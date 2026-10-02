@@ -17,6 +17,8 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+var errAttachmentReadAudit = errors.New("attachment read audit unavailable")
+
 func (s *Service) registerAttachmentRoutes(e *echo.Echo) {
 	for _, base := range []string{"/organizations/:organization/api/v2/projects/:project/attachments", "/api/v2/organizations/:organization/projects/:project/attachments"} {
 		e.POST(base, s.uploadAttachment)
@@ -247,23 +249,14 @@ func (s *Service) readAttachment(c echo.Context) error {
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, true)
 	}
-	key, err := attachment.Key(organization.ID, record.ID)
-	if err != nil {
-		return attachmentNotFound(c)
-	}
-	ctx := c.Request().Context()
-	if err := s.auth.audit(ctx, record.AuthorizedPrincipal, organization.ID, "attachment_read"); err != nil {
+	body, err := s.openAttachment(c.Request().Context(), organization, record)
+	if errors.Is(err, errAttachmentReadAudit) {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
 	}
-	body, err := s.attachments.Open(ctx, key)
 	if err != nil {
 		return attachmentNotFound(c)
 	}
-	defer func() {
-		if err := body.Close(); err != nil {
-			s.config.Logger.Warn("attachment read close failed", "attachment", record.ID)
-		}
-	}()
+	defer s.closeAttachmentBody(body, record.ID)
 	header := c.Response().Header()
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Content-Security-Policy", "default-src 'none'; sandbox")
@@ -275,6 +268,23 @@ func (s *Service) readAttachment(c echo.Context) error {
 	}
 	header.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": record.Name}))
 	return c.Stream(http.StatusOK, record.ContentType, io.LimitReader(body, record.Size))
+}
+
+func (s *Service) openAttachment(ctx context.Context, organization Organization, record attachment.Metadata) (io.ReadCloser, error) {
+	key, err := attachment.Key(organization.ID, record.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.audit(ctx, record.AuthorizedPrincipal, organization.ID, "attachment_read"); err != nil {
+		return nil, errors.Join(errAttachmentReadAudit, err)
+	}
+	return s.attachments.Open(ctx, key)
+}
+
+func (s *Service) closeAttachmentBody(body io.ReadCloser, id string) {
+	if err := body.Close(); err != nil {
+		s.config.Logger.Warn("attachment read close failed", "attachment", id)
+	}
 }
 
 func (s *Service) deleteAttachment(c echo.Context) error {

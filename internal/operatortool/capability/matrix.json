@@ -36542,7 +36542,7 @@
     },
     {
       "id": "cloudentry.upload_attachment",
-      "summary": "Upload a Cloud issue attachment",
+      "summary": "Upload attachment",
       "audience": "operator",
       "sources": [
         {
@@ -36587,62 +36587,57 @@
       ],
       "availability": [
         {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native",
+            "github"
+          ],
+          "service": "authenticated shared entry and tenant attachment owners"
+        },
+        {
           "deployment": "self_hosted",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes."
+          "service": "shared attachment service",
+          "unsupported": "omitted from discovery; no shared storage owner"
         },
         {
           "deployment": "hosted_dedicated",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service."
-        },
-        {
-          "deployment": "hosted_shared",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata"
-        },
-        {
-          "deployment": "credential_maintenance",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No attachment application service on this listener."
+          "service": "shared attachment service",
+          "unsupported": "omitted from discovery; no shared storage owner"
         }
       ],
       "authority": {
-        "role": "current organization member with project write authority",
-        "credential_scope": "hosted browser with CSRF or current bearer project write credential; API workers retain native scope, while MCP operator connections refuse worker credentials",
-        "project_grant": "current native project write grant",
-        "ownership": "undeleted attachment in the current organization/project; copied IDs or Markdown references grant no access; entry alone owns organization-prefixed object keys"
+        "role": "current organization member with project authority",
+        "credential_scope": "write",
+        "project_grant": "current credential and principal grant intersection",
+        "ownership": "attachment organization/project; reference targets resolve in the same project"
       },
       "preconditions": [
-        "Shared entry storage configured and organization ready; absent services remain unavailable.",
-        "Entry reauthorizes browser/bearer authority through signed tenant requests with current membership, scope and project grants; no storage credentials or object paths in tools/results.",
-        "Type, content, name, dimensions, 20 MiB limit, collaboration allowance and entry audit/storage are validated.",
-        "Public entry aliases /organizations/:organization/api/v2/projects/:project/attachments and /api/v2/organizations/:organization/projects/:project/attachments share this application owner."
+        "configured private entry storage",
+        "current credential, membership and project grant",
+        "safe opaque attachment ID",
+        "no storage URL, credentials or internal authorization principal in results"
       ],
       "confirmation": [
         {
-          "when": "ordinary upload under current write authority",
+          "when": "authenticated read or existing reference/upload command",
           "class": "none"
         }
       ],
-      "application": "cloudentry.uploadAttachment/storeAttachment and attachment.Prepare; hubserver.checkCloudAttachment/recordCloudAttachment; nativeOperatorExecutor authorizes upload_attachment and cloudentry.attachmentMCPResponse completes storage.",
-      "extraction": "Existing entry-owned adapter reuses upload preparation, signed authorization, allowance transaction, storage and audit. No business request_id or durable upload command receipt exists.",
+      "application": "existing entry attachment metadata/byte/storage owners and tenant readCloudAttachment/referenceCloudAttachmentCommand/deleteCloudAttachmentMetadata",
+      "extraction": "native #177 upload retained; native #238 typed authenticated reads/reference and existing connection action approval/deletion receipt",
       "tool": {
         "set": "work",
         "name": "upload_attachment",
         "arguments": "{\"type\":\"object\",\"required\":[\"project_id\",\"name\",\"content_base64\"],\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"name\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"content_type\":{\"type\":\"string\",\"maxLength\":128},\"content_base64\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":60000}},\"additionalProperties\":false}",
-        "result": "Attachment metadata, opaque ID and Markdown reference. Entry replaces the authorized Hub entry_upload marker with actual storage/metadata success; the marker alone is not stored-byte evidence.",
+        "result": "Recorded normalized metadata and markdown reference; up to 60000 base64 input characters",
         "annotations": {
           "readOnly": false,
           "destructive": false,
@@ -36652,12 +36647,12 @@
       },
       "owner": "digitaldrywood/detent#3341",
       "status": "implemented",
-      "coverage": "TestAttachmentRoutesIsolation covers actual API/MCP PNG upload, foreign project refusal, comment binding and evidence publishing; TestCloudAttachmentQuota and TestCloudAttachmentRetention.",
-      "decision": "Implemented by native #177 only through shared Cloud entry. Every upload allocates a new ID; retries may create another attachment. API permits one multipart file or raw bytes up to 20 MiB, while MCP retains its smaller base64/request bounds. Embed reference in file_issue/add_comment/edit_item content for existing transactional binding. Metadata/read/delete/explicit-reference adapters and parent native #26 acceptance remain pending. Signed tenant attachment-metadata source sites are the underlying entry callback/read/command owners, not separate metadata-write or maintenance tools; their existing native worker/operator scopes and project checks remain."
+      "coverage": "TestAttachmentRoutesIsolation; TestCloudAttachmentSavedReferences; TestCloudAttachmentRetention; TestCloudAttachmentQuota",
+      "decision": "Delivered shared-entry attachment adapter (native #177/#238), with current authority and existing application/storage semantics; parent parity remains separate."
     },
     {
       "id": "cloudentry.attachment_metadata",
-      "summary": "Read Cloud issue attachment metadata",
+      "summary": "Read attachment metadata",
       "audience": "operator",
       "sources": [
         {
@@ -36691,76 +36686,72 @@
       ],
       "availability": [
         {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native",
+            "github"
+          ],
+          "service": "authenticated shared entry and tenant attachment owners"
+        },
+        {
           "deployment": "self_hosted",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes."
+          "service": "shared attachment service",
+          "unsupported": "omitted from discovery; no shared storage owner"
         },
         {
           "deployment": "hosted_dedicated",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service."
-        },
-        {
-          "deployment": "hosted_shared",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata"
-        },
-        {
-          "deployment": "credential_maintenance",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No attachment application service on this listener."
+          "service": "shared attachment service",
+          "unsupported": "omitted from discovery; no shared storage owner"
         }
       ],
       "authority": {
-        "role": "current organization member with project read authority",
-        "credential_scope": "authenticated hosted browser or current bearer project read credential; MCP uses current operator connection authority",
-        "project_grant": "current native project read grant; attachment ID is resolved under the organization and selected project",
-        "ownership": "undeleted attachment in the current organization/project; copied IDs or Markdown references grant no access; entry alone owns organization-prefixed object keys"
+        "role": "current organization member with project authority",
+        "credential_scope": "read",
+        "project_grant": "current credential and principal grant intersection",
+        "ownership": "attachment organization/project; reference targets resolve in the same project"
       },
       "preconditions": [
-        "Shared entry storage configured and organization ready; absent services remain unavailable.",
-        "Entry reauthorizes browser/bearer authority through signed tenant requests with current membership, scope and project grants; no storage credentials or object paths in tools/results.",
-        "Public entry aliases /organizations/:organization/api/v2/projects/:project/attachments and /api/v2/organizations/:organization/projects/:project/attachments share this application owner."
+        "configured private entry storage",
+        "current credential, membership and project grant",
+        "safe opaque attachment ID",
+        "no storage URL, credentials or internal authorization principal in results"
       ],
       "confirmation": [
         {
-          "when": "authorized metadata read",
+          "when": "authenticated read or existing reference/upload command",
           "class": "none"
         }
       ],
-      "application": "cloudentry.readAttachmentMetadata/attachmentMetadata and hubserver.getCloudAttachment; current tenant metadata and source references, audited by entry.",
-      "extraction": "Reuse the existing authorized metadata read through a bounded typed adapter; omit authorized_principal_id and storage keys.",
+      "application": "existing entry attachment metadata/byte/storage owners and tenant readCloudAttachment/referenceCloudAttachmentCommand/deleteCloudAttachmentMetadata",
+      "extraction": "native #177 upload retained; native #238 typed authenticated reads/reference and existing connection action approval/deletion receipt",
       "tool": {
         "set": "work",
-        "name": "get_attachment_metadata",
-        "arguments": "Proposed project_id, attachment_id; bounded opaque IDs.",
-        "result": "Proposed bounded metadata and referenced_by records without internal authority/object keys.",
+        "name": "read_attachment_metadata",
+        "arguments": "{\"type\":\"object\",\"required\":[\"project_id\",\"attachment_id\"],\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"attachment_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"additionalProperties\":false}",
+        "result": "Authenticated metadata with SHA-256, size, type, dimensions and item/comment references; at most 256 KiB",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": false
+          "openWorld": true
         }
       },
-      "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Existing API: TestAttachmentRoutesIsolation and TestCloudAttachmentSavedReferences. No advertised MCP metadata tool/executor exists.",
-      "decision": "Required operator adapter remains pending. AttachmentCatalog advertises only upload_attachment; conversation attachment reads own a different resource and cannot stand in for Cloud issue metadata. Signed tenant attachment-metadata source sites are the underlying entry callback/read/command owners, not separate metadata-write or maintenance tools; their existing native worker/operator scopes and project checks remain."
+      "owner": "digitaldrywood/detent#3341",
+      "status": "implemented",
+      "coverage": "TestAttachmentRoutesIsolation; TestCloudAttachmentSavedReferences; TestCloudAttachmentRetention; TestCloudAttachmentQuota",
+      "decision": "Delivered shared-entry attachment adapter (native #177/#238), with current authority and existing application/storage semantics; parent parity remains separate."
     },
     {
       "id": "cloudentry.read_attachment",
-      "summary": "Read Cloud issue attachment bytes",
+      "summary": "Read attachment",
       "audience": "operator",
       "sources": [
         {
@@ -36783,76 +36774,72 @@
       ],
       "availability": [
         {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native",
+            "github"
+          ],
+          "service": "authenticated shared entry and tenant attachment owners"
+        },
+        {
           "deployment": "self_hosted",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes."
+          "service": "shared attachment service",
+          "unsupported": "omitted from discovery; no shared storage owner"
         },
         {
           "deployment": "hosted_dedicated",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service."
-        },
-        {
-          "deployment": "hosted_shared",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata"
-        },
-        {
-          "deployment": "credential_maintenance",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No attachment application service on this listener."
+          "service": "shared attachment service",
+          "unsupported": "omitted from discovery; no shared storage owner"
         }
       ],
       "authority": {
-        "role": "current organization member with project read authority",
-        "credential_scope": "authenticated hosted browser or current bearer project read credential; MCP uses current operator connection authority",
-        "project_grant": "current native project read grant; attachment ID is resolved under the organization and selected project",
-        "ownership": "undeleted attachment in the current organization/project; copied IDs or Markdown references grant no access; entry alone owns organization-prefixed object keys"
+        "role": "current organization member with project authority",
+        "credential_scope": "read",
+        "project_grant": "current credential and principal grant intersection",
+        "ownership": "attachment organization/project; reference targets resolve in the same project"
       },
       "preconditions": [
-        "Shared entry storage configured and organization ready; absent services remain unavailable.",
-        "Entry reauthorizes browser/bearer authority through signed tenant requests with current membership, scope and project grants; no storage credentials or object paths in tools/results.",
-        "Public entry aliases /organizations/:organization/api/v2/projects/:project/attachments and /api/v2/organizations/:organization/projects/:project/attachments share this application owner."
+        "configured private entry storage",
+        "current credential, membership and project grant",
+        "safe opaque attachment ID",
+        "no storage URL, credentials or internal authorization principal in results"
       ],
       "confirmation": [
         {
-          "when": "authorized byte read",
+          "when": "authenticated read or existing reference/upload command",
           "class": "none"
         }
       ],
-      "application": "cloudentry.readAttachment/attachmentMetadata; audited entry storage.Open after signed tenant metadata authorization.",
-      "extraction": "Extract a bounded chunk read from existing entry storage/metadata ownership; conversation byte readers are a separate authority.",
+      "application": "existing entry attachment metadata/byte/storage owners and tenant readCloudAttachment/referenceCloudAttachmentCommand/deleteCloudAttachmentMetadata",
+      "extraction": "native #177 upload retained; native #238 typed authenticated reads/reference and existing connection action approval/deletion receipt",
       "tool": {
         "set": "work",
         "name": "read_attachment",
-        "arguments": "Proposed project_id, attachment_id, offset >= 0, length 1\u201332768; no arbitrary URL/object key.",
-        "result": "Proposed base64 byte chunk, total size and safe metadata under current project authority.",
+        "arguments": "{\"type\":\"object\",\"required\":[\"project_id\",\"attachment_id\"],\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"attachment_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"offset\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":20971520},\"length\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":32768}},\"additionalProperties\":false}",
+        "result": "Recorded metadata plus base64 content, offset, returned_bytes, eof and max_content_bytes; at most 32768 content bytes and 256 KiB result",
         "annotations": {
           "readOnly": true,
           "destructive": false,
           "idempotent": true,
-          "openWorld": false
+          "openWorld": true
         }
       },
-      "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "TestAttachmentRoutesIsolation covers API byte reads and foreign-project refusal; no MCP byte-read adapter coverage.",
-      "decision": "Required operator adapter remains pending. No Cloud issue byte-read tool is advertised/executed. Browser image/download URLs perform authorized application reads and are not presentation-only exclusions."
+      "owner": "digitaldrywood/detent#3341",
+      "status": "implemented",
+      "coverage": "TestAttachmentRoutesIsolation; TestCloudAttachmentSavedReferences; TestCloudAttachmentRetention; TestCloudAttachmentQuota",
+      "decision": "Delivered shared-entry attachment adapter (native #177/#238), with current authority and existing application/storage semantics; parent parity remains separate."
     },
     {
       "id": "cloudentry.delete_attachment",
-      "summary": "Delete a Cloud issue attachment",
+      "summary": "Delete attachment",
       "audience": "operator",
       "sources": [
         {
@@ -36879,76 +36866,72 @@
       ],
       "availability": [
         {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native",
+            "github"
+          ],
+          "service": "authenticated shared entry and tenant attachment owners"
+        },
+        {
           "deployment": "self_hosted",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes."
+          "service": "shared attachment service",
+          "unsupported": "omitted from discovery; no shared storage owner"
         },
         {
           "deployment": "hosted_dedicated",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service."
-        },
-        {
-          "deployment": "hosted_shared",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata"
-        },
-        {
-          "deployment": "credential_maintenance",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No attachment application service on this listener."
+          "service": "shared attachment service",
+          "unsupported": "omitted from discovery; no shared storage owner"
         }
       ],
       "authority": {
-        "role": "current organization member with project write authority",
-        "credential_scope": "hosted browser with CSRF or current bearer project write credential; API workers retain native scope, while MCP operator connections refuse worker credentials",
-        "project_grant": "current native project write grant",
-        "ownership": "undeleted attachment in the current organization/project; copied IDs or Markdown references grant no access; entry alone owns organization-prefixed object keys"
+        "role": "current organization member with project authority",
+        "credential_scope": "write",
+        "project_grant": "current credential and principal grant intersection",
+        "ownership": "attachment organization/project; reference targets resolve in the same project"
       },
       "preconditions": [
-        "Shared entry storage configured and organization ready; absent services remain unavailable.",
-        "Entry reauthorizes browser/bearer authority through signed tenant requests with current membership, scope and project grants; no storage credentials or object paths in tools/results.",
-        "Public entry aliases /organizations/:organization/api/v2/projects/:project/attachments and /api/v2/organizations/:organization/projects/:project/attachments share this application owner."
+        "configured private entry storage",
+        "current credential, membership and project grant",
+        "safe opaque attachment ID",
+        "no storage URL, credentials or internal authorization principal in results"
       ],
       "confirmation": [
         {
-          "when": "attachment deletion with exact material preview; connection YOLO affects confirmation only",
-          "class": "operator"
+          "when": "every explicit deletion",
+          "class": "connection"
         }
       ],
-      "application": "cloudentry.deleteAttachment/removeAttachment and hubserver.deleteCloudAttachment; entry deletes bytes then acknowledges metadata through the service-only callback.",
-      "extraction": "Reuse current deletion/storage/audit ownership with exact browser preview and a shared request_id receipt before claiming MCP delivery/idempotency.",
+      "application": "existing entry attachment metadata/byte/storage owners and tenant readCloudAttachment/referenceCloudAttachmentCommand/deleteCloudAttachmentMetadata",
+      "extraction": "native #177 upload retained; native #238 typed authenticated reads/reference and existing connection action approval/deletion receipt",
       "tool": {
         "set": "work",
         "name": "delete_attachment",
-        "arguments": "Proposed project_id, attachment_id, request_id; exact selected attachment identity in approval.",
-        "result": "Proposed shared action preview/outcome and deletion receipt; pending storage cleanup stays explicit.",
+        "arguments": "{\"type\":\"object\",\"required\":[\"project_id\",\"attachment_id\",\"request_id\"],\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"attachment_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128}},\"additionalProperties\":false}",
+        "result": "Exact action preview and pending/approved/rejected receipt; object_deletion pending/confirmed through entry",
         "annotations": {
           "readOnly": false,
           "destructive": true,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
-      "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "TestAttachmentRoutesIsolation and TestCloudAttachmentReferenceDeletion cover HTTP behavior; MCP approval, execution and replay remain pending.",
-      "decision": "Required operator adapter remains pending. Public deletion is separate from internal object-deletion acknowledgment. API marks metadata before storage cleanup and may report deletion pending; no advertised delete_attachment tool, material approval or durable MCP retry receipt exists. Signed tenant attachment-metadata source sites are the underlying entry callback/read/command owners, not separate metadata-write or maintenance tools; their existing native worker/operator scopes and project checks remain."
+      "owner": "digitaldrywood/detent#3341",
+      "status": "implemented",
+      "coverage": "TestAttachmentRoutesIsolation; TestCloudAttachmentSavedReferences; TestCloudAttachmentRetention; TestCloudAttachmentQuota",
+      "decision": "Delivered shared-entry attachment adapter (native #177/#238), with current authority and existing application/storage semantics; parent parity remains separate."
     },
     {
       "id": "cloudentry.reference_attachment",
-      "summary": "Reference a Cloud issue attachment from work content",
+      "summary": "Reference attachment",
       "audience": "operator",
       "sources": [
         {
@@ -36975,76 +36958,72 @@
       ],
       "availability": [
         {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native",
+            "github"
+          ],
+          "service": "authenticated shared entry and tenant attachment owners"
+        },
+        {
           "deployment": "self_hosted",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes."
+          "service": "shared attachment service",
+          "unsupported": "omitted from discovery; no shared storage owner"
         },
         {
           "deployment": "hosted_dedicated",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service."
-        },
-        {
-          "deployment": "hosted_shared",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata"
-        },
-        {
-          "deployment": "credential_maintenance",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No attachment application service on this listener."
+          "service": "shared attachment service",
+          "unsupported": "omitted from discovery; no shared storage owner"
         }
       ],
       "authority": {
-        "role": "current organization member with project write authority",
-        "credential_scope": "hosted browser with CSRF or current bearer project write credential; API workers retain native scope, while MCP operator connections refuse worker credentials",
-        "project_grant": "current native project write grant",
-        "ownership": "undeleted attachment in the current organization/project; copied IDs or Markdown references grant no access; entry alone owns organization-prefixed object keys; referenced item and optional comment must be in the same project; copied references neither reassign bound uploads nor bypass saved-content authority"
+        "role": "current organization member with project authority",
+        "credential_scope": "write",
+        "project_grant": "current credential and principal grant intersection",
+        "ownership": "attachment organization/project; reference targets resolve in the same project"
       },
       "preconditions": [
-        "Shared entry storage configured and organization ready; absent services remain unavailable.",
-        "Entry reauthorizes browser/bearer authority through signed tenant requests with current membership, scope and project grants; no storage credentials or object paths in tools/results.",
-        "Public entry aliases /organizations/:organization/api/v2/projects/:project/attachments and /api/v2/organizations/:organization/projects/:project/attachments share this application owner."
+        "configured private entry storage",
+        "current credential, membership and project grant",
+        "safe opaque attachment ID",
+        "no storage URL, credentials or internal authorization principal in results"
       ],
       "confirmation": [
         {
-          "when": "ordinary reference under current write and item/comment authority",
+          "when": "authenticated read or existing reference/upload command",
           "class": "none"
         }
       ],
-      "application": "cloudentry.referenceAttachment and hubserver.referenceCloudAttachment; current item/comment reads and attachment_references insertion in the reauthorized tenant transaction.",
-      "extraction": "Reuse the existing reference transaction with bounded typed inputs and shared command receipts; saved content already uses bindCloudAttachmentReferences/syncCloudAttachmentReferences.",
+      "application": "existing entry attachment metadata/byte/storage owners and tenant readCloudAttachment/referenceCloudAttachmentCommand/deleteCloudAttachmentMetadata",
+      "extraction": "native #177 upload retained; native #238 typed authenticated reads/reference and existing connection action approval/deletion receipt",
       "tool": {
         "set": "work",
         "name": "reference_attachment",
-        "arguments": "Proposed project_id, attachment_id, work_item_id, optional comment_id, request_id; bounded owned IDs.",
-        "result": "Proposed bounded reference receipt with current item/comment identity; no bytes/storage keys.",
+        "arguments": "{\"type\":\"object\",\"required\":[\"project_id\",\"attachment_id\",\"request_id\",\"work_item_id\"],\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"attachment_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"work_item_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"comment_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256}},\"additionalProperties\":false}",
+        "result": "Exact same-project item/comment binding; replay upserts one relation",
         "annotations": {
           "readOnly": false,
           "destructive": false,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
-      "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "TestAttachmentRoutesIsolation and TestCloudAttachmentSavedReferences cover existing reference/content transactions; no standalone MCP reference adapter.",
-      "decision": "Explicit public reference adapter remains pending. Native issue/comment content saves implement transactional binding, but do not advertise the separate referenceAttachment command. Preserve same-project item/comment ownership and copied-reference restrictions. Signed tenant attachment-metadata source sites are the underlying entry callback/read/command owners, not separate metadata-write or maintenance tools; their existing native worker/operator scopes and project checks remain."
+      "owner": "digitaldrywood/detent#3341",
+      "status": "implemented",
+      "coverage": "TestAttachmentRoutesIsolation; TestCloudAttachmentSavedReferences; TestCloudAttachmentRetention; TestCloudAttachmentQuota",
+      "decision": "Delivered shared-entry attachment adapter (native #177/#238), with current authority and existing application/storage semantics; parent parity remains separate."
     },
     {
       "id": "hubserver.expired_cloud_attachments",
-      "summary": "Select expired Cloud attachment metadata",
+      "summary": "Expired cloud attachments",
       "audience": "transport",
       "sources": [
         {
@@ -37061,68 +37040,46 @@
       ],
       "availability": [
         {
-          "deployment": "self_hosted",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes."
-        },
-        {
-          "deployment": "hosted_dedicated",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service."
-        },
-        {
           "deployment": "hosted_shared",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata"
-        },
-        {
-          "deployment": "credential_maintenance",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No attachment application service on this listener."
+          "service": "signed entry maintenance callback"
         }
       ],
       "authority": {
-        "role": "authenticated Cloud entry service only",
-        "credential_scope": "verified cloudassert.KindService signed request; browser, bearer operator and worker credentials cannot invoke internal callbacks",
-        "project_grant": "signed entry service selects the organization-bound tenant; no operator project grant",
-        "ownership": "current shared organization tenant and entry-owned object prefix; internal metadata identity never grants public authority"
+        "role": "entry service assertion",
+        "credential_scope": "service only",
+        "project_grant": "not operator authority",
+        "ownership": "tenant-bound signed generation, audience, path and body"
       },
       "preconditions": [
-        "Verified shared entry signature binds method/path/body and current tenant organization; public machine/browser claims are refused."
+        "valid signed service assertion",
+        "existing storage maintenance owner"
       ],
       "confirmation": [
         {
-          "when": "service-only callback",
+          "when": "internal entry maintenance callback",
           "class": "not_applicable"
         }
       ],
-      "application": "hubserver.expiredCloudAttachments; entry sweepOrganizationAttachments selects existing retention work.",
-      "extraction": "None; service-to-tenant maintenance callback, not an operator application command.",
+      "application": "existing entry sweep/removeAttachment and tenant metadata callback",
+      "extraction": "none; private storage maintenance stays with entry",
       "tool": {
         "set": "",
         "name": "",
         "arguments": "",
         "result": ""
       },
-      "owner": "digitaldrywood/detent#3346",
+      "owner": "digitaldrywood/detent#3341",
       "status": "excluded",
-      "coverage": "TestAttachmentOrphanSweepAndDeprovision and TestCloudAttachmentRetention; hostedSharedEntry service-kind boundary.",
-      "decision": "Explicit non-model boundary. hostedSharedEntry and the handler require service-kind claims for these internal callbacks. Retention selection, object-deletion acknowledgment and existence probes are not operator tools."
+      "coverage": "TestAttachmentOrphanSweepAndDeprovision; TestCloudAttachmentRetention; TestHostedSharedEntryRejectsBypass",
+      "decision": "Current private signed service callback, not an authorized operator operation or model-callable tool."
     },
     {
       "id": "hubserver.finish_cloud_attachment_deletion",
-      "summary": "Acknowledge entry-owned object deletion",
+      "summary": "Finish cloud attachment deletion",
       "audience": "transport",
       "sources": [
         {
@@ -37139,68 +37096,46 @@
       ],
       "availability": [
         {
-          "deployment": "self_hosted",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes."
-        },
-        {
-          "deployment": "hosted_dedicated",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service."
-        },
-        {
           "deployment": "hosted_shared",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata"
-        },
-        {
-          "deployment": "credential_maintenance",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No attachment application service on this listener."
+          "service": "signed entry maintenance callback"
         }
       ],
       "authority": {
-        "role": "authenticated Cloud entry service only",
-        "credential_scope": "verified cloudassert.KindService signed request; browser, bearer operator and worker credentials cannot invoke internal callbacks",
-        "project_grant": "signed entry service selects the organization-bound tenant; no operator project grant",
-        "ownership": "current shared organization tenant and entry-owned object prefix; internal metadata identity never grants public authority"
+        "role": "entry service assertion",
+        "credential_scope": "service only",
+        "project_grant": "not operator authority",
+        "ownership": "tenant-bound signed generation, audience, path and body"
       },
       "preconditions": [
-        "Verified shared entry signature binds method/path/body and current tenant organization; public machine/browser claims are refused."
+        "valid signed service assertion",
+        "existing storage maintenance owner"
       ],
       "confirmation": [
         {
-          "when": "service-only callback",
+          "when": "internal entry maintenance callback",
           "class": "not_applicable"
         }
       ],
-      "application": "hubserver.finishCloudAttachmentDeletion; entry removeAttachment acknowledges object deletion.",
-      "extraction": "None; service-to-tenant maintenance callback, not an operator application command.",
+      "application": "existing entry sweep/removeAttachment and tenant metadata callback",
+      "extraction": "none; private storage maintenance stays with entry",
       "tool": {
         "set": "",
         "name": "",
         "arguments": "",
         "result": ""
       },
-      "owner": "digitaldrywood/detent#3346",
+      "owner": "digitaldrywood/detent#3341",
       "status": "excluded",
-      "coverage": "TestAttachmentOrphanSweepAndDeprovision and TestCloudAttachmentRetention; hostedSharedEntry service-kind boundary.",
-      "decision": "Explicit non-model boundary. hostedSharedEntry and the handler require service-kind claims for these internal callbacks. Retention selection, object-deletion acknowledgment and existence probes are not operator tools."
+      "coverage": "TestAttachmentOrphanSweepAndDeprovision; TestCloudAttachmentRetention; TestHostedSharedEntryRejectsBypass",
+      "decision": "Current private signed service callback, not an authorized operator operation or model-callable tool."
     },
     {
       "id": "hubserver.cloud_attachment_exists",
-      "summary": "Check metadata during entry orphan maintenance",
+      "summary": "Cloud attachment exists",
       "audience": "transport",
       "sources": [
         {
@@ -37217,64 +37152,42 @@
       ],
       "availability": [
         {
-          "deployment": "self_hosted",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No Cloud entry storage owner; direct Hub/daemon calls cannot operate on Cloud issue bytes."
-        },
-        {
-          "deployment": "hosted_dedicated",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "Cloud issue attachments are registered only for shared entry and its organization tenant; conversation attachments are a separate service."
-        },
-        {
           "deployment": "hosted_shared",
           "trackers": [
-            "native"
+            "native",
+            "github"
           ],
-          "service": "Cloud entry storage and signed tenant metadata"
-        },
-        {
-          "deployment": "credential_maintenance",
-          "trackers": [
-            "native"
-          ],
-          "service": "Cloud entry storage and signed tenant metadata",
-          "unsupported": "No attachment application service on this listener."
+          "service": "signed entry maintenance callback"
         }
       ],
       "authority": {
-        "role": "authenticated Cloud entry service only",
-        "credential_scope": "verified cloudassert.KindService signed request; browser, bearer operator and worker credentials cannot invoke internal callbacks",
-        "project_grant": "signed entry service selects the organization-bound tenant; no operator project grant",
-        "ownership": "current shared organization tenant and entry-owned object prefix; internal metadata identity never grants public authority"
+        "role": "entry service assertion",
+        "credential_scope": "service only",
+        "project_grant": "not operator authority",
+        "ownership": "tenant-bound signed generation, audience, path and body"
       },
       "preconditions": [
-        "Verified shared entry signature binds method/path/body and current tenant organization; public machine/browser claims are refused."
+        "valid signed service assertion",
+        "existing storage maintenance owner"
       ],
       "confirmation": [
         {
-          "when": "service-only callback",
+          "when": "internal entry maintenance callback",
           "class": "not_applicable"
         }
       ],
-      "application": "hubserver.cloudAttachmentExists; entry sweepOrganizationAttachments checks metadata before deleting orphan objects.",
-      "extraction": "None; service-to-tenant maintenance callback, not an operator application command.",
+      "application": "existing entry sweep/removeAttachment and tenant metadata callback",
+      "extraction": "none; private storage maintenance stays with entry",
       "tool": {
         "set": "",
         "name": "",
         "arguments": "",
         "result": ""
       },
-      "owner": "digitaldrywood/detent#3346",
+      "owner": "digitaldrywood/detent#3341",
       "status": "excluded",
-      "coverage": "TestAttachmentOrphanSweepAndDeprovision and TestCloudAttachmentRetention; hostedSharedEntry service-kind boundary.",
-      "decision": "Explicit non-model boundary. hostedSharedEntry and the handler require service-kind claims for these internal callbacks. Retention selection, object-deletion acknowledgment and existence probes are not operator tools."
+      "coverage": "TestAttachmentOrphanSweepAndDeprovision; TestCloudAttachmentRetention; TestHostedSharedEntryRejectsBypass",
+      "decision": "Current private signed service callback, not an authorized operator operation or model-callable tool."
     },
     {
       "id": "hubserver.wait_native_candidates",

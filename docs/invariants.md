@@ -134,6 +134,16 @@ the bytes. Markdown references bind to the same project and item/comment in the
 content transaction; copied references never grant read access or reassign a
 bound upload. `TestAttachmentRoutesIsolation` covers API/MCP PNG round-trips,
 foreign-project tokens, automatic comment binding and the evidence publisher.
+Native #238 exposes metadata and bounded base64 content reads through authenticated
+entry, and shares the API reference/deletion owners with typed MCP operations.
+Read authority never permits binding or deletion. The existing connection action
+binds deletion to the exact metadata/reference preview and real human approval or
+human-selected YOLO, rechecking current credentials at execution. Entry confirms
+object deletion before quota release; interrupted delivery uses only the existing
+maintenance cycle. Results contain no storage URL, secret or internal authorization
+principal. `TestAttachmentRoutesIsolation` additionally covers legacy/modern reads,
+content bounds, reference replay and foreign targets, approval/rejection, revoked
+credentials, stale previews and YOLO. Maintenance callbacks remain service-only.
 Worker screenshot capture (#197) selects only changed image paths from the
 existing attempt diff anchored before native Code/Rework execution. Unchanged
 inherited images and deleted paths are not current evidence. Programmatic

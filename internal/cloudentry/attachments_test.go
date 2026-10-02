@@ -30,12 +30,13 @@ type spacesObject struct {
 	created time.Time
 }
 type spacesFixture struct {
-	mu        sync.Mutex
-	objects   map[string]spacesObject
-	keys      []string
-	public    bool
-	versioned bool
-	transport http.RoundTripper
+	mu         sync.Mutex
+	objects    map[string]spacesObject
+	keys       []string
+	public     bool
+	versioned  bool
+	failDelete bool
+	transport  http.RoundTripper
 }
 
 func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
@@ -116,6 +117,10 @@ func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
 				w.Header().Set("x-amz-version-id", "version-test")
 			}
 		case http.MethodDelete:
+			if f.failDelete {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			if f.versioned && r.URL.Query().Get("versionId") != "version-test" {
 				t.Error("versioned deletion left retained bytes")
 				w.WriteHeader(400)
@@ -267,6 +272,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	}
 	otherProject := strings.TrimPrefix(other.Header.Get("Location"), "/organizations/org_alpha/projects/")
 	var writeToken string
+	var readToken, foreignToken string
 	for _, test := range []struct {
 		scope, project       string
 		wantRead, wantUpload int
@@ -304,6 +310,12 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		}
 		if test.wantUpload == 201 {
 			writeToken = token.Token
+		}
+		if scope == "read" {
+			readToken = token.Token
+		}
+		if test.project == otherProject {
+			foreignToken = token.Token
 		}
 	}
 
@@ -379,6 +391,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		t.Fatalf("audit entries=%d", audits)
 	}
 	exerciseAttachmentClients(t, f, alice, anonymous, project, writeToken)
+	exerciseAttachmentMCPOperations(t, f, store, alice, anonymous, project, otherProject, writeToken, readToken, foreignToken, record, content)
 	deleted := attachmentRequest(t, alice, http.MethodDelete, base+"/"+record.ID, nil, map[string]string{"X-CSRF-Token": csrf})
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete=%d %s", deleted.Code, deleted.Body.String())
