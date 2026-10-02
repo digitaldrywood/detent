@@ -26,6 +26,22 @@ replacement between requests take effect on the next candidate read.
 `TestWakeSpriteRunnersFreshAuthority` and
 `TestWakeSpriteRunnersProjectIsolation` preserve these boundaries.
 
+Configured native workflow requests through MCP (native #219) expose the existing
+typed `move_item` capability in hosted and stdio catalogs. The Hub adapter calls
+`transitionNativeIssueCommand`, the workflow API's current authority, configured
+graph, expected-revision and durable receipt owner. Native daemon requests retain
+the existing connector and orchestrator owner. `get_native_project` supplies the
+project's actual state names and edges. Ordinary reversible configured requests
+retain normal execution; terminal source or target states retain browser
+confirmation and trusted connection YOLO. Discovery retains connection role and
+scope filtering; preview, result delivery, execution and replay recheck current
+organization/project/item authority.
+History records the authenticated human operator and `user_requested`; a state
+request creates no Run, Attempt, lease, approval, completion or landing evidence.
+`TestMCPConfiguredWorkflowTransitions`, `TestMCPNativeWorkCommands`,
+`TestNativeMoveItemArguments` and `TestActionConfirmationClassification` cover
+the transport, owner, CAS, replay and approval boundaries.
+
 Analytics parity (native #33, imported #3665) uses the same application adapters
 for stdio, HTTP MCP and the daemon bridge. Each direct read resolves current
 read authority and project grants before selecting projects or aggregating
@@ -1624,6 +1640,13 @@ owner. `TestWakeSpriteRunnersAfterBurst` records fixture request counts, retaine
 goroutines and mutation latency; `TestWakeSpriteRunnersCancellation` covers
 context cancellation and service shutdown. This is fixture evidence of the
 conditional source risk, not a measured production incident.
+
+Native workflow MCP parity (#219) consolidates hosted requests under the existing
+workflow application command and connection approval service. It adds no lane
+writer, transition graph, lease, guard, recovery loop, configuration or UI.
+Project-specific review and validation policy and native fencing remain with
+their existing owners; exposing a requested transition supplies no worker or
+landing evidence.
 
 Hosted fleet approval (native #168) removes volatile heartbeat health from the
 existing configuration approval fence and consolidates material classification

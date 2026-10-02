@@ -22,7 +22,7 @@ const (
 // it is independent of JSON-RPC request IDs and is never an approval token.
 func CommandCatalog() []Definition {
 	return append(append(append([]Definition{
-		commandDefinition(MoveItem, "Move an item through the dashboard command. Moves between Todo and Backlog execute directly; material actions return a browser approval preview.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1}`, `"identifier","target_state"`, true),
+		commandDefinition(MoveItem, "Request an item's configured workflow transition through the application owner. Read get_native_project for native states and allowed transitions; native requests require expected_revision. Ordinary reversible native transitions execute directly; terminal or destructive transitions return a browser approval preview.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1}`, `"identifier","target_state"`, true),
 		commandDefinition(SetPriority, "Set an item's configured priority directly through the dashboard command.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"priority":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1}`, `"identifier","priority"`, false),
 		commandDefinition(StopRun, "Stop the exact active run and route its item. Requires real operator approval unless the operator selected YOLO for this connection.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"destination":{"type":"string","enum":["Blocked","Backlog","Cancelled","Todo"]},"priority":{"type":"integer","minimum":1,"maximum":4},"reason":{"type":"string","maxLength":280}`, `"identifier","destination"`, true),
 		fileIssueDefinition(),
@@ -81,4 +81,34 @@ func DecodeFileIssue(raw json.RawMessage) (FileIssueArguments, error) {
 func commandDefinition(name, description, properties, required string, destructive bool) Definition {
 	schema := `{"type":"object","required":["project_id","request_id",` + required + `],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"request_id":{"type":"string","description":"Business idempotency key; reuse for the same operation across reconnects. Independent of JSON-RPC id.","minLength":1,"maxLength":128},` + properties + `},"additionalProperties":false}`
 	return Definition{Name: name, Description: description, InputSchema: json.RawMessage(schema), Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: true}, Meta: toolset(name)}
+}
+
+type MoveItemArguments struct {
+	ProjectID        string `json:"project_id"`
+	RequestID        string `json:"request_id,omitempty"`
+	Identifier       string `json:"identifier"`
+	TargetState      string `json:"target_state"`
+	ExpectedRevision int64  `json:"expected_revision"`
+}
+
+func DecodeNativeMoveItem(raw json.RawMessage) (MoveItemArguments, error) {
+	var request MoveItemArguments
+	var fields map[string]json.RawMessage
+	if DecodeArguments(raw, &request) != nil || json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return request, ErrInvalidArguments
+	}
+	for _, value := range fields {
+		if string(value) == "null" {
+			return request, ErrInvalidArguments
+		}
+	}
+	for _, value := range []string{request.ProjectID, request.Identifier, request.TargetState} {
+		if strings.TrimSpace(value) == "" || len(value) > 256 {
+			return request, ErrInvalidArguments
+		}
+	}
+	if request.ExpectedRevision <= 0 || strings.TrimSpace(request.RequestID) == "" || len(request.RequestID) > 128 {
+		return request, ErrInvalidArguments
+	}
+	return request, nil
 }

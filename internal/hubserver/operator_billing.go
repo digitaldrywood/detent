@@ -190,7 +190,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	if hubFleetTool(call.Name) {
 		return hubFleetExecutor(e).Execute(ctx, call)
 	}
-	if call.Name == operatortool.UploadAttachment || call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
+	if call.Name == operatortool.MoveItem || call.Name == operatortool.UploadAttachment || call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
 		return nativeOperatorExecutor(e).Execute(ctx, call)
 	}
 	defer func() {
@@ -224,6 +224,12 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				return result, err
 			}
 			return (hubFleetExecutor{service: s}).actionResult(ctx, action)
+		}
+		if action.Kind == chat.ActionMoveItem {
+			if _, _, err := (nativeOperatorExecutor{service: s}).workflowAuthority(ctx, action.Arguments); err != nil {
+				return result, err
+			}
+			return s.hubActionResult(action)
 		}
 		if _, err := s.operatorBillingCredential(ctx, "billing", true); err != nil {
 			return result, err
@@ -434,6 +440,9 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 	if action.Mutation.Source == "chat" {
 		return e.service.executeCoordinatorAction(ctx, action)
 	}
+	if action.Kind == chat.ActionMoveItem {
+		return (nativeOperatorExecutor{service: e.service}).executeWorkflowTransition(ctx, action)
+	}
 	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
 		return (workspaceOperatorExecutor{server: e.service}).ExecuteAction(ctx, action)
 	}
@@ -486,6 +495,10 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 }
 
 func (e hostedOperatorExecutor) AuditAction(ctx context.Context, action chat.Action, outcome string) {
+	if action.Kind == chat.ActionMoveItem {
+		e.service.hubChangeAudit(ctx, action.Mutation, outcome)
+		return
+	}
 	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
 		(workspaceOperatorExecutor{server: e.service}).AuditAction(ctx, action, outcome)
 		return

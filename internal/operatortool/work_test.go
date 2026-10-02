@@ -73,3 +73,27 @@ func TestWorkArgumentsDirectCallBounds(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeMoveItemArguments(t *testing.T) {
+	for _, test := range []struct {
+		name, fields string
+		valid        bool
+	}{
+		{"configured state", `"target_state":"Ready","expected_revision":2`, true},
+		{"missing revision", `"target_state":"Ready"`, false},
+		{"zero revision", `"target_state":"Ready","expected_revision":0`, false},
+		{"blank state", `"target_state":" ","expected_revision":2`, false},
+		{"oversized state", `"target_state":"` + strings.Repeat("x", 257) + `","expected_revision":2`, false},
+		{"forged approval", `"target_state":"Ready","expected_revision":2,"confirm":true`, false},
+		{"forged fence", `"target_state":"Ready","expected_revision":2,"fencing_token":12`, false},
+		{"forged reason", `"target_state":"Ready","expected_revision":2,"reason":"worker_progress"`, false},
+		{"null field", `"target_state":null,"expected_revision":2`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := DecodeNativeMoveItem(json.RawMessage(`{"project_id":"project","request_id":"move","identifier":"item",` + test.fields + `}`))
+			if (err == nil) != test.valid {
+				t.Fatalf("valid=%t error=%v", test.valid, err)
+			}
+		})
+	}
+}
