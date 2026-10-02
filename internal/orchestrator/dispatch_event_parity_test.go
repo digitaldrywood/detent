@@ -95,8 +95,8 @@ func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
 			if tt.fenced {
 				wantOwned = 2
 			}
-			if len(observed.Running) != wantOwned || len(observed.Claimed) != wantOwned {
-				t.Fatalf("ownership during refill: running=%d claimed=%d, want %d each", len(observed.Running), len(observed.Claimed), wantOwned)
+			if len(observed.Running) != 0 || len(observed.Claimed) != wantOwned {
+				t.Fatalf("ownership during refill: running=%d claimed=%d, want running=0 claimed=%d", len(observed.Running), len(observed.Claimed), wantOwned)
 			}
 			if o.refreshProgress.Load() != nil || observed.RefreshProgress.Stage != "" {
 				t.Fatal("completion refill started a tracker refresh")

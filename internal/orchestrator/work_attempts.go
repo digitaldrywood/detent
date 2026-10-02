@@ -516,6 +516,7 @@ func (o *Orchestrator) completeDurableWorkAttemptWithSessionState(
 		return false
 	}
 	o.applyWorkAttemptCompletionSnapshot(state, running, completion)
+	o.publishRuntimeState(state)
 	return true
 }
 
