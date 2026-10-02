@@ -70,6 +70,12 @@ export interface WorkItemView {
   readonly stateId: string;
   readonly terminal: boolean;
   readonly sourceProvider: string | null;
+  readonly source: {
+    readonly externalId: string;
+    readonly createdAt: string | null;
+    readonly updatedAt: string | null;
+    readonly observedAt: string | null;
+  } | null;
   readonly priority: string | null;
   readonly labels: readonly string[];
   readonly assignees: readonly string[];
@@ -187,6 +193,7 @@ export interface BoardStats {
   readonly waiting: number;
   readonly blocked: number;
   readonly completed: number;
+  readonly importedClosed: number;
   readonly total: number;
 }
 
@@ -214,6 +221,7 @@ export function boardStats(
   let waiting = 0;
   let blocked = 0;
   let completed = 0;
+  let importedClosed = 0;
   const observations = {
     worker: { known: 0, unchecked: 0, unavailable: 0, partial: 0 },
     change: { known: 0, unchecked: 0, unavailable: 0, partial: 0 },
@@ -223,6 +231,7 @@ export function boardStats(
     observations.change[item.observations?.change ?? "unchecked"] += 1;
     if (terminal.has(item.state)) {
       completed += 1;
+      if (item.sourceProvider !== null) importedClosed += 1;
       continue;
     }
     if (isLive(item)) {
@@ -236,5 +245,5 @@ export function boardStats(
     if (started.has(item.state)) waiting += 1;
     else ready += 1;
   }
-  return { running, ready, waiting, blocked, completed, total: items.length, observations };
+  return { running, ready, waiting, blocked, completed, importedClosed, total: items.length, observations };
 }

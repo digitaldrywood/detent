@@ -23,7 +23,7 @@ export function StatsRow({
     { key: "running", value: totals?.running ?? stats.running, label: "running" },
     { key: "ready", value: totals?.ready ?? stats.ready, label: "ready" },
     { key: "waiting", value: totals?.waiting ?? stats.waiting + stats.blocked, label: "open" },
-    { key: "completed", value: totals?.completed ?? stats.completed, label: "done" },
+    { key: "completed", value: totals?.completed ?? stats.completed, label: "closed inventory" },
   ];
   const remaining = totals === null ? null : Math.max(0, totals.total - loadedCount);
   return (
@@ -36,9 +36,17 @@ export function StatsRow({
         {counters.map((counter, index) => (
           <React.Fragment key={counter.key}>
             {index === 0 ? null : <span aria-hidden>·</span>}
-            <span data-testid={`stat-${counter.key}`}>
+            <span
+              data-testid={`stat-${counter.key}`}
+              title={counter.key === "completed"
+                ? `${totals === null ? "Loaded items" : "All items"} in terminal states in the current filter scope, including cancelled and custom terminal states. Inventory, not shipping throughput. Imported terminal history: ${stats.importedClosed} of ${stats.completed} loaded closed items.`
+                : undefined}
+            >
               <b className="font-semibold text-foreground tabular-nums">{counter.value}</b>{" "}
               {counter.label}
+              {counter.key === "completed" && stats.importedClosed > 0
+                ? ` (${stats.importedClosed} imported history loaded)`
+                : null}
             </span>
           </React.Fragment>
         ))}
