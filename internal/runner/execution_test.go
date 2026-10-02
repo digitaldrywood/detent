@@ -52,6 +52,67 @@ func (e *testExecution) Finish(_ context.Context, outcome string) error {
 }
 func (e *testExecution) Recovery() tracker.NativeRecovery { return e.recovery }
 
+type readToolTestExecution struct {
+	testExecution
+	reads int
+}
+
+func (e *readToolTestExecution) AgentTools() ([]AgentTool, AgentToolHandler) {
+	return []AgentTool{{Name: "work_item", InputSchema: json.RawMessage(`{"type":"object"}`)}}, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		if err := e.Validate(ctx); err != nil {
+			return AgentToolResult{}, err
+		}
+		e.reads++
+		return AgentToolResult{Content: "authenticated native context", Success: true}, nil
+	}
+}
+
+type executionToolTestBackend struct {
+	fakeCodexClient
+	testing *testing.T
+}
+
+func (b *executionToolTestBackend) RunTurnWithTools(ctx context.Context, request AgentTurnRequest, tools []AgentTool, handler AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if !request.SupplementalTools || request.ReadOnly {
+		b.testing.Fatal("native read tools restricted the ordinary coding turn")
+	}
+	if len(tools) != 2 {
+		b.testing.Fatalf("tools=%d, want native read and existing worker tool", len(tools))
+	}
+	for _, name := range []string{"work_item", "existing_worker_tool"} {
+		result, err := handler(ctx, AgentToolCall{Name: name})
+		if err != nil || !result.Success {
+			b.testing.Fatalf("tool %s failed: %v", name, err)
+		}
+	}
+	return b.fakeCodexClient.RunTurn(ctx, request, update)
+}
+
+func TestRunnerExecutionReadToolsPreserveCodingAndExistingTools(t *testing.T) {
+	t.Parallel()
+	execution := &readToolTestExecution{}
+	agent := &executionToolTestBackend{testing: t}
+	backend := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousCalls := 0
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement,
+		AgentTools: []AgentTool{{Name: "existing_worker_tool"}},
+		AgentToolHandler: func(context.Context, AgentToolCall) (AgentToolResult, error) {
+			previousCalls++
+			return AgentToolResult{Success: true}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.reads != 1 || previousCalls != 1 || agent.calls != 1 || !execution.started {
+		t.Fatalf("reads=%d previous=%d turns=%d started=%t", execution.reads, previousCalls, agent.calls, execution.started)
+	}
+}
+
 type retainedExecutionWorkspace struct {
 	*fakeWorkspaceBackend
 	retained bool

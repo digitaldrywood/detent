@@ -27,13 +27,16 @@ func TestNativeIssuePromptOwnership(t *testing.T) {
 				t.Fatal(err)
 			}
 			if profile == "native" {
-				for _, want := range []string{"detent hub issue", "--project prj_example", "Detent-Work-Item: wi_example", "Native approval does not satisfy a required GitHub review"} {
+				for _, want := range []string{"work_item", "work_comments", "get_change", "project_id prj_example", "Detent-Work-Item: wi_example", "Native approval does not satisfy a required GitHub review", "never copy its identity or credentials"} {
 					if !strings.Contains(prompt, want) {
 						t.Errorf("missing %q", want)
 					}
 				}
 				if strings.Contains(prompt, "Fixes #12") {
 					t.Fatal("native number generated a GitHub closing reference")
+				}
+				if strings.Contains(prompt, "using the configured Hub runner identity") {
+					t.Fatal("native prompt requires inaccessible host identity")
 				}
 			} else if strings.Contains(prompt, "Native Detent issue authority") {
 				t.Fatal("compatibility workflow changed")

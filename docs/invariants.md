@@ -250,6 +250,23 @@ describe inventory, not shipment.
 cover scoped totals, expired leases, bounded reads and persistent operational
 visibility across inventory pages, including refused and stale reads.
 
+Native worker reads use the existing supplemental agent tool transport and
+authenticated execution owner (#195). The supplied `work_item`,
+`work_comments`, `work_history`, `list_changes` and `get_change` tools reuse
+native application read methods and bounded schemas/results. Each invocation
+validates the current execution authority and binds to its exact project;
+canonical `wi_` references are required; foreign projects, writes and arbitrary
+URLs are rejected. Identity renewal,
+credentials and API requests remain on the host; worker network and filesystem
+isolation do not change. Providers without supplemental tools use the supplied
+native context and report unavailable required evidence as an instance
+limitation. `TestNativeExecutionReadToolsKeepHostAuthority` exercises real
+enrolled-runner authenticated reads, immutable version evidence, bounds and
+authority loss. New Codex threads receive these definitions; pre-update resumed
+threads retain their original definitions, and the Claude CLI currently lacks
+this supplemental-tool adapter. This read authority does not change terminal
+no-change completion classification.
+
 Billing/usage MCP parity (#3345) delegates checkout/portal, plan and usage reads,
 exports, and daemon budget overrides to the dashboard application operations.
 Organization billing remains owner-only without support impersonation; plan

@@ -31,6 +31,10 @@ type RuntimeExecution interface {
 	ObserveRuntime(context.Context, tracker.NativeRuntimeObservation) error
 }
 
+type ToolExecution interface {
+	AgentTools() ([]AgentTool, AgentToolHandler)
+}
+
 type LandingRuntimeExecution interface {
 	StartLanding(context.Context, int64, uint64) error
 	ObserveLanding(context.Context, NativeLanding) error
@@ -164,6 +168,22 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, err
 	}
 	defer stop()
+	if source, ok := req.Execution.(ToolExecution); ok {
+		tools, handler := source.AgentTools()
+		previous := req.AgentToolHandler
+		req.AgentTools = append(append([]AgentTool(nil), req.AgentTools...), tools...)
+		req.AgentToolHandler = func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+			for _, tool := range tools {
+				if call.Name == tool.Name {
+					return handler(ctx, call)
+				}
+			}
+			if previous != nil {
+				return previous(ctx, call)
+			}
+			return AgentToolResult{Content: "unsupported tool"}, nil
+		}
+	}
 	result, runErr := r.run(guarded, req)
 	outcome := "succeeded"
 	if runErr != nil || result.FinalState != FinalStateCompleted {
