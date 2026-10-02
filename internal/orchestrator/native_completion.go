@@ -51,7 +51,26 @@ func (o *Orchestrator) completeNativeChangeRun(
 		return handoff(event.Err)
 	}
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
-		return false
+		states, err := reader.WorkflowStates(ctx)
+		if err != nil {
+			return handoff(fmt.Errorf("read native workflow states: %w", err))
+		}
+		review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState()
+		target, allowed := connector.CompletionLane(states, issue.State, review, true)
+		if !allowed {
+			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", issue.State, review))
+		}
+		if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason); err != nil {
+			return handoff(fmt.Errorf("move failed native item to %s: %w", target, err))
+		}
+		terminal := terminalStateForRun(event.Err, finalState)
+		class := runnerWorkAttemptErrorClass(event.Err)
+		message := errorString(event.Err)
+		o.recordProjectAttemptOutcome(state, issueID, event.CompletedAt, terminal, event.Err, class, message)
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminal, class, message, "failed", "native worker failed; source preserved for review")
+		o.recordCompletionUsage(ctx, state, event, issue)
+		o.releaseCompletedAttemptClaim(ctx, state, issue)
+		return true
 	}
 	if change == nil {
 		return false

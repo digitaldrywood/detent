@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -21,9 +20,6 @@ func scratchEnvironmentProcessIDs(ctx context.Context, root string) ([]int, erro
 	return darwinScratchEnvironmentProcessIDs(ctx, root, processes,
 		func(pid int) ([]byte, error) {
 			return unix.SysctlRaw("kern.procargs2", pid)
-		}, func(pid int) (bool, error) {
-			current, err := unix.SysctlKinfoProcSlice("kern.proc.pid", pid)
-			return len(current) > 0 && current[0].Proc.P_stat != 5, err
 		})
 }
 
@@ -32,7 +28,6 @@ func darwinScratchEnvironmentProcessIDs(
 	root string,
 	processes []unix.KinfoProc,
 	read func(int) ([]byte, error),
-	alive func(int) (bool, error),
 ) ([]int, error) {
 	var owned []int
 	var result error
@@ -45,12 +40,14 @@ func darwinScratchEnvironmentProcessIDs(
 		if pid <= 0 || pid == os.Getpid() || process.Proc.P_stat == 5 {
 			continue
 		}
-		data, err := readDarwinScratchEnvironment(ctx, func() ([]byte, error) {
-			return read(pid)
-		}, func() (bool, error) {
-			return alive(pid)
-		})
+		data, err := read(pid)
+		if ctx.Err() != nil {
+			return owned, errors.Join(result, ctx.Err())
+		}
 		if err != nil {
+			if errors.Is(err, unix.ESRCH) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EIO) || errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+				continue
+			}
 			result = errors.Join(result, fmt.Errorf("inspect worker scratch ownership for process %d: %w", pid, err))
 			continue
 		}
@@ -59,41 +56,6 @@ func darwinScratchEnvironmentProcessIDs(
 		}
 	}
 	return owned, result
-}
-
-func readDarwinScratchEnvironment(ctx context.Context, read func() ([]byte, error), alive func() (bool, error)) ([]byte, error) {
-	// XNU can report EINVAL while exec or exit leaves a live process without a
-	// readable user stack. Use the scan stage's existing liveness budget so a
-	// healthy transition under load is not cut short by a competing timer.
-	// A still-unreadable process at cancellation remains an ownership error.
-	var transientErr error
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, errors.Join(transientErr, err)
-		}
-		data, err := read()
-		if err == nil || errors.Is(err, unix.ESRCH) {
-			return data, nil
-		}
-		if !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.EIO) {
-			return nil, err
-		}
-		transientErr = err
-		running, inspectErr := alive()
-		if errors.Is(inspectErr, unix.ESRCH) || inspectErr == nil && !running {
-			return nil, nil
-		}
-		if inspectErr != nil {
-			return nil, errors.Join(err, inspectErr)
-		}
-		timer := time.NewTimer(time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, errors.Join(err, ctx.Err())
-		case <-timer.C:
-		}
-	}
 }
 
 func darwinProcessEnvironment(data []byte) []string {

@@ -17,6 +17,16 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Native failed coding and rework completion (#169) selects an allowed configured
+review destination under the existing leased completion owner before publishing
+`run.finished` or releasing the claim. It records the authentic failed or cancelled
+outcome, preserves source, creates no Change/version and schedules no new coding
+attempt. Stale lane authority remains a completion refusal.
+The existing deferred completion receipt retains cancellation/timeout outcomes
+and cleanup attribution across lane-write retries. `TestNativeChangeRunCompletion`
+and `TestNativePlannerAutomaticHandoff` cover failed settlement, stale refusal,
+preserved staged source and lease-retirement ordering.
+
 Native runtime evidence (#92) reuses the scoped work, explanation and Change
 application owners for API and MCP. Direct reads recheck current connection
 scope, project grants and work-item/attempt ownership, including local attempt
@@ -855,6 +865,11 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
 
+Worker process cleanup failures (#169) retain staged source and use the existing
+instance workspace-failure owner, excluding them from issue failure allowance.
+A cleanup-stage deadline does not establish parent or provider cancellation.
+Genuine provider failures and cancellation never authorize source publication.
+
 Native claim policy heartbeats (#151) share `nativeClaimError` with machine
 heartbeat and lease renewal. Contention on the enrolled runner's identity-file
 lock during credential rotation, policy transport failures, rate limits and Hub
@@ -1249,6 +1264,17 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Worker cleanup (#169) removes Darwin polling of unreadable unknown same-user
+process environments. A single inspection cannot establish ownership from an
+error; unknown candidates are never signaled. Existing authenticated process
+groups, readable scratch ownership and independent workspace cwd evidence remain
+cleanup authorities. A scratch-stage deadline retains its failure while allowing
+the independent cwd stage to find owned children. No cleanup is bypassed for a
+live positively owned child, and no recovery mechanism or lane writer is added.
+`TestDarwinScratchEnvironmentProcessIDsScanBudget` covers unknown candidates and
+owned TERM survivors; `TestWorkspaceProcessIDsScanBudget` preserves independent
+cwd evidence and parent cancellation.
 
 Native base races (#160) consolidate merge refusal classification with the
 existing exact-endpoint `ErrPullRequestBaseOutOfDate` owner. The connector and

@@ -236,9 +236,6 @@ func workspaceProcessIDsWithScanners(
 	if err := ctx.Err(); err != nil {
 		return owned, errors.Join(scratchErr, err)
 	}
-	if errors.Is(scratchErr, context.Canceled) || errors.Is(scratchErr, context.DeadlineExceeded) {
-		return owned, scratchErr
-	}
 	cwd, cwdErr := runWorkspaceProcessScan(ctx, path, cwdScan)
 	return append(owned, cwd...), errors.Join(scratchErr, cwdErr)
 }

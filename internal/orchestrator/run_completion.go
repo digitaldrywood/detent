@@ -295,7 +295,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	o.finishForgeAvailabilityProbe(state, event, running)
-	if event.Err != nil {
+	_, nativeCompletion := o.connector.(connector.WorkflowStateReader)
+	if event.Err != nil && !nativeCompletion {
 		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}
 	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
@@ -369,7 +370,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt)
 		return
 	}
-	if o.handlePreTurnFailure(ctx, state, event, running) {
+	if !(nativeCompletion && errors.Is(event.Err, runpkg.ErrWorkerProcessReap)) && o.handlePreTurnFailure(ctx, state, event, running) {
 		return
 	}
 	if running.Mode == runpkg.RunModeTriage {
@@ -382,6 +383,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 
 	if o.completeNativeChangeRun(ctx, state, event, running, event.Result.FinalState) {
 		return
+	}
+	if event.Err != nil && nativeCompletion {
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}
 
 	if event.Err != nil {
