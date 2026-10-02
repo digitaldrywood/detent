@@ -162,6 +162,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					TokenSource:                github.StaticTokenSource(test.name + strconv.FormatInt(time.Now().UnixNano(), 10)),
 					DisableConditionalRequests: true,
 					HTTPClient: landingHTTPClient(func(req *http.Request) (*http.Response, error) {
+						if req.URL.Path == "/graphql" && test.pullState == "merged" {
+							response := fmt.Sprintf(`{"data":{"repository":{"nameWithOwner":"example/repo","pullRequest":{"number":7,"merged":true,"headRefOid":%q,"headRefName":%q,"baseRefName":"main","headRepository":{"nameWithOwner":"example/repo"},"mergeCommit":{"oid":%q}}}}}`, fixture.head, fixture.info.Branch, fixture.head)
+							return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+						}
 						methods = append(methods, req.Method)
 						var body map[string]string
 						if req.Method == http.MethodPut {
@@ -480,6 +484,121 @@ func TestGitHubLandingRepository(t *testing.T) {
 			name, owner, ok := githubLandingRepository(test.url)
 			if name != test.name || owner != test.owner || ok != (test.name != "") {
 				t.Fatalf("repository = %q, %q, %v", name, owner, ok)
+			}
+		})
+	}
+}
+
+func TestLocalGitLandChangeViaGitHubAlreadyMerged(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, test := range []struct {
+		name     string
+		external bool
+		invalid  string
+	}{
+		{name: "modern runner-created PR"},
+		{name: "modern external PR", external: true},
+		{name: "wrong repository", external: true, invalid: "repository"},
+		{name: "wrong PR number", external: true, invalid: "number"},
+		{name: "moved head", external: true, invalid: "head"},
+		{name: "wrong branch", external: true, invalid: "branch"},
+		{name: "wrong base", external: true, invalid: "base"},
+		{name: "wrong head repository", external: true, invalid: "fork"},
+		{name: "not merged", external: true, invalid: "merged"},
+		{name: "missing merge commit", external: true, invalid: "missing"},
+		{name: "merge commit outside target", external: true, invalid: "ancestry"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLandingFixture(t)
+			base := fixture.remoteMain(t)
+			repository := "https://github.com/example/repo"
+			runGit(t, fixture.source, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
+			runGit(t, fixture.source, "remote", "set-url", "origin", repository+".git")
+			runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+fixture.info.Branch)
+			tree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", fixture.head+"^{tree}"))
+			merge := strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Actual squashed landing"))
+			runGit(t, fixture.source, "push", "origin", merge+":refs/heads/main")
+			pull := map[string]any{"number": 7, "merged": true, "headRefOid": fixture.head, "headRefName": fixture.info.Branch, "baseRefName": "main", "headRepository": map[string]any{"nameWithOwner": "example/repo"}, "mergeCommit": map[string]any{"oid": merge}}
+			projectedRepository := "example/repo"
+			switch test.invalid {
+			case "repository":
+				projectedRepository = "other/repo"
+			case "number":
+				pull["number"] = 8
+			case "head":
+				pull["headRefOid"] = base
+			case "branch":
+				pull["headRefName"] = "other"
+			case "base":
+				pull["baseRefName"] = "other"
+			case "fork":
+				pull["headRepository"] = map[string]any{"nameWithOwner": "other/repo"}
+			case "merged":
+				pull["merged"] = false
+			case "missing":
+				pull["mergeCommit"] = nil
+			case "ancestry":
+				pull["mergeCommit"] = map[string]any{"oid": fixture.head}
+			}
+			graphqlReads, restMutations := 0, 0
+			client, err := github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(test.name + strconv.FormatInt(time.Now().UnixNano(), 10)), DisableConditionalRequests: true, HTTPClient: landingHTTPClient(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path == "/graphql" {
+					if req.Method != http.MethodPost {
+						t.Fatalf("GraphQL method=%s", req.Method)
+					}
+					var body struct {
+						Query     string         `json:"query"`
+						Variables map[string]any `json:"variables"`
+					}
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(body.Query, "mergeCommit{oid}") || body.Variables["owner"] != "example" || body.Variables["name"] != "repo" || body.Variables["number"] != float64(7) {
+						t.Fatalf("wrong commit projection=%+v", body)
+					}
+					graphqlReads++
+					response, err := json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{"nameWithOwner": projectedRepository, "pullRequest": pull}}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(response)))}, nil
+				}
+				if req.Method != http.MethodGet {
+					restMutations++
+					t.Fatalf("already merged PR mutated: %s %s", req.Method, req.URL)
+				}
+				if req.Header.Get("X-GitHub-Api-Version") != "2026-03-10" {
+					t.Fatalf("API version=%s", req.Header.Get("X-GitHub-Api-Version"))
+				}
+				response := fmt.Sprintf(`{"number":7,"state":"closed","merged":true,"merged_at":"2026-10-02T16:00:00Z","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}`, fixture.head, fixture.info.Branch, merge)
+				if req.URL.Path == "/repos/example/repo/pulls" {
+					response = "[" + response + "]"
+				} else if req.URL.Path != "/repos/example/repo/pulls/7" {
+					t.Fatalf("unexpected read=%s", req.URL)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+			})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := LandOptions{HeadSHA: fixture.head, Method: "squash", Repository: repository, GitHubClient: client}
+			if test.external {
+				opts.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
+			}
+			result, err := fixture.backend.LandChangeViaGitHub(t.Context(), fixture.info, fixture.issue, opts)
+			if graphqlReads != 1 || restMutations != 0 {
+				t.Fatalf("reads=%d mutations=%d", graphqlReads, restMutations)
+			}
+			if test.invalid != "" {
+				if err == nil || result.MergeSHA != "" {
+					t.Fatalf("invalid source landed=%+v error=%v", result, err)
+				}
+			} else if err != nil || result.MergeSHA != merge || result.BaseRef != "main" {
+				t.Fatalf("genuine landing=%+v error=%v", result, err)
+			}
+			if fixture.remoteMain(t) != merge {
+				t.Fatal("already landed target changed")
 			}
 		})
 	}

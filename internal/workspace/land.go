@@ -27,6 +27,7 @@ type GitHubPRLander interface {
 
 type GitHubRESTClient interface {
 	REST(context.Context, string, string, any, any) error
+	GraphQL(context.Context, string, map[string]any, any) error
 }
 
 type LandOptions struct {
