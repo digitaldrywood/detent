@@ -7,6 +7,8 @@ const (
 	BillingUsage        = "billing_usage.hosted_billing"
 	BillingExport       = "billing_usage.billing_export"
 	BillingCheckout     = "billing_usage.hosted_billing_checkout"
+	CreditCheckout      = "billing_usage.hosted_credit_checkout"
+	CreditAutoFund      = "billing_usage.hosted_credit_auto_fund"
 	BillingPortal       = "billing_usage.hosted_billing_portal"
 	HostedPlan          = "billing_usage.hosted_plan_page"
 	HostedUsage         = "billing_usage.hosted_usage_report"
@@ -30,6 +32,8 @@ func BillingCatalog() []Definition {
 		{HostedPlan, "Read the current organization plan and allowances with owner/admin dashboard authority.", "", "", false, false},
 		{HostedUsage, "Read usage for currently granted projects in a bounded time window.", `"project_id":{"type":"string","maxLength":256},"range":{"type":"string","enum":["24h","7d","30d","90d"]}`, "", false, false},
 		{BillingCheckout, "Create or resume an approved subscription checkout. Requires exact browser approval unless this connection uses operator-selected YOLO.", `"price":{"type":"string","minLength":1,"maxLength":256}`, `,"price"`, true, true},
+		{CreditCheckout, "Create or resume checkout for a configured AI credit pack. Requires exact browser approval unless this connection uses operator-selected YOLO.", `"price":{"type":"string","minLength":1,"maxLength":256}`, `,"price"`, true, true},
+		{CreditAutoFund, "Configure AI credit auto-funding with a configured pack and threshold in USD cents. Enabling or changing automatic funding requires exact browser approval unless this connection uses operator-selected YOLO; disabling applies directly.", `"enabled":{"type":"boolean"},"threshold_cents":{"type":"integer","minimum":0},"price":{"type":"string","maxLength":256}`, `,"enabled","threshold_cents","price"`, true, true},
 		{BillingPortal, "Create a billing portal session. Requires exact browser approval unless this connection uses operator-selected YOLO.", "", "", true, true},
 		{BudgetOverrideSet, "Set project daily/per-issue budget overrides through the dashboard command; requires exact operator approval.", `"project_id":{"type":"string","minLength":1,"maxLength":256},"per_day_max_usd":{"type":"number","exclusiveMinimum":0},"per_issue_max_usd":{"type":"number","exclusiveMinimum":0},"duration":{"type":"string","minLength":1,"maxLength":128},"reason":{"type":"string","minLength":1,"maxLength":280}`, `,"project_id","duration","reason"`, true, false},
 		{BudgetOverrideClear, "Clear a project daily budget override directly through the dashboard command.", `"project_id":{"type":"string","minLength":1,"maxLength":256}`, `,"project_id"`, true, false},

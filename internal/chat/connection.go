@@ -146,7 +146,7 @@ func (s *Service) RetryResult(ctx context.Context, kind ActionKind, requestID st
 		// Purchases already approved by the operator resume only the existing
 		// application's durable checkout intent. Other failed effects retain
 		// their receipt: they have no provider key that permits a safe retry.
-		if previous.Kind == ActionKind(operatortool.BillingCheckout) && previous.Status == ActionFailed && (previous.Mutation.Confirmation == "approved" || previous.Mutation.Confirmation == "yolo") && s.actions != nil {
+		if (previous.Kind == ActionKind(operatortool.BillingCheckout) || previous.Kind == ActionKind(operatortool.CreditCheckout)) && previous.Status == ActionFailed && (previous.Mutation.Confirmation == "approved" || previous.Mutation.Confirmation == "yolo") && s.actions != nil {
 			result, executeErr := s.actions.ExecuteAction(executionContext, previous)
 			outcome := "succeeded"
 			if executeErr != nil {
@@ -198,6 +198,11 @@ func RequiresConfirmation(action Action) bool {
 		return required
 	}
 	switch action.Kind {
+	case ActionKind(operatortool.CreditAutoFund):
+		var input struct {
+			Enabled *bool `json:"enabled"`
+		}
+		return json.Unmarshal(action.Arguments, &input) != nil || input.Enabled == nil || *input.Enabled
 	case ActionSetPriority, "create_workspace", "create_conversation", "patch_conversation", "upload_conversation_attachment":
 		return false
 	case "post_conversation_command":

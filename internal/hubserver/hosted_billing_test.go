@@ -69,7 +69,7 @@ func (p *hostedBillingProvider) Portal(_ context.Context, binding billing.Bindin
 
 func newHostedBillingFixture(t *testing.T) (*browserHostedFixture, *hostedBillingProvider) {
 	t.Helper()
-	f := newBrowserHostedFixture(t, true)
+	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
 	plans := hostedTestPlans(t, f.service, map[string]int64{"projects": 2})
 	p := &hostedBillingProvider{snapshot: billing.Snapshot{Status: "free"}}
 	f.service.config.Hosted.Plans = &plans

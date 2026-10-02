@@ -22,11 +22,18 @@ type hostedCreditProvider struct {
 	chargeStatus    string
 	chargeError     error
 	creditCheckouts []billing.CreditRequest
+	checkoutError   error
+	checkoutLoss    bool
+	creditSessions  map[string]billing.Session
 	chargeKeys      []string
 	savedMethod     string
+	savedError      error
 }
 
 func (p *hostedCreditProvider) SavedCreditPaymentMethod(context.Context, billing.Binding) (string, error) {
+	if p.savedError != nil {
+		return "", p.savedError
+	}
 	if p.savedMethod == "" {
 		return "", billing.ErrPaymentFailed
 	}
@@ -37,7 +44,21 @@ func (p *hostedCreditProvider) CreditCheckout(_ context.Context, r billing.Credi
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.creditCheckouts = append(p.creditCheckouts, r)
-	return billing.Session{ID: "cs_test_credit", URL: "https://checkout.stripe.com/c/pay/test_credit", ExpiresAt: r.ExpiresAt}, nil
+	if p.checkoutError != nil {
+		return billing.Session{}, p.checkoutError
+	}
+	if session, ok := p.creditSessions[r.IdempotencyKey]; ok {
+		return session, nil
+	}
+	session := billing.Session{ID: "cs_test_credit", URL: "https://checkout.stripe.com/c/pay/test_credit", ExpiresAt: r.ExpiresAt}
+	if p.creditSessions == nil {
+		p.creditSessions = map[string]billing.Session{}
+	}
+	p.creditSessions[r.IdempotencyKey] = session
+	if p.checkoutLoss {
+		return billing.Session{}, errors.New("lost response pm_sensitive_secret")
+	}
+	return session, nil
 }
 
 func (p *hostedCreditProvider) CreditEvent(context.Context, billing.Binding, string) (billing.CreditPayment, error) {

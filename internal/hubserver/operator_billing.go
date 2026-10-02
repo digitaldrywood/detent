@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -121,6 +122,12 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		if _, err := e.service.catalogBillingCredential(ctx, kind, !definition.Annotations.ReadOnly); err != nil {
 			continue
 		}
+		if (definition.Name == operatortool.CreditCheckout || definition.Name == operatortool.CreditAutoFund) && !e.service.creditAvailable() {
+			continue
+		}
+		if definition.Name == operatortool.CreditCheckout && e.service.config.Hosted.Billing.CheckoutDisabled {
+			continue
+		}
 		if !definition.Annotations.ReadOnly && e.service.config.Hosted.Billing == nil {
 			continue
 		}
@@ -200,7 +207,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	}()
 	s := e.service
 	switch call.Name {
-	case operatortool.BillingCheckout, operatortool.BillingPortal:
+	case operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
 		return e.submitBilling(ctx, call)
 	case operatortool.ActionResult:
 		var request struct {
@@ -346,20 +353,45 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 type billingActionRequest struct {
 	RequestID string `json:"request_id"`
 	Price     string `json:"price,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
+	Threshold *int64 `json:"threshold_cents,omitempty"`
 }
 
 func decodeBillingAction(name string, raw json.RawMessage) (billingActionRequest, error) {
 	var request billingActionRequest
-	if name == operatortool.BillingPortal {
-		var portal struct {
+	switch name {
+	case operatortool.BillingCheckout, operatortool.CreditCheckout:
+		var input struct {
 			RequestID string `json:"request_id"`
+			Price     string `json:"price"`
 		}
-		if operatortool.DecodeArguments(raw, &portal) != nil {
+		if operatortool.DecodeArguments(raw, &input) != nil || input.Price == "" {
 			return request, operatortool.ErrInvalidArguments
 		}
-		request.RequestID = portal.RequestID
+		request.RequestID, request.Price = input.RequestID, input.Price
+	case operatortool.BillingPortal:
+		var input struct {
+			RequestID string `json:"request_id"`
+		}
+		if operatortool.DecodeArguments(raw, &input) != nil {
+			return request, operatortool.ErrInvalidArguments
+		}
+		request.RequestID = input.RequestID
+	case operatortool.CreditAutoFund:
+		var input struct {
+			RequestID string  `json:"request_id"`
+			Price     *string `json:"price"`
+			Enabled   *bool   `json:"enabled"`
+			Threshold *int64  `json:"threshold_cents"`
+		}
+		if operatortool.DecodeArguments(raw, &input) != nil || input.Price == nil || input.Enabled == nil || input.Threshold == nil || *input.Threshold < 0 {
+			return request, operatortool.ErrInvalidArguments
+		}
+		request = billingActionRequest{RequestID: input.RequestID, Price: *input.Price, Enabled: input.Enabled, Threshold: input.Threshold}
+	default:
+		return request, operatortool.ErrInvalidArguments
 	}
-	if name != operatortool.BillingPortal && operatortool.DecodeArguments(raw, &request) != nil || request.RequestID == "" || len(request.RequestID) > 128 || len(request.Price) > 256 || name == operatortool.BillingCheckout && request.Price == "" || name == operatortool.BillingPortal && request.Price != "" {
+	if request.RequestID == "" || len(request.RequestID) > 128 || len(request.Price) > 256 {
 		return request, operatortool.ErrInvalidArguments
 	}
 	return request, nil
@@ -379,6 +411,13 @@ func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operator
 		return operatortool.Result{}, errBillingUnavailable
 	}
 	arguments, err := json.Marshal(request)
+	if call.Name == operatortool.CreditAutoFund {
+		arguments, err = json.Marshal(struct {
+			RequestID string `json:"request_id"`
+			creditFundingInput
+		}{request.RequestID, creditFundingInput{Enabled: *request.Enabled, Threshold: *request.Threshold, Price: request.Price}})
+	}
+
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -403,13 +442,28 @@ func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operator
 			return operatortool.Result{}, errBillingUnavailable
 		}
 	}
+	if call.Name == operatortool.CreditCheckout || call.Name == operatortool.CreditAutoFund {
+		if !s.creditAvailable() || call.Name == operatortool.CreditCheckout && s.config.Hosted.Billing.CheckoutDisabled {
+			return operatortool.Result{}, errBillingUnavailable
+		}
+		if call.Name == operatortool.CreditCheckout || *request.Enabled {
+			pack, ok := s.creditPack(request.Price)
+			if !ok || call.Name == operatortool.CreditAutoFund && (*request.Threshold <= 0 || *request.Threshold >= pack.USDCents) {
+				return operatortool.Result{}, operatortool.ErrInvalidArguments
+			}
+		}
+	}
+	binding, description, err := s.billingRequestBinding(ctx, call.Name, request)
+	if err != nil {
+		return operatortool.Result{}, err
+	}
 	identity := operatortool.ConnectionIdentity(ctx)
 	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, Action: call.Name, Source: "mcp", CorrelationID: s.config.newLeaseID()}
 	m, err = m.Bind(request.RequestID, json.RawMessage(arguments))
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	action := chat.Action{Kind: chat.ActionKind(call.Name), RequestID: request.RequestID, Arguments: arguments, Mutation: m, Title: call.Name, Identifier: identity.OrganizationID, CurrentState: s.billingActionBinding(request.Price)}
+	action := chat.Action{Kind: chat.ActionKind(call.Name), RequestID: request.RequestID, Arguments: arguments, Mutation: m, Title: call.Name, Identifier: identity.OrganizationID, CurrentState: binding, Description: description}
 	action, err = s.operatorChat.Submit(ctx, action)
 	if err != nil {
 		return operatortool.Result{}, err
@@ -434,6 +488,58 @@ func (s *Service) billingActionBinding(price string) string {
 	}{cfg.AccountID, cfg.mode(), cfg.PortalConfigurationID, s.hostedBillingReturn(true), cfg.Prices, price})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
+}
+
+func (s *Service) billingRequestBinding(ctx context.Context, name string, request billingActionRequest) (string, string, error) {
+	if name != operatortool.CreditCheckout && name != operatortool.CreditAutoFund {
+		return s.billingActionBinding(request.Price), "", nil
+	}
+	if !s.creditAvailable() {
+		return "", "", errBillingUnavailable
+	}
+	cfg := s.config.Hosted.Billing
+	pack, _ := s.creditPack(request.Price)
+	material := struct {
+		Organization string           `json:"organization_id"`
+		Pack         HostedCreditPack `json:"credit_pack"`
+		Enabled      *bool            `json:"enabled,omitempty"`
+		Threshold    *int64           `json:"threshold_cents,omitempty"`
+	}{s.config.Hosted.OrganizationID, pack, request.Enabled, request.Threshold}
+	preview, err := json.Marshal(material)
+	if err != nil {
+		return "", "", err
+	}
+	state := struct {
+		Account, Mode, Return, Customer, Method, SavedMethod, Price string
+		Disabled, Enabled                                           bool
+		Threshold                                                   int64
+		Pack                                                        HostedCreditPack
+	}{Account: cfg.AccountID, Mode: cfg.mode(), Return: s.hostedBillingReturn(true), Customer: cfg.CustomerID, Disabled: cfg.CheckoutDisabled, Pack: pack}
+	if name == operatortool.CreditAutoFund {
+		if err := s.database.db.QueryRowContext(ctx, "SELECT auto_enabled,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&state.Enabled, &state.Threshold, &state.Price, &state.Method); err != nil {
+			return "", "", err
+		}
+		if *request.Enabled {
+			binding, err := s.database.hostedBillingBinding(ctx, cfg)
+			if err != nil {
+				return "", "", errBillingUnavailable
+			}
+			state.Customer = binding.CustomerID
+			state.SavedMethod, err = cfg.Provider.(billing.CreditProvider).SavedCreditPaymentMethod(ctx, binding)
+			if err != nil && !errors.Is(err, billing.ErrPaymentFailed) {
+				return "", "", errBillingUnavailable
+			}
+			if state.Method == "" && state.SavedMethod == "" {
+				return "", "", operatortool.ErrInvalidArguments
+			}
+		}
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return "", "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), string(preview), nil
 }
 
 func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.Action) (execution chat.ActionExecution, err error) {
@@ -465,26 +571,43 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 	}()
 	s := e.service
 	request, err := decodeBillingAction(string(action.Kind), action.Arguments)
-	if err != nil || action.Kind != chat.ActionKind(operatortool.BillingCheckout) && action.Kind != chat.ActionKind(operatortool.BillingPortal) {
+	if err != nil {
 		return execution, operatortool.ErrInvalidArguments
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
 	m := action.Mutation
 	bound, err := m.Bind(action.RequestID, action.Arguments)
-	if err != nil || request.RequestID != action.RequestID || m.Source != "mcp" || m.PrincipalID != identity.PrincipalID || m.OrganizationID != identity.OrganizationID || m.Action != string(action.Kind) || m.CorrelationID == "" || bound.RetryIdentity != m.RetryIdentity || bound.InputHash != m.InputHash || m.Confirmation != "approved" && m.Confirmation != "yolo" {
+	if err != nil || request.RequestID != action.RequestID || m.Source != "mcp" || m.PrincipalID != identity.PrincipalID || m.OrganizationID != identity.OrganizationID || m.Action != string(action.Kind) || m.CorrelationID == "" || bound.RetryIdentity != m.RetryIdentity || bound.InputHash != m.InputHash || m.Confirmation != "approved" && m.Confirmation != "yolo" && !(action.Kind == chat.ActionKind(operatortool.CreditAutoFund) && !*request.Enabled && m.Confirmation == "none") {
 		return execution, operatortool.ErrAccessDenied
 	}
 	ctx = mutation.WithContext(ctx, m)
 	authorize := func(ctx context.Context) (apiCredential, error) {
 		credential, err := s.operatorBillingCredential(ctx, "billing", true)
-		if err == nil && action.CurrentState != s.billingActionBinding(request.Price) {
-			err = mutation.ErrConflict
+		if err == nil {
+			current, _, bindingErr := s.billingRequestBinding(ctx, string(action.Kind), request)
+			if bindingErr != nil {
+				err = bindingErr
+			} else if action.CurrentState != current {
+				err = mutation.ErrConflict
+			}
 		}
 		return credential, err
 	}
 	var result billingDestination
 	if action.Kind == chat.ActionKind(operatortool.BillingCheckout) {
 		result, err = s.checkoutBilling(ctx, authorize, request.Price, request.RequestID)
+	} else if action.Kind == chat.ActionKind(operatortool.CreditCheckout) {
+		result, err = s.checkoutCredits(ctx, authorize, request.Price, request.RequestID)
+	} else if action.Kind == chat.ActionKind(operatortool.CreditAutoFund) {
+		settings, err := s.configureCreditFunding(ctx, authorize, creditFundingInput{Enabled: *request.Enabled, Threshold: *request.Threshold, Price: request.Price}, request.RequestID)
+		if err != nil {
+			return execution, err
+		}
+		raw, err := json.Marshal(settings)
+		if err != nil {
+			return execution, err
+		}
+		return chat.ActionExecution{Message: string(raw), ResourceID: identity.OrganizationID, Identifier: identity.OrganizationID}, nil
 	} else {
 		result, err = s.portalBilling(ctx, authorize, request.RequestID)
 	}
@@ -534,14 +657,21 @@ func (s *Service) billingApprovalURL(id string) string {
 }
 
 func (s *Service) billingActionResult(action chat.Action) (operatortool.Result, error) {
+	var settings *creditFundingInput
+	if action.Kind == chat.ActionKind(operatortool.CreditAutoFund) && action.Status == chat.ActionSucceeded {
+		if err := json.Unmarshal([]byte(action.Result), &settings); err != nil {
+			return operatortool.Result{}, errBillingUnavailable
+		}
+	}
 	return billingResult(struct {
-		Action        chat.Action       `json:"preview"`
-		ID            string            `json:"action_id"`
-		Status        chat.ActionStatus `json:"status"`
-		ResourceID    string            `json:"resource_id,omitempty"`
-		URL           string            `json:"url,omitempty"`
-		ApprovalURL   string            `json:"approval_url,omitempty"`
-		ResultTool    string            `json:"result_tool"`
-		CorrelationID string            `json:"correlation_id"`
-	}{action, action.ID, action.Status, action.IssueID, action.ResourceURL, action.PendingApprovalURL(s.billingApprovalURL(action.ConnectionID)), operatortool.ActionResult, action.Mutation.CorrelationID})
+		Action        chat.Action         `json:"preview"`
+		ID            string              `json:"action_id"`
+		Status        chat.ActionStatus   `json:"status"`
+		ResourceID    string              `json:"resource_id,omitempty"`
+		URL           string              `json:"url,omitempty"`
+		ApprovalURL   string              `json:"approval_url,omitempty"`
+		ResultTool    string              `json:"result_tool"`
+		CorrelationID string              `json:"correlation_id"`
+		Settings      *creditFundingInput `json:"settings,omitempty"`
+	}{action, action.ID, action.Status, action.IssueID, action.ResourceURL, action.PendingApprovalURL(s.billingApprovalURL(action.ConnectionID)), operatortool.ActionResult, action.Mutation.CorrelationID, settings})
 }
