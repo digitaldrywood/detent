@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -165,16 +166,17 @@ func TestLandNativeChange(t *testing.T) {
 	merge := strings.Repeat("e", 40)
 	target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "merge", Title: "Add a sign-in link", Number: 2}
 	for _, test := range []struct {
-		name         string
-		stub         landingStub
-		backend      landingBackend
-		wantOutput   string
-		wantErr      string
-		wantRecorded int
-		wantRefusal  string
-		wantGitHub   bool
-		quota        bool
-		prepared     *NativeLandingTarget
+		name           string
+		stub           landingStub
+		backend        landingBackend
+		wantOutput     string
+		wantErr        string
+		wantRecorded   int
+		wantRefusal    string
+		wantGitHub     bool
+		quota          bool
+		prepared       *NativeLandingTarget
+		infrastructure bool
 	}{
 		{name: "lands and records", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1},
@@ -187,6 +189,8 @@ func TestLandNativeChange(t *testing.T) {
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalConflict, wantGitHub: true},
 		{name: "an atomic GitHub head refusal retains reviewed identity without a receipt", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "Head branch was modified (HTTP 409)"}},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalHeadMoved, wantGitHub: true},
+		{name: "unproven GitHub conflict retains identity for infrastructure retry", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request repos/example/repo/pulls/7/merge"}, forgeavailability.ClassServer, &github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: 405, Body: `{"message":"Pull Request has merge conflicts"}`})},
+			wantErr: "forge_unavailable", wantGitHub: true, infrastructure: true},
 		{name: "quota evidence takes precedence over repository refusal", stub: landingStub{target: target}, backend: landingBackend{err: errors.Join(fmt.Errorf("%w: remaining=0 reserve=100", ErrWorkerGitHubRESTReserved), &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "HTTP 403"})},
 			wantErr: "remaining=0 reserve=100"},
 		{name: "typed quota evidence takes precedence over repository refusal", stub: landingStub{target: target}, backend: landingBackend{err: errors.Join(&github.StatusError{Err: github.ErrRateLimited, StatusCode: http.StatusForbidden, RateLimitKind: "primary_exhausted", CredentialIdentity: "landing-token", ObservedAt: time.Now()}, &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "HTTP 403"})},
@@ -230,9 +234,12 @@ func TestLandNativeChange(t *testing.T) {
 				if IsCapacityError(backend.err) && !IsCapacityError(err) || errors.Is(backend.err, github.ErrRateLimited) && !errors.Is(err, github.ErrRateLimited) {
 					t.Fatalf("quota lost capacity ownership: %v, %#v", err, result)
 				}
-				if IsCapacityError(backend.err) || errors.Is(backend.err, github.ErrRateLimited) {
+				if IsCapacityError(backend.err) || errors.Is(backend.err, github.ErrRateLimited) || test.infrastructure {
 					if result.NativeLanding == nil || result.NativeLanding.ChangeID != target.ChangeID || result.NativeLanding.VersionID != target.VersionID || result.NativeLanding.HeadSHA != head || result.NativeLanding.Landed || result.NativeLanding.RefusalKind != "" || result.Output != "" || result.FinalState != "" {
 						t.Fatalf("capacity wait lost reviewed identity or became a completed refusal: %#v", result)
+					}
+					if test.infrastructure && !errors.Is(err, backend.err) {
+						t.Fatalf("original infrastructure refusal lost: %v", err)
 					}
 				}
 				return
@@ -242,6 +249,9 @@ func TestLandNativeChange(t *testing.T) {
 			}
 			if result.FinalState != FinalStateCompleted || result.Output != test.wantOutput || result.NativeLanding == nil {
 				t.Fatalf("result = %#v", result)
+			}
+			if result.ForgeWriteCompleted != (test.wantGitHub && test.wantRecorded == 1) {
+				t.Fatalf("forge landing completion evidence = %t", result.ForgeWriteCompleted)
 			}
 			if result.NativeLanding.RefusalKind != test.wantRefusal || result.NativeLanding.Landed != (test.wantRefusal == "") {
 				t.Fatalf("landing = %#v", result.NativeLanding)

@@ -74,7 +74,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		result, err = lander.LandChange(ctx, info, issue, options)
 	}
 	if IsCapacityError(err) || errors.Is(err, github.ErrRateLimited) {
-		return RunResult{NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
+		return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
 	}
 	var refusal *workspace.LandRefusal
 	if errors.As(err, &refusal) {
@@ -83,7 +83,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		return r.refusedLanding(req, target, refusal.Kind, refusal.Reason), nil
 	}
 	if err != nil {
-		return RunResult{}, err
+		return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
 	}
 	landed := NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method}
 	// The base branch already carries the commit. Keep the landing beside the
@@ -100,7 +100,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	r.logWorkerEvent(req.Issue, "worker_native_landed",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "base_ref", result.BaseRef, "method", result.Method)
-	return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLanded, NativeLanding: &landed}, nil
+	return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLanded, NativeLanding: &landed, ForgeWriteCompleted: target.GitHubPullRequest}, nil
 }
 
 func sameLandingExternal(a, b *tracker.ChangeExternalReference) bool {

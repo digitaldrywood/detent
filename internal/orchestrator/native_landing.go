@@ -121,7 +121,10 @@ func (o *Orchestrator) completeNativeLandingRun(
 }
 
 func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
-	metadata := map[string]any{"native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID}
+	if landing == nil {
+		return nil
+	}
+	metadata := map[string]any{"native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
 	if landing.MergeSHA != "" {
 		metadata["native_merge_sha"] = landing.MergeSHA
 		metadata["native_base_ref"] = landing.BaseRef
