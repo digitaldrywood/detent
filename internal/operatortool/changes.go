@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -23,6 +24,7 @@ const (
 	GetArtifactReference      = "get_artifact_reference"
 	ArtifactAccess            = "artifact_access"
 	CreateChange              = "create_change"
+	PublishChangeVersion      = "publish_change_version"
 	DiscussChange             = "discuss_change"
 	ReviewChange              = "review_change"
 	ViewChangeFile            = "view_change_file"
@@ -40,31 +42,40 @@ var ErrServiceUnavailable = errors.New("change or artifact service is unavailabl
 // ChangeArguments is the typed application selector. Each tool allows only its
 // declared fields; credentials, producer provenance and leases are never input.
 type ChangeArguments struct {
-	ProjectID        string                      `json:"project_id"`
-	RequestID        string                      `json:"request_id,omitempty"`
-	ItemID           string                      `json:"work_item_id,omitempty"`
-	ChangeID         string                      `json:"change_id,omitempty"`
-	VersionID        string                      `json:"version_id,omitempty"`
-	ExpectedRevision int64                       `json:"expected_revision,omitempty"`
-	ArtifactID       string                      `json:"artifact_id,omitempty"`
-	Revision         int64                       `json:"revision,omitempty"`
-	SHA256           string                      `json:"sha256,omitempty"`
-	Limit            int                         `json:"limit,omitempty"`
-	Offset           int                         `json:"offset,omitempty"`
-	Title            string                      `json:"title,omitempty"`
-	Body             string                      `json:"body,omitempty"`
-	Decision         string                      `json:"decision,omitempty"`
-	Bundle           *tracker.ChangeReviewBundle `json:"bundle,omitempty"`
-	FileSHA256       string                      `json:"file_sha256,omitempty"`
-	Viewed           bool                        `json:"viewed,omitempty"`
-	ExpectedPolicyID string                      `json:"expected_review_policy_id,omitempty"`
-	Policy           *tracker.ChangeReviewPolicy `json:"policy,omitempty"`
-	Binding          *artifact.Binding           `json:"binding,omitempty"`
-	AttemptID        string                      `json:"attempt_id,omitempty"`
-	Sequence         int64                       `json:"sequence,omitempty"`
-	Source           string                      `json:"source,omitempty"`
-	Kind             string                      `json:"kind,omitempty"`
-	Status           string                      `json:"status,omitempty"`
+	ProjectID         string                           `json:"project_id"`
+	RequestID         string                           `json:"request_id,omitempty"`
+	ItemID            string                           `json:"work_item_id,omitempty"`
+	ChangeID          string                           `json:"change_id,omitempty"`
+	VersionID         string                           `json:"version_id,omitempty"`
+	ExpectedVersionID *string                          `json:"expected_version_id,omitempty"`
+	BaseSHA           string                           `json:"base_sha,omitempty"`
+	HeadSHA           string                           `json:"head_sha,omitempty"`
+	MergeBaseSHA      string                           `json:"merge_base_sha,omitempty"`
+	Repository        string                           `json:"repository,omitempty"`
+	Code              *tracker.ChangeArtifact          `json:"code,omitempty"`
+	Artifacts         []tracker.ChangeArtifact         `json:"artifacts,omitempty"`
+	PolicyID          string                           `json:"policy_id,omitempty"`
+	External          *tracker.ChangeExternalReference `json:"external,omitempty"`
+	ExpectedRevision  int64                            `json:"expected_revision,omitempty"`
+	ArtifactID        string                           `json:"artifact_id,omitempty"`
+	Revision          int64                            `json:"revision,omitempty"`
+	SHA256            string                           `json:"sha256,omitempty"`
+	Limit             int                              `json:"limit,omitempty"`
+	Offset            int                              `json:"offset,omitempty"`
+	Title             string                           `json:"title,omitempty"`
+	Body              string                           `json:"body,omitempty"`
+	Decision          string                           `json:"decision,omitempty"`
+	Bundle            *tracker.ChangeReviewBundle      `json:"bundle,omitempty"`
+	FileSHA256        string                           `json:"file_sha256,omitempty"`
+	Viewed            bool                             `json:"viewed,omitempty"`
+	ExpectedPolicyID  string                           `json:"expected_review_policy_id,omitempty"`
+	Policy            *tracker.ChangeReviewPolicy      `json:"policy,omitempty"`
+	Binding           *artifact.Binding                `json:"binding,omitempty"`
+	AttemptID         string                           `json:"attempt_id,omitempty"`
+	Sequence          int64                            `json:"sequence,omitempty"`
+	Source            string                           `json:"source,omitempty"`
+	Kind              string                           `json:"kind,omitempty"`
+	Status            string                           `json:"status,omitempty"`
 }
 
 // ChangeResult contains bounded application data, never rendered HTML.
@@ -72,6 +83,7 @@ type ChangeResult struct {
 	OrganizationID string                      `json:"organization_id"`
 	ProjectID      string                      `json:"project_id"`
 	WorkItemID     string                      `json:"work_item_id,omitempty"`
+	WorkItemState  string                      `json:"work_item_state,omitempty"`
 	ChangeID       string                      `json:"change_id,omitempty"`
 	URL            string                      `json:"url,omitempty"`
 	GeneratedAt    time.Time                   `json:"generated_at"`
@@ -132,6 +144,16 @@ func ChangeCatalog() []Definition {
 		props[k] = str()
 	}
 	props["request_id"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":128}`)
+	props["expected_version_id"] = json.RawMessage(`{"type":"string","maxLength":256}`)
+	props["policy_id"] = str()
+	props["repository"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":2048}`)
+	for _, k := range []string{"base_sha", "head_sha", "merge_base_sha"} {
+		props[k] = json.RawMessage(`{"type":"string","pattern":"^([0-9a-f]{40}|[0-9a-f]{64})$"}`)
+	}
+	artifactSchema := json.RawMessage(`{"type":"object","required":["kind","uri","sha256","availability"],"properties":{"kind":{"type":"string","enum":["code","manifest","diff","test","log","checkpoint","artifact"]},"uri":{"type":"string","minLength":1,"maxLength":2048},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"availability":{"type":"string","enum":["unverified","available","missing","inaccessible"]}},"additionalProperties":false}`)
+	props["code"] = json.RawMessage(`{"type":"object","required":["kind","uri","sha256","availability"],"properties":{"kind":{"type":"string","enum":["code"]},"uri":{"type":"string","minLength":1,"maxLength":2048},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"availability":{"type":"string","enum":["unverified","available","missing","inaccessible"]}},"additionalProperties":false}`)
+	props["artifacts"] = json.RawMessage(`{"type":"array","maxItems":63,"items":` + string(artifactSchema) + `}`)
+	props["external"] = json.RawMessage(`{"type":"object","required":["provider","id","url"],"properties":{"provider":{"type":"string","enum":["github"]},"id":{"type":"string","minLength":1,"maxLength":128},"url":{"type":"string","minLength":1,"maxLength":2048}},"additionalProperties":false}`)
 	props["title"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":256}`)
 	props["body"] = json.RawMessage(`{"type":"string","maxLength":32768}`)
 	props["decision"] = json.RawMessage(`{"type":"string","enum":["approved","changes_requested","commented"]}`)
@@ -177,6 +199,7 @@ func ChangeCatalog() []Definition {
 	add(GetArtifactReference, "Read the exact immutable artifact receipt, including historical revisions.", "work_item_id artifact_id revision", "", true, false)
 	add(ArtifactAccess, "Authorize an exact artifact revision for download/export through existing manifest/object endpoints. Token expires within one minute; send it as Bearer, never in a URL. Replays reauthorize and mint fresh ephemeral access.", "work_item_id artifact_id revision sha256 request_id", "", false, false)
 	add(CreateChange, "Create a Change Request using the existing application command.", "work_item_id title request_id", "body", false, false)
+	add(PublishChangeVersion, "Publish a genuine operator-authored immutable version without a Run/Attempt. Use an empty expected_version_id for first publication. Reuses approved policy, artifact validation and promotion; returns the stable published version and live current Change/lane. Unverified artifacts remain unverified; external PR references do not bypass repository protection.", "work_item_id change_id expected_version_id base_sha head_sha merge_base_sha repository code policy_id request_id", "artifacts external", false, false)
 	add(DiscussChange, "Discuss a change through its application command.", "work_item_id change_id body request_id", "version_id", false, false)
 	add(ReviewChange, "Review the current immutable bundle. Approval/requests for changes require real operator confirmation; comments run directly.", "work_item_id change_id version_id expected_revision decision bundle request_id", "body", false, true)
 	add(ViewChangeFile, "Record a viewed-file digest for an immutable review bundle.", "work_item_id change_id version_id bundle file_sha256 viewed request_id", "", false, false)
@@ -211,7 +234,7 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 	}
 	for _, k := range schema.Required {
 		v, ok := fields[k]
-		if !ok || string(v) == "null" || string(v) == `""` {
+		if !ok || string(v) == "null" || string(v) == `""` && k != "expected_version_id" {
 			return args, ErrInvalidArguments
 		}
 	}
@@ -222,6 +245,23 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 	}
 	if args.ProjectID == "" || len(args.RequestID) > 128 || strings.TrimSpace(args.RequestID) != args.RequestID || len(args.Title) > 256 || len(args.Body) > 32768 || args.Limit < 0 || args.Limit > 200 || args.Offset < 0 || args.Offset > 10000 {
 		return args, ErrInvalidArguments
+	}
+	if name == PublishChangeVersion {
+		expected := args.ExpectedVersionID
+		if expected == nil || len(*expected) > 256 || strings.TrimSpace(*expected) != *expected || strings.ContainsAny(*expected, "/\\?#%") || args.PolicyID == "" || len(args.PolicyID) > 256 || strings.TrimSpace(args.PolicyID) != args.PolicyID {
+			return args, ErrInvalidArguments
+		}
+		for _, commit := range []string{args.BaseSHA, args.HeadSHA, args.MergeBaseSHA} {
+			if !changerequest.ValidHash(commit, 40) && !changerequest.ValidHash(commit, 64) {
+				return args, ErrInvalidArguments
+			}
+		}
+		if !changerequest.ValidReference(args.Repository) || args.Code == nil || args.Code.Kind != "code" || changerequest.ValidateArtifacts(append([]tracker.ChangeArtifact{*args.Code}, args.Artifacts...)) != nil {
+			return args, ErrInvalidArguments
+		}
+		if external := args.External; external != nil && (external.Provider != "github" || external.ID == "" || len(external.ID) > 128 || !changerequest.ValidReference(external.URL)) {
+			return args, ErrInvalidArguments
+		}
 	}
 	for _, key := range []string{"revision", "expected_revision", "sequence"} {
 		if _, ok := fields[key]; ok {

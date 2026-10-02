@@ -886,6 +886,26 @@ version thereafter. Reusing a command with different content or publishing from
 an old current version returns a conflict. New versions require new approval and
 fresh evidence even when a publisher reports the same head.
 
+Operator MCP exposes this same owner as `publish_change_version` in the
+`changes_artifacts` toolset. Supply `project_id`, `work_item_id`, `change_id`,
+`request_id`, `expected_version_id` (explicitly empty for the first version),
+`base_sha`, `head_sha`, `merge_base_sha`, `repository`, `policy_id`, and `code`,
+with optional `artifacts` and `external`. It accepts no run, attempt, lease,
+fencing, actor or producer fields. Current operator write grants and nested
+ownership are checked on execution and replay. `request_id` uses the same
+idempotency owner as the REST `idempotency_key`; identical retries across
+transports retain the original immutable version receipt.
+
+The result includes `version` and `receipt` for the published version, `detail`
+for the live current Change and review/check summary, and `work_item_state` for
+the observed current lane. A replay after another publication retains its
+original version while reporting the newer current version. Publication runs
+directly with existing operator authority. Normal configured review/check
+requirements still apply; no-review/no-check versions can automatically promote
+through the existing owner. Unverified references remain unverified. An external
+PR reference preserves the repository integration's protection and landing
+checks; publication alone does not attest a worker success or a merge.
+
 Code, manifests, diff bundles, logs and other artifacts remain in customer storage.
 Hub retains only `kind`, `uri`, `sha256`, and `availability`. References support
 `https`, `s3`, or `gs`, without embedded credentials, query tokens or fragments.

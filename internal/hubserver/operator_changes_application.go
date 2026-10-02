@@ -172,6 +172,16 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	path := result.URL
 	method := "POST"
 	switch name {
+	case operatortool.PublishChangeVersion:
+		if args.ExpectedVersionID == nil || args.Code == nil {
+			return result, operatortool.ErrInvalidArguments
+		}
+		request := tracker.PublishChangeVersion{Mutation: command, ExpectedVersionID: *args.ExpectedVersionID, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: args.BaseSHA, HeadSHA: args.HeadSHA, MergeBaseSHA: args.MergeBaseSHA, Repository: args.Repository, Code: *args.Code, Artifacts: args.Artifacts, PolicyID: args.PolicyID, External: args.External}}
+		input = request
+		path += "/versions"
+		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+			return s.publishChangeVersionCommand(ctx, tx, scope, args.ItemID, args.ChangeID, request, now)
+		}
 	case operatortool.CreateChange:
 		request := tracker.CreateChange{Mutation: command, Title: args.Title, Body: args.Body}
 		input = request
@@ -262,6 +272,32 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	result.Receipt, err = s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: method + " " + path, Item: args.ItemID, Feature: "collaboration", ArtifactRead: name == operatortool.ArtifactAccess}, command, input, op)
 	if err != nil {
 		return result, err
+	}
+	if name == operatortool.PublishChangeVersion {
+		var version tracker.ChangeVersion
+		if err := json.Unmarshal(result.Receipt, &version); err != nil {
+			return result, err
+		}
+		result.Version = &version
+		tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return result, err
+		}
+		defer tx.Rollback()
+		change, err := readChange(ctx, tx, scope, args.ItemID, args.ChangeID)
+		if err != nil {
+			return result, err
+		}
+		detail, err := readCurrentChangeDetail(ctx, tx, scope, change, s.config.now())
+		if err != nil {
+			return result, err
+		}
+		issue, _, err := readNativeIssue(ctx, tx, scope, args.ItemID)
+		if err != nil {
+			return result, err
+		}
+		result.Detail, result.WorkItemState = &detail, issue.State
+		return result, tx.Commit()
 	}
 	if name == operatortool.CreateChange {
 		var change tracker.ChangeRequest

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -310,6 +311,8 @@ func TestActionConfirmationClassification(t *testing.T) {
 		{Action{Kind: "cutover_project", Arguments: json.RawMessage(`{"input":{"dry_run":true},"yolo":true}`)}, true},
 		{Action{Kind: "approve_project_policy"}, true},
 		{Action{Kind: "approve_change_review_policy"}, true},
+		{Action{Kind: ActionKind(operatortool.PublishChangeVersion)}, false},
+		{Action{Kind: ActionKind(operatortool.PublishChangeVersion), Mutation: mutation.Metadata{Source: "chat"}}, true},
 		{Action{Kind: "revoke_project_policy"}, true},
 		{Action{Kind: "remove_project_secret"}, true},
 		{Action{Kind: ActionKind(operatortool.BudgetOverrideSet)}, true},

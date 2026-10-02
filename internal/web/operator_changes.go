@@ -151,6 +151,27 @@ func (a dashboardChangeApplication) MutateChange(ctx context.Context, name strin
 	m := tracker.Mutation{IdempotencyKey: args.RequestID}
 	var receipt any
 	switch name {
+	case operatortool.PublishChangeVersion:
+		if args.ExpectedVersionID == nil || args.Code == nil {
+			return result, operatortool.ErrInvalidArguments
+		}
+		version, publishErr := client.PublishChangeVersion(ctx, item, args.ChangeID, tracker.PublishChangeVersion{Mutation: m, ExpectedVersionID: *args.ExpectedVersionID, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: args.BaseSHA, HeadSHA: args.HeadSHA, MergeBaseSHA: args.MergeBaseSHA, Repository: args.Repository, Code: *args.Code, Artifacts: args.Artifacts, PolicyID: args.PolicyID, External: args.External}})
+		if publishErr != nil {
+			return result, safeChangeError(publishErr)
+		}
+		result.Version = &version
+		receipt = version
+		detail, readErr := client.Change(ctx, item, args.ChangeID)
+		if readErr != nil {
+			return result, safeChangeError(readErr)
+		}
+		detail.Versions, detail.Reviews, detail.Checks, detail.Discussion = nil, nil, nil, nil
+		result.Detail = &detail
+		issue, readErr := client.Issue(ctx, item)
+		if readErr != nil {
+			return result, safeChangeError(readErr)
+		}
+		result.WorkItemState = issue.State
 	case operatortool.CreateChange:
 		receipt, err = client.CreateChange(ctx, item, tracker.CreateChange{Mutation: m, Title: args.Title, Body: args.Body})
 	case operatortool.DiscussChange:

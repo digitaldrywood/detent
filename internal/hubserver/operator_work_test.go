@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,14 +28,21 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusOK)
 		var envelope struct {
 			Result struct {
-				IsError bool `json:"isError"`
-				Content struct {
-					Data json.RawMessage `json:"data"`
-				} `json:"structuredContent"`
+				IsError bool            `json:"isError"`
+				Content json.RawMessage `json:"structuredContent"`
 			} `json:"result"`
 		}
 		decodeHubResponse(t, response, &envelope)
-		return envelope.Result.Content.Data, envelope.Result.IsError
+		if name == operatortool.CreateChange || name == operatortool.PublishChangeVersion || envelope.Result.IsError {
+			return envelope.Result.Content, envelope.Result.IsError
+		}
+		var content struct {
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(envelope.Result.Content, &content); err != nil {
+			t.Fatal(err)
+		}
+		return content.Data, envelope.Result.IsError
 	}
 	raw, failed := call("file_issue", "create", map[string]any{"title": "Created", "description": "Keep body", "state": "Todo"})
 	var created tracker.NativeIssue
@@ -88,6 +96,19 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	var comments tracker.Page[tracker.NativeComment]
 	if err := json.Unmarshal(raw, &comments); err != nil || failed || len(comments.Items) != 1 || comments.Items[0].Body != "Edited comment" {
 		t.Fatalf("discussion=%s %v", raw, err)
+	}
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	raw, failed = call(operatortool.CreateChange, "mcp-change", map[string]any{"work_item_id": id, "title": "Operator source"})
+	var change operatortool.ChangeResult
+	if err := json.Unmarshal(raw, &change); err != nil || failed || change.ChangeID == "" {
+		t.Fatalf("MCP Change creation=%s %v", raw, err)
+	}
+	input := changeTestInput()
+	fields := map[string]any{"work_item_id": id, "change_id": change.ChangeID, "expected_version_id": "", "base_sha": input.BaseSHA, "head_sha": input.HeadSHA, "merge_base_sha": input.MergeBaseSHA, "repository": input.Repository, "policy_id": input.PolicyID, "code": input.Code, "artifacts": input.Artifacts}
+	raw, failed = call(operatortool.PublishChangeVersion, "mcp-publication", fields)
+	var published operatortool.ChangeResult
+	if err := json.Unmarshal(raw, &published); err != nil || failed || published.Version == nil || published.Detail == nil || published.Detail.Change.CurrentVersion != published.Version.ID || published.WorkItemState != current.State || published.Version.RunID != "" || published.Version.AttemptID != "" {
+		t.Fatalf("MCP operator publication=%s %v", raw, err)
 	}
 }
 
