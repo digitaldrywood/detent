@@ -11,6 +11,7 @@ import {
   EmptyTitle,
 } from "../../../components/ui/empty.tsx";
 import { cn } from "../../../lib/utils.ts";
+import type { OnboardingStepState } from "../../../contracts/account.ts";
 import { useAccountApi, useAccountBootstrap } from "../../account/context.ts";
 import { useResource } from "../../account/useResource.ts";
 import { EnrollRunnerDialog } from "../../fleet/EnrollRunner.tsx";
@@ -24,6 +25,7 @@ export type FirstRunStepId = "project" | "runner" | "setup" | "issue";
 export interface FirstRunFacts {
   readonly projects: number;
   readonly runners: number | "loading" | "unavailable";
+  readonly runnerState: OnboardingStepState | "loading" | "unavailable";
   readonly issues: number;
   /**
    * The Hub's unready onboarding steps for the project this board is on, the
@@ -62,6 +64,7 @@ export function setupStepsLeftLabel(count: number): string {
 
 export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
   const hasProject = facts.projects > 0;
+  const configureRunner = hasProject && typeof facts.runners === "number" && facts.runners > 0;
   const needsRunnerAccess = hasProject && !facts.canEnrollRunners && facts.canManageProjects;
   return [
     {
@@ -77,18 +80,22 @@ export function firstRunSteps(facts: FirstRunFacts): readonly FirstRunStep[] {
       id: "runner",
       title: "Enroll a runner",
       description:
-        "A runner takes issue runs on your own machine, with your own provider login.",
-      actionLabel: needsRunnerAccess ? "Grant runner access" : "Enroll a runner",
-      done: typeof facts.runners === "number" && facts.runners > 0,
+        "Configure this project on a runner to take issue runs on your own machine, with your own provider login.",
+      actionLabel: needsRunnerAccess ? "Grant runner access" : configureRunner ? "Configure runner" : "Enroll a runner",
+      done: hasProject && facts.runnerState === "ready",
       blockedReason: !hasProject
         ? NEEDS_PROJECT
-        : facts.runners === "loading"
-          ? RUNNERS_LOADING
-          : facts.runners === "unavailable"
-            ? RUNNERS_UNAVAILABLE
-            : facts.canEnrollRunners || needsRunnerAccess
-              ? null
-              : RUNNER_ENROLLMENT_UNAVAILABLE,
+        : facts.runnerState === "loading"
+          ? SETUP_LOADING
+          : facts.runnerState === "unavailable"
+            ? SETUP_UNAVAILABLE
+            : facts.runners === "loading"
+              ? RUNNERS_LOADING
+              : facts.runners === "unavailable"
+                ? RUNNERS_UNAVAILABLE
+                : facts.canEnrollRunners || needsRunnerAccess
+                  ? null
+                  : RUNNER_ENROLLMENT_UNAVAILABLE,
       note: needsRunnerAccess && typeof facts.runners === "number" ? RUNNER_ACCESS_NEEDED : null,
     },
     {
@@ -276,6 +283,12 @@ export function FirstRunPanel({
         : fleet.error !== null
           ? "unavailable"
           : "loading",
+    runnerState:
+      onboarding !== undefined
+        ? onboarding.steps.find((step) => step.name === "Execution runner")?.state ?? "unavailable"
+        : setup.error !== null && !setup.loading
+          ? "unavailable"
+          : "loading",
     issues,
     setupStepsLeft:
       onboarding !== undefined
@@ -289,15 +302,16 @@ export function FirstRunPanel({
   });
 
   const refreshFleet = fleet.refresh;
+  const refreshSetup = setup.refresh;
   const onEnrollOpenChange = React.useCallback(
     (open: boolean) => {
       setEnrolling(open);
       if (!open) {
         void refreshFleet();
-        void setup.refresh();
+        void refreshSetup();
       }
     },
-    [refreshFleet],
+    [refreshFleet, refreshSetup],
   );
 
   return (
@@ -306,7 +320,13 @@ export function FirstRunPanel({
         steps={steps}
         onAction={(id) => {
           if (id === "project") newProject.openNewProject();
-          if (id === "runner" && canEnrollRunners) setEnrolling(true);
+          if (id === "runner" && canEnrollRunners) {
+            if (fleet.value !== undefined && fleet.value.runners.length > 0 && targetId !== null) {
+              void navigate({ to: "/projects/$project/setup", params: { project: targetId } } as never);
+            } else {
+              setEnrolling(true);
+            }
+          }
           if (id === "runner" && !canEnrollRunners) {
             void navigate({ to: "/settings/$section", params: { section: "organization" } });
           }

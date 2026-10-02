@@ -4,7 +4,7 @@
 
 - The Cloud client described here lives in `web/conversation` (React 19, Vite, TanStack Router, Tailwind v4). It builds into `static/app/conversation` (`make app`) and is served by `internal/hubserver` (`appShell` in `internal/hubserver/app_ui.go`), under the tenant base path passed to the client through the `detent-base-path` meta tag, and by the shared entry for its own screens (`clientShell` in `internal/cloudentry/client.go`). It is not mounted inside the local Templ shell.
 - A.1 Work board exists: `/work` and `/work/p/$projectId` (`web/conversation/src/app/work/WorkBoard.tsx`).
-- A.2 Issue thread exists as `/work/i/$workItemId` (`web/conversation/src/app/work/IssuePage.tsx`); the old `/chat/issues/$workItemId` redirects there. Diff review renders through `web/conversation/src/app/components/surfaces/DiffSurface.tsx`; parity with the artifact's five-tab dock is not verified here.
+- A.2 Issue thread exists as `/work/i/$workItemId` (`web/conversation/src/app/work/IssuePage.tsx`); the old `/chat/issues/$workItemId` redirects there. The original 300px Properties aside is retained. Diff is a user-selected Surface using `web/conversation/src/app/components/surfaces/DiffSurface.tsx`; Change Request review and round history remain on the linked change page.
 - A.3 Fleet and spend is split: `/usage` (`web/conversation/src/app/usage/UsagePage.tsx`) and `/fleet`, which redirects to `/settings/runners` (`web/conversation/src/app/fleet/RunnersSection.tsx`).
 - A.4 Project settings exists as `/settings/$section` (`web/conversation/src/app/settings/Settings.tsx`); `/projects/$project/settings` redirects to the `integrations` section. A `billing` section (owner or admin only) was added.
 - A.5 First-run wizard maps to `/projects/$project/setup` (`web/conversation/src/app/account/Setup.tsx`) plus the shared-entry screens in `web/conversation/src/app/entry/router.tsx`: sign-in `/`, organization chooser `/organizations`, create `/organizations/new`, provisioning `/organizations/$organization/provisioning`, and join `/invitations/join`.
@@ -193,6 +193,8 @@ On main: the client route is `/work/i/$workItemId` (`web/conversation/src/app/wo
 |      .dock-tabs 52px | .dock-sub 40px | .files | .diff (scrolls)          |
 +---------------------------------------------------------------------------+
 ```
+
+**Implementation status.** `/work/i/$workItemId` retains the original Properties aside, visible from 1024px. Opening the Surface panel yields the aside and exposes Properties through the issue disclosure. Narrow screens retain the original issue layout without an Open review dialog. Change resources link to the existing Change Request review page.
 
 **Sidebar difference from A.1.** In the project-scoped state the issue rows carry **no**
 project colour dot, the Running section shows the empty row

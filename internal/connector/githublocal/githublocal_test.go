@@ -522,6 +522,24 @@ func TestConnectorFetchIssueCommentsMergesRemoteAndLocalInCreatedOrder(t *testin
 			got[0].CanEdit, got[0].CanDelete, got[1].CanEdit, got[1].CanDelete, got[2].CanEdit, got[2].CanDelete)
 	}
 
+	for _, complete := range []struct{ local, remote bool }{{true, true}, {true, false}, {false, true}, {false, false}} {
+		merged := conn.mergeLocalWithGitHub(connector.Issue{CommentsComplete: complete.local, Comments: got[1:2]}, connector.Issue{CommentsComplete: complete.remote, Comments: []connector.IssueComment{got[0], got[2]}})
+		if merged.CommentsComplete != (complete.local && complete.remote) || len(merged.Comments) != 3 {
+			t.Fatalf("merged current coverage = %+v, want both current sources complete", merged)
+		}
+		raw, err := json.Marshal(merged)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var persisted connector.Issue
+		if err := json.Unmarshal(raw, &persisted); err != nil {
+			t.Fatal(err)
+		}
+		if persisted.CommentsComplete {
+			t.Fatal("comment completeness persisted outside its current operation")
+		}
+	}
+
 	localCommentID := got[1].ID
 	if err := conn.UpdateIssueComment(context.Background(), "github:123:779", localCommentID, "edited local note"); err != nil {
 		t.Fatalf("UpdateIssueComment() error = %v", err)

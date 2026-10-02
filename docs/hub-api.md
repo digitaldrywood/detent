@@ -4,6 +4,12 @@ Detent Hub owns its SQLite database and exposes fleet coordination through an au
 
 This page documents implemented behavior, including native collaboration, Changes and scoped runner enrollment through `/api/v2`. See [self-hosted operations](hub-self-hosting.md) for deployment, export/import and recovery, and [artifact deployment](artifacts-deployment.md) for independent durable storage. The [native Hub and Cloud RFC](cloud-hub-rfc.md) defines the broader architecture.
 
+Cloud members get one expiring scoped key for direct API and MCP access from
+**Settings → API & MCP**, at the preserved `/settings/mcp` bookmark. See
+[API & MCP setup](api-mcp-setup.md) for organization URLs, tested requests,
+private credential handling, agent prompts and the browser approval contract.
+Cloud keys do not authorize compatibility, worker, runner or instance-admin routes.
+
 ## Approved repository policy
 
 Every API claim requires an approved `policy_id`. Compatibility claims also
@@ -105,7 +111,7 @@ and the projects the runner may work on, creates a token-first enrollment, and
 shows one command to run on the host:
 
 ```sh
-detent hub runner register --url https://hub.detent.build/organizations/org_example \
+detent hub runner register --url https://cloud.detent.build/organizations/org_example \
   --token det_enroll_example --name "Build host" --capacity 2 --service
 ```
 
@@ -124,12 +130,19 @@ detent hub runner register --url https://hub.detent.build/organizations/org_exam
    `native_projects`, `display_name`, `capacity`), `service_name:
    detent.runner`, and one `projects:` entry per project whose `workdir` is the
    project's checkout under `--workspace-root` (default `~/detent-runner/NAME`).
-   An existing `global.yaml` is left untouched.
+   An existing `global.yaml` is left untouched; checkout checks use its
+   configured projects and `workdir` paths instead of `--workspace-root`.
 4. With `--service`, installs and starts the `detent.runner` background service
    (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
    separate from a local board's `detent` service on the same host. If a
    project's checkout is missing, it prints the clone step and the
    `detent start --config ... --yes` command to run afterwards instead.
+
+`detent start` and `detent status` default to the runner service when the
+configuration has a `client.hub_url`, including older configurations without
+`service_name`. An explicit `service_name` selects that service. If launchd
+cannot bootstrap a disabled label, the error names it and prints the
+`launchctl enable` command to run before retrying.
 
 The token appears in the command because it is single-use and expires within 15
 minutes; once redeemed it grants nothing. To keep it out of shell history,
@@ -572,7 +585,7 @@ typed data. `issue.created`, `issue.edited`, `comment.created`, `comment.edited`
 `dependency.changed` and `workflow.transitioned` are server-generated. They refer
 to content revisions instead of duplicating full text in event data.
 
-Worker schema 1 accepts `run.started`, `run.finished` and `run.checkpointed`.
+Worker schema 1 accepts `run.started`, `run.finished`, `run.checkpointed` and, with the optional `native_runtime_evidence` capability, ordered `run.observed`.
 Their `data` requires `lease_id`, positive string `fencing_token`, and typed
 `run_`, `attempt_` and `policy_` IDs. Finished outcomes are `succeeded`, `failed`,
 `cancelled` and `interrupted`. Only checkpoints accept `artifact_ids`, at most 20
@@ -583,6 +596,62 @@ Idempotent retries return the committed result; new events with an expired fence
 fail. A run outcome records a worker report, not a verified check or merge grant.
 The policy ID is `policy_` followed by its 64-character lowercase SHA-256 digest
 and must equal the approved descriptor pinned to the lease.
+
+### Native runtime evidence
+
+With `native_runtime_evidence`, `GET /work-items/{item}/runtime` selects the
+latest fenced attempt or an exact `native_attempt_id` (typed native ID) or
+positive `attempt_id` (recorded local attempt ID). Selectors are mutually
+exclusive and ownership is scoped to the item and current project grant;
+ambiguous local IDs require the native selector. An absent selected attempt
+returns not found. An item with no recorded attempt returns explicit unavailable
+evidence. Older deployments return unsupported availability separately from
+grant denial.
+
+The typed snapshot includes the current native item, authentic last workflow
+transition and recorded scheduler decision, current Change readiness and
+enrolled runner routing/host/provider capacity. A current fenced lease is shown
+independently of the selected attempt, including a lease without a started run;
+lease reads omit private isolation configuration. Current candidate readiness is
+not full runner eligibility, and board counts or nil PRs cannot establish it.
+Historical decisions are recorded only when the existing scheduler evaluates
+them, with actor, item revision, source and server time; reads add no history.
+
+Ordered events may include `runtime`: local attempt/generation attribution,
+observed backend/model/effort provenance, phase intervals, heartbeat, bounded
+instruction profile, landing receipt and existing REST accounting. Attribution
+cannot change and heartbeat cannot move backwards in an attempt. Runtime
+freshness is unavailable without an observation, expired for future/old
+heartbeats or lost running leases, and available for recorded terminal
+observations. Lease renewal is not proof of agent activity.
+
+Activity spans contain hashes and allowlisted evidence labels, never command
+text, instruction contents or filesystem paths. The projection retains at most
+128 KiB, 64 instruction sources and 32 actions/span, with partial coverage,
+dropped/unpaired counts and no claim that reading an instruction caused an
+action. `board_session_history` provides offset/limit pages (1–200).
+Receipts, attempt lists, work history and explanations include profile metadata
+and explicitly identify omitted activity spans; full spans have their existing
+board_session_history owner. Exact runtime and attempt detail retain the bounded
+recorded profile.
+
+A landing observation names Change/version/head and either actual landed
+merge SHA/base/method or a bounded refusal kind. The Hub verifies actual landing
+against recorded Change authority; terminal attempt success alone cannot prove
+a ship. REST data projects existing operation-header observations and attribution
+windows, with credential digests, resource, timestamp, HTTP status and the
+presence of a Used header. Selected-client counts exclude worker subprocesses,
+other clients and hosts; an unaccounted delta does not identify its consumer.
+At most 64 operation and attribution windows are returned, with dropped counts.
+This adds no quota capacity policy or aggregate reporting owner.
+
+The existing `explain_item`, `board_receipt`, `board_session`,
+`board_session_history`, `work_attempt_receipt`, `work_history` and
+`board_activity` operations delegate to this native application evidence
+through supported local and Cloud adapters. MCP results retain the 256 KiB
+bound and return unavailable on overflow. Native efficiency aggregates and
+unrecorded runtime data remain explicitly unavailable. Hub schema 59 preserves
+prior event history and refuses rollback when new event types would be lost.
 
 ### Ordered attempts and recovery
 
@@ -745,9 +814,8 @@ mutation transaction, including before returning a cached approval response.
 Before publishing, an administrator approves a review policy tied to the current
 repository `policy_id`. Approving a native project's repository policy seeds the
 default review policy when the project has none: no CI check is pinned, and
-`require_review` is set only when the repository gate is `human_review`, so under
-any other gate a published version is `reviewed` and lands without a person.
-A review policy that pins no checks follows the repository gate: approving the
+`require_review` follows the repository policy's `review.human` setting, which
+defaults to false. A review policy that pins no checks follows that setting: approving the
 repository policy again rewrites it to the default, and an approval that expects
 no review policy may replace it. A review policy an administrator shaped by
 pinning checks is never rewritten; it goes stale when the repository policy
@@ -815,8 +883,8 @@ next version.
 An `approved` decision that leaves the current version `reviewed` moves the
 primary issue to the landing lane: the lane named `Merging`, when the issue's
 lane may move there and it dispatches. The runner that holds the project claims
-the issue there and lands the reviewed head with plain git and its own
-credentials: it fetches the base branch (the remote's default), verifies the
+the issue there and lands the reviewed head with its own credentials. By
+default it uses plain git: it fetches the base branch (the remote's default), verifies the
 worktree still stands at the reviewed head, combines the two by the approved
 policy's `merge_method` (a squash commit, a merge commit, or the head's commits
 replayed onto the base), and pushes the result to the base branch, refusing to
@@ -837,6 +905,19 @@ review lane with a comment that carries it, such as "allow the runner to push
 to develop, or enable GitHub pull request mode for this project". Only an
 infrastructure failure (the remote unreachable, the Hub refusing the report)
 fails the run and retries it.
+
+A project may opt in with `deliverable.github_pull_request: true` in its
+approved repository policy. For a github.com origin and an authenticated `gh`
+on the project runner, landing then publishes the reviewed attempt branch,
+finds or opens a pull request against the remote default branch, and asks
+GitHub to merge the exact reviewed head using the policy's `merge_method`.
+GitHub's branch protection, required checks, and required reviews decide
+whether the merge succeeds. The runner verifies that the returned merge commit
+is on the base branch before reporting it to the Hub. A refused merge returns
+the issue to review with the GitHub reason; the reviewer can approve it again
+after fixing that condition. This mode uses the runner's `gh` credentials and
+does not give them to the Hub. The default remains plain git and requires no
+GitHub API access.
 
 Native approval never becomes a required GitHub review. Detail optionally reuses
 the existing projected `PullRequestSummary`, labels it as a snapshot, and identifies
@@ -1015,3 +1096,34 @@ external provider consumers still require fresh observations and local provider
 error handling. Fleet details show reports, shared usage and waiting reasons;
 run details show the selected role/backend/model/account and reason. `detent
 doctor` reports the same capacity view. There is no additional global banner.
+
+### Selective onboarding issue intake
+
+Native projects can import selected GitHub issues with runner credentials and
+GitHub transport disabled on Hub. Associate a matching runner checkout first.
+`GET /api/v2/organizations/:organization/projects/:project/onboarding/issue-intake`
+returns `batch` (nullable) and configured `lanes`. Administrator mutations use
+`POST` to the same path with `idempotency_key`, `revision`, and `action`:
+
+- `discover`: choose `runner_id`, optional `labels` and explicit `include_closed`.
+  Default is open issues. The assigned runner reads one page of at most 100
+  issues using GraphQL and publishes previews through its existing heartbeat.
+- `more`: request the next preview page, up to 1,000 previews per intake. Narrow
+  larger sets with labels. Selecting all matching requires loading all pages.
+- `apply`: provide selected `numbers` and `destination`. A configured
+  non-dispatchable, nonterminal lane is the default; dispatchable destinations
+  require `allow_dispatch: true`. Source URL and node identity deduplicate
+  linked issues and older imports. Existing issues are skipped without changes.
+- `retry`: resume failed discovery/items, optionally on another `runner_id`.
+  Reported source retry deadlines must have elapsed. Completed items are retained.
+
+The runner publishes one complete snapshot or an incomplete-context diagnostic
+per selected item to the worker-only `/onboarding/issue-intake/result` endpoint.
+Snapshot, provenance, comments and completion checkpoint commit together;
+native edits retain field ownership. At most 20 comment pages are read per
+issue. Context exceeding that bound remains incomplete. Rate limits stop
+unstarted items until an explicit retry; no idle GitHub polling occurs. The
+wizard refreshes progress only on request. Reopening setup resumes the persisted
+selection and results. Intake performs no GitHub writes. New authoring and
+landing continue through native Hub operations, including the existing Done
+transaction; any later explicit source action keeps its own write authorization.

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -29,6 +28,14 @@ func (s *Service) recordHostedRequest(c echo.Context, started time.Time) {
 		if err := s.database.recordHostedUsage(ctx, tx, now, sample.metric, sample.amount); err != nil {
 			s.config.Logger.Warn("hosted request metrics unavailable")
 			return
+		}
+	}
+	if c.Request().ContentLength >= 0 {
+		for metric, amount := range map[string]int64{"http_request_bytes": c.Request().ContentLength, "http_request_bytes_known": 1} {
+			if err := s.database.recordHostedUsage(ctx, tx, now, metric, amount); err != nil {
+				s.config.Logger.Warn("hosted request metrics unavailable")
+				return
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -79,25 +86,4 @@ func (s *Service) reserveHostedInvitationSeat(ctx context.Context, email string)
 func (s *Service) releaseHostedInvitation(ctx context.Context, email string) error {
 	_, err := s.database.db.ExecContext(ctx, "DELETE FROM hosted_member_reservations WHERE email = ?", email)
 	return err
-}
-
-func (s *Service) hostedInvitationFailure(c echo.Context, email string, reserved bool, cause error) error {
-	s.releaseFailedHostedInvitation(c, email, reserved, cause)
-	return s.hostedError(c, 503, "The invitation could not be sent")
-}
-
-// releaseFailedHostedInvitation gives back the seat a failed attempt reserved.
-// A seat the attempt found already held stays with the earlier invitation.
-func (s *Service) releaseFailedHostedInvitation(c echo.Context, email string, reserved bool, cause error) {
-	if !reserved {
-		if cause != nil {
-			s.config.Logger.Warn("hosted invitation failed")
-		}
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request().Context()), 2*time.Second)
-	defer cancel()
-	if err := errors.Join(cause, s.releaseHostedInvitation(ctx, email)); err != nil {
-		s.config.Logger.Warn("hosted invitation failed")
-	}
 }

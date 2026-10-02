@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -105,11 +106,18 @@ func TestLocalGitCleanupRecordedLanding(t *testing.T) {
 		name          string
 		method        string
 		terminal      bool
+		wrongHead     bool
+		verifiedPR    bool
 		recorded      bool
 		extraCommit   bool
 		dirty         bool
 		wantPreserved bool
 	}{
+		{name: "verified merged PR", method: "squash", terminal: true, verifiedPR: true},
+		{name: "mismatched PR head", method: "squash", terminal: true, verifiedPR: true, wrongHead: true, wantPreserved: true},
+		{name: "verified PR later commit", method: "squash", terminal: true, verifiedPR: true, extraCommit: true, wantPreserved: true},
+		{name: "verified PR dirty", method: "squash", terminal: true, verifiedPR: true, dirty: true, wantPreserved: true},
+		{name: "active PR proof", method: "squash", verifiedPR: true, wantPreserved: true},
 		{name: "squash landed", method: "squash", terminal: true, recorded: true},
 		{name: "merge landed", method: "merge", terminal: true, recorded: true},
 		{name: "fast-forward landed", method: "fast-forward", terminal: true, recorded: true},
@@ -138,6 +146,7 @@ func TestLocalGitCleanupRecordedLanding(t *testing.T) {
 			runGit(t, info.Path, "add", "native.txt")
 			runGit(t, info.Path, "commit", "-m", "native work")
 			landedHead := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			runGit(t, info.Path, "push", "origin", info.Branch)
 			switch tt.method {
 			case "squash":
 				runGit(t, source, "merge", "--squash", info.Branch)
@@ -148,6 +157,19 @@ func TestLocalGitCleanupRecordedLanding(t *testing.T) {
 				runGit(t, source, "merge", "--ff-only", info.Branch)
 			}
 			runGit(t, source, "push", "origin", "main")
+			runGit(t, source, "push", "origin", "--delete", info.Branch)
+			if tt.method == "squash" {
+				count, err := retainedGitCommitCount(t.Context(), info.Path, "HEAD")
+				if err != nil || count == 0 {
+					t.Fatalf("original head should fail live branch proof: count %d, %v", count, err)
+				}
+			}
+			if tt.verifiedPR {
+				issue.CleanupDeliveredHeadSHA = landedHead
+				if tt.wrongHead {
+					issue.CleanupDeliveredHeadSHA = strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+				}
+			}
 			if tt.recorded {
 				issue.LandedHeadSHA = landedHead
 			}
@@ -193,11 +215,12 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			issue := Issue{Identifier: "cleanup-hook"}
+			issue := Issue{Identifier: "cleanup-hook", Terminal: true}
 			info, err := backend.Create(t.Context(), issue)
 			if err != nil {
 				t.Fatal(err)
 			}
+			issue.CleanupDeliveredHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 			if dirty {
 				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("worker work"), 0o600); err != nil {
 					t.Fatal(err)
@@ -459,6 +482,156 @@ func TestFilesystemPreservationSurvivesRestartAndResumption(t *testing.T) {
 				if err != nil || string(content) != "completed render" {
 					t.Fatalf("retained artifact = %q, error = %v", content, err)
 				}
+			}
+		})
+	}
+}
+
+func TestLocalGitPublishWorkInProgress(t *testing.T) {
+	for _, remoteAvailable := range []bool{true, false} {
+		t.Run(strconv.FormatBool(remoteAvailable), func(t *testing.T) {
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "deadline-work"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "config", "user.name", "Test")
+			runGit(t, info.Path, "config", "user.email", "test@example.com")
+			if err := os.WriteFile(filepath.Join(info.Path, "unfinished.go"), []byte("package unfinished\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(info.Path, ".detent", "skills"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, ".detent", "skills", "work.md"), []byte("Unfinished project skill\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "add", "--", ".detent/skills/work.md")
+			if !remoteAvailable {
+				runGit(t, info.Path, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unavailable"))
+			}
+			err = backend.PublishWorkInProgress(t.Context(), issue, func(ctx context.Context) error { return ctx.Err() })
+			if (err == nil) != remoteAvailable {
+				t.Fatalf("publish error = %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(info.Path, "unfinished.go")); err != nil {
+				t.Fatal(err)
+			}
+			if branch := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); branch != info.Branch {
+				t.Fatalf("branch changed to %s", branch)
+			}
+			if remoteAvailable {
+				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+				refs := runGit(t, remote, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/wip/")
+				if !strings.Contains(refs, head+" refs/heads/wip/") {
+					t.Fatalf("WIP refs = %s", refs)
+				}
+				if content := runGit(t, remote, "show", head+":.detent/skills/work.md"); !strings.Contains(content, "Unfinished project skill") {
+					t.Fatalf("project skill = %q", content)
+				}
+				state, err := backend.RecoveryState(t.Context(), info, issue)
+				if err != nil || state.UnpushedCommits != 0 || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
+					t.Fatalf("published recovery state = %#v, %v", state, err)
+				}
+				if err := backend.PublishWorkInProgress(t.Context(), issue, func(ctx context.Context) error { return ctx.Err() }); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkInProgressRejectsSensitiveContent(t *testing.T) {
+	for _, tt := range []struct {
+		name, path, content string
+		committed           bool
+	}{
+		{"sensitive path", ".env", "example", false},
+		{"sensitive content", "config.go", "-----BEGIN PRIVATE KEY-----", false},
+		{"sensitive history", "config.go", "-----BEGIN PRIVATE KEY-----", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "deadline-sensitive"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "config", "user.name", "Test")
+			runGit(t, info.Path, "config", "user.email", "test@example.com")
+			if err := os.WriteFile(filepath.Join(info.Path, tt.path), []byte(tt.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tt.path == ".env" {
+				runGit(t, info.Path, "add", "--force", "--", tt.path)
+			}
+			if tt.committed {
+				runGit(t, info.Path, "add", tt.path)
+				runGit(t, info.Path, "commit", "-m", "example unfinished work")
+			}
+			if err := backend.PublishWorkInProgress(t.Context(), issue, func(ctx context.Context) error { return ctx.Err() }); !errors.Is(err, ErrCheckpointUnsafe) {
+				t.Fatalf("publication error = %v", err)
+			}
+			if refs := runGit(t, remote, "for-each-ref", "--format=%(refname)", "refs/heads/wip/"); strings.TrimSpace(refs) != "" {
+				t.Fatalf("sensitive WIP was published: %s", refs)
+			}
+			if _, err := os.Stat(filepath.Join(info.Path, tt.path)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestWorkInProgressRequiresOwnedBranchAndAuthority(t *testing.T) {
+	for _, changedBranch := range []bool{false, true} {
+		t.Run(strconv.FormatBool(changedBranch), func(t *testing.T) {
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "deadline-ownership"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(info.Path, "unfinished.go"), []byte("package unfinished\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			validate := func(context.Context) error { return context.Canceled }
+			want := context.Canceled
+			if changedBranch {
+				runGit(t, info.Path, "switch", "-c", "other-work")
+				validate = func(ctx context.Context) error { return ctx.Err() }
+				want = ErrCheckpointUnsafe
+			}
+			head := runGit(t, info.Path, "rev-parse", "HEAD")
+			if err := backend.PublishWorkInProgress(t.Context(), issue, validate); !errors.Is(err, want) {
+				t.Fatalf("ownership error = %v, want %v", err, want)
+			}
+			if current := runGit(t, info.Path, "rev-parse", "HEAD"); current != head {
+				t.Fatal("publication committed without ownership")
+			}
+			if refs := runGit(t, remote, "for-each-ref", "--format=%(refname)", "refs/heads/wip/"); strings.TrimSpace(refs) != "" {
+				t.Fatalf("publication without ownership: %s", refs)
 			}
 		})
 	}

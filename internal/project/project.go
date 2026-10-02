@@ -30,13 +30,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/intake"
-	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/publication"
 	releasepkg "github.com/digitaldrywood/detent/internal/release"
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/routine"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -185,6 +185,7 @@ type Project struct {
 	orchFactory               OrchestratorFactory
 	orchConfig                orchestrator.Config
 	orchDeps                  orchestrator.Dependencies
+	policyScheduling          orchestrator.SchedulingSource
 	runner                    orchestrator.Runner
 	scheduler                 scheduler.Scheduler
 	schedulerFactory          schedulerFactory
@@ -260,7 +261,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 
 	workflow := normalizeWorkflow(cfg.Workflow)
 	workflow.Config = workflow.Config.WithAgentDefaults(cfg.Project.GlobalAgents, cfg.Project.GlobalBudget)
-	workflow.Config = withMappedNativeTracker(workflow.Config, deps.Scheduling, id)
+	workflow.Config = WithMappedNativeTracker(workflow.Config, deps.Scheduling, id)
 	if err := configureProjectPolicy(context.Background(), cfg.Project, &workflow, deps.Scheduling); err != nil {
 		return nil, projectDefinitionError{err: err}
 	}
@@ -422,6 +423,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		DispatchStates:      workflow.Config.Agent.DispatchPriorityByState,
 		DispatchLabels:      workflow.Config.Agent.DispatchPriorityByLabel,
 		PrioritizeBlockers:  workflow.Config.Agent.PrioritizeUnblockers,
+		DependencyIssues:    admissionDependencyIssues(laneOwner),
 		DependencyReadiness: workflow.Config.Tracker.DependencyAutoUnblock.Readiness,
 		Runner:              deps.Runner,
 		Issues:              admissionIssueStore(projectConnector),
@@ -508,6 +510,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		orchFactory:               orchestratorFactory,
 		orchConfig:                orchConfig,
 		orchDeps:                  orchDeps,
+		policyScheduling:          deps.Scheduling,
 		runner:                    deps.Runner,
 		scheduler:                 projectScheduler,
 		schedulerFactory:          schedulerFactory,
@@ -544,6 +547,16 @@ func (p *Project) ID() ID {
 		return ""
 	}
 	return p.id
+}
+
+func (p *Project) RunnerProblems() []runnerauth.Problem {
+	p.mu.Lock()
+	value := p.runner
+	p.mu.Unlock()
+	if reporter, ok := value.(interface{ Problems() []runnerauth.Problem }); ok {
+		return reporter.Problems()
+	}
+	return nil
 }
 
 func (p *Project) Config() globalconfig.Project {
@@ -1491,11 +1504,12 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	issueCoordinator := p.issueCoordinator
 	scheduleConfig := p.scheduleConfig
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
-	scheduling := p.orchDeps.Scheduling
+	scheduling := p.policyScheduling
 	previousPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = workflow.Config.WithAgentDefaults(projectConfig.GlobalAgents, projectConfig.GlobalBudget)
+	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
 	}
@@ -1638,6 +1652,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 			DispatchStates:      workflow.Config.Agent.DispatchPriorityByState,
 			DispatchLabels:      workflow.Config.Agent.DispatchPriorityByLabel,
 			PrioritizeBlockers:  workflow.Config.Agent.PrioritizeUnblockers,
+			DependencyIssues:    admissionDependencyIssues(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
 			DependencyReadiness: workflow.Config.Tracker.DependencyAutoUnblock.Readiness,
 			Runner:              runner,
 			Issues:              admissionIssueStore(projectConnector),
@@ -1742,22 +1757,19 @@ func buildReleaseCoordinator(cfg workflowconfig.Config, projectConnector connect
 	}, releaseBackend)}, nil
 }
 
-// withMappedNativeTracker makes a project that client.native_projects maps to
+// WithMappedNativeTracker makes a project that client.native_projects maps to
 // a Hub project use the Hub instead of the repository's GitHub tracker, so a
 // runner host can reuse a committed detent.yaml without a local override. Any
 // other tracker kind is an explicit local choice and is kept.
-func withMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestrator.SchedulingSource, id ID) workflowconfig.Config {
+func WithMappedNativeTracker(workflow workflowconfig.Config, scheduling orchestrator.SchedulingSource, id ID) workflowconfig.Config {
 	source, ok := scheduling.(interface {
 		ConnectorForProject(string) (connector.Connector, bool)
 	})
 	if !ok {
 		return workflow
 	}
-	repositoryTracker := workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal
-	if _, mapped := source.ConnectorForProject(string(id)); mapped && repositoryTracker {
-		workflow.Tracker.Kind = workflowconfig.TrackerHubNative
-	}
-	return workflow
+	_, mapped := source.ConnectorForProject(string(id))
+	return MapNativeTracker(workflow, mapped)
 }
 
 func projectSchedulingSource(source orchestrator.SchedulingSource, workflow workflowconfig.Config) orchestrator.SchedulingSource {
@@ -1794,15 +1806,6 @@ func projectOrchestratorConfig(project globalconfig.Project, workflow workflowco
 		ActiveHoursOverrideUntil: overrideUntil,
 	}
 	cfg.SchedulingRepository = workflow.Tracker.Repository
-	lessonPath := strings.TrimSpace(cfg.Lessons.Path)
-	if lessonPath == "" {
-		lessonPath = lessons.DefaultPath
-	}
-	cfg.Lessons.Path = projectRelativePath(project.Workdir, lessonPath)
-	cfg.Lessons.Enabled = true
-	if cfg.Lessons.MaxEntries <= 0 {
-		cfg.Lessons.MaxEntries = lessons.DefaultMaxEntries
-	}
 	cfg.Authorization = combineAuthorizationSelectors(cfg.Authorization, project.Authorization)
 	return cfg
 }
@@ -1971,6 +1974,9 @@ func buildScheduleOwnership(
 	coordinationEndpoint := ""
 	if cfg.Tracker.Kind == workflowconfig.TrackerGitHub || cfg.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
 		coordinationEndpoint = cfg.Tracker.Endpoint
+	}
+	if cfg.Tracker.Kind == workflowconfig.TrackerHubNative && cfg.ScheduleOwnership.Enabled && strings.TrimSpace(cfg.ScheduleOwnership.Repository) == "" {
+		return nil, nil, scheduleowner.Config{}, errors.New("native schedule ownership requires an explicit schedule_ownership.repository to opt into GitHub coordination")
 	}
 	ownership := cfg.ScheduleOwnership.Normalized(cfg.Tracker.Repository, coordinationEndpoint)
 	if !ownership.Enabled {
@@ -2392,6 +2398,7 @@ func defaultConnectorFactoryWithRefresh(cfg workflowconfig.Config, refreshGitHub
 		StateMap:                    trackerStateMap(cfg.Tracker.StateMap),
 		PriorityMap:                 trackerPriorityMap(cfg.Tracker.PriorityMap),
 		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
+		LocalStatus:                 cfg.Gate.LocalStatus,
 		Publication:                 cfg.Tracker.Publication,
 	})
 }

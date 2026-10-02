@@ -2,12 +2,16 @@ package github
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -309,6 +313,420 @@ func TestRefreshPullRequestsEmpty(t *testing.T) {
 				c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "fixture/empty"})
 				if err := c.hydrateRefreshPullRequests(t.Context(), tc.issues, nil, candidates); err != nil {
 					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
+func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
+	const repo = "fixture/labels"
+	const stamp = "2026-09-30T20:00:00Z"
+	for _, reader := range []string{"refresh", "ids", "identifiers", "probe", "project-ids", "project-identifiers"} {
+		for _, scenario := range []string{"complete", "unsupported", "wrong-id", "null-id", "null-native", "partial", "pages", "stalled", "incomplete-labels", "transport", "budget", "fallback-error", "native-unsupported"} {
+			if (reader == "refresh" && scenario != "complete" && scenario != "unsupported") || (reader == "probe" && scenario != "complete") || (strings.HasPrefix(reader, "project-") && scenario != "complete" && scenario != "unsupported") {
+				continue
+			}
+			fallback := scenario != "complete" && scenario != "pages"
+			t.Run(reader+"/"+scenario, func(t *testing.T) {
+				reads := map[string]int{}
+				phase := 0
+				statuses := []string{"blocked", "in_progress", "complete"}
+				commentUpdated := func() string { return fmt.Sprintf("2026-09-30T20:0%d:00Z", phase) }
+				commentBody := func() string {
+					action := "null"
+					if phase == 0 {
+						action = "Approve this work."
+					}
+					return fmt.Sprintf("## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: %s\nblockers: []\nhuman_action: %s\n```", statuses[phase], action)
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet {
+						reads[r.URL.Path]++
+						switch {
+						case r.URL.Path == "/repos/fixture/labels/issues":
+							label := r.URL.Query().Get("labels")
+							start, end := 1, 30
+							switch label {
+							case "detent:blocked":
+								start, end = 31, 31
+							case "detent:backlog":
+								start, end = 32, 51
+							}
+							rows := []any{}
+							for n := start; n <= end; n++ {
+								rows = append(rows, map[string]any{"node_id": fmt.Sprintf("I%d", n), "number": n, "state": "open", "body": "body", "updated_at": stamp, "comments": 1, "labels": []any{map[string]any{"name": label}}})
+							}
+							json.NewEncoder(w).Encode(rows)
+						case strings.HasSuffix(r.URL.Path, "/comments"):
+							body := fmt.Sprintf("answer%d", phase)
+							if strings.HasSuffix(r.URL.Path, "/issues/31/comments") {
+								body = commentBody()
+							}
+							json.NewEncoder(w).Encode([]any{map[string]any{"id": 1, "node_id": "C1", "body": body, "created_at": stamp, "updated_at": commentUpdated(), "author_association": "OWNER", "user": map[string]any{"login": "operator"}}})
+						case strings.HasSuffix(r.URL.Path, "/dependencies/blocked_by"):
+							if scenario == "fallback-error" {
+								http.Error(w, "dependency read failed", http.StatusBadGateway)
+								return
+							}
+							if scenario == "native-unsupported" {
+								http.NotFound(w, r)
+								return
+							}
+							dependencies := []any{}
+							if reader != "refresh" || phase == 1 {
+								dependencies = append(dependencies, map[string]any{"node_id": "D1", "number": 99, "state": "closed", "html_url": "https://github.com/" + repo + "/issues/99", "labels": []any{}})
+							}
+							json.NewEncoder(w).Encode(dependencies)
+						case strings.HasSuffix(r.URL.Path, "/pulls"):
+							fmt.Fprint(w, `[]`)
+						case strings.HasPrefix(r.URL.Path, "/repos/fixture/labels/issues/"):
+							n, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/repos/fixture/labels/issues/"))
+							if err != nil {
+								t.Error(err)
+								return
+							}
+							state, label := "open", "detent:todo"
+							if n == 31 {
+								label = "detent:blocked"
+							}
+							if n == 2 {
+								state = "closed"
+							}
+							row := map[string]any{"node_id": fmt.Sprintf("I%d", n), "number": n, "title": fmt.Sprintf("Title %d", n), "body": "body", "state": state, "state_reason": "completed", "html_url": fmt.Sprintf("https://github.com/%s/issues/%d", repo, n), "created_at": stamp, "updated_at": stamp, "closed_at": stamp, "comments": 1, "user": map[string]any{"login": "author"}, "author_association": "OWNER", "assignees": []any{map[string]any{"login": "operator"}}, "labels": []any{map[string]any{"name": label}, map[string]any{"name": "bug"}}}
+							if scenario == "pages" {
+								row["comments"] = 2
+							}
+							if scenario == "native-unsupported" {
+								row["body"] = "Depends on: " + repo + "#99"
+							}
+							json.NewEncoder(w).Encode(row)
+						default:
+							t.Errorf("unexpected REST read: %s", r.URL)
+							http.NotFound(w, r)
+						}
+						return
+					}
+					var req struct {
+						Query     string
+						Variables map[string]any
+					}
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Error(err)
+						return
+					}
+					data := map[string]any{}
+					switch {
+					case strings.Contains(req.Query, "CandidateHydration"):
+						reads["batch"]++
+						if scenario == "unsupported" || scenario == "fallback-error" || scenario == "native-unsupported" {
+							fmt.Fprint(w, `{"errors":[{"message":"fixture unavailable scheduler fields"}]}`)
+							return
+						}
+						if scenario == "transport" {
+							conn, _, err := w.(http.Hijacker).Hijack()
+							if err != nil {
+								t.Error(err)
+								return
+							}
+							if err := conn.Close(); err != nil {
+								t.Error(err)
+							}
+							return
+						}
+						for key, value := range req.Variables {
+							if !strings.HasPrefix(key, "id") {
+								continue
+							}
+							id := value.(string)
+							reads["evidence:"+id]++
+							dependencies := []any{}
+							if reader != "refresh" || phase == 1 {
+								dependencies = append(dependencies, map[string]any{"id": "D1", "number": 99, "state": "CLOSED", "repository": map[string]any{"nameWithOwner": repo}, "labels": map[string]any{"nodes": []any{}}})
+							}
+							body := fmt.Sprintf("answer%d", phase)
+							if id == "I31" {
+								body = commentBody()
+							}
+							node := map[string]any{"id": id, "body": "body", "updatedAt": stamp, "comments": map[string]any{"totalCount": 1, "nodes": []any{map[string]any{"id": "C1", "body": body, "createdAt": stamp, "updatedAt": commentUpdated(), "author": map[string]any{"login": "operator"}, "authorAssociation": "OWNER"}}}, "blockedBy": map[string]any{"nodes": dependencies}}
+							comments := node["comments"].(map[string]any)
+							native := node["blockedBy"].(map[string]any)
+							switch scenario {
+							case "partial":
+								if id == "I2" {
+									node["id"] = "wrong"
+								}
+							case "wrong-id":
+								node["id"] = "wrong"
+							case "null-id":
+								node = nil
+							case "null-native":
+								node["blockedBy"] = nil
+							case "incomplete-labels":
+								dependencies[0].(map[string]any)["labels"] = map[string]any{"pageInfo": map[string]any{"hasNextPage": true, "endCursor": "labels"}}
+							case "pages", "stalled":
+								after := req.Variables["comments"+strings.TrimPrefix(key, "id")]
+								next := after == nil || scenario == "stalled"
+								comments["pageInfo"] = map[string]any{"hasNextPage": next, "endCursor": "comments"}
+								native["pageInfo"] = map[string]any{"hasNextPage": next, "endCursor": "native"}
+								if scenario == "pages" {
+									comments["totalCount"] = 2
+									if after == nil {
+										comments["nodes"] = []any{map[string]any{"id": "old", "body": "older answer", "createdAt": stamp, "updatedAt": stamp}}
+										native["nodes"] = []any{map[string]any{"id": "D0", "number": 98, "state": "CLOSED", "repository": map[string]any{"nameWithOwner": repo}, "labels": map[string]any{"nodes": []any{}}}}
+									}
+								}
+							}
+							data["issue"+strings.TrimPrefix(key, "id")] = node
+						}
+					case strings.Contains(req.Query, "IssueIdentitiesByID"):
+						nodes := []any{}
+						for _, id := range req.Variables["issueIds"].([]any) {
+							var n int
+							fmt.Sscanf(id.(string), "I%d", &n)
+							nodes = append(nodes, map[string]any{"__typename": "Issue", "id": id, "number": n, "repository": map[string]any{"nameWithOwner": repo}})
+						}
+						data["nodes"] = nodes
+					case strings.Contains(req.Query, "CandidatePullRequestReferences"), strings.Contains(req.Query, "LabelIssuePullRequestReferences"):
+						ids, ok := req.Variables["ids"].([]any)
+						if !ok {
+							ids, _ = req.Variables["issueIds"].([]any)
+						}
+						nodes := []any{}
+						for _, id := range ids {
+							var number int
+							fmt.Sscanf(id.(string), "I%d", &number)
+							label := "detent:todo"
+							if id == "I31" {
+								label = "detent:blocked"
+							}
+							references := []any{}
+							if !fallback && id == "I31" {
+								pr := candidatePRFixtureReference(repo, 31)
+								pr["headRefOid"] = fmt.Sprintf("head%d", phase)
+								references = append(references, pr)
+							}
+							nodes = append(nodes, map[string]any{"__typename": "Issue", "id": id, "number": number, "repository": map[string]any{"nameWithOwner": repo}, "timelineItems": map[string]any{"nodes": []any{map[string]any{"__typename": "LabeledEvent", "createdAt": stamp, "label": map[string]any{"name": label}, "actor": map[string]any{"__typename": "User", "login": "operator"}}}}, "closedByPullRequestsReferences": map[string]any{"totalCount": len(references), "nodes": references}})
+						}
+						data["nodes"] = nodes
+						data["repo0"] = map[string]any{"pullRequests": map[string]any{}}
+					case strings.Contains(req.Query, "CandidatePullRequestStatus"):
+						reads["pr-status"]++
+						for _, alias := range regexp.MustCompile(`(pr[0-9]+): repository`).FindAllStringSubmatch(req.Query, -1) {
+							pr := candidatePRFixtureSnapshot(repo, 31)
+							pr["headRefOid"] = fmt.Sprintf("head%d", phase)
+							candidateFixtureCommit(pr)["oid"] = fmt.Sprintf("head%d", phase)
+							candidateFixtureCommit(pr)["statusCheckRollup"] = nil
+							candidateFixtureCommit(pr)["committedDate"] = stamp
+							data[alias[1]] = map[string]any{"pullRequest": pr}
+						}
+					default:
+						t.Errorf("unexpected query: %s", req.Query)
+					}
+					json.NewEncoder(w).Encode(map[string]any{"data": data})
+				}))
+				defer server.Close()
+				c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: repo, ActiveStates: []string{"Todo", "Blocked"}, ObservedStates: []string{"Todo", "Blocked", "Backlog"}, RESTFanoutMaxRequests: 500})
+				if strings.HasPrefix(reader, "project-") {
+					c.statusSource = GitHubStatusSourceProjectV2
+					c.projectID = "PVT_fixture"
+				}
+				if reader != "refresh" {
+					ids := []string{"I31", "I2", "I1"}
+					identifiers := []string{repo + "#31", repo + "#2", repo + "#1"}
+					var baseline []connector.Issue
+					for _, identifier := range identifiers {
+						ref, _ := issueRefFromIdentifier(identifier)
+						if strings.HasPrefix(reader, "project-") {
+							at, err := time.Parse(time.RFC3339, stamp)
+							if err != nil {
+								t.Fatal(err)
+							}
+							c.projectCache.SetProjectFields(c.projectID, fmt.Sprintf("I%d", ref.Number), projectItemFields{itemID: fmt.Sprintf("PVTI%d", ref.Number), statusName: "Todo", priorityName: "High", statusUpdatedAt: &at, fields: map[string]string{"Status": "Todo", "Priority": "High", "Owner": "operator"}})
+						}
+						issue, _, err := c.fetchIssueByRef(t.Context(), ref)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if c.usesLabelStatus() {
+							issue = c.normalizeLabelIssueStateRead(issue)
+						}
+						baseline = append(baseline, issue)
+					}
+					reads = map[string]int{}
+					if scenario == "budget" {
+						c.client.graphQLMinReserve = 100
+						c.client.hasRateLimit = true
+						c.client.rateLimit = connector.GraphQLRateLimit{Limit: 5000, Remaining: 50, ResetAt: time.Now().Add(time.Hour)}
+					}
+					for phase = range 3 {
+						var got []connector.Issue
+						var err error
+						switch reader {
+						case "ids", "project-ids":
+							got, err = c.FetchIssueStatesByIDs(t.Context(), ids)
+						case "identifiers", "project-identifiers":
+							got, err = c.FetchIssueStatesByIdentifiers(t.Context(), identifiers)
+						case "probe":
+							got, err = c.FetchIssueStateProbeByIDs(t.Context(), ids)
+						}
+						if scenario == "fallback-error" {
+							var readErr *StatusError
+							if !errors.As(err, &readErr) || readErr.StatusCode != http.StatusBadGateway {
+								t.Fatalf("failed REST fallback lost read error: %v", err)
+							}
+							return
+						}
+						if err != nil || len(got) != 3 {
+							t.Fatalf("full read: %v %+v", err, got)
+						}
+						if !fallback && reader != "probe" {
+							for endpoint, count := range reads {
+								if count > 0 && (strings.HasSuffix(endpoint, "/comments") || strings.HasSuffix(endpoint, "/dependencies/blocked_by")) {
+									t.Fatalf("complete scheduler evidence used separate REST reads: %v", reads)
+								}
+							}
+						}
+						for i, issue := range got {
+							preserved := issue
+							preserved.Comments = baseline[i].Comments
+							preserved.CommentCount = baseline[i].CommentCount
+							preserved.CommentsComplete = baseline[i].CommentsComplete
+							preserved.WorkpadSignal = baseline[i].WorkpadSignal
+							preserved.BlockerReason = baseline[i].BlockerReason
+							preserved.BlockedBy = baseline[i].BlockedBy
+							preserved.DependencySource = baseline[i].DependencySource
+							preserved.DependencyNotes = baseline[i].DependencyNotes
+							if !reflect.DeepEqual(preserved, baseline[i]) {
+								t.Fatalf("REST metadata or ordering changed: got %+v want %+v", preserved, baseline[i])
+							}
+							if reader == "probe" {
+								if issue.CommentsComplete || len(issue.Comments) != 0 || issue.DependencySource != "" {
+									t.Fatalf("probe enriched: %+v", issue)
+								}
+								continue
+							}
+							if scenario == "native-unsupported" {
+								if issue.CommentsComplete || issue.DependencySource != connector.BlockedRefSourceProse || len(issue.BlockedBy) != 1 || issue.BlockedBy[0].Identifier != repo+"#99" {
+									t.Fatalf("unsupported native authority: %+v", issue)
+								}
+								continue
+							}
+							wantBlockers := 1
+							if scenario == "pages" {
+								wantBlockers = 2
+							}
+							if !issue.CommentsComplete || len(issue.BlockedBy) != wantBlockers || issue.BlockedBy[wantBlockers-1].ID != "D1" {
+								t.Fatalf("missing complete native/comment evidence: %+v", issue)
+							}
+						}
+						if reader != "probe" && scenario != "native-unsupported" {
+							issue := got[0]
+							signal := issue.WorkpadSignal
+							if signal == nil || signal.Invalid != nil || signal.Status != statuses[phase] || (signal.HumanAction != "") != (phase == 0) || signal.RecordedAt == nil || signal.RecordedAt.Format(time.RFC3339) != commentUpdated() {
+								t.Fatalf("edited canonical human hold stale: %+v", signal)
+							}
+							if scenario == "pages" && (len(issue.Comments) != 2 || issue.Comments[1].ID != "C1") {
+								t.Fatalf("pagination incomplete: %+v", issue)
+							}
+						}
+					}
+					for _, id := range ids {
+						var n int
+						fmt.Sscanf(id, "I%d", &n)
+						path := fmt.Sprintf("/repos/%s/issues/%d", repo, n)
+						if reads[path] != 3 {
+							t.Fatalf("metadata reads: %v", reads)
+						}
+						want := 0
+						if fallback && (scenario != "partial" || id == "I2") {
+							want = 3
+						}
+						if reads[path+"/dependencies/blocked_by"] != want && scenario != "native-unsupported" {
+							t.Fatalf("native REST reads: %v", reads)
+						}
+						if scenario == "native-unsupported" {
+							want = 0
+						}
+						if reads[path+"/comments"] != want {
+							t.Fatalf("comment REST reads: %v", reads)
+						}
+					}
+					if reader == "probe" || scenario == "budget" {
+						if reads["batch"] != 0 {
+							t.Fatalf("unexpected GraphQL hydration: %v", reads)
+						}
+					} else {
+						want := 3
+						if reader == "identifiers" || strings.HasPrefix(reader, "project-") {
+							want *= 3
+						}
+						if scenario == "pages" || scenario == "stalled" {
+							want *= 2
+						}
+						if reads["batch"] != want {
+							t.Fatalf("batch requests = %d want %d", reads["batch"], want)
+						}
+					}
+					return
+				}
+				if !c.CombinedRefreshEnabled() {
+					t.Fatal("label refresh is not combined")
+				}
+				for phase = range 3 {
+					result := c.FetchRefreshIssues(t.Context(), []string{"Todo", "Blocked"}, []string{"Todo", "Blocked", "Backlog"}, connector.IssueFilterHint{SchedulerStates: []string{"Blocked"}})
+					if result.CandidateError != nil || result.StatusError != nil || len(result.Candidates) != 31 || len(result.Statuses) != 51 {
+						t.Fatalf("refresh: %+v", result)
+					}
+					for _, issue := range result.Candidates {
+						if len(issue.Comments) != 1 || (!fallback && issue.ID != "I31" && issue.Comments[0].Body != fmt.Sprintf("answer%d", phase)) || issue.DependencySource != connector.BlockedRefSourceNative {
+							t.Fatalf("scheduler evidence: %+v", issue)
+						}
+					}
+					issue := result.Candidates[30]
+					signal := issue.WorkpadSignal
+					if signal == nil || signal.Invalid != nil || signal.Status != statuses[phase] || signal.RecordedAt == nil || signal.RecordedAt.Format("2006-01-02T15:04:05Z") != commentUpdated() {
+						t.Fatalf("same-comment edit retained previous Workpad authority: %+v", signal)
+					}
+					if issue.Comments[0].ID != "C1" || !issue.Comments[0].AuthorAuthorized || issue.Comments[0].Body != commentBody() || (signal.HumanAction != "") != (phase == 0) {
+						t.Fatalf("same-comment human authority stale: %+v", issue)
+					}
+					if !fallback && len(result.Candidates[0].BlockedBy) != phase%2 {
+						t.Fatalf("native dependencies stale: %+v", result.Candidates[0].BlockedBy)
+					}
+					blocked := result.Candidates[30]
+					if !fallback && (blocked.PRNumber == nil || *blocked.PRNumber != 131 || blocked.PRHeadSHA != fmt.Sprintf("head%d", phase)) {
+						t.Fatalf("PR identity/head stale: %+v", blocked)
+					}
+					if blocked.StageUpdatedAt == nil || blocked.StageUpdatedActor.Login != "operator" {
+						t.Fatalf("lane evidence: %+v", blocked)
+					}
+					for _, issue := range result.Statuses[31:] {
+						if len(issue.Comments) != 0 || issue.DependencySource != "" {
+							t.Fatalf("metadata-only lane enriched: %+v", issue)
+						}
+					}
+				}
+				if reads["/repos/fixture/labels/issues"] != 9 {
+					t.Fatalf("label lists repeated: %v", reads)
+				}
+				if !fallback {
+					if reads["pr-status"] != 3 {
+						t.Fatalf("overlapping PR status hydrated more than once: %v", reads)
+					}
+					if reads["batch"] != 6 {
+						t.Fatalf("batch reads=%d want6", reads["batch"])
+					}
+					for n := 1; n <= 31; n++ {
+						if reads[fmt.Sprintf("evidence:I%d", n)] != 3 {
+							t.Fatalf("evidence repeated or stale: %v", reads)
+						}
+					}
+					for endpoint := range reads {
+						if strings.HasSuffix(endpoint, "/comments") || strings.HasSuffix(endpoint, "/dependencies/blocked_by") {
+							t.Fatalf("complete batch used REST evidence: %v", reads)
+						}
+					}
 				}
 			})
 		}

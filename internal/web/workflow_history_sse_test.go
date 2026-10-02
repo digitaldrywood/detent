@@ -11,13 +11,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
 type workflowSSECountingStore struct {
 	enrichmentQueryCountingStore
-	revision atomic.Int64
+	revision     atomic.Int64
+	shippedCalls atomic.Int64
+}
+
+func (s *workflowSSECountingStore) ShippedOutcomes(context.Context) ([]store.ShippedOutcome, error) {
+	s.shippedCalls.Add(1)
+	return []store.ShippedOutcome{}, nil
 }
 
 type sseMetricsLogWriter chan string
@@ -78,16 +85,23 @@ func TestWorkflowHistoryUnchangedSSETickSkipsQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.After(5 * time.Second)
+	retry := time.NewTicker(20 * time.Millisecond)
+	defer retry.Stop()
 	for {
 		select {
 		case line := <-logs:
-			if !strings.Contains(line, "dashboard sse stream metrics") || !strings.Contains(line, "event=snapshot") || !strings.Contains(line, "skipped_fingerprint=1") {
+			if !strings.Contains(line, "dashboard sse stream metrics") || !strings.Contains(line, "event=snapshot") || !strings.Contains(line, "skipped_fingerprint=") || strings.Contains(line, "skipped_fingerprint=0") {
 				continue
 			}
 			if got := backend.workflowMetricsCalls.Load(); got != queries {
 				t.Fatalf("workflow metrics queries after unchanged tick = %d, want %d", got, queries)
 			}
 			return
+		case <-retry.C:
+			second.Seq++
+			if err := deps.Hub.Publish(second); err != nil {
+				t.Fatal(err)
+			}
 		case <-deadline:
 			t.Fatal("unchanged snapshot did not reach the pre-enrichment skip path")
 		}
@@ -145,6 +159,9 @@ func TestWorkflowHistorySharedAcrossSSEClients(t *testing.T) {
 			}
 			if got := backend.workflowMetricsCalls.Load(); got != tt.want {
 				t.Fatalf("history queries = %d, want %d", got, tt.want)
+			}
+			if got := backend.shippedCalls.Load(); got != tt.want/6 {
+				t.Fatalf("shipped queries = %d, want %d", got, tt.want/6)
 			}
 		})
 	}

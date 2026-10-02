@@ -394,7 +394,7 @@ func TestTickAutoPromoteHumanReviewIssuesConflictParks(t *testing.T) {
 		protected bool
 	}{
 		{"operator_move", true},
-		{"attempt_allowance_exhausted", true},
+		{"attempt_allowance_exhausted", false},
 		{"completed", false},
 	} {
 		t.Run(tt.reason, func(t *testing.T) {
@@ -577,6 +577,124 @@ func TestApplyAutoPromoteDecisionArtifactReworkTicks(t *testing.T) {
 	}
 }
 
+func TestAutoPromoteReadyPullRequestRepairs(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, lane, ci, prState                                    string
+		threads, draft, running, finalAttempt, optout, unavailable bool
+		want                                                       AutoPromoteReason
+	}{
+		{name: "human review threads", lane: "Human Review", threads: true, want: AutoPromoteReasonUnresolvedReviewThreads},
+		{name: "in progress threads", lane: "In Progress", threads: true, want: AutoPromoteReasonUnresolvedReviewThreads},
+		{name: "running in progress threads", lane: "In Progress", threads: true, running: true, want: AutoPromoteReasonUnresolvedReviewThreads},
+		{name: "final running attempt threads", lane: "In Progress", threads: true, running: true, finalAttempt: true, want: AutoPromoteReasonUnresolvedReviewThreads},
+		{name: "human review failed check", lane: "Human Review", ci: "failure", want: AutoPromoteReasonCINotGreen},
+		{name: "in progress failed check", lane: "In Progress", ci: "failure", want: AutoPromoteReasonCINotGreen},
+		{name: "final running attempt failed check", lane: "In Progress", ci: "failure", running: true, finalAttempt: true, want: AutoPromoteReasonCINotGreen},
+		{name: "draft threads", lane: "In Progress", threads: true, draft: true},
+		{name: "draft failed check", lane: "In Progress", ci: "failure", draft: true},
+		{name: "unfinished green PR", lane: "In Progress", ci: "success"},
+		{name: "pending check", lane: "In Progress", ci: "pending"},
+		{name: "closed PR threads", lane: "In Progress", threads: true, prState: "CLOSED"},
+		{name: "opted out threads", lane: "In Progress", threads: true, optout: true},
+		{name: "unavailable threads", lane: "In Progress", threads: true, unavailable: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+			issue := autoPromoteTickIssue("ready-repair", nil, &connector.PullRequest{
+				Number: 2974, URL: "https://github.test/digitaldrywood/detent/pull/2974",
+				State: firstNonBlank(tt.prState, "OPEN"), Draft: tt.draft, CIStatus: firstNonBlank(tt.ci, "success"),
+				MergeableState: "clean", CodexReviewState: "COMMENTED",
+			})
+			issue.State = tt.lane
+			if tt.lane == "In Progress" {
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusInProgress}
+			}
+			if tt.optout {
+				issue.Labels = []string{"human-only"}
+			}
+			if tt.unavailable {
+				issue.PullRequest.HydrationUnavailableReason = "unavailable"
+			}
+			if tt.threads {
+				issue.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{Path: "main.go", Line: 10}}
+			}
+			cfg := normalizeConfig(Config{
+				AutoPromote:    AutoPromoteConfig{Enabled: true, OptoutLabel: "human-only", Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			state := newState(cfg)
+			if tt.running {
+				state.Running[issue.ID] = Running{Issue: issue}
+			}
+			tracker := &autoPromoteTickConnector{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			if tt.finalAttempt {
+				orch.workAttempts = &autoPromoteActiveAttemptStore{
+					recordingWorkAttemptStore: &recordingWorkAttemptStore{history: []store.WorkAttempt{
+						{IssueID: issue.ID, WorkerType: "agent", Lane: "In Progress", StartedAt: now.Add(-2 * time.Hour)},
+						{IssueID: issue.ID, WorkerType: "agent", Lane: "In Progress", StartedAt: now.Add(-time.Hour)},
+					}},
+					active: []store.WorkAttempt{{IssueID: issue.ID, WorkerType: "agent", Lane: "In Progress", StartedAt: now.Add(-time.Minute)}},
+				}
+			}
+			result := orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+			if tt.want == "" {
+				if len(tracker.updates) != 0 || len(result.transitioned) != 0 {
+					t.Fatalf("unexpected transition: %#v", tracker.updates)
+				}
+				return
+			}
+			want := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}
+			if !reflect.DeepEqual(tracker.updates, want) {
+				t.Fatalf("updates = %#v, want %#v", tracker.updates, want)
+			}
+			if len(tracker.comments) != 1 {
+				t.Fatalf("comments = %#v, want one", tracker.comments)
+			}
+			for _, fragment := range []string{"Auto-promote routed this issue from " + tt.lane + " to Rework", "reason: " + string(tt.want)} {
+				if !strings.Contains(tracker.comments[0].body, fragment) {
+					t.Fatalf("comment %q missing %q", tracker.comments[0].body, fragment)
+				}
+			}
+			if _, ok := result.transitioned[issue.ID]; !ok {
+				t.Fatal("transition missing from result")
+			}
+		})
+	}
+}
+
+type autoPromoteActiveAttemptStore struct {
+	*recordingWorkAttemptStore
+	active []store.WorkAttempt
+}
+
+func (s *autoPromoteActiveAttemptStore) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
+	return append([]store.WorkAttempt(nil), s.active...), nil
+}
+
+func TestAutoPromoteConfiguredInProgressSourcePromotesReadyPullRequest(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 22, 18, 0, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("configured-source", nil, &connector.PullRequest{
+		Number: 2974, State: "OPEN", CIStatus: "success", MergeableState: "clean", CodexReviewState: "COMMENTED",
+	})
+	issue.State = "In Progress"
+	cfg := normalizeConfig(Config{
+		AutoPromote:  AutoPromoteConfig{Enabled: true, SourceState: "In Progress", Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}},
+		ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{}
+	orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	orch.autoPromoteHumanReviewIssues(context.Background(), &state, []connector.Issue{issue}, now)
+	if want := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(tracker.updates, want) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, want)
+	}
+}
+
 func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 	t.Parallel()
 
@@ -684,6 +802,7 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 			t.Parallel()
 
 			cfg := normalizeConfig(Config{
+				Project:             scheduler.ProjectCandidate{ID: "detent"},
 				PollInterval:        time.Minute,
 				MaxConcurrentAgents: 1,
 				AutoPromote: AutoPromoteConfig{
@@ -707,6 +826,20 @@ func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
 				cfg:       cfg,
 				connector: tracker,
 				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+
+			db := openWorkAttemptRecoveryStore(t, t.Context())
+			orch.workAttempts = db
+			for i := range 3 {
+				id, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{
+					ProjectID: cfg.Project.ID, IssueID: tt.issue.ID, WorkerType: "agent", Lane: "Rework", AttemptNumber: i + 1, StartedAt: now.Add(-time.Duration(10-i) * time.Minute),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := db.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: id, TerminalState: store.WorkAttemptTerminalFailure, Phase: "failed", ErrorClass: "runner_error", CompletedAt: now.Add(-time.Duration(9-i) * time.Minute)}); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			orch.tick(context.Background(), &state, now)
@@ -2557,6 +2690,7 @@ func TestTickReconcilesStaleTodoMergedPullRequestToDone(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 7, 15, 0, 0, 0, time.UTC)
+	mergedAt := now.Add(-5 * time.Minute)
 	cfg := normalizeConfig(Config{
 		PollInterval:        time.Minute,
 		MaxConcurrentAgents: 1,
@@ -2572,22 +2706,48 @@ func TestTickReconcilesStaleTodoMergedPullRequestToDone(t *testing.T) {
 		URL:      "https://github.test/digitaldrywood/pyroapex/pull/1471",
 		State:    "MERGED",
 		CIStatus: "success",
+		MergedAt: &mergedAt,
 	})
 	issue.State = "Todo"
 	issue.Identifier = "digitaldrywood/pyroapex#1462"
 	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 	attempts := &recordingWorkAttemptStore{}
+	recorder := &autoPromoteWorkflowMetricsRecorder{}
 	var logs strings.Builder
 	orch := &Orchestrator{
-		cfg:          cfg,
-		connector:    tracker,
-		workAttempts: attempts,
-		logger:       slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		cfg:             cfg,
+		workflowMetrics: recorder,
+		connector:       tracker,
+		workAttempts:    attempts,
+		logger:          slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 
 	state := newState(cfg)
 	orch.tick(context.Background(), &state, now)
 
+	write := orch.laneWrites[issue.ID]
+	if !write.WrittenAt.Equal(mergedAt) {
+		t.Fatalf("delivery=%s, want forge %s", write.WrittenAt, mergedAt)
+	}
+	found := false
+	for _, phase := range recorder.snapshot() {
+		if phase.PhaseName == "Done" {
+			metadata, ok := workflowLaneMetadataFromJSON(phase.MetadataJSON)
+			if !ok || metadata.DeliveryTimeSource != "forge_merged_at" || metadata.PullRequest == nil || metadata.PullRequest.MergedAt == nil || !metadata.PullRequest.MergedAt.Equal(mergedAt) || !phase.StartedAt.Equal(mergedAt) {
+				t.Fatalf("forge delivery phase=%#v", phase)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("forge delivery phase missing")
+	}
+	terminal := cloneIssue(issue)
+	terminal.State = "Done"
+	terminal.StageUpdatedAt = &now
+	if got := terminalCompletedAt(terminal, cfg.TerminalStates, now); !got.Equal(mergedAt) {
+		t.Fatalf("terminal time=%s, want forge %s", got, mergedAt)
+	}
 	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}
 	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
 		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
@@ -4331,11 +4491,19 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 		}),
 	}
 	tests := []struct {
-		name        string
-		attempts    []store.WorkAttempt
-		wantRestore bool
+		name            string
+		attempts        []store.WorkAttempt
+		wantRestore     bool
+		mergedClaim     bool
+		stopAtAllowance bool
 	}{
 		{name: "successful attempt after declaration", attempts: []store.WorkAttempt{successfulAttempt}, wantRestore: true},
+		{name: "merged branch claim cannot bypass failed allowance", wantRestore: true, mergedClaim: true, stopAtAllowance: true, attempts: []store.WorkAttempt{
+			successfulAttempt,
+			{ID: 2, WorkerType: "agent", StartedAt: now.Add(-time.Hour), TerminalState: store.WorkAttemptTerminalNoProgress, Phase: "no_progress"},
+			{ID: 3, WorkerType: "agent", StartedAt: now.Add(-2 * time.Hour), TerminalState: store.WorkAttemptTerminalNoProgress, Phase: "no_progress"},
+			{ID: 4, WorkerType: "agent", StartedAt: now.Add(-3 * time.Hour), TerminalState: store.WorkAttemptTerminalNoProgress, Phase: "no_progress"},
+		}},
 		{name: "no terminal attempt"},
 		{
 			name: "attempt before declaration",
@@ -4374,6 +4542,9 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 				URL:       "https://github.test/comment/operational-restart",
 				CreatedAt: &workpadRecordedAt,
 			}}
+			if tt.mergedClaim {
+				issue.Comments[0].Body = mergedCompletionWorkpadBody()
+			}
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 			attempts := &recordingWorkAttemptStore{history: tt.attempts}
 			cfg := normalizeConfig(Config{
@@ -4392,14 +4563,18 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 			if restored != tt.wantRestore {
 				t.Fatalf("state.Completed[%q] present = %v, want %v", issue.ID, restored, tt.wantRestore)
 			}
+			if tt.stopAtAllowance {
+				state.Running[issue.ID] = Running{Issue: issue}
+			}
 
 			result := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
 			_, transitioned := result.transitioned[issue.ID]
-			if transitioned != tt.wantRestore {
-				t.Fatalf("transitioned[%q] present = %v, want %v", issue.ID, transitioned, tt.wantRestore)
+			wantTransition := tt.wantRestore && !tt.stopAtAllowance
+			if transitioned != wantTransition {
+				t.Fatalf("transitioned[%q] present = %v, want %v", issue.ID, transitioned, wantTransition)
 			}
 			wantUpdates := []autoPromoteTickUpdate(nil)
-			if tt.wantRestore {
+			if wantTransition {
 				wantUpdates = []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}
 			}
 			if got, want := tracker.updates, wantUpdates; !reflect.DeepEqual(got, want) {
@@ -4408,7 +4583,7 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 			if len(result.dispatchCandidates) != 0 {
 				t.Fatalf("dispatchCandidates = %#v, want none", result.dispatchCandidates)
 			}
-			if tt.wantRestore {
+			if wantTransition {
 				if len(tracker.comments) != 1 || strings.Contains(tracker.comments[0].body, string(AutoPromoteReasonMissingPullRequest)) {
 					t.Fatalf("comments = %#v, want one operational audit comment", tracker.comments)
 				}
@@ -4418,8 +4593,12 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 			} else if len(tracker.comments) != 0 {
 				t.Fatalf("comments = %#v, want none", tracker.comments)
 			}
-			if len(attempts.historyQueries) != 1 {
-				t.Fatalf("history queries = %d, want 1", len(attempts.historyQueries))
+			wantQueries := 1
+			if tt.stopAtAllowance {
+				wantQueries = 2
+			}
+			if len(attempts.historyQueries) != wantQueries {
+				t.Fatalf("history queries = %d, want %d", len(attempts.historyQueries), wantQueries)
 			}
 		})
 	}
@@ -4539,72 +4718,6 @@ func TestStaleMergingLinkedPullRequestDoesNotDependOnBranchName(t *testing.T) {
 				t.Fatalf("staleMergingPullRequestDecisionForIssue() = %#v, want issue retained in Merging", decision)
 			}
 		})
-	}
-}
-
-func TestTickAdvancesStaleMergingLaneAfterFrontPRReconcilesDone(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 6, 24, 18, 30, 0, 0, time.UTC)
-	front := autoPromoteTickIssue("issue-front-merged", []string{"bug"}, &connector.PullRequest{
-		Number:         71,
-		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/71",
-		State:          "MERGED",
-		MergeableState: "clean",
-		CIStatus:       "success",
-	})
-	front.State = "Merging"
-	front.Identifier = "digitaldrywood/creswoodcorners-phone#63"
-	next := autoPromoteTickIssue("issue-next-ready", []string{"bug"}, &connector.PullRequest{
-		Number:         72,
-		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/72",
-		State:          "OPEN",
-		MergeableState: "clean",
-		CIStatus:       "success",
-	})
-	next.State = "Merging"
-	next.Identifier = "digitaldrywood/creswoodcorners-phone#64"
-	cfg := normalizeConfig(Config{
-		PollInterval:        time.Minute,
-		MaxConcurrentAgents: 1,
-		MaxConcurrentAgentsByState: map[string]int{
-			"Merging": 1,
-		},
-		AutoPromote: AutoPromoteConfig{
-			Enabled:       true,
-			QuietDuration: 10 * time.Minute,
-		},
-		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
-		TerminalStates: []string{"Done", "Cancelled"},
-	})
-	tracker := &autoPromoteTickConnector{
-		stateIssues:        []connector.Issue{front, next},
-		candidateIssuesSet: true,
-	}
-	runner := newWorkerHostRunner()
-	orch := &Orchestrator{
-		cfg:        cfg,
-		connector:  tracker,
-		supervisor: newTestSupervisor(t, runner, cfg),
-		runResults: make(chan runpkg.Completion, 1),
-		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-	state := newState(cfg)
-
-	orch.tick(context.Background(), &state, now)
-
-	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: front.ID, state: "Done"}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("updates = %#v, want %#v", got, want)
-	}
-	request := receiveWorkerHostRunRequest(t, runner.started)
-	if request.Issue.ID != next.ID {
-		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, next.ID)
-	}
-	if _, ok := state.Running[next.ID]; !ok {
-		t.Fatalf("Running[%q] missing after front PR reconciliation", next.ID)
-	}
-	if running := state.Running[next.ID]; running.cancel != nil {
-		running.cancel()
 	}
 }
 
@@ -4832,7 +4945,7 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 		connector: &autoPromoteTickConnector{stateIssues: []connector.Issue{successIssue}},
 		logger:    slog.New(slog.NewTextHandler(&successLogs, nil)),
 	}
-	successOrch.completeTerminalRunning(context.Background(), &successState, successIssue.ID, successState.Running[successIssue.ID], now, TokenTotals{})
+	successOrch.completeTerminalRunning(context.Background(), &successState, successIssue.ID, successState.Running[successIssue.ID], now, TokenTotals{}, now)
 	for _, fragment := range []string{
 		"merge_completed",
 		"final_state=Done",
@@ -5986,97 +6099,185 @@ func TestHandleRunResultRetriesMergeWorkerWhenRunCompletesWithoutTerminalState(t
 func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalState(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 6, 26, 13, 15, 30, 0, time.UTC)
-	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents:   1,
-		FailureRetryBaseDelay: time.Minute,
-		MaxRetryBackoff:       time.Hour,
-		MergeMethod:           "merge",
-		ActiveStates:          []string{"Todo", "In Progress", "Rework", "Merging"},
-		TerminalStates:        []string{"Done", "Cancelled"},
-	})
-	issue := autoPromoteTickIssue("issue-clean-merge", []string{"bug"}, &connector.PullRequest{
-		Number:         76,
-		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/76",
-		State:          "OPEN",
-		MergeableState: "clean",
-		CIStatus:       "success",
-		HeadSHA:        "head-clean",
-	})
-	issue.State = "Merging"
-	issue.Identifier = "digitaldrywood/creswoodcorners-phone#68"
-	tracker := &autoPromoteTickMergeConnector{
-		autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
-	}
-	var logs strings.Builder
-	orch := &Orchestrator{
-		cfg:       cfg,
-		connector: tracker,
-		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
-	}
-	state := newState(cfg)
-	state.Running[issue.ID] = Running{
-		Issue:       cloneIssue(issue),
-		Attempt:     1,
-		StartedAt:   now.Add(-time.Minute),
-		WorkerHost:  "worker-a",
-		TurnCount:   3,
-		LastEvent:   "workpad_update",
-		LastMessage: "validated current-head CI and updated the Workpad, but left the PR open",
-	}
-	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+	// Replays #3445/#3465's recorded worker completion and actual integration,
+	// then the same delay across Chicago midnight. Catches backdated delivery.
+	for _, tt := range []struct {
+		name             string
+		worker, delivery time.Time
+	}{
+		{"recorded audit", time.Date(2026, 9, 30, 19, 35, 28, 0, time.UTC), time.Date(2026, 9, 30, 19, 40, 7, 0, time.UTC)},
+		{"Chicago midnight", time.Date(2026, 10, 1, 4, 59, 0, 0, time.UTC), time.Date(2026, 10, 1, 5, 3, 39, 0, time.UTC)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := tt.worker
+			clock := now
+			backend, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "delivery.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := backend.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents:   1,
+				FailureRetryBaseDelay: time.Minute,
+				MaxRetryBackoff:       time.Hour,
+				MergeMethod:           "merge",
+				ActiveStates:          []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates:        []string{"Done", "Cancelled"},
+			})
+			issue := autoPromoteTickIssue("issue-clean-merge", []string{"bug"}, &connector.PullRequest{
+				Number:         76,
+				URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/76",
+				State:          "OPEN",
+				MergeableState: "clean",
+				CIStatus:       "success",
+				HeadSHA:        "head-clean",
+			})
+			issue.State = "Merging"
+			issue.Identifier = "digitaldrywood/creswoodcorners-phone#68"
+			tracker := &autoPromoteTickMergeConnector{
+				autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+			}
+			tracker.afterHydrate = func() { clock = now.Add(time.Minute) }
+			tracker.afterMerge = func() { clock = tt.delivery }
+			var logs strings.Builder
+			orch := &Orchestrator{
+				cfg:             cfg,
+				now:             func() time.Time { return clock },
+				workflowMetrics: backend,
+				workAttempts:    backend.(store.WorkAttemptStore),
+				efficiency:      backend,
+				connector:       tracker,
+				logger:          slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+			state := newState(cfg)
+			state.MergeTimings[issue.ID] = MergeTiming{EnteredMergingAt: now.Add(-time.Minute), MergeStartedAt: now.Add(-time.Minute)}
+			attemptID, err := backend.(store.WorkAttemptStore).StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID, WorkerType: "codex", Lane: "Merging", AttemptNumber: 1, StartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Hour)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Running[issue.ID] = Running{
+				WorkAttemptID: attemptID,
+				Issue:         cloneIssue(issue),
+				Attempt:       1,
+				StartedAt:     now.Add(-time.Minute),
+				WorkerHost:    "worker-a",
+				TurnCount:     3,
+				LastEvent:     "workpad_update",
+				LastMessage:   "validated current-head CI and updated the Workpad, but left the PR open",
+			}
+			state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 
-	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
-		IssueID:     issue.ID,
-		CompletedAt: now,
-		Result: runpkg.RunResult{
-			FinalState: runpkg.FinalStateCompleted,
-			Output:     "validated current-head CI and updated the Workpad",
-		},
-	})
+			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+				IssueID:     issue.ID,
+				CompletedAt: now,
+				Result: runpkg.RunResult{
+					FinalState: runpkg.FinalStateCompleted,
+					Output:     "validated current-head CI and updated the Workpad",
+				},
+			})
 
-	if len(tracker.merges) != 1 {
-		t.Fatalf("merges = %#v, want one programmatic merge", tracker.merges)
-	}
-	if got := tracker.merges[0]; got.repository != "digitaldrywood/creswoodcorners-phone" || got.number != 76 || got.headSHA != "head-clean" || got.method != "merge" {
-		t.Fatalf("merge request = %#v, want repository digitaldrywood/creswoodcorners-phone PR 76 head-clean using merge", got)
-	}
-	if got := tracker.hydrations; !reflect.DeepEqual(got, []autoPromoteTickHydration{{
-		issueID:    issue.ID,
-		repository: "digitaldrywood/creswoodcorners-phone",
-		number:     76,
-	}}) {
-		t.Fatalf("hydrations = %#v, want fresh PR hydration", got)
-	}
-	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("updates = %#v, want %#v", got, want)
-	}
-	if _, ok := state.Retry[issue.ID]; ok {
-		t.Fatalf("Retry[%q] present after programmatic merge", issue.ID)
-	}
-	if _, ok := state.Running[issue.ID]; ok {
-		t.Fatalf("Running[%q] present after programmatic merge", issue.ID)
-	}
-	if _, ok := state.Claimed[issue.ID]; ok {
-		t.Fatalf("Claimed[%q] present after programmatic merge", issue.ID)
-	}
-	completed, ok := state.Completed[issue.ID]
-	if !ok {
-		t.Fatalf("Completed[%q] missing after programmatic merge", issue.ID)
-	}
-	if completed.FinalState != "Done" {
-		t.Fatalf("Completed[%q].FinalState = %q, want Done", issue.ID, completed.FinalState)
-	}
-	if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.State != "MERGED" {
-		t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want merged PR", issue.ID, completed.Issue.PullRequest)
-	}
-	for _, fragment := range []string{"merge_worker_programmatic_merge", "merge_worker_success"} {
-		if !strings.Contains(logs.String(), fragment) {
-			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
-		}
-	}
-	if strings.Contains(logs.String(), "terminal_state_missing") {
-		t.Fatalf("logs %q contain terminal_state_missing", logs.String())
+			if len(tracker.merges) != 1 {
+				t.Fatalf("merges = %#v, want one programmatic merge", tracker.merges)
+			}
+			if got := tracker.merges[0]; got.repository != "digitaldrywood/creswoodcorners-phone" || got.number != 76 || got.headSHA != "head-clean" || got.method != "merge" {
+				t.Fatalf("merge request = %#v, want repository digitaldrywood/creswoodcorners-phone PR 76 head-clean using merge", got)
+			}
+			if got := tracker.hydrations; !reflect.DeepEqual(got, []autoPromoteTickHydration{{
+				issueID:    issue.ID,
+				repository: "digitaldrywood/creswoodcorners-phone",
+				number:     76,
+			}}) {
+				t.Fatalf("hydrations = %#v, want fresh PR hydration", got)
+			}
+			if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("updates = %#v, want %#v", got, want)
+			}
+			if _, ok := state.Retry[issue.ID]; ok {
+				t.Fatalf("Retry[%q] present after programmatic merge", issue.ID)
+			}
+			if _, ok := state.Running[issue.ID]; ok {
+				t.Fatalf("Running[%q] present after programmatic merge", issue.ID)
+			}
+			if _, ok := state.Claimed[issue.ID]; ok {
+				t.Fatalf("Claimed[%q] present after programmatic merge", issue.ID)
+			}
+			completed, ok := state.Completed[issue.ID]
+			if !ok {
+				t.Fatalf("Completed[%q] missing after programmatic merge", issue.ID)
+			}
+			if completed.FinalState != "Done" {
+				t.Fatalf("Completed[%q].FinalState = %q, want Done", issue.ID, completed.FinalState)
+			}
+			if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.State != "MERGED" {
+				t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want merged PR", issue.ID, completed.Issue.PullRequest)
+			}
+			for _, fragment := range []string{"merge_worker_programmatic_merge", "merge_worker_success"} {
+				if !strings.Contains(logs.String(), fragment) {
+					t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+				}
+			}
+			if strings.Contains(logs.String(), "terminal_state_missing") {
+				t.Fatalf("logs %q contain terminal_state_missing", logs.String())
+			}
+
+			attempt, err := backend.(store.WorkAttemptStore).WorkAttempt(t.Context(), attemptID)
+			if err != nil || !attempt.CompletedAt.Equal(now) {
+				t.Fatalf("worker completed=%s err=%v, want %s", attempt.CompletedAt, err, now)
+			}
+			timeline, err := backend.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			foundSource := false
+			for _, phase := range timeline.Events {
+				if phase.PhaseName == "Done" && strings.Contains(phase.MetadataJSON, `"delivery_time_source":"post_api_observation"`) {
+					foundSource = true
+				}
+			}
+			if !foundSource {
+				t.Fatal("post-API delivery attribution missing")
+			}
+			if completed.Issue.PullRequest.MergedAt != nil {
+				t.Fatal("fabricated forge merge time")
+			}
+			if !completed.CompletedAt.Equal(tt.delivery) || !completed.MergeTiming.MergedAt.Equal(tt.delivery) {
+				t.Fatalf("completion=%s merge=%s, want delivery %s", completed.CompletedAt, completed.MergeTiming.MergedAt, tt.delivery)
+			}
+			if completed.MergeTiming.TotalMergingSeconds != int64(tt.delivery.Sub(now.Add(-time.Minute))/time.Second) {
+				t.Fatalf("merge duration = %#v", completed.MergeTiming)
+			}
+			write, result, err := backend.(store.LaneLedgerStore).LatestLaneWrite(t.Context(), store.IssueIdentity{ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID})
+			if err != nil || result != "applied" || !write.WrittenAt.Equal(tt.delivery) {
+				t.Fatalf("write=%#v result=%s err=%v", write, result, err)
+			}
+			receipt, err := backend.EfficiencyReceipt(t.Context(), defaultWorkflowMetricsProjectID, issue.ID, "")
+			if err != nil || !receipt.CompletedAt.Equal(tt.delivery) {
+				t.Fatalf("receipt=%#v err=%v", receipt, err)
+			}
+			loc, err := time.LoadLocation("America/Chicago")
+			if err != nil {
+				t.Fatal(err)
+			}
+			midnight := time.Date(2026, 10, 1, 0, 0, 0, 0, loc)
+			days, err := backend.DailyDigest(t.Context(), []store.DailyDigestWindow{
+				{Date: "2026-09-30", From: midnight.AddDate(0, 0, -1), To: midnight},
+				{Date: "2026-10-01", From: midnight, To: midnight.AddDate(0, 0, 1)},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantFirst := int64(0)
+			if tt.delivery.Before(midnight) {
+				wantFirst = 1
+			}
+			if days[0].IssuesShipped != wantFirst || days[1].IssuesShipped != 1-wantFirst {
+				t.Fatalf("calendar shipped=%d/%d", days[0].IssuesShipped, days[1].IssuesShipped)
+			}
+		})
 	}
 }
 
@@ -6618,6 +6819,8 @@ type autoPromoteTickConnector struct {
 }
 
 type autoPromoteTickMergeConnector struct {
+	afterHydrate func()
+	afterMerge   func()
 	*autoPromoteTickConnector
 	merges         []autoPromoteTickMerge
 	hydrations     []autoPromoteTickHydration
@@ -6718,6 +6921,9 @@ func (c *autoPromoteTickConnector) RerunPullRequestChecks(_ context.Context, iss
 }
 
 func (c *autoPromoteTickMergeConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	if c.afterHydrate != nil {
+		defer c.afterHydrate()
+	}
 	c.hydrations = append(c.hydrations, autoPromoteTickHydration{
 		issueID:    issue.ID,
 		repository: pullRequestRepository(issue),
@@ -6768,6 +6974,9 @@ func (c *autoPromoteTickMergeConnector) ReapplyPullRequestLabel(ctx context.Cont
 }
 
 func (c *autoPromoteTickMergeConnector) MergePullRequest(_ context.Context, repository string, number int, headSHA string, method string) error {
+	if c.afterMerge != nil {
+		defer c.afterMerge()
+	}
 	c.merges = append(c.merges, autoPromoteTickMerge{repository: repository, number: number, headSHA: headSHA, method: method})
 	if c.err != nil {
 		return c.err

@@ -57,6 +57,7 @@ func TestReportsCostPerOutcomeRendersOutsideSnapshot(t *testing.T) {
 		CostPerOutcome: efficiency.CostPerOutcomeReport{Projects: []efficiency.CostPerOutcomeProject{{
 			ProjectID: "detent",
 			Current: efficiency.CostPerOutcomeMetrics{
+				ComputeUSD: .00024, ComputeEvents: 2, ComputePerMergedPRUSD: .00012,
 				MergedPRs:              2,
 				ClosedIssues:           4,
 				TokensPerMergedPR:      2_000,
@@ -80,7 +81,7 @@ func TestReportsCostPerOutcomeRendersOutsideSnapshot(t *testing.T) {
 	if snapshotStart < 0 || outcomeStart < 0 || outcomeStart < snapshotStart || !strings.Contains(html[snapshotStart:outcomeStart], "</div>") {
 		t.Fatalf("cost-per-outcome section is not rendered after the snapshot")
 	}
-	for _, want := range []string{"Cost per outcome", `data-outcome-project="detent"`, "Tokens / merged PR", "2.0K", "$4.00", "Tokens / closed issue", "1.0K", "Detent tokens per outcome trend", `data-outcome-window="7d"`, `aria-current="true"`} {
+	for _, want := range []string{"Compute USD / merged PR", "$0.000120", "2 measured sessions", "Cost per outcome", `data-outcome-project="detent"`, "Tokens / merged PR", "2.0K", "$4.00", "Tokens / closed issue", "1.0K", "Detent tokens per outcome trend", `data-outcome-window="7d"`, `aria-current="true"`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("cost-per-outcome report missing %q:\n%s", want, html)
 		}
@@ -135,8 +136,8 @@ func TestReportsTopRowsResolveTrackerURLs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			rows := reportsTopRows(tt.prefix, []UsageBucketData{{Bucket: tt.bucket}}, snapshot)
-			if len(rows) != 1 || rows[0].URL != tt.want {
+			rows := reportsTopRows(tt.prefix, []UsageBucketData{{Bucket: tt.bucket, ComputeUSD: .00012, ComputeEvents: 1}}, snapshot)
+			if len(rows) != 1 || rows[0].URL != tt.want || rows[0].Compute != "$0.000120" {
 				t.Fatalf("reportsTopRows() = %#v, want URL %q", rows, tt.want)
 			}
 		})
@@ -172,5 +173,20 @@ func TestReportsDigestViewShowsTrailingSevenDayDelta(t *testing.T) {
 	}
 	if metrics["efficiency-anomalies"].Value != "1" || metrics["dwell-working"].Value != "2m 0s" {
 		t.Fatalf("efficiency anomaly/dwell metrics = %#v / %#v", metrics["efficiency-anomalies"], metrics["dwell-working"])
+	}
+	// Receipt coverage and lifetime gaps belong to the displayed cohort, while
+	// absent release history must never look like a measured daily zero.
+	empty := reportsDigestMetrics(DailyDigestDayData{UnknownDwellSeconds: 60}, nil)
+	for _, metric := range empty {
+		switch metric.ID {
+		case "releases":
+			if metric.Value != "Unavailable" || metric.Delta != "" {
+				t.Fatalf("release availability=%#v", metric)
+			}
+		case "tokens-per-merged", "dwell-unknown":
+			if metric.Value != "—" {
+				t.Fatalf("empty cohort metric=%#v", metric)
+			}
+		}
 	}
 }

@@ -23,7 +23,7 @@ func (o *Orchestrator) revalidateTickPullRequestAssociations(ctx context.Context
 		if issue.PullRequest == nil && issue.PRNumber == nil {
 			continue
 		}
-		fresh, err := validator.RevalidatePullRequestAssociation(ctx, cloneIssue(issue))
+		fresh, err := validator.RevalidatePullRequestAssociation(ctx, cloneIssue(issue), true)
 		if err != nil {
 			fresh = cloneIssue(issue)
 			if fresh.PullRequest == nil {
@@ -85,7 +85,7 @@ func (o *Orchestrator) recoverStaleTodoReviews(ctx context.Context, state *State
 		candidate := cloneIssue(issue)
 		candidate.PRNumber = new(int(recovery.PullRequest.Number))
 		candidate.PRRepository = recovery.PullRequest.Repository
-		fresh, err := validator.RevalidatePullRequestAssociation(ctx, candidate)
+		fresh, err := validator.RevalidatePullRequestAssociation(ctx, candidate, true)
 		if err != nil || fresh.PullRequest != nil || fresh.PRNumber != nil || !staleTodoReviewEntry(fresh, event) {
 			continue
 		}

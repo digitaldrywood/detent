@@ -149,6 +149,16 @@ work: validation gates are now pluggable, while non-git or non-PR deliverables
 remain follow-up work described in
 [Execution Seams](docs/execution-seams.md).
 
+**Choosing a GitHub status source:** Prefer `github_status_source: label` for
+boards beyond a few hundred items or instances running several projects on one
+GitHub token. ProjectV2 polling cost scales with total unarchived board item
+count multiplied by refresh rate. Done items still cost on every cycle;
+hiding them in a board view does not reduce polling cost. One large board can
+exhaust the shared GraphQL budget, affecting other projects and the operator's
+`gh` CLI. Label mode avoids board inventory reads; archiving Done board items
+also reduces ProjectV2 cost. `detent doctor` reports total and Done item counts
+and warns above 300 items; this is advisory, not a safe-budget guarantee.
+
 It is a **system, not an agent.** You specify the work — the issues, acceptance
 criteria, review gates, and merge rules — and Detent runs that process with
 rigor, isolation, and parallelism across many issues at once. The intelligence
@@ -177,6 +187,10 @@ at hand.
 
 ### Get started
 
+[Detent Cloud](https://cloud.detent.build) is the shared hosted product. See
+[Cloud onboarding](docs/cloud-onboarding.md) for sign-in and runner enrollment.
+
+
 - [Quick Start](docs/getting-started.md) — configure a tracker and run Detent.
 - [Project Onboarding](docs/ONBOARDING.md) — agent-guided installation and project setup.
 - [Bootstrap a new machine](docs/bootstrap.md) — install prerequisites, templates, and service files.
@@ -199,6 +213,7 @@ join keys, rollout inspection, and runnable audit queries.
 ### Reference and contribute
 
 - [Native Hub and Cloud architecture RFC](docs/cloud-hub-rfc.md) — proposed native authority, portable execution, and launch contracts; [current Hub API](docs/hub-api.md).
+- [Sprites Cloud runners spike](docs/sprites-cloud-runners-spike.md) — measured viability and cost of running Detent runners on Fly Sprites, and the path to production.
 - [CLI reference](docs/cli.md) — exit codes, JSON errors, logging, and structured output.
 - [Release process](docs/release.md) and [branching](docs/branching.md).
 - [Development](docs/development.md) and [contribution guide](CONTRIBUTING.md).
@@ -257,8 +272,8 @@ Detent takes that idea from spec to a shipped system, and diverges where it
 counts:
 
 - **A product, not a spec.** One CGO-free Go binary for macOS, Linux, and
-  Windows — `go install`, Homebrew, or copy a single file. No BEAM service to
-  adapt, nothing to stand up.
+  Windows — a prepared source build, Homebrew, or copy a single file. No BEAM
+  service to adapt, nothing to stand up.
 - **[GitHub Projects v2, not Linear](#why-these-defaults).** Issues, status
   columns, priorities, labels, blockers, comments, and pull requests are the
   state machine.
@@ -411,7 +426,8 @@ detent --version
 
 Use the shell installer for a user-local install without sudo, for Linux
 distributions that do not use `.deb` or `.rpm`, or for bootstrap scripts that
-should fall back to `go install` when a release asset is unavailable.
+should fall back to a Go-only build of the prepared source archive when a
+binary asset is unavailable.
 
 Use Homebrew on macOS or Linux when you already manage CLI tools with Homebrew:
 
@@ -419,12 +435,25 @@ Use Homebrew on macOS or Linux when you already manage CLI tools with Homebrew:
 brew install digitaldrywood/tap/detent
 ```
 
-Use Go on any platform when you want to build from source instead of using a
-release archive:
+For a Go-only source build, download `detent_<version>_source.tar.gz` and the
+checksums from the same validated [release](https://github.com/digitaldrywood/detent/releases).
+Verify the archive against those checksums, extract it, then build inside it:
 
 ```sh
-go install github.com/digitaldrywood/detent/cmd/detent@latest
+go build -trimpath -ldflags "$(cat BUILD_LDFLAGS)" -o detent ./cmd/detent
 ```
+
+On PowerShell, use `go build -trimpath -ldflags (Get-Content BUILD_LDFLAGS -Raw).Trim() -o detent.exe ./cmd/detent`.
+The prepared archive includes JavaScript, CSS, lazy chunks and attribution from
+the tagged source; compilation needs only Go, without Node or Make. Keep
+`BUILD_LDFLAGS` to retain the release version and full source commit.
+
+Raw Git checkouts and GitHub's automatic source archives need Node 24 and
+`make app` before Go compilation. `go install github.com/digitaldrywood/detent/cmd/detent@latest`
+is no longer supported: Go module archives contain tracked source only.
+Published tags continue to identify the exact validated source commit, with no
+generated commit substituted underneath them. Developers and private operators
+should use `make build` for their selected source; see [build ownership](docs/development.md#conversation-assets).
 
 After installing, check for updates with:
 
@@ -448,14 +477,11 @@ brew upgrade digitaldrywood/tap/detent
 Native Linux packages are owned by the system package manager; install a newer
 `.deb` with `sudo apt install ./detent_<version>_linux_<arch>.deb`, or a newer
 `.rpm` with `sudo rpm -Uvh ./detent_<version>_linux_<arch>.rpm` or the distro
-wrapper you normally use. Go-installed binaries offer an
-interactive choice: run
-`go install github.com/digitaldrywood/detent/cmd/detent@latest`, switch to the
-checksum-verified release binary, or abort. `detent update --yes` runs the Go
-install command for go-installed binaries; `detent update --from-release`
-switches the detected Go-installed binary to the release asset and pins future
-updates to release-binary management. Source builds still print the recommended
-command instead of overwriting the binary.
+wrapper you normally use. Legacy Go-installed binaries can switch to the
+checksum-verified release binary with `detent update --from-release`.
+Go-only source users rebuild the prepared source archive for the selected
+release. `detent update --yes` no longer runs an incomplete module install.
+Source builds still print the recommended command instead of overwriting the binary.
 
 CI runs the `Installer Smoke` confidence job on Ubuntu and Windows against the
 current GitHub Release assets on pushes to `main` and `develop` and manual workflow dispatch.
@@ -474,7 +500,7 @@ the published checksum file.
 
 Requirements:
 
-- Go 1.26 or newer when installing with `go install` or building from source.
+- Go 1.26 or newer when building from prepared release source.
 - The [OpenAI Codex CLI](https://github.com/openai/codex) installed and signed
   in, so `codex app-server` runs on the host that dispatches agents. Detent
   drives every agent through this app-server. Verify with `codex --version`.

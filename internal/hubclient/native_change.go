@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -23,46 +22,64 @@ import (
 
 const maxNativeChangeTitle = 512
 
-// settle decides, before run.finished is published at the finish sequence,
-// what the run left for review. It records nothing when the run is not work
-// the runner owns the review of, when no diff was ever readable, when the worktree was left dirty
-// or unread (the ordinary completion path resolves uncommitted work), or when
-// the lease is gone: the next owner of the item decides then.
-//
-// A committed change is reported as reviewable only once the hub has stored
-// the finish diff and the Change Request exists. A create the hub refuses is
-// retried within the finish, under the same idempotency key, and a finish
-// called again retries it too; a change that still cannot be opened is
-// reported with its error so the orchestrator hands the item off instead of
-// moving it to review. e.mu is held by the caller.
-func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int64) {
-	if e.settled {
-		return
+func (e *nativeExecution) ownsChangeCompletion() bool {
+	return !e.conversationContinuation && (e.role == runner.RoleCode || e.role == runner.RoleRework) &&
+		e.worktreeState != "dirty"
+}
+
+func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int64) error {
+	if e.settled || outcome != "succeeded" || !e.ownsChangeCompletion() {
+		return nil
 	}
-	if outcome != "succeeded" || e.conversation || e.lastDiff == nil || e.claim.source == nil || e.claim.source.client == nil ||
-		e.role != runner.RoleCode && e.role != runner.RoleRework ||
-		e.worktreeState != "clean" && e.worktreeState != "unpushed" {
-		e.settled = true
-		return
+	if e.worktreeState != "clean" && e.worktreeState != "unpushed" {
+		return errors.New("the run's final worktree checkpoint is unavailable")
 	}
-	if e.remaining() <= 0 {
-		e.settled = true
-		return
+	if e.claim.source == nil || e.claim.source.client == nil || e.remaining() <= 0 {
+		return runner.ErrExecutionAuthorityUnavailable
+	}
+	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
+		return err
+	}
+	if _, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease); err != nil {
+		return err
+	}
+	if e.lastDiff == nil {
+		return errors.New("the run's final attempt diff is unavailable")
+	}
+	if e.storedSeq != finish {
+		return errors.New("the hub has not stored the run's final attempt diff")
 	}
 	diff := *e.lastDiff
+	if e.worktreeHead != "" && diff.HeadSHA != e.worktreeHead {
+		return errors.New("the attempt diff does not match the final checkpoint head")
+	}
 	change := &runner.NativeChange{
 		Changed: diff.HeadSHA != "" && diff.HeadSHA != diff.BaseSHA && len(diff.Files) > 0,
 		BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, Files: len(diff.Files),
 	}
 	e.change = change
 	if !change.Changed {
-		e.settled = true
-		return
-	}
-	if e.storedSeq != finish {
-		change.Error = "the hub has not stored the run's final attempt diff"
-		e.settled = true
-		return
+		detail, err := e.claim.source.client.currentChange(ctx, e.claim.lease.WorkItemID)
+		if err != nil {
+			change.Error = err.Error()
+			return err
+		}
+		if detail == nil {
+			e.settled = true
+			return nil
+		}
+		for _, version := range detail.Versions {
+			if version.ID == detail.Change.CurrentVersion && version.HeadSHA == diff.HeadSHA {
+				change.Changed, change.ChangeID, change.BaseSHA = true, detail.Change.ID, version.BaseSHA
+				if err := e.publishVersion(ctx, diff, change); err != nil {
+					return err
+				}
+				e.settled = true
+				return nil
+			}
+		}
+		change.Error = "the final attempt diff does not identify the current Change Request head"
+		return errors.New(change.Error)
 	}
 	var err error
 	for try := range nativeChangeCreateTries {
@@ -78,44 +95,34 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		var id string
 		if id, err = e.openChange(ctx, diff); err == nil {
 			change.ChangeID, change.Error = id, ""
-			e.publishVersion(ctx, diff, change)
+			if err := e.publishVersion(ctx, diff, change); err != nil {
+				return err
+			}
 			e.settled = true
-			return
+			return nil
 		}
 		if e.remaining() <= 0 || nativeLeaseLost(err) {
-			slog.Default().Warn("native change not opened: lease lost",
-				"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "error", err)
-			e.change = nil
-			e.settled = true
-			return
+			break
 		}
 	}
 	if err == nil {
 		err = ctx.Err()
 	}
-	slog.Default().Warn("native change not opened",
-		"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "error", err)
 	change.Error = errorText(err)
+	if err == nil {
+		return errors.New(change.Error)
+	}
+	return err
 }
 
-// publishVersion puts the run's head on the Change Request as an immutable
-// version, the record a reviewer approves or sends back. A change whose
-// current version already carries this head, as a rework run that changed
-// nothing new leaves, is not published again. A version the hub refuses is
-// reported on the change rather than failing the run: the Change Request
-// exists and the item still reaches review, where the reason is shown, and
-// the next successful run publishes again. The idempotency key is the
-// attempt's, so a retried finish cannot publish two. e.mu is held by the
-// caller.
-func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.AttemptDiffRequest, change *runner.NativeChange) {
+func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.AttemptDiffRequest, change *runner.NativeChange) error {
 	id, reviewed, err := e.publishChangeVersion(ctx, change.ChangeID, diff)
 	if err != nil {
-		slog.Default().Warn("native change version not published",
-			"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "change", change.ChangeID, "error", err)
 		change.VersionID, change.VersionError, change.VersionCode, change.Reviewed = "", err.Error(), hubErrorCode(err), false
-		return
+		return err
 	}
 	change.VersionID, change.VersionError, change.VersionCode, change.Reviewed = id, "", "", reviewed
+	return nil
 }
 
 // publishChangeVersion reports the version that carries the head and whether
@@ -127,13 +134,17 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	if err != nil {
 		return "", false, fmt.Errorf("read change: %w", err)
 	}
-	// The current version is reused only when it carries this head under the
-	// policy this run was claimed with and is not stale: a policy change
-	// between attempts needs a new version to review, head or no new head.
 	for _, version := range detail.Versions {
-		if version.ID == detail.Change.CurrentVersion && version.HeadSHA == diff.HeadSHA && version.PolicyID == e.data.PolicyID && detail.Summary.Status != "stale_policy" {
-			return version.ID, detail.Summary.Status == "reviewed", nil
+		if version.ID != detail.Change.CurrentVersion || version.HeadSHA != diff.HeadSHA {
+			continue
 		}
+		if version.PolicyID != e.data.PolicyID || detail.Summary.Status == "stale_policy" {
+			return "", false, &APIError{Status: 409, Code: "policy_mismatch", Message: "the current head's version no longer matches the approved policy"}
+		}
+		return version.ID, detail.Summary.Status == "reviewed", nil
+	}
+	if diff.HeadSHA == diff.BaseSHA || len(diff.Files) == 0 {
+		return "", false, errors.New("the final attempt diff does not identify a changed source head to publish")
 	}
 	if e.repository == "" {
 		return "", false, errors.New("the checkout's origin remote is not an https repository the version can name")

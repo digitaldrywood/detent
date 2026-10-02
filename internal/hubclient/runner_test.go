@@ -1,26 +1,35 @@
 package hubclient
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
-	t.Parallel()
 	const adminToken = "runner-client-test-admin"
+	const hubURL = "https://runner-hub.example.test"
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken)})
 	if err != nil {
 		t.Fatal(err)
@@ -31,32 +40,51 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		}
 	})
 	var dropRotation atomic.Bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var pauseRotation atomic.Bool
+	var policyStatus atomic.Int64
+	rotationEntered, rotationResume := make(chan struct{}), make(chan struct{})
+	var resumeRotation sync.Once
+	transport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "runner-hub.example.test" {
+			return nil, errors.New("unexpected runner Hub destination")
+		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/policy") {
+			if status := policyStatus.Load(); status != 0 {
+				if status < 0 {
+					return nil, errors.New("policy transport unavailable")
+				}
+				recorder := httptest.NewRecorder()
+				recorder.WriteHeader(int(status))
+				if _, err := recorder.WriteString(`{"code":"unavailable","message":"policy read unavailable"}`); err != nil {
+					return nil, err
+				}
+				return recorder.Result(), nil
+			}
+		}
+		if strings.HasSuffix(r.URL.Path, "/rotate") && pauseRotation.CompareAndSwap(true, false) {
+			close(rotationEntered)
+			select {
+			case <-rotationResume:
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
+		}
+		recorder := httptest.NewRecorder()
+		service.Handler().ServeHTTP(recorder, r)
 		if strings.HasSuffix(r.URL.Path, "/rotate") && dropRotation.CompareAndSwap(true, false) {
-			recorder := httptest.NewRecorder()
-			service.Handler().ServeHTTP(recorder, r)
 			if recorder.Code != http.StatusOK {
 				t.Errorf("rotation failed before response loss: %d", recorder.Code)
 			}
-			hijacker, ok := w.(http.Hijacker)
-			if !ok {
-				t.Error("test server cannot hijack response")
-				return
-			}
-			connection, _, err := hijacker.Hijack()
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			if err := connection.Close(); err != nil {
-				t.Error(err)
-			}
-			return
+			return nil, errors.New("rotation response lost after commit")
 		}
-		service.Handler().ServeHTTP(w, r)
-	}))
-	t.Cleanup(server.Close)
-	admin, err := New(Config{URL: server.URL, TokenSource: func() string { return adminToken }, HTTPClient: server.Client()})
+		return recorder.Result(), nil
+	})
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	httpClient := &http.Client{Transport: transport}
+	t.Cleanup(func() { resumeRotation.Do(func() { close(rotationResume) }) })
+	admin, err := New(Config{URL: hubURL, TokenSource: func() string { return adminToken }, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +100,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
-	file, err := runnerauth.Initialize(path, server.URL)
+	file, err := runnerauth.Initialize(path, hubURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +108,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := Machine{ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 1, Version: "test"}
+	machine := Machine{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 1, Version: "test"}
 	identity, err := EnrollRunner(t.Context(), path, organization, enrollment.Token, machine)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +119,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if _, err := EnrollRunner(t.Context(), path, organization, enrollment.Token, machine); err != nil {
 		t.Fatalf("lost enrollment response recovery: %v", err)
 	}
-	client, err := New(Config{URL: server.URL, IdentityFile: path, HTTPClient: server.Client()})
+	client, err := New(Config{URL: hubURL, IdentityFile: path, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,11 +131,15 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	supported, err := native.HubFeature(t.Context(), tracker.NativeLocalChecksCapability)
+	if err != nil || !supported {
+		t.Fatalf("current Hub diagnostic capability = %v, %v", supported, err)
+	}
 	fleetAdmin, err := NewFleetClient(admin, organization, map[string]tracker.ProjectID{"native": project.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted builder", Tags: []string{"Build"}, State: "active", CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{project.ID}, IsolationTier: "native-trusted", Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}, Spillover: runnerauth.Spillover{Mode: "after", AfterMinutes: 0}}}
+	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted builder", Tags: []string{"Build"}, State: "active", CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{project.ID}, IsolationTier: "native-trusted", Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, Spillover: runnerauth.Spillover{Mode: "after", AfterMinutes: 0}}}
 	if err := fleetAdmin.UpdateRunner(t.Context(), file.Identity.RunnerID, change); err != nil {
 		t.Fatal(err)
 	}
@@ -136,6 +168,41 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err := fleetWorker.UpdateHost(t.Context(), machine.ID, runnerauth.HostChange{}); err == nil {
 		t.Fatal("worker changed host")
 	}
+	t.Run("diagnostics without a project orchestrator", func(t *testing.T) {
+		report := isolation.Report{"native/workflow": {}}
+		now := time.Now()
+		scheduler, err := NewScheduler(client, SchedulerConfig{
+			OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine,
+			HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, Now: func() time.Time { return now },
+			IsolationReport: func(context.Context) isolation.Report { return report },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := scheduler.Heartbeat(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		view, err := fleetAdmin.Fleet(t.Context())
+		if err != nil || len(view.Runners) != 1 || view.Runners[0].Health != "needs_attention" {
+			t.Fatalf("failed startup fleet = %#v, %v", view, err)
+		}
+		found := false
+		for _, problem := range view.Runners[0].Problems {
+			found = found || problem.Code == "settings_invalid"
+		}
+		if !found {
+			t.Fatal("invalid workflow diagnostic was not reported")
+		}
+		report = machine.BackendIsolation
+		now = now.Add(time.Minute)
+		if err := scheduler.Heartbeat(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		view, err = fleetAdmin.Fleet(t.Context())
+		if err != nil || len(view.Runners[0].Problems) != 0 || view.Runners[0].Health != "online" {
+			t.Fatalf("recovered startup fleet = %#v, %v", view, err)
+		}
+	})
 	descriptor := clientTestPolicy()
 	descriptor.Requirements = policy.Requirements{RequiredTags: []string{"build"}, RunnerID: file.Identity.RunnerID, MachineID: string(file.Identity.MachineID)}
 	descriptor = descriptor.WithID()
@@ -154,9 +221,100 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil || len(candidates) != 1 || candidates[0].ID != string(issue.WorkItemID) {
 		t.Fatalf("enrolled scheduler: candidates=%d err=%v", len(candidates), err)
 	}
-	if _, err := scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+	cachedClaim, cacheErr := runnerauth.LoadRoutingCache(path)
+	if cacheErr != nil || cachedClaim.Revision != 2 || cachedClaim.Routing.IsolationTier != "native-trusted" {
+		t.Fatalf("claim routing cache = %#v, %v", cachedClaim, cacheErr)
+	}
+	candidates[0].IsolationPolicy = nil
+	adopted, err := scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
+	if err != nil {
 		t.Fatalf("runner-side validation: %v", err)
 	}
+	if adopted.Issue.IsolationPolicy == nil || adopted.Issue.IsolationPolicy.Tier != isolation.NativeTrusted {
+		t.Fatalf("adopted isolation policy = %#v", adopted.Issue.IsolationPolicy)
+	}
+	t.Run("credential rotation preserves the active execution", func(t *testing.T) {
+		execution := scheduler.RunExecution(string(issue.WorkItemID))
+		guarded, stop, err := execution.Guard(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stop()
+		if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		before, err := adminNative.Recovery(t.Context(), issue.WorkItemID)
+		if err != nil || len(before.Attempts) != 1 {
+			t.Fatalf("active attempt = %#v, %v", before.Attempts, err)
+		}
+		for _, test := range []struct {
+			name   string
+			status int64
+		}{
+			{name: "transport failure", status: -1},
+			{name: "hub unavailable", status: http.StatusServiceUnavailable},
+			{name: "rate limited", status: http.StatusTooManyRequests},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				policyStatus.Store(test.status)
+				defer policyStatus.Store(0)
+				_, err := scheduler.RenewClaim(guarded, string(issue.WorkItemID), time.Now())
+				if err == nil || errors.Is(err, orchestrator.ErrSchedulingClaimLost) || guarded.Err() != nil || scheduler.RunExecution(string(issue.WorkItemID)) != execution {
+					t.Fatalf("instance failure discarded the active worker: %v", err)
+				}
+			})
+		}
+		original, err := runnerauth.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rotationDone := make(chan error, 1)
+		pauseRotation.Store(true)
+		go func() {
+			_, err := RefreshRunner(t.Context(), path, true)
+			rotationDone <- err
+		}()
+		defer resumeRotation.Do(func() { close(rotationResume) })
+		select {
+		case <-rotationEntered:
+		case err := <-rotationDone:
+			t.Fatalf("rotation did not reach the credential owner: %v", err)
+		case <-t.Context().Done():
+			t.Fatal(t.Context().Err())
+		}
+		_, err = scheduler.RenewClaim(guarded, string(issue.WorkItemID), time.Now())
+		if !errors.Is(err, instancelock.ErrHeld) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Fatalf("credential-owner contention = %v", err)
+		}
+		if guarded.Err() != nil || scheduler.RunExecution(string(issue.WorkItemID)) != execution {
+			t.Fatalf("rotation discarded the active worker: %v", context.Cause(guarded))
+		}
+		during, err := adminNative.Recovery(t.Context(), issue.WorkItemID)
+		if err != nil || during.Issue.State != before.Issue.State || during.Issue.Revision != before.Issue.Revision || !reflect.DeepEqual(during.Attempts, before.Attempts) {
+			t.Fatalf("contention changed the issue or attempt: %#v, %v", during, err)
+		}
+		resumeRotation.Do(func() { close(rotationResume) })
+		if err := <-rotationDone; err != nil {
+			t.Fatal(err)
+		}
+		rotated, err := runnerauth.Load(path)
+		expectedIdentity := original.Identity
+		expectedIdentity.ExpiresAt = rotated.Identity.ExpiresAt
+		if err != nil || rotated.Credential == original.Credential || rotated.PendingCredential != "" || rotated.Identity.ExpiresAt.Before(original.Identity.ExpiresAt) || !reflect.DeepEqual(rotated.Identity, expectedIdentity) {
+			t.Fatalf("rotation did not preserve identity and grants: %v", err)
+		}
+		renewed, err := scheduler.RenewClaim(guarded, string(issue.WorkItemID), time.Now())
+		if err != nil || renewed.Owner != adopted.Owner || !renewed.LeaseExpiresAt.After(adopted.LeaseExpiresAt) {
+			t.Fatalf("heartbeat after rotation = %#v, %v", renewed, err)
+		}
+		if err := execution.Validate(guarded); err != nil || errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) {
+			t.Fatalf("worker lost authority after rotation: %v", err)
+		}
+		after, err := adminNative.Recovery(t.Context(), issue.WorkItemID)
+		if err != nil || after.Issue.State != before.Issue.State || after.Issue.Revision != before.Issue.Revision || !reflect.DeepEqual(after.Attempts, before.Attempts) {
+			t.Fatalf("rotation charged an issue attempt or changed its lane: %#v, %v", after, err)
+		}
+	})
 	eligibility, err := fleetAdmin.ProjectEligibility(t.Context(), "native")
 	if err != nil || len(eligibility.Exclusions) != 1 || len(eligibility.Runners) != 1 {
 		t.Fatalf("occupied project eligibility = %#v, %v", eligibility, err)
@@ -175,7 +333,10 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
-		t.Fatalf("accepted heartbeat failed on cache permission error: %v", err)
+		t.Fatalf("heartbeat with validated in-memory routing: %v", err)
+	}
+	if _, err := runnerauth.LoadRoutingCache(path); runtime.GOOS != "windows" && err == nil {
+		t.Fatal("accepted an insecure routing cache")
 	}
 	if err := os.Chmod(runnerauth.RoutingCachePath(path), 0o600); err != nil {
 		t.Fatal(err)
@@ -240,7 +401,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil || pending.PendingCredential == "" || pending.Credential != file.Credential {
 		t.Fatalf("interrupted rotation not recoverable: %v", err)
 	}
-	restarted, err := New(Config{URL: server.URL, IdentityFile: path, HTTPClient: server.Client()})
+	restarted, err := New(Config{URL: hubURL, IdentityFile: path, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +415,26 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if _, err := RefreshRunner(t.Context(), path, false); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("stale fencing token remains fatal", func(t *testing.T) {
+		stale, err := NewScheduler(client, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := string(issue.WorkItemID)
+		claim := scheduler.nativeClaims[id]
+		claim.lease.FencingToken++
+		stale.nativeClaims[id] = claim
+		stale.claims[id] = nativeTrackerLease(claim.lease)
+		stale.claimPolicies[id] = scheduler.claimPolicies[id]
+		_, err = stale.RenewClaim(t.Context(), id, time.Now())
+		var failure *APIError
+		if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) || !errors.As(err, &failure) || failure.Code != "stale_fencing_token" {
+			t.Fatalf("stale heartbeat retained authority: %v", err)
+		}
+		if _, err := scheduler.RenewClaim(t.Context(), id, time.Now()); err != nil {
+			t.Fatalf("stale heartbeat disturbed the active lease: %v", err)
+		}
+	})
 	if err := admin.RevokeRunner(t.Context(), organization, identity.Binding); err != nil {
 		t.Fatal(err)
 	}
@@ -286,5 +467,131 @@ func TestRunnerRequestsDoNotFollowCredentialRedirects(t *testing.T) {
 	_, err = client.CreateRunnerEnrollment(t.Context(), "org_example", runnerauth.EnrollmentRequest{})
 	if err == nil || forwarded.Load() != 0 {
 		t.Fatalf("credential redirect followed: requests=%d err=%v", forwarded.Load(), err)
+	}
+}
+
+func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer server.Close()
+	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	scheduler := &Scheduler{client: client, now: time.Now, heartbeatInterval: time.Second, machine: Machine{ID: "machine", Capacity: 1}, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": time.Now().Add(-time.Minute)}, isolationReport: func(ctx context.Context) isolation.Report {
+		close(entered)
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 5*time.Second {
+			t.Error("probe has no bounded aggregate deadline")
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return isolation.Report{}
+	}}
+	done := make(chan error, 1)
+	go func() { done <- scheduler.ensureNativeMachine(t.Context(), &NativeConnector{client: native}) }()
+	<-entered
+	acquired := make(chan struct{})
+	go func() { scheduler.mu.Lock(); close(acquired); scheduler.mu.Unlock() }()
+	select {
+	case <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("probe blocked scheduler mutex")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("probe exceeded aggregate deadline")
+	}
+}
+
+func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "private", "runner.json")
+	file, err := runnerauth.Initialize(path, "https://hub.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Identity.OrganizationID = "org_test"
+	file.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+	if err := runnerauth.Save(path, file); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	closed := runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun " + now.Add(time.Hour).Format("15:04") + "-" + now.Add(2*time.Hour).Format("15:04")}}
+	snapshot := runnerauth.RoutingSnapshot{RunnerID: file.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 3, Availability: closed}.Normalized()}
+	var capacities []int
+	claims := 0
+	transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		body := `{}`
+		if strings.HasSuffix(request.URL.Path, "/heartbeat") {
+			var report struct {
+				Capacity int `json:"capacity"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&report); err != nil {
+				return nil, err
+			}
+			capacities = append(capacities, report.Capacity)
+			encoded, err := json.Marshal(snapshot)
+			if err != nil {
+				return nil, err
+			}
+			body = string(encoded)
+		} else if strings.HasSuffix(request.URL.Path, "/claims") {
+			claims++
+			body = `{"isolation_policy":{"tier":"sandbox"}}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	client, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := Machine{ID: file.Identity.MachineID, Capacity: 3, Version: "test"}
+	if err := native.RegisterMachine(t.Context(), machine); err != nil {
+		t.Fatal(err)
+	}
+	if len(capacities) == 0 || capacities[0] != 0 || capacities[len(capacities)-1] != 0 {
+		t.Fatalf("closed capacities = %v", capacities)
+	}
+	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
+		t.Fatalf("closed claim = %v, calls = %d", err, claims)
+	}
+	restarted, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err = restarted.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
+		t.Fatalf("cached claim = %v, calls = %d", err, claims)
+	}
+	snapshot.Revision++
+	snapshot.Routing.Availability = runnerauth.Availability{}
+	if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+		t.Fatal(err)
+	}
+	if capacities[len(capacities)-1] != 3 {
+		t.Fatalf("reopened capacities = %v", capacities)
+	}
+	if _, err := native.Claim(t.Context(), tracker.NativeClaim{}); err != nil || claims != 1 {
+		t.Fatalf("open claim = %v, calls = %d", err, claims)
 	}
 }

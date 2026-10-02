@@ -67,6 +67,24 @@ interface IssueData {
   readonly history: readonly CollaborationEvent[];
   readonly comments: readonly NativeComment[];
   readonly change: ChangeDetail | null;
+  readonly changes: readonly {
+    readonly record: { readonly change_id: string; readonly title: string };
+    readonly detail: ChangeDetail | null;
+  }[];
+}
+
+/** Keep every linked change visible, including one whose detail read failed. */
+export function changeResourceRows(
+  changes: IssueData["changes"],
+  onOpen: (changeId: string) => void,
+): ResourceRow[] {
+  return changes.map(({ record, detail }) => ({
+    key: record.change_id,
+    icon: "diff" as const,
+    label: record.title,
+    detail: detail?.summary.status.replaceAll("_", " ") ?? "unavailable",
+    onOpen: () => onOpen(record.change_id),
+  }));
 }
 
 /**
@@ -128,13 +146,16 @@ function useIssue(
             .catch(() => []),
           http.listChanges(projectId, workItemId).catch(() => []),
         ]);
+        const details = await Promise.all(
+          changes.map(async (record) => ({
+            record,
+            detail: await http.getChange(projectId, workItemId, record.change_id).catch(() => null),
+          })),
+        );
         const selected = selectChangeId(changes, requestedChange);
-        const change =
-          selected === null
-            ? null
-            : await http.getChange(projectId, workItemId, selected).catch(() => null);
+        const change = details.find((entry) => entry.record.change_id === selected)?.detail ?? null;
         if (cancelled) return;
-        setData({ issue, project, attempts, history, comments, change });
+        setData({ issue, project, attempts, history, comments, change, changes: details });
         setError(null);
       } catch (cause) {
         if (cancelled) return;
@@ -223,11 +244,42 @@ interface ConversationBridge {
 export function IssuePage(): React.ReactElement {
   const { workItemId } = useParams({ from: "/work/i/$workItemId" });
   const shell = useShell();
-  // The conversation list is this client's only index from work item to
-  // project, and to the conversation the issue is linked to.
-  const linked = shell.conversations.find(
+  const http = useWorkHttp();
+  const indexed = shell.conversations.find(
     (conversation) => conversation.work_item_id === workItemId,
   );
+  const projectId = indexed?.project_id ?? shell.projectId ?? null;
+  const [resolved, setResolved] = React.useState<Conversation | undefined>();
+  React.useEffect(() => {
+    let cancelled = false;
+    setResolved(undefined);
+    if (projectId !== null && indexed === undefined) {
+      void http
+        .getWorkItemConversation(projectId, workItemId)
+        .then((snapshot) => {
+          if (!cancelled) setResolved(snapshot.conversation);
+        })
+        .catch((error: unknown) => {
+          if (!cancelled && !(error instanceof WorkApiError && error.code === "not_found")) {
+            toastManager.add({
+              title: "Worker conversation unavailable",
+              description: String(error),
+              type: "error",
+            });
+          }
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [http, projectId, workItemId, indexed]);
+  const linked =
+    indexed ??
+    (resolved !== undefined &&
+    resolved.work_item_id === workItemId &&
+    resolved.project_id === projectId
+      ? resolved
+      : undefined);
   if (linked === undefined) {
     return <IssueSurface workItemId={workItemId} projectHint={null} conversation={null} />;
   }
@@ -387,7 +439,7 @@ function IssueSurface({
   );
 
   const moves = React.useMemo(
-    () => (data === null ? [] : transitionsFrom(data.project, data.issue.state)),
+    () => (data === null || data.issue.archived ? [] : transitionsFrom(data.project, data.issue.state)),
     [data],
   );
 
@@ -412,11 +464,14 @@ function IssueSurface({
         reload();
       } catch (cause) {
         apply(before);
-        const conflict = cause instanceof WorkApiError && cause.conflict;
+        const activeWork = what === "archive this issue" && cause instanceof WorkApiError && cause.code === "lease_conflict";
+        const conflict = cause instanceof WorkApiError && cause.conflict && !activeWork;
         toastManager.add({
           type: conflict ? "warning" : "error",
           title: conflict ? "This issue changed while you were reading it" : `Could not ${what}`,
-          description: conflict
+          description: activeWork
+            ? "Finish or stop active work and release its claim before archiving."
+            : conflict
             ? "Your change was not applied. The issue has been reloaded with what the hub has now."
             : cause instanceof Error
               ? cause.message
@@ -521,15 +576,12 @@ function IssueSurface({
       data={data}
       moves={moves}
       now={now}
-      onOpenChange={
-        item.change === null
-          ? null
-          : () =>
-              void navigate({
-                to: "/work/i/$workItemId/changes/$changeId",
-                params: { workItemId, changeId: item.change!.id },
-                ...(projectId === null ? {} : { search: { project: projectId } }),
-              })
+      onOpenChange={(changeId) =>
+        void navigate({
+          to: "/work/i/$workItemId/changes/$changeId",
+          params: { workItemId, changeId },
+          ...(projectId === null ? {} : { search: { project: projectId } }),
+        })
       }
       canWrite={canWrite}
       saving={saving}
@@ -537,6 +589,11 @@ function IssueSurface({
       conversation={conversation}
       viewerPrincipalId={client.bootstrap.actor.principal_id}
       preferenceChoices={client.bootstrap.preferences}
+      onArchive={() => void mutate(
+        (revision) => http.setArchived({ projectId, itemId: workItemId,
+          key: newWorkKey("archive"), expectedRevision: revision, archived: !item.archived }),
+        item.archived ? "restore this issue" : "archive this issue",
+      )}
       onMove={(state) =>
         void mutate(
           (revision) =>
@@ -655,6 +712,7 @@ interface IssueBodyProps {
   readonly conversation: ConversationBridge | null;
   readonly viewerPrincipalId: string;
   readonly preferenceChoices: PreferenceChoices | undefined;
+  readonly onArchive: () => void;
   readonly onMove: (state: string) => void;
   readonly onPriority: (name: string | null) => void;
   readonly onLabels: (labels: readonly string[]) => void;
@@ -669,8 +727,8 @@ interface IssueBodyProps {
   readonly onComment: (body: string) => Promise<void>;
   readonly onOpenIssue: (workItemId: string) => void;
   readonly onOpenConversationPage: () => void;
-  /** Opens the issue's Change Request page; null when it has no change. */
-  readonly onOpenChange: (() => void) | null;
+  /** Opens any Change Request linked to this issue. */
+  readonly onOpenChange: (changeId: string) => void;
 }
 
 /**
@@ -762,15 +820,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const resources: ResourceRow[] = [];
   // The Change Request page: the round under review, its diff and the
   // decisions. Every issue with a change has one, mirrored to a host or not.
-  if (item.change !== null && props.onOpenChange !== null) {
-    resources.push({
-      key: "change-request",
-      icon: "diff",
-      label: item.change.title,
-      detail: item.change.review === "" ? "review" : item.change.review.replaceAll("_", " "),
-      onOpen: props.onOpenChange,
-    });
-  }
+  resources.push(...changeResourceRows(data.changes, props.onOpenChange));
   // The attempt diff is absent rather than empty. A change version's code is
   // one opaque artifact and the hub serves no file list, no hunks and no
   // per-file counts, so there is no `1 file · +1 −1` to put on a row; the
@@ -913,7 +963,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
       onOpenPullRequest={
         panel !== null && panel.pullRequestAvailable ? panel.openPullRequest : null
       }
-      onOpenChangeRequest={props.onOpenChange}
+      onOpenChangeRequest={item.change === null ? null : () => props.onOpenChange(item.change!.id)}
     />
   );
 
@@ -929,11 +979,19 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
         >
           <header>
             <p className="font-mono text-muted-foreground text-xs" data-testid="issue-identifier">
-              {item.projectName} {issueNumber(item.identifier, item.number)}
+              {item.projectName} {issueNumber(item.identifier, item.number)}{item.archived ? " · Archived" : ""}
             </p>
             <h1 className="mt-1.5 text-balance font-semibold text-2xl leading-tight tracking-[-0.01em]">
               {item.title}
             </h1>
+            {props.canWrite && data.project.profile === "native" ? (
+              <Button size="sm" variant="outline" className="mt-3" data-testid="issue-archive"
+                disabled={props.saving || data.attempts.some((attempt) => attempt.status === "running")}
+                title={data.attempts.some((attempt) => attempt.status === "running") ? "Finish or stop active work before archiving" : undefined}
+                onClick={props.onArchive}>
+                {item.archived ? "Restore issue" : "Archive issue"}
+              </Button>
+            ) : null}
           </header>
 
           {/* With the panel open the sidebar yields its width, so the facts it
@@ -957,18 +1015,29 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
             className="rounded-[var(--radius)] border border-border bg-card px-4 py-3.5"
             data-testid="issue-body"
           >
+			{data.issue.linked_source === undefined ? null : (
+				<div className="mb-3 text-sm" data-testid="issue-linked-source">
+					<a className="text-primary underline" href={data.issue.linked_source.url} target="_blank" rel="noopener noreferrer">GitHub source</a>
+					<p className="text-xs text-muted-foreground">{data.issue.linked_source.status === "complete" ? "Source intake completed" : "Awaiting source intake before the first run"}</p>
+						{data.issue.linked_source.snapshot === undefined ? null : (
+						<details className="mt-2">
+							<summary>Original source context</summary>
+							<p className="text-xs text-muted-foreground">Observed {data.issue.linked_source.snapshot.provenance.observed_at}</p>
+							<p>{data.issue.linked_source.snapshot.title}</p>
+							<Markdown source={data.issue.linked_source.snapshot.body} />
+						</details>
+					)}
+				</div>
+			)}
             <div className={truncated ? "relative max-h-64 overflow-hidden" : undefined}>
               <Markdown source={truncated ? item.body.slice(0, BODY_CLAMP) : item.body} />
               {truncated ? (
                 <span className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-card to-transparent" />
               ) : null}
             </div>
-            {/* The mockup's own line under the description. It is only drawn
-                where it is true: an issue created some other way did not come
-                from a chat and does not claim to have. */}
-            {conversation === null ? null : (
+            {conversation?.detail?.conversation.visibility !== "shared" ? null : (
               <p className="mt-2.5 text-muted-foreground text-xs">
-                Created from a chat · history shared with the project
+                Conversation history shared with the project
               </p>
             )}
             {item.body.length > BODY_CLAMP ? (

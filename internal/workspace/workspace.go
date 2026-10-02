@@ -35,6 +35,7 @@ const failedWorkspacePreservationTimeout = time.Minute
 const workspaceCommandWaitDelay = time.Second
 const hookOutputTailBytes = 16 * 1024
 const workerScratchRelativePath = ".detent/worker-tmp"
+const workerScratchBaseName = "detent-worker-scratch"
 const quarantineTimestampFormat = "20060102T150405.000000000Z"
 const quarantineAccumulationWarningThreshold = 5
 
@@ -165,6 +166,14 @@ type DeliverableState struct {
 	RemoteBranchExists bool
 }
 
+type ReworkPreparer interface {
+	PrepareRework(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
+}
+
+type NativeWorkFinalizer interface {
+	FinalizeNativeWork(context.Context, Info, Issue, func(context.Context) error) error
+}
+
 type MergePreparer interface {
 	PrepareMerge(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
 }
@@ -230,18 +239,21 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
-	ProjectID             string
-	ID                    string
-	Identifier            string
-	Terminal              bool
-	LandedHeadSHA         string
-	BranchName            string
-	BaseRef               string
-	ProgressBaseRef       string
-	PullRequestHeadSHA    string
-	PullRequestRepository string
-	PullRequestNumber     int
-	PullRequestBranch     string
+	Landing                 *LandOptions
+	NativeRework            bool
+	ProjectID               string
+	ID                      string
+	Identifier              string
+	Terminal                bool
+	LandedHeadSHA           string
+	CleanupDeliveredHeadSHA string
+	BranchName              string
+	BaseRef                 string
+	ProgressBaseRef         string
+	PullRequestHeadSHA      string
+	PullRequestRepository   string
+	PullRequestNumber       int
+	PullRequestBranch       string
 	// WorkspaceSession marks a workspace session checkout (decisions 18.1
 	// `worktree: "fresh"`): a worktree opened so a person can look at a
 	// commit, not one an attempt commits into. It takes its own branch
@@ -257,12 +269,13 @@ type Info struct {
 }
 
 type Hooks struct {
-	Shell        string
-	AfterCreate  string
-	BeforeRun    string
-	AfterRun     string
-	BeforeRemove string
-	Timeout      time.Duration
+	Shell             string
+	AfterCreate       string
+	BeforeRun         string
+	AfterRun          string
+	BeforeRemove      string
+	Timeout           time.Duration
+	StripGitHubTokens bool
 }
 
 type LocalGitOptions struct {
@@ -551,8 +564,39 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
+	if issue.NativeRework {
+		exists, isDir, err := pathExists(info.Path)
+		if err != nil {
+			return Info{}, err
+		}
+		if exists && isDir {
+			paused, err := rebaseInProgress(ctx, info.Path)
+			if err != nil {
+				return Info{}, err
+			}
+			if paused {
+				release, err := l.acquireSourceOperation(ctx)
+				if err != nil {
+					return Info{}, err
+				}
+				paused, err = l.verifyReworkBranch(ctx, info, issue)
+				release()
+				if err != nil {
+					return Info{}, err
+				}
+				if paused {
+					return info, nil
+				}
+			}
+		}
+	}
 
-	created, err := l.createWorktree(ctx, info.Path, info.Branch)
+	var created bool
+	if issue.Landing != nil {
+		info, created, err = l.createLandingWorktree(ctx, info, issue)
+	} else {
+		created, err = l.createWorktree(ctx, info.Path, info.Branch)
+	}
 	if err != nil {
 		var creationErr *worktreeCreationError
 		if errors.As(err, &creationErr) {
@@ -561,12 +605,6 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 		return Info{}, err
 	}
 	info.Created = created
-	if err := ensureGitInfoExcludes(ctx, info.Path, detentHandoffDiffExcludes); err != nil {
-		if created {
-			err = l.preserveFailedWorkspace(ctx, info.Path, err)
-		}
-		return Info{}, err
-	}
 
 	if created {
 		if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
@@ -1711,47 +1749,117 @@ func PrepareWorkerScratch(ctx context.Context, workspacePath string) (scratchPat
 	if err != nil {
 		return "", fmt.Errorf("resolve worker workspace: %w", err)
 	}
-	if err := ensureWorkerScratchExcluded(ctx, workspacePath); err != nil {
-		return "", err
-	}
-	root, err := os.OpenRoot(workspacePath)
-	if err != nil {
-		return "", fmt.Errorf("open worker workspace: %w", err)
-	}
-	defer func() {
-		err = errors.Join(err, root.Close())
-	}()
-
-	relativePath := filepath.Join(filepath.FromSlash(workerScratchRelativePath), "attempt-"+uuid.NewString())
-	if err := root.MkdirAll(relativePath, 0o700); err != nil {
+	scratchRoot := WorkerScratchRoot(workspacePath)
+	scratchPath = filepath.Join(scratchRoot, "attempt-"+uuid.NewString())
+	if err := ensurePrivateDirectories(workerScratchBase(), scratchRoot); err != nil {
 		return "", fmt.Errorf("create worker scratch: %w", err)
 	}
-	return filepath.Join(workspacePath, relativePath), nil
+	if err := os.Mkdir(scratchPath, 0o700); err != nil {
+		return "", fmt.Errorf("create worker scratch: %w", err)
+	}
+	return scratchPath, nil
 }
 
-func ensureWorkerScratchExcluded(ctx context.Context, workspacePath string) error {
-	_, err := os.Lstat(filepath.Join(workspacePath, ".git"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("stat worker workspace git metadata: %w", err)
-	}
-	if err := ensureGitInfoExcludes(ctx, workspacePath, detentHandoffDiffExcludes); err != nil {
-		return fmt.Errorf("exclude worker scratch from git: %w", err)
+// RemoveWorkerScratchRoot removes every attempt scratch of a workspace, for
+// callers that delete the workspace itself. The group directory is shared
+// with sibling workspaces that may be creating scratch in it, so it stays.
+func RemoveWorkerScratchRoot(workspacePath string) error {
+	if err := os.RemoveAll(WorkerScratchRoot(workspacePath)); err != nil {
+		return fmt.Errorf("remove worker scratch root: %w", err)
 	}
 	return nil
 }
 
+// WorkerScratchRoot is the per-workspace parent of attempt scratch. It lives
+// under the OS temp root rather than the workspace so that compiler and test
+// churn never lands in a file-watched home tree. Workspaces are grouped by
+// their parent directory so retention can sweep scratch of removed workspaces.
+func WorkerScratchRoot(workspacePath string) string {
+	workspacePath = bestEffortCanonicalPath(workspacePath)
+	return filepath.Join(workerScratchGroup(filepath.Dir(workspacePath)), filepath.Base(workspacePath))
+}
+
+// ensurePrivateDirectories creates base and every directory down to path, and
+// refuses any component that is a symlink or writable by others, because the
+// OS temp root may be shared between users.
+func ensurePrivateDirectories(base string, path string) error {
+	if !pathWithin(base, path) {
+		return &PathError{Path: path, Root: base, Reason: "directory escapes root"}
+	}
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		return err
+	}
+	current := base
+	components := []string{current}
+	if rel != "." {
+		for _, part := range strings.Split(rel, string(filepath.Separator)) {
+			current = filepath.Join(current, part)
+			components = append(components, current)
+		}
+	}
+	for _, component := range components {
+		if err := os.Mkdir(component, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		info, err := os.Lstat(component)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return &PathError{Path: component, Root: base, Reason: "scratch directory is not a directory"}
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
+			return &PathError{Path: component, Root: base, Reason: "scratch directory is writable by others"}
+		}
+	}
+	return nil
+}
+
+func workerScratchGroup(workspaceParent string) string {
+	sum := sha256.Sum256([]byte(bestEffortCanonicalPath(workspaceParent)))
+	return filepath.Join(workerScratchBase(), hex.EncodeToString(sum[:8]))
+}
+
+func workerScratchBase() string {
+	return filepath.Join(bestEffortCanonicalPath(os.TempDir()), workerScratchBaseName)
+}
+
+func bestEffortCanonicalPath(path string) string {
+	if canonical, err := canonicalExistingPath(path); err == nil {
+		return canonical
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(path)
+}
+
+// workerScratchParent returns the directory that owns scratchPath: the
+// external scratch root, or the legacy in-workspace scratch directory for
+// attempts started before scratch moved out of the workspace.
+func workerScratchParent(workspacePath string, scratchPath string) (string, bool) {
+	scratchPath = filepath.Clean(scratchPath)
+	for _, parent := range []string{WorkerScratchRoot(workspacePath), filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))} {
+		if scratchPath == parent || pathWithin(parent, scratchPath) {
+			return parent, true
+		}
+	}
+	return "", false
+}
+
 func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
-	workspacePath, err := canonicalExistingPath(workspacePath)
-	if errors.Is(err, fs.ErrNotExist) {
+	if strings.TrimSpace(scratchPath) == "" {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("resolve worker workspace: %w", err)
+	workspacePath = bestEffortCanonicalPath(workspacePath)
+	scratchRoot, ok := workerScratchParent(workspacePath, scratchPath)
+	if !ok {
+		return fmt.Errorf("remove worker scratch: %w", &PathError{Path: scratchPath, Root: WorkerScratchRoot(workspacePath), Reason: "worker scratch escapes root"})
 	}
-	scratchRoot := filepath.Join(workspacePath, filepath.FromSlash(workerScratchRelativePath))
+	if _, err := os.Lstat(scratchRoot); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err := removeWorkspacePath(scratchRoot, scratchPath); err != nil {
 		return fmt.Errorf("remove worker scratch: %w", err)
 	}
@@ -1760,6 +1868,15 @@ func CleanupWorkerScratch(workspacePath string, scratchPath string) error {
 
 func CleanupOwnedPath(root string, path string) error {
 	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if scratchRoot := WorkerScratchRoot(root); pathWithin(scratchRoot, filepath.Clean(path)) {
+		if _, err := os.Lstat(scratchRoot); errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err := removeWorkspacePath(scratchRoot, path); err != nil {
+			return fmt.Errorf("remove owned path: %w", err)
+		}
 		return nil
 	}
 	root, err := canonicalExistingPath(root)
@@ -1779,6 +1896,11 @@ func ReapWorkerArtifactProcesses(ctx context.Context, root string, path string, 
 	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
 		return 0, nil
 	}
+	if scratchRoot := WorkerScratchRoot(root); pathWithin(scratchRoot, filepath.Clean(path)) {
+		if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
+			return ReapProcesses(ctx, filepath.Clean(path), grace)
+		}
+	}
 	root, err := canonicalExistingPath(root)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
@@ -1786,13 +1908,14 @@ func ReapWorkerArtifactProcesses(ctx context.Context, root string, path string, 
 	if err != nil {
 		return 0, err
 	}
+	if _, ok := workerScratchParent(root, path); ok {
+		return ReapProcesses(ctx, root, grace)
+	}
 	path, err = validateWorkspacePath(root, path)
 	if err != nil {
 		return 0, err
 	}
-	scratchRoot := filepath.Join(root, filepath.FromSlash(workerScratchRelativePath))
-	legacyScratchRoot := filepath.Join(root, ".detent", "tmp")
-	if path == legacyScratchRoot || path == scratchRoot || pathWithin(scratchRoot, path) {
+	if path == filepath.Join(root, ".detent", "tmp") {
 		path = root
 	}
 	return ReapProcesses(ctx, path, grace)
@@ -1858,7 +1981,7 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 
 	cmd := commandshell.Command(hookCtx, command, l.hooks.Shell)
 	cmd.Dir = info.Path
-	cmd.Env = hookEnv(info, issue)
+	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 
 	l.logger.Info(
@@ -2109,17 +2232,16 @@ func GitMetadataWritableRoots(ctx context.Context, workspacePath string) ([]stri
 		return roots, nil
 	}
 
-	refDir, err := canonicalExistingDir(filepath.Dir(filepath.Join(metadata.commonDir, filepath.FromSlash(metadata.headRef))))
-	if err != nil {
-		return nil, fmt.Errorf("git branch ref dir: %w", err)
+	for _, prefix := range []string{"", "logs"} {
+		path := filepath.Join(metadata.commonDir, prefix, filepath.FromSlash(metadata.headRef))
+		parent, err := canonicalGitMetadataPath(filepath.Dir(path))
+		if err != nil {
+			return nil, fmt.Errorf("git branch metadata parent: %w", err)
+		}
+		path = filepath.Join(parent, filepath.Base(path))
+		addRoot(path)
+		addRoot(path + ".lock")
 	}
-	addRoot(refDir)
-
-	logDir, err := canonicalExistingDir(filepath.Dir(filepath.Join(metadata.commonDir, "logs", filepath.FromSlash(metadata.headRef))))
-	if err != nil {
-		return nil, fmt.Errorf("git branch log dir: %w", err)
-	}
-	addRoot(logDir)
 
 	return roots, nil
 }
@@ -2172,10 +2294,14 @@ func inspectGitMetadata(ctx context.Context, dir string) (gitMetadata, error) {
 	}, nil
 }
 
-func canonicalExistingDir(path string) (string, error) {
+func canonicalGitMetadataPath(path string) (string, error) {
+	var missing []string
 	for {
 		canonical, err := canonicalExistingPath(path)
 		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				canonical = filepath.Join(canonical, missing[i])
+			}
 			return canonical, nil
 		}
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -2185,6 +2311,7 @@ func canonicalExistingDir(path string) (string, error) {
 		if parent == path {
 			return "", err
 		}
+		missing = append(missing, filepath.Base(path))
 		path = parent
 	}
 }
@@ -2197,13 +2324,29 @@ func pathWithin(root string, path string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
-func hookEnv(info Info, issue Issue) []string {
-	env := append([]string{}, os.Environ()...)
+func hookEnv(info Info, issue Issue, stripGitHubTokens bool) []string {
+	env := make([]string, 0, len(os.Environ())+len(workspaceEnvironmentKeys))
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if stripGitHubTokens && isGitHubTokenKey(key) {
+			continue
+		}
+		env = append(env, entry)
+	}
 	variables := EnvironmentVariables(info, issue)
 	for _, key := range workspaceEnvironmentKeys {
 		env = append(env, key+"="+variables[key])
 	}
 	return env
+}
+
+func isGitHubTokenKey(key string) bool {
+	switch key {
+	case "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN":
+		return true
+	default:
+		return false
+	}
 }
 
 var workspaceEnvironmentKeys = [...]string{
@@ -2264,7 +2407,7 @@ func canonicalExistingPath(path string) (string, error) {
 	}
 	canonical, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", fmt.Errorf("canonicalize %s: %w", abs, err)
+		return "", &os.PathError{Op: "canonicalize", Path: abs, Err: err}
 	}
 	return filepath.Clean(canonical), nil
 }

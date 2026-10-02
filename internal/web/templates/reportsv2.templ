@@ -51,7 +51,7 @@ templ reportsCostPerOutcomeSection(view reportsCostPerOutcome) {
 						<h3 class="text-sm font-semibold text-text">{ project.Name }</h3>
 						<p class="font-mono text-2xs text-dim tabular-nums">{ project.MergedPRs } merged PRs · { project.Closed } closed issues</p>
 					</header>
-					<div class="grid grid-cols-2 gap-x-5 gap-y-4 p-4 lg:grid-cols-4">
+					<div class="grid grid-cols-2 gap-x-5 gap-y-4 p-4 lg:grid-cols-3">
 						for _, metric := range project.Metrics {
 							<div data-outcome-metric={ metric.ID }>
 								<p class="font-mono text-lg font-semibold text-text tabular-nums">{ metric.Value }</p>
@@ -233,6 +233,7 @@ templ reportsDailyDigest(digest reportsDigest) {
 						<h3 class="text-sm font-semibold text-text">{ day.Label }</h3>
 						<span class="font-mono text-2xs text-dim tabular-nums">{ day.Date }</span>
 					</div>
+					<p class="text-2xs text-sec">{ day.Scope }</p>
 					<div class="grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
 						for _, metric := range day.Metrics {
 							<div data-digest-metric={ metric.ID } data-digest-trend={ metric.Trend } class="min-w-0">
@@ -245,7 +246,7 @@ templ reportsDailyDigest(digest reportsDigest) {
 									>{ metric.Value }</span>
 									<span class={ "whitespace-nowrap text-2xs tabular-nums " + reportsDigestDeltaClass(metric.Trend) }>{ metric.Delta }</span>
 								</div>
-								<div class="truncate text-2xs text-sec">{ metric.Label }</div>
+								<div class="truncate text-2xs text-sec" title={ metric.Label }>{ metric.Label }</div>
 								if metric.Detail != "" {
 									<div class="truncate text-2xs text-dim" title={ metric.Detail }>{ metric.Detail }</div>
 								}
@@ -260,7 +261,7 @@ templ reportsDailyDigest(digest reportsDigest) {
 								</thead>
 								<tbody class="text-sec">
 									for _, project := range day.Projects {
-										<tr data-digest-project={ project.ID }><td class="py-0.5 text-text">{ project.Name }</td><td class="py-0.5 text-right font-mono tabular-nums">{ formatInt(project.Shipped) }</td><td class="py-0.5 text-right font-mono tabular-nums">{ formatInt(project.Filed) }</td><td class="py-0.5 text-right font-mono tabular-nums">{ formatInt(project.Releases) }</td></tr>
+										<tr data-digest-project={ project.ID }><td class="py-0.5 text-text">{ project.Name }</td><td class="py-0.5 text-right font-mono tabular-nums">{ formatInt(project.Shipped) }</td><td class="py-0.5 text-right font-mono tabular-nums">{ formatInt(project.Filed) }</td><td class="py-0.5 text-right font-mono tabular-nums"><span title="Durable release history unavailable; external releases unobserved">—</span></td></tr>
 									}
 								</tbody>
 							</table>
@@ -275,12 +276,13 @@ templ reportsDailyDigest(digest reportsDigest) {
 templ reportsTopTable(id string, title string, rows []reportsTopRow) {
 	@primitives.Panel(primitives.PanelProps{ID: id, Title: title}) {
 		<div class="overflow-x-auto">
-			<div class="min-w-[450px] md:min-w-0">
-				<div class="grid grid-cols-[90px_minmax(0,1fr)_110px_90px] gap-3.5 border-b border-line px-4 py-2">
+			<div class="min-w-[550px] md:min-w-0">
+				<div class="grid grid-cols-[70px_minmax(0,1fr)_70px_80px_100px] gap-3.5 border-b border-line px-4 py-2">
 					<span class="text-2xs font-semibold uppercase text-dim">ID</span>
 					<span class="text-2xs font-semibold uppercase text-dim">Title</span>
 					<span class="text-right text-2xs font-semibold uppercase text-dim">Tokens</span>
-					<span class="text-right text-2xs font-semibold uppercase text-dim">Notional USD</span>
+					<span class="text-right text-2xs font-semibold uppercase text-dim">Token USD</span>
+					<span class="text-right text-2xs font-semibold uppercase text-dim">Compute USD</span>
 				</div>
 				if len(rows) == 0 {
 					@primitives.EmptyLine("No usage buckets yet")
@@ -291,6 +293,7 @@ templ reportsTopTable(id string, title string, rows []reportsTopRow) {
 						<span class="truncate text-sm text-text">{ row.Title }</span>
 						<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Tokens }</span>
 						<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Cost }</span>
+						<span class="whitespace-nowrap text-right font-mono text-xs text-sec tabular-nums">{ row.Compute }</span>
 					</div>
 				}
 			</div>

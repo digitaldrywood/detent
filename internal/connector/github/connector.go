@@ -94,6 +94,7 @@ type Config struct {
 	StateMap                   map[string]string
 	PriorityMap                map[string]*int
 	RequiredStatusChecks       []string
+	LocalStatus                string
 	TokenSource                TokenSource
 	HTTPClient                 HTTPClient
 	HTTPTransport              HTTPTransportConfig
@@ -128,6 +129,7 @@ type Connector struct {
 	terminalStates      []string
 	stateMap            map[string]string
 	priorityMap         map[string]*int
+	localStatus         string
 	requiredChecks      []string
 	unstartedThreshold  time.Duration
 	dependencySource    string
@@ -224,6 +226,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 	if err != nil {
 		return nil, err
 	}
+	client.unscopedRESTScope.ProjectID = strings.TrimSpace(cfg.ProjectSlug)
 
 	statusField := strings.TrimSpace(cfg.StatusField)
 	if statusField == "" {
@@ -251,6 +254,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		stateMap:           cloneStateMap(cfg.StateMap),
 		priorityMap:        clonePriorityMapWithDefault(cfg.PriorityMap),
 		requiredChecks:     normalizeRequiredStatusChecks(cfg.RequiredStatusChecks),
+		localStatus:        strings.TrimSpace(cfg.LocalStatus),
 		unstartedThreshold: unstartedThreshold,
 		dependencySource:   normalizeDependencySource(cfg.DependencySource),
 		dependencyCaps:     map[string]nativeDependencyCapability{},
@@ -463,6 +467,7 @@ var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.IssueStateProber = (*Connector)(nil)
+var _ connector.IssueStateIDProber = (*Connector)(nil)
 var _ connector.IssueStateScanner = (*Connector)(nil)
 var _ connector.RefreshIssueFetcher = (*Connector)(nil)
 var _ connector.FreshIssuesByStatesFetcher = (*Connector)(nil)

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,26 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-// completeNativeChangeRun finishes a successful hub-native work run through
-// the lane ledger (INV-1). A native item never has a pull request, so the
-// review transition's readiness rule never holds for it and the success path
-// used to continue the item in its active lane, dispatching it again after
-// every success. The runner has already opened the Change Request under the
-// run's lease and reported what the run left; this moves the item out of the
-// dispatchable set along the workflow the hub enforces: to the landing lane
-// when the project's review policy already accepts the published version,
-// so the runner lands it with no one waiting on it; to the project's
-// configured review lane for any other committed change; and to the lane
-// the workflow marks terminal when it committed nothing.
-//
-// When the item cannot be moved -- the workflow cannot be read or allows no
-// such move, the Change Request was not opened, or the lane write fails --
-// the completed result is held in the existing tracker completion deferral
-// (INV-2: attributed to the instance), which keeps the item from being
-// dispatched again and replays the completion later. It never falls back to
-// the ordinary success path, whose continuation would run the item again.
-//
-// It reports false only for a run with no native change to settle.
 func (o *Orchestrator) completeNativeChangeRun(
 	ctx context.Context,
 	state *State,
@@ -39,12 +20,25 @@ func (o *Orchestrator) completeNativeChangeRun(
 	finalState string,
 ) bool {
 	change := event.Result.NativeChange
-	if change == nil || state.Draining {
+	if event.Result.NativeLanding != nil {
 		return false
 	}
 	reader, ok := o.connector.(connector.WorkflowStateReader)
 	if !ok {
 		return false
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		running.DiffStats = event.Result.DiffStats
+	}
+	if o.handlePermissionWaitCompletion(ctx, state, event, running) {
+		return true
+	}
+	mode := firstNonBlank(event.Request.Mode, running.Mode)
+	if mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement {
+		return false
+	}
+	if finalState == "" {
+		finalState = FinalStateCompleted
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
@@ -53,15 +47,30 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return true
 	}
+	if errors.Is(event.Err, runpkg.ErrExecutionAuthorityUnavailable) {
+		return handoff(event.Err)
+	}
+	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
+		return false
+	}
+	if change == nil {
+		return false
+	}
+	if change.Error != "" {
+		return handoff(errors.New(change.Error))
+	}
 	if change.Changed && change.ChangeID == "" {
 		return handoff(fmt.Errorf("native change request was not opened: %s", change.Error))
+	}
+	if change.Changed && change.VersionID == "" && change.VersionError == "" {
+		return handoff(errors.New("the native change has no published current version"))
 	}
 	states, err := reader.WorkflowStates(ctx)
 	if err != nil {
 		return handoff(fmt.Errorf("read native workflow states: %w", err))
 	}
 	change = o.refreshNativeChangeReview(ctx, issueID, change)
-	review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
+	review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState()
 	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed)
 	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && direct && dispatchableState(states, landing) {
 		target, ok = landing, true
@@ -114,6 +123,11 @@ func (o *Orchestrator) completeNativeChangeRun(
 // captured may be stale. A failed read keeps the captured answer.
 func (o *Orchestrator) refreshNativeChangeReview(ctx context.Context, issueID string, change *runpkg.NativeChange) *runpkg.NativeChange {
 	reader, ok := o.connector.(connector.ChangeReviewReader)
+	if change.VersionError != "" {
+		refused := *change
+		refused.Reviewed = false
+		return &refused
+	}
 	if !ok || !change.Changed || change.ChangeID == "" || change.VersionID == "" {
 		return change
 	}
@@ -156,21 +170,27 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 	if change.VersionID != "" {
 		metadata["native_version_id"] = change.VersionID
 	}
+	if change.VersionError != "" {
+		metadata["native_version_error"] = change.VersionError
+	}
+	if change.VersionCode != "" {
+		metadata["native_version_code"] = change.VersionCode
+	}
 	return metadata
 }
 
 func nativeCompletionComment(change *runpkg.NativeChange, from, to string) string {
 	from, to = displayStateName(from), displayStateName(to)
+	if change.VersionError != "" {
+		return fmt.Sprintf("The run completed, but Change Request %s could not publish its final version for head %s: %s. Moved from %s to %s for review.",
+			change.ChangeID, shortCommit(change.HeadSHA), change.VersionError, from, to)
+	}
 	if change.Changed {
 		comment := fmt.Sprintf("The run succeeded and opened Change Request %s (%d files, head %s). Moved from %s to %s.",
 			change.ChangeID, change.Files, shortCommit(change.HeadSHA), from, to)
 		switch {
 		case change.Reviewed && normalizeState(to) == normalizeState(autoPromoteMergingState):
 			comment += " The current version needs no further review, so the runner lands it next."
-		case change.VersionID == "" && change.VersionCode == "policy_mismatch":
-			comment += fmt.Sprintf(" No version was published for review: %s. A project owner or admin has to approve a review policy for the current repository policy: approving the repository policy again in Project settings sets the default one. Then move this item back to In Progress so the runner publishes the version.", change.VersionError)
-		case change.VersionID == "":
-			comment += fmt.Sprintf(" No version was published for review: %s. The next successful run publishes one.", change.VersionError)
 		case change.Reviewed:
 			comment += fmt.Sprintf(" The current version needs no further review, but the workflow has no move from %s to %s, so it waits in %s.", from, displayStateName(autoPromoteMergingState), to)
 		}

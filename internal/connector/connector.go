@@ -199,7 +199,7 @@ type PullRequestReferenceRefresher interface {
 }
 
 type PullRequestAssociationRevalidator interface {
-	RevalidatePullRequestAssociation(context.Context, Issue) (Issue, error)
+	RevalidatePullRequestAssociation(context.Context, Issue, bool) (Issue, error)
 }
 
 // BranchHeadLookup resolves a remote branch without requiring a local workspace.
@@ -336,6 +336,10 @@ type RefreshIssueFetcher interface {
 
 type IssueStateProber interface {
 	FetchIssueStateProbe(context.Context, []string, int) ([]Issue, error)
+}
+
+type IssueStateIDProber interface {
+	FetchIssueStateProbeByIDs(context.Context, []string) ([]Issue, error)
 }
 
 type StatusDriftReader interface {

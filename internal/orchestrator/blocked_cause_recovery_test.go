@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -2527,6 +2528,102 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 	}
 }
 
+func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		mutate      func(*connector.Issue, time.Time)
+		audit       string
+		wantMerging bool
+	}{
+		{name: "same head green", wantMerging: true},
+		{name: "newer head green", mutate: func(issue *connector.Issue, at time.Time) {
+			issue.PullRequest.HeadSHA = "new-head"
+			committed := at.Add(time.Minute)
+			issue.PullRequest.HeadCommittedAt = &committed
+		}, wantMerging: true},
+		{name: "changed head without newer commit evidence", mutate: func(issue *connector.Issue, _ time.Time) {
+			issue.PullRequest.HeadSHA = "unverified-head"
+		}},
+		{name: "CI running", mutate: func(issue *connector.Issue, _ time.Time) {
+			issue.PullRequest.CIStatus = "pending"
+			issue.PullRequest.RunningChecks = []string{"Test"}
+		}},
+		{name: "CI failing", mutate: func(issue *connector.Issue, _ time.Time) {
+			issue.PullRequest.CIStatus = "failure"
+		}},
+		{name: "audit not yet run", audit: "missing", wantMerging: true},
+		{name: "audit passed", audit: "passed", wantMerging: true},
+		{name: "audit running", audit: "running"},
+		{name: "audit failed", audit: "failed"},
+		{name: "audit findings", audit: "findings"},
+		{name: "human question", mutate: func(issue *connector.Issue, _ time.Time) {
+			issue.WorkpadSignal.Status = workpad.StatusBlocked
+			issue.WorkpadSignal.HumanAction = "answer deployment question"
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			at := time.Date(2026, 9, 25, 8, 37, 0, 0, time.UTC)
+			issue := blockedReadyPullRequestIssue()
+			issue.State = "Rework"
+			issue.PullRequest.CIStatus = "pending"
+			issue.PullRequest.RunningChecks = []string{"Test"}
+			tracker := &blockedReadyPullRequestLookupConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{}}
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework", autoPromoteMergingState}, TerminalStates: []string{"Done", "Cancelled"}, MergeFastPathEnabled: true, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOff}}})
+			if tt.audit != "" {
+				cfg.Project.ID = "detent"
+				cfg.ServiceIdentity = "detent:detent"
+				cfg.AutoPromote.Gate.SecurityAudit = gate.SecurityAuditConfig{Enabled: true, MaxAttempts: 1}
+			}
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics, logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+			if tt.audit != "" {
+				memo := newSecurityAuditMemoryStore()
+				orch.securityAuditStore = memo
+				if tt.audit == "running" {
+					orch.securityAuditRuns = map[string]struct{}{orch.securityAuditIdentity(issue).cacheKey: {}}
+				}
+				if tt.audit == "passed" || tt.audit == "failed" || tt.audit == "findings" {
+					run := securityAuditPassingRun(issue)
+					if tt.audit == "failed" {
+						run.ExitStatus = securityaudit.ExitStatusFailed
+					}
+					if tt.audit == "findings" {
+						run.Verdict = securityaudit.VerdictFail
+						run.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Path: "internal/auth.go", Line: 1, Body: "authorization bypass"}}
+					}
+					if _, err := memo.RecordSecurityAuditRun(t.Context(), run); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			orch.recordLaneTransition(t.Context(), issue, blockedStatusState, at, attemptAllowanceExhaustedReason, workflowLaneMetadata{})
+			issue.State = blockedStatusState
+			issue.PullRequest.CIStatus = "success"
+			issue.PullRequest.RunningChecks = nil
+			if tt.mutate != nil {
+				tt.mutate(&issue, at)
+			}
+			state := newState(cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: attemptAllowanceExhaustedReason, Source: BlockedSourceProjectStatus, BlockedAt: at}
+			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, at.Add(2*time.Minute))
+			if tt.audit != "" && !orch.cfg.AutoPromote.Gate.SecurityAudit.Enabled {
+				t.Fatal("recovery disabled the configured security audit")
+			}
+			if tt.wantMerging {
+				if len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteMergingState {
+					t.Fatalf("updates = %#v, want Merging", tracker.updates)
+				}
+				if tracker.hydrateCalls != 1 {
+					t.Fatalf("hydrate calls = %d, want 1", tracker.hydrateCalls)
+				}
+			} else if len(tracker.updates) != 0 {
+				t.Fatalf("updates = %#v, want park held", tracker.updates)
+			}
+		})
+	}
+}
+
 func blockedReadyPullRequestIssue() connector.Issue {
 	prNumber := 1776
 	issue := dependencyAutoUnblockIssue("issue-ready-pr", blockedStatusState)
@@ -2634,4 +2731,136 @@ func (c *blockedReadyPullRequestLookupConnector) LookupBranchHead(_ context.Cont
 	c.remoteCalls++
 	c.remoteRepository, c.remoteBranch = repository, branch
 	return c.remoteHead, c.remoteErr
+}
+
+func TestRetiredAttemptTriageParkRestoresPriorLane(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, priorLane, humanAction string
+		failureMessage               string
+		failures                     int
+		incomplete                   bool
+		clearedBlocker               bool
+		operationalClaim             bool
+		closedDraft                  bool
+		newerOperatorClearance       bool
+		dependencyState              string
+		wantLane                     string
+	}{
+		{name: "missing PR association is not failure", priorLane: "Rework", failures: 2, wantLane: "Rework"},
+		{name: "preserve prior In Progress", priorLane: "In Progress", failures: 2, wantLane: "In Progress"},
+		{name: "resolved dependency", priorLane: "Rework", failures: 2, dependencyState: "Done", wantLane: "Rework"},
+		{name: "legacy failures return to configured owners", priorLane: "Rework", failures: 3, wantLane: "Rework"},
+		{name: "historical diagnostics recover Rework", priorLane: "Rework", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1", wantLane: "Rework"},
+		{name: "historical diagnostics recover In Progress", priorLane: "In Progress", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git -C /tmp/example add --intent-to-add -- . :(top,exclude).detent/worker-tmp/ failed: exit status 1", wantLane: "In Progress"},
+		{name: "worker Git failures return to configured owners", priorLane: "Rework", failures: 3, failureMessage: "run agent turn: git add intent to add: git add failed: exit status 1", wantLane: "Rework"},
+		{name: "diagnostic allowance retains human hold", priorLane: "Rework", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git add failed: exit status 1", humanAction: "approve data migration"},
+		{name: "diagnostic allowance retains dependency hold", priorLane: "Rework", failures: 3, failureMessage: "workspace diff stat: git add intent to add: git add failed: exit status 1", dependencyState: "In Progress"},
+		{name: "retired allowance no longer competes with cleared blocker", priorLane: "Rework", failures: 3, clearedBlocker: true, wantLane: "Rework"},
+		{name: "older cleared blocker permits corrected allowance", priorLane: "Rework", failures: 2, clearedBlocker: true, wantLane: "Rework"},
+		{name: "sparse operational claim does not grant acceptance", priorLane: "In Progress", failures: 3, operationalClaim: true, wantLane: "In Progress"},
+		{name: "closed draft returns to prior lane without acceptance", priorLane: "In Progress", failures: 3, operationalClaim: true, closedDraft: true, wantLane: "In Progress"},
+		{name: "current clearance returns to prior lane", priorLane: "Rework", failures: 3, newerOperatorClearance: true, wantLane: "Rework"},
+		{name: "human hold remains", priorLane: "Rework", failures: 2, humanAction: "approve data migration"},
+		{name: "active dependency remains", priorLane: "Rework", failures: 2, dependencyState: "In Progress"},
+		{name: "unknown dependency remains", priorLane: "Rework", failures: 3, dependencyState: "unknown"},
+		{name: "incomplete success returns to current owner", priorLane: "Rework", failures: 2, incomplete: true, wantLane: "Rework"},
+		{name: "do not start fresh Todo work", priorLane: "Todo", failures: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			at := time.Date(2026, 9, 30, 15, 11, 41, 0, time.UTC)
+			issue := dependencyAutoUnblockIssue("legacy-allowance", tt.priorLane)
+			issue.Identifier = "digitaldrywood/detent#3123"
+			cfg := laneMutationTestConfig()
+			cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(DependencyAutoUnblockConfig{Enabled: true, Readiness: DependencyReadinessTerminalOrMerged})
+			db := openWorkAttemptRecoveryStore(t, t.Context())
+			tracker := &dependencyAutoUnblockConnector{}
+			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, at)
+			for i := range tt.failures + 1 {
+				start := at.Add(time.Duration(i-10) * time.Minute)
+				id, err := db.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, WorkerType: "agent", Lane: tt.priorLane, AttemptNumber: i + 1, StartedAt: start})
+				if err != nil {
+					t.Fatal(err)
+				}
+				terminal, phase := store.WorkAttemptTerminalNoProgress, "no_progress"
+				if i == tt.failures {
+					terminal, phase = store.WorkAttemptTerminalSuccess, "completed"
+				}
+				if i == tt.failures && tt.incomplete {
+					phase = "waiting"
+				}
+				completion := store.WorkAttemptCompletion{AttemptID: id, CompletedAt: start.Add(time.Second), TerminalState: terminal, Phase: phase}
+				if i < tt.failures && tt.failureMessage != "" {
+					completion.TerminalState = store.WorkAttemptTerminalFailure
+					completion.Phase = "failed"
+					completion.ErrorClass = workAttemptErrorRunner
+					completion.ErrorMessage = tt.failureMessage
+				}
+				if err := db.CompleteWorkAttempt(t.Context(), completion); err != nil {
+					t.Fatal(err)
+				}
+			}
+			orch.recordLaneTransition(t.Context(), issue, blockedStatusState, at, attemptAllowanceExhaustedReason, workflowLaneMetadata{})
+			issue.State = blockedStatusState
+			issue.StageUpdatedAt = &at
+			if tt.clearedBlocker {
+				issue.WorkpadSignal = &workpad.Signal{
+					Source: workpad.SourceStructured,
+					Status: workpad.StatusBlocked,
+					Blockers: []workpad.Blocker{typedTestBlocker(workpad.Predicate{
+						Type: workpad.PredicateConfigFingerprint, Fingerprint: "old-config",
+					})},
+				}
+				orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig("new-config")}
+			}
+			if tt.operationalClaim {
+				issue.Comments = []connector.IssueComment{{Body: mergedCompletionWorkpadBody()}}
+				if _, accepted := operationalCompletionFromIssue(issue); !accepted {
+					t.Fatal("fixture must reproduce sparse operational completion claim")
+				}
+			}
+			if tt.closedDraft {
+				issue.PullRequest = &connector.PullRequest{Number: 3424, State: "CLOSED", Draft: true, HeadSHA: "old-draft", BaseRef: "develop"}
+				issue.PRNumber = &issue.PullRequest.Number
+			}
+			if tt.newerOperatorClearance {
+				clearedAt := at.Add(time.Second)
+				body := "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
+				issue.Comments = []connector.IssueComment{{Body: body, AuthorAuthorized: true, CreatedAt: &clearedAt}}
+				issue.WorkpadSignal, _ = workpad.SignalFromComment(body, "", "digitaldrywood/detent")
+			}
+			if tt.humanAction != "" {
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: tt.humanAction}
+			}
+			if tt.dependencyState != "" {
+				blocker := dependencyAutoUnblockIssue("dependency", tt.dependencyState)
+				blocker.Identifier = "digitaldrywood/detent#3134"
+				blocker.Closed = tt.dependencyState == "Done"
+				issue.DependencySource = connector.BlockedRefSourceNative
+				issue.BlockedBy = []connector.BlockedRef{{ID: blocker.ID, Identifier: blocker.Identifier, State: blocker.State, Source: connector.BlockedRefSourceNative}}
+				issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Ref: blocker.Identifier, Identifier: blocker.Identifier, Reason: "prior validation gate awaits dependency"}}}
+				tracker.blockers = []connector.Issue{blocker}
+			}
+			tracker.stateIssues = []connector.Issue{issue}
+			state := newState(cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: attemptAllowanceExhaustedReason, Source: BlockedSourceProjectStatus, BlockedAt: at}
+			orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, at.Add(time.Minute))
+			if tt.wantLane == "" {
+				if len(tracker.updates) != 0 {
+					t.Fatalf("updates=%+v, want retained hold", tracker.updates)
+				}
+				return
+			}
+			if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantLane {
+				t.Fatalf("updates=%+v, want prior lane %s", tracker.updates, tt.wantLane)
+			}
+			if _, held := state.Blocked[issue.ID]; held {
+				t.Fatal("cleared allowance remains blocked")
+			}
+			entry, ok := orch.latestWorkflowLaneEntry(t.Context(), promotedIssue(issue, tt.wantLane, at.Add(time.Minute)))
+			if !ok || entry.Event.Reason != workflowActionRecordedBlockerRecovery {
+				t.Fatalf("entry=%+v, found=%v", entry, ok)
+			}
+		})
+	}
 }

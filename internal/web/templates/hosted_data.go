@@ -16,9 +16,13 @@ type HostedPageData struct {
 	BillingCanPurchase   bool
 	BillingStatus        string
 	BillingMessage       string
+	AICredits            *HostedAICredits
+	ChatUsage            string
+	ChatUsagePeriod      string
 	BillingCheckedAt     string
 	BillingPrices        []HostedBillingPrice
 	BillingAudit         []HostedBillingAudit
+	PlanPrice            string
 	PlanName             string
 	PlanSource           string
 	UsageWindow          string
@@ -44,6 +48,19 @@ type HostedPageData struct {
 	Organizations        []HostedOrganizationChoice
 	Projects             []HostedProjectChoice
 	Members              []HostedMember
+}
+
+type HostedAICredits struct {
+	Returned    bool
+	Balance     string
+	Enabled     bool
+	Threshold   string
+	PriceID     string
+	Failure     string
+	InFlight    bool
+	CanAutoFund bool
+	Packs       []HostedBillingPrice
+	History     []HostedBillingAudit
 }
 
 type HostedBillingPrice struct {
@@ -137,13 +154,6 @@ func hostedSignInURL(data HostedPageData) templ.SafeURL {
 	return templ.SafeURL("/auth/oidc/start")
 }
 
-func hostedJoinURL(data HostedPageData) templ.SafeURL {
-	if data.SharedOrigin {
-		return templ.SafeURL("/invitations/join")
-	}
-	return templ.SafeURL("/auth/oidc/start?unscoped=1")
-}
-
 func hostedProjectPath(project string) string {
 	return "/projects/" + url.PathEscape(project)
 }
@@ -157,6 +167,7 @@ func hostedProjectMode(data HostedPageData) bool {
 }
 
 type HostedAllowanceRow struct {
+	Remaining   string
 	LimitOnly   bool
 	Label       string
 	Consumption string

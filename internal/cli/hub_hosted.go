@@ -69,6 +69,8 @@ type hostedBillingFileConfig struct {
 	WebhookSecretEnv      string                         `yaml:"webhook_secret_env"`
 	GraceSeconds          int64                          `yaml:"grace_seconds"`
 	ReconcileSeconds      int64                          `yaml:"reconcile_seconds"`
+	CreditCostMultiplier  float64                        `yaml:"credit_cost_multiplier,omitempty"`
+	CreditPacks           []hubserver.HostedCreditPack   `yaml:"credit_packs"`
 	Prices                []hubserver.HostedBillingPrice `yaml:"prices"`
 }
 
@@ -90,7 +92,7 @@ func readHostedBillingConfig(config *hostedBillingFileConfig, lookupEnv func(str
 	return &hubserver.HostedBillingConfig{
 		Mode: config.Mode, CheckoutDisabled: config.CheckoutDisabled, AccountID: config.AccountID, CustomerID: config.CustomerID, PortalConfigurationID: config.PortalConfigurationID,
 		WebhookSecret: []byte(secret), GraceSeconds: config.GraceSeconds, ReconcileSeconds: config.ReconcileSeconds,
-		Prices: config.Prices, Provider: provider,
+		Prices: config.Prices, CreditPacks: config.CreditPacks, CreditCostMultiplier: config.CreditCostMultiplier, Provider: provider,
 	}, nil
 }
 

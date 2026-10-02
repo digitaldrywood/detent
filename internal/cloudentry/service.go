@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -86,15 +87,16 @@ func (c Config) validate() error {
 }
 
 type Service struct {
-	config     Config
-	registry   *Registry
-	auth       *authStore
-	echo       *echo.Echo
-	secure     bool
-	transports sync.Map
-	mutationMu sync.Mutex
-	verified   sessionVerifications
-	refreshes  refreshLocks
+	administration *operatoradmin.Executor
+	config         Config
+	registry       *Registry
+	auth           *authStore
+	echo           *echo.Echo
+	secure         bool
+	transports     sync.Map
+	mutationMu     sync.Mutex
+	verified       sessionVerifications
+	refreshes      refreshLocks
 
 	stopAllocator context.CancelFunc
 	allocatorDone chan struct{}
@@ -191,6 +193,7 @@ func Run(ctx context.Context, cfg Config) (resultErr error) {
 }
 
 func (s *Service) routes() {
+	s.registerAdministration()
 	e := s.echo
 	e.Pre(s.boundary)
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
@@ -220,8 +223,6 @@ func (s *Service) routes() {
 	e.POST("/support/start", s.startSupport)
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
 	e.GET("/invite", s.startInvitation)
-	e.GET("/invitations/join", s.joinPage)
-	e.POST("/invitations/join", s.joinInvitation)
 	e.Any("/organizations/:organization", s.proxy)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)
@@ -239,6 +240,9 @@ func (s *Service) boundary(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		if !cloudassert.CanonicalPath(c.Request().URL) {
 			return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
+		}
+		if s.redirectLegacyNavigation(c) {
+			return c.Redirect(http.StatusTemporaryRedirect, s.config.PublicURL+c.Request().URL.RequestURI())
 		}
 		return next(c)
 	}
@@ -347,12 +351,6 @@ func (s *Service) loginDenied(c echo.Context, status int, message string, denial
 	return s.denied(c, status, message)
 }
 
-func (s *Service) loginRefused(c echo.Context, status int, code, message string, denial auth.HostedDenial) error {
-	denial.Status = status
-	auth.LogHostedDenial(s.config.Logger, c.Response(), c.Request(), denial)
-	return s.refuse(c, status, code, message)
-}
-
 func (s *Service) home(c echo.Context) error {
 	if session, err := s.session(c); err == nil {
 		return c.Redirect(http.StatusSeeOther, s.landing(session.Email, session.Identity))
@@ -369,7 +367,8 @@ func (s *Service) sameOrigin(c echo.Context) bool {
 	if origin == "null" {
 		return header.Get("Sec-Fetch-Site") == "same-origin"
 	}
-	return origin != "" && origin == strings.TrimRight(s.config.PublicURL, "/")
+	return origin != "" && (origin == strings.TrimRight(s.config.PublicURL, "/") ||
+		s.legacyHostedRequest(c.Request()) && origin == "https://"+c.Request().Host)
 }
 
 func (s *Service) csrfValid(c echo.Context, session accountSession, organization string) bool {

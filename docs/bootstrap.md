@@ -9,7 +9,7 @@ can execute these steps top to bottom; replace each `<...>` placeholder. The
 complete, annotated reference instance to compare against as you work.
 
 1. **Install Detent.** `brew install digitaldrywood/tap/detent` (macOS/Linux),
-   `go install github.com/digitaldrywood/detent/cmd/detent@latest`, or a
+   a Go-only build of the prepared source archive, or a
    platform installer from [Install](../README.md#install). Verify: `detent version`.
 
 2. **Install and authenticate the GitHub CLI.** Install
@@ -46,9 +46,15 @@ complete, annotated reference instance to compare against as you work.
    [OpenAI Codex CLI](https://github.com/openai/codex) and sign in. Detent
    dispatches every agent through `codex app-server`. Verify: `codex --version`.
 
-4. **Choose the GitHub status source.** For the current/default compatibility
-   path, choose the GitHub ProjectV2 board Detent will drive and get its node
-   id (starts with `PVT_`):
+4. **Choose the GitHub status source.** Recommend repository label mode when
+   several projects share one GitHub token or a board has more than a few
+   hundred items. ProjectV2 polling cost scales with total unarchived items
+   multiplied by refresh rate; Done items keep costing every cycle. One large
+   board can exhaust the GraphQL budget shared by other projects and `gh`.
+   Label mode avoids board inventory reads; archiving Done board items also
+   reduces ProjectV2 cost. Keep the operator's explicit mode choice.
+
+   If you choose ProjectV2, get the board's node id (starts with `PVT_`):
 
    ```sh
    gh project list --owner <org-or-user> --format json --limit 50

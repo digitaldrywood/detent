@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -106,16 +108,49 @@ func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []
 
 func tenantConfiguration(config cloudFileConfig) func(cloudentry.TenantSpec) ([]byte, error) {
 	return func(spec cloudentry.TenantSpec) ([]byte, error) {
+		workspaces, err := tenantWorkspaceConfiguration(spec)
+		if err != nil {
+			return nil, err
+		}
 		tenant := hostedFileConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL,
 			StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, Plans: config.Allocation.Entitlements, Billing: config.Allocation.Billing,
 			Conversation:             &hostedConversationFileConfig{Enabled: true},
+			Workspaces:               workspaces,
 			EntitlementAdministrator: config.Allocation.EntitlementAdministrator, EntitlementAdminTokenEnv: config.Allocation.EntitlementAdminTokenEnv,
 			SharedEntry: &hostedSharedEntryFileConfig{Issuer: spec.Issuer, PublicKeys: []string{spec.PublicKey}, AllocationGeneration: spec.Organization.Generation},
 		}
 		tenant.WorkOS.ClientID, tenant.WorkOS.APIKeyEnv, tenant.WorkOS.APIURL, tenant.WorkOS.IssuerURL = config.WorkOS.ClientID, config.WorkOS.APIKeyEnv, config.WorkOS.APIURL, config.WorkOS.IssuerURL
 		return yaml.Marshal(tenant)
 	}
+}
+
+func tenantWorkspaceConfiguration(spec cloudentry.TenantSpec) (*hostedWorkspaceFileConfig, error) {
+	if spec.Directory == "" {
+		return nil, nil
+	}
+	file, err := os.Open(filepath.Join(spec.Directory, "tenant.yaml"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.New("tenant workspace policy could not be opened")
+	}
+	decoder := yaml.NewDecoder(io.LimitReader(file, 128*1024))
+	decoder.KnownFields(true)
+	var tenant hostedFileConfig
+	decodeErr := decoder.Decode(&tenant)
+	closeErr := file.Close()
+	if decodeErr != nil || closeErr != nil {
+		return nil, errors.New("tenant workspace policy could not be read")
+	}
+	if tenant.OrganizationID != spec.Organization.ID || tenant.WorkOSOrganizationID != spec.Organization.ProviderID {
+		return nil, errors.New("tenant workspace policy belongs to another organization")
+	}
+	if _, _, err := readWorkspaceConfig(tenant.Workspaces); err != nil {
+		return nil, err
+	}
+	return tenant.Workspaces, nil
 }
 
 func validateTenantConfiguration(config cloudFileConfig, key ed25519.PrivateKey, lookupEnv func(string) string) error {

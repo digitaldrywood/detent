@@ -44,10 +44,16 @@ type nativeWebFixture struct {
 func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 	t.Helper()
 	fixture := &nativeWebFixture{issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_example", Revision: 7, Profile: "native", Number: 1}, Title: "Native collaboration", Body: "Full native body <script>unsafe()</script>", State: "Todo"}}
-	hubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	hubHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fixture.mu.Lock()
 		defer fixture.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v2/capabilities" {
+			if err := json.NewEncoder(w).Encode(map[string]any{"features": []string{tracker.NativeRuntimeEvidenceCapability}}); err != nil {
+				t.Error(err)
+			}
+			return
+		}
 		base := "/api/v2/organizations/org_example/projects/prj_example"
 		if !strings.HasPrefix(r.URL.Path, base) {
 			t.Errorf("unexpected external request %s", r.URL)
@@ -88,16 +94,34 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 			switch path {
 			case "":
 				response = tracker.NativeProject{ID: "prj_example", OrganizationID: "org_example", Profile: "native", States: []tracker.NativeState{{Name: "Todo", Transitions: []string{"In Progress"}}, {Name: "In Progress"}}}
+			case "/labels":
+				response = map[string]any{"items": []tracker.NativeLabel{{Name: "bug", Count: 1}}}
+			case "/work-items":
+				response = tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{fixture.issue}}
 			case "/work-items/wi_example":
 				response = fixture.issue
+			case "/work-items/wi_visible":
+				response = tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_visible", OrganizationID: "org_example", ProjectID: "prj_example"}, Title: "Visible peer"}
 			case "/work-items/wi_example/history":
-				response = tracker.Page[tracker.CollaborationEvent]{}
+				page := tracker.Page[tracker.CollaborationEvent]{Items: []tracker.CollaborationEvent{}}
+				for _, id := range fixture.issue.Dependencies {
+					page.Items = append(page.Items, tracker.CollaborationEvent{Data: tracker.CollaborationData{RelatedWorkItemID: id}})
+				}
+				response = page
 			case "/work-items/wi_example/comments":
 				response = tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{{ID: "cmt_example", Revision: 7, Body: "Discussion <img src=x onerror=unsafe()>", Provenance: &tracker.Provenance{Provider: "github", AuthorID: "contributor"}}}, NextCursor: "next-page"}
+			case "/work-items/wi_example/runtime":
+				response = tracker.NativeRuntimeEvidence{Issue: fixture.issue, ObservedAt: time.Now().UTC(), Selection: "unavailable", Unavailable: []string{"runtime_phase_heartbeat", "historical_scheduler_decision"}}
 			case "/work-items/wi_example/attempts":
 				response = tracker.Page[tracker.NativeAttempt]{}
 			case "/work-items/wi_example/changes":
 				response = []tracker.ChangeRequest{}
+			case "/work-items/wi_example/artifacts":
+				response = []map[string]any{{"artifact_id": "artifact_example", "version_id": "version_example", "availability": "available", "kind": "diff", "revision": 1, "expires_at": "2099-01-01T00:00:00Z"}}
+			case "/work-items/wi_example/pull-requests":
+				response = []hubclient.NativePullRequestReference{{Number: 10, URL: "https://github.com/example/repo/pull/10"}}
+			case "/work-items/wi_example/versions/7":
+				response = fixture.issue
 			default:
 				w.WriteHeader(http.StatusNotFound)
 				response = map[string]string{"code": "not_found"}
@@ -106,9 +130,8 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 		if err := json.NewEncoder(w).Encode(response); err != nil {
 			t.Error(err)
 		}
-	}))
-	t.Cleanup(hubServer.Close)
-	client, err := hubclient.New(hubclient.Config{URL: hubServer.URL, TokenSource: func() string { return "hub-operator" }})
+	})
+	client, err := hubclient.New(hubclient.Config{URL: "http://hub.test", HTTPClient: &http.Client{Transport: nativeWebTransport{handler: hubHandler}}, TokenSource: func() string { return "hub-operator" }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +257,7 @@ func TestNativeWorkReadAndBrowserAuthorization(t *testing.T) {
 			if res.Header().Get("Cache-Control") != "no-store" {
 				t.Fatal("native content must not be cached")
 			}
-			if strings.Contains(res.Body.String(), "<script>unsafe()") || strings.Contains(res.Body.String(), "<img src=x") || strings.Contains(res.Body.String(), "github.com/") {
+			if strings.Contains(res.Body.String(), "<script>unsafe()") || strings.Contains(res.Body.String(), "<img src=x") || strings.Contains(res.Body.String(), `href="https://github.com/`) {
 				t.Fatal("unsafe content or manufactured GitHub URL")
 			}
 		})
@@ -262,6 +285,25 @@ func TestNativeWorkReadAndBrowserAuthorization(t *testing.T) {
 			server.Handler().ServeHTTP(res, req)
 			if res.Code != tt.want {
 				t.Fatalf("response %d: %s", res.Code, res.Body)
+			}
+		})
+	}
+}
+
+func TestNativeLinkedSourceStatus(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"pending", "complete"} {
+		t.Run(status, func(t *testing.T) {
+			server, fixture := newNativeWebServer(t)
+			fixture.issue.LinkedSource = &tracker.LinkedIssueSource{URL: "https://github.com/acme/orders/issues/12", Status: status}
+			r := httptest.NewRecorder()
+			server.Handler().ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/projects/native/issues/wi_example", nil))
+			want := "Awaiting source intake"
+			if status == "complete" {
+				want = "Source intake completed"
+			}
+			if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), want) || !strings.Contains(r.Body.String(), `href="https://github.com/acme/orders/issues/12"`) {
+				t.Fatalf("linked issue view: status=%d, missing %s or source link", r.Code, want)
 			}
 		})
 	}
@@ -334,4 +376,12 @@ func TestNativeWorkUpstreamErrorsPreserveDraft(t *testing.T) {
 			}
 		})
 	}
+}
+
+type nativeWebTransport struct{ handler http.Handler }
+
+func (r nativeWebTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response := httptest.NewRecorder()
+	r.handler.ServeHTTP(response, request)
+	return response.Result(), nil
 }

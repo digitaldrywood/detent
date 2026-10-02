@@ -31,6 +31,15 @@ requirements, do not authorize this refresh fallback. If a refreshed head
 is missing required contexts, Detent routes the issue to `Rework` instead of
 retrying an incomplete merge worker.
 
+When `gate.local_status` is configured, Detent is its only producer. A missing
+Detent-owned status is work for Detent to produce and is never waited on as CI.
+Todo and Rework workers remain dispatchable, and the merge worker validates the
+head and posts that status through the existing local-gate path. The missing
+context remains required-check evidence until it is produced; it does not feed
+missing-check streaks, parks, or park-recovery waits. Other missing required
+contexts still wait for their CI producers. Manually posting `local-gate=failure`
+to unblock dispatch is no longer needed.
+
 A selected merge worker reserves its repository across CI waits for at most
 one hour from initial selection. Other same-repository retries cannot refresh
 or merge ahead of it during that reservation. Waiting releases the worker and
@@ -52,20 +61,28 @@ releases the reservation even after the tracker omits the completed issue from
 queue fetches. Diagnostics record
 reservation release reasons, head/base identities, and validation invalidation.
 
-Each Detent pull request runs `make check-fast` in its own worktree before
-merge. The target has no repository or machine-wide validation lock, so
-independent worktrees can validate concurrently. No pull-request GitHub Actions
-workflow or required status check delays the merge. The scheduled full suite
-validates a pinned `develop` commit after integration; only a green commit gets
+This repository uses `gate.run: true` with no required status checks, as described
+in [AGENTS.md](../AGENTS.md#validation). Focused diagnostics during repair are
+not a merge prerequisite; do not require local-gate publication or blocking CI.
+Other projects retain their configured validation and required checks.
+The scheduled full suite validates a pinned `develop` commit after integration;
+only a green commit gets
 an annotated version tag and release artifacts. Every `develop` push still
 deploys to staging.
 
-The local target verifies generated sources, migrations, frontend build and
-unit tests, Go build and vet, lint, invariants, and short tests that avoid
+The optional local diagnostic target verifies generated sources, migrations,
+frontend build and unit tests, Go build and vet, lint, invariants, and short tests that avoid
 shared database and port resources. The scheduled suite includes race,
 coverage, security, browser visual, portability, installer, and packaging
-checks. Scheduled failures file one fingerprinted Todo hotfix issue per job;
-a later green run closes them.
+checks. The existing native scheduled reporter files fingerprinted diagnostics
+in Backlog and appends occurrences to matching open issues, including imported
+history. Parsed source/test blockers of deployment or validated release receive
+at least High priority through the existing revisioned owner, preserving Urgent
+and operator holds. Unknown infrastructure evidence remains instance-owned
+intake, without source-repair authority or priority promotion. Scheduled green
+evidence does not close native issues or authorize admission or completion.
+A pinned red result does not establish a current staging outage. Follow the
+[failure reporting policy](../AGENTS.md#deployment-and-release-failure-reporting).
 
 When implementation workers fill project or global capacity, a clean PR with
 passing current-head checks and a known base can complete through the existing

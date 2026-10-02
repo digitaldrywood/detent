@@ -9,6 +9,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // nativeWorkflow reports whether the tracker is a hub-native project, whose
@@ -30,15 +31,6 @@ func withNativeLandingLane(cfg Config, tracker connector.Connector) Config {
 	return cfg
 }
 
-// completeNativeLandingRun finishes a hub-native landing run. A landed
-// version was finished by the hub in the same write that recorded its merge
-// commit, so the item is read back rather than moved; a refused landing
-// moves the item back to the review lane with the reason, where a person
-// decides what to change. Either way the run is complete: a refusal is the
-// repository's answer, not a failure of the runner.
-//
-// It reports false for a run with no landing to settle, and hands the
-// completion off (INV-2) when the lane cannot be read or written.
 func (o *Orchestrator) completeNativeLandingRun(
 	ctx context.Context,
 	state *State,
@@ -83,10 +75,14 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if err != nil {
 			return handoff(fmt.Errorf("read native workflow states: %w", err))
 		}
-		review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
-		lane, ok := connector.CompletionLane(states, issue.State, review, true)
+		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+		destination := cfg.reviewTargetState()
+		if landing.RefusalKind == workspace.LandRefusalConflict {
+			destination = cfg.ReworkState
+		}
+		lane, ok := connector.CompletionLane(states, issue.State, destination, true)
 		if !ok {
-			return handoff(fmt.Errorf("native workflow allows no move from %s back to the review lane %s", strings.TrimSpace(issue.State), review))
+			return handoff(fmt.Errorf("native workflow allows no move from %s to the landing refusal lane %s", strings.TrimSpace(issue.State), destination))
 		}
 		if err := o.updateIssueStateByID(ctx, state, issueID, issue, lane, event.CompletedAt, "completed_active_review_transition"); err != nil {
 			return handoff(fmt.Errorf("move native item to %s: %w", lane, err))
@@ -125,7 +121,10 @@ func (o *Orchestrator) completeNativeLandingRun(
 }
 
 func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
-	metadata := map[string]any{"native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID}
+	if landing == nil {
+		return nil
+	}
+	metadata := map[string]any{"native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
 	if landing.MergeSHA != "" {
 		metadata["native_merge_sha"] = landing.MergeSHA
 		metadata["native_base_ref"] = landing.BaseRef

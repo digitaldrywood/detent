@@ -57,6 +57,7 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 	issue connector.Issue,
 	resolvedReferences map[string]connector.Issue,
 	now time.Time,
+	referencesAttempted ...bool,
 ) recordedBlockerEvaluation {
 	signal, _ := rawIssueWorkpadSignal(issue)
 	if signal == nil {
@@ -91,7 +92,7 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 		issue:           issue,
 		state:           state,
 		now:             now,
-		references:      o.resolveBlockerPredicateReferences(ctx, issue, issue.WithNativeWorkpadAuthority().WorkpadSignal.Blockers, resolvedReferences),
+		references:      o.resolveBlockerPredicateReferences(ctx, issue, issue.WithNativeWorkpadAuthority().WorkpadSignal.Blockers, resolvedReferences, len(referencesAttempted) > 0 && referencesAttempted[0]),
 		hydrated:        map[string]connector.Issue{},
 		hydrationErrors: map[string]error{},
 	}
@@ -143,8 +144,27 @@ func recordedHumanActionEvidence(state *State, issue connector.Issue, now time.T
 // Workpad park. The newest authorized Workpad must explicitly clear the action
 // after the Blocked entry; an ordinary reply cannot silently release it.
 func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) *telemetry.BlockerEvidence {
-	for index := len(issue.Comments) - 1; index >= 0; index-- {
-		comment := issue.Comments[index]
+	recordedAt := clearedHumanActionRecordedAt(issue, parkedAt, false)
+	if recordedAt == nil {
+		return nil
+	}
+	evidence := newBlockerEvidence("free_text", workpad.BlockerOwnerHuman, blockerEvidenceStatusCleared,
+		"", "human_action", "authorized Workpad cleared human_action after Blocked entry",
+		recordedAt, nil, "", now)
+	return &evidence
+}
+
+func clearedHumanActionRecordedAt(issue connector.Issue, parkedAt time.Time, preserveCompleted bool) *time.Time {
+	comments := issue.Comments
+	if !preserveCompleted {
+		index := currentWorkpadCommentIndex(comments)
+		if index < 0 {
+			return nil
+		}
+		comments = comments[index : index+1]
+	}
+	for index := len(comments) - 1; index >= 0; index-- {
+		comment := comments[index]
 		if !autoPromoteIsWorkpadComment(comment.Body) {
 			continue
 		}
@@ -153,8 +173,13 @@ func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) 
 		}
 		signal, ok := workpad.SignalFromComment(comment.Body, comment.URL, dependencyIssueRepo(issue.Identifier))
 		if !ok || signal.Invalid != nil || signal.Source != workpad.SourceStructured ||
-			strings.TrimSpace(signal.Status) != workpad.StatusInProgress ||
 			strings.TrimSpace(signal.HumanAction) != "" || strings.TrimSpace(signal.ReasonCode) != "" || len(signal.Blockers) != 0 {
+			return nil
+		}
+		if preserveCompleted && strings.TrimSpace(signal.Status) == workpad.StatusComplete {
+			continue
+		}
+		if strings.TrimSpace(signal.Status) != workpad.StatusInProgress {
 			return nil
 		}
 		recordedAt := autoPromoteWorkpadRecordedAt(comment)
@@ -163,10 +188,7 @@ func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) 
 		if recordedAt == nil || recordedAt.Before(parkedAt.Truncate(time.Second)) {
 			return nil
 		}
-		evidence := newBlockerEvidence("free_text", workpad.BlockerOwnerHuman, blockerEvidenceStatusCleared,
-			"", "human_action", "authorized Workpad cleared human_action after Blocked entry",
-			recordedAt, nil, "", now)
-		return &evidence
+		return recordedAt
 	}
 	return nil
 }
@@ -298,6 +320,7 @@ func (o *Orchestrator) resolveBlockerPredicateReferences(
 	issue connector.Issue,
 	blockers []workpad.Blocker,
 	seed map[string]connector.Issue,
+	attempted bool,
 ) map[string]connector.Issue {
 	resolved := map[string]connector.Issue{}
 	for identifier, resolvedIssue := range seed {
@@ -306,6 +329,11 @@ func (o *Orchestrator) resolveBlockerPredicateReferences(
 	self := normalizedIssueIdentifier(issue.Identifier)
 	if self != "" {
 		resolved[self] = issue
+	}
+	if attempted {
+		// The phase already attempted the whole cohort. Missing results remain
+		// unknown instead of triggering another per-root resolver call.
+		return resolved
 	}
 	refs := []connector.BlockedRef{}
 	seen := map[string]struct{}{}
@@ -637,6 +665,11 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 	now time.Time,
 ) bool {
 	targetState := dependencyAutoUnblockTargetState(state, issue, normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock).TargetState)
+	if entry, ok := o.latestWorkflowLaneEntry(ctx, issue); ok && entry.Metadata.BlockedRecovery == nil {
+		if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
+			targetState = park.TargetState
+		}
+	}
 	encoded, err := json.Marshal(evidence)
 	if err != nil {
 		if o.logger != nil {
@@ -646,6 +679,9 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 	}
 	signature := workpad.ContentHash(strings.TrimSpace(issue.Identifier) + "\n" + string(encoded))
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionRecordedBlockerRecovery, signature)
+	if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
+		metadata.BlockedRecovery = &park
+	}
 	if err := o.updateIssueStateByIDStrictWithMetadata(
 		ctx,
 		state,

@@ -29,7 +29,6 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		tokens = running.Tokens
 	}
 	running.Tokens = tokens
-	releaseWorkerGitHubMonitorProbe(state, event.IssueID, "deferred", "worker completed after lane transition", event.CompletedAt)
 	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
 		o.recoverBackendCapacity(state, running, event.CompletedAt)
 	} else {
@@ -45,7 +44,7 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		return
 	}
 	if event.Err == nil && stateIn(running.Issue.State, o.cfg.TerminalStates) {
-		o.completeTerminalRunning(ctx, state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
+		o.completeTerminalRunning(ctx, state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt)
 		return
 	}
 	errorClass := ""
@@ -226,11 +225,6 @@ func (o *Orchestrator) observeLane(ctx context.Context, state *State, issue conn
 		o.recordLaneTransition(ctx, before, issue.State, enteredAt, "operator_move", workflowLaneMetadata{Provenance: attribution})
 		o.handleOperatorMove(state, OperatorMoveRequest{IssueID: issue.ID, Identifier: issue.Identifier, FromState: previous.State, ToState: strings.TrimSpace(issue.State)}, enteredAt)
 	}
-	if !same && normalizeState(issue.State) == normalizeState(autoPromoteReworkState) {
-		observed := cloneIssue(issue)
-		observed.State = ""
-		o.captureReworkLesson(observed, enteredAt, "tracker_state_observed")
-	}
 	return observation, attribution, nil
 }
 
@@ -284,4 +278,21 @@ func latestLedgerBaseline(events []store.WorkflowPhaseEvent) (store.WorkflowPhas
 		}
 	}
 	return latest, !latest.StartedAt.IsZero()
+}
+
+// programmaticMergeDelivery is called only after a successful merge API return.
+// ActivityAt records that observation; MergedAt remains immutable forge evidence.
+func (o *Orchestrator) programmaticMergeDelivery(issue connector.Issue) (connector.Issue, time.Time) {
+	merged := cloneIssue(issue)
+	observedAt := o.clockNow().UTC()
+	merged.PullRequest.State = "MERGED"
+	merged.PullRequest.ActivityAt = &observedAt
+	return merged, mergedDeliveryAt(merged, observedAt)
+}
+
+func mergedDeliveryAt(issue connector.Issue, fallback time.Time) time.Time {
+	if pr := issue.PullRequest; pr != nil && normalizePullRequestState(pr.State) == "merged" && pr.MergedAt != nil && !pr.MergedAt.IsZero() {
+		return pr.MergedAt.UTC()
+	}
+	return fallback.UTC()
 }

@@ -75,6 +75,7 @@ type ConversationBindRequest struct {
 // bounded transcript for the runner to prepend as data.
 type ConversationBindResponse struct {
 	ConversationID string `json:"conversation_id"`
+	Continuation   *bool  `json:"continuation"`
 	// Preferences are the conversation's turn preferences: the runner
 	// applies the explicit ones to every turn it runs for this attempt.
 	Preferences runner.ConversationPreferences `json:"preferences"`
@@ -227,7 +228,7 @@ func (e *nativeExecution) BindConversation(ctx context.Context, capabilities run
 		return nil, err
 	}
 	e.mu.Lock()
-	e.conversation = true
+	e.conversationContinuation = response.Continuation == nil || *response.Continuation
 	e.mu.Unlock()
 	logger := slog.Default().With("work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID)
 	return newConversationSession(ctx, e.claim.source.client, e.claim.lease.WorkItemID, identity, response, e.leaseCheck, logger), nil

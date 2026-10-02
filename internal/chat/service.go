@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 const (
@@ -40,6 +43,8 @@ type Service struct {
 }
 
 type session struct {
+	connection *operatortool.Connection
+	mode       ConnectionMode
 	mu         sync.Mutex
 	threadID   string
 	messages   []Message
@@ -122,14 +127,40 @@ func (s *Service) Send(ctx context.Context, sessionID string, content string) (C
 	}
 	current.messages = append(current.messages, Message{ID: messageID, Role: RoleUser, Content: content, At: s.now().UTC()})
 
+	tools := Tools()
+	if current.connection != nil {
+		tools = tools[:len(operatortool.Catalog())]
+	}
 	actionsBefore := len(current.actions)
 	response, err := s.provider.Reply(ctx, TurnRequest{
 		ThreadID: current.threadID,
 		Prompt:   content,
-		Tools:    Tools(),
+		Tools:    tools,
 		Handle: func(ctx context.Context, call ToolCall) (ToolResult, error) {
 			if s.tools == nil {
 				return ToolResult{}, errors.New("chat tools unavailable")
+			}
+			if current.connection != nil {
+				allowed := false
+				for _, definition := range operatortool.Catalog() {
+					if definition.Name == call.Name {
+						allowed = true
+					}
+				}
+				if !allowed {
+					return ToolResult{}, operatortool.ErrAccessDenied
+				}
+				var selector struct {
+					ProjectID string `json:"project_id"`
+				}
+				if json.Unmarshal(call.Arguments, &selector) != nil {
+					return ToolResult{}, operatortool.ErrInvalidArguments
+				}
+				var err error
+				ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: selector.ProjectID})
+				if err != nil {
+					return ToolResult{}, err
+				}
 			}
 			result, err := s.tools.ExecuteTool(ctx, call)
 			if err != nil || result.Proposal == nil {
@@ -188,11 +219,35 @@ func (s *Service) Confirm(ctx context.Context, sessionID string, actionID string
 	if current.actions[index].Status != ActionPending {
 		return s.conversation(current), ErrActionNotPending
 	}
+	if current.connection != nil {
+		if err := authorizeHuman(ctx, current.connection.Identity.OrganizationID); err != nil {
+			return s.conversation(current), err
+		}
+		var err error
+		ctx, err = authorizeAction(ctx, *current.connection, current.actions[index])
+		if err != nil {
+			s.auditAction(ctx, current.actions[index], "denied")
+			return s.resolveAction(current, index, "Operator access is unavailable.", err)
+		}
+		current.actions[index].Mode = current.mode
+		current.actions[index].Mutation.Mode = string(current.mode)
+		current.actions[index].Mutation.Confirmation = "approved"
+		s.auditAction(ctx, current.actions[index], "approved")
+	}
 	if s.actions == nil {
 		return s.resolveAction(current, index, "Action execution is unavailable.", ErrUnavailable)
 	}
 	result, err := s.actions.ExecuteAction(ctx, current.actions[index])
-	return s.resolveAction(current, index, result, err)
+	outcome := "succeeded"
+	if err != nil {
+		outcome = "failed"
+	}
+	auditAction := current.actions[index]
+	if err == nil && result.ResourceID != "" {
+		auditAction.IssueID = result.ResourceID
+	}
+	s.auditAction(ctx, auditAction, outcome)
+	return s.resolveExecution(current, index, result, err)
 }
 
 func (s *Service) Reject(sessionID string, actionID string) (Conversation, error) {
@@ -206,6 +261,13 @@ func (s *Service) Reject(sessionID string, actionID string) (Conversation, error
 	if current.actions[index].Status != ActionPending {
 		return s.conversation(current), ErrActionNotPending
 	}
+	if current.connection != nil {
+		return s.conversation(current), operatortool.ErrAccessDenied
+	}
+	return s.rejectAction(current, index)
+}
+
+func (s *Service) rejectAction(current *session, index int) (Conversation, error) {
 	now := s.now().UTC()
 	current.actions[index].Status = ActionRejected
 	current.actions[index].Result = "Cancelled by the operator."
@@ -226,6 +288,24 @@ func (s *Service) providerFailure(current *session, content string, err error) (
 func (s *Service) providerFailureAfterUser(current *session, err error) (Conversation, error) {
 	s.appendAssistant(current, "Chat is temporarily unavailable. The board was not changed.", true)
 	return s.conversation(current), err
+}
+
+func (s *Service) resolveExecution(current *session, index int, result ActionExecution, actionErr error) (Conversation, error) {
+	if actionErr == nil {
+		if current.actions[index].Kind == ActionKind(operatortool.SessionLogout) && result.SignOut != nil {
+			copy := *result.SignOut
+			current.actions[index].SignOut = &copy
+		}
+		current.actions[index].resultData = append(json.RawMessage(nil), result.Data...)
+	}
+	if actionErr == nil && result.ResourceID != "" {
+		current.actions[index].IssueID = result.ResourceID
+		current.actions[index].Identifier = result.Identifier
+		current.actions[index].ResourceURL = result.URL
+		current.actions[index].Revision = result.Revision
+		current.actions[index].CommentID = result.CommentID
+	}
+	return s.resolveAction(current, index, result.Message, actionErr)
 }
 
 func (s *Service) resolveAction(current *session, index int, result string, actionErr error) (Conversation, error) {
@@ -294,18 +374,53 @@ func (s *Service) prune(now time.Time) {
 }
 
 func (s *Service) conversation(current *session) Conversation {
-	return Conversation{
+	conversation := Conversation{Mode: current.mode,
 		Messages:    append([]Message(nil), current.messages...),
 		Actions:     cloneActions(current.actions),
-		Unavailable: s.provider == nil,
+		Unavailable: s.provider == nil && current.connection == nil,
 	}
+	if current.connection != nil {
+		conversation.RequireConfirmation = current.connection.RequireConfirmation
+		conversation.PrincipalID = current.connection.Identity.PrincipalID
+		conversation.ConnectionID = current.connection.ID
+		conversation.ApprovalBaseURL = current.connection.DashboardURL
+		conversation.OrganizationID = current.connection.Identity.OrganizationID
+		conversation.Client = current.connection.Client
+	}
+	return conversation
 }
 
 func cloneActions(actions []Action) []Action {
 	out := make([]Action, len(actions))
 	copy(out, actions)
 	for index := range out {
+		out[index].resultData = nil
+		if out[index].SignOut != nil {
+			copy := *out[index].SignOut
+			out[index].SignOut = &copy
+		}
 		out[index].Labels = append([]string(nil), out[index].Labels...)
+		out[index].Arguments = append(json.RawMessage(nil), out[index].Arguments...)
+		if out[index].Work != nil {
+			work := *out[index].Work
+			if work.Title != nil {
+				title := *work.Title
+				work.Title = &title
+			}
+			if work.Body != nil {
+				body := *work.Body
+				work.Body = &body
+			}
+			if work.Priority != nil {
+				priority := *work.Priority
+				work.Priority = &priority
+			}
+			if work.Labels != nil {
+				labels := append([]string{}, (*work.Labels)...)
+				work.Labels = &labels
+			}
+			out[index].Work = &work
+		}
 	}
 	return out
 }
@@ -326,4 +441,12 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(data), nil
+}
+
+func (s *Service) auditAction(ctx context.Context, action Action, outcome string) {
+	if auditor, ok := s.actions.(interface {
+		AuditAction(context.Context, Action, string)
+	}); ok {
+		auditor.AuditAction(ctx, action, outcome)
+	}
 }

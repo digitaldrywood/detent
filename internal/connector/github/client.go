@@ -84,6 +84,7 @@ type Client struct {
 	restDivergenceKeys     map[string]struct{}
 	restDivergences        *restDivergenceRegistry
 	restRequests           map[string]connector.RESTEndpointUsage
+	unscopedRESTScope      *connector.RESTScope
 	restFanoutUnits        int64
 	restReserveHeld        bool
 	restFanoutDeferred     bool
@@ -143,7 +144,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		"fanout_scope", "shared across endpoint families",
 	)
 
-	return &Client{
+	client := &Client{
 		endpoint:            endpoint,
 		restEndpoint:        restEndpoint,
 		tokenSource:         cfg.TokenSource,
@@ -155,9 +156,17 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		restBackoffs:        defaultRESTBackoffs,
 		graphQLSecondary:    newGraphQLSecondaryState(),
 		restDivergences:     defaultRESTDivergences,
+		unscopedRESTScope:   &connector.RESTScope{Name: "outside_refresh"},
 		conditionalRequests: !cfg.DisableConditionalRequests,
 		restCache:           map[string]restCacheEntry{},
-	}, nil
+	}
+	if resolver, ok := cfg.TokenSource.(*TokenResolver); ok {
+		resolver.unscopedRESTScope = client.unscopedRESTScope
+	}
+	if source, ok := cfg.TokenSource.(*InstallationTokenSource); ok {
+		source.unscopedRESTScope = client.unscopedRESTScope
+	}
+	return client, nil
 }
 
 func (c *Client) GraphQL(ctx context.Context, query string, variables map[string]any, out any) error {
@@ -172,7 +181,8 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	queryType = graphQLQueryType(queryType, query)
 	lookup := graphQLLookup(query)
 	trackerRead := graphQLTrackerRead(queryType, query)
-	token, err := c.tokenSource.Token(ctx)
+	attribution := c.restScope(ctx).Attribution("graphql", fixedGraphQLTimingPurpose(queryType))
+	token, err := c.resolveRequestToken(ctx, attribution)
 	if err != nil {
 		return fmt.Errorf("resolve github token: %w", err)
 	}
@@ -215,7 +225,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		"live_connections", c.LiveConnections(),
 	)
 
-	resp, err := c.httpClient.Do(req)
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, c.httpClient, req, false, true)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, ctxErr)
@@ -223,7 +233,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
-		if err := drainAndClose(resp.Body); err != nil {
+		if err := resp.Body.Close(); err != nil {
 			c.logger.DebugContext(ctx, "github graphql response body drain failed", "operation", operation, "error", err)
 		}
 	}()
@@ -236,7 +246,9 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		"live_connections", c.LiveConnections(),
 	)
 
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
 	if err != nil {
 		return c.trackerReadAvailabilityError(trackerRead, token, c.endpoint, queryType, fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
@@ -314,7 +326,8 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	if maxBytes <= 0 {
 		return "", false, 0, errors.New("maximum response bytes must be positive")
 	}
-	token, err := c.tokenSource.Token(ctx)
+	attribution := c.restScope(ctx).Attribution(restEndpointFamily(http.MethodGet, path), "")
+	token, err := c.resolveRequestToken(ctx, attribution)
 	if err != nil {
 		return "", false, 0, fmt.Errorf("resolve github token: %w", err)
 	}
@@ -348,7 +361,7 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	family := restEndpointFamily(http.MethodGet, path)
 	trackerRead := restTrackerRead(http.MethodGet, family)
 	c.logRESTRequest(ctx, "github rest text request", http.MethodGet, path, family, false)
-	resp, err := c.httpClient.Do(req)
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, c.httpClient, req, true, false)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), ctxErr)
@@ -361,7 +374,9 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 		}
 	}()
 
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
+	finishHTTP.BodyConsumed(err)
 	if err != nil {
 		return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
@@ -380,7 +395,9 @@ func (c *Client) restTextWithTokenRefresh(ctx context.Context, path, accept stri
 	truncated := len(raw) > maxBytes
 	size := len(raw)
 	if truncated && countSize {
+		finishHTTP.BeginBody()
 		rest, err := io.Copy(io.Discard, resp.Body)
+		finishHTTP.BodyConsumed(err)
 		if err != nil {
 			return "", false, 0, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(http.MethodGet, path), fmt.Errorf("%w: count response: %w", ErrTransient, err))
 		}
@@ -397,7 +414,8 @@ func (c *Client) restProbe(ctx context.Context, method string, path string, body
 }
 
 func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, path string, body any, allowTokenRefresh bool) (restProbeResult, error) {
-	token, err := c.tokenSource.Token(ctx)
+	attribution := c.restScope(ctx).Attribution(restEndpointFamily(method, path), "")
+	token, err := c.resolveRequestToken(ctx, attribution)
 	if err != nil {
 		return restProbeResult{}, fmt.Errorf("resolve github token: %w", err)
 	}
@@ -436,7 +454,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	family := restEndpointFamily(method, path)
 	trackerRead := restTrackerRead(method, family)
 	c.logRESTRequest(ctx, "github rest probe request", method, path, family, body != nil)
-	resp, err := c.httpClient.Do(req)
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, c.httpClient, req, true, true)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), ctxErr)
@@ -444,12 +462,14 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 		return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
-		if err := drainAndClose(resp.Body); err != nil {
+		if err := resp.Body.Close(); err != nil {
 			c.logger.DebugContext(ctx, "github rest probe response body drain failed", "method", method, "path", path, "endpoint_family", family, "error", err)
 		}
 	}()
 
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
 	if err != nil {
 		return restProbeResult{}, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
@@ -479,7 +499,8 @@ func (c *Client) rest(ctx context.Context, method string, path string, body any,
 }
 
 func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path string, body any, out any, allowTokenRefresh bool) (http.Header, error) {
-	token, err := c.tokenSource.Token(ctx)
+	attribution := c.restScope(ctx).Attribution(restEndpointFamily(method, path), "")
+	token, err := c.resolveRequestToken(ctx, attribution)
 	if err != nil {
 		return nil, fmt.Errorf("resolve github token: %w", err)
 	}
@@ -544,7 +565,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	family := restEndpointFamily(method, path)
 	trackerRead := restTrackerRead(method, family)
 	c.logRESTRequest(ctx, "github rest request", method, path, family, body != nil)
-	resp, err := c.httpClient.Do(req)
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, c.httpClient, req, true, true)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), ctxErr)
@@ -552,13 +573,15 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: %w", ErrTransient, err))
 	}
 	defer func() {
-		if err := drainAndClose(resp.Body); err != nil {
+		if err := resp.Body.Close(); err != nil {
 			c.logger.DebugContext(ctx, "github rest response body drain failed", "method", method, "path", path, "endpoint_family", family, "error", err)
 		}
 	}()
 
 	c.logRESTResponse(ctx, "github rest response", method, path, family, resp.StatusCode)
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
 	if err != nil {
 		return nil, c.trackerReadAvailabilityError(trackerRead, token, c.restEndpoint, restRequestPurpose(method, path), fmt.Errorf("%w: read response: %w", ErrTransient, err))
 	}
@@ -581,6 +604,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		raw = cached.body
 		headers := mergeRESTHeaders(cached.headers, resp.Header)
 		if out == nil {
+			c.touchRESTConditionalEntry(method, path, cached.etag)
 			return headers, nil
 		}
 		if len(raw) == 0 {
@@ -589,10 +613,19 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		if err := json.Unmarshal(raw, out); err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 		}
+		c.touchRESTConditionalEntry(method, path, cached.etag)
 		return headers, nil
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) {
+			statusErr.CredentialIdentity = credentialIdentity
+			statusErr.ObservedAt = receivedAt
+			c.mu.RLock()
+			statusErr.RateLimit = c.restBudgets[restCredentialFamilyKey(credentialIdentity, family)].RateLimit
+			c.mu.RUnlock()
+		}
 		c.logRESTStatusError(ctx, method, path, family, resp.StatusCode, err)
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.restWithTokenRefresh(ctx, method, path, body, out, false)
@@ -611,6 +644,31 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	return headers, nil
+}
+
+func (c *Client) restScope(ctx context.Context) *connector.RESTScope {
+	if scope := connector.RESTScopeFromContext(ctx); scope != nil {
+		return scope
+	}
+	return c.unscopedRESTScope
+}
+
+func classifyRESTScopeOutcome(response *http.Response, requestErr error) string {
+	outcome := "error"
+	if requestErr == nil && response != nil {
+		switch {
+		case response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices:
+			outcome = "200"
+		case response.StatusCode == http.StatusNotModified:
+			outcome = "304"
+		case response.StatusCode == http.StatusTooManyRequests:
+			outcome = "429"
+		case response.StatusCode == http.StatusForbidden &&
+			(response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != ""):
+			outcome = "429"
+		}
+	}
+	return outcome
 }
 
 func (c *Client) logRESTRequest(ctx context.Context, message string, method string, path string, family string, bodyPresent bool) {
@@ -837,6 +895,7 @@ func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
 func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	connector.LogRESTScope(c.logger, c.unscopedRESTScope.Drain())
 
 	rateLimit := c.restRateLimit
 	if core, ok := c.restRateLimits["core"]; ok {
@@ -857,6 +916,16 @@ func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 		BackoffUntil:   backoffUntil,
 		ReserveHeld:    c.restReserveHeld,
 		FanoutDeferred: c.restFanoutDeferred,
+	}
+	if c.logger != nil {
+		for _, window := range usage.Divergences {
+			c.logger.Info("github rest quota window", "credential_identity", window.CredentialIdentity,
+				"resource", window.Resource, "window_started_at", window.WindowStartedAt,
+				"reset_at", window.ResetAt, "last_observed_at", window.LastObservedAt,
+				"consumed_quota", window.ObservedRequests,
+				"instrumented_billable_requests", window.DetentRequests,
+				"unattributed_remainder", window.AttributedRequests+window.UnattributedRequests)
+		}
 	}
 	for _, request := range usage.Requests {
 		usage.TotalRequests += request.Count
@@ -915,6 +984,10 @@ func (c *Client) restBackoffError(backoffKey string, now time.Time) error {
 	if backoffUntil.IsZero() || !backoffUntil.After(now) {
 		return nil
 	}
+	if evidence := c.restBackoffs.failure(backoffKey); evidence != nil && evidence.status != nil {
+		status := *evidence.status
+		return &status
+	}
 	return &StatusError{
 		StatusCode:    http.StatusTooManyRequests,
 		Err:           ErrRateLimited,
@@ -962,6 +1035,7 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 			var allowed bool
 			fanoutUnits, allowed = budget.Reserve(maxUnits, requestCost)
 			if !allowed {
+				c.restScope(ctx).Record(family, "fanout-deferred")
 				c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateFanoutCap, fanoutUnits, rateLimit, hasRateLimit, now)
 				return &RESTFanoutDeferralError{
 					EndpointFamily: family,
@@ -973,6 +1047,7 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 			}
 			reservedScoped = true
 		} else if fanoutUnits+requestCost > maxUnits {
+			c.restScope(ctx).Record(family, "fanout-deferred")
 			c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateFanoutCap, fanoutUnits, rateLimit, hasRateLimit, now)
 			return &RESTFanoutDeferralError{
 				EndpointFamily: family,
@@ -992,6 +1067,7 @@ func (c *Client) restBudgetPolicyError(ctx context.Context, credentialIdentity s
 		if reservedScoped {
 			budget.Add(-requestCost)
 		}
+		c.restScope(ctx).Record(family, "reserve-refused")
 		c.recordRESTBudgetThrottleLocked(credentialIdentity, method, path, family, budgetScope, restBudgetGateReserve, fanoutUnits, rateLimit, hasRateLimit, now)
 		return &StatusError{
 			StatusCode: http.StatusTooManyRequests,
@@ -1196,7 +1272,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 				restDivergenceAttribution(credentialIdentity),
 				RESTResourceReserve(resource, c.restPolicy.MinRemainingReserve),
 			)
-			if divergence.ObservedRequests > 0 {
+			if !divergence.WindowStartedAt.IsZero() {
 				if c.restDivergenceKeys == nil {
 					c.restDivergenceKeys = make(map[string]struct{})
 				}
@@ -1253,6 +1329,8 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 		}
 	}
 	request.LastStatus = status
+	request.LastObservedAt = now
+	request.UsedObserved = hasUsed
 	if currentCredential {
 		request.RateLimited = request.RateLimited || rateLimited
 	}
@@ -1283,7 +1361,13 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 			c.restBackoffUntil = backoffUntil
 		}
 		if c.restBackoffs != nil && backoffKey != "" {
-			c.restBackoffs.set(backoffKey, backoffUntil, method, path, resource)
+			var rateError *StatusError
+			if errors.As(classifyStatusAt(status, headers, body, now), &rateError) {
+				rateError.CredentialIdentity = credentialIdentity
+				rateError.ObservedAt = now
+				rateError.RateLimit = snapshot
+				c.restBackoffs.set(backoffKey, backoffUntil, method, path, resource, rateError)
+			}
 		}
 		c.logger.Warn(
 			"github rest shared backoff recorded",
@@ -2172,12 +2256,7 @@ func (r *restDivergenceRegistry) observe(
 	divergence, diverged := restBudgetDivergence(window.last, current, billable)
 	previous := window.last
 	window.last = current
-	if !diverged {
-		r.windows[key] = window
-		return window.usage, restDivergenceReport{}
-	}
-
-	if window.usage.ObservedRequests == 0 {
+	if window.usage.WindowStartedAt.IsZero() {
 		window.usage = connector.RESTUsageDivergence{
 			CredentialIdentity: credentialIdentity,
 			Resource:           current.Resource,
@@ -2189,14 +2268,16 @@ func (r *restDivergenceRegistry) observe(
 	window.usage.ObservedRequests += divergence.ObservedDrop
 	window.usage.DetentRequests += divergence.DetentBillableRequests
 	window.usage.LastObservedAt = current.UpdatedAt
-	if attribution == connector.RESTDivergenceExpectedShared {
-		window.usage.AttributedRequests += divergence.UnexplainedRequests
-	} else {
-		window.usage.UnattributedRequests += divergence.UnexplainedRequests
+	if diverged {
+		if attribution == connector.RESTDivergenceExpectedShared {
+			window.usage.AttributedRequests += divergence.UnexplainedRequests
+		} else {
+			window.usage.UnattributedRequests += divergence.UnexplainedRequests
+		}
 	}
 
 	report := restDivergenceReport{}
-	reserveThreat := reserve > 0 && current.Remaining <= reserve
+	reserveThreat := diverged && reserve > 0 && current.Remaining <= reserve
 	if reserveThreat && !window.warningReported {
 		report = restDivergenceReport{Level: slog.LevelWarn, Reason: "reserve_threat", Emit: true}
 		window.warningReported = true
@@ -2227,7 +2308,7 @@ func (r *restDivergenceRegistry) snapshots(keys map[string]struct{}) []connector
 	out := make([]connector.RESTUsageDivergence, 0, len(keys))
 	for key := range keys {
 		window, ok := r.windows[key]
-		if ok && window.usage.ObservedRequests > 0 {
+		if ok && !window.usage.WindowStartedAt.IsZero() {
 			out = append(out, window.usage)
 		}
 	}
@@ -2341,7 +2422,7 @@ func (r *restBackoffRegistry) until(key string, now time.Time) time.Time {
 	return time.Time{}
 }
 
-func (r *restBackoffRegistry) set(key string, until time.Time, method, path, resource string) {
+func (r *restBackoffRegistry) set(key string, until time.Time, method, path, resource string, status ...*StatusError) {
 	if r == nil || strings.TrimSpace(key) == "" || until.IsZero() {
 		return
 	}
@@ -2351,6 +2432,9 @@ func (r *restBackoffRegistry) set(key string, until time.Time, method, path, res
 		r.untils[key] = until
 	}
 	evidence := &restRecoveryEvidence{resource: resource}
+	if len(status) > 0 {
+		evidence.status = status[0]
+	}
 	if method == http.MethodGet && path != "/rate_limit" {
 		evidence.path = path
 	} else if previous := r.failures[key]; previous != nil {

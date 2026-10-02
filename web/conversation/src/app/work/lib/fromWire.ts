@@ -151,6 +151,7 @@ export function toChangeView(
 }
 
 export interface ItemExtras {
+  readonly observations?: WorkItemView["observations"];
   readonly attempts?: readonly NativeAttempt[];
   readonly change?: ChangeView | null;
   readonly conversationId?: string | null;
@@ -175,6 +176,11 @@ export function toWorkItemView(
   const labels = [...issue.labels];
   return {
     id: issue.work_item_id,
+    observations: extras.observations ?? {
+      worker: extras.attempts === undefined ? "unchecked" : "known",
+      change: extras.change === undefined ? "unchecked" : "known",
+    },
+    archived: issue.archived ?? false,
     projectId: issue.project_id,
     projectName,
     identifier: `${projectName}#${issue.number}`,
@@ -183,6 +189,8 @@ export function toWorkItemView(
     body: issue.body,
     state: issue.state,
     stateId: issue.state,
+    terminal: issue.terminal,
+    sourceProvider: issue.provenance?.provider ?? null,
     priority: priorityName(issue.priority),
     labels,
     assignees: [...issue.assignees],

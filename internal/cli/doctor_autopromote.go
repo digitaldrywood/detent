@@ -555,6 +555,7 @@ func doctorStatusDriftIssueSummary(issue doctorStatusDriftIssueDiagnostic) strin
 func doctorAutoPromoteConfig(cfg workflowconfig.Config) orchestrator.AutoPromoteConfig {
 	return orchestrator.AutoPromoteConfig{
 		Enabled:               cfg.Agent.AutoPromote.Enabled,
+		HumanReview:           &cfg.Review.Human,
 		QuietDuration:         time.Duration(cfg.Agent.AutoPromote.QuietSeconds) * time.Second,
 		OptoutLabel:           cfg.Agent.AutoPromote.OptoutLabel,
 		AllowedIssueLabels:    append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
@@ -787,6 +788,7 @@ func defaultDoctorAutoPromoteConnector(cfg workflowconfig.Config) (doctorAutoPro
 		TerminalStates:              cfg.Tracker.TerminalStates,
 		StateMap:                    doctorTrackerStateMap(cfg.Tracker.StateMap),
 		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
+		LocalStatus:                 cfg.Gate.LocalStatus,
 		Logger:                      doctorConnectorLogger(),
 	})
 }

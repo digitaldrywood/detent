@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -285,9 +286,18 @@ func TestDetentRolloutsTraversalBoundaries(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := &rolloutSwapContext{Context: t.Context()}
+			moved := filepath.Join(home, "moved")
 			if replacement {
 				ctx.swap = func() {
-					if err := os.Rename(root, filepath.Join(home, "moved")); err != nil {
+					err := os.Rename(root, moved)
+					if runtime.GOOS == "windows" {
+						// Windows protects the open root by refusing its rename.
+						if err == nil {
+							t.Fatal("renamed sessions while its os.Root was open")
+						}
+						return
+					}
+					if err != nil {
 						t.Fatal(err)
 					}
 					if err := os.Symlink(outside, root); err != nil {
@@ -299,11 +309,20 @@ func TestDetentRolloutsTraversalBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if replacement && ctx.swap != nil {
+				t.Fatal("root replacement was not attempted during traversal")
+			}
 			if len(got) != 1 || got[0].size != int64(len(insideData)) {
 				t.Fatalf("rollouts=%+v; want only original inside file (%d bytes)", got, len(insideData))
 			}
 			if data, err := os.ReadFile(outsideFile); err != nil || string(data) != string(outsideData) {
 				t.Fatalf("outside file changed: %v", err)
+			}
+			if replacement && runtime.GOOS == "windows" {
+				// The refusal must be tied to the open handle, not fixture permissions.
+				if err := os.Rename(root, moved); err != nil {
+					t.Fatalf("rename after closing sessions root: %v", err)
+				}
 			}
 		})
 	}

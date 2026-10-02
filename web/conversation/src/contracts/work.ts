@@ -116,6 +116,15 @@ export const NativeDependency = Schema.Struct({
 export type NativeDependency = typeof NativeDependency.Type;
 
 export const NativeIssue = Schema.Struct({
+	linked_source: Schema.optional(Schema.Struct({
+		url: Schema.String,
+		status: Schema.String,
+		snapshot: Schema.optional(Schema.Struct({
+			title: Schema.String,
+			body: Schema.String,
+			provenance: Provenance,
+		})),
+	})),
   /** Present only when the project does not require dependencies. */
   ignore_dependencies: Schema.optional(Schema.Boolean),
   organization_id: OrganizationId,
@@ -128,6 +137,7 @@ export const NativeIssue = Schema.Struct({
   body: Schema.String,
   state: Schema.String,
   terminal: Schema.Boolean,
+  archived: Schema.optional(Schema.Boolean),
   /** 0 Urgent, 1 High, 2 Normal, 3 Low. Absent when the issue has none. */
   priority: Schema.optional(Schema.Number),
   labels: Schema.Array(Schema.String),
@@ -223,6 +233,7 @@ export const MutationEnvelope = Schema.Struct({
 });
 
 export const CreateIssueRequest = Schema.Struct({
+	github_issue_url: Schema.optional(Schema.String),
   idempotency_key: Schema.String,
   title: Schema.String,
   body: Schema.String,
@@ -549,12 +560,6 @@ export type ChangeRequest = typeof ChangeRequest.Type;
 export const ChangeRequestList = Schema.Array(ChangeRequest);
 export type ChangeRequestList = typeof ChangeRequestList.Type;
 
-/**
- * The code artifact of a version. This is as close to a diff as the API gets:
- * an opaque URI and a digest. The hub serves no file list, no hunks and no
- * per-file counts, so the review dock reports what it has instead of drawing a
- * diff it cannot fetch.
- */
 export const ChangeArtifact = Schema.Struct({
   kind: Schema.String,
   uri: Schema.String,

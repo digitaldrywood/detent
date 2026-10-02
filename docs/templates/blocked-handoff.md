@@ -1,6 +1,10 @@
 ## Blocked handoff
 
-One `## Codex Workpad`: plan, validation, one `detent-status` fence (`schema: 1`; `in_progress`, `blocked`, or `complete`). Prose is not a blocker.
+Current Workpad: plan, validation, one `detent-status` fence (`schema: 1`; `in_progress`, `blocked`, or `complete`). Prose is not a blocker.
+
+Comment projects: use the authoritative `## Codex Workpad` comment from current context. Edit when permitted; otherwise post a new comment with that heading/current status block. Body/final-only status cannot supersede it. Keep native/local writers.
+
+Verified same-head/test-input evidence can publish a receipt without reruns solely for handoff. Required verification, pending acceptance and human approvals remain.
 
 PR handoff: record gate and current-head checks. Expected skips allow handoff, not test credit; merge-group CI must pass.
 
@@ -30,4 +34,4 @@ status: complete
 human_action: null
 ```
 
-Already-merged work needs no authorization. In `fields`, set `completion_kind: operational`, `completion_evidence` (acceptance results), `completion_merged_pr` (URL), `completion_merge_commit` (SHA), `completion_branch` (tracked ref), `completion_branch_head` (SHA), and `completion_ancestry: verified` after fetch and successful `git merge-base --is-ancestor`. Missing evidence needs a blocked Workpad `human_action`. Other no-PR work needs issue-body `detent-completion` authorization.
+Already-merged work needs no authorization. In `fields`, set `completion_kind: operational`, `completion_evidence` (acceptance results), `completion_merged_pr` (URL), `completion_merge_commit` (SHA), `completion_branch` (merging PR's integration ref), `completion_branch_head` (SHA), and `completion_ancestry: verified` after fetch and successful `git merge-base --is-ancestor`. Record the same integration branch/head actually tested, matching the merging PR's base, never the workspace branch/head. Pending scheduled acceptance remains pending, not test credit. Missing evidence needs a blocked Workpad `human_action`. Other no-PR work needs issue-body `detent-completion` authorization.

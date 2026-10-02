@@ -14,6 +14,7 @@ import { deltaText, type ConversationDetail } from "../../runtime/state/conversa
 
 /** The three cards a status or tool message can carry. */
 export interface TimelineCards {
+  readonly approvalURL?: string;
   readonly proposal?: IssueProposal;
   readonly issue?: IssueResult;
   readonly attention?: readonly AttentionItem[];
@@ -24,11 +25,14 @@ export interface TimelineCards {
 /** The cards on one message, or `undefined` when it carries none. */
 export function readTimelineCards(message: Message): TimelineCards | undefined {
   if (message.kind !== "status" && message.kind !== "tool") return undefined;
+  const approval = message.data.operator_approval;
+  const approvalURL = typeof approval === "object" && approval !== null && "url" in approval && typeof approval.url === "string" && /^\/(?:organizations\/[^/]+\/)?chat\/approval\?connection_id=luna_[a-f0-9]+$/.test(approval.url) ? approval.url : undefined;
   const proposal = readIssueProposal(message.data);
   const issue = readIssueResult(message.data);
   const attention = readAttention(message.data);
-  if (proposal === undefined && issue === undefined && attention.length === 0) return undefined;
+  if (approvalURL === undefined && proposal === undefined && issue === undefined && attention.length === 0) return undefined;
   return {
+    ...(approvalURL === undefined ? {} : { approvalURL }),
     ...(proposal === undefined ? {} : { proposal }),
     ...(issue === undefined ? {} : { issue }),
     ...(attention.length === 0 ? {} : { attention }),

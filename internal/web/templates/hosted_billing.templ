@@ -3,6 +3,22 @@ package templates
 templ hostedBilling(data HostedPageData) {
 	<section class="space-y-4 rounded-card border border-line bg-surface p-4 md:p-6" aria-label="Organization billing">
 		<h2 class="break-words text-lg font-semibold">{ data.PlanName }</h2>
+		<p class="text-sm">{ data.PlanPrice }</p>
+		<dl class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+			for _, row := range data.Allowances {
+				<div class="text-sm">
+					<dt class="capitalize">{ row.Label }</dt>
+					<dd>{ row.Consumption } used / { row.Allowance } allowed · { row.Remaining } remaining</dd>
+					if row.OverLimit {
+						if row.Label == "unarchived issues" {
+							<dd class="text-warn">Over limit. Upgrade or archive issues to free capacity.</dd>
+						} else {
+							<dd class="text-warn">Over limit. Upgrade to increase project capacity.</dd>
+						}
+					}
+				</div>
+			}
+		</dl>
 		<p class="font-medium" data-billing-status>{ data.BillingStatus }</p>
 		<p class="break-words text-sm" role="status">{ data.BillingMessage }</p>
 		<p class="text-sm text-sec">Detent subscriptions cover the hosted service. Your model provider accounts, keys, usage, and charges remain separate.</p>
@@ -11,7 +27,7 @@ templ hostedBilling(data HostedPageData) {
 		}
 		<p class="text-sm text-sec">Cancellation, payment failure, or downgrade preserves running work, artifacts, reading, and export. New allocations must fit your current allowances.</p>
 		if data.BillingEnabled {
-			<p class="text-sm text-sec">Test billing pilot. Stripe shows the configured amount before purchase.</p>
+			<p class="text-sm text-sec">Stripe confirms the configured amount before purchase.</p>
 			if data.BillingCanPurchase {
 				<form method="post" action={ hostedURL(data, "/organization/billing/checkout") } class="max-w-md space-y-3">
 					@hostedCSRF(data.CSRF)
@@ -35,6 +51,11 @@ templ hostedBilling(data HostedPageData) {
 		if data.BillingCheckedAt != "" {
 			<p class="break-words text-xs text-sec">Last verified with Stripe: { data.BillingCheckedAt }</p>
 		}
+		<section aria-label="AI usage this billing period" class="space-y-1 text-sm">
+			<h3 class="font-semibold">AI usage this billing period</h3>
+			<p>{ data.ChatUsage }</p>
+			<p class="text-sec">{ data.ChatUsagePeriod }</p>
+		</section>
 		<div class="flex flex-wrap gap-3">
 			<a href={ hostedURL(data, "/organization/plan") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Plan and usage</a>
 			<a href={ hostedURL(data, "/api/cloud/billing/subscription") } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Export billing status</a>
@@ -55,4 +76,57 @@ templ hostedBilling(data HostedPageData) {
 			}
 		</ol>
 	</section>
+	if data.AICredits != nil {
+		<section aria-label="AI credits" class="space-y-4 rounded-card border border-line bg-surface p-4 md:p-6">
+			<h2 class="font-semibold">AI credits</h2>
+			if data.AICredits.Returned {
+				<p class="text-sm">Credit checkout returned. Credits arrive after Stripe confirms payment. Refresh the page to check.</p>
+			}
+			<p class="text-sm">Credit balance: { data.AICredits.Balance }</p>
+			<p class="text-sm text-sec">Purchased credits do not expire. No sponsored AI allowance is included.</p>
+			if data.AICredits.Failure != "" {
+				<p role="status" class="text-sm text-warn">Auto-fund disabled: { data.AICredits.Failure }</p>
+			}
+			if data.AICredits.InFlight {
+				<p class="text-sm">Automatic top-up pending. Your balance changes after Stripe confirms payment.</p>
+			}
+			<form method="post" action={ hostedURL(data, "/organization/billing/credits/checkout") } class="max-w-md space-y-3">
+				@hostedCSRF(data.CSRF)
+				<label for="ai-credit-price" class="block text-sm">Buy AI credits</label>
+				<select id="ai-credit-price" name="price" required class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm">
+					for _,pack:=range data.AICredits.Packs {
+						<option value={ pack.ID }>{ pack.Label }</option>
+					}
+				</select>
+				<button type="submit" class="min-h-11 rounded-card bg-accent px-4 text-sm text-page">Buy credits</button>
+				<p class="text-sm text-sec">Stripe confirms the price. This purchase saves your payment method for optional auto-fund.</p>
+			</form>
+			<form method="post" action={ hostedURL(data, "/organization/billing/credits/auto-fund") } class="max-w-md space-y-3">
+				@hostedCSRF(data.CSRF)
+				<label class="flex items-center gap-2 text-sm"><input name="enabled" type="checkbox" checked?={ data.AICredits.Enabled }/>Enable auto-fund</label>
+				<p class="text-sm text-sec">When enabled, charge the saved payment method for the selected pack whenever your balance drops below the threshold. A failed charge disables auto-fund.</p>
+				if !data.AICredits.CanAutoFund {
+					<p class="text-sm text-sec">Buy credits or save a payment method in the billing portal before enabling auto-fund.</p>
+				}
+				<label for="ai-credit-threshold" class="block text-sm">Top up below (USD cents)</label>
+				<input id="ai-credit-threshold" name="threshold_cents" type="number" min="1" step="1" value={ data.AICredits.Threshold } class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm"/>
+				<label for="ai-auto-price" class="block text-sm">Credit pack</label>
+				<select id="ai-auto-price" name="price" class="min-h-11 w-full rounded-card border border-line bg-page px-3 text-sm">
+					for _,pack:=range data.AICredits.Packs {
+						<option value={ pack.ID } selected?={ pack.ID==data.AICredits.PriceID }>{ pack.Label }</option>
+					}
+				</select>
+				<button type="submit" class="min-h-11 rounded-card border border-line px-4 text-sm">Save auto-fund</button>
+			</form>
+			<h3 class="font-semibold">Credit transaction history</h3>
+			if len(data.AICredits.History)==0 {
+				<p class="text-sm text-sec">No credit transactions yet.</p>
+			}
+			<ol class="space-y-2 text-sm">
+				for _,item:=range data.AICredits.History {
+					<li>{ item.Action } · { item.Summary } · { item.At }</li>
+				}
+			</ol>
+		</section>
+	}
 }

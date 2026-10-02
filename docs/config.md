@@ -10,6 +10,10 @@ Detent has two configuration layers:
 This page is the single reference for both configuration layers. Project
 configuration is documented below after the host-wide settings.
 
+`agent.no_progress_timeout_ms` remains readable for older project files but is
+ignored. Worker sessions use their absolute duration bound, and local validation
+waits use the gate lock deadline.
+
 For instance backend/route inheritance and the opt-in `sol_first` model-selection
 preset, see [Instance agent defaults](multi-project.md#instance-agent-defaults-and-sol-first-selection).
 
@@ -44,6 +48,15 @@ It then evicts remaining build entries oldest-first until the cache fits
 (`trim.txt` and `README`) is never removed. The module cache is reported and
 shared but is not trimmed. Concurrent builds can grow the cache between sweeps.
 
+## GitHub completion CI policy
+
+Omitting `gate.required_status_checks` retains aggregate CI evaluation. Explicit
+`gate.required_status_checks: []` uses the PR base branch's native required
+checks. If the branch requires none, absent or pending optional CI does not
+block promotion or merging. Reported failed CI always blocks. Native missing,
+pending, and failed checks still block. A nonempty list retains the existing
+configured-check behavior.
+
 ## Issue session allowance
 
 Code and rework share a fixed allowance of three sessions without a merged PR.
@@ -51,7 +64,9 @@ The next code dispatch runs one read-only triage pass, publishes its explanation
 and leaves the issue in Human Review. An operator move out of Human Review
 renews the allowance, as does a merged PR. Detent-instance moves, new PR heads,
 changed CI signatures, ordinary lane moves, and acknowledgements alone do not
-renew it; instance-attributed failures do not consume it. The existing triage
+renew it; instance-attributed failures do not consume it. Completed, successful
+PR deliveries without a recorded error also do not consume it; waiting on the
+completion gate is not a failed delivery. The existing triage
 comment records the operator reset timestamp when comment updates are supported.
 
 The former `agent.auto_promote.rework_limit` and
@@ -626,6 +641,59 @@ sharing, and cleanup. `deliverable` selects pull requests or file artifacts and
 their review destination. `worker` distributes sessions across optional SSH
 hosts; per-state and global concurrency limits remain under `agent`.
 
+SSH workers run the installed `detent` binary on each selected host over an
+SSH stdio channel. Workspace setup, hooks, provider processes, gates, and Git
+pushes execute there; session records, Workpads, lane decisions, and merge
+coordination stay with the orchestrator. Hosts use normal SSH configuration and
+host-key verification, with noninteractive authentication and no agent forwarding.
+
+```yaml
+worker:
+  # Per runner host; omitted prices inherit Sprites public rates.
+  compute_rates:
+    local:
+      cpu_hour_usd: 0.07
+      memory_gb_hour_usd: 0.04375
+  ssh_hosts: [logans-macbook-air, corys-mac-studio, local]
+  host_selection: preference
+  max_concurrent_agents_per_host: 2
+  host_caps:
+    logans-macbook-air: 2
+    corys-mac-studio: 6
+    local: 1
+```
+
+`preference` fills hosts in list order to their project-specific cap. The default
+`least_loaded` selects the least busy available host and retains retry affinity
+when that host has capacity. `host_caps` overrides the fallback
+`max_concurrent_agents_per_host` for individual configured hosts. Include `local`
+where local execution belongs in the order; an empty list means local execution.
+The existing project and instance agent limits still apply.
+
+Install matching Detent binaries, Git, `gh`, and the configured provider on every
+remote host. Provider subscription authentication must already be available there.
+The noninteractive SSH environment must provide a writable `TMPDIR`, `TMP`, or
+`TEMP`; workers never fall back to host scratch space. Paths below the
+orchestrator's home directory are mapped below the remote user's home directory;
+other absolute paths must exist on that host. Hook references to the home path
+are mapped too. Provision the source checkout there, or allow Detent to clone
+its HTTPS origin into the mapped source root on first use.
+
+Detent checks SSH reachability and the worker protocol before dispatch, caches
+the result for 15 seconds, and skips unavailable hosts. A lost channel cancels
+the remote lifecycle and uses the existing instance retry path. A retry on a
+different host starts a fresh provider session. Existing workspace reaping and
+reconciliation also visit configured remote hosts. GitHub credentials cross only
+the encrypted channel and use the same private temporary `GH_CONFIG_DIR` as
+local workers; they are removed when the worker exits and never written to the
+source checkout or persistent Git configuration.
+
+Remote workers support GitHub, Linear, and `hub_native` trackers. Native runs
+capture artifacts and attempt diffs on the selected host through SSH; upload
+journals, credentials, lease fencing, Change Request publication, landing reports,
+and provider reservations remain central. Interrupted transfers retain their
+journals for existing recovery. Both endpoints must support SSH protocol version 2.
+
 GitHub-capable workers never inherit `GITHUB_TOKEN`, `GH_TOKEN`, their
 enterprise variants, or the host's GitHub CLI configuration. When omitted or
 empty, `worker.github_token` defaults to the resolved top-level `github_token`
@@ -684,13 +752,20 @@ current body declarations. Remove a body declaration to remove its blocker
 `agent` is the orchestration policy: concurrency, turn and session limits,
 retry brakes, spend limits, shutdown, dispatch priority, automatic promotion,
 state-specific instructions, learned context, skill drafts, and follow-up
-work. `agents.backends` defines pluggable Codex or Claude Code processes, while
+work. `agents.backends` defines pluggable Codex, Claude Code, or Pi processes, while
 `agents.routes` selects a backend and model by role or issue selector.
 
 `codex` is the legacy/default Codex backend configuration and remains the
 fallback when `agents.backends` is empty. A Codex backend inherits omitted
 values from it. Claude Code backend options are interpreted only when the
 backend `kind` is `claude_code`.
+
+Pi uses `kind: pi_agent`, `protocol: rpc`, and `command: pi` by default. The
+backend provider and existing routes select its provider and exact model ID.
+Pi requires native-trusted isolation; sandboxed/read-only turns, resume,
+Detent dynamic tools and persisted history hydration are unsupported in this
+initial integration. See [Pi backend configuration and limitations](pi-agent.md)
+for a complete route example, authentication and an opt-in smoke test.
 
 Implementation workers on automatically owned Git branches request a bounded
 recovery checkpoint when a duration, turn, or no-progress limit stops them.
@@ -981,7 +1056,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agent.auto_promote.gate_wait_state` | `string` | `"source"` | No | must be one of source, review |
 | `agent.auto_promote.gate_wait_timeout_action` | `string` | `"human_review"` | No | must be one of merge, human_review |
 | `agent.auto_promote.gate_wait_timeout_seconds` | `integer` | `3600` | No | must be greater than 0 |
-| `agent.auto_promote.optout_label` | `string` | `"requires-human-review"` | No | must not be blank |
+| `agent.auto_promote.optout_label` | `string` | `none` | No | None |
 | `agent.auto_promote.pass_state` | `string` | `"Merging"` | No | None |
 | `agent.auto_promote.quiet_seconds` | `integer` | `600` | No | must be greater than or equal to 0 |
 | `agent.auto_promote.rework_state` | `string` | `"Rework"` | No | None |
@@ -1085,12 +1160,15 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agents.backends[].options.permission_mode` | `string` | `"bypassPermissions" for Claude Code` | No | must be one of default, acceptEdits, bypassPermissions<br>must not be plan for unattended workers |
 | `agents.backends[].options.read_timeout_ms` | `integer` | `5000 for Codex` | No | must be greater than or equal to 0 |
 | `agents.backends[].options.service_tier` | `string` | `none for Codex` | No | None |
-| `agents.backends[].options.shell` | `string` | `Codex: platform default shell; Claude Code: none` | No | None |
-| `agents.backends[].options.stall_timeout_ms` | `integer` | `Codex: 300000; Claude Code: 0` | No | must be greater than or equal to 0 |
+| `agents.backends[].options.session_dir` | `string` | `none for Pi` | No | None |
+| `agents.backends[].options.shell` | `string` | `platform default shell` | No | None |
+| `agents.backends[].options.stall_timeout_ms` | `integer` | `Codex: 300000; Claude Code: 0; Pi: 0` | No | must be greater than or equal to 0 |
+| `agents.backends[].options.thinking_level` | `string` | `none for Pi` | No | must be one of off, minimal, low, medium, high, xhigh, max |
 | `agents.backends[].options.thread_sandbox` | `string` | `"workspace-write" for Codex` | No | None |
+| `agents.backends[].options.tools` | `list<string>` | `["read","bash","edit","write","grep","find","ls"] for Pi` | No | must contain only Pi built-in tools: read, bash, edit, write, grep, find, ls |
 | `agents.backends[].options.turn_sandbox_policy` | `mapping<string, value>` | `{} for Codex` | No | None |
-| `agents.backends[].options.turn_timeout_ms` | `integer` | `Codex: 3600000; Claude Code: 0` | No | must be greater than or equal to 0 |
-| `agents.backends[].protocol` | `string` | `none` | No | must be app-server for codex<br>must be headless for claude_code |
+| `agents.backends[].options.turn_timeout_ms` | `integer` | `Codex: 3600000; Claude Code: 0; Pi: 0` | No | must be greater than or equal to 0 |
+| `agents.backends[].protocol` | `string` | `none` | No | must be app-server for codex<br>must be headless for claude_code<br>must be rpc for pi_agent |
 | `agents.backends[].provider` | `string` | `none` | No | must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens |
 | `agents.model_selection` | `object` | `see child fields` | No | None |
 | `agents.model_selection.backend_kinds` | `list<string>` | `none` | No | None |
@@ -1199,6 +1277,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `codex.turn_sandbox_policy` | `mapping<string, value>` | `{"type":"workspaceWrite"}` | No | None |
 | `codex.turn_timeout_ms` | `integer` | `3600000` | No | must be greater than 0 |
 | `deliverable` | `object` | `see child fields` | No | None |
+| `deliverable.github_pull_request` | `boolean` | `false` | No | None |
 | `deliverable.kind` | `string` | `"pull_request"` | No | must be one of pull_request, artifact |
 | `deliverable.merge_method` | `string` | `"squash"` | No | must be one of squash, merge, rebase |
 | `deliverable.output_root` | `string` | `none` | No | None |
@@ -1336,6 +1415,8 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `retro.schedule` | `string` | `"0 3 * * *" when configured` | No | must be a valid five-field cron expression |
 | `retro.single_occurrence_severity` | `string` | `"critical" when configured` | No | must be one of info, warning, high, critical |
 | `retro.target_state` | `string` | `"Backlog" when configured` | No | must name a configured tracker state |
+| `review` | `object` | `see child fields` | No | agent.auto_promote.gate_wait_state must be one of source, review |
+| `review.human` | `boolean` | `false` | No | None |
 | `routines` | `list<object>` | `[]` | No | None |
 | `routines[].labels` | `list<string>` | `[]` | Conditional | labels must not be blank |
 | `routines[].max_findings_per_run` | `integer` | `3 when configured` | No | must be greater than 0 |
@@ -1629,12 +1710,15 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.terminal_states` | `list<string>` | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | No | state names must be unique<br>state names must not be blank |
 | `tracker.write_probe_issue` | `string` | `none` | No | None |
 | `worker` | `object` | `see child fields` | No | None |
+| `worker.compute_rates` | `mapping<string, mapping>` | `{}` | No | None |
 | `worker.github_rest_min_remaining_reserve` | `integer` | `1250` | No | must be greater than 0 |
 | `worker.github_rest_poll_interval_ms` | `integer` | `60000` | No | must be greater than or equal to 60000 |
 | `worker.github_token` | `string` | `top-level github_token` | No | None |
 | `worker.github_token_resolution_timeout_ms` | `integer` | `15000` | No | must be greater than 0 |
+| `worker.host_caps` | `mapping<string, integer>` | `{}` | No | .__invalid__ must be greater than 0<br>.__invalid__ must name a configured worker.ssh_hosts entry |
+| `worker.host_selection` | `string` | `"least_loaded"` | No | must be least_loaded or preference |
 | `worker.max_concurrent_agents_per_host` | `integer` | `none` | No | must be greater than 0 |
-| `worker.ssh_hosts` | `list<string>` | `[]` | No | None |
+| `worker.ssh_hosts` | `list<string>` | `[]` | No | must contain unique SSH destinations or local<br>worker.host_caps.__invalid__ must name a configured worker.ssh_hosts entry |
 | `workpad` | `object` | `see child fields` | No | None |
 | `workpad.structured_only` | `boolean` | `false` | No | None |
 | `workspace` | `object` | `see child fields` | No | agent.lessons.path must be a relative path inside the workspace<br>agent.skills.path must be a relative path inside the workspace |

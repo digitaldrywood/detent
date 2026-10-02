@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
@@ -972,6 +974,27 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RecordSchedulerDecision() error = %v", err)
 	}
+
+	t.Run("atomic scheduler batch", func(t *testing.T) {
+		writer := backend.(SchedulerDecisionBatchStore)
+		valid := SchedulerDecision{ProjectID: "batch", IssueID: "one", Result: SchedulerDecisionResultSkipped, Reason: "authorization_selector_declined", DecisionAt: base, MetadataJSON: `{"authorization_decision":{"matched":false}}`}
+		for _, last := range []SchedulerDecision{{}, {ProjectID: "batch", IssueID: "two", DecisionAt: base}} {
+			ids, err := writer.RecordSchedulerDecisions(ctx, []SchedulerDecision{valid, last})
+			rows, readErr := backend.ListRecentSchedulerDecisions(ctx, SchedulerDecisionQuery{ProjectID: "batch"})
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if last.ProjectID == "" {
+				if err == nil || len(ids) != 0 || len(rows) != 0 {
+					t.Fatalf("failed batch persisted evidence: %v %v %v", ids, err, rows)
+				}
+			} else {
+				if err != nil || len(ids) != 2 || len(rows) != 2 || ids[0] >= ids[1] || rows[1].MetadataJSON != valid.MetadataJSON {
+					t.Fatalf("batch lost ordered per-issue evidence: %v %v %v", ids, err, rows)
+				}
+			}
+		}
+	})
 
 	active, err := backend.ListActiveWorkAttempts(ctx, WorkAttemptQuery{ProjectID: "detent"})
 	if err != nil {
@@ -2691,6 +2714,125 @@ func TestWorkflowMetricsStoreRoundTripAndAggregates(t *testing.T) {
 	if timeline.Events[1].Turns != 3 || timeline.Events[1].TotalTokens != 1250 || timeline.Events[1].MetadataJSON != `{"session_id":42}` {
 		t.Fatalf("timeline agent event = %#v, want turns/tokens/metadata", timeline.Events[1])
 	}
+	// Checkpointing must update one durable profile, not append snapshots that
+	// double-count activity. An independent reader must retain incomplete data.
+	profile := workflowmetrics.ActivityProfile{Schema: 1, SessionID: 42, AttemptID: 3390, StartedAt: base, AsOf: base.Add(time.Minute), Status: "running", Coverage: "partial", Spans: []workflowmetrics.ActivitySpan{{ID: "test", Kind: "local_validation", StartedAt: base.Add(10 * time.Second), FinishedAt: base.Add(30 * time.Second), Outcome: "completed", Repeat: 2}}}
+	data, _ := json.Marshal(profile)
+	event := WorkflowPhaseEvent{ProjectID: "detent", IssueID: "issue-722", Identifier: "digitaldrywood/detent#722", SessionID: 42, PhaseType: workflowmetrics.PhaseTypeAgentActivity, PhaseName: "instruction_activity", StartedAt: base, MetadataJSON: string(data)}
+	writer := backend.(*sqliteStore)
+	id, err := writer.SaveWorkflowActivityProfile(ctx, 0, event, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.AsOf = base.Add(2 * time.Minute)
+	data, _ = json.Marshal(profile)
+	event.MetadataJSON = string(data)
+	if next, err := writer.SaveWorkflowActivityProfile(ctx, id, event, profile); err != nil || next != id {
+		t.Fatalf("checkpoint id=%d err=%v", next, err)
+	}
+	reader, err := Open(ctx, Config{Backend: BackendSQLite, Path: writer.path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	durable, err := reader.IssueWorkflowTimeline(ctx, IssueIdentity{ProjectID: "detent", IssueID: "issue-722"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audits := workflowmetrics.ActivityAudits(durable.Events, base.Add(3*time.Minute))
+	if len(durable.Events) != 3 || len(audits) != 1 || audits[0].Profile.Instance == "" || audits[0].Profile.AsOf != profile.AsOf || audits[0].Breakdown.ObservedSeconds != 20 || audits[0].UnobservedTailSeconds != 60 {
+		t.Fatalf("durable audit=%+v", audits)
+	}
+	wrongSession := profile
+	wrongSession.SessionID++
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, id, event, wrongSession); err == nil {
+		t.Fatal("cross-session profile accepted")
+	}
+	profile.Status = "ended"
+	profile.FinishedAt = profile.AsOf
+	data, _ = json.Marshal(profile)
+	event.MetadataJSON = string(data)
+	event.FinishedAt = profile.FinishedAt
+	event.Status = profile.Status
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, id, event, profile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.SaveWorkflowActivityProfile(ctx, id+100, event, profile); err == nil {
+		t.Fatal("missing checkpoint accepted")
+	}
+	report, err = backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{ProjectID: "detent", From: base.Add(-time.Minute), To: base.Add(2 * time.Hour)})
+	if err != nil || len(report.SubPhases) != 1 {
+		t.Fatalf("activity changed session totals: %+v, %v", report, err)
+	}
+	wantReport, _ := json.Marshal(report)
+	largeMetadata := `{"payload":"` + strings.Repeat("x", 1<<20) + `"}`
+	if err := writer.UpdateWorkflowPhaseEventMetadata(ctx, id, largeMetadata); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &refreshQueryRecorder{DB: writer.db}
+	writer.queries = sqlc.New(recorder)
+	for _, tt := range []struct {
+		name     string
+		from, to time.Time
+		count    int
+	}{
+		{"bounded", base.Add(-time.Minute), base.Add(2 * time.Hour), 3},
+		{"inclusive from exclusive to", base.Add(10 * time.Minute), base.Add(time.Hour + 20*time.Minute), 1},
+		{"from only", base.Add(10 * time.Minute), time.Time{}, 2},
+		{"to only", time.Time{}, base.Add(10 * time.Minute), 1},
+		{"unbounded", time.Time{}, time.Time{}, 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder.reads = nil
+			got, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{ProjectID: "detent", From: tt.from, To: tt.to})
+			if err != nil {
+				t.Fatal(err)
+			}
+			read := recorder.reads[0]
+			var count int
+			if err := writer.db.QueryRowContext(ctx, "SELECT count(*) FROM ("+read.query+")", read.args...).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != tt.count {
+				t.Fatalf("duration rows=%d, want %d without activity payload", count, tt.count)
+			}
+			if tt.name == "bounded" {
+				data, _ := json.Marshal(got)
+				if string(data) != string(wantReport) {
+					t.Fatal("activity payload changed report")
+				}
+				rows, err := writer.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+read.query, read.args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rows.Close()
+				var bounded bool
+				for rows.Next() {
+					var id, parent, unused int
+					var detail string
+					if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+						t.Fatal(err)
+					}
+					bounded = bounded || strings.Contains(detail, "workflow_phase_events_finished_at_idx (finished_at>? AND finished_at<?)")
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				if !bounded {
+					t.Fatal("duration query did not search both finished_at bounds")
+				}
+			}
+		})
+	}
+	timeline, err = backend.IssueWorkflowTimeline(ctx, IssueIdentity{ProjectID: "detent", IssueID: "issue-722"})
+	var retainedActivity bool
+	for _, event := range timeline.Events {
+		retainedActivity = retainedActivity || event.PhaseType == workflowmetrics.PhaseTypeAgentActivity && event.MetadataJSON == largeMetadata
+	}
+	if err != nil || len(timeline.Events) != 3 || !retainedActivity {
+		t.Fatalf("timeline lost activity payload: events=%d err=%v", len(timeline.Events), err)
+	}
+
 }
 
 func TestWorkflowMetricsReportComputesLaneFlowEfficiency(t *testing.T) {
@@ -2805,6 +2947,27 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 			activeSeconds: 60,
 			waitSeconds:   180,
 		},
+		{
+			name:   "active event spans entire lane and ends after upper bound",
+			lane:   workflowMetricTestEvent("detent", "issue-long", WorkflowPhaseTypeLane, "Merging", 8*time.Minute, 4*time.Minute),
+			active: workflowMetricTestEvent("detent", "issue-long", WorkflowPhaseTypeAgentSession, "agent_active", 0, 2*time.Hour),
+			from:   workflowMetricTestBase.Add(9 * time.Minute), to: workflowMetricTestBase.Add(13 * time.Minute),
+			activeSeconds: 240,
+		},
+		{
+			name:   "active event ends exactly at lane start",
+			lane:   workflowMetricTestEvent("detent", "issue-ended", WorkflowPhaseTypeLane, "Merging", 8*time.Minute, 4*time.Minute),
+			active: workflowMetricTestEvent("detent", "issue-ended", WorkflowPhaseTypeCI, "ci", 0, 8*time.Minute),
+			from:   workflowMetricTestBase.Add(9 * time.Minute), to: workflowMetricTestBase.Add(13 * time.Minute),
+			waitSeconds: 240,
+		},
+		{
+			name:   "active event starts exactly at lane end",
+			lane:   workflowMetricTestEvent("detent", "issue-starting", WorkflowPhaseTypeLane, "Merging", 8*time.Minute, 4*time.Minute),
+			active: workflowMetricTestEvent("detent", "issue-starting", WorkflowPhaseTypeCI, "ci", 12*time.Minute, time.Minute),
+			from:   workflowMetricTestBase.Add(9 * time.Minute), to: workflowMetricTestBase.Add(13 * time.Minute),
+			waitSeconds: 240,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2819,6 +2982,9 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 				}
 			}
 
+			writer := backend.(*sqliteStore)
+			recorder := &refreshQueryRecorder{DB: writer.db}
+			writer.queries = sqlc.New(recorder)
 			report, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{
 				ProjectID: "detent",
 				From:      tt.from,
@@ -2826,6 +2992,41 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 			})
 			if err != nil {
 				t.Fatalf("WorkflowMetricsReport() error = %v", err)
+			}
+
+			if len(recorder.reads) != 2 {
+				t.Fatalf("report reads=%d, want duration and flow", len(recorder.reads))
+			}
+			read := recorder.reads[1]
+			rows, err := writer.db.QueryContext(ctx, "EXPLAIN "+read.query, read.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			registers := make(map[int]string)
+			var lowerBoundSeek bool
+			for rows.Next() {
+				var address, p1, p2, p3 int
+				var opcode string
+				var p4, p5, comment any
+				if err := rows.Scan(&address, &opcode, &p1, &p2, &p3, &p4, &p5, &comment); err != nil {
+					t.Fatal(err)
+				}
+				if opcode == "Variable" || opcode == "Null" {
+					registers[p2] = opcode
+				}
+				if opcode == "SeekGT" {
+					lowerBoundSeek = registers[p3] == "Variable"
+				}
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !lowerBoundSeek {
+				t.Fatal("flow index seeks NULL instead of the bound parameter")
 			}
 
 			lane := workflowMetricTestLane(t, report.Lanes, tt.lane.PhaseName)
@@ -3328,6 +3529,21 @@ func TestUsageReportAggregates(t *testing.T) {
 			},
 		},
 	}
+
+	// These cases catch filtering after aggregation, leaking totals or treating
+	// an empty authorized project set as an unrestricted query.
+	tests = append(tests,
+		struct {
+			name  string
+			query UsageReportQuery
+			want  []UsageReportRow
+		}{name: "no authorized projects", query: UsageReportQuery{By: UsageReportByDay, ProjectIDs: []string{}}, want: []UsageReportRow{}},
+		struct {
+			name  string
+			query UsageReportQuery
+			want  []UsageReportRow
+		}{name: "filtered project totals", query: UsageReportQuery{By: UsageReportByDay, ProjectIDs: []string{"pyroapex"}}, want: []UsageReportRow{{Key: "2026-06-02", InputTokens: 5, OutputTokens: 2, TotalTokens: 7, RuntimeSeconds: 3, Events: 1}}},
+	)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3879,10 +4095,13 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	backend := &sqliteStore{db: db, queries: sqlc.New(db)}
 	startedAt := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	// Seed the version-54 schema directly: RecordUsageEvent targets the current
+	// schema, including telemetry columns added after this migration.
 	for i := range cases {
-		if _, err := backend.RecordUsageEvent(ctx, UsageEvent{ProjectID: "detent", IssueID: "issue", SessionID: int64(i + 1), CostUSD: 50, InputTokens: 5000, TotalTokens: 5000, StartedAt: startedAt, FinishedAt: startedAt.Add(time.Hour), Outcome: "completed"}); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO usage_events
+		(project_id, issue_id, session_id, cost_usd, input_tokens, total_tokens, started_at, finished_at, event_day, outcome)
+		VALUES ('detent', 'issue', ?, 50, 5000, 5000, '2026-09-07T10:00:00Z', '2026-09-07T11:00:00Z', '2026-09-07', 'completed')`, i+1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -3900,6 +4119,11 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 			}
 		})
 	}
+	// Current readers require the current schema; migration 55 was checked above.
+	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
+		t.Fatal(err)
+	}
+	backend := &sqliteStore{db: db, queries: sqlc.New(db)}
 	spend, err := backend.IssueSpendSince(ctx, IssueSpendSinceQuery{ProjectID: "detent", IssueID: "issue", Since: startedAt.Add(-time.Second)})
 	if err != nil {
 		t.Fatal(err)

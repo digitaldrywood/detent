@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const (
@@ -40,16 +42,17 @@ type InstallationTokenConfig struct {
 }
 
 type InstallationTokenSource struct {
-	endpoint       string
-	appID          string
-	installationID string
-	privateKey     string
-	httpClient     HTTPClient
-	now            func() time.Time
-	mu             sync.Mutex
-	cachedToken    string
-	expiresAt      time.Time
-	details        InstallationTokenDetails
+	endpoint          string
+	appID             string
+	installationID    string
+	privateKey        string
+	httpClient        HTTPClient
+	now               func() time.Time
+	mu                sync.Mutex
+	cachedToken       string
+	expiresAt         time.Time
+	details           InstallationTokenDetails
+	unscopedRESTScope *connector.RESTScope
 }
 
 type InstallationTokenDetails struct {
@@ -177,6 +180,11 @@ func (s *InstallationTokenSource) jwt(now time.Time) (string, error) {
 }
 
 func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, jwt string) (InstallationTokenDetails, error) {
+	scope := connector.RESTScopeFromContext(ctx)
+	if scope == nil {
+		scope = s.unscopedRESTScope
+	}
+	attribution := scope.Attribution("app installation tokens", "")
 	endpoint, err := installationTokenURL(s.endpoint, s.installationID)
 	if err != nil {
 		return InstallationTokenDetails{}, err
@@ -191,7 +199,7 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
 
-	resp, err := s.httpClient.Do(req)
+	resp, finishHTTP, err := timedHTTPAttempt(attribution, s.httpClient, req, true, true)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return InstallationTokenDetails{}, ctxErr
@@ -199,12 +207,14 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 		return InstallationTokenDetails{}, fmt.Errorf("%w: %w", ErrTransient, err)
 	}
 	defer func() {
-		if err := drainAndClose(resp.Body); err != nil {
+		if err := resp.Body.Close(); err != nil {
 			return
 		}
 	}()
 
+	finishHTTP.BeginBody()
 	raw, err := io.ReadAll(resp.Body)
+	finishHTTP.BodyConsumed(err)
 	if err != nil {
 		return InstallationTokenDetails{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}

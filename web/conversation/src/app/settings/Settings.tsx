@@ -44,7 +44,9 @@ import {
   settingsNavItems,
   type SettingsSectionId,
 } from "./sections.tsx";
+import { CreditSettings } from "./CreditSettings.tsx";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
+import { MCPSettings } from "./MCPSettings.tsx";
 import { signInPath } from "../../runtime/basePath.ts";
 
 /** The allowance label the plan report's keys become. */
@@ -62,7 +64,7 @@ export interface AllowanceRow {
 }
 
 export function allowanceRows(plan: PlanReport): readonly AllowanceRow[] {
-  const names = new Set([...Object.keys(plan.allowances), ...Object.keys(plan.usage)]);
+  const names = new Set(Object.keys(plan.allowances));
   return [...names].toSorted().map((name) => {
     const used = plan.usage[name] ?? 0;
     const limit = plan.allowances[name] ?? 0;
@@ -85,6 +87,7 @@ export function AllowanceList({ rows }: { readonly rows: readonly AllowanceRow[]
           >
             {row.used.toLocaleString()} / {row.limit.toLocaleString()}
             {row.overLimit ? <span className="ps-1.5 text-xs">over limit</span> : null}
+            {row.name === "projects" || row.name === "unarchived_issues" ? <span className="ps-1.5 text-xs">{Math.max(0, row.limit - row.used).toLocaleString()} remaining</span> : null}
           </span>
         </li>
       ))}
@@ -298,6 +301,11 @@ export function IntegrationsSettings({
   return <ProjectSettingsRoute key={selected} projectId={selected} onNavigate={onNavigate} header={picker} />;
 }
 
+export function planPriceText(plan: PlanReport): string {
+  if (plan.monthly_usd_cents === undefined || plan.monthly_usd_cents === null) return "Custom or legacy complimentary access";
+  return `$${(plan.monthly_usd_cents / 100).toLocaleString()} per organization/month${plan.monthly_usd_cents === 0 ? " · no card required" : ""}`;
+}
+
 export function PlanSettings(): React.ReactElement {
   const api = useAccountApi();
   const plan = useResource<PlanReport>(() => api.plan(), [api]);
@@ -323,13 +331,13 @@ export function PlanSettings(): React.ReactElement {
         ) : plan.value === undefined ? null : (
           <>
             <SettingsRow
-              title={`${plan.value.effective_base.id} · version ${plan.value.effective_base.version}`}
+              title={plan.value.name ?? `${plan.value.effective_base.id} · version ${plan.value.effective_base.version}`}
               description={
                 plan.value.source === "subscription" ? "Subscription-derived plan" : "Base plan"
               }
-              status={`Usage window ends ${plan.value.window_ends_at}`}
+              status={planPriceText(plan.value)}
             />
-            <SettingsRow title="Allowances">
+            <SettingsRow title="Capacity" description="Archived issues remain available. Hosting and model-provider charges are separate.">
               <AllowanceList rows={allowanceRows(plan.value)} />
             </SettingsRow>
           </>
@@ -351,7 +359,7 @@ export function billingStatusText(
   switch (state.status) {
     case "":
     case "free":
-      return report.entitlement.source === "grant"
+      return report.entitlement.source === "grant" || report.entitlement.effective_base.id !== "free"
         ? { title: "Complimentary access", description: `Plan ${plan}, granted by Detent.` }
         : { title: "Free plan", description: `Plan ${plan}. No payment details are on file.` };
     case "active":
@@ -463,6 +471,10 @@ export function BillingSettings(): React.ReactElement {
           />
         ) : billing.value === undefined || status === null ? null : (
           <>
+            <SettingsRow title={billing.value.entitlement.name ?? billing.value.entitlement.effective_base.id} status={planPriceText(billing.value.entitlement)} description="Detent subscriptions cover hosting. Model-provider charges remain separate; no AI-dollar allowance is included." />
+            <SettingsRow title="Capacity" description="Archive issues to free capacity; existing data, reading and exports remain available.">
+              <AllowanceList rows={allowanceRows(billing.value.entitlement).filter((row) => row.name === "projects" || row.name === "unarchived_issues")} />
+            </SettingsRow>
             <SettingsRow
               title={status.title}
               description={status.description}
@@ -488,18 +500,25 @@ export function BillingSettings(): React.ReactElement {
               <SettingsRow
                 key={price.id}
                 title={price.label}
-                description={price.id}
+                description="Per organization; manage plan changes in the billing portal."
                 control={
                   <Button
                     size="sm"
                     disabled={checkout.pending || billing.value?.can_checkout === false}
                     onClick={() => void checkout.call(price.id)}
                   >
-                    {checkout.pending ? "Opening…" : "Subscribe"}
+                    {checkout.pending ? "Opening…" : "Upgrade"}
                   </Button>
                 }
               />
             ))}
+            {billing.value.chat_usage === undefined ? null : (
+              <SettingsRow
+                title="AI usage this billing period"
+                description={`${billing.value.chat_usage.range.from.slice(0, 10)} – ${billing.value.chat_usage.range.to.slice(0, 10)} · ${billing.value.chat_usage.turns.toLocaleString()} ${billing.value.chat_usage.turns === 1 ? "turn" : "turns"}${billing.value.chat_usage.unpriced_turns > 0 ? ` · ${billing.value.chat_usage.unpriced_turns} ${billing.value.chat_usage.unpriced_turns === 1 ? "turn" : "turns"} awaiting pricing` : ""}`}
+                status={`${billing.value.chat_usage.tokens.toLocaleString()} tokens · $${billing.value.chat_usage.cost_usd.toFixed(6)} USD`}
+              />
+            )}
             <SettingsRow title="">
               <div className="pb-3">
                 <ControlError message={checkout.error?.message ?? portal.error?.message ?? null} />
@@ -508,6 +527,9 @@ export function BillingSettings(): React.ReactElement {
           </>
         )}
       </SettingsSection>
+      {billing.value?.ai_credits === undefined ? null : (
+        <CreditSettings credits={billing.value.ai_credits} refresh={billing.refresh} />
+      )}
     </SettingsPageContainer>
   );
 }
@@ -657,6 +679,8 @@ function SettingsBody({
       return <RunnersSettings />;
     case "integrations":
       return <IntegrationsSettings project={project} onNavigate={onNavigate} />;
+    case "mcp":
+      return <MCPSettings />;
     case "plan":
       return <PlanSettings />;
     case "billing":

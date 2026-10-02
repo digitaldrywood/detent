@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -481,7 +482,7 @@ func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Du
 		base = defaultPollInterval
 	}
 	lookupPause := githubLookupBackoffPause(state, now)
-	if backoffPause := gitHubRESTBackoffPause(state, now); backoffPause > lookupPause {
+	if backoffPause := gitHubRESTBackoffPause(state, now); !o.nativeWorkflow() && backoffPause > lookupPause {
 		return backoffPause
 	}
 	if lookupPause > 0 {
@@ -580,10 +581,65 @@ func (o *Orchestrator) projectRefreshInterval(state *State, now time.Time, base 
 	pace(state.RateLimits.GitHubGraphQL, o.cfg.GitHubGraphQLMinReserve)
 	pace(state.RateLimits.GitHubREST, o.cfg.GitHubRESTMinReserve)
 	for _, budget := range state.RateLimits.GitHubRESTBudgets {
-		if budget.Resource != "" && budget.Resource != "core" {
+		if o.nativeWorkflow() && budget.Consumer != telemetry.RESTConsumerOrchestrator || budget.Resource != "" && budget.Resource != "core" {
 			continue
 		}
 		pace(&telemetry.RateLimitBucket{Limit: budget.Limit, Remaining: budget.Remaining, ResetAt: budget.ResetAt}, o.cfg.GitHubRESTMinReserve)
 	}
 	return interval
+}
+
+// A refresh flushes before dispatch for current capacity authority and after
+// maintenance for complete operation counts. Both belong to the same budget.
+func mergeRefreshRESTUsage(tail, prior *telemetry.RESTUsage) {
+	if tail == nil || prior == nil {
+		return
+	}
+	tail.TotalRequests += prior.TotalRequests
+	tail.ConditionalRequests += prior.ConditionalRequests
+	tail.NotModifiedRequests += prior.NotModifiedRequests
+	tail.BillableRequests += prior.BillableRequests
+	tail.RateLimited = tail.RateLimited || prior.RateLimited
+	tail.ReserveHeld = tail.ReserveHeld || prior.ReserveHeld
+	tail.FanoutDeferred = tail.FanoutDeferred || prior.FanoutDeferred
+	tail.Contributors = append(prior.Contributors, tail.Contributors...)
+	tail.Divergences = append(prior.Divergences, tail.Divergences...)
+	if tail.BackoffUntil == nil || (prior.BackoffUntil != nil && prior.BackoffUntil.After(*tail.BackoffUntil)) {
+		tail.BackoffUntil = prior.BackoffUntil
+	}
+}
+
+func (o *Orchestrator) captureNativeLandingRESTUsage(state *State, result runpkg.RunResult, now time.Time) {
+	if result.GitHubRESTUsage == nil {
+		return
+	}
+	usage := *result.GitHubRESTUsage
+	consumer := result.GitHubRESTConsumer
+	if consumer == "" {
+		consumer = telemetry.RESTConsumerWorker
+	}
+	budgets := restBudgetSummaries(usage.Budgets)
+	for i := range budgets {
+		budgets[i].Consumer = consumer
+	}
+	summary := restUsageSummary(usage)
+	if summary != nil {
+		for i := range summary.Contributors {
+			summary.Contributors[i].Consumer = consumer
+		}
+	}
+	state.RateLimits = mergeRateLimits(state.RateLimits, &telemetry.RateLimits{
+		GitHubRESTBudgets: budgets,
+		RESTUsage:         summary,
+	})
+	if result.NativeLanding != nil && result.NativeLanding.Landed && !usage.RateLimited {
+		key, outage, exists := githubRESTCapacityOutage(state.BackendOutages)
+		if exists && outage.Trigger != "" {
+			for _, budget := range budgets {
+				if budget.ObservedAt != nil && budget.ObservedAt.After(outage.LastObservedAt) && budget.Remaining > 0 && budget.CredentialIdentity != "" && outage.Reason == "GitHub REST "+outage.Trigger+" for credential "+budget.CredentialIdentity {
+					delete(state.BackendOutages, key)
+				}
+			}
+		}
+	}
 }

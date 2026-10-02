@@ -1442,3 +1442,74 @@ func TestConversationCoordinatorRefusesWritesOnceLinked(t *testing.T) {
 		})
 	}
 }
+
+func TestCoordinatorFreeRefusesLuna(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		credits      bool
+		balance      int64
+		owner        bool
+		overrun      bool
+		wantBalance  int64
+		wantCalls    int
+		want, hidden string
+	}{
+		{name: "Free without credits", want: "Upgrade", hidden: "Auto-fund"},
+		{name: "purchased credits permit chat", credits: true, balance: 1000000, wantCalls: 1},
+		{name: "marked-up turn overruns then refuses", credits: true, balance: 120000, overrun: true, wantBalance: -30000, wantCalls: 1},
+		{name: "exact charged balance exhausts then refuses", credits: true, balance: 150000, overrun: true, wantBalance: 0, wantCalls: 1},
+		{name: "exhausted owner sees failure", credits: true, owner: true, want: "Auto-fund is disabled", hidden: "Ask an organization owner"},
+		{name: "exhausted viewer sees owner action", credits: true, want: "Ask an organization owner", hidden: "Auto-fund"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newCoordinatorFixture(t, "free-chat")
+			d := f.service.database
+			d.hostedOrganization = f.organization
+			if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+				t.Fatal(err)
+			}
+			f.conversations.config.Model = "gpt-6-luna"
+			if test.credits {
+				d.aiCreditMode = "test"
+				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros,failure) VALUES(?,'test',?,'update the saved payment method')", f.organization, test.balance); err != nil {
+					t.Fatal(err)
+				}
+				role := "viewer"
+				if test.owner {
+					role = "owner"
+				}
+				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO hosted_members(user_id,email,membership_id,role,principal_id,created_at,updated_at) VALUES('user_credit','credit@example.test','member_credit',?,?,?,?)", role, f.owner, formatHubTime(d.now()), formatHubTime(d.now())); err != nil {
+					t.Fatal(err)
+				}
+			}
+			record := f.seed(t, "Free chat", nil)
+			f.say(t, &record, "Can you explain this project?")
+			delivery := conversation.DeliveryFailed
+			if test.wantCalls > 0 {
+				delivery = conversation.DeliveryCompleted
+			}
+			reply := f.waitAssistant(t, record.ID, delivery)
+			if test.overrun {
+				usage := ConversationUsage{OrganizationID: f.organization, ProjectID: f.project.ID, ConversationID: record.ID, TurnID: reply.ID, Provider: "openai", Model: "gpt-6-luna", Tokens: runner.AgentTokenCounts{InputTokens: 1000000}, Outcome: conversation.DeliveryCompleted, OccurredAt: d.now()}
+				if err := d.RecordConversationUsage(t.Context(), usage); err != nil {
+					t.Fatal(err)
+				}
+				var balance int64
+				if err := d.db.QueryRowContext(t.Context(), "SELECT balance_micros FROM ai_credit_accounts").Scan(&balance); err != nil || balance != test.wantBalance {
+					t.Fatalf("charged balance=%d want=%d err=%v", balance, test.wantBalance, err)
+				}
+				f.say(t, &record, "One more question")
+				reply = f.waitAssistant(t, record.ID, conversation.DeliveryFailed)
+				if !strings.Contains(reply.Text, "Ask an organization owner") {
+					t.Fatalf("exhaustion refusal=%#v", reply)
+				}
+			}
+			if f.backend.turns() != test.wantCalls {
+				t.Fatalf("backend calls=%d want=%d", f.backend.turns(), test.wantCalls)
+			}
+			if test.want != "" && !strings.Contains(reply.Text, test.want) || test.hidden != "" && strings.Contains(reply.Text, test.hidden) {
+				t.Fatalf("refusal=%#v", reply)
+			}
+		})
+	}
+}

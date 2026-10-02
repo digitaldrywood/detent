@@ -2,6 +2,10 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -27,7 +31,7 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 			}
 		}
 		for start := 0; start < len(ids); start += 100 {
-			issues, err := o.connector.FetchIssueStatesByIDs(ctx, ids[start:min(start+100, len(ids))])
+			issues, err := o.fetchWorkspaceCleanupIssueStatesByIDs(ctx, ids[start:min(start+100, len(ids))])
 			if err != nil {
 				return nil, err
 			}
@@ -73,6 +77,32 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 		state.WorkspaceRetention = []workspace.RetentionTotals{totals}
 	}
 	if err != nil {
-		o.logger.Warn("workspace retention failed", "error", err)
+		o.warnRetentionFailure(err)
 	}
+}
+
+func (o *Orchestrator) warnRetentionFailure(err error) {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, failure := range joined.Unwrap() {
+			o.warnRetentionFailure(failure)
+		}
+		return
+	}
+	var pathError *os.PathError
+	if errors.As(err, &pathError) {
+		parent := filepath.Join(".detent", "quarantine")
+		path := filepath.Clean(pathError.Path)
+		if relative, ok := strings.CutPrefix(path, parent+string(filepath.Separator)); ok {
+			name, _, _ := strings.Cut(relative, string(filepath.Separator))
+			key := filepath.Join(parent, name)
+			if o.quarantineWarnings == nil {
+				o.quarantineWarnings = make(map[string]struct{})
+			}
+			if _, warned := o.quarantineWarnings[key]; warned {
+				return
+			}
+			o.quarantineWarnings[key] = struct{}{}
+		}
+	}
+	o.logger.Warn("workspace retention failed", "error", err)
 }

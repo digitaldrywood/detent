@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -18,11 +19,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 const (
@@ -220,18 +223,18 @@ func (s *Server) apiState(c echo.Context) error {
 		return err
 	} else if ok {
 		if scenario.ID == "api-state-no-snapshot" {
-			return c.JSON(http.StatusOK, snapshotErrorResponse(demoBaseTime, "snapshot_unavailable", "Snapshot unavailable"))
+			return writeStateResponse(c, snapshotErrorResponse(demoBaseTime, "snapshot_unavailable", "Snapshot unavailable"))
 		}
 		snapshot := demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
 		if updateFields {
 			return c.JSON(http.StatusOK, updateStateResponse(snapshot))
 		}
-		return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
+		return writeStateResponse(c, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
 	}
 	now := s.now()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
+		return writeStateResponse(c, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
 	if updateFields {
 		return c.JSON(http.StatusOK, updateStateResponse(snapshot))
@@ -246,6 +249,22 @@ func (s *Server) apiState(c echo.Context) error {
 
 	response := stateResponse(snapshot, generatedAt(snapshot, now), now, s.instanceName(), s.build)
 	response.Enrichment = enrichment
+	return writeStateResponse(c, response)
+}
+
+func writeStateResponse(c echo.Context, response any) error {
+	if c.QueryParam("projection") == serviceapi.StateProjection {
+		projected, err := serviceapi.BoundedState(response)
+		if err != nil {
+			return err
+		}
+		data, err := json.Marshal(projected)
+		if err != nil {
+			return err
+		}
+		// Echo's optional pretty rendering must not expand the byte budget.
+		return c.JSONBlob(http.StatusOK, data)
+	}
 	return c.JSON(http.StatusOK, response)
 }
 
@@ -290,12 +309,12 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 			return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 		}
 		scoped := projectScopedSnapshotForProject(snapshot, telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL, Pool: project.Pool})
-		return c.JSON(http.StatusOK, stateResponse(scoped, generatedAt(scoped, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
+		return writeStateResponse(c, stateResponse(scoped, generatedAt(scoped, demoBaseTime), demoBaseTime, s.instanceName(), s.build))
 	}
 	now := s.now()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
+		return writeStateResponse(c, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
 	var enrichment stateEnrichmentAPIResponse
 	if !snapshot.Shutdown.Draining {
@@ -318,7 +337,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 
 	response := stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), now, s.instanceName(), s.build)
 	response.Enrichment = enrichment
-	return c.JSON(http.StatusOK, response)
+	return writeStateResponse(c, response)
 }
 
 func (s *Server) stateSnapshot(snapshot telemetry.Snapshot) (telemetry.Snapshot, stateEnrichmentAPIResponse) {
@@ -435,20 +454,35 @@ func (s *Server) apiRefresh(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, errorResponse("orchestrator_unavailable", "Orchestrator is unavailable"))
 	}
 
+	payload, err := s.requestOperatorRefresh(c.Request().Context())
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("orchestrator_unavailable", "Orchestrator is unavailable"))
+	}
+	if htmxRequest(c) {
+		return renderManualRefreshFeedback(c, refreshAttemptFromResponse(payload))
+	}
+	status := http.StatusAccepted
+	if payload.Refused {
+		status = http.StatusTooManyRequests
+	}
+	return c.JSON(status, payload)
+}
+
+func (s *Server) requestOperatorRefresh(ctx context.Context) (RefreshResponse, error) {
+	if s.refresher == nil {
+		return RefreshResponse{}, errOperatorCommandUnavailable
+	}
 	now := apiNow()
 	if payload, ok := s.refreshRefusal(now); ok {
 		if s.refreshes != nil {
 			s.refreshes.recordResponse(payload)
 		}
-		if htmxRequest(c) {
-			return renderManualRefreshFeedback(c, refreshAttemptFromResponse(payload))
-		}
-		return c.JSON(http.StatusTooManyRequests, payload)
+		return payload, nil
 	}
 
-	payload, err := s.refresher.RequestRefresh(c.Request().Context())
+	payload, err := s.refresher.RequestRefresh(ctx)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("orchestrator_unavailable", "Orchestrator is unavailable"))
+		return RefreshResponse{}, errOperatorCommandUnavailable
 	}
 	if payload.RequestedAt.IsZero() {
 		payload.RequestedAt = now
@@ -472,10 +506,7 @@ func (s *Server) apiRefresh(c echo.Context) error {
 		s.refreshes.recordResponse(payload)
 	}
 
-	if htmxRequest(c) {
-		return renderManualRefreshFeedback(c, refreshAttemptFromResponse(payload))
-	}
-	return c.JSON(http.StatusAccepted, payload)
+	return payload, nil
 }
 
 func renderManualRefreshFeedback(c echo.Context, attempt *telemetry.RefreshAttempt) error {
@@ -607,7 +638,7 @@ func (s *Server) apiUsage(c echo.Context) error {
 		}
 	}
 
-	report, err := s.store.UsageReport(c.Request().Context(), query)
+	report, err := s.readUsageReport(c.Request().Context(), query)
 	if err != nil {
 		s.logger.Error("usage report failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse("usage_report_failed", "Usage report failed"))
@@ -629,12 +660,12 @@ func (s *Server) apiWorkflowTimeline(c echo.Context) error {
 	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
 		return c.JSON(http.StatusBadRequest, errorResponse("missing_issue_identity", "issue_id, identifier, or issue_url is required"))
 	}
-	timeline, err := s.store.IssueWorkflowTimeline(c.Request().Context(), identity)
+	timeline, err := s.workTimeline(c.Request().Context(), identity)
 	if err != nil {
 		s.logger.Error("workflow timeline failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse("workflow_timeline_failed", "Workflow timeline failed"))
 	}
-	return c.JSON(http.StatusOK, workflowTimelineResponse(timeline))
+	return c.JSON(http.StatusOK, timeline)
 }
 
 func (s *Server) methodNotAllowed(c echo.Context) error {
@@ -1237,17 +1268,21 @@ func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
 }
 
 func usageReportQuery(c echo.Context) (store.UsageReportQuery, *apiErrorResponse, int) {
-	group, ok := usageReportGroup(c.QueryParam("by"))
+	return usageReportQueryValues(c.QueryParam("by"), c.QueryParam("from"), c.QueryParam("to"))
+}
+
+func usageReportQueryValues(by, fromValue, toValue string) (store.UsageReportQuery, *apiErrorResponse, int) {
+	group, ok := usageReportGroup(by)
 	if !ok {
 		response := errorResponse("invalid_usage_group", "by must be one of day, project, issue, pr, model")
 		return store.UsageReportQuery{}, &response, http.StatusBadRequest
 	}
 
-	from, response, status := usageDate("from", c.QueryParam("from"))
+	from, response, status := usageDate("from", fromValue)
 	if response != nil {
 		return store.UsageReportQuery{}, response, status
 	}
-	to, response, status := usageDate("to", c.QueryParam("to"))
+	to, response, status := usageDate("to", toValue)
 	if response != nil {
 		return store.UsageReportQuery{}, response, status
 	}
@@ -1357,6 +1392,8 @@ func usageBucketResponses(group store.UsageReportGroup, rows []store.UsageReport
 
 func usageBucketResponse(group store.UsageReportGroup, row store.UsageReportRow, pricing budget.PricingTable) usageBucketAPIResponse {
 	return usageBucketAPIResponse{
+		ComputeUSD:            row.ComputeUSD,
+		ComputeEvents:         row.ComputeEvents,
 		Bucket:                row.Key,
 		Label:                 row.Key,
 		Date:                  usageBucketDate(group, row.Key),
@@ -1376,6 +1413,8 @@ func usageBucketResponse(group store.UsageReportGroup, row store.UsageReportRow,
 
 func usageTotalsResponse(totals store.UsageReportTotals, pricing budget.PricingTable) usageTotalsAPIResponse {
 	return usageTotalsAPIResponse{
+		ComputeUSD:            totals.ComputeUSD,
+		ComputeEvents:         totals.ComputeEvents,
 		InputTokens:           totals.InputTokens,
 		CachedInputTokens:     totals.CachedInputTokens,
 		OutputTokens:          totals.OutputTokens,
@@ -1394,6 +1433,8 @@ func usageModelResponses(models []store.UsageReportModel, pricing budget.Pricing
 	payload := make([]usageModelAPIResponse, 0, len(models))
 	for _, model := range models {
 		payload = append(payload, usageModelAPIResponse{
+			ComputeUSD:            model.ComputeUSD,
+			ComputeEvents:         model.ComputeEvents,
 			Model:                 model.Model,
 			InputTokens:           model.InputTokens,
 			CachedInputTokens:     model.CachedInputTokens,
@@ -1486,7 +1527,7 @@ func workflowTimelineResponse(timeline store.WorkflowTimeline) workflowTimelineA
 			EndpointFamily:        event.EndpointFamily,
 		})
 	}
-	return workflowTimelineAPIResponse{Events: events}
+	return workflowTimelineAPIResponse{Events: events, Activity: workflowmetrics.ActivityAudits(timeline.Events, apiNow())}
 }
 
 func issueDescription(description string) *string {
@@ -1941,6 +1982,8 @@ type usageReportAPIResponse struct {
 }
 
 type usageTotalsAPIResponse struct {
+	ComputeUSD            float64                 `json:"compute_usd"`
+	ComputeEvents         int64                   `json:"compute_events"`
 	InputTokens           int64                   `json:"input_tokens"`
 	CachedInputTokens     int64                   `json:"cached_input_tokens"`
 	OutputTokens          int64                   `json:"output_tokens"`
@@ -1955,6 +1998,8 @@ type usageTotalsAPIResponse struct {
 }
 
 type usageBucketAPIResponse struct {
+	ComputeUSD            float64                 `json:"compute_usd"`
+	ComputeEvents         int64                   `json:"compute_events"`
 	Bucket                string                  `json:"bucket"`
 	Label                 string                  `json:"label"`
 	Date                  *string                 `json:"date"`
@@ -1972,6 +2017,8 @@ type usageBucketAPIResponse struct {
 }
 
 type usageModelAPIResponse struct {
+	ComputeUSD            float64 `json:"compute_usd"`
+	ComputeEvents         int64   `json:"compute_events"`
 	Model                 string  `json:"model"`
 	InputTokens           int64   `json:"input_tokens"`
 	CachedInputTokens     int64   `json:"cached_input_tokens"`
@@ -1986,7 +2033,8 @@ type usageModelAPIResponse struct {
 }
 
 type workflowTimelineAPIResponse struct {
-	Events []workflowPhaseEventAPIResponse `json:"events"`
+	Events   []workflowPhaseEventAPIResponse `json:"events"`
+	Activity []workflowmetrics.ActivityAudit `json:"activity"`
 }
 
 type workflowPhaseEventAPIResponse struct {

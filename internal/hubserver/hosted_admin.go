@@ -67,6 +67,9 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
+	if err := s.validateHostedInvitationGrants(c.Request().Context(), s.database.db, credential, email, nil); err != nil {
+		return s.hostedError(c, http.StatusForbidden, "You cannot replace this member's project access")
+	}
 	reserved, err := s.reserveHostedInvitationSeat(c.Request().Context(), email)
 	if err != nil {
 		var limit *hostedLimitError
@@ -75,19 +78,15 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 		}
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
 	}
-	invitation, err := s.config.Hosted.Provider.Invite(c.Request().Context(), credential.Hosted.OrganizationID, email, role, credential.Hosted.Subject)
-	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
-		return s.hostedInvitationFailure(c, email, reserved, err)
+	if _, err := s.sendReservedHostedInvitationFor(c.Request().Context(), credential, email, role, reserved, nil); err != nil {
+		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 	}
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, role, formatHubTime(s.config.now()))
-	if err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be recorded")
-	}
+
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
-func (s *Service) hostedManagedMember(c echo.Context, credential apiCredential, removingOwner bool) (auth.Membership, error) {
-	members, err := s.config.Hosted.Provider.Memberships(c.Request().Context(), "", credential.Hosted.OrganizationID)
+func (s *Service) hostedManagedMemberFor(ctx context.Context, credential apiCredential, id string, removingOwner bool) (auth.Membership, error) {
+	members, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {
 		return auth.Membership{}, auth.ErrHostedIdentity
 	}
@@ -100,7 +99,7 @@ func (s *Service) hostedManagedMember(c echo.Context, credential apiCredential, 
 		if member.Role.Slug == "owner" {
 			owners++
 		}
-		if member.ID == c.Param("member") {
+		if member.ID == id {
 			selected = member
 		}
 	}
@@ -115,16 +114,10 @@ func (s *Service) revokeHostedMember(c echo.Context) error {
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot remove organization members")
 	}
-	member, err := s.hostedManagedMember(c, credential, true)
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This member cannot be removed; the organization must retain an owner")
+	if err := s.removeHostedMemberFor(c.Request().Context(), credential, c.Param("member")); err != nil {
+		return s.hostedError(c, http.StatusForbidden, "This member could not be removed; the organization must retain an owner")
 	}
-	if err := s.revokeHostedMemberLocally(c.Request().Context(), member.UserID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Membership removal is temporarily unavailable")
-	}
-	if err := s.config.Hosted.Provider.RevokeMembership(c.Request().Context(), member.ID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "Local access is revoked. Provider revocation could not be confirmed; retry removal.")
-	}
+
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
@@ -161,16 +154,10 @@ func (s *Service) changeHostedRole(c echo.Context) error {
 	if err != nil || !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
 		return s.hostedError(c, http.StatusForbidden, "You cannot assign this organization role")
 	}
-	member, err := s.hostedManagedMember(c, credential, role != "owner")
-	if err != nil {
-		return s.hostedError(c, http.StatusForbidden, "This role cannot be changed; the organization must retain an owner")
+	if _, err := s.changeHostedRoleFor(c.Request().Context(), credential, c.Param("member"), role); err != nil {
+		return s.hostedError(c, http.StatusForbidden, "This role could not be changed; the organization must retain an owner")
 	}
-	if err := s.config.Hosted.Provider.SetMembershipRole(c.Request().Context(), member.ID, role); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The role could not be changed")
-	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_members SET role = ?,updated_at = ? WHERE user_id = ?", role, formatHubTime(s.config.now()), member.UserID); err != nil {
-		return s.hostedError(c, http.StatusServiceUnavailable, "The role could not be recorded")
-	}
+
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/organization"))
 }
 
@@ -201,6 +188,13 @@ func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, use
 		}
 	}()
 	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential}); err != nil {
+		return err
+	}
+	grants := []hostedMemberGrant{{ProjectID: project, Write: write, Runner: runner}}
+	if revoke {
+		grants[0].Write, grants[0].Runner = false, false
+	}
+	if err := s.validateHostedGrants(ctx, tx, credential, grants); err != nil {
 		return err
 	}
 	var principal string
@@ -236,7 +230,7 @@ func (s *Service) createHostedProject(c echo.Context) error {
 	if name == "" || len(name) > 120 || !hostedFormTrue(c, "grant_access") {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter a project name and explicitly grant yourself project access")
 	}
-	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name)
+	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name, nil)
 	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
@@ -247,7 +241,7 @@ func (s *Service) createHostedProject(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/projects/"+project))
 }
 
-func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string) (project string, resultErr error) {
+func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -257,12 +251,24 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
+	project, err = s.createHostedProjectInTx(ctx, tx, credential, name, states)
+	if err != nil {
+		return "", err
+	}
+	return project, tx.Commit()
+}
+func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
 	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
 		return "", err
 	}
-	err = tx.QueryRowContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id=p.id WHERE p.organization_id=? AND p.name=? AND g.user_id=? AND g.can_write=1`, s.config.Hosted.OrganizationID, name, credential.Hosted.Subject).Scan(&project)
+	if states != nil {
+		if err := validateNativeStates(states); err != nil {
+			return "", err
+		}
+	}
+	err := tx.QueryRowContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id=p.id WHERE p.organization_id=? AND p.name=? AND g.user_id=? AND g.can_write=1`, s.config.Hosted.OrganizationID, name, credential.Hosted.Subject).Scan(&project)
 	if err == nil {
-		return project, tx.Commit()
+		return project, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
@@ -276,7 +282,9 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 		return "", err
 	}
 	project = newNativeID("prj")
-	states := HostedProjectStates()
+	if states == nil {
+		states = HostedProjectStates()
+	}
 	now := formatHubTime(s.config.now())
 	encoded, err := marshalNative(states)
 	if err != nil {
@@ -300,17 +308,18 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 	if err := s.database.checkHostedGrowth(ctx, tx, before, stamp, false); err != nil {
 		return "", err
 	}
-	return project, tx.Commit()
+	return project, nil
 }
 
 // HostedProjectStates is the workflow a new hosted project starts with. A
 // completed run whose version the project's review policy already accepts,
-// the default unless the repository gate asks for a person, moves from In
+// the default unless review.human asks for a person, moves from In
 // Progress straight to Merging, where the runner that holds the project lands
 // it and the Hub finishes it in Done. Human Review is where a Change Request
-// waits for a person: when the project requires review, and when a landing
-// was refused. It neither ends nor dispatches the work, and it is not
-// operator-only, so the orchestrator can move a finished run there. A person
+// waits for a person when the project requires review. Blocked holds a
+// refused landing when human review is disabled. Neither lane ends nor
+// dispatches the work, and neither is operator-only, so the orchestrator
+// can move a finished run there. A person
 // approves the change, which moves it to Merging, or sends it back to In
 // Progress. Human Review is the default auto_promote.source_state, which is
 // how the orchestrator names its review lane. Migrations 36, 38 and 39 move
@@ -318,9 +327,10 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 func HostedProjectStates() []tracker.NativeState {
 	return []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Merging", "Done"}},
-		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
-		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "In Progress"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done"}},
+		{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}
 }

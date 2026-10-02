@@ -2,9 +2,7 @@ package cloudentry
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,6 +14,8 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -392,27 +392,24 @@ func (s *Service) createOrganization(c echo.Context) error {
 	if !s.csrfValid(c, session, "") {
 		return s.refuse(c, http.StatusForbidden, "invalid_csrf", "Reload the page and try again")
 	}
-	if s.staff(session.Email) || session.Identity.SupportActor != "" {
-		return s.refuse(c, http.StatusForbidden, "staff_session", "Staff and support sessions cannot create customer organizations")
-	}
 	name, key := strings.TrimSpace(c.FormValue("name")), c.FormValue("creation_key")
-	if name == "" || len(name) > 120 || len(key) < 16 || len(key) > 128 || !safeID(key) {
-		return s.refuse(c, http.StatusUnprocessableEntity, "invalid_name", "Enter an organization name of at most 120 characters")
-	}
-	if !s.signupAllowed(session.Email) {
-		return s.refuse(c, http.StatusForbidden, "not_eligible", "Organization creation is limited to invited pilot accounts")
-	}
-	fingerprint := sha256.Sum256([]byte(name))
-	id, err := s.recordIntent(c.Request().Context(), session, key, hex.EncodeToString(fingerprint[:]), name)
+	id, err := s.createOrganizationFor(c.Request().Context(), session, name, key)
 	switch {
 	case errors.Is(err, errIntentConflict):
 		return s.refuse(c, http.StatusConflict, "intent_conflict", "This creation request was already used with a different name")
 	case errors.Is(err, errQuota):
-		return s.refuse(c, http.StatusTooManyRequests, "quota_reached", "Your account has reached its organization limit. Open your existing organization from the organization list.")
+		return s.refuse(c, http.StatusTooManyRequests, "quota_reached", "Your account has reached its organization limit")
+	case errors.Is(err, operatortool.ErrAccessDenied):
+		if s.staff(session.Email) || session.Identity.SupportActor != "" {
+			return s.refuse(c, http.StatusForbidden, "staff_session", "Staff and support sessions cannot create customer organizations")
+		}
+		return s.refuse(c, http.StatusForbidden, "not_eligible", "This account cannot create customer organizations")
+	case errors.Is(err, operatortool.ErrInvalidArguments):
+		return s.refuse(c, http.StatusUnprocessableEntity, "invalid_name", "Enter an organization name of at most 120 characters")
 	case err != nil:
 		return s.refuse(c, http.StatusServiceUnavailable, "unavailable", "Organization creation is temporarily unavailable")
 	}
-	s.wakeAllocator()
+
 	if wantJSON {
 		return s.next(c, http.StatusCreated, "/organizations/"+id+"/provisioning", map[string]any{"organization": map[string]string{"id": id, "name": name}})
 	}
@@ -492,11 +489,60 @@ func (s *Service) creatorOrganization(c echo.Context) (accountSession, Organizat
 	if err != nil {
 		return accountSession{}, Organization{}, err
 	}
-	organization, err := s.registry.Organization(c.Request().Context(), c.Param("organization"))
-	if err != nil || !organization.Managed || organization.CreatorSubject != session.Subject || organization.State == "deleted" {
-		return accountSession{}, Organization{}, ErrOrganizationNotFound
+	organization, err := s.creatorOrganizationFor(c.Request().Context(), session, c.Param("organization"))
+	return session, organization, err
+}
+
+func (s *Service) creatorOrganizationFor(ctx context.Context, session accountSession, id string) (Organization, error) {
+	if s.config.Allocation == nil {
+		return Organization{}, operatoradmin.ErrUnavailable
 	}
-	return session, organization, nil
+	organization, err := s.registry.Organization(ctx, id)
+	if err != nil || !organization.Managed || organization.CreatorSubject != session.Subject || organization.State == "deleted" {
+		return Organization{}, operatortool.ErrAccessDenied
+	}
+	return organization, nil
+}
+
+// provisioningResult deliberately excludes allocation diagnostics, provider
+// payloads and credentials. Browser diagnostics remain in provisioningStatus.
+type provisioningResult struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	State     string `json:"state"`
+	Step      string `json:"step"`
+	CanResume bool   `json:"can_resume"`
+	Next      string `json:"next,omitempty"`
+}
+
+func (s *Service) provisioningResult(organization Organization) (provisioningResult, error) {
+	if !ValidOrganizationID(organization.ID) || len(organization.Name) > 120 || len(organization.State) > 64 || len(organization.Step) > 64 {
+		return provisioningResult{}, operatoradmin.ErrUnavailable
+	}
+	result := provisioningResult{ID: organization.ID, Name: organization.Name, State: organization.State, Step: organization.Step, CanResume: provisioningRetryable(organization)}
+	if organization.State == "ready" {
+		result.Next = s.organizationHome(organization.ID)
+	}
+	return result, nil
+}
+
+func (s *Service) resumeProvisioningFor(ctx context.Context, session accountSession, id string) (Organization, error) {
+	organization, err := s.creatorOrganizationFor(ctx, session, id)
+	if err != nil {
+		return Organization{}, err
+	}
+	if !provisioningRetryable(organization) {
+		return organization, nil
+	}
+	state := "allocating"
+	if organization.Step == "" {
+		state = "requested"
+	}
+	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
+		return Organization{}, err
+	}
+	s.wakeAllocator()
+	return s.creatorOrganizationFor(ctx, session, id)
 }
 
 func provisioningRetryable(organization Organization) bool {
@@ -547,11 +593,14 @@ func (s *Service) provisioningJSON(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
 	status := provisioningStatus(organization, s.retryLimit())
-	result := map[string]any{"id": status.ID, "name": status.Name, "state": status.State, "step": status.Step, "error": status.Error, "can_resume": status.CanResume}
-	if organization.State == "ready" {
-		result["next"] = s.organizationHome(organization.ID)
+	result, err := s.provisioningResult(organization)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Setup status is unavailable"})
 	}
-	return c.JSON(http.StatusOK, result)
+	return c.JSON(http.StatusOK, struct {
+		provisioningResult
+		Error string `json:"error"`
+	}{result, status.Error})
 }
 
 func (s *Service) resumeProvisioning(c echo.Context) error {
@@ -562,17 +611,9 @@ func (s *Service) resumeProvisioning(c echo.Context) error {
 	if !s.csrfValid(c, session, "") {
 		return s.refuse(c, http.StatusForbidden, "invalid_csrf", "Reload the page and try again")
 	}
-	if !provisioningRetryable(organization) {
-		return s.next(c, http.StatusOK, "/organizations/"+organization.ID+"/provisioning", nil)
-	}
-	state := "allocating"
-	if organization.Step == "" {
-		state = "requested"
-	}
-	if _, err := s.registry.store.db.ExecContext(c.Request().Context(), "UPDATE organizations SET state = ?, attempts = 0, next_attempt_at = '', error_code = '', error_detail = '', updated_at = ? WHERE id = ? AND state = 'failed'", state, formatTime(s.config.now()), organization.ID); err != nil {
+	if _, err := s.resumeProvisioningFor(c.Request().Context(), session, organization.ID); err != nil {
 		return s.refuse(c, http.StatusServiceUnavailable, "unavailable", "Setup could not be resumed")
 	}
-	s.wakeAllocator()
 	return s.next(c, http.StatusOK, "/organizations/"+organization.ID+"/provisioning", nil)
 }
 
@@ -608,28 +649,8 @@ func (s *Service) ownerOrganization(c echo.Context) (accountSession, Organizatio
 	if err != nil {
 		return accountSession{}, Organization{}, err
 	}
-	organization, err := s.readyOrganization(ctx, c.Param("organization"))
-	if err != nil || !organization.Managed {
-		return accountSession{}, Organization{}, ErrOrganizationNotFound
-	}
-	authorized, err := s.auth.authorization(ctx, session, organization.ID)
-	if err != nil || authorized.Support {
-		return accountSession{}, Organization{}, errNoSession
-	}
-	current, err := s.config.Provider.CurrentSession(ctx, authorized.Identity)
-	if err != nil || current.Subject != session.Subject || current.OrganizationID != organization.ProviderID {
-		return accountSession{}, Organization{}, errNoSession
-	}
-	memberships, err := s.config.Provider.Memberships(ctx, session.Subject, organization.ProviderID)
-	if err != nil {
-		return accountSession{}, Organization{}, err
-	}
-	for _, membership := range memberships {
-		if membership.UserID == session.Subject && membership.Status == "active" && membership.Role.Slug == "owner" {
-			return session, organization, nil
-		}
-	}
-	return accountSession{}, Organization{}, errNoSession
+	organization, err := s.ownerOrganizationFor(ctx, session, c.Param("organization"))
+	return session, organization, err
 }
 
 func (s *Service) deleteOrganization(c echo.Context) error {
@@ -641,24 +662,10 @@ func (s *Service) deleteOrganization(c echo.Context) error {
 	if !s.csrfValid(c, session, organization.ID) || c.FormValue("confirm") != organization.Name {
 		return s.denied(c, http.StatusUnprocessableEntity, "Type the organization name exactly to confirm deletion")
 	}
-	state, err := s.tenantBillingState(ctx, organization, true)
-	if err != nil {
-		return s.denied(c, http.StatusServiceUnavailable, "Billing status could not be confirmed; retry deletion later")
+	if err := s.deleteOrganizationFor(ctx, session, organization, c.FormValue("confirm")); err != nil {
+		return s.denied(c, http.StatusServiceUnavailable, "Deletion could not be completed")
 	}
-	if billingBlocksDeletion(state, s.config.now()) {
-		return s.denied(c, http.StatusConflict, "Finish or let any pending checkout expire, and cancel the subscription in the billing portal, before deleting this organization")
-	}
-	if _, err := s.registry.store.db.ExecContext(ctx, "UPDATE organizations SET state = 'deleting', updated_at = ? WHERE id = ? AND state = 'ready'", formatTime(s.config.now()), organization.ID); err != nil {
-		return s.denied(c, http.StatusServiceUnavailable, "Deletion could not start")
-	}
-	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-	defer cancel()
-	if err := s.finishDeletion(detached, organization.ID); err != nil {
-		return s.denied(c, http.StatusServiceUnavailable, "Deletion is pending; it resumes automatically")
-	}
-	if err := s.auth.audit(detached, session.Subject, organization.ID, "organization_deleted"); err != nil {
-		s.config.Logger.Warn("organization deletion audit failed", "organization", organization.ID)
-	}
+
 	return c.Redirect(http.StatusSeeOther, "/organizations")
 }
 

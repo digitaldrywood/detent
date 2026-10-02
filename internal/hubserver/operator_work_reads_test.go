@@ -1,0 +1,331 @@
+package hubserver
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func TestOperatorNativeWorkReads(t *testing.T) {
+	// Real application writes populate the reads; catches bypassing native scope,
+	// losing cursor pages, dropping reads from the combined command dispatcher,
+	// and leaking hidden relationship IDs in saved versions.
+	f := newNativeFixture(t, nil, "", "read-tools")
+	first := f.create(t, "needle first")
+	second := f.create(t, "needle second")
+	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign")
+	hidden := foreign.create(t, "hidden issue")
+	itemPath := f.base + "/work-items/" + string(first.WorkItemID)
+	response := performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/dependencies", testHubAdminToken, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "hidden-dependency"}, ExpectedRevision: first.Revision, RelatedWorkItemID: hidden.WorkItemID, Operation: "add"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var updated tracker.NativeIssue
+	decodeHubResponse(t, response, &updated)
+	var firstComment tracker.NativeComment
+	for index, body := range []string{"first comment", "second comment"} {
+		response = performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: body}, Body: body})
+		requireNativeStatus(t, response, http.StatusOK)
+		if index == 0 {
+			decodeHubResponse(t, response, &firstComment)
+		}
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodPatch, itemPath+"/comments/"+firstComment.ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-first"}, ExpectedRevision: firstComment.Revision, Body: "edited first comment"})
+	requireNativeStatus(t, response, http.StatusOK)
+	ctxs := make(chan context.Context, 1)
+	f.service.echo.POST("/api/v2/organizations/:organization/operator-read-fixture", func(c echo.Context) error { ctxs <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/operator-read-fixture", f.token, map[string]any{})
+	requireNativeStatus(t, response, http.StatusOK)
+	ctx := <-ctxs
+	executor := hostedOperatorExecutor{service: f.service}
+	call := func(tool string, args map[string]any) (operatortool.Result, error) {
+		t.Helper()
+		raw, err := json.Marshal(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return executor.Execute(ctx, operatortool.Call{Name: tool, Arguments: raw})
+	}
+	args := func() map[string]any {
+		return map[string]any{"project_id": string(f.project.ID), "reference": string(first.WorkItemID)}
+	}
+	for _, tool := range []string{operatortool.WorkItem, operatortool.WorkRelationships, operatortool.WorkHistory, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession} {
+		result, err := call(tool, args())
+		if err != nil {
+			t.Fatalf("%s: %v", tool, err)
+		}
+		if strings.Contains(string(result.Content), string(hidden.WorkItemID)) || strings.Contains(string(result.Content), hidden.Title) {
+			t.Fatalf("%s leaked foreign dependency: %s", tool, result.Content)
+		}
+		var envelope struct {
+			Project   string `json:"project_id"`
+			Freshness string `json:"freshness"`
+		}
+		if err := json.Unmarshal(result.Content, &envelope); err != nil || envelope.Project != string(f.project.ID) || envelope.Freshness == "" {
+			t.Fatalf("%s envelope=%s", tool, result.Content)
+		}
+	}
+	versionArgs := args()
+	versionArgs["revision"] = int64(updated.Revision)
+	version, err := call(operatortool.WorkVersion, versionArgs)
+	if err != nil || strings.Contains(string(version.Content), string(hidden.WorkItemID)) {
+		t.Fatalf("version=%s err=%v", version.Content, err)
+	}
+	commentVersionArgs := args()
+	commentVersionArgs["comment_id"] = firstComment.ID
+	commentVersionArgs["revision"] = int64(firstComment.Revision)
+	version, err = call(operatortool.WorkVersion, commentVersionArgs)
+	if err != nil || !strings.Contains(string(version.Content), "first comment") || strings.Contains(string(version.Content), "edited first comment") {
+		t.Fatalf("saved comment revision=%s err=%v", version.Content, err)
+	}
+	listArgs := map[string]any{"project_id": string(f.project.ID), "query": "needle", "limit": 1}
+	var listing operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]
+	result, err := call(operatortool.WorkList, listArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing = operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]{}
+	if err := json.Unmarshal(result.Content, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Data.Items) != 1 || listing.Data.Items[0].WorkItemID != first.WorkItemID || listing.Data.NextCursor == "" || listing.Data.Items[0].URL == "" {
+		t.Fatalf("list=%s", result.Content)
+	}
+	listArgs["cursor"] = listing.Data.NextCursor
+	result, err = call(operatortool.WorkList, listArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing = operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]{}
+	if err := json.Unmarshal(result.Content, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Data.Items) != 1 || listing.Data.Items[0].WorkItemID != second.WorkItemID || listing.Data.NextCursor != "" {
+		t.Fatalf("next list=%s", result.Content)
+	}
+	commentsArgs := args()
+	commentsArgs["limit"] = 1
+	var comments operatortool.WorkReadResult[tracker.Page[tracker.NativeComment]]
+	result, err = call(operatortool.WorkComments, commentsArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(result.Content, &comments); err != nil {
+		t.Fatal(err)
+	}
+	if len(comments.Data.Items) != 1 || comments.Data.NextCursor == "" {
+		t.Fatalf("comments=%s", result.Content)
+	}
+	if comments.Data.Items[0].Body != "edited first comment" || comments.Data.Items[0].Revision <= firstComment.Revision {
+		t.Fatalf("current edited comment=%s", result.Content)
+	}
+	commentsArgs["cursor"] = comments.Data.NextCursor
+	result, err = call(operatortool.WorkComments, commentsArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(result.Content, &comments); err != nil {
+		t.Fatal(err)
+	}
+	if len(comments.Data.Items) != 1 || comments.Data.Items[0].Body != "second comment" {
+		t.Fatalf("next comments=%s", result.Content)
+	}
+	changedResource := args()
+	changedResource["reference"] = string(second.WorkItemID)
+	changedResource["cursor"] = commentsArgs["cursor"]
+	if _, err := call(operatortool.WorkComments, changedResource); !errors.Is(err, operatortool.ErrInvalidArguments) {
+		t.Fatalf("foreign cursor=%v", err)
+	}
+	for _, tool := range []string{operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkReferences} {
+		foreignArgs := args()
+		foreignArgs["project_id"] = string(foreign.project.ID)
+		foreignArgs["reference"] = string(hidden.WorkItemID)
+		if _, err := call(tool, foreignArgs); !errors.Is(err, operatortool.ErrAccessDenied) {
+			t.Fatalf("%s foreign project=%v", tool, err)
+		}
+		foreignArgs = args()
+		foreignArgs["reference"] = string(hidden.WorkItemID)
+		if _, err := call(tool, foreignArgs); !errors.Is(err, explain.ErrNotFound) {
+			t.Fatalf("%s foreign item=%v", tool, err)
+		}
+	}
+	if _, err := call(operatortool.WorkConfig, map[string]any{"project_id": string(f.project.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	historyArgs := args()
+	historyArgs["limit"] = 1
+	result, err = call(operatortool.WorkHistory, historyArgs)
+	var history operatortool.WorkReadResult[tracker.Page[tracker.CollaborationEvent]]
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(result.Content, &history); err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Data.Items) != 1 || history.Data.NextCursor == "" {
+		t.Fatalf("history=%s", result.Content)
+	}
+	historyArgs["cursor"] = history.Data.NextCursor
+	result, err = call(operatortool.WorkHistory, historyArgs)
+	var nextHistory operatortool.WorkReadResult[tracker.Page[tracker.CollaborationEvent]]
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(result.Content, &nextHistory); err != nil {
+		t.Fatal(err)
+	}
+	if len(nextHistory.Data.Items) != 1 || nextHistory.Data.Items[0].AggregateSequence <= history.Data.Items[0].AggregateSequence {
+		t.Fatalf("next history=%s", result.Content)
+	}
+	if _, err := call(operatortool.BoardSessionHistory, args()); !errors.Is(err, operatortool.ErrReadUnavailable) {
+		t.Fatalf("absent service=%v", err)
+	}
+	listArgs = map[string]any{"project_id": string(f.project.ID), "query": "absent"}
+	result, err = call(operatortool.WorkList, listArgs)
+	if err != nil || !strings.Contains(string(result.Content), `"items":[]`) {
+		t.Fatalf("empty=%s err=%v", result.Content, err)
+	}
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	worker := f.worker(t, "runtime-worker")
+	lease := claimNativeAttempt(t, f, worker, "runtime-machine", "runtime-session", second.WorkItemID)
+	started := nativeStartedEvent(lease)
+	at := time.Now().UTC()
+	started.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Generation: 27, Phase: "implementation", HeartbeatAt: at, Phases: []tracker.NativePhase{{Name: "implementation", StartedAt: at}}}
+	runtimePath := f.base + "/work-items/" + string(second.WorkItemID)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, started), http.StatusOK)
+	observed := started
+	observed.Type, observed.IdempotencyKey, observed.Data.Sequence = "run.observed", "runtime-observed", 2
+	runtime := *started.Data.Runtime
+	runtime.Activity = &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 168, Generation: 27, SessionID: 99, Stage: "implementation", Status: "running", Coverage: "partial", StartedAt: at, AsOf: at, Dropped: 3, Unpaired: 2,
+		Sources: []workflowmetrics.InstructionRef{{Name: "AGENTS.md", Hash: strings.Repeat("a", 64), PathRef: strings.Repeat("b", 64)}},
+		Spans:   []workflowmetrics.ActivitySpan{{ID: "private-command-and-path", ParentID: "private-parent", Kind: "context_read", Evidence: "read_tool", Outcome: "completed", StartedAt: at, FinishedAt: at, CausalAttribution: "secret", Sources: []workflowmetrics.InstructionRef{{Name: "private-instruction-content", PathRef: "/private/instructions", Hash: "secret"}}}, {ID: "second-span", Kind: "implementation", Evidence: "edit_tool", Outcome: "running", StartedAt: at}}}
+	runtime.REST = &tracker.NativeRESTEvidence{Source: "probe", Coverage: "complete", ObservedAt: at, Requests: 19,
+		Windows:     []tracker.NativeRESTWindow{{CredentialIdentity: "github-rest:abcdef012345", Resource: "core", EndpointFamily: "other", BudgetScope: "private-path", Requests: 19, Limit: 5000, Used: 3820, UsedObserved: true, Remaining: 1180, ResetAt: at.Add(time.Hour), ObservedAt: at, Status: 200}},
+		Divergences: []tracker.NativeRESTDivergence{{CredentialIdentity: "github-rest:abcdef012345", Resource: "core", Attribution: "unattributed", ObservedRequests: 2678, DetentRequests: 19, UnattributedRequests: 2659, WindowStartedAt: at.Add(-6 * time.Minute), LastObservedAt: at, ResetAt: at.Add(time.Hour)}}}
+	observed.Data.Runtime = &runtime
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, observed), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, observed), http.StatusOK)
+	for _, test := range []struct {
+		name   string
+		change func(*tracker.NativeRuntimeObservation)
+		status int
+	}{
+		{"changed local identity", func(r *tracker.NativeRuntimeObservation) { r.LocalAttemptID++; r.Activity = nil }, http.StatusConflict},
+		{"older heartbeat", func(r *tracker.NativeRuntimeObservation) { r.HeartbeatAt = at.Add(-time.Second) }, http.StatusConflict},
+		{"forged landing", func(r *tracker.NativeRuntimeObservation) {
+			r.Landing = &tracker.NativeLandingReceipt{ChangeID: "change_" + strings.Repeat("a", 32), VersionID: "version_" + strings.Repeat("b", 32), HeadSHA: strings.Repeat("c", 40), Landed: true, MergeSHA: strings.Repeat("d", 40), BaseRef: "develop", Method: "squash", ObservedAt: at}
+		}, http.StatusNotFound},
+		{"private credential", func(r *tracker.NativeRuntimeObservation) {
+			r.REST = &tracker.NativeRESTEvidence{Windows: []tracker.NativeRESTWindow{{CredentialIdentity: "secret-token", EndpointFamily: "other"}}}
+		}, http.StatusUnprocessableEntity},
+		{"unbounded windows", func(r *tracker.NativeRuntimeObservation) {
+			r.REST = &tracker.NativeRESTEvidence{Windows: make([]tracker.NativeRESTWindow, 65)}
+		}, http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := observed
+			invalid.IdempotencyKey = test.name
+			invalid.Data.Sequence = 3
+			r := runtime
+			test.change(&r)
+			invalid.Data.Runtime = &r
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, invalid), test.status)
+		})
+	}
+	selectArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(second.WorkItemID)}
+	result, err = call(operatortool.BoardSession, selectArgs)
+	var runtimeResult operatortool.WorkReadResult[tracker.NativeRuntimeEvidence]
+	if err != nil || json.Unmarshal(result.Content, &runtimeResult) != nil {
+		t.Fatalf("runtime=%s %v", result.Content, err)
+	}
+	attempt := runtimeResult.Data.Attempt
+	if attempt == nil || attempt.AttemptID != started.Data.AttemptID || attempt.Runtime.LocalAttemptID != 168 || attempt.Runtime.Generation != 27 || !attempt.Current || attempt.RuntimeFreshness != "available" || attempt.Runtime.Phase != "implementation" || attempt.Runtime.Activity.Dropped != 3 || attempt.Runtime.Activity.Unpaired != 2 {
+		t.Fatalf("runtime attempt=%#v", attempt)
+	}
+	for _, selector := range []map[string]any{{"native_attempt_id": started.Data.AttemptID}, {"attempt_id": int64(168)}} {
+		receiptArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(second.WorkItemID)}
+		for key, value := range selector {
+			receiptArgs[key] = value
+		}
+		if _, err := call(operatortool.WorkAttemptReceipt, receiptArgs); err != nil {
+			t.Fatal(err)
+		}
+		receiptArgs["reference"] = string(first.WorkItemID)
+		if _, err := call(operatortool.WorkAttemptReceipt, receiptArgs); !errors.Is(err, explain.ErrNotFound) {
+			t.Fatalf("foreign attempt=%v", err)
+		}
+	}
+	sessionArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(second.WorkItemID), "native_attempt_id": started.Data.AttemptID, "limit": 1}
+	result, err = call(operatortool.BoardSessionHistory, sessionArgs)
+	var activityPage struct {
+		Data struct {
+			Profile workflowmetrics.ActivityProfile                     `json:"profile"`
+			Page    operatortool.ReadPage[workflowmetrics.ActivitySpan] `json:"page"`
+		} `json:"data"`
+	}
+	if err != nil || json.Unmarshal(result.Content, &activityPage) != nil || len(activityPage.Data.Page.Items) != 1 || activityPage.Data.Page.NextOffset == nil || activityPage.Data.Profile.Coverage != "partial" || activityPage.Data.Profile.Dropped != 3 {
+		t.Fatalf("activity=%s %v", result.Content, err)
+	}
+	for _, secret := range []string{"private-command-and-path", "private-parent", "private-instruction-content", "/private/instructions", "secret"} {
+		if strings.Contains(string(result.Content), secret) {
+			t.Fatalf("activity secret leaked: %s", result.Content)
+		}
+	}
+	sessionArgs["offset"] = *activityPage.Data.Page.NextOffset
+	if result, err = call(operatortool.BoardSessionHistory, sessionArgs); err != nil || !strings.Contains(string(result.Content), "edit_tool") {
+		t.Fatalf("activity next=%s %v", result.Content, err)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/runtime?native_attempt_id="+started.Data.AttemptID, f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &runtimeResult.Data)
+	rest := runtimeResult.Data.Attempt.Runtime.REST
+	if rest.Source != "ordinary_response_headers" || !strings.Contains(rest.Coverage, "unavailable") || rest.Windows[0].Used != 3820 || !rest.Windows[0].UsedObserved || rest.Windows[0].ObservedAt != at || rest.Windows[0].BudgetScope != "native_landing" || rest.Divergences[0].UnattributedRequests != 2659 {
+		t.Fatalf("REST authority=%#v", rest)
+	}
+	if len(runtimeResult.Data.Attempt.Runtime.Activity.Spans) != 2 {
+		t.Fatal("API runtime omitted recorded spans")
+	}
+	clock := f.service.config.now
+	f.service.config.now = func() time.Time { return at.Add(2 * time.Minute) }
+	result, err = call(operatortool.BoardSession, selectArgs)
+	if err != nil || !strings.Contains(string(result.Content), `"runtime_freshness":"expired"`) || !strings.Contains(string(result.Content), `"current":false`) {
+		t.Fatalf("stale runtime=%s %v", result.Content, err)
+	}
+	f.service.config.now = clock
+	finished := observed
+	finished.Type, finished.IdempotencyKey, finished.Data.Sequence, finished.Data.Outcome = "run.finished", "runtime-finished", 3, "succeeded"
+	finishedRuntime := runtime
+	finishedRuntime.Landing = &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", ObservedAt: at}
+	finished.Data.Runtime = &finishedRuntime
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, finished), http.StatusOK)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/workflow", worker, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "runner-done", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedRevision: second.Revision, State: "Done", Reason: "worker_progress"})
+	requireNativeStatus(t, response, http.StatusOK)
+	result, err = call(operatortool.ExplainItem, selectArgs)
+	var explanation explain.IssueExplanation
+	if err != nil || json.Unmarshal(result.Content, &explanation) != nil || explanation.LatestTransition == nil || explanation.LatestTransition.Actor.Kind != "runner" || explanation.LatestTransition.Reason != "worker_progress" || explanation.Attempt.NativeID != started.Data.AttemptID || explanation.NativeRuntime.Attempt.Runtime.Landing.Landed || explanation.NativeRuntime.Attempt.Runtime.Landing.RefusalKind != "nothing_to_land" {
+		t.Fatalf("native explanation=%s %v", result.Content, err)
+	}
+	if explanation.Eligibility.Latest != nil || explanation.Eligibility.Source != explain.SourceUnavailable {
+		t.Fatal("missing scheduler history was fabricated")
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE organization_id=? AND project_id=? AND token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", f.project.OrganizationID, f.project.ID, apikey.HashToken(f.token)); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{operatortool.ExplainItem, operatortool.BoardReceipt, operatortool.BoardSession} {
+		if _, err := call(tool, selectArgs); !errors.Is(err, operatortool.ErrAccessDenied) {
+			t.Fatalf("revoked %s=%v", tool, err)
+		}
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/runtime", f.token, nil), http.StatusNotFound)
+
+}

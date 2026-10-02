@@ -131,6 +131,14 @@ func TestConnectorUsesOnePooledClientForGitHubAppAndGraphQL(t *testing.T) {
 	if err := connector.Authenticate(context.Background()); err != nil {
 		t.Fatalf("Authenticate() error = %v", err)
 	}
+	scope := connector.client.unscopedRESTScope
+	installationTiming := assertScopeTiming(t, scope, "http_transport", "app installation tokens", "200", 1)
+	assertScopeTiming(t, scope, "http_transport", "graphql", "200", 1)
+	tokenTiming := assertScopeTiming(t, scope, "token_resolution_inclusive", "graphql", "200", 1)
+	if tokenTiming.ElapsedSumNS < installationTiming.ElapsedSumNS {
+		t.Fatalf("token timer omitted pooled installation HTTP: token=%#v installation=%#v", tokenTiming, installationTiming)
+	}
+
 	if got := atomic.LoadInt64(&requests); got != 2 {
 		t.Fatalf("requests = %d, want 2", got)
 	}

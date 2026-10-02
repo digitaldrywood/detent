@@ -240,6 +240,7 @@ type Server struct {
 	observeProcesses    func([]procgroup.Identity) ([]procgroup.Observation, error)
 	now                 func() time.Time
 	operatorTools       *operatortool.Executor
+	mcpPublicURL        string
 	mcpHTTP             *mcp.HTTPHandler
 }
 
@@ -331,6 +332,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		version:             strings.TrimSpace(cfg.Version),
 		build:               cfg.Build,
 		dashboardURL:        cfg.dashboardURL(),
+		mcpPublicURL:        strings.TrimRight(strings.TrimSpace(cfg.DashboardURL), "/"),
 		pricing:             cfg.pricing(),
 		globalConfig:        cfg.GlobalConfig,
 		globalConfigSource:  cfg.globalConfigSource(),
@@ -379,10 +381,9 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		chatProvider = server.demoChatProvider()
 	}
 	server.operatorTools = server.newReadOnlyToolExecutor()
-	server.mcpHTTP = mcp.NewHTTPHandler(server.operatorTools, server.version, mcp.HTTPConfig{
-		Principal: func(req *http.Request) string {
-			credential, _ := apiCredentialFromContext(req.Context())
-			return credential.ID
+	server.mcpHTTP = mcp.NewHTTPHandler(dashboardOperatorExecutor{server: server}, server.version, mcp.HTTPConfig{
+		Principal: func(req *http.Request) operatortool.Identity {
+			return operatortool.ConnectionIdentity(req.Context())
 		},
 	})
 	server.chat = chatpkg.NewService(chatProvider, server.newChatToolExecutor(), server)
@@ -509,14 +510,18 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/operations", s.apiOperations, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
-	s.echo.POST("/api/v1/operator-tools/:tool_name", s.apiOperatorTool, apiReadAuth, apiReadScope)
-	s.echo.Any("/mcp", echo.WrapHandler(s.mcpHTTP), mcpReadAuth)
+	s.echo.POST("/api/v1/operator-connections", s.apiOperatorConnection, apiReadAuth, apiReadScope, s.operatorAuthority)
+	s.echo.GET("/chat/approval", s.operatorApprovalPage, s.operatorBrowserReadAuth)
+	s.echo.POST("/chat/approval", s.operatorApprovalDecision, s.operatorBrowserFormAuth)
+	s.echo.GET("/api/v1/operator-tools", s.apiOperatorTools, apiReadAuth, apiReadScope, s.operatorAuthority)
+	s.echo.POST("/api/v1/operator-tools/:tool_name", s.apiOperatorTool, apiReadAuth, apiReadScope, s.operatorAuthority)
+	s.echo.Any("/mcp", echo.WrapHandler(s.mcpHTTP), mcpReadAuth, s.operatorAuthority)
 	s.echo.POST("/api/v1/projects/:project_id/work-items", s.apiCreateWorkItem, apiMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/security-audits/dispositions", s.apiSecurityAuditDisposition, apiMutateAuth, apiAuditDispositionScope)
 	s.echo.POST("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideSet, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.DELETE("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideClear, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/:project_id/work-attempts/:attempt_id", s.apiWorkAttemptReceipt, apiDashboardReadAuth, apiReadScope)
-	s.echo.GET("/api/v1/projects/:project_id/issues/explanation", s.apiIssueExplanation, apiReadAuth, apiReadScope)
+	s.echo.GET("/api/v1/projects/:project_id/issues/explanation", s.apiIssueExplanation, apiReadAuth, apiReadScope, s.operatorAuthority)
 	s.echo.POST("/api/v1/projects/:project_id/issues/explanation", s.apiIssueParkAcknowledgement, apiMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/issues/progress-credit", s.apiIssueProgressCredit, apiMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/staleness-warnings/acknowledge", s.apiStalenessWarningsAcknowledgement, apiDashboardMutateAuth, apiProjectWriteScope)
@@ -624,6 +629,9 @@ func (s *Server) apiBoardCard(c echo.Context) error {
 	activityData := boardActivityBaseData(issue, activityRequest)
 	activityData.Pending = true
 	sessionData := boardSessionSnapshotData(data.Snapshot, issue, projectID)
+	if !demo {
+		s.loadBoardAttemptCosts(c.Request().Context(), &data, card.ProjectID, card.IssueID, card.Identifier)
+	}
 	return render(c, templates.BoardCardSheet(data, card, boardActions, expanded, conversation, activityData, sessionData))
 }
 
@@ -893,21 +901,23 @@ func cleanProjectRouteParam(projectID string) string {
 func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
 	instanceName := s.instanceName()
 	snapshot = s.fleetKanbanSnapshotWithPendingStates(snapshot)
+	agents, stages := s.boardAgentIdentitiesForProject(snapshot, "")
 	return templates.DashboardData{
-		RunnerFleetEnabled: s.runnerFleet != nil,
-		Title:              instancePageTitle(instanceName, "Detent"),
-		ApplicationName:    applicationName(instanceName),
-		InstanceName:       instanceName,
-		Version:            s.version,
-		Build:              s.build,
-		ConnectorName:      s.connector.Name(),
-		DashboardURL:       s.dashboardURL,
-		Snapshot:           snapshot,
-		ConfiguredAgents:   s.boardConfiguredAgents(snapshot),
-		Projects:           s.projectSmallMultiples(ctx, snapshot),
-		Kanban:             s.dashboardKanbanData(ctx, "", snapshot),
-		Assets:             s.assets.templatePaths(),
-		ActiveNav:          "fleet",
+		RunnerFleetEnabled:    s.runnerFleet != nil,
+		Title:                 instancePageTitle(instanceName, "Detent"),
+		ApplicationName:       applicationName(instanceName),
+		InstanceName:          instanceName,
+		Version:               s.version,
+		Build:                 s.build,
+		ConnectorName:         s.connector.Name(),
+		DashboardURL:          s.dashboardURL,
+		Snapshot:              snapshot,
+		ConfiguredAgents:      agents,
+		ConfiguredStageAgents: stages,
+		Projects:              s.projectSmallMultiples(ctx, snapshot),
+		Kanban:                s.dashboardKanbanData(ctx, "", snapshot),
+		Assets:                s.assets.templatePaths(),
+		ActiveNav:             "fleet",
 	}
 }
 
@@ -927,22 +937,24 @@ func (s *Server) boardFirstPaintData(ctx context.Context, snapshot telemetry.Sna
 func (s *Server) dashboardFirstPaintData(ctx context.Context, snapshot telemetry.Snapshot, pendingEnrichment bool) templates.DashboardData {
 	instanceName := s.instanceName()
 	snapshot = s.fleetKanbanSnapshotWithPendingStates(snapshot)
+	agents, stages := s.boardAgentIdentitiesForProject(snapshot, "")
 	return templates.DashboardData{
-		Title:              instancePageTitle(instanceName, "Detent"),
-		ApplicationName:    applicationName(instanceName),
-		InstanceName:       instanceName,
-		Version:            s.version,
-		Build:              s.build,
-		ConnectorName:      s.connector.Name(),
-		DashboardURL:       s.dashboardURL,
-		Snapshot:           snapshot,
-		ConfiguredAgents:   s.boardConfiguredAgents(snapshot),
-		Projects:           s.cachedProjectSmallMultiples(snapshot),
-		Kanban:             s.dashboardKanbanData(ctx, "", snapshot),
-		Assets:             s.assets.templatePaths(),
-		ActiveNav:          "fleet",
-		PendingEnrichment:  pendingEnrichment,
-		RunnerFleetEnabled: s.runnerFleet != nil,
+		Title:                 instancePageTitle(instanceName, "Detent"),
+		ApplicationName:       applicationName(instanceName),
+		InstanceName:          instanceName,
+		Version:               s.version,
+		Build:                 s.build,
+		ConnectorName:         s.connector.Name(),
+		DashboardURL:          s.dashboardURL,
+		Snapshot:              snapshot,
+		ConfiguredAgents:      agents,
+		ConfiguredStageAgents: stages,
+		Projects:              s.cachedProjectSmallMultiples(snapshot),
+		Kanban:                s.dashboardKanbanData(ctx, "", snapshot),
+		Assets:                s.assets.templatePaths(),
+		ActiveNav:             "fleet",
+		PendingEnrichment:     pendingEnrichment,
+		RunnerFleetEnabled:    s.runnerFleet != nil,
 	}
 }
 
@@ -1015,6 +1027,7 @@ func (s *Server) projectDashboardDataFromProjects(
 		name = strings.TrimSpace(project.ID)
 	}
 	instanceName := s.instanceName()
+	agents, stages := s.boardAgentIdentitiesForProject(scopedSnapshot, project.ID)
 	data := templates.DashboardData{
 		RunnerFleetEnabled:        s.runnerFleet != nil,
 		Title:                     instancePageTitle(instanceName, name+" - Detent"),
@@ -1025,7 +1038,8 @@ func (s *Server) projectDashboardDataFromProjects(
 		ConnectorName:             s.connector.Name(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scopedSnapshot,
-		ConfiguredAgents:          s.boardConfiguredAgentsForProject(scopedSnapshot, project.ID),
+		ConfiguredAgents:          agents,
+		ConfiguredStageAgents:     stages,
 		Projects:                  projects,
 		Kanban:                    s.dashboardKanbanData(ctx, project.ID, scopedSnapshot),
 		Assets:                    s.assets.templatePaths(),
@@ -1200,6 +1214,11 @@ func (s *Server) health(c echo.Context) error {
 	if _, _, err := s.demoScenarioOrError(c); err != nil {
 		return err
 	}
+	response, status := s.readInstanceHealth(c.Request().Context())
+	return c.JSON(status, response)
+}
+
+func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 	lifecycle := s.startupLifecycle.State()
 	status := "ok"
 	now := s.now().UTC()
@@ -1278,7 +1297,7 @@ func (s *Server) health(c echo.Context) error {
 		tickLiveness = s.tickLiveness.TickLiveness(now)
 	}
 	if s.healthNotifications != nil {
-		failures, err := s.healthNotifications.Failures(c.Request().Context())
+		failures, err := s.healthNotifications.Failures(ctx)
 		if err != nil {
 			s.logger.Warn("read health notification failures failed", "error", err)
 		} else {
@@ -1291,7 +1310,7 @@ func (s *Server) health(c echo.Context) error {
 		"registry":  configuredStatus(s.registry),
 		"connector": configuredStatus(s.connector),
 	}
-	orphanedProcesses, orphanErr := s.orphanedAgentProcesses(c.Request().Context(), latestSnapshot, now)
+	orphanedProcesses, orphanErr := s.orphanedAgentProcesses(ctx, latestSnapshot, now)
 	if orphanErr != nil {
 		checks["worker_processes"] = "unavailable: " + orphanErr.Error()
 		s.logger.Warn("inspect orphaned agent processes failed", "error", orphanErr)
@@ -1330,7 +1349,7 @@ func (s *Server) health(c echo.Context) error {
 		httpStatus = http.StatusServiceUnavailable
 		status = "not_ready"
 	}
-	return c.JSON(httpStatus, healthResponse{
+	return healthResponse{
 		CandidatesMissingVsTracker: candidatesMissing,
 
 		Status:                 status,
@@ -1372,7 +1391,7 @@ func (s *Server) health(c echo.Context) error {
 		StateEndpoints:         stateEndpoints,
 		TickLiveness:           tickLiveness,
 		OrphanedAgentProcesses: orphanedProcesses,
-	})
+	}, httpStatus
 }
 
 func faultDispatchStatuses(statuses []telemetry.DispatchStatus) []telemetry.DispatchStatus {

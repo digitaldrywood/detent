@@ -585,7 +585,7 @@ func (p *workosProvider) Invite(ctx context.Context, organizationID string, emai
 	if err := p.request(ctx, http.MethodPost, "/user_management/invitations", request, &invitation); err != nil {
 		return Invitation{}, err
 	}
-	if !validWorkOSInvitation(invitation) || invitation.State != "pending" || normalizeEmail(invitation.Email) != email || invitation.OrganizationID != organizationID {
+	if !validWorkOSInvitation(invitation) || invitation.State != "pending" || !invitation.ExpiresAt.After(time.Now()) || normalizeEmail(invitation.Email) != email || invitation.OrganizationID != organizationID {
 		return Invitation{}, ErrHostedIdentity
 	}
 	return invitation, nil
@@ -606,10 +606,30 @@ func (p *workosProvider) Invitation(ctx context.Context, token string) (Invitati
 }
 
 func validWorkOSInvitation(invitation Invitation) bool {
-	if !validWorkOSID(invitation.ID) || !validWorkOSID(invitation.OrganizationID) || !validWorkOSEmail(normalizeEmail(invitation.Email)) || !invitation.ExpiresAt.After(time.Now()) {
+	if !validWorkOSID(invitation.ID) || !validWorkOSID(invitation.OrganizationID) || !validWorkOSEmail(normalizeEmail(invitation.Email)) || invitation.ExpiresAt.IsZero() {
 		return false
 	}
-	return invitation.State == "pending" && invitation.AcceptedUserID == "" || invitation.State == "accepted" && validWorkOSID(invitation.AcceptedUserID)
+	return (invitation.State == "pending" || invitation.State == "expired" || invitation.State == "revoked") && invitation.AcceptedUserID == "" || invitation.State == "accepted" && validWorkOSID(invitation.AcceptedUserID)
+}
+
+func (p *workosProvider) HasUser(ctx context.Context, email string) (bool, error) {
+	email = normalizeEmail(email)
+	if !validWorkOSEmail(email) {
+		return false, ErrHostedIdentity
+	}
+	var result struct {
+		Data []workosUser `json:"data"`
+	}
+	if err := p.request(ctx, http.MethodGet, "/user_management/users?"+url.Values{"email": {email}, "limit": {"1"}}.Encode(), nil, &result); err != nil {
+		return false, err
+	}
+	if len(result.Data) == 0 {
+		return false, nil
+	}
+	if !validWorkOSID(result.Data[0].ID) || normalizeEmail(result.Data[0].Email) != email {
+		return false, ErrHostedIdentity
+	}
+	return true, nil
 }
 
 func (p *workosProvider) AcceptInvitation(ctx context.Context, token string, userID string) error {
@@ -620,7 +640,56 @@ func (p *workosProvider) AcceptInvitation(ctx context.Context, token string, use
 	if err != nil {
 		return err
 	}
-	if invitation.State != "pending" {
+	return p.acceptInvitationRecord(ctx, invitation, userID)
+}
+
+func (p *workosProvider) InvitationByID(ctx context.Context, id string) (Invitation, error) {
+	if !validWorkOSID(id) {
+		return Invitation{}, ErrHostedIdentity
+	}
+	var invitation Invitation
+	if err := p.request(ctx, http.MethodGet, "/user_management/invitations/"+id, nil, &invitation); err != nil {
+		return Invitation{}, err
+	}
+	if !validWorkOSInvitation(invitation) || invitation.ID != id {
+		return Invitation{}, ErrHostedIdentity
+	}
+	return invitation, nil
+}
+
+func (p *workosProvider) RevokeInvitation(ctx context.Context, id string) error {
+	return p.deliverInvitation(ctx, id, "revoke", "revoked")
+}
+
+func (p *workosProvider) ResendInvitation(ctx context.Context, id string) error {
+	return p.deliverInvitation(ctx, id, "resend", "pending")
+}
+
+func (p *workosProvider) deliverInvitation(ctx context.Context, id, action, state string) error {
+	if !validWorkOSID(id) {
+		return ErrHostedIdentity
+	}
+	var invitation Invitation
+	if err := p.request(ctx, http.MethodPost, "/user_management/invitations/"+id+"/"+action, nil, &invitation); err != nil {
+		return err
+	}
+	if !validWorkOSInvitation(invitation) || invitation.ID != id || invitation.State != state {
+		return ErrHostedIdentity
+	}
+	return nil
+}
+func (p *workosProvider) AcceptInvitationByID(ctx context.Context, id, userID string) error {
+	if !validWorkOSID(userID) {
+		return ErrHostedIdentity
+	}
+	invitation, err := p.InvitationByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	return p.acceptInvitationRecord(ctx, invitation, userID)
+}
+func (p *workosProvider) acceptInvitationRecord(ctx context.Context, invitation Invitation, userID string) error {
+	if invitation.State != "pending" || !invitation.ExpiresAt.After(time.Now()) {
 		return ErrHostedIdentity
 	}
 	var user workosUser

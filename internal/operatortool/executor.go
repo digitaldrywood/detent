@@ -47,18 +47,23 @@ type Explainer interface {
 type Dependencies struct {
 	Snapshots SnapshotSource
 	Explainer Explainer
+	WorkReads WorkReader
 }
 
 type Executor struct {
 	snapshots SnapshotSource
 	explainer Explainer
+	workReads WorkReader
 }
 
 func NewExecutor(deps Dependencies) *Executor {
-	return &Executor{snapshots: deps.Snapshots, explainer: deps.Explainer}
+	return &Executor{snapshots: deps.Snapshots, explainer: deps.Explainer, workReads: deps.WorkReads}
 }
 
 func (e *Executor) Execute(ctx context.Context, call Call) (Result, error) {
+	if IsWorkRead(call.Name) {
+		return e.readWork(ctx, call)
+	}
 	switch call.Name {
 	case BoardState:
 		return e.boardState(ctx, call.Arguments)
@@ -201,12 +206,19 @@ func (e *Executor) explainItem(ctx context.Context, raw json.RawMessage) (Result
 	if request.ProjectID == "" || request.Reference == "" {
 		return Result{}, fmt.Errorf("%w: project_id and reference are required", ErrInvalidArguments)
 	}
-	if e.explainer == nil {
-		return Result{}, errors.New("issue explanation is unavailable")
+	explainer := e.explainer
+	if authority, ok := ctx.Value(authorityKey{}).(Authority); ok && authority.Explainer != nil {
+		explainer = authority.Explainer
 	}
-	result, err := e.explainer.Explain(ctx, explain.Query{ProjectID: request.ProjectID, Reference: request.Reference})
+	if explainer == nil {
+		return Result{}, ErrReadUnavailable
+	}
+	result, err := explainer.Explain(ctx, explain.Query{ProjectID: request.ProjectID, Reference: request.Reference})
 	if err != nil {
 		return Result{}, err
+	}
+	if _, authorized := ctx.Value(authorityKey{}).(Authority); authorized && result.Identity.ProjectID != request.ProjectID {
+		return Result{}, ErrAccessDenied
 	}
 	return encodeResult(result)
 }
@@ -222,7 +234,7 @@ func (e *Executor) snapshot(ctx context.Context) (telemetry.Snapshot, error) {
 	if snapshot.GeneratedAt.IsZero() {
 		return telemetry.Snapshot{}, ErrSnapshotUnavailable
 	}
-	return snapshot, nil
+	return ProjectSnapshot(ctx, snapshot)
 }
 
 func decodeArguments(raw json.RawMessage, target any) error {
@@ -438,3 +450,6 @@ func boardItems(snapshot telemetry.Snapshot, projectID string, state string) []B
 	})
 	return out
 }
+
+// DecodeArguments applies the catalog's bounded strict decoder to shared commands.
+func DecodeArguments(raw json.RawMessage, target any) error { return decodeArguments(raw, target) }

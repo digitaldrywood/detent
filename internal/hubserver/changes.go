@@ -78,11 +78,30 @@ func (s *Service) registerChangeRoutes(e *echo.Echo) {
 	e.GET(changeBase+"/:change", s.getChange, read)
 	e.POST(changeBase+"/:change/versions", s.publishChangeVersion, write)
 	e.POST(changeBase+"/:change/discussion", s.discussChange, write)
-	e.POST(changeBase+"/:change/versions/:version/reviews", s.reviewChange, operator)
+	e.POST(changeBase+"/:change/versions/:version/reviews", s.reviewChange, s.requireChangeReviewer())
 	e.GET(changeBase+"/:change/versions/:version/viewed-files", s.changeViewedFiles, operator)
 	e.POST(changeBase+"/:change/versions/:version/viewed-files", s.viewChangeFile, operator)
 	e.POST(changeBase+"/:change/versions/:version/checks", s.submitChangeCheck, write)
 	e.POST(changeBase+"/:change/versions/:version/landing", s.landChange, write)
+}
+
+// A hosted review is a project decision, so a write grant alone is not
+// enough: the reviewer must also be an organization owner or administrator.
+// Self-hosted operator tokens retain their existing review authority.
+func (s *Service) requireChangeReviewer() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return s.requireNativeScope(apiScopeOperator)(func(c echo.Context) error {
+			scope := nativeRequestScope(c)
+			if scope.credential.Hosted != nil {
+				if scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
+					return s.nativeAPIError(c, nativeNotFound())
+				}
+				scope.requireHostedAdmin = true
+				c.Set("native_scope", scope)
+			}
+			return next(c)
+		})
+	}
 }
 
 func (s *Service) requireChangeReviewPolicyAdmin() echo.MiddlewareFunc {
@@ -122,46 +141,8 @@ func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
-		approved, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
-		if err != nil {
-			return nil, err
-		}
-		if err := changerequest.ValidatePolicy(request.Policy, approved.Policy); err != nil {
-			return nil, nativeInvalid(err.Error())
-		}
-		for _, check := range request.Policy.RequiredChecks {
-			var role string
-			err := tx.QueryRowContext(ctx, `SELECT scope FROM api_tokens t WHERE id = ? AND revoked_at IS NULL
-AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = t.id AND g.organization_id = ? AND g.project_id = ?)`, check.PrincipalID, scope.organization, scope.project).Scan(&role)
-			if errors.Is(err, sql.ErrNoRows) || err == nil && check.Source == "independent" && role == string(apiScopeWorker) {
-				return nil, nativeInvalid("Expected CI principals must have a project grant; independent validation requires an operator credential")
-			}
-			if err != nil {
-				return nil, err
-			}
-		}
-		previous, err := readChangePolicy(ctx, tx, scope)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-		// A policy that pins no checks follows the repository gate and is
-		// nobody's separate decision, so an approval that expects no review
-		// policy may replace it; any other policy must be named by the
-		// identity the approver read.
-		seeded := followsRepositoryGate(previous)
-		if previous.ID != request.ExpectedID && (request.ExpectedID != "" || !seeded) {
-			return nil, policyMismatch("Review policy changed; supply its current identity")
-		}
-		rules := request.Policy
-		rules.ID = changerequest.PolicyID(rules)
-		raw, err := marshalNative(rules)
-		if err != nil {
-			return nil, err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO change_review_policies (organization_id, project_id, policy_json) VALUES (?, ?, ?)
-ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.policy_json`, scope.organization, scope.project, raw)
-		return rules, err
+	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		return s.approveChangeReviewPolicyCommand(ctx, tx, scope, request)
 	})
 }
 
@@ -209,16 +190,23 @@ func changeRows[T any](ctx context.Context, query nativeQueryer, statement strin
 }
 
 func (s *Service) listChanges(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	if _, _, err := readNativeIssue(c.Request().Context(), s.database.db, scope, c.Param("item")); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	result, err := changeRows[tracker.ChangeRequest](c.Request().Context(), s.database.db, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
-WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, c.Param("item"))
+	result, err := s.readChanges(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+func (s *Service) readChanges(ctx context.Context, scope nativeScope, item string) ([]tracker.ChangeRequest, error) {
+	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+		return nil, err
+	}
+	result, err := changeRows[tracker.ChangeRequest](ctx, s.database.db, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
+WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *Service) createChange(c echo.Context) error {
@@ -227,34 +215,7 @@ func (s *Service) createChange(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		if strings.TrimSpace(request.Title) == "" || len(request.Title) > 512 || len(request.Body) > 64<<10 || len(request.LinkedIssues) > 32 {
-			return nil, nativeInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
-		}
-		change := tracker.ChangeRequest{ID: newNativeID("change"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(c.Param("item")), Title: request.Title, Body: request.Body, Revision: 1, CreatedAt: now, UpdatedAt: now}
-		change.LinkedIssues = append([]tracker.NativeWorkItemID{change.WorkItemID}, request.LinkedIssues...)
-		slices.Sort(change.LinkedIssues)
-		change.LinkedIssues = slices.Compact(change.LinkedIssues)
-		for _, id := range change.LinkedIssues {
-			if _, _, err := readNativeIssue(ctx, tx, scope, string(id)); err != nil {
-				return nil, err
-			}
-		}
-		raw, err := marshalNative(change)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json) VALUES (?, ?, ?, ?, ?)", change.ID, scope.organization, scope.project, change.WorkItemID, raw); err != nil {
-			return nil, err
-		}
-		for _, id := range change.LinkedIssues {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO change_issue_links VALUES (?, ?, ?, ?)", change.ID, scope.organization, scope.project, id); err != nil {
-				return nil, err
-			}
-			if err := appendNativeHistory(ctx, tx, scope, string(id), "change.created", tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID}}, now); err != nil {
-				return nil, err
-			}
-		}
-		return change, nil
+		return s.createChangeCommand(ctx, tx, scope, c.Param("item"), request, now)
 	})
 }
 
@@ -312,6 +273,44 @@ func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScop
 	return result, err
 }
 
+func readCurrentChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, change tracker.ChangeRequest, now time.Time) (tracker.ChangeDetail, error) {
+	result := tracker.ChangeDetail{Change: change}
+	var staleApproval bool
+	version, found, err := readNativeChangeVersion(ctx, query, change)
+	if err != nil {
+		return result, err
+	}
+	if found {
+		result.Versions = []tracker.ChangeVersion{version}
+		result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence", change.ID, version.ID)
+		if err != nil {
+			return result, err
+		}
+		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
+AND json_extract(record_json, '$.decision') = 'approved' AND version_id != ?)`, change.ID, version.ID).Scan(&staleApproval)
+		if err != nil {
+			return result, err
+		}
+		result.Checks, err = changeRows[tracker.ChangeCheck](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'check' ORDER BY sequence", change.ID, version.ID)
+		if err != nil {
+			return result, err
+		}
+	}
+	var approvedID string
+	err = query.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", string(scope.organization)+"/"+string(scope.project)).Scan(&approvedID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+	rules, err := readChangePolicy(ctx, query, scope)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+	result.Summary = changerequest.SummarizeCurrentVersion(result, approvedID, rules.ID, now, staleApproval)
+	err = loadChangeExternal(ctx, query, scope, &result)
+	result.Versions, result.Reviews, result.Checks = nil, nil, nil
+	return result, err
+}
+
 func loadChangeExternal(ctx context.Context, query nativeQueryer, scope nativeScope, detail *tracker.ChangeDetail) error {
 	for _, version := range detail.Versions {
 		if version.ID != detail.Change.CurrentVersion || version.External == nil {
@@ -343,4 +342,77 @@ WHERE p.organization_id = ? AND p.id = ? AND pr.url = ? AND pr.issue_id IS NOT N
 		}
 	}
 	return nil
+}
+
+func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, request tracker.CreateChange, now time.Time) (any, error) {
+	if strings.TrimSpace(request.Title) == "" || len(request.Title) > 512 || len(request.Body) > 64<<10 || len(request.LinkedIssues) > 32 {
+		return nil, nativeInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
+	}
+	change := tracker.ChangeRequest{ID: newNativeID("change"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), Title: request.Title, Body: request.Body, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	change.LinkedIssues = append([]tracker.NativeWorkItemID{change.WorkItemID}, request.LinkedIssues...)
+	slices.Sort(change.LinkedIssues)
+	change.LinkedIssues = slices.Compact(change.LinkedIssues)
+	for _, id := range change.LinkedIssues {
+		if _, _, err := readNativeIssue(ctx, tx, scope, string(id)); err != nil {
+			return nil, err
+		}
+	}
+	raw, err := marshalNative(change)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json) VALUES (?, ?, ?, ?, ?)", change.ID, scope.organization, scope.project, change.WorkItemID, raw); err != nil {
+		return nil, err
+	}
+	for _, id := range change.LinkedIssues {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO change_issue_links VALUES (?, ?, ?, ?)", change.ID, scope.organization, scope.project, id); err != nil {
+			return nil, err
+		}
+		if err := appendNativeHistory(ctx, tx, scope, string(id), "change.created", tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID}}, now); err != nil {
+			return nil, err
+		}
+	}
+	return change, nil
+}
+
+func (s *Service) approveChangeReviewPolicyCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.ApproveChangeReviewPolicy) (any, error) {
+	approved, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+	if err != nil {
+		return nil, err
+	}
+	if err := changerequest.ValidatePolicy(request.Policy, approved.Policy); err != nil {
+		return nil, nativeInvalid(err.Error())
+	}
+	for _, check := range request.Policy.RequiredChecks {
+		var role string
+		err := tx.QueryRowContext(ctx, `SELECT scope FROM api_tokens t WHERE id = ? AND revoked_at IS NULL
+AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = t.id AND g.organization_id = ? AND g.project_id = ?)`, check.PrincipalID, scope.organization, scope.project).Scan(&role)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && check.Source == "independent" && role == string(apiScopeWorker) {
+			return nil, nativeInvalid("Expected CI principals must have a project grant; independent validation requires an operator credential")
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	previous, err := readChangePolicy(ctx, tx, scope)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	// A policy that pins no checks follows the repository gate and is
+	// nobody's separate decision, so an approval that expects no review
+	// policy may replace it; any other policy must be named by the
+	// identity the approver read.
+	seeded := followsRepositoryGate(previous)
+	if previous.ID != request.ExpectedID && (request.ExpectedID != "" || !seeded) {
+		return nil, policyMismatch("Review policy changed; supply its current identity")
+	}
+	rules := request.Policy
+	rules.ID = changerequest.PolicyID(rules)
+	raw, err := marshalNative(rules)
+	if err != nil {
+		return nil, err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO change_review_policies (organization_id, project_id, policy_json) VALUES (?, ?, ?)
+ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.policy_json`, scope.organization, scope.project, raw)
+	return rules, err
 }

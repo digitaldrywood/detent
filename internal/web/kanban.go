@@ -17,6 +17,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/provenance"
@@ -33,6 +34,7 @@ type kanbanActionTarget struct {
 }
 
 type kanbanMoveRequest struct {
+	exactState   bool
 	projectID    string
 	board        string
 	issueID      string
@@ -125,24 +127,37 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	if response != "" {
 		return s.kanbanMoveValidationResponse(c, status, response)
 	}
+	message, status, err := s.moveKanbanCard(c.Request().Context(), req, kanbanMutationProvenanceSource(c))
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return s.kanbanMoveValidationResponse(c, status, message)
+	}
+	return s.kanbanMoveSuccess(c, req, "Moved card to "+req.targetState+".")
+}
+
+// moveKanbanCard is shared by dashboard and operator transports. Lane writes
+// remain delegated to the orchestrator.
+func (s *Server) moveKanbanCard(ctx context.Context, req kanbanMoveRequest, source provenance.Source) (string, int, error) {
 	target, response, status := s.kanbanActionTarget(req.projectID)
 	if response != "" {
-		return s.kanbanMoveValidationResponse(c, status, response)
+		return response, status, nil
 	}
 	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
-		return s.kanbanMoveValidationResponse(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
+		return "Kanban integration mode is not enabled.", http.StatusForbidden, nil
 	}
 	if !kanbanCanMoveCards(target) {
-		return s.kanbanMoveValidationResponse(c, http.StatusForbidden, kanbanMoveUnsupportedMessage)
+		return kanbanMoveUnsupportedMessage, http.StatusForbidden, nil
 	}
 	if req.issueID == "" {
 		if req.prNumber > 0 {
-			return s.kanbanMoveValidationResponse(c, http.StatusUnprocessableEntity, "Cannot move PR-only card without a linked issue.")
+			return "Cannot move PR-only card without a linked issue.", http.StatusUnprocessableEntity, nil
 		}
-		return s.kanbanMoveValidationResponse(c, http.StatusBadRequest, "Issue id is required.")
+		return "Issue id is required.", http.StatusBadRequest, nil
 	}
 	if !kanbanstate.StateAllowed(target.workflow, req.targetState) {
-		return s.kanbanMoveValidationResponse(c, http.StatusBadRequest, "Target state is not configured for this board.")
+		return "Target state is not configured for this board.", http.StatusBadRequest, nil
 	}
 	var feedback string
 	var feedbackStatus int
@@ -158,8 +173,8 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		moveIssueIdentifier = kanbanBlockedMoveIssueIdentifier(snapshotIssue, req.issueID)
 		moveCurrentState = currentState
 		moveDataSeq = dataSeqAtWrite
-		if !ok && (strings.TrimSpace(current) == "" || !target.workflow.KanbanTransitionAllowed(currentState, req.targetState)) {
-			s.logger.WarnContext(c.Request().Context(), "kanban move rejected: stale card",
+		if !ok && (req.exactState || strings.TrimSpace(current) == "" || !target.workflow.KanbanTransitionAllowed(currentState, req.targetState)) {
+			s.logger.WarnContext(ctx, "kanban move rejected: stale card",
 				"project", req.projectID,
 				"issue_id", req.issueID,
 				"identifier", moveIssueIdentifier,
@@ -176,7 +191,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			return nil
 		}
 		if !target.workflow.KanbanTransitionAllowed(currentState, req.targetState) {
-			s.logger.WarnContext(c.Request().Context(), "kanban move blocked by transition policy",
+			s.logger.WarnContext(ctx, "kanban move blocked by transition policy",
 				"project", req.projectID,
 				"issue_id", req.issueID,
 				"identifier", moveIssueIdentifier,
@@ -192,8 +207,8 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		if s.operatorMoves == nil {
 			return errors.New("orchestrator lane writer is unavailable")
 		}
-		if _, err := s.operatorMoves.ReconcileOperatorMove(c.Request().Context(), orchestrator.OperatorMoveRequest{
-			Attribution:     provenance.AttributionFromSource(kanbanMutationProvenanceSource(c), provenance.Actor{}),
+		if _, err := s.operatorMoves.ReconcileOperatorMove(ctx, orchestrator.OperatorMoveRequest{
+			Attribution:     provenance.AttributionFromSource(source, provenance.Actor{}),
 			ProjectID:       target.projectID,
 			IssueID:         req.issueID,
 			Identifier:      moveIssueIdentifier,
@@ -210,41 +225,41 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		return nil
 	})
 	if feedback != "" {
-		return s.kanbanMoveValidationResponse(c, feedbackStatus, feedback)
+		return feedback, feedbackStatus, nil
 	}
 	if err != nil {
 		var blocked *connector.StateUpdateBlockedError
 		if errors.As(err, &blocked) {
-			s.logger.WarnContext(c.Request().Context(), "kanban move blocked by connector",
+			s.logger.WarnContext(ctx, "kanban move blocked by connector",
 				"project", req.projectID,
 				"issue_id", req.issueID,
 				"identifier", moveIssueIdentifier,
 				"current_state", moveCurrentState,
 				"target_state", req.targetState,
 				"data_seq", moveDataSeq,
-				"error", blocked,
+				"error", mutation.ErrorText(ctx, blocked),
 			)
-			return s.kanbanMoveValidationResponse(c, http.StatusUnprocessableEntity, kanbanBlockedMoveMessage(blocked, req.targetState, moveIssueIdentifier))
+			return kanbanBlockedMoveMessage(blocked, req.targetState, moveIssueIdentifier), http.StatusUnprocessableEntity, nil
 		}
 		if errors.Is(err, connector.ErrNotImplemented) {
-			return s.kanbanMoveValidationResponse(c, http.StatusNotImplemented, kanbanMoveUnsupportedMessage)
+			return kanbanMoveUnsupportedMessage, http.StatusNotImplemented, nil
 		}
-		s.logger.WarnContext(c.Request().Context(), "kanban move failed",
+		s.logger.WarnContext(ctx, "kanban move failed",
 			"project", req.projectID,
 			"issue_id", req.issueID,
 			"identifier", moveIssueIdentifier,
 			"current_state", moveCurrentState,
 			"target_state", req.targetState,
 			"data_seq", moveDataSeq,
-			"error", err,
+			"error", mutation.ErrorText(ctx, err),
 		)
-		return kanbanFeedback(c, http.StatusBadGateway, "Move failed: "+err.Error())
+		return "Move failed: " + err.Error(), http.StatusBadGateway, nil
 	}
 	var runtimeMove orchestrator.OperatorMoveResult
 	if s.operatorMoves != nil && strings.EqualFold(strings.TrimSpace(moveCurrentState), kanbanBlockedState) &&
 		!strings.EqualFold(strings.TrimSpace(req.targetState), kanbanBlockedState) {
 		var reconcileErr error
-		runtimeMove, reconcileErr = s.operatorMoves.ReconcileOperatorMove(c.Request().Context(), orchestrator.OperatorMoveRequest{
+		runtimeMove, reconcileErr = s.operatorMoves.ReconcileOperatorMove(ctx, orchestrator.OperatorMoveRequest{
 			ProjectID:  req.projectID,
 			IssueID:    req.issueID,
 			Identifier: moveIssueIdentifier,
@@ -252,18 +267,18 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			ToState:    req.targetState,
 		})
 		if reconcileErr != nil {
-			s.logger.WarnContext(c.Request().Context(), "kanban move runtime reconcile failed",
+			s.logger.WarnContext(ctx, "kanban move runtime reconcile failed",
 				"project", req.projectID,
 				"issue_id", req.issueID,
 				"identifier", moveIssueIdentifier,
 				"current_state", moveCurrentState,
 				"target_state", req.targetState,
 				"data_seq", moveDataSeq,
-				"error", reconcileErr,
+				"error", mutation.ErrorText(ctx, reconcileErr),
 			)
 		}
 	}
-	s.logger.InfoContext(c.Request().Context(), "kanban move succeeded",
+	s.logger.InfoContext(ctx, "kanban move succeeded",
 		"project", req.projectID,
 		"issue_id", req.issueID,
 		"identifier", moveIssueIdentifier,
@@ -272,7 +287,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		"data_seq", moveDataSeq,
 		"runtime_block_cleared", runtimeMove.BlockedCleared,
 	)
-	return s.kanbanMoveSuccess(c, req, "Moved card to "+req.targetState+".")
+	return "", http.StatusOK, nil
 }
 
 func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, message string) error {
@@ -313,82 +328,14 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 		return kanbanFeedback(c, status, response)
 	}
 
-	target, response, status := s.kanbanActionTarget(req.projectID)
-	if response != "" {
-		return kanbanFeedback(c, status, response)
-	}
-	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
-		return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
-	}
-	if !kanbanCanRemoveCards(target) {
-		return kanbanFeedback(c, http.StatusForbidden, kanbanRemoveUnsupportedMessage)
-	}
-	if req.issueID == "" {
-		if req.prNumber > 0 {
-			return kanbanFeedback(c, http.StatusUnprocessableEntity, "Cannot remove PR-only card without a linked issue.")
-		}
-		return kanbanFeedback(c, http.StatusBadRequest, "Issue id is required.")
-	}
-
-	var feedback string
-	var feedbackStatus int
-	var removeIssueIdentifier string
-	err := s.kanbanMutations.WithLock(target.key, func() error {
-		currentState := req.currentState
-		ok, current, snapshotState, snapshotIssue, dataSeqAtWrite := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
-		if !ok {
-			feedback = "Card is stale; refresh and retry."
-			if current != "" {
-				feedback = fmt.Sprintf("Card is stale; current state is %s.", current)
-			}
-			feedbackStatus = http.StatusConflict
-			return nil
-		}
-		if strings.TrimSpace(current) != "" {
-			currentState = current
-		}
-		removeIssueIdentifier = kanbanBlockedMoveIssueIdentifier(snapshotIssue, req.issueID)
-		if target.kanban.IssueStateFieldID > 0 {
-			clearer, ok := target.connector.(connector.IssueFieldClearer)
-			if !ok {
-				return connector.ErrNotImplemented
-			}
-			if err := clearer.ClearIssueField(c.Request().Context(), req.issueID, target.kanban.IssueStateFieldID); err != nil {
-				return err
-			}
-			if strings.TrimSpace(snapshotState) == "" {
-				snapshotState = currentState
-			}
-			s.kanbanMutations.NoteCardRemoved(target.key, req.issueID, snapshotState, dataSeqAtWrite)
-			return nil
-		}
-		remover, ok := target.connector.(connector.ProjectRemover)
-		if !ok {
-			return connector.ErrNotImplemented
-		}
-		if err := remover.RemoveIssueFromProject(c.Request().Context(), req.issueID); err != nil {
-			return err
-		}
-		if strings.TrimSpace(snapshotState) == "" {
-			snapshotState = currentState
-		}
-		s.kanbanMutations.NoteCardRemoved(target.key, req.issueID, snapshotState, dataSeqAtWrite)
-		return nil
-	})
-	if feedback != "" {
-		return kanbanFeedback(c, feedbackStatus, feedback)
-	}
+	message, status, err := s.removeKanbanCard(c.Request().Context(), req)
 	if err != nil {
-		var blocked *connector.StateUpdateBlockedError
-		if errors.As(err, &blocked) {
-			return kanbanFeedback(c, http.StatusUnprocessableEntity, kanbanBlockedMoveMessage(blocked, "", removeIssueIdentifier))
-		}
-		if errors.Is(err, connector.ErrNotImplemented) {
-			return kanbanFeedback(c, http.StatusNotImplemented, kanbanRemoveUnsupportedMessage)
-		}
-		s.logger.WarnContext(c.Request().Context(), "kanban remove failed", "project", req.projectID, "issue_id", req.issueID, "error", err)
 		return kanbanFeedback(c, http.StatusBadGateway, "Remove failed: "+err.Error())
 	}
+	if status != http.StatusOK {
+		return kanbanFeedback(c, status, message)
+	}
+
 	return s.kanbanRemoveSuccess(c, req, "Removed card from project.")
 }
 
@@ -509,43 +456,14 @@ func (s *Server) apiKanbanComment(c echo.Context) error {
 		return s.kanbanCommentValidationResponse(c, status, response)
 	}
 
-	target, response, status := s.kanbanActionTarget(req.projectID)
-	if response != "" {
+	response, status, err := s.addKanbanComment(c.Request().Context(), req)
+	if status != http.StatusOK {
 		if kanbanThreadForm(c) {
 			return s.kanbanIssueCommentThread(c, response, req.body, "")
 		}
 		return s.kanbanCommentValidationResponse(c, status, response)
 	}
-	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
-		if kanbanThreadForm(c) {
-			return s.kanbanIssueCommentThread(c, "Kanban integration mode is not enabled.", req.body, "")
-		}
-		return s.kanbanCommentValidationResponse(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
-	}
-	if req.target == "pr" && !kanbanSupportsPullRequestComments(target.connector) {
-		return s.kanbanCommentValidationResponse(c, http.StatusNotFound, "Comment target is not available on the current board.")
-	}
-	if !s.kanbanCommentTargetKnown(req) {
-		if kanbanThreadForm(c) {
-			return s.kanbanIssueCommentThread(c, "Comment target is not available on the current board.", req.body, "")
-		}
-		return s.kanbanCommentValidationResponse(c, http.StatusNotFound, "Comment target is not available on the current board.")
-	}
 
-	err := s.kanbanMutations.WithLock(target.key, func() error {
-		switch req.target {
-		case "issue":
-			return target.connector.CreateComment(c.Request().Context(), req.issueID, req.body)
-		case "pr":
-			commenter, ok := target.connector.(connector.PullRequestCommenter)
-			if !ok {
-				return connector.ErrNotImplemented
-			}
-			return commenter.CreatePullRequestComment(c.Request().Context(), req.prRepository, req.prNumber, req.body)
-		default:
-			return connector.ErrNotImplemented
-		}
-	})
 	if err != nil {
 		s.logger.WarnContext(c.Request().Context(), "kanban comment failed", "project", req.projectID, "target", req.target, "error", err)
 		if kanbanThreadForm(c) {
@@ -571,20 +489,8 @@ func (s *Server) apiKanbanCommentEdit(c echo.Context) error {
 	if response != "" {
 		return kanbanFeedback(c, status, response)
 	}
-	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
-		return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
-	}
-	if !s.kanbanCommentCanMutate(req, true) {
-		return kanbanFeedback(c, http.StatusForbidden, "Only local Detent comments can be edited.")
-	}
+	err := s.mutateKanbanComment(c.Request().Context(), req, true)
 
-	err := s.kanbanMutations.WithLock(target.key, func() error {
-		editor, ok := target.connector.(connector.IssueCommentUpdater)
-		if !ok {
-			return connector.ErrNotImplemented
-		}
-		return editor.UpdateIssueComment(c.Request().Context(), req.issueID, req.commentID, req.body)
-	})
 	if err != nil {
 		return s.kanbanCommentMutationError(c, req, err)
 	}
@@ -603,20 +509,8 @@ func (s *Server) apiKanbanCommentDelete(c echo.Context) error {
 	if response != "" {
 		return kanbanFeedback(c, status, response)
 	}
-	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
-		return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
-	}
-	if !s.kanbanCommentCanMutate(req, false) {
-		return kanbanFeedback(c, http.StatusForbidden, "Only local Detent comments can be deleted.")
-	}
+	err := s.mutateKanbanComment(c.Request().Context(), req, false)
 
-	err := s.kanbanMutations.WithLock(target.key, func() error {
-		deleter, ok := target.connector.(connector.IssueCommentDeleter)
-		if !ok {
-			return connector.ErrNotImplemented
-		}
-		return deleter.DeleteIssueComment(c.Request().Context(), req.issueID, req.commentID)
-	})
 	if err != nil {
 		return s.kanbanCommentMutationError(c, req, err)
 	}
@@ -625,6 +519,10 @@ func (s *Server) apiKanbanCommentDelete(c echo.Context) error {
 }
 
 func (s *Server) kanbanCommentMutationError(c echo.Context, req kanbanCommentMutationRequest, err error) error {
+	var denied *kanbanCommentCommandError
+	if errors.As(err, &denied) {
+		return kanbanFeedback(c, denied.status, denied.message)
+	}
 	s.logger.WarnContext(c.Request().Context(), "kanban comment mutation failed", "project", req.projectID, "issue_id", req.issueID, "comment_id", req.commentID, "verb", req.mutateVerb, "error", err)
 	if errors.Is(err, sql.ErrNoRows) {
 		return kanbanFeedback(c, http.StatusNotFound, "Local comment is not available on the current board.")
@@ -1467,7 +1365,7 @@ func (s *Server) requestKanbanRefreshWithRetry(ctx context.Context, retryOnError
 	}
 	response, err := s.refresher.RequestRefresh(ctx)
 	if err != nil {
-		s.logger.WarnContext(ctx, "kanban refresh request failed", "error", err)
+		s.logger.WarnContext(ctx, "kanban refresh request failed", "error", mutation.ErrorText(ctx, err))
 		if retryOnError {
 			s.scheduleKanbanRefreshRetry(ctx)
 		}
@@ -1563,3 +1461,134 @@ func kanbanRepositoryFromPullRequestURL(rawURL string) string {
 	}
 	return owner + "/" + repo
 }
+
+func kanbanCommandFeedback(status int, message string) (string, int, error) {
+	return message, status, nil
+}
+
+func (s *Server) removeKanbanCard(ctx context.Context, req kanbanRemoveRequest) (string, int, error) {
+	target, response, status := s.kanbanActionTarget(req.projectID)
+	if response != "" {
+		return kanbanCommandFeedback(status, response)
+	}
+	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
+		return kanbanCommandFeedback(http.StatusForbidden, "Kanban integration mode is not enabled.")
+	}
+	if !kanbanCanRemoveCards(target) {
+		return kanbanCommandFeedback(http.StatusForbidden, kanbanRemoveUnsupportedMessage)
+	}
+	if req.issueID == "" {
+		if req.prNumber > 0 {
+			return kanbanCommandFeedback(http.StatusUnprocessableEntity, "Cannot remove PR-only card without a linked issue.")
+		}
+		return kanbanCommandFeedback(http.StatusBadRequest, "Issue id is required.")
+	}
+
+	var feedback string
+	var feedbackStatus int
+	var removeIssueIdentifier string
+	err := s.kanbanMutations.WithLock(target.key, func() error {
+		currentState := req.currentState
+		ok, current, snapshotState, snapshotIssue, dataSeqAtWrite := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
+		if !ok {
+			feedback = "Card is stale; refresh and retry."
+			if current != "" {
+				feedback = fmt.Sprintf("Card is stale; current state is %s.", current)
+			}
+			feedbackStatus = http.StatusConflict
+			return nil
+		}
+		if strings.TrimSpace(current) != "" {
+			currentState = current
+		}
+		removeIssueIdentifier = kanbanBlockedMoveIssueIdentifier(snapshotIssue, req.issueID)
+		if s.operatorMoves == nil {
+			return errors.New("orchestrator lane writer is unavailable")
+		}
+		if _, err := s.operatorMoves.ReconcileOperatorMove(ctx, orchestrator.OperatorMoveRequest{
+			ProjectID: req.projectID, IssueID: req.issueID, Identifier: removeIssueIdentifier,
+			FromState: currentState, WriteTracker: true, Remove: true,
+			StateFieldID: target.kanban.IssueStateFieldID,
+		}); err != nil {
+			return err
+		}
+
+		if strings.TrimSpace(snapshotState) == "" {
+			snapshotState = currentState
+		}
+		s.kanbanMutations.NoteCardRemoved(target.key, req.issueID, snapshotState, dataSeqAtWrite)
+		return nil
+	})
+	if feedback != "" {
+		return kanbanCommandFeedback(feedbackStatus, feedback)
+	}
+	if err != nil {
+		var blocked *connector.StateUpdateBlockedError
+		if errors.As(err, &blocked) {
+			return kanbanCommandFeedback(http.StatusUnprocessableEntity, kanbanBlockedMoveMessage(blocked, "", removeIssueIdentifier))
+		}
+		if errors.Is(err, connector.ErrNotImplemented) {
+			return kanbanCommandFeedback(http.StatusNotImplemented, kanbanRemoveUnsupportedMessage)
+		}
+		s.logger.WarnContext(ctx, "kanban remove failed", "project", req.projectID, "issue_id", req.issueID, "error", err)
+		return kanbanCommandFeedback(http.StatusBadGateway, "Remove failed: "+err.Error())
+	}
+	return "Removed card from project.", http.StatusOK, nil
+}
+
+func (s *Server) addKanbanComment(ctx context.Context, req kanbanCommentRequest) (string, int, error) {
+	target, response, status := s.kanbanActionTarget(req.projectID)
+	if response != "" {
+		return response, status, nil
+	}
+	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
+		return "Kanban integration mode is not enabled.", http.StatusForbidden, nil
+	}
+	if req.target == "pr" && !kanbanSupportsPullRequestComments(target.connector) || !s.kanbanCommentTargetKnown(req) {
+		return "Comment target is not available on the current board.", http.StatusNotFound, nil
+	}
+
+	err := s.kanbanMutations.WithLock(target.key, func() error {
+		switch req.target {
+		case "issue":
+			return target.connector.CreateComment(ctx, req.issueID, req.body)
+		case "pr":
+			commenter, ok := target.connector.(connector.PullRequestCommenter)
+			if !ok {
+				return connector.ErrNotImplemented
+			}
+			return commenter.CreatePullRequestComment(ctx, req.prRepository, req.prNumber, req.body)
+		default:
+			return connector.ErrNotImplemented
+		}
+	})
+	return "Comment submitted.", http.StatusOK, err
+}
+
+func (s *Server) mutateKanbanComment(ctx context.Context, req kanbanCommentMutationRequest, edit bool) error {
+	target, message, _ := s.kanbanActionTarget(req.projectID)
+	if message != "" || target.kanban.Mode != workflowconfig.KanbanModeIntegration || !s.kanbanCommentCanMutate(req, edit) {
+		return &kanbanCommentCommandError{status: http.StatusForbidden, message: "Only local Detent comments can be mutated."}
+	}
+	return s.kanbanMutations.WithLock(target.key, func() error {
+		if edit {
+			editor, ok := target.connector.(connector.IssueCommentUpdater)
+			if !ok {
+				return connector.ErrNotImplemented
+			}
+			return editor.UpdateIssueComment(ctx, req.issueID, req.commentID, req.body)
+		}
+		deleter, ok := target.connector.(connector.IssueCommentDeleter)
+		if !ok {
+			return connector.ErrNotImplemented
+		}
+		return deleter.DeleteIssueComment(ctx, req.issueID, req.commentID)
+	})
+}
+
+type kanbanCommentCommandError struct {
+	status  int
+	message string
+}
+
+func (e *kanbanCommentCommandError) Error() string { return e.message }

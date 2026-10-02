@@ -83,15 +83,16 @@ func (s *Server) authorizePrivateDashboardSession(c echo.Context) bool {
 	if c == nil || c.Request() == nil {
 		return false
 	}
+	cookie, err := c.Cookie(privateDashboardCookieName)
+	return err == nil && cookie != nil && s.privateDashboardSessionAuthorized(cookie.Value)
+}
+
+func (s *Server) privateDashboardSessionAuthorized(value string) bool {
 	access := s.dashboardAccess()
 	if access.Mode != globalconfig.DashboardAccessModePrivateToken || access.Token == "" {
 		return false
 	}
-	cookie, err := c.Cookie(privateDashboardCookieName)
-	if err != nil {
-		return false
-	}
-	return hmac.Equal([]byte(cookie.Value), []byte(privateDashboardSession(access.Token)))
+	return hmac.Equal([]byte(value), []byte(privateDashboardSession(access.Token)))
 }
 
 func privateDashboardSession(token string) string {

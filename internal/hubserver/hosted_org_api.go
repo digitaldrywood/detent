@@ -16,7 +16,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -33,7 +35,9 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	session := s.hostedSessionOnly
 	e.GET(hostedOrganizationBase+"/members", s.listHostedMembers, session)
 	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMemberJSON, session)
+	e.PUT(hostedOrganizationBase+"/members/invitations/:invitation", s.editHostedInvitationJSON, session)
 	e.DELETE(hostedOrganizationBase+"/members/invitations/:invitation", s.revokeHostedInvitationJSON, session)
+	e.POST(hostedOrganizationBase+"/members/invitations/:invitation/resend", s.resendHostedInvitationJSON, session)
 	e.DELETE(hostedOrganizationBase+"/members/:member", s.revokeHostedMemberJSON, session)
 	e.PUT(hostedOrganizationBase+"/members/:member/role", s.changeHostedRoleJSON, session)
 	e.PUT(hostedOrganizationBase+"/members/:member/grants", s.changeHostedGrantJSON, session)
@@ -93,11 +97,12 @@ type hostedMemberView struct {
 }
 
 type hostedInvitationView struct {
-	ID        string `json:"id"`
-	Email     string `json:"email"`
-	Role      string `json:"role"`
-	CreatedAt string `json:"created_at"`
-	ExpiresAt string `json:"expires_at"`
+	ID        string              `json:"id"`
+	Email     string              `json:"email"`
+	Role      string              `json:"role"`
+	CreatedAt string              `json:"created_at"`
+	ExpiresAt string              `json:"expires_at"`
+	Grants    []hostedMemberGrant `json:"grants"`
 }
 
 type hostedMembersResponse struct {
@@ -147,42 +152,11 @@ func (s *Service) listHostedMembers(c echo.Context) error {
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	ctx := c.Request().Context()
-	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
-	memberships, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
-	if err != nil {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Organization membership is temporarily unavailable")
-	}
-	emails, err := s.hostedMemberEmails(ctx)
+	response, err := s.hostedMembersFor(c.Request().Context(), credential)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	grants, err := s.hostedMemberGrants(ctx)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	response := hostedMembersResponse{Members: []hostedMemberView{}, Invitations: []hostedInvitationView{}}
-	for _, member := range memberships {
-		if member.OrganizationID != credential.Hosted.OrganizationID || member.Status != "active" {
-			continue
-		}
-		if !manage && member.UserID != credential.Hosted.Subject {
-			continue
-		}
-		view := hostedMemberView{ID: member.ID, UserID: member.UserID, Email: emails[member.UserID], Role: member.Role.Slug, Status: member.Status, Grants: []hostedMemberGrant{}}
-		if list, ok := grants[member.UserID]; ok {
-			view.Grants = list
-		}
-		response.Members = append(response.Members, view)
-	}
-	sortHostedMembers(response.Members)
-	if manage {
-		response.Invitations, err = s.hostedPendingInvitations(ctx)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	if err := s.hostedAudit(ctx, credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
+	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, response)
@@ -223,26 +197,30 @@ func (s *Service) hostedMemberGrants(ctx context.Context) (map[string][]hostedMe
 	return grants, errors.Join(rows.Err(), rows.Close())
 }
 
-// hostedPendingInvitations lists invitations that nobody has accepted. The
-// expiry comes from the reserved member seat, which is what the allowance
-// check holds open for the invited address.
 func (s *Service) hostedPendingInvitations(ctx context.Context) ([]hostedInvitationView, error) {
 	invitations := []hostedInvitationView{}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT i.id, i.email, i.role, i.created_at, COALESCE(r.expires_at, 0)
-FROM hosted_invitations i LEFT JOIN hosted_member_reservations r ON r.email = i.email
-WHERE i.organization_id = ? AND i.accepted_user_id = '' ORDER BY i.rowid`, s.config.Hosted.OrganizationID)
+	rows, err := s.database.db.QueryContext(ctx, `SELECT id, email, role, created_at, expires_at, grants_json
+FROM hosted_invitations
+WHERE organization_id = ? AND accepted_user_id = '' ORDER BY rowid DESC`, s.config.Hosted.OrganizationID)
 	if err != nil {
 		return nil, fmt.Errorf("read hosted invitations: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var view hostedInvitationView
-		var expires int64
-		if err := rows.Scan(&view.ID, &view.Email, &view.Role, &view.CreatedAt, &expires); err != nil {
+		var grants string
+		if err := rows.Scan(&view.ID, &view.Email, &view.Role, &view.CreatedAt, &view.ExpiresAt, &grants); err != nil {
 			return nil, fmt.Errorf("scan hosted invitation: %w", err)
 		}
-		if expires > 0 {
-			view.ExpiresAt = time.Unix(expires, 0).UTC().Format(time.RFC3339)
+		if err := json.Unmarshal([]byte(grants), &view.Grants); err != nil {
+			return nil, err
+		}
+		if view.ExpiresAt == "" {
+			invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, view.ID)
+			if err != nil {
+				return nil, fmt.Errorf("read hosted invitation expiry: %w", err)
+			}
+			view.ExpiresAt = formatHubTime(invitation.ExpiresAt)
 		}
 		invitations = append(invitations, view)
 	}
@@ -277,12 +255,34 @@ func (s *Service) hostedMemberResponse(ctx context.Context, member auth.Membersh
 	return view, nil
 }
 
+func (s *Service) editHostedInvitationJSON(c echo.Context) error {
+	var request struct {
+		hostedIdempotent
+		Grants []hostedMemberGrant `json:"grants"`
+	}
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if err := request.validate(false); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	credential, err := s.hostedAdministrator(c)
+	if err != nil {
+		return s.hostedJSONError(c, http.StatusForbidden, "You cannot edit invitations")
+	}
+	if err := s.editHostedInvitationFor(c.Request().Context(), credential, c.Param("invitation"), request.Grants); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
 // inviteHostedMemberJSON answers POST /members/invitations.
 func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	var request struct {
 		hostedIdempotent
-		Email string `json:"email"`
-		Role  string `json:"role"`
+		Email  string              `json:"email"`
+		Role   string              `json:"role"`
+		Grants []hostedMemberGrant `json:"grants"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -294,40 +294,26 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 	if err != nil || !auth.ValidOrganizationRole(request.Role) || request.Role == "owner" && credential.HostedRole != "owner" {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot invite a member with this role")
 	}
-	email := strings.ToLower(strings.TrimSpace(request.Email))
-	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || hostedEmailListed(s.config.Hosted.StaffEmails, email) {
-		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
-	}
-	ctx := c.Request().Context()
-	command := hostedCommand{actor: credential.ID, operation: c.Request().Method + " " + c.Request().URL.EscapedPath(), key: request.IdempotencyKey, input: struct{ Email, Role string }{email, request.Role}}
-	if claimed, err := s.claimHostedCommand(c, command, http.StatusCreated); !claimed || err != nil {
-		return err
-	}
-	reserved, err := s.reserveHostedInvitationSeat(ctx, email)
+	view, err := s.inviteHostedMemberFor(c.Request().Context(), credential, request.Email, request.Role, request.IdempotencyKey, request.Grants)
 	if err != nil {
-		s.abandonHostedCommand(c, command)
+		var application *nativeError
 		var limit *hostedLimitError
-		if errors.As(err, &limit) {
+		switch {
+		case errors.As(err, &application):
+			return s.nativeAPIError(c, err)
+		case errors.Is(err, mutation.ErrConflict):
+			return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
+		case errors.Is(err, mutation.ErrUncertain):
+			return c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+		case errors.Is(err, operatortool.ErrInvalidArguments):
+			return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
+		case errors.As(err, &limit):
 			return s.hostedJSONError(c, http.StatusTooManyRequests, limit.Error())
+		default:
+			return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 		}
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
 	}
-	invitation, err := s.config.Hosted.Provider.Invite(ctx, credential.Hosted.OrganizationID, email, request.Role, credential.Hosted.Subject)
-	if err != nil || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, email) || invitation.State != "pending" {
-		s.releaseFailedHostedInvitation(c, email, reserved, err)
-		s.abandonHostedCommand(c, command)
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
-	}
-	created := formatHubTime(s.config.now())
-	_, err = s.database.db.ExecContext(ctx, `INSERT INTO hosted_invitations(id,email,organization_id,role,created_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, invitation.ID, email, s.config.Hosted.OrganizationID, request.Role, created)
-	if err != nil {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be recorded")
-	}
-	view := hostedInvitationView{ID: invitation.ID, Email: email, Role: request.Role, CreatedAt: created}
-	if !invitation.ExpiresAt.IsZero() {
-		view.ExpiresAt = invitation.ExpiresAt.UTC().Format(time.RFC3339)
-	}
-	return s.completeHostedCommand(c, command, http.StatusCreated, view)
+	return c.JSON(http.StatusCreated, view)
 }
 
 // hostedCommand identifies one idempotent hosted mutation: the actor's
@@ -335,6 +321,7 @@ func (s *Service) inviteHostedMemberJSON(c echo.Context) error {
 // hash a replay must match. It is stored in native_commands, the table every
 // native mutation replays from.
 type hostedCommand struct {
+	organization          string
 	actor, operation, key string
 	input                 any
 }
@@ -357,59 +344,87 @@ const hostedPendingCommand = `{"detent_pending_command":true}`
 // key. It reports true when the caller owns the key and should perform the
 // mutation. Otherwise it has already answered: the stored response for a
 // completed key, a conflict for a key used with different content, and a
-// retryable conflict for a key whose mutation is still pending. A pending
-// claim is never taken over, so a request that stopped after calling the
-// provider cannot be repeated under the same key; the caller retries with a
-// new key once it has checked the invitations list.
-func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
+// safe conflict for a key whose outcome is still pending or uncertain.
+// A pending invitation is never taken over; inspect provider/application
+// records before choosing a new key.
+// claimHostedOperation is the application receipt path shared by adapters.
+// Authorization must precede each call, including a replay.
+func (s *Service) claimHostedOperation(ctx context.Context, command hostedCommand) (claimed bool, response json.RawMessage, err error) {
+	command = command.forContext(ctx)
 	hash, err := command.hash()
 	if err != nil {
-		return false, s.nativeAPIError(c, err)
+		return false, nil, err
 	}
-	ctx := c.Request().Context()
-	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
+	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
 	if err != nil {
-		return false, s.nativeAPIError(c, err)
+		return false, nil, err
 	}
-	if claimed, err := result.RowsAffected(); err != nil || claimed == 1 {
-		if err != nil {
-			return false, s.nativeAPIError(c, err)
-		}
-		return true, nil
-	}
-	var storedHash, response string
-	err = s.database.db.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key).Scan(&storedHash, &response)
+	count, err := result.RowsAffected()
 	if err != nil {
-		return false, s.nativeAPIError(c, err)
+		return false, nil, err
+	}
+	if count == 1 {
+		return true, nil, nil
+	}
+	var storedHash, raw string
+	if err := s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key).Scan(&storedHash, &raw); err != nil {
+		return false, nil, err
 	}
 	if storedHash != hash {
-		return false, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict})
+		return false, nil, mutation.ErrConflict
 	}
-	if response == hostedPendingCommand {
-		return false, c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: "This request is still being processed; check the invitations before retrying with a new key"})
+	if raw == hostedPendingCommand {
+		return false, nil, mutation.ErrUncertain
 	}
-	return false, c.JSONBlob(status, []byte(response))
+	return false, json.RawMessage(raw), nil
 }
 
-// completeHostedCommand stores the response a replay of the claimed key
-// answers with, then sends it.
-func (s *Service) completeHostedCommand(c echo.Context, command hostedCommand, status int, value any) error {
+func (s *Service) claimHostedCommand(c echo.Context, command hostedCommand, status int) (bool, error) {
+	claimed, response, err := s.claimHostedOperation(c.Request().Context(), command)
+	if errors.Is(err, mutation.ErrConflict) {
+		return false, s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: mutation.ErrConflict.Error(), status: http.StatusConflict})
+	}
+	if errors.Is(err, mutation.ErrUncertain) {
+		return false, c.JSON(http.StatusConflict, apiErrorResponse{Code: "idempotency_in_progress", Message: mutation.ErrUncertain.Error()})
+	}
+	if err != nil {
+		return false, s.nativeAPIError(c, err)
+	}
+	if !claimed {
+		return false, c.JSONBlob(status, response)
+	}
+	return true, nil
+}
+
+func (s *Service) completeHostedOperation(ctx context.Context, command hostedCommand, value any) (json.RawMessage, error) {
+	command = command.forContext(ctx)
 	response, err := marshalNative(value)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), `UPDATE native_commands SET response_json = ? WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ? AND response_json = ?`, response, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hostedPendingCommand); err != nil {
-		return s.nativeAPIError(c, err)
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hostedPendingCommand)
+	if err != nil {
+		return nil, err
 	}
-	return c.JSONBlob(status, []byte(response))
+	count, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if count != 1 {
+		return nil, mutation.ErrUncertain
+	}
+	return json.RawMessage(response), nil
 }
 
-// abandonHostedCommand gives back a claim whose mutation did not happen, so
+// abandonHostedOperation gives back a claim whose mutation did not happen, so
 // the same key can be retried.
-func (s *Service) abandonHostedCommand(c echo.Context, command hostedCommand) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request().Context()), 2*time.Second)
+func (s *Service) abandonHostedOperation(parent context.Context, command hostedCommand) {
+	command = command.forContext(parent)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 2*time.Second)
 	defer cancel()
-	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_commands WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ? AND response_json = ?`, s.config.Hosted.OrganizationID, command.actor, command.operation, command.key, hostedPendingCommand); err != nil {
+	if _, err := s.database.db.ExecContext(ctx, `DELETE FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hostedPendingCommand); err != nil {
 		s.config.Logger.Warn("hosted command claim could not be released")
 	}
 }
@@ -421,15 +436,8 @@ func (s *Service) revokeHostedMemberJSON(c echo.Context) error {
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot remove organization members")
 	}
-	member, err := s.hostedManagedMember(c, credential, true)
-	if err != nil {
-		return s.hostedJSONError(c, http.StatusForbidden, "This member cannot be removed; the organization must retain an owner")
-	}
-	if err := s.revokeHostedMemberLocally(c.Request().Context(), member.UserID); err != nil {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Membership removal is temporarily unavailable")
-	}
-	if err := s.config.Hosted.Provider.RevokeMembership(c.Request().Context(), member.ID); err != nil {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Local access is revoked. Provider revocation could not be confirmed; retry removal.")
+	if err := s.removeHostedMemberFor(c.Request().Context(), credential, c.Param("member")); err != nil {
+		return s.hostedJSONError(c, http.StatusForbidden, "This member could not be removed; the organization must retain an owner")
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -450,19 +458,9 @@ func (s *Service) changeHostedRoleJSON(c echo.Context) error {
 	if err != nil || !auth.ValidOrganizationRole(request.Role) || request.Role == "owner" && credential.HostedRole != "owner" {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot assign this organization role")
 	}
-	member, err := s.hostedManagedMember(c, credential, request.Role != "owner")
+	view, err := s.changeHostedRoleFor(c.Request().Context(), credential, c.Param("member"), request.Role)
 	if err != nil {
-		return s.hostedJSONError(c, http.StatusForbidden, "This role cannot be changed; the organization must retain an owner")
-	}
-	if err := s.config.Hosted.Provider.SetMembershipRole(c.Request().Context(), member.ID, request.Role); err != nil {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The role could not be changed")
-	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE hosted_members SET role = ?,updated_at = ? WHERE user_id = ?", request.Role, formatHubTime(s.config.now()), member.UserID); err != nil {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The role could not be recorded")
-	}
-	view, err := s.hostedMemberResponse(c.Request().Context(), member)
-	if err != nil {
-		return s.nativeAPIError(c, err)
+		return s.hostedJSONError(c, http.StatusForbidden, "This role could not be changed")
 	}
 	return c.JSON(http.StatusOK, view)
 }
@@ -488,17 +486,7 @@ func (s *Service) changeHostedGrantJSON(c echo.Context) error {
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot manage project grants")
 	}
-	member, err := s.hostedMemberByID(c.Request().Context(), credential, c.Param("member"))
-	if err != nil {
-		return s.hostedJSONError(c, http.StatusNotFound, "This member is not part of the organization")
-	}
-	if !hostedSafeID(member.UserID) || !hostedSafeID(request.ProjectID) {
-		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Select a member and project")
-	}
-	if err := s.hostedGrant(c.Request().Context(), credential, member.UserID, request.ProjectID, request.Write, request.Runner, request.Revoke); err != nil {
-		return s.hostedJSONError(c, http.StatusForbidden, "The project grant could not be changed")
-	}
-	view, err := s.hostedMemberResponse(c.Request().Context(), member)
+	view, err := s.changeHostedGrantFor(c.Request().Context(), credential, c.Param("member"), request.ProjectID, request.Write, request.Runner, request.Revoke)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -567,8 +555,9 @@ type hostedProjectView struct {
 func (s *Service) createHostedProjectJSON(c echo.Context) error {
 	var request struct {
 		hostedIdempotent
-		Name        string `json:"name"`
-		GrantAccess bool   `json:"grant_access"`
+		Name        string                `json:"name"`
+		GrantAccess bool                  `json:"grant_access"`
+		States      []tracker.NativeState `json:"states,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -584,7 +573,12 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 	if name == "" || len(name) > 120 || !request.GrantAccess {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter a project name and explicitly grant yourself project access")
 	}
-	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name)
+	if request.States != nil {
+		if err := validateNativeStates(request.States); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name, request.States)
 	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
@@ -605,10 +599,6 @@ func (s *Service) hostedJSONError(c echo.Context, status int, message string) er
 	return c.JSON(status, apiErrorResponse{Code: hostedErrorCode(status), Message: message})
 }
 
-// revokeHostedInvitationJSON answers DELETE /members/invitations/:invitation.
-// The provider has no revocation call, so the invitation is withdrawn here:
-// acceptance and the invitation link both require the pending local record,
-// and the member seat it reserved is released.
 func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 	var request hostedIdempotent
 	if c.Request().ContentLength != 0 {
@@ -622,23 +612,31 @@ func (s *Service) revokeHostedInvitationJSON(c echo.Context) error {
 	if _, err := s.hostedAdministrator(c); err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot revoke invitations")
 	}
-	ctx := c.Request().Context()
-	var email string
-	err := s.database.db.QueryRowContext(ctx, "DELETE FROM hosted_invitations WHERE id = ? AND organization_id = ? AND accepted_user_id = '' RETURNING email", c.Param("invitation"), s.config.Hosted.OrganizationID).Scan(&email)
-	if errors.Is(err, sql.ErrNoRows) {
-		return s.hostedJSONError(c, http.StatusNotFound, "This invitation is not pending in the organization")
-	}
-	if err != nil {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be revoked")
-	}
-	var remaining int
-	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE email = ? AND accepted_user_id = ''", email).Scan(&remaining); err != nil {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be revoked")
-	}
-	if remaining == 0 {
-		if err := s.releaseHostedInvitation(ctx, email); err != nil {
-			return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation is revoked; its member seat could not be released")
+	if err := s.revokeHostedInvitationFor(c.Request().Context(), c.Param("invitation")); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return s.hostedJSONError(c, http.StatusNotFound, "This invitation is no longer pending")
 		}
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be revoked. Try again.")
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
+	var request hostedIdempotent
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	if err := request.validate(false); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if _, err := s.hostedAdministrator(c); err != nil {
+		return s.hostedJSONError(c, http.StatusForbidden, "You cannot resend invitations")
+	}
+	if err := s.resendHostedInvitationFor(c.Request().Context(), c.Param("invitation")); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return s.hostedJSONError(c, http.StatusNotFound, "This invitation is no longer pending")
+		}
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "The invitation could not be resent. Try again.")
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -676,4 +674,48 @@ func hostedErrorCode(status int) string {
 	default:
 		return "request_failed"
 	}
+}
+
+// The HTTP and MCP application adapters share records. Context metadata is
+// created by trusted authority; it is never decoded from hosted request bodies.
+func (command hostedCommand) forContext(ctx context.Context) hostedCommand {
+	if m, ok := mutation.FromContext(ctx); ok && m.RetryIdentity != "" {
+		command.key = m.RetryIdentity
+	}
+	return command
+}
+
+func (s *Service) commandOrganization(ctx context.Context, command hostedCommand) string {
+	if m, ok := mutation.FromContext(ctx); ok && m.OrganizationID != "" {
+		return m.OrganizationID
+	}
+	if s.config.Hosted != nil {
+		return s.config.Hosted.OrganizationID
+	}
+	return command.organization
+}
+
+// readHostedOperation is the read-only application receipt lookup. It never
+// claims a missing command; action_result must remain a read operation.
+func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand) (json.RawMessage, bool, error) {
+	command = command.forContext(ctx)
+	hash, err := command.hash()
+	if err != nil {
+		return nil, false, err
+	}
+	var storedHash, raw string
+	err = s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key).Scan(&storedHash, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if storedHash != hash {
+		return nil, true, mutation.ErrConflict
+	}
+	if raw == hostedPendingCommand {
+		return nil, true, mutation.ErrUncertain
+	}
+	return json.RawMessage(raw), true, nil
 }

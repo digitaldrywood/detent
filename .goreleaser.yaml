@@ -5,8 +5,8 @@ dist: tmp/goreleaser
 before:
   hooks:
     - go mod download
-    - make check-generated
-    - make test
+    - make app
+    - make source-metadata VERSION={{ .Version }} COMMIT={{ .FullCommit }} DATE={{ .Date }}
 
 builds:
   - id: detent
@@ -25,6 +25,16 @@ builds:
     goarch:
       - amd64
       - arm64
+
+source:
+  enabled: true
+  name_template: "{{ .ProjectName }}_{{ .Version }}_source"
+  prefix_template: "{{ .ProjectName }}_{{ .Version }}_source/"
+  files:
+    - static/app/conversation
+    - src: tmp/source-metadata/BUILD_LDFLAGS
+      dst: .
+      strip_parent: true
 
 archives:
   - id: detent

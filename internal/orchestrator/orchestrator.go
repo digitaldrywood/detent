@@ -129,6 +129,8 @@ type Config struct {
 	Authorization                 selector.Selector
 	SelectorContext               selector.Context
 	WorkerHosts                   []string
+	WorkerHostSelection           string
+	WorkerHostCaps                map[string]int
 	BudgetRefusalCooldown         time.Duration
 	WorkspaceCleanupIdleTTL       time.Duration
 	WorkspaceCleanupSweepInterval time.Duration
@@ -143,7 +145,6 @@ type Config struct {
 	ServiceIdentity               string
 	OutputTruncationMaxBytes      int
 	EfficiencyThresholds          efficiency.Thresholds
-	Lessons                       LessonCaptureConfig
 	Staleness                     staleness.Config
 	StalenessDelivery             staleness.DeliveryConfig
 	StrandedActiveThreshold       time.Duration
@@ -156,12 +157,6 @@ type Config struct {
 	CPUPressureSomeAvg10Max       float64
 	CPUPressureDegradedMaxAgents  int
 	CPUPressurePollInterval       time.Duration
-}
-
-type LessonCaptureConfig struct {
-	Enabled    bool
-	Path       string
-	MaxEntries int
 }
 
 type FailureBreakerConfig struct {
@@ -184,12 +179,20 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
-	ProviderRequirement func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
-	Policy              policy.Descriptor
-	ProjectID           string
-	Repository          string
-	WorkflowStates      []string
-	Filter              connector.IssueFilterHint
+	DispatchPriorityByState []string
+	DispatchPriorityByLabel []string
+	PrioritizeUnblockers    bool
+	CandidateReady          func(context.Context, connector.Issue) bool
+	CandidateKnownWait      func(connector.Issue) bool
+	CandidateAdmitted       func(connector.Issue)
+	CandidateLimit          int
+	AdmissionLimit          int
+	ProviderRequirement     func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
+	Policy                  policy.Descriptor
+	ProjectID               string
+	Repository              string
+	WorkflowStates          []string
+	Filter                  connector.IssueFilterHint
 }
 
 type SchedulingSource interface {
@@ -296,6 +299,7 @@ type Orchestrator struct {
 	validator               Validator
 	securityAuditor         SecurityAuditor
 	reaper                  WorkspaceReaper
+	quarantineWarnings      map[string]struct{}
 	trimHostCache           func(context.Context, toolcache.Policy, time.Time) error
 	logger                  *slog.Logger
 	globalDispatchGate      scheduler.ProjectDispatchGate
@@ -320,6 +324,7 @@ type Orchestrator struct {
 	release                 releasepkg.Coordinator
 	capacityController      runpkg.CapacityController
 	providerCapacity        runpkg.ProviderCapacityResolver
+	workerHostChecker       runpkg.WorkerHostChecker
 	capacityStatus          runpkg.CapacityStatusController
 	validatorCapacity       runpkg.ValidatorCapacityController
 	recoveryInspector       runpkg.BlockedRecoveryInspector
@@ -351,9 +356,6 @@ type Orchestrator struct {
 	dispatchGateSamples     map[dispatchGateSampleKey]time.Time
 	ciTriggerLabelMu        sync.Mutex
 	ciTriggerLabelHeads     map[string]ciTriggerLabelHead
-	stateRequests           chan stateRequest
-	snapshotSignalMu        sync.Mutex
-	snapshotAvailable       chan struct{}
 	initialStateReady       chan struct{}
 	initialStatePublished   sync.Once
 	drainRequests           chan drainRequest
@@ -383,7 +385,6 @@ type Orchestrator struct {
 	latestState             atomic.Pointer[State]
 	completionState         atomic.Pointer[State]
 	latestRuntimeState      atomic.Pointer[runtimeState]
-	refreshInProgress       atomic.Bool
 	refreshProgress         atomic.Pointer[telemetry.RefreshProgress]
 	tickWatchdog            *tickWatchdog
 
@@ -408,10 +409,6 @@ type validatorStageFailure struct {
 	Attempt     int
 	NextRetryAt time.Time
 	Error       string
-}
-
-type stateRequest struct {
-	reply chan State
 }
 
 type modelPermitRequest struct {
@@ -489,6 +486,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		runner = FakeRunner{}
 	}
 	reaper := deps.WorkspaceReaper
+	var workerHostChecker runpkg.WorkerHostChecker
+	if candidate, ok := runner.(runpkg.WorkerHostChecker); ok {
+		workerHostChecker = candidate
+	}
 	if reaper == nil {
 		if candidate, ok := runner.(WorkspaceReaper); ok {
 			reaper = candidate
@@ -720,6 +721,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		projectID:               cfg.Project.ID,
 		capacityController:      capacityController,
 		providerCapacity:        providerCapacity,
+		workerHostChecker:       workerHostChecker,
 		capacityStatus:          capacityStatus,
 		validatorCapacity:       validatorCapacity,
 		recoveryInspector:       blockedRecoveryInspector,
@@ -731,8 +733,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		now:                     now,
 		dispatchGateSamples:     map[dispatchGateSampleKey]time.Time{},
 		ciTriggerLabelHeads:     map[string]ciTriggerLabelHead{},
-		stateRequests:           make(chan stateRequest),
-		snapshotAvailable:       make(chan struct{}),
 		initialStateReady:       make(chan struct{}),
 		drainRequests:           make(chan drainRequest),
 		forceRequests:           make(chan forceRequest),
@@ -888,7 +888,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			}
 		case request := <-o.stopRequests:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			o.handleStopRunRequest(ctx, &state, request)
+			if len(state.Running) < before {
+				o.refillProjectSlotsExcluding(ctx, &state, o.clockNow(), request.request.IssueID)
+			}
 		case request := <-o.modelPermitRequests:
 			state.syncWorkerProgress()
 			request.reply <- o.handleModelPermitRequest(&state, request.issueID)
@@ -900,7 +904,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case result := <-o.runResults:
 			state.syncWorkerProgress()
 			o.startCompletion(&state)
-			o.handleRunResult(ctx, &state, result)
+			o.handleQueuedRunResults(ctx, &state, result)
 			o.publishState(&state)
 			o.completionState.Store(nil)
 			continue
@@ -912,7 +916,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			}
 		case result := <-heartbeatResults:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			o.handleHeartbeatResult(&state, result)
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 		case event := <-o.validatorCapacityEvents:
 			state.syncWorkerProgress()
 			o.handleValidatorCapacityEvent(&state, event)
@@ -920,12 +928,18 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
 			o.startDrain(&state, request.at)
+			o.publishState(&state)
 			request.reply <- struct{}{}
+			continue
 		case request := <-o.forceRequests:
 			state.syncWorkerProgress()
-			request.reply <- o.forceQuit(request.ctx, &state, request.at)
+			err := o.forceQuit(request.ctx, &state, request.at)
+			o.publishState(&state)
+			request.reply <- err
+			continue
 		case request := <-o.recoveryRequests:
 			state.syncWorkerProgress()
+			before := len(state.Running)
 			var response WorkAttemptRecoveryResponse
 			var err error
 			if request.receiptOnly {
@@ -937,22 +951,31 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 				response, err = o.handleWorkAttemptRecovery(ctx, &state, request.request, request.at)
 			}
 			request.reply <- workAttemptRecoveryReply{response: response, err: err}
+			if len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 			if !request.receiptOnly && err == nil && response.Queued {
 				resetTicker(ticker, time.Millisecond)
 			}
 		case request := <-o.operatorMoves:
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
-			request.reply <- o.applyOperatorMove(ctx, &state, request.request, request.at)
+			before := len(state.Running)
+			result := o.applyOperatorMove(ctx, &state, request.request, request.at)
+			request.reply <- result.OperatorMoveResult
+			if result.ready || len(state.Running) < before {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 		case update := <-o.configUpdates:
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
+			previousCapacity := state.MaxConcurrentAgents
 			o.applyRuntimeUpdate(&state, update.update, ticker)
+			if state.MaxConcurrentAgents > previousCapacity {
+				o.refillProjectSlots(ctx, &state, o.clockNow())
+			}
 			o.finishTick(&state)
 			update.reply <- struct{}{}
-		case request := <-o.stateRequests:
-			state.syncWorkerProgress()
-			request.reply <- state.clone()
 		}
 		o.publishState(&state)
 	}
@@ -970,8 +993,9 @@ func (o *Orchestrator) startTick(state *State, at time.Time) {
 		return
 	}
 	state.syncWorkerProgress()
-	o.refreshInProgress.Store(true)
-	o.signalSnapshotAvailable()
+	// Publish recovered and updated runtime ownership before tracker reads can
+	// block the actor. Existing progress pointers keep heartbeats observable.
+	o.publishRuntimeState(state)
 	if o.tickWatchdog == nil || state == nil {
 		return
 	}
@@ -991,20 +1015,10 @@ func (o *Orchestrator) finishTick(state *State) {
 	}
 	o.publishState(state)
 	o.refreshProgress.Store(nil)
-	o.refreshInProgress.Store(false)
 	if o.tickWatchdog == nil || state == nil {
 		return
 	}
 	o.tickWatchdog.Schedule(state.NextRefreshAt, state.PollInterval)
-}
-
-func (o *Orchestrator) signalSnapshotAvailable() {
-	o.snapshotSignalMu.Lock()
-	defer o.snapshotSignalMu.Unlock()
-	if o.snapshotAvailable != nil {
-		close(o.snapshotAvailable)
-	}
-	o.snapshotAvailable = make(chan struct{})
 }
 
 func (o *Orchestrator) startCompletion(state *State) {
@@ -1019,7 +1033,6 @@ func (o *Orchestrator) startCompletion(state *State) {
 		Complete:   true,
 	}
 	o.completionState.Store(&cloned)
-	o.signalSnapshotAvailable()
 }
 
 func (o *Orchestrator) ClearBackendCapacity(ctx context.Context, scope string) ([]BackendOutage, error) {
@@ -1166,16 +1179,21 @@ func (o *Orchestrator) UpdateRuntime(ctx context.Context, update RuntimeUpdate) 
 	}
 }
 
+func (o *Orchestrator) DependencyIssues() []connector.Issue {
+	state := o.latestState.Load()
+	if state == nil {
+		return nil
+	}
+	issues := make([]connector.Issue, len(state.BoardIssues))
+	for i, issue := range state.BoardIssues {
+		issues[i] = cloneIssue(issue)
+	}
+	return issues
+}
+
 func (o *Orchestrator) State(ctx context.Context) (State, error) {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	select {
-	case <-ctx.Done():
-		return State{}, ctx.Err()
-	case <-o.done:
-		return State{}, ErrStopped
-	default:
 	}
 	if o.latestState.Load() == nil {
 		select {
@@ -1186,31 +1204,13 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 		case <-o.initialStateReady:
 		}
 	}
-	o.snapshotSignalMu.Lock()
-	snapshotAvailable := o.snapshotAvailable
-	o.snapshotSignalMu.Unlock()
-	if o.completionState.Load() != nil || o.refreshInProgress.Load() {
-		return o.publishedState(), nil
-	}
-	request := stateRequest{reply: make(chan State, 1)}
 	select {
 	case <-ctx.Done():
 		return State{}, ctx.Err()
 	case <-o.done:
 		return State{}, ErrStopped
-	case <-snapshotAvailable:
+	default:
 		return o.publishedState(), nil
-	case o.stateRequests <- request:
-	}
-	select {
-	case <-ctx.Done():
-		return State{}, ctx.Err()
-	case <-o.done:
-		return State{}, ErrStopped
-	case <-snapshotAvailable:
-		return o.publishedState(), nil
-	case state := <-request.reply:
-		return o.observableState(state), nil
 	}
 }
 
@@ -1270,15 +1270,15 @@ func (o *Orchestrator) publishState(state *State) {
 		return
 	}
 	cloned := state.clone()
-	o.latestState.Store(&cloned)
-	if o.initialStateReady != nil {
-		o.initialStatePublished.Do(func() { close(o.initialStateReady) })
-	}
 	o.latestRuntimeState.Store(&runtimeState{
 		WorkAttempts: cloned.WorkAttempts,
 		Running:      cloned.Running,
 		Claimed:      cloned.Claimed,
 	})
+	o.latestState.Store(&cloned)
+	if o.initialStateReady != nil {
+		o.initialStatePublished.Do(func() { close(o.initialStateReady) })
+	}
 }
 
 func (o *Orchestrator) publishRuntimeState(state *State) {

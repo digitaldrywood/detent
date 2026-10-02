@@ -6,6 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -48,6 +49,10 @@ type LaneSignalStatus struct {
 }
 
 type Issue struct {
+	// CleanupDeliveredHeadSHA is fresh delivery evidence for one cleanup call, never tracker state.
+	CleanupDeliveredHeadSHA string `json:"-" yaml:"-"`
+
+	IsolationPolicy    *isolation.Policy  `json:"-" yaml:"-"`
 	LaneSignalStatuses []LaneSignalStatus `json:"-" yaml:"-"`
 
 	PublicationReused bool                 `json:"-" yaml:"-"`
@@ -84,6 +89,7 @@ type Issue struct {
 	WorkpadSignal     *workpad.Signal      `json:"workpad_signal,omitempty" yaml:"workpad_signal,omitempty"`
 	Labels            []string             `json:"labels" yaml:"labels"`
 	CommentCount      int                  `json:"-" yaml:"-"`
+	CommentsComplete  bool                 `json:"-" yaml:"-"`
 	Comments          []IssueComment       `json:"comments,omitempty" yaml:"comments,omitempty"`
 	Fields            map[string]string    `json:"fields,omitempty" yaml:"fields,omitempty"`
 	FieldUpdatedAt    map[string]time.Time `json:"field_updated_at,omitempty" yaml:"field_updated_at,omitempty"`
@@ -197,6 +203,27 @@ type PullRequestCheck struct {
 	DetailsURL      string `json:"details_url,omitempty" yaml:"details_url,omitempty"`
 	QueueSeconds    int64  `json:"queue_seconds,omitempty" yaml:"queue_seconds,omitempty"`
 	DurationSeconds int64  `json:"duration_seconds,omitempty" yaml:"duration_seconds,omitempty"`
+}
+
+// IsMissingLocalStatus reports work whose only producer is Detent's local gate.
+// Posted pending or failed statuses remain CI evidence and must still be honored.
+func (c PullRequestCheck) IsMissingLocalStatus(localStatus string) bool {
+	localStatus = strings.TrimSpace(localStatus)
+	return localStatus != "" && strings.TrimSpace(c.Name) == localStatus &&
+		strings.EqualFold(strings.TrimSpace(c.Status), "missing")
+}
+
+// HasMissingLocalStatus identifies a head that still needs Detent to run its gate.
+func (pr *PullRequest) HasMissingLocalStatus(localStatus string) bool {
+	if pr == nil {
+		return false
+	}
+	for _, check := range pr.RequiredCheckFailures {
+		if check.IsMissingLocalStatus(localStatus) {
+			return true
+		}
+	}
+	return false
 }
 
 type PullRequestFinding struct {

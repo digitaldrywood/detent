@@ -10,15 +10,24 @@ import (
 	"strings"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.SchedulingSource, error) {
+type hubSchedulingOptions struct {
+	runtimeConfig func() globalconfig.Config
+	intakeToken   githubconnector.TokenSource
+	problems      func() []runnerauth.Problem
+}
+
+func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version string, options ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
 	clientConfig := cfg.Client
 	if !clientConfig.Configured() {
 		return nil, errors.New("hub client is not configured")
@@ -69,15 +78,50 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 	for name, id := range clientConfig.NativeProjects {
 		nativeProjects[name] = tracker.ProjectID(id)
 	}
+	checkouts := make(map[string]globalconfig.Project, len(nativeProjects))
+	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
+		if _, ok := nativeProjects[selected.ID]; ok {
+			checkouts[selected.ID] = selected
+		}
+	}
 	var providerReports func() ([]providercapacity.Report, error)
 	if clientConfig.ProviderCapacityFile != "" {
 		providerReports = func() ([]providercapacity.Report, error) {
 			return providercapacity.Load(clientConfig.ProviderCapacityFile)
 		}
 	}
+	localChecks, err := collectRunnerSetupReports(ctx, cfg, client)
+	if err != nil {
+		return nil, err
+	}
+	tokenSource := githubconnector.StaticTokenSource("")
+	if len(options) > 0 && options[0].intakeToken != nil {
+		tokenSource = options[0].intakeToken
+	}
+	github, err := githubconnector.NewClient(githubconnector.ClientConfig{TokenSource: tokenSource, HTTPClient: &http.Client{Timeout: clientConfig.RequestTimeout()}})
+	if err != nil {
+		return nil, err
+	}
+	var capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
+	if len(options) > 0 {
+		capacityConfiguration = runnerCapacityOwner(cfg, options[0].runtimeConfig)
+	}
+	var reportProblems func() []runnerauth.Problem
+	if len(options) > 0 {
+		reportProblems = options[0].problems
+	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
-		ProviderReports: providerReports,
-		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
+		CapacityConfiguration: capacityConfiguration,
+		LocalChecks:           localChecks,
+		GitHubIntake:          github.FetchIssueSnapshot,
+		GitHubDiscovery:       github.DiscoverIssues,
+		Problems:              reportProblems,
+		IsolationReport:       func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
+		ProviderReports:       providerReports,
+		OrganizationID:        tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
+		CheckoutRepository: func(project string) string {
+			return runnerCheckoutRepository(ctx, checkouts[project])
+		},
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),
@@ -93,6 +137,18 @@ func newHubScheduling(cfg globalconfig.Config, version string) (orchestrator.Sch
 		HeartbeatInterval: clientConfig.HeartbeatInterval(),
 		LeaseTTL:          clientConfig.LeaseTTL(),
 	})
+}
+
+func runnerCheckoutRepository(ctx context.Context, selected globalconfig.Project) string {
+	if !runnerCheckoutReady(ctx, selected) {
+		return ""
+	}
+	remote, err := defaultGitRemoteURL(ctx, selected.Workdir)
+	if err != nil {
+		return ""
+	}
+	repository, _ := doctorGitHubRepositoryFromRemoteURL(remote)
+	return repository
 }
 
 func newHubRunnerFleet(cfg globalconfig.Config) (*hubclient.FleetClient, error) {

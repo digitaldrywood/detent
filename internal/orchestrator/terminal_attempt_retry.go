@@ -161,8 +161,10 @@ func (o *Orchestrator) consecutiveRetryCycleCount(
 		count := 0
 		latest := telemetry.WorkAttempt{}
 		for _, attempt := range attempts {
-			if strings.TrimSpace(attempt.ErrorClass) == "service_restart" &&
-				terminalAttemptRetryableFailure(attempt) && !workAttemptHasPushedProduct(attempt) {
+			if allowanceInfrastructureAttempt(store.WorkAttempt{
+				TerminalState: store.WorkAttemptTerminalState(attempt.TerminalState), ErrorClass: attempt.ErrorClass,
+				Phase: attempt.Phase, MetricsJSON: attempt.MetricsJSON, WorkerMetadataJSON: attempt.WorkerMetadataJSON,
+			}) && !workAttemptHasPushedProduct(attempt) {
 				continue
 			}
 			if !retryCycleAttemptMatches(attempt, cause) {
@@ -486,19 +488,29 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 			continue
 		}
 		attempt, ok := latestByIssue[issueID]
-		if !ok || !terminalAttemptRetryableFailure(attempt) {
+		if !ok {
 			continue
 		}
-		if preTurnAttempt(attempt) {
+		legacyRESTCapacity := strings.TrimSpace(attempt.ErrorClass) == githubRESTCapacityError && terminalAttemptRetryableFailure(attempt)
+		if preTurnAttempt(attempt) || strings.TrimSpace(attempt.ErrorClass) == "service_restart" || legacyRESTCapacity {
+			if terminalAttemptHasWorkProduct(issue, workAttemptHasPushedProduct(attempt)) || pullRequestHydrationBlocksProgress(issue.PullRequest) || o.terminalAttemptClaimBlocksDemotion(ctx, issue, now) {
+				continue
+			}
 			var metadata struct {
 				Source string `json:"dispatch_source_state"`
 			}
 			if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) != nil {
 				metadata.Source = ""
 			}
-			if updated, changed := o.restorePreTurnIssue(ctx, state, Running{Issue: issue, DispatchSourceState: metadata.Source}, now); changed {
+			if updated, changed := o.restorePreTurnIssue(ctx, state, Running{Issue: issue, DispatchSourceState: metadata.Source, WorkProductPushed: workAttemptHasPushedProduct(attempt)}, now); changed {
 				transitions = append(transitions, updated)
 			}
+			continue
+		}
+		if allowanceInfrastructureAttempt(store.WorkAttempt{
+			TerminalState: store.WorkAttemptTerminalState(attempt.TerminalState), ErrorClass: attempt.ErrorClass,
+			Phase: attempt.Phase, MetricsJSON: attempt.MetricsJSON, WorkerMetadataJSON: attempt.WorkerMetadataJSON,
+		}) || !terminalAttemptRetryableFailure(attempt) {
 			continue
 		}
 		updated, changed, _ := o.demoteTerminalAttemptRetry(
@@ -573,8 +585,13 @@ func workAttemptCompletedAfter(left telemetry.WorkAttempt, right telemetry.WorkA
 }
 
 func terminalAttemptRetryableFailure(attempt telemetry.WorkAttempt) bool {
+	// A plan is a work product without a PR. Abandoning its local completion
+	// cannot revoke an operator's subsequent implementation handoff.
+	if workAttemptRunMode(attempt) == RunModePlan && strings.EqualFold(strings.TrimSpace(attempt.TerminalState), string(store.WorkAttemptTerminalAbandoned)) {
+		return false
+	}
 	errorClass := strings.TrimSpace(attempt.ErrorClass)
-	if errorClass == backendcapacity.ErrorClass || errorClass == forgeUnavailableErrorClass || errorClass == workspaceBranchHoldErrorClass || errorClass == workerGitHubMonitorErrorClass || errorClass == workerGitHubTokenResolutionErrorClass {
+	if errorClass == backendcapacity.ErrorClass || errorClass == forgeUnavailableErrorClass || errorClass == workspaceBranchHoldErrorClass || errorClass == "worker_github_budget_monitor_unavailable" || errorClass == workerGitHubTokenResolutionErrorClass {
 		return false
 	}
 	if errorClass == githubRESTCapacityError {

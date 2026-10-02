@@ -614,7 +614,7 @@ func TestWorkerGitHubCredentialPrincipalClassification(t *testing.T) {
 			if classified.CredentialMode != tt.wantMode {
 				t.Fatalf("CredentialMode = %q, want %q", classified.CredentialMode, tt.wantMode)
 			}
-			if classified.Principal.Login != "detent-worker[bot]" {
+			if classified.PrincipalID != 42 || classified.Principal.Login != "detent-worker[bot]" || classified.Principal.Kind != "Bot" {
 				t.Fatalf("Principal = %#v, want Detent worker bot", classified.Principal)
 			}
 			warning := strings.Contains(logs.String(), "worker github credential uses shared REST budget")
@@ -622,6 +622,104 @@ func TestWorkerGitHubCredentialPrincipalClassification(t *testing.T) {
 				t.Fatalf("shared-budget warning present = %t, want %t: %q", warning, tt.wantWarning, logs.String())
 			}
 		})
+	}
+}
+
+func TestRunnerWorkerGitHubBudgetRecoveryOwnership(t *testing.T) {
+	t.Parallel()
+	var identityReads, budgetReads atomic.Int64
+	var actor atomic.Int64
+	var remaining atomic.Int64
+	remaining.Store(4900)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("Authorization") == "Bearer revoked-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.URL.Path {
+		case "/graphql":
+			identityReads.Add(1)
+			_, _ = fmt.Fprintf(w, `{"data":{"viewer":{"databaseId":42,"login":%q,"__typename":"User"}}}`, fmt.Sprintf("current-user-%d", actor.Load()))
+		case "/rate_limit":
+			budgetReads.Add(1)
+			_, _ = fmt.Fprintf(w, `{"resources":{"core":{"limit":5000,"used":100,"remaining":%d,"reset":2000000000}}}`, remaining.Load())
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(server.Close)
+	cfg := config.Config{}
+	cfg.Tracker.Kind = config.TrackerGitHub
+	cfg.Tracker.Endpoint = server.URL + "/graphql"
+	cfg.Tracker.APIKey = "shared-token"
+	cfg.Tracker.GitHubRESTMinReserve = 300
+	cfg.Worker.GitHubToken = "shared-token"
+	cfg.Worker.GitHubRESTMinReserve = 500
+	cfg.Worker.GitHubRESTPollIntervalMS = 3600000
+	r := &Runner{workflow: config.Workflow{Config: cfg}}
+	for _, phase := range []string{"cold", "warm"} {
+		beforeIdentity, beforeBudget := identityReads.Load(), budgetReads.Load()
+		for number := range 10 {
+			identifier := fmt.Sprintf("fixture/detent#%d", number+1)
+			observed, supported, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{Identifier: identifier})
+			if err != nil || !supported || observed.Remaining != 4900 || observed.Consumer != telemetry.RESTConsumerSharedPool {
+				t.Fatalf("current shared budget = %+v, supported=%t, error=%v", observed, supported, err)
+			}
+			actor.Add(1)
+			policy, err := r.workerGitHubPolicy(t.Context(), cfg, identifier)
+			if err != nil || policy.PrincipalID != 42 || policy.Principal.Login != fmt.Sprintf("current-user-%d", actor.Load()) {
+				t.Fatalf("renamed launch principal = %+v, error=%v", policy.Principal, err)
+			}
+			_, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := stop(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if ids, budgets := identityReads.Load()-beforeIdentity, budgetReads.Load()-beforeBudget; ids != 10 || budgets != 20 {
+			t.Fatalf("%s batch reads: identity=%d current_budget=%d, want10/20", phase, ids, budgets)
+		}
+	}
+	beforeIdentity, beforeBudget := identityReads.Load(), budgetReads.Load()
+	results := make(chan error, 10)
+	for range 10 {
+		go func() {
+			_, _, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{Identifier: "fixture/detent#1"})
+			results <- err
+		}()
+	}
+	for range 10 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if identityReads.Load() != beforeIdentity || budgetReads.Load()-beforeBudget != 10 {
+		t.Fatal("parallel recovery retained duplicate identity reads or lost current budgets")
+	}
+	cfg.Worker.GitHubToken = "other-token"
+	r.workflow.Config = cfg
+	beforeIdentity = identityReads.Load()
+	if budget, _, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{}); err != nil || budget.Consumer != telemetry.RESTConsumerSharedPool || identityReads.Load()-beforeIdentity != 2 {
+		t.Fatalf("different tokens for same principal: budget=%+v error=%v", budget, err)
+	}
+	cfg.Worker.GitHubToken = "shared-token"
+	cfg.Worker.GitHubRESTMinReserve = 300
+	r.workflow.Config = cfg
+	if _, _, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{}); !errors.Is(err, ErrWorkerGitHubSharedReserve) {
+		t.Fatalf("changed shared reserve = %v", err)
+	}
+	cfg.Worker.GitHubRESTMinReserve = 500
+	cfg.Worker.GitHubToken, cfg.Tracker.APIKey = "revoked-token", "revoked-token"
+	r.workflow.Config = cfg
+	var monitorErr *WorkerGitHubBudgetMonitorError
+	if _, supported, err := r.ProbeGitHubRESTBudget(t.Context(), connector.Issue{}); !supported || !errors.As(err, &monitorErr) || monitorErr.Operation != "recovery_probe" {
+		t.Fatalf("revoked recovery token: supported=%t error=%v", supported, err)
+	}
+	if _, err := r.workerGitHubPolicy(t.Context(), cfg, "fixture/detent#1"); !errors.As(err, &monitorErr) || monitorErr.Operation != "credential_classification_worker" {
+		t.Fatalf("revoked launch token = %v", err)
 	}
 }
 
@@ -681,10 +779,15 @@ func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
 		},
 	}
 	preclassifyWorkerGitHubPolicy(&policy)
-	result := make(chan error, 1)
+	type governorResult struct {
+		ctxErr error
+		stop   func() error
+		err    error
+	}
+	result := make(chan governorResult, 1)
 	go func() {
-		_, _, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
-		result <- err
+		ctx, stop, err := startWorkerGitHubGovernor(context.Background(), policy, nil)
+		result <- governorResult{ctxErr: ctx.Err(), stop: stop, err: err}
 	}()
 
 	var cancel context.CancelFunc
@@ -700,147 +803,72 @@ func TestWorkerGitHubGovernorBoundsStalledProbe(t *testing.T) {
 	}
 	cancel()
 	select {
-	case err := <-result:
-		if !errors.Is(err, ErrWorkerGitHubBudgetMonitor) || !errors.Is(err, context.Canceled) {
-			t.Fatalf("startWorkerGitHubGovernor() error = %v, want bounded canceled probe", err)
+	case got := <-result:
+		if got.err != nil || got.ctxErr != nil {
+			t.Fatalf("launch probe timeout stopped governor: error=%v context=%v", got.err, got.ctxErr)
 		}
-		monitorErr, ok := AsWorkerGitHubBudgetMonitorError(err)
-		if !ok || monitorErr.Operation != "launch_probe" || monitorErr.CredentialIdentity == "" {
-			t.Fatalf("monitor error = %#v, want credential-scoped launch probe", monitorErr)
+		if err := got.stop(); err != nil {
+			t.Fatalf("stop governor: %v", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("governor did not return after the probe context was canceled")
 	}
 }
 
-func TestWorkerGitHubMonitorErrorsCarryCredentialScope(t *testing.T) {
+func TestWorkerGitHubProbeFailureIsInstanceDiagnostic(t *testing.T) {
 	t.Parallel()
-
-	transportErr := errors.New("github transport unavailable")
-	server := workerGitHubRateLimitServer(t, func(int64) int64 { return 4200 })
-	t.Cleanup(server.Close)
-	tests := []struct {
-		name          string
-		wantOperation string
-		run           func() error
-	}{
-		{
-			name:          "launch probe",
-			wantOperation: "launch_probe",
-			run: func() error {
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				preclassifyWorkerGitHubPolicy(&policy)
-				policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
-					return nil, transportErr
-				})
-				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
-				return err
-			},
-		},
-		{
-			name:          "launch observation",
-			wantOperation: "launch_observation",
-			run: func() error {
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				preclassifyWorkerGitHubPolicy(&policy)
-				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, func(AgentUpdate) error {
-					return transportErr
-				})
-				return err
-			},
-		},
-		{
-			name:          "periodic probe",
-			wantOperation: "periodic_probe",
-			run: func() error {
-				poll := make(chan time.Time, 1)
-				var calls atomic.Int64
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				preclassifyWorkerGitHubPolicy(&policy)
-				policy.Poll = poll
-				policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
-					if calls.Add(1) > 1 {
-						return nil, transportErr
+	for _, phase := range []string{"launch", "periodic"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			poll := make(chan time.Time, 1)
+			observed := make(chan struct{}, 1)
+			var calls atomic.Int64
+			policy := workerGitHubPolicy{
+				Enabled: true, CredentialMode: workerGitHubCredentialDistinct,
+				Token: "worker-token", CredentialIdentity: "github-rest:worker",
+				RateLimitURL: "https://api.github.test/rate_limit",
+				MinRemaining: 1000, Poll: poll,
+				HTTPClient: workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
+					call := calls.Add(1)
+					if (phase == "launch" && call == 1) || (phase == "periodic" && call == 2) {
+						<-request.Context().Done()
+						observed <- struct{}{}
+						return nil, request.Context().Err()
 					}
 					return workerGitHubRateLimitResponse(), nil
-				})
-				governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
-				if err != nil {
-					return err
-				}
-				poll <- time.Now()
-				<-governedCtx.Done()
-				return stop()
-			},
-		},
-		{
-			name:          "periodic observation",
-			wantOperation: "periodic_observation",
-			run: func() error {
-				poll := make(chan time.Time, 1)
-				var updates atomic.Int64
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				preclassifyWorkerGitHubPolicy(&policy)
-				policy.Poll = poll
-				governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, func(AgentUpdate) error {
-					if updates.Add(1) > 1 {
-						return transportErr
+				}),
+				ProbeContext: func(ctx context.Context) (context.Context, context.CancelFunc) {
+					if (phase == "launch" && calls.Load() == 0) || (phase == "periodic" && calls.Load() == 1) {
+						return context.WithDeadline(ctx, time.Now().Add(-time.Second))
 					}
-					return nil
-				})
-				if err != nil {
-					return err
-				}
+					return context.WithCancel(ctx)
+				},
+				Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+			}
+			preclassifyWorkerGitHubPolicy(&policy)
+			governedCtx, stop, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
+			if err != nil || governedCtx.Err() != nil {
+				t.Fatalf("launch: error=%v context=%v", err, governedCtx.Err())
+			}
+			if phase == "periodic" {
 				poll <- time.Now()
-				<-governedCtx.Done()
-				return stop()
-			},
-		},
-		{
-			name:          "worker credential classification",
-			wantOperation: "credential_classification_worker",
-			run: func() error {
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				policy.CredentialMode = workerGitHubCredentialUnclassified
-				policy.HTTPClient = workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
-					return nil, transportErr
-				})
-				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
-				return err
-			},
-		},
-		{
-			name:          "orchestrator credential classification",
-			wantOperation: "credential_classification_orchestrator",
-			run: func() error {
-				policy := workerGitHubTestPolicy(server, new(bytes.Buffer))
-				policy.CredentialMode = workerGitHubCredentialUnclassified
-				policy.OrchestratorToken = "orchestrator-token"
-				policy.HTTPClient = workerGitHubHTTPClientFunc(func(request *http.Request) (*http.Response, error) {
-					if request.Header.Get("Authorization") == "Bearer orchestrator-token" {
-						return nil, transportErr
-					}
-					return workerGitHubPrincipalResponse(), nil
-				})
-				_, _, err := startWorkerGitHubGovernor(t.Context(), policy, nil)
-				return err
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := tt.run()
-			if !errors.Is(err, ErrWorkerGitHubBudgetMonitor) || !errors.Is(err, transportErr) {
-				t.Fatalf("error = %v, want monitor and transport errors", err)
+				select {
+				case <-observed:
+				case <-time.After(2 * time.Second):
+					t.Fatal("periodic timeout was not observed")
+				}
 			}
-			monitorErr, ok := AsWorkerGitHubBudgetMonitorError(err)
-			if !ok {
-				t.Fatalf("error = %T %v, want WorkerGitHubBudgetMonitorError", err, err)
+			if governedCtx.Err() != nil {
+				t.Fatalf("probe timeout canceled active turn: %v", governedCtx.Err())
 			}
-			if monitorErr.Operation != tt.wantOperation || monitorErr.CredentialIdentity != "github-rest:worker" || monitorErr.Consumer != telemetry.RESTConsumerWorker {
-				t.Fatalf("monitor error = %#v, want operation %q and worker credential scope", monitorErr, tt.wantOperation)
+			if err := stop(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(logs.String(), "scope=instance") ||
+				!strings.Contains(logs.String(), "operation="+phase+"_probe") ||
+				!strings.Contains(logs.String(), context.DeadlineExceeded.Error()) {
+				t.Fatalf("probe failure lacks instance attribution: %s", logs.String())
 			}
 		})
 	}
@@ -850,6 +878,7 @@ func TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor(t *testing.T) {
 	t.Parallel()
 
 	poll := make(chan time.Time, 1)
+	probeDone := make(chan struct{})
 	var calls atomic.Int64
 	policy := workerGitHubPolicy{
 		Enabled:            true,
@@ -863,6 +892,7 @@ func TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor(t *testing.T) {
 		Poll:               poll,
 		HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
 			if calls.Add(1) > 1 {
+				close(probeDone)
 				return nil, errors.New("periodic DNS failure")
 			}
 			return workerGitHubRateLimitResponse(), nil
@@ -871,9 +901,10 @@ func TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor(t *testing.T) {
 	}
 	preclassifyWorkerGitHubPolicy(&policy)
 	backend := workerGitHubGovernorBackend{
-		policy: policy,
-		poll:   poll,
-		result: RunResult{FinalState: FinalStateFailed, TurnStarted: true, Tokens: TokenTotals{InputTokens: 2_000_000, OutputTokens: 1_000_000, TotalTokens: 3_000_000}},
+		policy:    policy,
+		poll:      poll,
+		result:    RunResult{FinalState: FinalStateCompleted, TurnStarted: true, Tokens: TokenTotals{InputTokens: 2_000_000, OutputTokens: 1_000_000, TotalTokens: 3_000_000}},
+		probeDone: probeDone,
 	}
 	supervisor, err := NewSupervisor(backend, SupervisorConfig{})
 	if err != nil {
@@ -881,12 +912,11 @@ func TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor(t *testing.T) {
 	}
 	completion := supervisor.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-2028"}, Attempt: 4})
 
-	monitorErr, ok := AsWorkerGitHubBudgetMonitorError(completion.Err)
-	if !ok || monitorErr.Operation != "periodic_probe" {
-		t.Fatalf("completion error = %#v, want periodic monitor failure", completion.Err)
+	if completion.Err != nil || completion.Result.FinalState != FinalStateCompleted {
+		t.Fatalf("completion = %#v, want successful active turn after probe failure", completion)
 	}
 	if completion.Retryable || completion.RetryAttempt != 0 || completion.RetryDelay != 0 {
-		t.Fatalf("generic retry state = %v, %d, %s; want cooperative monitor stop", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
+		t.Fatalf("generic retry state = %v, %d, %s; want completed turn", completion.Retryable, completion.RetryAttempt, completion.RetryDelay)
 	}
 	if completion.Result.Tokens.TotalTokens != 3_000_000 {
 		t.Fatalf("tokens = %#v, want actual usage intact", completion.Result.Tokens)
@@ -978,9 +1008,10 @@ type workerGitHubCaptureBackend struct {
 }
 
 type workerGitHubGovernorBackend struct {
-	policy workerGitHubPolicy
-	poll   chan<- time.Time
-	result RunResult
+	policy    workerGitHubPolicy
+	poll      chan<- time.Time
+	result    RunResult
+	probeDone <-chan struct{}
 }
 
 type workerGitHubHTTPClientFunc func(*http.Request) (*http.Response, error)
@@ -995,10 +1026,15 @@ func (b workerGitHubGovernorBackend) Run(ctx context.Context, _ RunRequest) (Run
 		return b.result, err
 	}
 	b.poll <- time.Now()
-	<-governedCtx.Done()
-	cause := context.Cause(governedCtx)
-	_ = stop()
-	return b.result, cause
+	select {
+	case <-b.probeDone:
+	case <-ctx.Done():
+		return b.result, ctx.Err()
+	}
+	if governedCtx.Err() != nil {
+		return b.result, context.Cause(governedCtx)
+	}
+	return b.result, stop()
 }
 
 func workerGitHubRateLimitResponse() *http.Response {
@@ -1105,7 +1141,8 @@ func TestWorkerGitHubCLIAuthStatus(t *testing.T) {
 }
 
 func TestWorkerGitHubCLIAuthenticationPreflight(t *testing.T) {
-	t.Parallel()
+	// Keep real gh startup outside the parallel helper-process fixtures. The
+	// production probe deadline still applies, including on hosted Windows.
 	if _, err := exec.LookPath("gh"); err != nil {
 		t.Skip("gh is not installed")
 	}
@@ -1193,6 +1230,9 @@ func TestWorkerGitHubClassificationWaitsForSharedCooldown(t *testing.T) {
 		{"existing shared cooldown", 403, `{"message":"You have exceeded a secondary rate limit"}`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			// Repetitions share the process registry, but synctest resets time.
+			// Both clients still share this invocation's credential and cooldown.
+			token := t.TempDir()
 			synctest.Test(t, func(t *testing.T) {
 				started := time.Now()
 				calls := 0
@@ -1206,7 +1246,7 @@ func TestWorkerGitHubClassificationWaitsForSharedCooldown(t *testing.T) {
 					}
 					return workerGitHubPrincipalResponse(), nil
 				})
-				policy := workerGitHubPolicy{Enabled: true, CredentialMode: workerGitHubCredentialUnclassified, Token: t.Name(), GraphQLURL: "https://github.test/graphql", HTTPClient: client}
+				policy := workerGitHubPolicy{Enabled: true, CredentialMode: workerGitHubCredentialUnclassified, Token: token, GraphQLURL: "https://github.test/graphql", HTTPClient: client}
 				if tt.existing {
 					shared, err := githubconnector.NewClient(githubconnector.ClientConfig{Endpoint: policy.GraphQLURL, TokenSource: githubconnector.StaticTokenSource(policy.Token), HTTPClient: client})
 					if err != nil {

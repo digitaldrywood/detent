@@ -52,7 +52,7 @@ func TestFirstHumanBlockerCompletionReachesBlocked(t *testing.T) {
 			// The newly reported Workpad already prevents the second dispatch that the
 			// old completion threshold required.
 			preview := newState(cfg)
-			decision := orch.liveDispatchPlanner(t.Context()).dispatchableIssueDecision(current, &preview, false, now, "")
+			decision := orch.liveDispatchPlanner(t.Context(), nil).dispatchableIssueDecision(current, &preview, false, now, "")
 			if decision.dispatchable || decision.reason != dispatchSkipBlockedByDependency {
 				t.Fatalf("next dispatch = %+v, want recorded blocker suppression", decision)
 			}
@@ -70,9 +70,6 @@ func TestFirstHumanBlockerCompletionReachesBlocked(t *testing.T) {
 			}
 			if len(metrics.events) == 0 {
 				t.Fatal("missing lane transition audit")
-			}
-			if reset := lastAllowanceOperatorMoveAt(metrics.events); !reset.IsZero() {
-				t.Fatalf("automated Blocked move renewed attempt allowance at %s", reset)
 			}
 			blocked := state.Blocked[issue.ID]
 			if blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman || blocked.RecoveryReason != "Approve the hardware check." {

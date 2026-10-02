@@ -41,31 +41,7 @@ const (
 
 // pullRequestMergeable is 18.6's three-valued mergeability: true, false, or
 // the string "unknown" when the connector has not said.
-type pullRequestMergeable struct {
-	Known bool
-	Value bool
-}
-
-func (m pullRequestMergeable) MarshalJSON() ([]byte, error) {
-	if !m.Known {
-		return []byte(`"unknown"`), nil
-	}
-	return json.Marshal(m.Value)
-}
-
-func (m *pullRequestMergeable) UnmarshalJSON(data []byte) error {
-	var value bool
-	if err := json.Unmarshal(data, &value); err == nil {
-		m.Known, m.Value = true, value
-		return nil
-	}
-	var text string
-	if err := json.Unmarshal(data, &text); err != nil || text != "unknown" {
-		return errors.New(`mergeable must be true, false or "unknown"`)
-	}
-	m.Known, m.Value = false, false
-	return nil
-}
+type pullRequestMergeable = tracker.PullRequestMergeable
 
 // mergeableFromState maps GitHub's mergeable_state onto 18.6's three values.
 // An empty or "unknown" state is unknown; "dirty" is the only state that means
@@ -82,55 +58,11 @@ func mergeableFromState(state string) pullRequestMergeable {
 	}
 }
 
-type pullRequestRef struct {
-	Ref        string `json:"ref"`
-	SHA        string `json:"sha,omitempty"`
-	Repository string `json:"repository,omitempty"`
-}
-
-type pullRequestCheck struct {
-	Name        string     `json:"name"`
-	Status      string     `json:"status"`
-	Conclusion  string     `json:"conclusion"`
-	URL         string     `json:"url"`
-	CompletedAt *time.Time `json:"completed_at"`
-}
-
-type pullRequestReview struct {
-	Author      string    `json:"author"`
-	State       string    `json:"state"`
-	SubmittedAt time.Time `json:"submitted_at"`
-}
-
-type pullRequestConnector struct {
-	Provider       string    `json:"provider"`
-	Repository     string    `json:"repository"`
-	SynchronizedAt time.Time `json:"synchronized_at"`
-}
-
-// pullRequestView is one row of the panel: a change request, joined with the
-// connector's projection of its pull request when there is one.
-type pullRequestView struct {
-	ID             string                `json:"id"`
-	ChangeID       string                `json:"change_id"`
-	Number         int                   `json:"number"`
-	Title          string                `json:"title"`
-	State          string                `json:"state"`
-	Draft          bool                  `json:"draft"`
-	URL            string                `json:"url"`
-	Head           pullRequestRef        `json:"head"`
-	Base           pullRequestRef        `json:"base"`
-	Author         string                `json:"author"`
-	FromFork       bool                  `json:"from_fork"`
-	Mergeable      pullRequestMergeable  `json:"mergeable"`
-	Checks         []pullRequestCheck    `json:"checks"`
-	Reviews        []pullRequestReview   `json:"reviews"`
-	ReviewDecision string                `json:"review_decision"`
-	Labels         []string              `json:"labels"`
-	UpdatedAt      time.Time             `json:"updated_at"`
-	FetchedAt      time.Time             `json:"fetched_at"`
-	Connector      *pullRequestConnector `json:"connector"`
-}
+type pullRequestRef = tracker.PullRequestRef
+type pullRequestCheck = tracker.PullRequestCheck
+type pullRequestReview = tracker.PullRequestReview
+type pullRequestConnector = tracker.PullRequestConnector
+type pullRequestView = tracker.PullRequestView
 
 // pullRequestCache serves an assembled view for pullRequestViewTTL and paces
 // forced refreshes per organization. Both are in-process: a restart loses a
@@ -384,46 +316,51 @@ func (s *Service) listWorkItemPullRequests(c echo.Context) error {
 	if refresh != "" && refresh != "1" {
 		return s.nativeAPIError(c, nativeInvalid("refresh accepts only 1"))
 	}
-	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	item := c.Param("item")
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+	views, err := s.readWorkItemPullRequests(c.Request().Context(), nativeRequestScope(c), c.Param("item"), refresh)
+	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, views)
+}
+
+func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScope, item, refresh string) ([]pullRequestView, error) {
+	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+		return nil, err
 	}
 	now := s.config.now()
 	key := pullRequestCacheKey(scope, item)
 	if refresh == "" {
 		if cached, ok := s.pullRequests.get(key, now); ok {
-			return c.JSON(http.StatusOK, cached)
+			return cached, nil
 		}
 	} else if !s.pullRequests.allowRefresh(scope.organization, now) {
-		return s.nativeAPIError(c, pullRequestRefreshLimited())
+		return nil, pullRequestRefreshLimited()
 	}
 	connector, repositoryID, err := projectConnector(ctx, s.database.db, scope)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	changes, err := changeRows[tracker.ChangeRequest](ctx, s.database.db, `SELECT c.record_json FROM change_requests c
 JOIN change_issue_links l ON l.change_id = c.id
 WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	views := []pullRequestView{}
 	for _, change := range changes {
 		view, err := s.changePullRequestView(ctx, scope, item, change, connector, repositoryID, now)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		views = append(views, view)
 	}
 	if refresh == "1" && connector != nil {
 		if err := s.requestPullRequestHydration(ctx, repositoryID, views, now); err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 	}
 	s.pullRequests.set(key, views, now)
-	return c.JSON(http.StatusOK, views)
+	return views, nil
 }
 
 // requestPullRequestHydration asks the reconciler to re-fetch every pull

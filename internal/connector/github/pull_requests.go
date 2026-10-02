@@ -210,7 +210,7 @@ func (c *Connector) attachBranchPullRequests(
 		}
 		return "", err
 	}
-	return c.attachMatchingPullRequests(ctx, repo, issues, candidates, pullRequests, useStatusCache)
+	return c.attachMatchingPullRequests(ctx, repo, issues, candidates, pullRequests, useStatusCache, true)
 }
 
 func firstPullRequestCandidateNeedsBranchHydration(issues []connector.Issue, candidates []issuePullRequestCandidate) bool {
@@ -348,6 +348,10 @@ func (c *Connector) fetchRepositoryPullRequest(ctx context.Context, repo pullReq
 }
 
 func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	return c.hydratePullRequest(ctx, issue, true)
+}
+
+func (c *Connector) hydratePullRequest(ctx context.Context, issue connector.Issue, includeStatus bool) (connector.Issue, error) {
 	repo, number, ok := hydratedPullRequestRef(issue)
 	if !ok {
 		return issue, nil
@@ -360,14 +364,23 @@ func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issu
 		}
 		return issue, fmt.Errorf("hydrate github pull request: %w", err)
 	}
-	if err := c.populatePullRequestStatus(ctx, repo, &pullRequest, false); err != nil {
-		if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
-			applyPullRequestHydrationUnavailableState(&pullRequest, state)
-		} else {
-			return issue, fmt.Errorf("hydrate github pull request status: %w", err)
+	if includeStatus {
+		if err := c.populatePullRequestStatus(ctx, repo, &pullRequest, false); err != nil {
+			if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
+				applyPullRequestHydrationUnavailableState(&pullRequest, state)
+			} else {
+				return issue, fmt.Errorf("hydrate github pull request status: %w", err)
+			}
 		}
 	}
 	attachPullRequestToIssue(&issue, repo, pullRequest)
+	if !includeStatus {
+		if pullRequest.Number != number {
+			return issue, fmt.Errorf("hydrate github pull request: %w: pull request number mismatch", ErrInvalidResponse)
+		}
+		issue.PRNumber = new(number)
+		return issue, nil
+	}
 	if err := c.attachRequiredBranchChecks(ctx, &issue); err != nil {
 		return issue, err
 	}
@@ -811,6 +824,11 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 	}
 	var response restPullRequestMergeResponse
 	if err := c.client.REST(ctx, http.MethodPut, restPullRequestMergePath(repo, number), body, &response); err != nil {
+		err = classifyPullRequestMergeError(http.MethodPut, restPullRequestMergePath(repo, number), err,
+			"head branch is out of date", "base branch was modified")
+		if errors.Is(err, ErrRateLimited) {
+			return fmt.Errorf("merge github pull request: %w", err)
+		}
 		var status *StatusError
 		if errors.As(err, &status) && status.StatusCode == http.StatusMethodNotAllowed {
 			message := strings.ToLower(status.Body)
@@ -836,9 +854,6 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 				}
 				return fmt.Errorf("merge github pull request: %w: %w", connector.ErrPullRequestMergeQueueRequired, err)
 			}
-			if strings.Contains(message, "head branch is out of date") || strings.Contains(message, "base branch was modified") {
-				return fmt.Errorf("merge github pull request: %w: %w", connector.ErrPullRequestBaseOutOfDate, err)
-			}
 		}
 		return fmt.Errorf("merge github pull request: %w", err)
 	}
@@ -850,6 +865,41 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 		return fmt.Errorf("merge github pull request: %s", message)
 	}
 	return nil
+}
+
+func ClassifyPullRequestMergeError(method, path string, err error) error {
+	return classifyPullRequestMergeError(method, path, err, "base branch was modified")
+}
+
+func classifyPullRequestMergeError(method, path string, err error, prefixes ...string) error {
+	if err == nil || errors.Is(err, ErrRateLimited) || method != http.MethodPut {
+		return err
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) != 6 || parts[0] != "repos" || parts[1] == "" || parts[2] == "" || parts[3] != "pulls" || parts[5] != "merge" {
+		return err
+	}
+	number, parseErr := strconv.Atoi(parts[4])
+	if parseErr != nil || number <= 0 || strconv.Itoa(number) != parts[4] {
+		return err
+	}
+	var status *StatusError
+	if !errors.As(err, &status) || status.StatusCode != http.StatusMethodNotAllowed {
+		return err
+	}
+	var response struct {
+		Message string `json:"message"`
+	}
+	if decodeErr := json.Unmarshal([]byte(status.Body), &response); decodeErr != nil {
+		return err
+	}
+	message := strings.ToLower(strings.TrimSpace(response.Message))
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(message, prefix) {
+			return fmt.Errorf("%s %s: %w: %w", method, path, connector.ErrPullRequestBaseOutOfDate, err)
+		}
+	}
+	return err
 }
 
 func (c *Connector) RerunPullRequestChecks(ctx context.Context, issue connector.Issue, checks []connector.PullRequestCheck) error {
@@ -1125,6 +1175,7 @@ func (c *Connector) attachMatchingPullRequests(
 	candidates []issuePullRequestCandidate,
 	pullRequests []pullRequestNode,
 	useStatusCache bool,
+	includeStatus bool,
 ) (string, error) {
 	hydrated := map[int]pullRequestNode{}
 	for _, candidate := range candidates {
@@ -1144,7 +1195,11 @@ func (c *Connector) attachMatchingPullRequests(
 			hydratedPullRequest, ok := hydrated[pullRequest.Number]
 			if !ok {
 				var err error
-				hydratedPullRequest, err = c.fetchBranchPullRequest(ctx, repo, pullRequest.Number)
+				if includeStatus {
+					hydratedPullRequest, err = c.fetchBranchPullRequest(ctx, repo, pullRequest.Number)
+				} else {
+					hydratedPullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, pullRequest.Number)
+				}
 				if err != nil {
 					if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
 						applyPullRequestHydrationUnavailableState(&pullRequest, state)
@@ -1158,21 +1213,27 @@ func (c *Connector) attachMatchingPullRequests(
 					}
 					return "", err
 				}
-				if err := c.populatePullRequestStatus(ctx, repo, &hydratedPullRequest, useStatusCache); err != nil {
-					if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
-						applyPullRequestHydrationUnavailableState(&hydratedPullRequest, state)
-						hydrated[pullRequest.Number] = hydratedPullRequest
-						attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
-						markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-						if restFanoutOrReserveDeferred(err) {
-							return candidate.Identifier, nil
+				if includeStatus {
+					statusTarget := &hydratedPullRequest
+					if err := c.populatePullRequestStatus(ctx, repo, statusTarget, useStatusCache); err != nil {
+						if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
+							applyPullRequestHydrationUnavailableState(&hydratedPullRequest, state)
+							hydrated[pullRequest.Number] = hydratedPullRequest
+							attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
+							markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
+							if restFanoutOrReserveDeferred(err) {
+								return candidate.Identifier, nil
+							}
+							return "", nil
+						} else {
+							return "", err
 						}
-						return "", nil
-					} else {
-						return "", err
 					}
 				}
 				hydrated[pullRequest.Number] = hydratedPullRequest
+			}
+			if !includeStatus && (hydratedPullRequest.Number != pullRequest.Number || !branchMatchesIssuePrefix(hydratedPullRequest.HeadRefName, candidate.BranchPrefix)) {
+				return "", fmt.Errorf("revalidate github pull request association: %w: branch pull request mismatch", ErrInvalidResponse)
 			}
 			attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
 			break

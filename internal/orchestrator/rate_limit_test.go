@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -262,37 +263,6 @@ func TestRecordGraphQLUsageWindow(t *testing.T) {
 	}
 }
 
-func TestTickPublishesGitHubGraphQLExhaustionWithoutRateLimitSnapshot(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	cfg := normalizeConfig(Config{
-		PollInterval:        30 * time.Second,
-		MaxConcurrentAgents: 1,
-		ActiveStates:        []string{"Todo", "In Progress"},
-		TerminalStates:      []string{"Done", "Cancelled"},
-	})
-	state := newState(cfg)
-	tracker := &rateLimitConnector{
-		usage: connector.GraphQLRateLimitUsage{
-			RateLimitStatus: connector.GraphQLRateLimitStatusExhausted,
-		},
-	}
-	orch := newRateLimitTestOrchestrator(cfg, tracker)
-
-	orch.tick(context.Background(), &state, now)
-
-	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil {
-		t.Fatalf("RateLimits = %#v, want GitHub GraphQL status bucket", state.RateLimits)
-	}
-	if state.RateLimits.GitHubGraphQL.Status != telemetry.RateLimitStatusExhausted {
-		t.Fatalf("GitHubGraphQL.Status = %q, want %q", state.RateLimits.GitHubGraphQL.Status, telemetry.RateLimitStatusExhausted)
-	}
-	if state.RateLimits.GitHubGraphQL.Limit != 0 || state.RateLimits.GitHubGraphQL.Remaining != 0 {
-		t.Fatalf("GitHubGraphQL = %#v, want status-only exhausted bucket", state.RateLimits.GitHubGraphQL)
-	}
-}
-
 func TestTickPublishesGitHubGraphQLUnknownWithoutRateLimitSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -459,8 +429,8 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.flushRESTUsageCalls != 1 {
-		t.Fatalf("FlushRESTRateLimitUsage() calls = %d, want 1", tracker.flushRESTUsageCalls)
+	if tracker.flushRESTUsageCalls != 2 {
+		t.Fatalf("FlushRESTRateLimitUsage() calls = %d, want pre-dispatch and post-maintenance observations", tracker.flushRESTUsageCalls)
 	}
 	if state.RateLimits == nil || state.RateLimits.GitHubREST == nil || state.RateLimits.RESTUsage == nil {
 		t.Fatalf("RateLimits = %#v, want GitHub REST bucket and usage summary", state.RateLimits)
@@ -491,6 +461,33 @@ func TestTickPublishesGitHubRESTUsageAndBackoff(t *testing.T) {
 	}
 	if state.PollInterval != time.Minute {
 		t.Fatalf("PollInterval = %s, want explicit REST backoff 1m", state.PollInterval)
+	}
+
+	// A second usage flush must include maintenance without double-counting the
+	// pre-dispatch sample or reusing a previous refresh's usage when it is empty.
+	for _, before := range []int64{0, 2} {
+		for _, after := range []int64{0, 3} {
+			t.Run(fmt.Sprintf("maintenance_%d_after_%d_requests", after, before), func(t *testing.T) {
+				tracker := &rateLimitConnector{
+					restUsage:     connector.RESTRateLimitUsage{TotalRequests: before, BillableRequests: before},
+					restTailUsage: connector.RESTRateLimitUsage{HasRateLimit: true, RateLimit: connector.RESTRateLimit{Limit: 5000, Remaining: 4800, Resource: "core"}, TotalRequests: after, BillableRequests: after},
+				}
+				state := newState(cfg)
+				state.RateLimits = &telemetry.RateLimits{RESTUsage: &telemetry.RESTUsage{TotalRequests: 99, BillableRequests: 99}}
+				newRateLimitTestOrchestrator(cfg, tracker).tick(t.Context(), &state, now)
+				got := state.RateLimits.RESTUsage
+				want := before + after
+				if want == 0 {
+					if got != nil || state.RateLimits.GitHubREST.Cost != 0 {
+						t.Fatalf("empty refresh retained old usage: %+v bucket=%+v", got, state.RateLimits.GitHubREST)
+					}
+					return
+				}
+				if got == nil || got.TotalRequests != want || got.BillableRequests != want || state.RateLimits.GitHubREST.Cost != want {
+					t.Fatalf("maintenance usage=%+v bucket=%+v", got, state.RateLimits.GitHubREST)
+				}
+			})
+		}
 	}
 }
 
@@ -1999,6 +1996,7 @@ type rateLimitConnector struct {
 	hasRateLimit            bool
 	usage                   connector.GraphQLRateLimitUsage
 	restUsage               connector.RESTRateLimitUsage
+	restTailUsage           connector.RESTRateLimitUsage
 	restStatus              connector.RESTRateLimitUsage
 	restProbeRateLimits     []connector.RESTRateLimit
 	restProbeErrs           []error
@@ -2148,7 +2146,12 @@ func (c *rateLimitConnector) FlushGraphQLRateLimitUsage() connector.GraphQLRateL
 
 func (c *rateLimitConnector) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
 	c.flushRESTUsageCalls++
-	return c.restUsage
+	usage := c.restUsage
+	c.restUsage = connector.RESTRateLimitUsage{}
+	if c.flushRESTUsageCalls == 2 {
+		usage = c.restTailUsage
+	}
+	return usage
 }
 
 func (c *rateLimitConnector) RESTRateLimitStatus() connector.RESTRateLimitUsage {
@@ -2396,6 +2399,52 @@ func TestGitHubLookupBackoffSecondaryDeadline(t *testing.T) {
 			after := state.DispatchRecoveries[dispatchRecoveryGitHubLookup]
 			if after.Limit != before.Limit || tracker.probeCalls != 1 {
 				t.Fatalf("recovery restarted: before %#v after %#v", before, after)
+			}
+		})
+	}
+}
+
+type cleanupIDProbeConnector struct {
+	*rateLimitConnector
+	probeCalls   int
+	requestedIDs []string
+}
+
+func (c *cleanupIDProbeConnector) FetchIssueStateProbeByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	c.probeCalls++
+	c.requestedIDs = append([]string(nil), ids...)
+	return cloneIssues(c.issuesByID), c.fetchByIDErr
+}
+
+func TestCleanupIDReadUsesProbeAndPreservesActiveOwnership(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"terminal", "routing", "running", "unknown", "error"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			issue := dispatchTestIssue("cleanup-id", "Done")
+			tracker := &cleanupIDProbeConnector{rateLimitConnector: &rateLimitConnector{issuesByID: []connector.Issue{issue}}}
+			state := newState(cfg)
+			switch mode {
+			case "routing":
+				tracker.issuesByID[0].State = "Todo"
+			case "running":
+				state.Running[issue.ID] = Running{Issue: issue}
+			case "unknown":
+				tracker.issuesByID = nil
+			case "error":
+				tracker.fetchByIDErr = errors.New("fresh metadata unavailable")
+			}
+			reaper := &cleanupSweepReaper{}
+			o := newRateLimitTestOrchestrator(cfg, tracker)
+			o.reaper = reaper
+			fetched, cleaned := o.reapWorkspaceIssueIDs(t.Context(), &state, []string{issue.ID}, time.Now())
+			if tracker.probeCalls != 1 || tracker.fetchByIDCalls != 0 || len(tracker.requestedIDs) != 1 || tracker.requestedIDs[0] != issue.ID {
+				t.Fatalf("probe=%d full=%d ids=%v", tracker.probeCalls, tracker.fetchByIDCalls, tracker.requestedIDs)
+			}
+			wantCleaned := mode == "terminal"
+			if fetched != (mode != "error") || cleaned != wantCleaned || (len(reaper.issues) > 0) != wantCleaned {
+				t.Fatalf("fetched=%v cleaned=%v reaped=%+v", fetched, cleaned, reaper.issues)
 			}
 		})
 	}

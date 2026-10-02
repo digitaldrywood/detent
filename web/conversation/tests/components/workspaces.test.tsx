@@ -84,10 +84,11 @@ class FakeEventSource {
   }
 }
 
-function Probe(props: { requires?: readonly string[] }): React.ReactElement {
+function Probe(props: { requires?: readonly string[]; attemptId?: string; projectId?: string; workItemId?: string }): React.ReactElement {
   const handle = useWorkspace({
-    projectId: "proj_1",
-    workItemId: "item_1",
+    projectId: props.projectId ?? "proj_1",
+    workItemId: props.workItemId ?? "item_1",
+    attemptId: props.attemptId ?? null,
     requires: props.requires ?? ["files"],
   });
   return (
@@ -96,6 +97,8 @@ function Probe(props: { requires?: readonly string[] }): React.ReactElement {
       <span data-testid="reason">{handle.reason ?? "none"}</span>
       <span data-testid="error">{handle.error ?? "none"}</span>
       <span data-testid="id">{handle.workspace?.id ?? "none"}</span>
+      <span data-testid="ticket">{handle.mintTicket === null ? "none" : "available"}</span>
+      <span data-testid="relay">{handle.relayUrl === null ? "none" : "available"}</span>
     </div>
   );
 }
@@ -142,6 +145,25 @@ describe("useWorkspace", () => {
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/workspaces?work_item=item_1");
   });
 
+  it("opens the selected attempt instead of reusing another attempt's workspace", async () => {
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "GET") {
+        return Promise.resolve(json(200, { workspaces: [workspace({ id: "ws_other", state: "ready", attempt_id: "attempt_old" })] }));
+      }
+      return Promise.resolve(json(201, workspace({ id: "ws_selected", attempt_id: "attempt_current" })));
+    });
+    mount(<Probe attemptId="attempt_current" />);
+    await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_selected"));
+    const post = fetchMock.mock.calls.find((call) => (call[1] as RequestInit).method === "POST");
+    expect(JSON.parse(String((post?.[1] as RequestInit).body))).toMatchObject({
+      work_item_id: "item_1",
+      attempt_id: "attempt_current",
+    });
+    expect(workspaceKey("proj_1", "item_1", ["files"], "attempt_current")).not.toBe(
+      workspaceKey("proj_1", "item_1", ["files"], "attempt_old"),
+    );
+  });
+
   it("skips a closed workspace and opens a new one, carrying `requires`", async () => {
     fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
       if ((init?.method ?? "GET") === "GET") {
@@ -160,6 +182,25 @@ describe("useWorkspace", () => {
       work_item_id: "item_1",
       requires: ["files"],
     });
+  });
+
+  it.each([
+    { name: "attempt", props: { attemptId: "attempt_current" }, client: CLIENT },
+    { name: "project", props: { attemptId: "attempt_old", projectId: "proj_other" }, client: CLIENT },
+    { name: "item", props: { attemptId: "attempt_old", workItemId: "item_other" }, client: CLIENT },
+    { name: "client", props: { attemptId: "attempt_old" }, client: { ...CLIENT, http: { ...CLIENT.http, csrfToken: "other-session" } } as ConversationClient },
+  ])("drops the previous workspace and ticket binding while a different $name is being acquired", async ({ props, client }) => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(json(200, { workspaces: [workspace({ state: "ready", attempt_id: "attempt_old" })] })),
+    );
+    const mounted = mount(<Probe attemptId="attempt_old" />);
+    await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_1"));
+    fetchMock.mockImplementation(() => new Promise<Response>(() => {}));
+    mounted.rerender(<ClientContext.Provider value={client}><Probe {...props} /></ClientContext.Provider>);
+    expect(screen.getByTestId("id").textContent).toBe("none");
+    expect(screen.getByTestId("state").textContent).toBe("none");
+    expect(screen.getByTestId("ticket").textContent).toBe("none");
+    expect(screen.getByTestId("relay").textContent).toBe("none");
   });
 
   it("adopts the workspace a 409 names rather than reporting the conflict", async () => {

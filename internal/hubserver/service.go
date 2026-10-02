@@ -18,6 +18,9 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,6 +30,9 @@ const (
 )
 
 type Service struct {
+	mcpHTTP           *mcp.HTTPHandler
+	operatorChat      *chat.Service
+	administration    *operatoradmin.Executor
 	billing           *hostedBillingWorker
 	hostedMutationMu  sync.Mutex
 	hostedAuthLogger  *slog.Logger
@@ -78,6 +84,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := database.checkProjectSecretKeys(ctx, cfg.SecretKeys); err != nil {
+		return nil, errors.Join(err, database.Close())
+	}
 	if !cfg.CredentialMaintenance {
 		if err := database.ensureInitialAdminToken(ctx, cfg.InitialAdminToken); err != nil {
 			return nil, errors.Join(err, database.Close())
@@ -122,11 +131,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	if cfg.Conversation != nil && cfg.Conversation.Enabled && !cfg.CredentialMaintenance {
 		service.conversations = newConversationService(service, cfg.Conversation.normalized())
-		if err := service.conversations.start(ctx); err != nil {
-			workerCancel()
-			reconcileCancel()
-			return nil, errors.Join(err, database.Close())
-		}
 	}
 	if cfg.Workspace != nil && cfg.Workspace.Enabled && !cfg.CredentialMaintenance {
 		if err := cfg.Workspace.validate(); err != nil {
@@ -142,6 +146,13 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		}
 	}
 	service.registerRoutes(e)
+	if service.conversations != nil {
+		if err := service.conversations.start(ctx); err != nil {
+			workerCancel()
+			reconcileCancel()
+			return nil, errors.Join(err, database.Close())
+		}
+	}
 	if cfg.CredentialMaintenance {
 		workerCancel()
 		reconcileCancel()
@@ -318,6 +329,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	s.ready.Store(false)
+	var mcpErr error
+	if s.mcpHTTP != nil {
+		mcpErr = s.mcpHTTP.Shutdown(ctx)
+	}
 	httpErr := s.echo.Shutdown(ctx)
 	if errors.Is(httpErr, http.ErrServerClosed) {
 		httpErr = nil
@@ -326,7 +341,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		httpErr = fmt.Errorf("shut down hub server: %w", httpErr)
 	}
 	s.stopHostedBilling()
-	return errors.Join(httpErr, s.stopGitHubWebhookMaintenance(), s.stopGitHubReconciliation())
+	return errors.Join(mcpErr, httpErr, s.stopGitHubWebhookMaintenance(), s.stopGitHubReconciliation())
 }
 
 func (s *Service) Backup(ctx context.Context, destination string) error {
@@ -342,6 +357,10 @@ func (s *Service) Close() error {
 	}
 	s.closeOnce.Do(func() {
 		s.ready.Store(false)
+		var mcpErr error
+		if s.mcpHTTP != nil {
+			mcpErr = s.mcpHTTP.Shutdown(context.Background())
+		}
 		httpErr := s.echo.Close()
 		if errors.Is(httpErr, http.ErrServerClosed) {
 			httpErr = nil
@@ -358,7 +377,7 @@ func (s *Service) Close() error {
 		if s.workspaces != nil {
 			s.workspaces.Stop()
 		}
-		s.closeErr = errors.Join(httpErr, webhookErr, reconcileErr, s.database.Close())
+		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, reconcileErr, s.database.Close())
 	})
 	return s.closeErr
 }
@@ -399,26 +418,31 @@ func (s *Service) stopGitHubWebhookMaintenance() error {
 }
 
 func (s *Service) health(c echo.Context) error {
-	if !s.ready.Load() || s.database.health(c.Request().Context()) != nil {
-		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+	response, status := s.readInstanceHealth(c.Request().Context())
+	return c.JSON(status, response)
+}
+
+func (s *Service) readInstanceHealth(ctx context.Context) (healthResponse, int) {
+	if !s.ready.Load() || s.database.health(ctx) != nil {
+		return healthResponse{Status: "unavailable"}, http.StatusServiceUnavailable
 	}
-	outbox, err := s.OutboxHealth(c.Request().Context())
+	outbox, err := s.OutboxHealth(ctx)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+		return healthResponse{Status: "unavailable"}, http.StatusServiceUnavailable
 	}
-	repositories, err := s.database.repositoryFreshness(c.Request().Context(), s.config.now().UTC(), s.config.ReconcileInterval)
+	repositories, err := s.database.repositoryFreshness(ctx, s.config.now().UTC(), s.config.ReconcileInterval)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, healthResponse{Status: "unavailable"})
+		return healthResponse{Status: "unavailable"}, http.StatusServiceUnavailable
 	}
 	status := "ok"
 	if repositories.Summary.Stale > 0 || repositories.Summary.Error > 0 {
 		status = "degraded"
 	}
-	return c.JSON(http.StatusOK, healthResponse{
+	return healthResponse{
 		Status:        status,
 		SchemaVersion: s.database.schemaVersion,
 		Version:       s.config.Version,
 		Outbox:        outbox,
 		Repositories:  repositories.Summary,
-	})
+	}, http.StatusOK
 }

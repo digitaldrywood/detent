@@ -30,8 +30,9 @@ func hostedSharedKey(seed byte) ed25519.PrivateKey {
 }
 
 func hostedSharedTestConfig(path string, provider auth.HostedProvider, key ed25519.PrivateKey, generation int64) Config {
+	legacyPlans := pilotHostedPlans()
 	return Config{DatabasePath: path, GitHubDisabled: true, Hosted: &HostedConfig{
-		OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner",
+		Plans: &legacyPlans, OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", BootstrapSubject: "user_owner",
 		PublicURL: "https://hub.example.test", StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, Provider: provider,
 		SharedEntry: &HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: generation},
 	}}
@@ -92,6 +93,7 @@ func (f hostedSharedFixture) claims(user *hostedSecurityUser, kind, method, targ
 }
 
 type hostedSharedRequest struct {
+	headers  map[string]string
 	user     *hostedSecurityUser
 	kind     string
 	method   string
@@ -115,6 +117,9 @@ func (f hostedSharedFixture) serve(t *testing.T, r hostedSharedRequest) *httptes
 		r.kind = cloudassert.KindBrowser
 	}
 	request := httptest.NewRequest(r.method, r.target, strings.NewReader(r.body))
+	for name, value := range r.headers {
+		request.Header.Set(name, value)
+	}
 	if r.form {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	} else if r.body != "" {

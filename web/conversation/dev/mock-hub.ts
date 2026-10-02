@@ -94,6 +94,7 @@ interface IntegrationRow {
   projection: string;
   repository_enabled: boolean;
   repository?: string;
+  checkout_repository?: string;
   authority: Record<string, string>;
 }
 
@@ -131,6 +132,7 @@ interface RunnerRow {
 }
 
 interface RunnerEligibilityRow {
+  local_checks?: { checkout: string; doctor: string; provider: string; provider_kinds?: string[]; observed_at: string };
   runner: RunnerRow;
   /** Empty is what makes the wizard's third step ready. */
   exclusions: Array<{ code: string; message: string }>;
@@ -181,26 +183,10 @@ const WORKFLOW_STATES = [
  * needs, which does not change with whether it has it, so only `state` moves.
  */
 const ONBOARDING_STEP_TEXT: ReadonlyArray<{ name: string; detail: string }> = [
-  {
-    name: "Repository configuration",
-    detail:
-      "Inspect detent.yaml and WORKFLOW.md on the customer host, then explicitly approve the resolved policy descriptor.",
-  },
-  {
-    name: "Local validation",
-    detail:
-      "User-reported: run detent doctor and sign in to the selected provider on the execution host. Credentials stay local.",
-  },
-  {
-    name: "Execution runner",
-    detail:
-      "Requires approved project access, matching tags and host selectors, a fresh heartbeat and available capacity.",
-  },
-  {
-    name: "Artifact history",
-    detail:
-      "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access.",
-  },
+  { name: "Execution runner", detail: "Enroll a host, then prepare its project checkout, detent.yaml and WORKFLOW.md. Enrollment does not require policy approval." },
+  { name: "Local validation", detail: "The runner reports checkout, detent doctor and selected provider sign-in checks. Fix failures on that host, then restart the runner to report fresh results. Credentials stay local." },
+  { name: "Repository configuration", detail: "Review the policy reported by the runner and explicitly approve it before dispatch." },
+  { name: "Artifact history", detail: "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access." },
 ];
 
 /**
@@ -388,12 +374,12 @@ const SEED_RUNNERS: RunnerEligibilityRow[] = [
       machine_id: "mac_mock01",
       display_name: "Mock MacBook Pro",
       tags: ["detent:mock"],
-      state: "enabled",
+      state: "active",
       capacity_limit: 2,
       project_ids: ["proj_alpha"],
       revision: 4,
       hostname: "mock-macbook.local",
-      health: "healthy",
+      health: "online",
       os: "darwin",
       architecture: "arm64",
       last_heartbeat_at: "2026-09-10T12:04:31Z",
@@ -431,8 +417,8 @@ const SEED_FLEET = {
       id: "rnr_mock",
       display_name: "Mock MacBook Pro",
       hostname: "mock-macbook.local",
-      health: "healthy",
-      state: "enabled",
+      health: "online",
+      state: "active",
       os: "darwin",
       architecture: "arm64",
       host_capacity: 2,
@@ -888,6 +874,7 @@ interface AccountState {
   /** False once `POST /__mock/usage {"usage": null}` has run: §17.5's empty report. */
   usage: boolean;
   integrations: Map<string, IntegrationRow>;
+  checkoutReports: Map<string, string>;
   policies: Map<string, PolicyRow>;
   /** What runners last reported they resolved and could not run, per project, newest first. */
   observedPolicies: Map<string, Array<{ policy: Record<string, unknown>; runner_id: string; observed_at: string }>>;
@@ -921,6 +908,7 @@ function initialAccountState(organization: OrganizationMode = "seeded"): Account
     spend: true,
     usage: true,
     integrations: new Map(empty ? [] : Object.entries(clone(SEED_INTEGRATIONS))),
+    checkoutReports: new Map(empty ? [] : [["proj_beta", "mockorg/private"]]),
     policies: new Map(empty ? [] : [["proj_alpha", clone(SEED_POLICY)]]),
     observedPolicies: new Map(),
     progress: new Map(empty ? [] : Object.entries(clone(SEED_PROGRESS))),
@@ -2240,9 +2228,9 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     const services = account.artifactServices.get(projectId) ?? [];
     const artifacts = progress?.artifacts ?? "";
     const met = [
+      account.runners.some((entry) => entry.runner.state === "active" && entry.runner.health === "online"),
+      account.runners.some((entry) => entry.runner.state === "active" && entry.runner.health === "online" && entry.local_checks?.checkout === "passed" && ["passed", "warning"].includes(entry.local_checks.doctor) && entry.local_checks.provider === "passed"),
       policy !== null,
-      progress?.doctor === true && progress.provider === true,
-      policy !== null && account.runners.some((entry) => entry.exclusions.length === 0),
       artifacts === "local" || (artifacts === "customer" && services.length > 0),
     ];
     return {
@@ -2968,18 +2956,21 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
             payload: { code: "invalid_request", message: "A repository is owner/name." },
           };
         }
-        // Already bound to exactly this repository: the wizard's retry is a
-        // no-op, and a no-op must not spend the key it was retried with.
-        if ((current.repository ?? "").toLowerCase() === repository.toLowerCase()) {
+        if (body.source !== "runner_checkout") {
+          return { status: 422, payload: { code: "invalid_request", message: "Use the runner checkout association." } };
+        }
+        if ((current.checkout_repository ?? "").toLowerCase() === repository.toLowerCase()) {
           return { status: 200, payload: clone(current), store: false };
         }
         if (String(body.expected_revision ?? "") !== current.revision) {
           return { status: 409, payload: REVISION_CONFLICT };
         }
+        if (account.checkoutReports.get(projectId)?.toLowerCase() !== repository.toLowerCase()) {
+          return { status: 422, payload: { code: "checkout_unavailable", message: "Start an enrolled runner with this project's Git checkout and matching GitHub origin, then retry." } };
+        }
         const next: IntegrationRow = {
           ...current,
-          repository,
-          repository_enabled: true,
+          checkout_repository: repository,
           revision: String(Number(current.revision) + 1),
         };
         account.integrations.set(projectId, next);

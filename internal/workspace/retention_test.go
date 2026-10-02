@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +103,110 @@ func TestRetentionQuarantine(t *testing.T) {
 	}
 }
 
+func TestRetentionQuarantineReadOnlyDirectory(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name     string
+		readOnly string
+	}{
+		{name: "writable"},
+		{name: "read-only nested directory", readOnly: "cache"},
+		{name: "read-only quarantine directory", readOnly: "."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := retentionBackend(t)
+			quarantine := filepath.Join(backend.root, ".detent/quarantine", "workspace-"+now.Add(-4*24*time.Hour).Format(quarantineTimestampFormat))
+			retentionFixture(t, filepath.Join(quarantine, "cache", "file"), now)
+			if test.readOnly != "" {
+				readOnly := filepath.Join(quarantine, test.readOnly)
+				if err := os.Chmod(readOnly, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := os.Chmod(readOnly, 0o700); err != nil && !errors.Is(err, fs.ErrNotExist) {
+						t.Error(err)
+					}
+				})
+			}
+			totals, err := backend.SweepRetention(t.Context(), RetentionRequest{Now: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if totals.Quarantine.Count != 1 || totals.Quarantine.Bytes != 16 {
+				t.Fatalf("totals=%+v", totals)
+			}
+			if _, err := os.Stat(quarantine); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("quarantine remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestRetentionQuarantineDoesNotChmodSymlinkTarget(t *testing.T) {
+	t.Parallel()
+	backend := retentionBackend(t)
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	quarantine := filepath.Join(backend.root, ".detent/quarantine", "workspace-"+now.Add(-4*24*time.Hour).Format(quarantineTimestampFormat))
+	retentionFixture(t, filepath.Join(quarantine, "file"), now)
+	target := t.TempDir()
+	retentionFixture(t, filepath.Join(target, "keep"), now)
+	if err := os.Chmod(target, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(target, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	before, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(quarantine, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := backend.SweepRetention(t.Context(), RetentionRequest{Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil || info.Mode().Perm() != before.Mode().Perm() {
+		t.Fatalf("symlink target mode changed: info=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "keep")); err != nil {
+		t.Fatalf("symlink target content removed: %v", err)
+	}
+}
+
+func TestRetentionQuarantineUnremovablePath(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod on Windows does not deny directory removal; this fixture requires POSIX permissions")
+	}
+	backend := retentionBackend(t)
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	parent := filepath.Join(backend.root, ".detent/quarantine")
+	quarantine := filepath.Join(parent, "workspace-"+now.Add(-4*24*time.Hour).Format(quarantineTimestampFormat))
+	retentionFixture(t, filepath.Join(quarantine, "file"), now)
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	for range 2 {
+		totals, err := backend.SweepRetention(t.Context(), RetentionRequest{Now: now})
+		if err == nil || !strings.Contains(err.Error(), filepath.Join(".detent/quarantine", filepath.Base(quarantine))) {
+			t.Fatalf("retention error = %v, want quarantine path", err)
+		}
+		if totals.Quarantine.Count != 0 {
+			t.Fatalf("totals=%+v", totals)
+		}
+	}
+}
+
 func TestRetentionAttempts(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -116,31 +221,58 @@ func TestRetentionAttempts(t *testing.T) {
 		{name: "terminal", registered: true, terminal: true, remove: true}, {name: "live", terminal: true, live: true},
 		{name: "lookup failed", fail: true, age: 24 * time.Hour},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			backend := retentionBackend(t)
-			path := filepath.Join(backend.root, "workspace", workerScratchRelativePath, "attempt-test")
-			retentionFixture(t, filepath.Join(path, "file"), now)
-			if err := os.Chtimes(path, now.Add(-test.age), now.Add(-test.age)); err != nil {
-				t.Fatal(err)
-			}
-			if test.live {
-				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return []int{999999}, nil }
-			}
-			request := RetentionRequest{Now: now, ScratchState: func(context.Context, string) (bool, bool, error) {
-				if test.fail {
-					return false, false, errors.New("unavailable")
+		for _, location := range []struct {
+			name              string
+			external, removed bool
+		}{{name: "legacy"}, {name: "external", external: true}, {name: "external removed workspace", external: true, removed: true}} {
+			t.Run(test.name+"/"+location.name, func(t *testing.T) {
+				backend := retentionBackend(t)
+				workspacePath := filepath.Join(backend.root, "workspace")
+				path := filepath.Join(workspacePath, workerScratchRelativePath, "attempt-test")
+				if location.external {
+					t.Cleanup(func() { _ = os.RemoveAll(workerScratchGroup(backend.root)) })
+					if !location.removed {
+						if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := ensurePrivateDirectories(workerScratchBase(), WorkerScratchRoot(workspacePath)); err != nil {
+						t.Fatal(err)
+					}
+					path = filepath.Join(WorkerScratchRoot(workspacePath), "attempt-test")
 				}
-				return test.registered, test.terminal, nil
-			}}
-			total, err := backend.SweepRetention(t.Context(), request)
-			if (err != nil) != test.fail {
-				t.Fatalf("err=%v", err)
-			}
-			_, err = os.Stat(path)
-			if errors.Is(err, fs.ErrNotExist) != test.remove {
-				t.Fatalf("remove=%v stat=%v total=%+v", test.remove, err, total)
-			}
-		})
+				retentionFixture(t, filepath.Join(path, "file"), now)
+				if err := os.Chtimes(path, now.Add(-test.age), now.Add(-test.age)); err != nil {
+					t.Fatal(err)
+				}
+				if test.live {
+					backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return []int{999999}, nil }
+				}
+				var queried []string
+				request := RetentionRequest{Now: now, ScratchState: func(_ context.Context, scratch string) (bool, bool, error) {
+					queried = append(queried, scratch)
+					if test.fail {
+						return false, false, errors.New("unavailable")
+					}
+					return test.registered, test.terminal, nil
+				}}
+				total, err := backend.SweepRetention(t.Context(), request)
+				if (err != nil) != test.fail {
+					t.Fatalf("err=%v", err)
+				}
+				if len(queried) != 1 || queried[0] != path {
+					t.Fatalf("scratch state queried for %q, want %q", queried, path)
+				}
+				_, err = os.Stat(path)
+				if errors.Is(err, fs.ErrNotExist) != test.remove {
+					t.Fatalf("remove=%v stat=%v total=%+v", test.remove, err, total)
+				}
+				_, err = os.Stat(filepath.Dir(path))
+				if wantParentRemoved := location.removed && test.remove; errors.Is(err, fs.ErrNotExist) != wantParentRemoved {
+					t.Fatalf("scratch parent removed=%v, want %v", err, wantParentRemoved)
+				}
+			})
+		}
 	}
 }
 

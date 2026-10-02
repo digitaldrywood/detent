@@ -24,6 +24,7 @@ type Skill struct {
 	Name        string
 	Description string
 	WhenToUse   string
+	Aliases     []string
 	BodyPath    string
 }
 
@@ -170,11 +171,16 @@ func parseSkill(path string, content []byte) (Skill, *Drop) {
 	if len(missing) > 0 {
 		return Skill{}, &Drop{Path: path, Reason: DropReasonInvalid, Message: strings.Join(missing, ", ")}
 	}
+	aliases, err := stringListField(root, "aliases")
+	if err != nil {
+		return Skill{}, &Drop{Path: path, Reason: DropReasonInvalid, Message: err.Error()}
+	}
 
 	return Skill{
 		Name:        fields["name"],
 		Description: fields["description"],
 		WhenToUse:   fields["when_to_use"],
+		Aliases:     aliases,
 		BodyPath:    path,
 	}, nil
 }
@@ -226,6 +232,27 @@ func stringField(root *yaml.Node, name string) (string, bool) {
 		return value.Value, true
 	}
 	return "", false
+}
+
+func stringListField(root *yaml.Node, name string) ([]string, error) {
+	for i := 0; i < len(root.Content); i += 2 {
+		if root.Content[i].Value != name {
+			continue
+		}
+		value := root.Content[i+1]
+		if value.Kind != yaml.SequenceNode {
+			return nil, fmt.Errorf("%s must be a list of nonempty strings", name)
+		}
+		items := make([]string, 0, len(value.Content))
+		for _, item := range value.Content {
+			if item.Kind != yaml.ScalarNode || item.Tag != "!!str" || strings.TrimSpace(item.Value) == "" {
+				return nil, fmt.Errorf("%s must be a list of nonempty strings", name)
+			}
+			items = append(items, strings.TrimSpace(item.Value))
+		}
+		return items, nil
+	}
+	return nil, nil
 }
 
 func rejectDuplicateNames(skillList []Skill) ([]Skill, []Drop) {

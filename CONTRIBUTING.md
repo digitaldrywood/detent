@@ -7,7 +7,7 @@ Detent is a Go agent orchestrator delivered as a single binary. Keep changes sma
 - Go 1.26.
 - Git.
 - Node.js and npm for Tailwind CSS.
-- GitHub CLI for issue and pull request workflow.
+- GitHub CLI when the selected project's tracker or PR workflow uses it.
 
 Install the project tools with:
 
@@ -170,12 +170,24 @@ test(scheduler): cover fair-share selection
 
 ## Branch And Pull Request Flow
 
+For new work, follow [AGENTS.md issue authoring](AGENTS.md#issue-authoring)
+and let Detent dogfood implementation unless direct changes are explicitly
+authorized. File through the selected project's supplied tracker owner;
+a GitHub repository or PR landing path alone does not authorize GitHub issues.
+
 1. Start from current `origin/develop`.
 2. Create a focused branch for the issue.
 3. Make the smallest complete change that satisfies the issue.
 4. Run focused tests for touched packages.
-5. Run `make check-fast` in the dedicated worktree before merging.
+5. Follow [AGENTS.md validation](AGENTS.md#validation); focused diagnostics do not become merge gates, local-gate statuses or a blocking CI wait.
 6. Open a pull request against `develop` with a clear summary, a `Fixes #N` line, and the exact test plan.
 7. Address review feedback with follow-up commits on the same branch.
+
+For native Cloud work items, commit on the assigned Detent branch; Detent records
+the Change Request and owns publication and lane state. Follow the
+[deployment and release failure reporting policy](AGENTS.md#deployment-and-release-failure-reporting)
+for genuine source blockers: High in Backlog, preserving Urgent and operator
+holds, with fingerprint and pinned occurrence evidence retained. The retired
+private hourly producer must remain retired for Detent.
 
 Do not commit directly to `develop` or `main`. Scheduled full validation tags passing `develop` commits; production releases use those tags. `develop` always deploys to staging; see [Branching](docs/branching.md). Do not bypass hooks. If validation fails, fix the blocker before requesting review.

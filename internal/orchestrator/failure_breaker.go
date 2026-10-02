@@ -498,7 +498,7 @@ func projectAttemptFailureClass(
 		return class
 	}
 	if terminalState == store.WorkAttemptTerminalNoProgress {
-		return projectFailureClassNoProgress
+		return ""
 	}
 	if err == nil && terminalState == store.WorkAttemptTerminalFailure {
 		return projectFailureClassRunnerFinalState + ":" + projectFailureHash(errorMessage)

@@ -36,7 +36,7 @@ query DetentGitHubLabelIssuePullRequestReferences($issueIds: [ID!]!) {
           ... on UnlabeledEvent { createdAt label { name } actor { __typename login } }
         }
       }
-      closedByPullRequestsReferences(first: 100) {
+      closedByPullRequestsReferences(first: 5) {
         pageInfo { hasNextPage endCursor }
         nodes { number url state updatedAt headRefOid commits(last: 1) { nodes { commit { oid committedDate } } } repository { nameWithOwner } }
       }
@@ -352,7 +352,7 @@ func withoutPullRequestAssociation(issue connector.Issue) connector.Issue {
 	return issue
 }
 
-func (c *Connector) RevalidatePullRequestAssociation(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+func (c *Connector) RevalidatePullRequestAssociation(ctx context.Context, issue connector.Issue, includeStatus bool) (connector.Issue, error) {
 	issues := []connector.Issue{withoutPullRequestAssociation(issue)}
 	if _, ok := pullRequestRepoFromIdentifier(issue.Identifier); !ok {
 		return issue, fmt.Errorf("revalidate github pull request association: %w: missing issue repository", ErrInvalidResponse)
@@ -372,13 +372,13 @@ func (c *Connector) RevalidatePullRequestAssociation(ctx context.Context, issue 
 		return fresh, nil
 	}
 	if fresh.PRNumber != nil {
-		if repo, number, ok := hydratedPullRequestRef(issue); ok && issue.PullRequest != nil &&
+		if repo, number, ok := hydratedPullRequestRef(issue); includeStatus && ok && issue.PullRequest != nil &&
 			number == *fresh.PRNumber && strings.EqualFold(pullRequestRepoName(repo), fresh.PRRepository) &&
 			strings.EqualFold(issue.PullRequest.State, fresh.PullRequest.State) {
 			fresh.PullRequest = issue.PullRequest
 		} else {
 			var err error
-			fresh, err = c.HydratePullRequest(ctx, fresh)
+			fresh, err = c.hydratePullRequest(ctx, fresh, includeStatus)
 			if err != nil {
 				return issue, err
 			}
@@ -390,14 +390,19 @@ func (c *Connector) RevalidatePullRequestAssociation(ctx context.Context, issue 
 			if err != nil {
 				return issue, err
 			}
+			if !includeStatus && pullRequest.Number != number {
+				return issue, fmt.Errorf("revalidate github pull request association: %w: pull request number mismatch", ErrInvalidResponse)
+			}
 			if branchMatchesIssuePrefix(pullRequest.HeadRefName, detentIssueBranchPrefix(issue.Identifier)) {
-				if issue.PullRequest != nil && issue.PullRequest.HeadSHA == pullRequest.HeadSHA && strings.EqualFold(issue.PullRequest.State, pullRequest.State) {
+				if includeStatus && issue.PullRequest != nil && issue.PullRequest.HeadSHA == pullRequest.HeadSHA && strings.EqualFold(issue.PullRequest.State, pullRequest.State) {
 					pr := *issue.PullRequest
 					pr.BranchName = pullRequest.HeadRefName
 					fresh.PullRequest = &pr
 				} else {
-					if err := c.populatePullRequestStatus(ctx, repo, &pullRequest, false); err != nil {
-						return issue, err
+					if includeStatus {
+						if err := c.populatePullRequestStatus(ctx, repo, &pullRequest, false); err != nil {
+							return issue, err
+						}
 					}
 					attachPullRequestToIssue(&fresh, repo, pullRequest)
 				}
@@ -410,7 +415,7 @@ func (c *Connector) RevalidatePullRequestAssociation(ctx context.Context, issue 
 			return issue, err
 		}
 		candidates := []issuePullRequestCandidate{{Index: 0, Identifier: issue.Identifier, BranchPrefix: detentIssueBranchPrefix(issue.Identifier)}}
-		if _, err := c.attachMatchingPullRequests(ctx, repo, issues, candidates, pullRequests, false); err != nil {
+		if _, err := c.attachMatchingPullRequests(ctx, repo, issues, candidates, pullRequests, false, includeStatus); err != nil {
 			return issue, err
 		}
 		fresh = issues[0]

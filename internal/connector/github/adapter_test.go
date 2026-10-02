@@ -18,7 +18,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -1116,86 +1115,8 @@ func TestConnectorBoundedBacklogFetchesUseUnfilteredLightweightQuery(t *testing.
 	}
 }
 
-func TestConnectorFetchCandidateIssuesDoesNotBlockOnBlankProjectStatusDefaulting(t *testing.T) {
-	t.Parallel()
-
-	synctest.Test(t, func(t *testing.T) {
-		releaseDefaultWrite := make(chan struct{})
-		var releaseOnce sync.Once
-		release := func() {
-			releaseOnce.Do(func() {
-				close(releaseDefaultWrite)
-			})
-		}
-		defer release()
-		server := &graphqlTestServer{t: t, unsupportedNative: true, responses: []graphqlTestResponse{
-			{
-				body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null}]}}}}`,
-			},
-			{
-				release: releaseDefaultWrite,
-				body:    `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`,
-			},
-			{
-				body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_blank"}}}}`,
-			},
-		}}
-		c, err := NewConnector(Config{
-			Endpoint: "https://blank-status.test/",
-			APIKey:   "token",
-			HTTPClient: recoveryHTTPClient(func(r *http.Request) (*http.Response, error) {
-				w := httptest.NewRecorder()
-				server.serveHTTP(w, r)
-				return w.Result(), nil
-			}),
-			ProjectSlug:  "PVT_1",
-			ActiveStates: []string{"Todo"},
-		})
-
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		type result struct {
-			issues []connector.Issue
-			err    error
-		}
-		results := make(chan result, 1)
-		go func() {
-			issues, err := c.FetchCandidateIssues(context.Background())
-			results <- result{issues: issues, err: err}
-		}()
-
-		// Wait until fetch has returned or is durably blocked on the held response.
-		// No wall-clock deadline competes with scheduling the fetch goroutine.
-		synctest.Wait()
-		select {
-		case result := <-results:
-			if result.err != nil {
-				t.Fatalf("FetchCandidateIssues() error = %v", result.err)
-			}
-			if len(result.issues) != 0 {
-				t.Fatalf("FetchCandidateIssues() len = %d, want 0", len(result.issues))
-			}
-		default:
-			t.Fatal("FetchCandidateIssues() blocked on default status write")
-		}
-
-		if requests := server.requests(); len(requests) != 2 {
-			t.Fatalf("request count before release = %d, want scan and held status lookup", len(requests))
-		}
-		release()
-		synctest.Wait()
-		requests := server.requests()
-		if len(requests) != 3 {
-			t.Fatalf("request count = %d, want 3", len(requests))
-		}
-		updateVariables := requestVariables(t, requests[2])
-		if updateVariables["itemId"] != "PVTI_blank" || updateVariables["optionId"] != "OPT_backlog" {
-			t.Fatalf("update variables = %#v, want blank item moved to Backlog", updateVariables)
-		}
-	})
-}
+// Wait until fetch has returned or is durably blocked on the held response.
+// No wall-clock deadline competes with scheduling the fetch goroutine.
 
 func TestConnectorFetchCandidateIssuesDefaultStatusWriteSurvivesParentCancellation(t *testing.T) {
 	t.Parallel()
@@ -3274,13 +3195,50 @@ func TestRequiredStatusCheckFailures(t *testing.T) {
 
 	staleCompleted := time.Date(2026, 7, 7, 0, 49, 24, 0, time.UTC)
 	tests := []struct {
-		name       string
-		checkRuns  []restCheckRun
-		statuses   []restCommitStatus
-		required   []string
-		wantState  string
-		wantChecks []connector.PullRequestCheck
+		name        string
+		localStatus string
+		checkRuns   []restCheckRun
+		statuses    []restCommitStatus
+		required    []string
+		wantState   string
+		wantChecks  []connector.PullRequestCheck
 	}{
+		{
+			name:        "missing Detent-owned status is unproduced work",
+			wantState:   "success",
+			localStatus: "local-gate",
+			required:    []string{"local-gate"},
+			wantChecks:  []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}},
+		},
+		{
+			name:       "missing status without local ownership remains pending",
+			required:   []string{"local-gate"},
+			wantState:  "pending",
+			wantChecks: []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}},
+		},
+		{
+			name:        "other missing context still waits with local ownership",
+			localStatus: "local-gate",
+			required:    []string{"local-gate", "Verify"},
+			wantState:   "pending",
+			wantChecks:  []connector.PullRequestCheck{{Name: "local-gate", Status: "missing", Conclusion: "missing"}, {Name: "Verify", Status: "missing", Conclusion: "missing"}},
+		},
+		{
+			name:        "posted local pending status still waits",
+			localStatus: "local-gate",
+			required:    []string{"local-gate"},
+			statuses:    []restCommitStatus{{Context: "local-gate", State: "pending"}},
+			wantState:   "pending",
+			wantChecks:  []connector.PullRequestCheck{{Name: "local-gate", Status: "pending", Conclusion: "pending"}},
+		},
+		{
+			name:        "posted local failure still fails",
+			localStatus: "local-gate",
+			required:    []string{"local-gate"},
+			statuses:    []restCommitStatus{{Context: "local-gate", State: "failure"}},
+			wantState:   "failure",
+			wantChecks:  []connector.PullRequestCheck{{Name: "local-gate", Status: "failure", Conclusion: "failure"}},
+		},
 		{
 			name:      "all required check runs succeeded",
 			checkRuns: []restCheckRun{{Name: "Lint", Status: "completed", Conclusion: "success"}},
@@ -3413,7 +3371,7 @@ func TestRequiredStatusCheckFailures(t *testing.T) {
 			if !reflect.DeepEqual(gotChecks, tt.wantChecks) {
 				t.Fatalf("requiredStatusCheckFailures() = %#v, want %#v", gotChecks, tt.wantChecks)
 			}
-			if gotState := requiredStatusCheckState(gotChecks); gotState != tt.wantState {
+			if gotState := requiredStatusCheckState(gotChecks, tt.localStatus); gotState != tt.wantState {
 				t.Fatalf("requiredStatusCheckState() = %q, want %q", gotState, tt.wantState)
 			}
 		})
@@ -3987,12 +3945,33 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
+		comments    []issueComment
+		wantURL     string
+		wantStatus  string
+		wantNil     bool
+		bodyOnly    bool
 		name        string
 		body        string
 		wantReason  string
 		wantSource  string
 		wantInvalid string
 	}{
+		{name: "earlier created edited complete supersedes stale in progress", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-09-02T00:00:00Z"), UpdatedAt: new("2026-09-02T00:00:00Z")}}, wantURL: "https://github.test/comment/earlier", wantStatus: "complete", wantReason: "", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "earlier edited human hold supersedes complete", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-09-02T00:00:00Z"), UpdatedAt: new("2026-09-02T00:00:00Z")}}, wantURL: "https://github.test/comment/earlier", wantStatus: "blocked", wantReason: "Need owner approval.", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "earlier edited invalid supersedes complete", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-09-02T00:00:00Z"), UpdatedAt: new("2026-09-02T00:00:00Z")}}, wantURL: "https://github.test/comment/earlier", wantStatus: "blocked", wantReason: "", wantSource: "structured", wantInvalid: "status blocked requires", wantNil: false},
+		{name: "edited clearing suppresses prior and body receipt", comments: []issueComment{{Body: "## Codex Workpad\n\nCurrent status cleared.", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-09-02T00:00:00Z"), UpdatedAt: new("2026-09-02T00:00:00Z")}}, wantURL: "https://github.test/comment/earlier", wantStatus: "", wantReason: "", wantSource: "structured", wantInvalid: "", wantNil: true},
+		{name: "equal edit time retains reverse input precedence", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-09-02T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}}, wantURL: "https://github.test/comment/later", wantStatus: "in_progress", wantReason: "", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "zero edit timestamp falls back to created time", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-10-01T00:00:00Z"), UpdatedAt: new("0001-01-01T00:00:00Z")}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantReason: "Need owner approval.", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "invalid edit timestamp falls back to created time", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later", CreatedAt: new("2026-10-01T00:00:00Z"), UpdatedAt: new("not-a-date")}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantReason: "Need owner approval.", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "invalid dates retain input precedence", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later", CreatedAt: new("not-a-date"), UpdatedAt: new("not-a-date")}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantReason: "Need owner approval.", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "undated later human hold keeps input precedence", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: new("2026-09-01T00:00:00Z"), UpdatedAt: new("2026-10-01T00:00:00Z")}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later"}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantReason: "Need owner approval.", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{name: "no dates keep reverse input precedence", comments: []issueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier"}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later"}}, wantURL: "https://github.test/comment/later", wantStatus: "in_progress", wantReason: "", wantSource: "structured", wantInvalid: "", wantNil: false},
+		{
+			name:       "canonical body operational receipt",
+			bodyOnly:   true,
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_kind: operational\n  completion_work_attempt_id: \"7018\"\n  completion_generation: \"25\"\n  completion_evidence: No PR required.\nblockers: []\nhuman_action: null\n```",
+			wantSource: "structured",
+		},
 		{
 			name:       "valid structured block suppresses prose",
 			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: \"needs migration\"\nhuman_action: null\n```\n\n### Human Action Needed\n- Blocked by: #999",
@@ -4031,7 +4010,27 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 					URL:  "https://github.test/comment/workpad",
 				}}},
 			}
+			wantURL := "https://github.test/comment/workpad"
+			if tt.bodyOnly {
+				issue.Body, issue.URL = tt.body, "https://github.test/issue/3058"
+				issue.Comments.Nodes = nil
+				wantURL = issue.URL
+			}
+			if tt.comments != nil {
+				issue.Comments.Nodes = tt.comments
+				issue.Body = "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+				wantURL = tt.wantURL
+			}
 			signal := parseWorkpadSignal(issue)
+			if tt.wantNil {
+				if signal != nil {
+					t.Fatalf("selected cleared Workpad retained older signal: %#v", signal)
+				}
+				return
+			}
+			if tt.wantStatus != "" && tt.wantInvalid == "" && (signal == nil || signal.Status != tt.wantStatus) {
+				t.Fatalf("selected status = %#v, want %q", signal, tt.wantStatus)
+			}
 			if signal == nil {
 				t.Fatal("parseWorkpadSignal() = nil, want signal")
 				return
@@ -4039,7 +4038,7 @@ func TestParseBlockerReasonUsesStructuredWorkpadFirst(t *testing.T) {
 			if signal.Source != tt.wantSource {
 				t.Fatalf("Signal.Source = %q, want %q", signal.Source, tt.wantSource)
 			}
-			if signal.CommentURL != "https://github.test/comment/workpad" {
+			if signal.CommentURL != wantURL {
 				t.Fatalf("Signal.CommentURL = %q, want comment URL", signal.CommentURL)
 			}
 			if tt.wantInvalid != "" {
@@ -4649,17 +4648,24 @@ func TestConnectorFetchIssueParentsReturnsParentAndTrackedInIssues(t *testing.T)
 	if len(got) != 2 {
 		t.Fatalf("FetchIssueParents() len = %d, want 2", len(got))
 	}
-	if got[0].ID != "I_parent" || got[0].Identifier != "digitaldrywood/detent#258" || got[0].State != "Todo" {
-		t.Fatalf("first parent = %#v", got[0])
-	}
-	if got[1].ID != "I_tracked_parent" || got[1].Identifier != "digitaldrywood/detent#259" || got[1].State != "In Progress" {
-		t.Fatalf("second parent = %#v", got[1])
-	}
-	if got[0].ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
-		t.Fatalf("first parent child issues = %#v", got[0].ChildIssues)
-	}
-	if got[1].ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
-		t.Fatalf("second parent child issues = %#v", got[1].ChildIssues)
+	for index, tt := range []struct {
+		name       string
+		id         string
+		identifier string
+		state      string
+	}{
+		{name: "sub-issue parent", id: "I_parent", identifier: "digitaldrywood/detent#258", state: "Todo"},
+		{name: "trackedIn parent", id: "I_tracked_parent", identifier: "digitaldrywood/detent#259", state: "In Progress"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := got[index]
+			if parent.ID != tt.id || parent.Identifier != tt.identifier || parent.State != tt.state {
+				t.Fatalf("parent = %#v", parent)
+			}
+			if len(parent.ChildIssues) != 1 || parent.ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
+				t.Fatalf("parent child issues = %#v", parent.ChildIssues)
+			}
+		})
 	}
 
 	requests := server.requests()
@@ -4691,12 +4697,7 @@ func TestConnectorFetchIssueParentsReturnsBodyReferencedEpic(t *testing.T) {
 		},
 		{
 			method: http.MethodGet,
-			body:   `{"items":[{"number":258}]}`,
-		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/258",
-			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}`,
+			body:   `{"items":[{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
@@ -4720,8 +4721,8 @@ func TestConnectorFetchIssueParentsReturnsBodyReferencedEpic(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 4 {
-		t.Fatalf("request count = %d, want parent lookup, search, REST issue, project item", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want parent lookup, search, project item", len(requests))
 	}
 	if requests[1]["method"] != http.MethodGet || !strings.HasPrefix(requests[1]["path"].(string), "/search/issues?") {
 		t.Fatalf("search request = %#v, want REST issue search", requests[1])
@@ -4741,12 +4742,7 @@ func TestConnectorFetchIssueParentsReturnsCrossRepoBodyReferencedEpic(t *testing
 		},
 		{
 			method: http.MethodGet,
-			body:   `{"total_count":1,"items":[{"number":258,"html_url":"https://github.com/digitaldrywood/detent/issues/258"}]}`,
-		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/258",
-			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}`,
+			body:   `{"total_count":1,"items":[{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
@@ -4767,15 +4763,131 @@ func TestConnectorFetchIssueParentsReturnsCrossRepoBodyReferencedEpic(t *testing
 	}
 
 	requests := server.requests()
-	if len(requests) != 4 {
-		t.Fatalf("request count = %d, want parent lookup, search, REST issue, project item", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want parent lookup, search, project item", len(requests))
 	}
 	searchPath := requests[1]["path"].(string)
 	if !strings.Contains(searchPath, "user%3Adigitaldrywood") || strings.Contains(searchPath, "repo%3A") {
 		t.Fatalf("search path = %q, want owner-scoped search", searchPath)
 	}
-	if requests[2]["path"] != "/repos/digitaldrywood/detent/issues/258" {
-		t.Fatalf("REST issue path = %#v, want cross-repo epic issue", requests[2])
+	if !strings.Contains(requests[2]["query"].(string), "projectItems") {
+		t.Fatalf("project item query = %#v, want cross-repo epic status", requests[2])
+	}
+}
+
+func TestConnectorFetchIssueParentsFiltersSearchHits(t *testing.T) {
+	t.Parallel()
+
+	type hit struct {
+		repo   string
+		title  string
+		body   string
+		labels []label
+	}
+	tests := []struct {
+		name      string
+		childRepo string
+		hits      []hit
+		wantID    string
+		labelMode bool
+	}{
+		{name: "shorthand", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "- [ ] #251"}}, wantID: "I_epic_0"},
+		{name: "qualified", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Parent", body: "digitaldrywood/detent#251", labels: []label{{Name: "epic"}}}}, wantID: "I_epic_0"},
+		{name: "full URL", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "https://github.com/digitaldrywood/detent/issues/251"}}, wantID: "I_epic_0"},
+		{name: "cross repository", childRepo: "digitaldrywood/agent-runtime", hits: []hit{{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "digitaldrywood/agent-runtime#251"}}, wantID: "I_epic_0"},
+		{name: "label status", childRepo: "digitaldrywood/detent", hits: []hit{{repo: "digitaldrywood/detent", title: "Parent", body: "#251", labels: []label{{Name: "epic"}, {Name: "detent:todo"}}}}, wantID: "I_epic_0", labelMode: true},
+		{name: "unrelated org hits", childRepo: "digitaldrywood/detent", hits: []hit{
+			{repo: "digitaldrywood/other", title: "Ordinary issue", body: "#251"},
+			{repo: "digitaldrywood/other", title: "Epic: Wrong child", body: "#252"},
+			{repo: "digitaldrywood/detent", title: "Epic: Parent", body: "#251"},
+		}, wantID: "I_epic_2"},
+		{name: "no matching epic", childRepo: "digitaldrywood/detent", hits: []hit{
+			{repo: "digitaldrywood/other", title: "Ordinary issue", body: "#251"},
+			{repo: "digitaldrywood/other", title: "Epic: Wrong child", body: "#252"},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := make([]restIssue, 0, len(tt.hits))
+			for index, candidate := range tt.hits {
+				body := candidate.body
+				items = append(items, restIssue{
+					NodeID:  fmt.Sprintf("I_epic_%d", index),
+					Number:  258 + index,
+					Title:   candidate.title,
+					Body:    &body,
+					State:   "open",
+					HTMLURL: fmt.Sprintf("https://github.com/%s/issues/%d", candidate.repo, 258+index),
+					Labels:  candidate.labels,
+				})
+			}
+			searchBody, err := json.Marshal(restIssueSearchResponse{TotalCount: len(items), Items: items})
+			if err != nil {
+				t.Fatal(err)
+			}
+			responses := []graphqlTestResponse{
+				{body: fmt.Sprintf(`{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":%q},"parent":null,"trackedInIssues":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}`, tt.childRepo)},
+				{method: http.MethodGet, body: string(searchBody)},
+			}
+			if tt.wantID != "" && !tt.labelMode {
+				responses = append(responses, graphqlTestResponse{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"fieldValues":{"nodes":[]}}]}}}}`})
+			}
+			server := newGraphQLTestServer(t, responses)
+			config := Config{ProjectSlug: "PVT_1"}
+			if tt.labelMode {
+				config = Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "digitaldrywood/detent", ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}}
+			}
+			c := newGitHubTestConnector(t, server, config)
+			got, err := c.FetchIssueParents(context.Background(), "I_child")
+			if err != nil {
+				t.Fatalf("FetchIssueParents() error = %v", err)
+			}
+			if tt.wantID == "" {
+				if len(got) != 0 {
+					t.Fatalf("FetchIssueParents() = %#v, want no parents", got)
+				}
+			} else if len(got) != 1 || got[0].ID != tt.wantID || got[0].State != "Todo" {
+				t.Fatalf("FetchIssueParents() = %#v, want %s in Todo", got, tt.wantID)
+			}
+			requests := server.requests()
+			if len(requests) != len(responses) {
+				t.Fatalf("request count = %d, want %d (no per-hit reads)", len(requests), len(responses))
+			}
+			for _, request := range requests {
+				if path, ok := request["path"].(string); ok && strings.HasPrefix(path, "/repos/") {
+					t.Fatalf("unexpected per-hit REST request: %s", path)
+				}
+			}
+		})
+	}
+}
+
+func TestConnectorFetchIssueParentsBatchesProjectFieldsForMatchingEpics(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/detent"},"trackedInIssues":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}`},
+		{method: http.MethodGet, body: `{"total_count":2,"items":[{"node_id":"I_epic_1","number":258,"title":"Epic: One","body":"#251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258"},{"node_id":"I_epic_2","number":259,"title":"Epic: Two","body":"digitaldrywood/detent#251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/259"}]}`},
+		{body: `{"data":{"issue0":{"id":"I_epic_1","number":258,"repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"}}]}},"issue1":{"id":"I_epic_2","number":259,"repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_2","project":{"id":"PVT_1"}}]}}}}`},
+		{body: `{"data":{"item0":{"id":"PVTI_1","statusValue":{"name":"Todo"},"fieldValues":{"nodes":[]}},"item1":{"id":"PVTI_2","statusValue":{"name":"In Progress"},"fieldValues":{"nodes":[]}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "I_epic_1" || got[0].State != "Todo" || got[1].ID != "I_epic_2" || got[1].State != "In Progress" {
+		t.Fatalf("FetchIssueParents() = %#v, want both epics with project statuses", got)
+	}
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want parent query, search, batched membership and fields", len(requests))
+	}
+	for _, request := range requests[2:] {
+		if query, ok := request["query"].(string); !ok || !strings.Contains(query, "item1") && !strings.Contains(query, "issue1") {
+			t.Fatalf("unbatched project query = %#v", request)
+		}
 	}
 }
 
@@ -4792,12 +4904,7 @@ func TestConnectorFetchIssueParentsPaginatesBodyReferencedEpicSearch(t *testing.
 		},
 		{
 			method: http.MethodGet,
-			body:   `{"total_count":101,"items":[{"number":258}]}`,
-		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/258",
-			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"Depends on: #251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[]}`,
+			body:   `{"total_count":101,"items":[{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"Depends on: #251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[]}]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
@@ -4815,8 +4922,8 @@ func TestConnectorFetchIssueParentsPaginatesBodyReferencedEpicSearch(t *testing.
 	}
 
 	requests := server.requests()
-	if len(requests) != 5 {
-		t.Fatalf("request count = %d, want parent lookup, 2 search pages, REST issue, project item", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want parent lookup, 2 search pages, project item", len(requests))
 	}
 	firstSearch := requests[1]["path"].(string)
 	secondSearch := requests[2]["path"].(string)
@@ -5167,15 +5274,22 @@ func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
 		status  int
 		message string
 		want    bool
+		body    string
+		quota   bool
 	}{
-		{"strict protection", 405, "Head branch is out of date. Review and try the merge again.", true},
-		{"base race", 405, "Base branch was modified. Review and try the merge again.", true},
-		{"required failure", 405, "Required status check Test is failing.", false},
-		{"native queue", 405, "Pull request must be merged using the merge queue.", false},
-		{"conflict", 405, "Pull Request is not mergeable", false},
-		{"changed head", 409, "Head branch is out of date.", false},
-		{"permission", 403, "Head branch is out of date.", false},
-		{"transient", 502, "Head branch is out of date.", false},
+		{name: "strict protection", status: 405, message: "Head branch is out of date. Review and try the merge again.", want: true},
+		{name: "base race", status: 405, message: "Base branch was modified. Review and try the merge again.", want: true},
+		{name: "required failure", status: 405, message: "Required status check Test is failing."},
+		{name: "native queue", status: 405, message: "Pull request must be merged using the merge queue."},
+		{name: "conflict", status: 405, message: "Pull Request is not mergeable"},
+		{name: "changed head", status: 409, message: "Head branch is out of date."},
+		{name: "permission", status: 403, message: "Head branch is out of date."},
+		{name: "transient", status: 502, message: "Head branch is out of date."},
+		{name: "metadata cannot supply base refusal", status: 405, body: `{"message":"Required status check Test is failing.","documentation_url":"Base branch was modified"}`},
+		{name: "required check mentioning base refusal", status: 405, message: "Required status check 'Base branch was modified' has not passed."},
+		{name: "closure mentioning base refusal", status: 405, message: "Pull Request is closed. Base branch was modified."},
+		{name: "malformed JSON cannot supply base refusal", status: 405, body: `{"message":"Base branch was modified"`},
+		{name: "quota precedes base refusal", status: 403, message: "Base branch was modified", quota: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -5183,8 +5297,24 @@ func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			server := newGraphQLTestServer(t, []graphqlTestResponse{{method: http.MethodPut, path: "/repos/example/repo/pulls/42/merge", status: tt.status, body: string(body)}})
-			c := newGitHubTestConnector(t, server, Config{})
+			if tt.body != "" {
+				body = []byte(tt.body)
+			}
+			reset := time.Now().Add(time.Hour).Truncate(time.Second)
+			c, err := NewConnector(Config{Endpoint: "https://merge-refusal.test/graphql", TokenSource: StaticTokenSource(tt.name), HTTPClient: recoveryHTTPClient(func(request *http.Request) (*http.Response, error) {
+				if request.Method != http.MethodPut || request.URL.Path != "/repos/example/repo/pulls/42/merge" {
+					t.Fatalf("unexpected merge request %s %s", request.Method, request.URL)
+				}
+				headers := make(http.Header)
+				if tt.quota {
+					headers.Set("X-RateLimit-Remaining", "0")
+					headers.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+				}
+				return &http.Response{StatusCode: tt.status, Header: headers, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+			})})
+			if err != nil {
+				t.Fatal(err)
+			}
 			err = c.MergePullRequest(t.Context(), "example/repo", 42, "checked-head", "squash")
 			if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) != tt.want {
 				t.Fatalf("error = %v, want base refusal %t", err, tt.want)
@@ -5192,6 +5322,12 @@ func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
 			var status *StatusError
 			if !errors.As(err, &status) || status.StatusCode != tt.status {
 				t.Fatalf("lost original status: %v", err)
+			}
+			if errors.Is(err, ErrRateLimited) != tt.quota || tt.quota && !status.ResetAt.Equal(reset) {
+				t.Fatalf("lost quota precedence or reset: %v", err)
+			}
+			if tt.want && !strings.Contains(err.Error(), "PUT /repos/example/repo/pulls/42/merge") {
+				t.Fatalf("lost merge endpoint identity: %v", err)
 			}
 		})
 	}

@@ -189,25 +189,35 @@ must first be migrated with `detent fix workflow-layout`.
 
 ### MCP stdio server
 
-`detent mcp` serves the shared read-only operator catalog to MCP-native clients.
-It supports the initialization-based MCP revisions `2024-11-05`, `2025-03-26`,
-`2025-06-18`, and `2025-11-25`, negotiating `2025-11-25` when a client requests
-another revision. The process reads newline-delimited JSON-RPC messages from
-stdin and reserves stdout for protocol frames. Logs and command diagnostics go
-to stderr. Successful calls use structured content for the 2025-06-18 and
-2025-11-25 revisions and one JSON text content block for the older revisions.
+`detent mcp` serves the shared typed operator catalog to any MCP client. Modern
+`2026-07-28` requests carry protocol version and client capabilities in `_meta`,
+without an initialization handshake. Clients can probe `server/discover` first.
+Older clients use `initialize` and `notifications/initialized` with
+`2025-11-25`, `2025-06-18`, `2025-03-26`, or `2024-11-05`; an unsupported
+initialization revision negotiates `2025-11-25`, never a modern handshake.
 
-The MCP process is an HTTP client of the already-running Detent daemon. It uses
-the same config, host, port, wildcard-to-loopback mapping, API-token precedence,
-timeouts, and read-scoped authentication bridge as `detent issue --explain`.
-It does not open SQLite, start a daemon, or call the tracker. Daemon transport
-failures return tool errors rather than empty results. Snapshot-backed results
-include `generated_at` and `freshness`; last-known results also include
-`expires_at`.
+The process reads newline-delimited JSON-RPC from stdin and reserves stdout for
+protocol frames. Diagnostics use stderr. Successful results include serialized
+JSON text; versions from `2025-06-18` also receive `structuredContent`, and modern
+results include `resultType: "complete"`. Arguments, results, frames and catalog
+pages are bounded. Follow `nextCursor` until absent to load every tool; each
+shared definition has `_meta["detent/toolset"]` for grouping.
 
-The exposed tools are `board_state`, `fleet_health`, `telemetry_usage`,
-`recent_activity`, and `explain_item`. Names, descriptions, input schemas,
-limits, and result shapes come from the shared operator catalog and executor.
+The MCP process uses the already-running daemon's authenticated application
+bridge, with the same config, host, port, wildcard-to-loopback mapping and
+API-token precedence as `detent issue --explain`. Set `DETENT_API_TOKEN` to an
+existing scoped credential when needed. Discovery and execution recheck current
+authority in the daemon; a legacy loopback read bridge does not gain write access.
+The bridge opens a default-confirmation application connection and forwards its
+server-issued handle on fixed typed-tool endpoints. Client metadata cannot
+select identity, organization or YOLO, and no arbitrary HTTP path is accepted.
+
+The five existing reads remain `board_state`, `fleet_health`, `telemetry_usage`,
+`recent_activity`, and `explain_item`. Available shared application commands and
+connection/approval reads are permission-filtered by the daemon. Snapshot results
+include `generated_at`, `freshness`, and `expires_at` for last-known results.
+See [generic MCP setup](mcp-capabilities.md#generic-client-setup) for authority,
+organization selection, approval URLs, explicit YOLO and trusted remote access.
 
 ### Operator skill installation
 
@@ -269,16 +279,25 @@ remain on stderr.
 
 ### Fleet state reads
 
-`detent state` reads the public `/api/v1/state` model from the running service.
+`detent state` reads the public `/api/v1/state` model from the running service
+with `projection=cli`, bounding the response before the client reads it.
 `--project <project-id>` selects the existing project-scoped state route. The
 CLI projection does not expose the fuller internal snapshot's `board_issues`
 array. It preserves `generated_at`, refresh freshness and source degradation,
 and snapshot-unavailable degraded responses.
 
-Every JSON array is limited to its first 100 entries in service order. The
+Every state data array is limited to its first 100 entries in service order. The
 top-level `truncation` object always reports that limit and contains
-`truncated` plus a `collections` array of JSON Pointer paths and omitted counts.
-The one-MiB shared-client response limit also bounds non-collection content.
+`truncated` plus a `collections` array of JSON Pointer paths, original `total`,
+`returned`, and `omitted` counts. The service limits compact JSON, including
+metadata, to 768 KiB (`max_bytes`), and individual encoded scalar values to
+16 KiB (`value_max_bytes`). The byte budget can return fewer than 100 entries.
+Oversized fields or subtrees appear in `omitted_fields` with a JSON Pointer
+`path` and `reason: byte_limit`; an omitted array also records its original
+`total`. Counts and freshness come from the complete scoped snapshot.
+The shared client's hard one-MiB transport limit remains unchanged. Older
+services remain compatible for small states, but large states require updating
+the service to support this projection.
 JSON is written to stdout, pretty output is only a human-readable projection,
 and diagnostics remain on stderr.
 

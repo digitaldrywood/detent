@@ -385,6 +385,13 @@ func TestRecoverBlockedIssuesRequiresConfiguredBlockedReasonAndCurrentCondition(
 			wantTarget: autoPromoteReworkState,
 		},
 		{
+			name:       "missing dependency cannot reuse closed snapshot for conflict repair",
+			reasonCode: blockedRecoveryReasonMergeConflict,
+			mutateIssue: func(issue *connector.Issue) {
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#404", State: "Done", TrackerState: connector.BlockedRefTrackerStateClosed}}
+			},
+		},
+		{
 			name:       "stale base reason still behind",
 			reasonCode: blockedRecoveryReasonStaleBase,
 			mutateIssue: func(issue *connector.Issue) {
@@ -588,6 +595,8 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 		mutateConfig  func(*AutoPromoteConfig)
 		prepare       func(*Orchestrator, connector.Issue)
 		wantUnpark    bool
+		sourceState   string
+		wantReads     *int
 	}{
 		{
 			name:       "same head green and clean",
@@ -734,6 +743,19 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 			disabled: true,
 		},
 		{
+			name:        "rework source does not inspect breaker history",
+			reason:      AutoPromoteReasonCINotGreen,
+			sourceState: autoPromoteReworkState,
+			wantReads:   new(0),
+		},
+		{
+			name:        "disabled promotion with rework source",
+			reason:      AutoPromoteReasonCINotGreen,
+			disabled:    true,
+			sourceState: autoPromoteReworkState,
+			wantReads:   new(0),
+		},
+		{
 			name:       "automated review finding is human-gated",
 			reason:     AutoPromoteReasonP1Findings,
 			wantUnpark: false,
@@ -757,6 +779,11 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 			}
 			tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{issue}}
 			orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
+			if tt.sourceState != "" {
+				issue.State = tt.sourceState
+				tracker.stateIssues[0] = cloneIssue(issue)
+				orch.cfg.BlockedRecovery = BlockedRecoveryConfig{SourceStates: []string{tt.sourceState}}
+			}
 			orch.cfg.AutoPromote.Enabled = !tt.disabled
 			orch.cfg.AutoPromote.Gate = gate.Config{
 				Kind:            gate.KindCommand,
@@ -769,7 +796,8 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 				tt.prepare(orch, issue)
 			}
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
-			orch.workflowMetrics = metrics
+			reader := &blockedRecoveryTimelineRecorder{autoPromoteWorkflowMetricsRecorder: metrics}
+			orch.workflowMetrics = reader
 			recordReworkBreakerPark(t, metrics, parkedIssue, base.Add(-time.Hour), tt.reason)
 			if tt.consumed {
 				recordReworkBreakerAutoUnpark(t, metrics, parkedIssue, base.Add(-30*time.Minute))
@@ -781,6 +809,9 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 			state := newState(orch.cfg)
 
 			transitioned := orch.recoverBlockedIssues(context.Background(), &state, []connector.Issue{issue}, base)
+			if tt.wantReads != nil && reader.reads != *tt.wantReads {
+				t.Fatalf("timeline reads = %d, want %d", reader.reads, *tt.wantReads)
+			}
 
 			if got := len(tracker.updates); got != boolInt(tt.wantUnpark) {
 				t.Fatalf("updates = %#v, want unpark %v", tracker.updates, tt.wantUnpark)
@@ -800,6 +831,16 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 			}
 		})
 	}
+}
+
+type blockedRecoveryTimelineRecorder struct {
+	*autoPromoteWorkflowMetricsRecorder
+	reads int
+}
+
+func (r *blockedRecoveryTimelineRecorder) IssueWorkflowTimeline(ctx context.Context, identity store.IssueIdentity) (store.WorkflowTimeline, error) {
+	r.reads++
+	return r.autoPromoteWorkflowMetricsRecorder.IssueWorkflowTimeline(ctx, identity)
 }
 
 func TestRecoverBlockedIssuesDoesNotRecordRejectedReworkBreakerUnpark(t *testing.T) {

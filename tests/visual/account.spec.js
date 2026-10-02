@@ -9,8 +9,8 @@
 //
 // The React routes these tests exercise are served by the hub for every
 // non-API path (decisions.md §12, "Serving"), and they read the JSON endpoints
-// of §12. The hub still renders `/login` and `/organization` itself, so those
-// two are asserted against the hub's own pages.
+// of §12. The public login uses the client shell; `/organization` remains
+// a server-rendered page.
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
@@ -103,29 +103,28 @@ async function tabTo(page, name, limit = 40) {
   return false;
 }
 
-test("the sign-in page renders without a session and offers both ways in", async ({ page }) => {
+test("the sign-in page renders without a session and offers sign-in and account creation", async ({ page }) => {
   const errors = watchConsole(page);
   await page.goto(new URL("/login", hub.fixture.url).toString(), {
     waitUntil: "domcontentloaded",
   });
 
   await expectOneHeadingOne(page, "Sign in");
-  await expect(page.getByRole("link", { name: "Continue with WorkOS" })).toHaveAttribute(
+  await expect(page.getByRole("link", { name: "Sign in" })).toHaveAttribute(
     "href",
     "/auth/oidc/start",
   );
-  await expect(page.getByRole("link", { name: "Join with invitation" })).toHaveAttribute(
+  await expect(page.getByRole("link", { name: "Create account" })).toHaveAttribute(
     "href",
-    "/auth/oidc/start?unscoped=1",
+    "/auth/oidc/start?screen_hint=sign-up",
   );
 
-  expect(await tabTo(page, "Continue with WorkOS")).toBe(true);
+  expect(await tabTo(page, "Sign in")).toBe(true);
   await expectNoSeriousAxeViolations(page, "/login");
   expect(errors, "console errors on /login").toEqual([]);
 });
 
 test("the login card says what went wrong when the callback failed", async ({ page }) => {
-  test.skip(true, "The hub renders /login itself and ignores ?error=; the client login card (routes.account.tsx) is not served on main.");
   await page.goto(new URL("/login?error=no_membership", hub.fixture.url).toString(), {
     waitUntil: "domcontentloaded",
   });
@@ -156,6 +155,33 @@ test("the organization page lists the members and gates the controls by role", a
   await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Send invitation" })).toHaveCount(0);
   await expectNoSeriousAxeViolations(page, "/organization as viewer");
+});
+
+test("sending invitations resets the form and shows the newest invitation with its enforced expiry", async ({ page }) => {
+  await openAs(page, "owner", "/settings/organization");
+  const invitations = page.locator("section").filter({ has: page.getByRole("heading", { name: "Invitations", exact: true }) });
+  for (const email of ["older-invite@example.test", "newest-invite@example.test"]) {
+    await page.getByLabel("Email", { exact: true }).fill(email);
+    await page.getByLabel("Role", { exact: true }).selectOption("viewer");
+    const responsePromise = page.waitForResponse((response) =>
+      response.request().method() === "POST" && response.url().endsWith("/members/invitations"),
+    );
+    await page.getByRole("button", { name: "Send invitation", exact: true }).click();
+    const response = await responsePromise;
+    expect(response.status()).toBe(201);
+    const created = await response.json();
+    expect(created.email).toBe(email);
+    expect(created.expires_at).toBeTruthy();
+    await expect(page.getByLabel("Email", { exact: true })).toHaveValue("");
+    await expect(page.getByLabel("Role", { exact: true })).toHaveValue("member");
+    await expect(page.getByRole("status").filter({ hasText: `Invitation sent to ${email}.` })).toBeVisible();
+    const row = invitations.locator('[data-slot="settings-row"]').first();
+    await expect(row).toBeVisible();
+    await expect(row).toContainText(email);
+    await expect(row).toContainText(`Invited as viewer. Expires ${created.expires_at}.`);
+    await page.reload();
+    await expect(invitations.locator('[data-slot="settings-row"]').first()).toContainText(`Expires ${created.expires_at}.`);
+  }
 });
 
 test("removing the last owner is refused by the hub and said in the page", async ({ page }) => {
@@ -234,8 +260,8 @@ test("project settings show the integration and refuse to edit it for a viewer",
   await expect(page).toHaveURL(/\/settings\/integrations\?project=/);
   await expectOneHeadingOne(page, "Settings");
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
-  await expect(page.getByLabel("Intake")).toBeVisible();
-  await expect(page.getByLabel("Projection")).toBeVisible();
+  await expect(page.getByLabel("Intake", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Projection", { exact: true })).toBeVisible();
   await expectNoSeriousAxeViolations(page, "/projects/:project/settings as owner");
   // `GET {nativeBase}/policy` answers `409 policy_mismatch` on a project with
   // no approved descriptor, which is this fixture's state and a state the
@@ -247,10 +273,54 @@ test("project settings show the integration and refuse to edit it for a viewer",
   ).toEqual([]);
 
   await openAs(page, "viewer", `/projects/${hub.fixture.project_id}/settings`);
-  const intake = page.getByLabel("Intake");
+  const intake = page.getByLabel("Intake", { exact: true });
   await expect(intake).toBeVisible();
   await expect(intake).toBeDisabled();
   await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);
+});
+
+test("pending invitations can be resent and revoked from their row", async ({ page }) => {
+  const email = "withdraw@example.test";
+  await openAs(page, "owner", "/settings/organization");
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page.getByRole("button", { name: "Send invitation", exact: true }).click();
+  const row = page.locator('[data-slot="settings-row"]').filter({
+    has: page.getByRole("heading", { name: email, exact: true }),
+  });
+  await expect(row).toBeVisible();
+  const providerInvitations = async () => {
+    const response = await page.request.get(`${hub.fixture.url}/__preview/invitations`);
+    expect(response.ok()).toBe(true);
+    return Object.values(await response.json()).filter((invitation) => invitation.email === email);
+  };
+  const [invitation] = await providerInvitations();
+  expect(invitation.state).toBe("pending");
+  await row.getByRole("button", { name: "Resend", exact: true }).click();
+  await expect(row.getByRole("status")).toHaveText("Invitation resent.");
+  expect(await providerInvitations()).toHaveLength(1);
+  await row.getByRole("button", { name: "Revoke", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText(`Revoke invitation to ${email}?`);
+  await dialog.getByRole("button", { name: "Keep invitation", exact: true }).click();
+  await expect(row).toBeVisible();
+  const revokeURL = `**/members/invitations/${invitation.id}`;
+  await page.route(revokeURL, (route) => route.fulfill({
+    status: 503, contentType: "application/json",
+    body: JSON.stringify({ code: "unavailable", message: "The invitation could not be revoked. Try again." }),
+  }));
+  await row.getByRole("button", { name: "Revoke", exact: true }).click();
+  await dialog.getByRole("button", { name: "Revoke invitation", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("could not be revoked");
+  await expect(row).toBeVisible();
+  expect((await providerInvitations())[0].state).toBe("pending");
+  await page.unroute(revokeURL);
+  await dialog.getByRole("button", { name: "Revoke invitation", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(row).toHaveCount(0);
+  expect((await providerInvitations())[0].state).toBe("revoked");
+  await openAs(page, "viewer", "/settings/organization");
+  await expect(page.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Resend", exact: true })).toHaveCount(0);
 });
 
 test("the first-run wizard reports the hub's four onboarding steps", async ({ page }) => {
@@ -259,7 +329,7 @@ test("the first-run wizard reports the hub's four onboarding steps", async ({ pa
 
   const steps = page.getByRole("list", { name: "Setup steps" }).getByRole("listitem");
   await expect(steps).toHaveCount(4);
-  await expect(steps.first()).toContainText("Repository configuration");
+  await expect(steps.first()).toContainText("Execution runner");
   // Exactly one step is the current one, and it is reachable from the keyboard.
   await expect(page.locator('[aria-current="step"]')).toHaveCount(1);
   expect(await tabTo(page, "Continue")).toBe(true);
@@ -292,16 +362,20 @@ for (const viewport of [
 
     // Clicking anywhere on a card chooses it, and the choice is visible.
     const local = page.getByRole("radio", { name: "Local history" });
+    const selectedChoice = page.locator("[data-checked]").filter({ has: page.getByRole("radio") });
     await page.getByText("Local history", { exact: true }).click();
     await expect(local).toBeChecked();
-    await expect(page.locator("label[data-checked]")).toContainText("Local history");
+    await expect(selectedChoice).toHaveCount(1);
+    await expect(selectedChoice).toContainText("Local history");
     await page.getByText("Customer service", { exact: true }).click();
     await expect(page.getByRole("radio", { name: "Customer service" })).toBeChecked();
     await expect(local).not.toBeChecked();
+    await expect(selectedChoice).toHaveCount(1);
+    await expect(selectedChoice).toContainText("Customer service");
 
     // Every step stays reachable from the tabs.
     await tabs.nth(0).click();
-    await expect(page.getByRole("heading", { level: 1, name: "Repository configuration" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Execution runner" })).toBeVisible();
     await expectNoSeriousAxeViolations(page, `/projects/:project/setup (${viewport.name})`);
     expect(errors, "console errors on the wizard").toEqual([]);
   });
@@ -385,7 +459,7 @@ test("Providers & runners enrolls a host and shows the one-time token once", asy
   // capacity and projects, never for runner or machine IDs.
   await expect(dialog.getByLabel("Runner id")).toHaveCount(0);
   await dialog.getByLabel("Name").fill("Build host");
-  await dialog.getByLabel("Runs at once").fill("2");
+  await dialog.getByLabel("Concurrent work items", { exact: true }).fill("2");
   await expectNoSeriousAxeViolations(page, "the enrollment dialog");
 
   await dialog.getByRole("button", { name: "Create command" }).click();

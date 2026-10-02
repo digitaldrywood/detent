@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -12,44 +13,65 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type bindNativeRepositoryRequest struct {
+	tracker.Mutation
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	Repository       string           `json:"repository"`
+	Source           string           `json:"source,omitempty"`
+}
+
 func (s *Service) bindNativeRepository(c echo.Context) error {
-	var request struct {
-		tracker.Mutation
-		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
-		Repository       string           `json:"repository"`
-	}
+	var request bindNativeRepositoryRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	owner, name, valid := splitRepositoryFullName(request.Repository)
-	if !valid {
-		return s.nativeAPIError(c, nativeInvalid("Repository must be owner/name"))
-	}
-	if s.config.ReconcileBackend == nil {
-		return s.nativeAPIError(c, nativeInvalid("GitHub repository transport is not configured"))
-	}
-	ctx, scope := c.Request().Context(), nativeRequestScope(c)
-	current, err := readProjectIntegration(ctx, s.database.db, scope)
+	result, err := s.bindNativeRepositoryCommand(c.Request().Context(), nativeRequestScope(c), nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Feature: hostedMutationFeature(c)}, request)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	return c.JSONBlob(http.StatusOK, result)
+}
+func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeScope, options nativeCommandOptions, request bindNativeRepositoryRequest) (json.RawMessage, error) {
+	if request.Source == "" {
+		if replay, found, err := s.nativeCommandReplay(ctx, scope, options.OperationID, request.IdempotencyKey, request); found || err != nil {
+			return replay, err
+		}
+	}
+
+	owner, name, valid := splitRepositoryFullName(request.Repository)
+	if !valid {
+		return nil, nativeInvalid("Repository must be owner/name")
+	}
+	if request.Source == "runner_checkout" {
+		return s.bindRunnerCheckoutCommand(ctx, scope, options, request.Mutation, request.ExpectedRevision, owner+"/"+name)
+	}
+	if request.Source != "" {
+		return nil, nativeInvalid("Repository source is invalid")
+	}
+	if s.config.ReconcileBackend == nil {
+		return nil, nativeInvalid("GitHub repository transport is not configured")
+	}
+	current, err := readProjectIntegration(ctx, s.database.db, scope)
+	if err != nil {
+		return nil, err
+	}
 	if current.Repository != "" && strings.EqualFold(current.Repository, request.Repository) {
-		return c.JSON(http.StatusOK, current)
+		return json.Marshal(current)
 	}
 	if current.Revision != request.ExpectedRevision {
-		return s.nativeAPIError(c, nativeConflict(current.Revision))
+		return nil, nativeConflict(current.Revision)
 	}
 	if current.Profile != "native" || current.RepositoryID != 0 {
-		return s.nativeAPIError(c, nativeInvalid("Only an unbound native project can attach a repository; existing bindings are immutable"))
+		return nil, nativeInvalid("Only an unbound native project can attach a repository; existing bindings are immutable")
 	}
 	snapshot, err := s.config.ReconcileBackend.Reconcile(ctx, ReconcileRequest{Repository: RepositoryTarget{Owner: owner, Name: name}, Profile: "native", SkipIssues: true, SkipRepository: true})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if err := validateReconcileSnapshot(ReconcileSnapshot{Repository: snapshot.Repository}); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		current, err := readProjectIntegration(ctx, tx, scope)
 		if err != nil {
 			return nil, err

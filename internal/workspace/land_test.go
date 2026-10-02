@@ -3,10 +3,16 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 // landingFixture is a source checkout with a bare origin, a workspace backend
@@ -23,6 +29,7 @@ type landingFixture struct {
 func newLandingFixture(t *testing.T) landingFixture {
 	t.Helper()
 	source := initSourceRepo(t)
+	runGit(t, source, "config", "commit.gpgsign", "false")
 	remote := initBareRemote(t)
 	runGit(t, source, "remote", "add", "origin", remote)
 	runGit(t, source, "push", "-u", "origin", "main")
@@ -65,6 +72,132 @@ func (f landingFixture) advanceMain(t *testing.T, name, content string) {
 	runGit(t, f.source, "add", name)
 	runGit(t, f.source, "commit", "-m", "main: "+name)
 	runGit(t, f.source, "push", "origin", "main")
+}
+
+func TestLocalGitCreateReviewedLanding(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, test := range []struct {
+		name, change, refusal string
+		external, held        bool
+	}{
+		{name: "hydrate external reviewed head", external: true},
+		{name: "hydrate operator head without external PR"},
+		{name: "reuse worker published head", change: "worker"},
+		{name: "preserve dirty workspace", external: true, change: "dirty", refusal: LandRefusalHeadMoved},
+		{name: "preserve moved local branch", external: true, change: "branch", refusal: LandRefusalHeadMoved},
+		{name: "preserve another active worktree", external: true, change: "held", held: true},
+		{name: "refuse moved fetched PR head", external: true, change: "remote", refusal: LandRefusalHeadMoved},
+		{name: "refuse cross-project source", external: true, change: "repository", refusal: LandRefusalProtected},
+		{name: "refuse cross-org external reference", external: true, change: "external", refusal: LandRefusalProtected},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLandingFixture(t)
+			branch := "detent/external-source"
+			runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+branch, fixture.head+":refs/pull/7/head")
+			receiver := filepath.Join(t.TempDir(), "receiver")
+			runGit(t, fixture.source, "clone", "--no-local", "--single-branch", "--branch", "main", fixture.remote, receiver)
+			if _, err := runGitAt(t.Context(), receiver, "cat-file", "-e", fixture.head+"^{commit}"); err == nil {
+				t.Fatal("receiver already has the external commit")
+			}
+			repository := "https://github.com/example/repo"
+			runGit(t, receiver, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
+			runGit(t, receiver, "remote", "set-url", "origin", repository+".git")
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var requests []string
+			client, err := github.NewClient(github.ClientConfig{
+				TokenSource: github.StaticTokenSource(t.Name()),
+				HTTPClient: landingHTTPClient(func(req *http.Request) (*http.Response, error) {
+					requests = append(requests, req.Method)
+					body := fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":"%s","repo":{"full_name":"example/repo"}},"base":{"ref":"main","repo":{"full_name":"example/repo"}}}`, fixture.head, branch)
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+				}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := &LandOptions{Repository: repository, HeadSHA: fixture.head, GitHubClient: client}
+			if test.external {
+				options.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
+			}
+			issue := Issue{ProjectID: "project", Identifier: "native-98", Landing: options}
+			var before Info
+			switch test.change {
+			case "repository":
+				options.Repository = "https://github.com/another/repo"
+			case "external":
+				options.External.URL = "https://github.com/another/repo/pull/7"
+			case "remote":
+				runGit(t, fixture.remote, "update-ref", "refs/pull/7/head", fixture.remoteMain(t))
+			case "branch", "held":
+				runGit(t, receiver, "branch", branch, "main")
+				if test.held {
+					runGit(t, receiver, "worktree", "add", filepath.Join(t.TempDir(), "active"), branch)
+				}
+			case "dirty", "worker":
+				runGit(t, receiver, "fetch", "origin", fixture.head)
+				prepared := issue
+				prepared.Landing = nil
+				if test.external {
+					prepared.BranchName = branch
+				}
+				before, err = backend.Create(t.Context(), prepared)
+				if err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, before.Path, "reset", "--hard", fixture.head)
+				if test.change == "dirty" {
+					if err := os.WriteFile(filepath.Join(before.Path, "uncommitted"), []byte("keep me"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			bundle := filepath.Join(t.TempDir(), "source.bundle")
+			runGit(t, fixture.info.Path, "bundle", "create", bundle, "HEAD")
+			info, err := backend.Create(t.Context(), issue)
+			if test.refusal != "" {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != test.refusal {
+					t.Fatalf("Create() error = %v, want %s", err, test.refusal)
+				}
+			} else if test.held {
+				var held *BranchHeldError
+				if !errors.As(err, &held) {
+					t.Fatalf("Create() error = %v, want branch held", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				head, err := backend.Head(t.Context(), info, issue)
+				if err != nil || strings.TrimSpace(head) != fixture.head || test.external && info.Branch != branch {
+					t.Fatalf("landing workspace = %#v, head %s, error %v", info, head, err)
+				}
+				if err := backend.VerifyReviewTree(t.Context(), info, issue); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.change == "dirty" {
+				if contents, err := os.ReadFile(filepath.Join(before.Path, "uncommitted")); err != nil || string(contents) != "keep me" {
+					t.Fatalf("dirty workspace was altered: %s, %v", contents, err)
+				}
+			}
+			if _, err := os.Stat(bundle); err != nil {
+				t.Fatal("source bundle was removed", err)
+			}
+			if head := strings.TrimSpace(runGit(t, fixture.info.Path, "rev-parse", "HEAD")); head != fixture.head {
+				t.Fatal("source worktree was changed", head)
+			}
+			for _, method := range requests {
+				if method != http.MethodGet {
+					t.Fatalf("workspace hydration performed external writes: %v", requests)
+				}
+			}
+		})
+	}
 }
 
 func TestLocalGitLandChangeMethods(t *testing.T) {

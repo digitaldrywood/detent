@@ -131,7 +131,7 @@ func TestOperatorRejectionPromotion(t *testing.T) {
 				state = newState(cfg)
 				if tt.readFailure || tt.writeFailure && !tt.newCommit {
 					other := dispatchTestIssue("unrelated-rework", "Rework")
-					planner := o.liveDispatchPlanner(t.Context())
+					planner := o.liveDispatchPlanner(t.Context(), nil)
 					plan := planner.plan(&state, []connector.Issue{issue, other}, now.Add(time.Minute), dispatchPlanHooks{})
 					if slices.Contains(plan.DispatchOrder(), issue.ID) || !slices.Contains(plan.DispatchOrder(), other.ID) {
 						t.Fatalf("history failure dispatch=%v, want unrelated issue only", plan.DispatchOrder())
@@ -179,7 +179,7 @@ func TestOperatorRejectionRepairDispatch(t *testing.T) {
 			issue.PullRequest.HeadSHA = tt.head
 			state := newState(cfg)
 			state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted}
-			planner := o.liveDispatchPlanner(t.Context())
+			planner := o.liveDispatchPlanner(t.Context(), nil)
 			plan := planner.plan(&state, []connector.Issue{issue}, now.Add(time.Minute), dispatchPlanHooks{})
 			if got := len(plan.DispatchOrder()) > 0; got != tt.wantDispatch {
 				t.Fatalf("dispatch=%v, want dispatch=%v", plan.DispatchOrder(), tt.wantDispatch)

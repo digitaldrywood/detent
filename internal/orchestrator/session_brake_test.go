@@ -46,8 +46,8 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				Status:          "changed",
 			},
 			wantState:    "Rework",
-			finalState:   runpkg.FinalStateNoProgress,
-			wantTerminal: store.WorkAttemptTerminalNoProgress,
+			finalState:   runpkg.FinalStateSessionDurationExceeded,
+			wantTerminal: store.WorkAttemptTerminalTimedOut,
 		},
 		{
 			name:         "workspace progress uses configured rework state",
@@ -55,16 +55,16 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			activeStates: []string{"Todo", "In Progress", "Production Rework"},
 			reworkState:  "Production Rework",
 			wantState:    "production rework",
-			finalState:   runpkg.FinalStateNoProgress,
-			wantTerminal: store.WorkAttemptTerminalNoProgress,
+			finalState:   runpkg.FinalStateSessionDurationExceeded,
+			wantTerminal: store.WorkAttemptTerminalTimedOut,
 		},
 		{
 			name:         "workspace progress falls back to todo when rework is inactive",
 			resumable:    true,
 			activeStates: []string{"Todo", "In Progress"},
 			wantState:    "Todo",
-			finalState:   runpkg.FinalStateNoProgress,
-			wantTerminal: store.WorkAttemptTerminalNoProgress,
+			finalState:   runpkg.FinalStateSessionDurationExceeded,
+			wantTerminal: store.WorkAttemptTerminalTimedOut,
 		},
 		{
 			name:         "memory ceiling returns to todo without breaker strike",
@@ -106,8 +106,6 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				Resumable:        tt.resumable,
 			}
 			switch tt.finalState {
-			case runpkg.FinalStateNoProgress:
-				brake.Reason = runpkg.SessionBrakeReasonNoProgress
 			case runpkg.FinalStateMemoryCeilingExceeded:
 				brake.Reason = runpkg.SessionBrakeReasonMemory
 				brake.RSSBytes = 9 << 30

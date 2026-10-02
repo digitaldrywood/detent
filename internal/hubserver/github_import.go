@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -88,17 +89,23 @@ FROM github_imports g JOIN projects p ON p.id = g.project_id WHERE p.organizatio
 	return result, nil
 }
 
+type startGitHubImportRequest struct {
+	tracker.Mutation
+	IssueNumber      int              `json:"issue_number"`
+	Restart          bool             `json:"restart"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+
 func (s *Service) startGitHubImport(c echo.Context) error {
-	var request struct {
-		tracker.Mutation
-		IssueNumber      int              `json:"issue_number"`
-		Restart          bool             `json:"restart"`
-		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
-	}
+	var request startGitHubImportRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.nativeMutation(c, request.Mutation, request, s.startGitHubImportOperation(request))
+}
+
+func (s *Service) startGitHubImportOperation(request startGitHubImportRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
+	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		integration, err := readProjectIntegration(ctx, tx, scope)
 		if err != nil {
 			return nil, err
@@ -131,7 +138,7 @@ func (s *Service) startGitHubImport(c echo.Context) error {
 			}
 		}
 		return readGitHubImport(ctx, tx, scope, id)
-	})
+	}
 }
 
 func (s *Service) getGitHubImport(c echo.Context) error {
@@ -144,83 +151,106 @@ func (s *Service) getGitHubImport(c echo.Context) error {
 
 func (s *Service) advanceGitHubImport(c echo.Context) error {
 	var request struct {
+		tracker.Mutation
 		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if s.config.ImportBackend == nil {
-		return s.nativeAPIError(c, nativeInvalid("GitHub import transport is not configured"))
+	id := c.Param("import")
+	key := request.IdempotencyKey
+	if key == "" {
+		// Legacy callers do not supply a retry key; preserve their revision
+		// conflict semantics. Explicit keys use the shared durable receipt.
+		current, err := readGitHubImport(c.Request().Context(), s.database.db, nativeRequestScope(c), id)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if current.Revision != request.ExpectedRevision {
+			return s.nativeAPIError(c, nativeConflict(current.Revision))
+		}
+		key = fmt.Sprintf("advance:%s:%d", id, request.ExpectedRevision)
 	}
-	ctx, scope := c.Request().Context(), nativeRequestScope(c)
-	current, err := readGitHubImport(ctx, s.database.db, scope, c.Param("import"))
+	result, err := s.advanceGitHubImportCommand(c.Request().Context(), nativeRequestScope(c), id, request.ExpectedRevision, key)
 	if err != nil {
+		var failure *nativeError
+		if errors.As(err, &failure) && failure.status == http.StatusTooManyRequests {
+			current, readErr := readGitHubImport(c.Request().Context(), s.database.db, nativeRequestScope(c), id)
+			if readErr != nil {
+				return s.nativeAPIError(c, readErr)
+			}
+			return c.JSON(http.StatusTooManyRequests, current)
+		}
 		return s.nativeAPIError(c, err)
 	}
-	if current.Revision != request.ExpectedRevision {
-		return s.nativeAPIError(c, nativeConflict(current.Revision))
+	return c.JSONBlob(http.StatusOK, result)
+}
+func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeScope, id string, revision tracker.Revision, key string) (json.RawMessage, error) {
+	input := struct {
+		ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	}{revision}
+	options := nativeCommandOptions{OperationID: projectOperationID(scope, "POST", "/imports/"+id+"/advance"), Feature: "github_integration"}
+	if replay, found, err := s.nativeCommandReplay(ctx, scope, options.OperationID, key, input); found || err != nil {
+		return replay, err
+	}
+
+	if s.config.ImportBackend == nil {
+		return nil, nativeInvalid("GitHub import transport is not configured")
+	}
+	current, err := readGitHubImport(ctx, s.database.db, scope, id)
+	if err != nil {
+		return nil, err
+	}
+	if current.Revision != revision {
+		return nil, nativeConflict(current.Revision)
 	}
 	if current.Stage == "finished" {
-		return c.JSON(http.StatusOK, current)
+		return json.Marshal(current)
 	}
 	if current.RetryAfter != nil && s.config.now().Before(*current.RetryAfter) {
-		return c.JSON(http.StatusTooManyRequests, current)
+		return nil, &nativeError{Code: "invalid_request", Message: "Import retry is not ready", status: http.StatusTooManyRequests}
 	}
 	integration, err := readProjectIntegration(ctx, s.database.db, scope)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if integration.Intake != "manual" {
-		return s.nativeAPIError(c, nativeInvalid("Manual intake is disabled"))
+		return nil, nativeInvalid("Manual intake is disabled")
 	}
 	page, fetchErr := s.fetchImportPage(ctx, integration, current)
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer tx.Rollback()
-	latest, err := readGitHubImport(ctx, tx, scope, current.ID)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if latest.Revision != current.Revision {
-		return s.nativeAPIError(c, nativeConflict(latest.Revision))
-	}
-	active, err := readProjectIntegration(ctx, tx, scope)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if active.Revision != integration.Revision {
-		return s.nativeAPIError(c, nativeConflict(active.Revision))
-	}
-	now := s.config.now().UTC()
-	before, err := s.database.hostedConsumption(ctx, tx, now)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if fetchErr != nil {
-		retry := now.Add(time.Minute)
-		if page.RetryAt.After(retry) {
-			retry = page.RetryAt
+	return s.executeNativeMutation(ctx, scope, options, tracker.Mutation{IdempotencyKey: key}, input, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		latest, err := readGitHubImport(ctx, tx, scope, current.ID)
+		if err != nil {
+			return nil, err
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE github_imports SET status = 'partial', last_error = ?, retry_after = ?, revision = revision + 1 WHERE id = ?", truncateOutboxError(fetchErr.Error()), formatHubTime(retry), current.ID)
-	} else {
-		err = applyGitHubImportPage(ctx, tx, scope, integration, current, page, now)
-	}
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	result, err := readGitHubImport(ctx, tx, scope, current.ID)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, result)
+		if latest.Revision != current.Revision {
+			return nil, nativeConflict(latest.Revision)
+		}
+		active, err := readProjectIntegration(ctx, tx, scope)
+		if err != nil {
+			return nil, err
+		}
+		if active.Revision != integration.Revision {
+			return nil, nativeConflict(active.Revision)
+		}
+		if fetchErr != nil {
+			retry := now.Add(time.Minute)
+			if page.RetryAt.After(retry) {
+				retry = page.RetryAt
+			}
+			_, err = tx.ExecContext(ctx, "UPDATE github_imports SET status = 'partial', last_error = ?, retry_after = ?, revision = revision + 1 WHERE id = ?", truncateOutboxError(fetchErr.Error()), formatHubTime(retry), current.ID)
+		} else {
+			err = applyGitHubImportPage(ctx, tx, scope, integration, current, page, now)
+		}
+		if err != nil {
+			return nil, err
+		}
+		result, err := readGitHubImport(ctx, tx, scope, current.ID)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	})
 }
 
 func applyGitHubImportPage(ctx context.Context, tx *sql.Tx, scope nativeScope, integration ProjectIntegration, current GitHubImport, page GitHubImportPage, now time.Time) error {
@@ -354,13 +384,9 @@ func importGitHubIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, integ
 		if author == "" {
 			author = "unavailable"
 		}
-		created, createErr := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: source.Title, Body: source.Body, State: project.States[0].Name, Labels: source.Labels, Assignees: source.Assignees, Provenance: &tracker.Provenance{Provider: "github", ExternalID: source.NodeID, AuthorID: author, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ObservedAt: now}}, now)
+		issue, createErr := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: source.Title, Body: source.Body, State: project.States[0].Name, Labels: source.Labels, Assignees: source.Assignees, Provenance: &tracker.Provenance{Provider: "github", ExternalID: source.NodeID, AuthorID: author, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ObservedAt: now}}, now)
 		if createErr != nil {
 			return createErr
-		}
-		issue, ok := created.(tracker.NativeIssue)
-		if !ok {
-			return nativeInvalid("Native issue import returned an invalid identity")
 		}
 		current.WorkItemID = string(issue.WorkItemID)
 		if _, err := tx.ExecContext(ctx, "UPDATE github_imports SET intake_pending = 1 WHERE id = ?", current.ID); err != nil {

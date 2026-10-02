@@ -1,5 +1,14 @@
 {
   "tests": {
+    "./tools/cifailure": [
+      "TestParseProblems",
+      "TestReport",
+      "TestReportFailures",
+      "TestCloudReport",
+      "TestCloudTransport",
+      "TestCloudDestinationAuthority",
+      "TestScheduledFinalizer"
+    ],
     "./tools/invariantcheck": [
       "TestBehaviorEvidence"
     ],
@@ -7,13 +16,14 @@
       "TestOperatorRejectionPromotion",
       "TestOperatorRejectionRepairDispatch",
       "TestCompletedActiveReviewRequiresFinishedWork",
+      "TestOperationalBodyCompletionSurvivesRestart",
       "TestUnfinishedCompletionClassification",
       "TestCompletionRebaseProgress",
       "TestCompletionForgeEvidence",
       "TestCompletionForgeEvidenceClassification",
       "TestCompletionForgeEvidenceDispatch",
       "TestCompletionForgeEvidencePreservesReceipt",
-      "TestUnfinishedSessionsExhaustAttemptAllowance",
+      "TestUnfinishedSessionsRetainConfiguredDispatch",
       "TestCompletedReworkCandidatesRemainVisible",
       "TestPolicyMismatchStopsDispatchWithoutAttempt",
       "TestAttemptMetadataRetainsApprovedPolicy",
@@ -26,6 +36,7 @@
       "TestWorkpadHumanActionClearanceRecoversBlockedIssue",
       "TestReconcileRunningIssuesRetainsWorkerOutsideActiveLane",
       "TestPreTurnFailuresDrainInstance",
+      "TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers",
       "TestClassifyWorkspaceForgeReadFailure",
       "TestWorkspaceSSHRefusalDoesNotTripProjectBreaker",
       "TestRecoverDurableWorkspaceGitReadWait",
@@ -62,23 +73,28 @@
       "TestQueuedDispatchPreservesRetry",
       "TestStandingDispatchSurvivesProjectRefresh",
       "TestQueuedDispatchPreservesPullRequestEnrichment",
-      "TestAttemptAllowanceCountsIssueJourney",
-      "TestAttemptAllowanceExternalWaits",
-      "TestAttemptAllowanceExternalEvidencePersistence",
-      "TestAttemptAllowanceExternalWaitRestart",
-      "TestAttemptAllowanceDispatchAndRestart",
+      "TestDispatchRetainsConfiguredModeAfterPriorSessions",
+      "TestRetiredAttemptTriageParkRestoresPriorLane",
       "TestAttemptAllowanceTriagePublication",
       "TestAttemptAllowanceNoteFormat",
-      "TestAttemptAllowanceMergeTimeAndRunningOwnership",
       "TestAttemptAllowancePreservesOperatorCompletionLane",
-      "TestTransitionAlreadyMergedCompletion"
+      "TestTransitionAlreadyMergedCompletion",
+      "TestSSHHostLossUsesInstanceRetry",
+      "TestSSHHostLossClearsResumeOnSpillover",
+      "TestSSHQueuedPreferenceAndHostCaps"
     ],
     "./internal/runner": [
+      "TestNativeReworkFinalizesBeforeImmutableEvidence",
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
       "TestWorkerCredentialBlockerError",
       "TestRunnerTriageIsReadOnly",
       "TestINV12WorkerInheritsToolchainEnvironment",
-      "TestINV12BackendToolchainEnvironment"
+      "TestINV12BackendToolchainEnvironment",
+      "TestSSHCallbackDoesNotPublishRemotePID"
+    ],
+    "./internal/workspace": [
+      "TestLocalGitNativeReworkOwnsPausedRebase",
+      "TestGitMetadataWritableRootsForLinkedWorktree"
     ],
     "./internal/store": [
       "TestLegacyHumanQuestionReceiptsReadable",
@@ -122,7 +138,10 @@
       "TestDoctorInvariantAdmissionUnavailableEvidence",
       "TestINV12DoctorNativeCaches",
       "TestINV12DoctorWorkspaceKinds",
-      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns"
+      "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns",
+      "TestSSHLocalTargetIntegration",
+      "TestSSHServiceProxyKeepsCentralAuthority",
+      "TestSSHProbeRequiresProvidedScratch"
     ],
     "./internal/connector/github": [
       "TestRefreshBoardFilterCost",

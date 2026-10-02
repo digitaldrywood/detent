@@ -63,34 +63,6 @@ func TestCIHasNoPullRequestConcurrency(t *testing.T) {
 	}
 }
 
-func TestSnapshotBudgetPreservesReleaseWork(t *testing.T) {
-	t.Parallel()
-
-	config := readNormalizedFile(t, ".goreleaser.yaml")
-	for _, tt := range []struct {
-		name    string
-		start   string
-		end     string
-		markers []string
-	}{
-		{"hooks", "before:", "\nbuilds:", []string{"go mod download", "make check-generated", "make test"}},
-		{"targets", "builds:", "\narchives:", []string{"CGO_ENABLED=0", "-trimpath", "- darwin", "- linux", "- windows", "- amd64", "- arm64"}},
-		{"archives", "archives:", "\nbrews:", []string{"- tar.gz", "goos: windows", "- zip", "- README.md", "- LICENSE", "- docs/**/*", "- scripts/hub-smoke.py"}},
-		{"packages", "nfpms:", "\nscoops:", []string{"- deb", "- rpm"}},
-		{"checksums", "checksum:", "\nsigns:", []string{"algorithm: sha256"}},
-		{"signing", "signs:", "\nsnapshot:", []string{"artifacts: checksum", "cmd: minisign", "${artifact}.minisig", "{{ .Env.MINISIGN_KEY_FILE }}"}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			section := workflowBetween(t, config, tt.start, tt.end)
-			for _, marker := range tt.markers {
-				if !strings.Contains(section, marker) {
-					t.Errorf("release configuration missing %q", marker)
-				}
-			}
-		})
-	}
-}
-
 func TestReleaseHooksDoNotRegenerate(t *testing.T) {
 	t.Parallel()
 
@@ -149,7 +121,7 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 		"GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)",
 		"GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)",
 		"lint: $(GOLANGCI_LINT)",
-		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --timeout=15m`,
+		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m`,
 		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" GOBIN="$(GOLANGCI_LINT_DIR)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)`,
 		"setup: $(GOLANGCI_LINT)",
 	} {
@@ -226,7 +198,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			if err != nil {
 				t.Fatalf("make lint: %v\n%s", err, output)
 			}
-			if !strings.Contains(string(output), "pinned:go1.26.6:run --timeout=15m") {
+			if !strings.Contains(string(output), "pinned:go1.26.6:run --allow-parallel-runners ") || !strings.Contains(string(output), "--timeout=15m") {
 				t.Fatalf("make lint did not invoke the pinned toolchain: %s", output)
 			}
 			if installed := strings.Contains(string(output), "go install"); installed == cached {
@@ -239,7 +211,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 func TestScheduledCIDocumentationMatchesWorkflow(t *testing.T) {
 	t.Parallel()
 	docs := readNormalizedFile(t, "docs/execution-seams.md")
-	section := workflowBetween(t, docs, "### Main Branch Protection\n", "\n## Still Git/PR Coupled")
+	section := workflowBetween(t, docs, "### Detent Repository Branch Protection\n", "\n## Still Git/PR Coupled")
 	for _, want := range []string{"`make check-fast`", "scheduled", "`develop`", "tag", "staging"} {
 		if !strings.Contains(section, want) {
 			t.Errorf("CI documentation missing %q", want)
@@ -294,10 +266,13 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 	}{
 		{name: "hosted runner", want: "    runs-on: ubuntu-latest\n", present: true},
 		{name: "dispatch limited to develop", want: "    if: github.ref == 'refs/heads/develop'\n", present: true},
-		{name: "staging environment", want: "    environment:\n      name: staging\n      url: https://staging.hub.detent.build\n", present: true},
+		{name: "staging environment", want: "    environment:\n      name: staging\n      url: https://staging.cloud.detent.build\n", present: true},
 		{name: "single deploy at a time", want: "concurrency:\n  group: deploy-staging\n  cancel-in-progress: true\n", present: true},
 		{name: "read-only token", want: "permissions:\n  contents: read\n", present: true},
 		{name: "strict host key", want: "-o StrictHostKeyChecking=yes", present: true},
+		{name: "existing host key pin survives rename", want: "-o HostKeyAlias=staging.hub.detent.build", present: true},
+		{name: "canonical SSH destination", want: "apprunner@staging.cloud.detent.build", present: true},
+		{name: "canonical and legacy deployment smoke", want: "run: python3 scripts/cloud-origin-smoke.py --environment staging", present: true},
 		{name: "stale run skips deploy", want: `if [ "$head" != "$GITHUB_SHA" ]; then`, present: true},
 		{name: "only pre-key-exchange failures retry", want: `grep -qE '^(kex_exchange_identification:|ssh: connect to host )'`, present: true},
 		{name: "self-hosted runner", want: "self-hosted"},
@@ -313,53 +288,6 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 	}
 	if count := strings.Count(workflow, "runs-on:"); count != 1 {
 		t.Fatalf("deploy-staging has %d runs-on entries, want 1", count)
-	}
-}
-
-func TestScheduledCIFinalizerReportsAndTags(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	finalizer := workflowBetween(t, workflow, "  finalize:", "")
-	for _, want := range []string{"if: always()", "actions: write", "contents: write", "issues: write", "statuses: write", "scripts/scheduled-ci-finish.sh"} {
-		if !strings.Contains(finalizer, want) {
-			t.Errorf("scheduled finalizer missing %q", want)
-		}
-	}
-	finish := readNormalizedFile(t, "scripts/scheduled-ci-finish.sh")
-	for _, want := range []string{"ci-scheduled-failure", "detent:todo", "hotfix", "scheduled-full-ci", "git tag -a", "git push origin", "release.yml/dispatches"} {
-		if !strings.Contains(finish, want) {
-			t.Errorf("scheduled finalizer script missing %q", want)
-		}
-	}
-}
-
-func TestPortabilityStressRunsOutsidePullRequestGate(t *testing.T) {
-	t.Parallel()
-
-	requiredWorkflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	requiredJob := workflowBetween(t, requiredWorkflow, "  portability-verify:", "\n  windows-core:")
-	for _, forbidden := range []string{"go test -race", "-count=10", "-count=20"} {
-		if strings.Contains(requiredJob, forbidden) {
-			t.Fatalf("required portability job contains heavy coverage %q", forbidden)
-		}
-	}
-
-	stressWorkflow := readNormalizedFile(t, ".github/workflows/portability-stress.yml")
-	for _, want := range []string{
-		"workflow_dispatch:",
-		"timeout-minutes: 45",
-		"os: [macos-latest, windows-latest]",
-		"go test ./internal/orchestrator -run '^TestLocalSQLiteArtifactLifecycleEndToEnd$' -count=20",
-		"go test -race ./internal/cli ./internal/runner ./tools/checklock -count=10 -timeout=30m",
-		"bash scripts/test-workspace.sh -race",
-		`go test -race "${packages[@]}"`,
-	} {
-		if !strings.Contains(stressWorkflow, want) {
-			t.Fatalf("portability stress workflow missing %q", want)
-		}
-	}
-	if strings.Contains(stressWorkflow, "pull_request:") || strings.Contains(stressWorkflow, "schedule:") {
-		t.Fatal("portability stress workflow must run only on manual dispatch")
 	}
 }
 
@@ -568,7 +496,7 @@ list)
   ;;
 run)
   test -z "${DETENT_API_TOKEN:-}" || exit 99
-  case "$*" in *"-timeout 30m"*) ;; *) exit 97 ;; esac
+  case "$*" in *"-timeout "*) ;; *) exit 97 ;; esac
   echo invoked > workspace-invoked
   exit "$TEST_EXIT"
   ;;

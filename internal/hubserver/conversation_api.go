@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,13 +35,14 @@ const (
 // Write capability is therefore checked per handler by authorizeWrite.
 func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
 	scope := s.requireConversationScope()
-	e.POST(nativeBase+"/conversations", s.createConversation, scope)
+	e.POST(nativeBase+"/conversations", s.createConversation, scope, s.operatorAuthority)
 	e.GET(nativeBase+"/conversations", s.listProjectConversations, scope)
 	e.GET("/api/v2/organizations/:organization/conversations", s.listOrganizationConversations, s.requireConversationOrganization())
 	e.GET(nativeBase+"/conversations/:conversation", s.getConversation, scope)
+	e.GET(nativeBase+"/work-items/:item/conversation", s.getWorkItemConversation, scope)
 	e.GET(nativeBase+"/conversations/:conversation/messages", s.listConversationMessages, scope)
 	e.GET(nativeBase+"/conversations/:conversation/events", s.streamConversationEvents, scope)
-	e.POST(nativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope)
+	e.POST(nativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope, s.operatorAuthority)
 	e.POST(nativeBase+"/conversations/:conversation/link", s.linkConversation, scope)
 	e.PATCH(nativeBase+"/conversations/:conversation", s.patchConversation, scope)
 	e.GET(nativeBase+"/work-items/:item/references", s.listWorkItemReferences, scope)
@@ -525,87 +527,11 @@ func (s *Service) createConversation(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	request.Title = strings.TrimSpace(request.Title)
-	if utf8.RuneCountInString(request.Title) > conversationTitleMaxRunes {
-		return s.nativeAPIError(c, nativeInvalid(fmt.Sprintf("Title must be at most %d characters", conversationTitleMaxRunes)))
-	}
-	var command conversation.Command
-	if request.FirstMessage != nil {
-		command = conversation.Command{Key: request.FirstMessage.Key, Kind: conversation.CommandMessage, Text: request.FirstMessage.Text}
-		if err := conversation.ValidateCommand(command); err != nil {
-			return s.nativeAPIError(c, nativeInvalid(err.Error()))
-		}
-	}
-	service := s.conversations
-	// Write capability is checked before the mutation so that a read-only
-	// member is refused with the contract's forbidden rather than the
-	// hosted mutation guard's opaque not_found, as linkConversation does.
-	scope := nativeRequestScope(c)
-	fresh := conversationRecord{OrganizationID: scope.organization, ProjectID: scope.project, OwnerPrincipalID: scope.credential.ID, Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive}
-	if err := service.authorizeWrite(c.Request().Context(), s.database.db, scope, fresh); err != nil {
+	value, err := s.commandCreateConversation(c.Request().Context(), nativeRequestScope(c), request)
+	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	var record conversationRecord
-	notify := false
-	err := s.nativeMutationStatus(c, http.StatusCreated, tracker.Mutation{IdempotencyKey: request.Key}, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		if err := service.authorizeWrite(ctx, tx, scope, fresh); err != nil {
-			return nil, err
-		}
-		if err := service.requireActorAuthority(ctx, tx, scope, now); err != nil {
-			return nil, err
-		}
-		title := request.Title
-		if title == "" {
-			title = conversationDefaultTitle
-			if request.FirstMessage != nil {
-				title = deriveConversationTitle(request.FirstMessage.Text)
-			}
-		}
-		record = conversationRecord{
-			ID:               conversation.NewConversationID(),
-			OrganizationID:   scope.organization,
-			ProjectID:        scope.project,
-			OwnerPrincipalID: scope.credential.ID,
-			Title:            title,
-			Visibility:       conversation.VisibilityPrivate,
-			Status:           conversation.StatusActive,
-			Execution:        conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: now},
-			CreatedAt:        now,
-			UpdatedAt:        now,
-		}
-		if scope.credential.Hosted != nil {
-			record.OwnerSubject = scope.credential.Hosted.Subject
-		}
-		if err := service.store.createConversation(ctx, tx, &record); err != nil {
-			return nil, err
-		}
-		var receipt *conversation.Receipt
-		if request.FirstMessage != nil {
-			if _, _, err := service.store.reserveCommand(ctx, tx, record.ID, command.Key, command.Kind, conversation.RequestHash(command), now); err != nil {
-				return nil, err
-			}
-			result, err := service.acceptCommand(ctx, tx, scope, &record, command, now)
-			if err != nil {
-				service.logStaleExecution(string(command.Kind), record.ID, err)
-				return nil, err
-			}
-			if err := service.recordReceipt(ctx, tx, record.ID, record.Execution.Owner.AttemptID, result, now); err != nil {
-				return nil, err
-			}
-			result.UpdatedAt = now
-			receipt = &result
-		}
-		stored, err := service.store.readConversation(ctx, tx, scope.organization, scope.project, record.ID)
-		if err != nil {
-			return nil, err
-		}
-		record, notify = stored, receipt != nil
-		return conversationCreatedResponse{Conversation: projectConversation(record), Receipt: receipt}, nil
-	})
-	if notify {
-		service.committed(record)
-	}
-	return err
+	return c.JSONBlob(http.StatusCreated, value)
 }
 
 func (s *Service) listConversationsPage(c echo.Context, filter conversationListQuery) error {
@@ -626,15 +552,11 @@ func (s *Service) listConversationsPage(c echo.Context, filter conversationListQ
 		filter.Settled = &settled
 	}
 	filter.Title = strings.TrimSpace(c.QueryParam("q"))
-	records, next, err := s.conversations.store.listConversations(c.Request().Context(), s.database.db, filter)
+	value, err := s.readConversationsPage(c.Request().Context(), scope, filter)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	page := conversationListPage{Conversations: make([]conversationResource, 0, len(records)), NextCursor: conversationOptional(next)}
-	for _, record := range records {
-		page.Conversations = append(page.Conversations, projectConversation(record))
-	}
-	return c.JSON(http.StatusOK, page)
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // listProjectConversations implements GET /conversations for a project.
@@ -692,43 +614,31 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
 	return projects, false, nil
 }
 
+func (s *Service) getWorkItemConversation(c echo.Context) error {
+	value, err := s.readWorkItemConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("item"))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, value)
+}
+
+func (s *Service) readWorkItemConversationSnapshot(ctx context.Context, scope nativeScope, item string) (json.RawMessage, error) {
+	return s.readConversationSnapshotFor(ctx, scope, "", item)
+}
+
 // getConversation implements GET /conversations/:conversation. The record,
 // the latest message page and the pending questions are read in one
 // transaction so that the returned cursor matches the messages exactly.
 func (s *Service) getConversation(c echo.Context) error {
-	scope := nativeRequestScope(c)
-	service := s.conversations
-	ctx := c.Request().Context()
-	var snapshot conversationSnapshot
-	err := service.transact(ctx, func(tx *sql.Tx, _ time.Time) error {
-		record, err := service.loadConversation(ctx, tx, scope, c.Param("conversation"))
-		if err != nil {
-			return err
-		}
-		messages, err := service.store.listMessages(ctx, tx, record.ID, 0, conversationMessagePage)
-		if err != nil {
-			return err
-		}
-		questions, err := service.store.listSnapshotQuestions(ctx, tx, record.ID, record.Execution.Owner.AttemptID, conversationSnapshotQuestions)
-		if err != nil {
-			return err
-		}
-		snapshot = conversationSnapshot{Conversation: projectConversation(record), Messages: projectMessages(messages), Questions: make([]conversation.Question, 0, len(questions)), Cursor: record.EventSeq}
-		snapshot.HasMore, _ = conversationOlderCursor(snapshot.Messages)
-		for _, question := range questions {
-			snapshot.Questions = append(snapshot.Questions, question.Question)
-		}
-		return nil
-	})
+	value, err := s.readConversationSnapshot(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, snapshot)
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // listConversationMessages implements GET /conversations/:conversation/messages.
 func (s *Service) listConversationMessages(c echo.Context) error {
-	scope := nativeRequestScope(c)
 	before, err := conversationQueryInt(c, "before")
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -740,18 +650,11 @@ func (s *Service) listConversationMessages(c echo.Context) error {
 	if limit == 0 {
 		limit = conversationMessagePage
 	}
-	ctx := c.Request().Context()
-	record, err := s.conversations.loadConversation(ctx, s.database.db, scope, c.Param("conversation"))
+	value, err := s.readConversationMessages(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), before, int(limit))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	messages, err := s.conversations.store.listMessages(ctx, s.database.db, record.ID, before, int(limit))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	page := conversationMessagesPage{Messages: projectMessages(messages)}
-	_, page.NextCursor = conversationOlderCursor(page.Messages)
-	return c.JSON(http.StatusOK, page)
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // postConversationCommand implements POST /conversations/:conversation/commands.
@@ -760,57 +663,11 @@ func (s *Service) postConversationCommand(c echo.Context) error {
 	if err := decodeAPIJSON(c, &command); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if err := conversation.ValidateCommand(command); err != nil {
-		return s.nativeAPIError(c, nativeInvalid(err.Error()))
-	}
-	scope := nativeRequestScope(c)
-	service := s.conversations
-	ctx := c.Request().Context()
-	var record conversationRecord
-	var receipt *conversation.Receipt
-	replay := false
-	err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		var err error
-		record, err = service.loadConversation(ctx, tx, scope, c.Param("conversation"))
-		if err != nil {
-			return err
-		}
-		if err := service.authorizeWrite(ctx, tx, scope, record); err != nil {
-			return err
-		}
-		if err := service.requireActorAuthority(ctx, tx, scope, now); err != nil {
-			return err
-		}
-		stored, conflict, err := service.store.reserveCommand(ctx, tx, record.ID, command.Key, command.Kind, conversation.RequestHash(command), now)
-		if err != nil {
-			return err
-		}
-		if stored != nil {
-			if conflict {
-				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
-			}
-			receipt, replay = stored, true
-			return nil
-		}
-		result, err := service.acceptCommand(ctx, tx, scope, &record, command, now)
-		if err != nil {
-			return err
-		}
-		if err := service.recordReceipt(ctx, tx, record.ID, record.Execution.Owner.AttemptID, result, now); err != nil {
-			return err
-		}
-		result.UpdatedAt = now
-		receipt = &result
-		return nil
-	})
+	value, err := s.commandPostConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), command)
 	if err != nil {
-		service.logStaleExecution(string(command.Kind), record.ID, err)
 		return s.nativeAPIError(c, err)
 	}
-	if !replay {
-		service.committed(record)
-	}
-	return c.JSON(http.StatusOK, receipt)
+	return c.JSONBlob(http.StatusOK, value)
 }
 
 // conversationExecutionLive reports whether an attempt is bound and can be
@@ -845,7 +702,7 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 	pending := linked && !conversationExecutionLive(record.Execution.Status)
 	switch command.Kind {
 	case conversation.CommandMessage:
-		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: command.Text, Actor: actor, CommandKey: command.Key}
+		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: command.Text, Actor: actor, CommandKey: command.Key, Data: coordinatorConnectionData(ctx)}
 		switch {
 		case !linked:
 			// The hub-side coordinator reads saved messages from the store,
@@ -1045,6 +902,7 @@ func (c *conversationService) retryMessage(ctx context.Context, tx *sql.Tx, scop
 	}
 	// The generation that could not serve the control is cleared, so the
 	// next attempt takes it as a fresh delivery.
+	message.Data = coordinatorConnectionData(ctx)
 	message.Delivery = delivery
 	message.AttemptID, message.ThreadID, message.TurnID = "", "", ""
 	if err := c.updateMessage(ctx, tx, message, now); err != nil {
@@ -1113,19 +971,215 @@ func (s *Service) linkConversation(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	scope := nativeRequestScope(c)
+	value, err := s.commandLinkConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, value)
+}
+
+// saveConversationChange loads, authorizes (owner or write access), applies
+// change and saves the conversation, then reports the result.
+func (s *Service) changeConversation(ctx context.Context, scope nativeScope, id string, change func(context.Context, *sql.Tx, nativeScope, *conversationRecord, time.Time) error) (json.RawMessage, error) {
 	service := s.conversations
-	ctx := c.Request().Context()
-	id := c.Param("conversation")
+	var record conversationRecord
+	err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		var err error
+		record, err = service.loadConversation(ctx, tx, scope, id)
+		if err != nil {
+			return err
+		}
+		if err := service.authorizeManage(ctx, tx, scope, record); err != nil {
+			return err
+		}
+		if err := service.requireActorAuthority(ctx, tx, scope, now); err != nil {
+			return err
+		}
+		if err := change(ctx, tx, scope, &record, now); err != nil {
+			return err
+		}
+		if err := service.saveConversation(ctx, tx, &record, now); err != nil {
+			return err
+		}
+		record, err = service.store.readConversation(ctx, tx, scope.organization, scope.project, record.ID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	service.committed(record)
+	return json.Marshal(projectConversation(record))
+}
+
+// patchConversation implements PATCH /conversations/:conversation. It
+// renames a conversation, changes its turn preferences, or both; a request
+// that asks for neither is refused rather than silently accepted.
+func (s *Service) patchConversation(c echo.Context) error {
+	var request conversationPatchRequest
+	if err := decodeAPIJSON(c, &request); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	value, err := s.commandPatchConversation(c.Request().Context(), nativeRequestScope(c), c.Param("conversation"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, value)
+}
+
+func (s *Service) commandCreateConversation(ctx context.Context, scope nativeScope, request conversationCreateRequest) (json.RawMessage, error) {
+	request.Title = strings.TrimSpace(request.Title)
+	if utf8.RuneCountInString(request.Title) > conversationTitleMaxRunes {
+		return nil, nativeInvalid(fmt.Sprintf("Title must be at most %d characters", conversationTitleMaxRunes))
+	}
+	var command conversation.Command
+	if request.FirstMessage != nil {
+		command = conversation.Command{Key: request.FirstMessage.Key, Kind: conversation.CommandMessage, Text: request.FirstMessage.Text}
+		if err := conversation.ValidateCommand(command); err != nil {
+			return nil, nativeInvalid(err.Error())
+		}
+	}
+	ctx, err := s.bindCoordinatorConnection(ctx, command.Key)
+	if err != nil {
+		return nil, err
+	}
+	service := s.conversations
+	// Write capability is checked before the mutation so that a read-only
+	// member is refused with the contract's forbidden rather than the
+	// hosted mutation guard's opaque not_found, as linkConversation does.
+	fresh := conversationRecord{OrganizationID: scope.organization, ProjectID: scope.project, OwnerPrincipalID: scope.credential.ID, Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive}
+	if err := service.authorizeWrite(ctx, s.database.db, scope, fresh); err != nil {
+		return nil, err
+	}
+	var record conversationRecord
+	notify := false
+	value, err := s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/conversations"), Feature: "collaboration"}, tracker.Mutation{IdempotencyKey: request.Key}, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		if err := service.authorizeWrite(ctx, tx, scope, fresh); err != nil {
+			return nil, err
+		}
+		if err := service.requireActorAuthority(ctx, tx, scope, now); err != nil {
+			return nil, err
+		}
+		title := request.Title
+		if title == "" {
+			title = conversationDefaultTitle
+			if request.FirstMessage != nil {
+				title = deriveConversationTitle(request.FirstMessage.Text)
+			}
+		}
+		record = conversationRecord{
+			ID:               conversation.NewConversationID(),
+			OrganizationID:   scope.organization,
+			ProjectID:        scope.project,
+			OwnerPrincipalID: scope.credential.ID,
+			Title:            title,
+			Visibility:       conversation.VisibilityPrivate,
+			Status:           conversation.StatusActive,
+			Execution:        conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: now},
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+		if scope.credential.Hosted != nil {
+			record.OwnerSubject = scope.credential.Hosted.Subject
+		}
+		if err := service.store.createConversation(ctx, tx, &record); err != nil {
+			return nil, err
+		}
+		var receipt *conversation.Receipt
+		if request.FirstMessage != nil {
+			if _, _, err := service.store.reserveCommand(ctx, tx, record.ID, command.Key, command.Kind, conversation.RequestHash(command), now); err != nil {
+				return nil, err
+			}
+			result, err := service.acceptCommand(ctx, tx, scope, &record, command, now)
+			if err != nil {
+				service.logStaleExecution(string(command.Kind), record.ID, err)
+				return nil, err
+			}
+			if err := service.recordReceipt(ctx, tx, record.ID, record.Execution.Owner.AttemptID, result, now); err != nil {
+				return nil, err
+			}
+			result.UpdatedAt = now
+			receipt = &result
+		}
+		stored, err := service.store.readConversation(ctx, tx, scope.organization, scope.project, record.ID)
+		if err != nil {
+			return nil, err
+		}
+		record, notify = stored, receipt != nil
+		return conversationCreatedResponse{Conversation: projectConversation(record), Receipt: receipt}, nil
+	})
+	if notify {
+		service.committed(record)
+	}
+	return value, err
+}
+
+func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope, id string, command conversation.Command) (json.RawMessage, error) {
+	if err := conversation.ValidateCommand(command); err != nil {
+		return nil, nativeInvalid(err.Error())
+	}
+	ctx, bindErr := s.bindCoordinatorConnection(ctx, command.Key)
+	if bindErr != nil {
+		return nil, bindErr
+	}
+	service := s.conversations
+	var record conversationRecord
+	var receipt *conversation.Receipt
+	replay := false
+	err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		var err error
+		record, err = service.loadConversation(ctx, tx, scope, id)
+		if err != nil {
+			return err
+		}
+		if err := service.authorizeWrite(ctx, tx, scope, record); err != nil {
+			return err
+		}
+		if err := service.requireActorAuthority(ctx, tx, scope, now); err != nil {
+			return err
+		}
+		stored, conflict, err := service.store.reserveCommand(ctx, tx, record.ID, command.Key, command.Kind, conversation.RequestHash(command), now)
+		if err != nil {
+			return err
+		}
+		if stored != nil {
+			if conflict {
+				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict}
+			}
+			receipt, replay = stored, true
+			return nil
+		}
+		result, err := service.acceptCommand(ctx, tx, scope, &record, command, now)
+		if err != nil {
+			return err
+		}
+		if err := service.recordReceipt(ctx, tx, record.ID, record.Execution.Owner.AttemptID, result, now); err != nil {
+			return err
+		}
+		result.UpdatedAt = now
+		receipt = &result
+		return nil
+	})
+	if err != nil {
+		service.logStaleExecution(string(command.Kind), record.ID, err)
+		return nil, err
+	}
+	if !replay {
+		service.committed(record)
+	}
+	return json.Marshal(receipt)
+}
+
+func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope, id string, request conversationLinkRequest) (json.RawMessage, error) {
+	service := s.conversations
 	// Check visibility and write capability before entering the mutation so
 	// that denials carry the contract's codes rather than the generic hosted
 	// mutation denial.
 	preview, err := service.loadConversation(ctx, s.database.db, scope, id)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	if err := service.authorizeWrite(ctx, s.database.db, scope, preview); err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
 	// A coordinator turn must not write into the conversation once it is
 	// linked and shared, nor overwrite the linked runner's execution, so the
@@ -1134,13 +1188,13 @@ func (s *Service) linkConversation(c echo.Context) error {
 	if preview.WorkItemID == "" {
 		release, err := service.coordinator.Hold(id)
 		if err != nil {
-			return s.nativeAPIError(c, err)
+			return nil, err
 		}
 		defer release()
 	}
 	var linked conversationRecord
 	notify := false
-	err = s.nativeMutation(c, tracker.Mutation{IdempotencyKey: request.Key}, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	value, err := s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/conversations/"+id+"/link"), Feature: "collaboration"}, tracker.Mutation{IdempotencyKey: request.Key}, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		record, err := service.loadConversation(ctx, tx, scope, id)
 		if err != nil {
 			return nil, err
@@ -1171,13 +1225,9 @@ func (s *Service) linkConversation(c echo.Context) error {
 		// the first revision, so the first runner to claim it already reads
 		// them (decisions section 14).
 		body = conversationAgentOverrideBody(body, record.Preferences)
-		created, err := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: request.Key}, Title: strings.TrimSpace(request.Issue.Title), Body: body, State: next.State, Labels: request.Issue.Labels, Priority: next.Priority}, now)
+		issue, err := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: request.Key}, Title: strings.TrimSpace(request.Issue.Title), Body: body, State: next.State, Labels: request.Issue.Labels, Priority: next.Priority}, now)
 		if err != nil {
 			return nil, err
-		}
-		issue, ok := created.(tracker.NativeIssue)
-		if !ok {
-			return nil, fmt.Errorf("unexpected issue result %T", created)
 		}
 		record.WorkItemID = string(issue.WorkItemID)
 		linkedAt := now
@@ -1232,63 +1282,66 @@ func (s *Service) linkConversation(c echo.Context) error {
 	if notify {
 		service.committed(linked)
 	}
-	return err
+	return value, err
 }
 
-// saveConversationChange loads, authorizes (owner or write access), applies
-// change and saves the conversation, then reports the result.
-func (s *Service) saveConversationChange(c echo.Context, change func(ctx context.Context, tx *sql.Tx, scope nativeScope, record *conversationRecord, now time.Time) error) error {
-	scope := nativeRequestScope(c)
+func (s *Service) readConversationSnapshot(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
+	return s.readConversationSnapshotFor(ctx, scope, id, "")
+}
+
+func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeScope, id, item string) (json.RawMessage, error) {
 	service := s.conversations
-	ctx := c.Request().Context()
-	var record conversationRecord
-	err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	var snapshot conversationSnapshot
+	err := service.transact(ctx, func(tx *sql.Tx, _ time.Time) error {
+		var record conversationRecord
 		var err error
-		record, err = service.loadConversation(ctx, tx, scope, c.Param("conversation"))
+		if item != "" {
+			if _, _, err = readNativeIssue(ctx, tx, scope, item); err != nil {
+				return err
+			}
+			record, err = service.readLinkedConversation(ctx, tx, scope, item)
+			if err == nil {
+				record, err = service.loadConversation(ctx, tx, scope, record.ID)
+			}
+		} else {
+			record, err = service.loadConversation(ctx, tx, scope, id)
+		}
 		if err != nil {
 			return err
 		}
-		if err := service.authorizeManage(ctx, tx, scope, record); err != nil {
+		messages, err := service.store.listMessages(ctx, tx, record.ID, 0, conversationMessagePage)
+		if err != nil {
 			return err
 		}
-		if err := service.requireActorAuthority(ctx, tx, scope, now); err != nil {
+		questions, err := service.store.listSnapshotQuestions(ctx, tx, record.ID, record.Execution.Owner.AttemptID, conversationSnapshotQuestions)
+		if err != nil {
 			return err
 		}
-		if err := change(ctx, tx, scope, &record, now); err != nil {
-			return err
+		snapshot = conversationSnapshot{Conversation: projectConversation(record), Messages: projectMessages(messages), Questions: make([]conversation.Question, 0, len(questions)), Cursor: record.EventSeq}
+		snapshot.HasMore, _ = conversationOlderCursor(snapshot.Messages)
+		for _, question := range questions {
+			snapshot.Questions = append(snapshot.Questions, question.Question)
 		}
-		if err := service.saveConversation(ctx, tx, &record, now); err != nil {
-			return err
-		}
-		record, err = service.store.readConversation(ctx, tx, scope.organization, scope.project, record.ID)
-		return err
+		return nil
 	})
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return nil, err
 	}
-	service.committed(record)
-	return c.JSON(http.StatusOK, projectConversation(record))
+	return json.Marshal(snapshot)
 }
 
-// patchConversation implements PATCH /conversations/:conversation. It
-// renames a conversation, changes its turn preferences, or both; a request
-// that asks for neither is refused rather than silently accepted.
-func (s *Service) patchConversation(c echo.Context) error {
-	var request conversationPatchRequest
-	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
-	}
+func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScope, id string, request conversationPatchRequest) (json.RawMessage, error) {
 	if request.Title == nil && request.Preferences == nil {
-		return s.nativeAPIError(c, nativeInvalid("A patch must change the title, the preferences, or both"))
+		return nil, nativeInvalid("A patch must change the title, the preferences, or both")
 	}
 	title := ""
 	if request.Title != nil {
 		title = strings.TrimSpace(*request.Title)
 		if title == "" || utf8.RuneCountInString(title) > conversationTitleMaxRunes {
-			return s.nativeAPIError(c, nativeInvalid(fmt.Sprintf("Title must contain 1 to %d characters", conversationTitleMaxRunes)))
+			return nil, nativeInvalid(fmt.Sprintf("Title must contain 1 to %d characters", conversationTitleMaxRunes))
 		}
 	}
-	return s.saveConversationChange(c, func(ctx context.Context, tx *sql.Tx, scope nativeScope, record *conversationRecord, now time.Time) error {
+	return s.changeConversation(ctx, scope, id, func(ctx context.Context, tx *sql.Tx, scope nativeScope, record *conversationRecord, now time.Time) error {
 		if request.ProjectID != "" && tracker.ProjectID(request.ProjectID) != record.ProjectID {
 			return conversationProjectFixed()
 		}
@@ -1325,4 +1378,32 @@ func (s *Service) patchConversation(c echo.Context) error {
 		// them (decisions section 14).
 		return s.conversations.writeAgentOverride(ctx, tx, scope, *record, now)
 	})
+}
+
+func (s *Service) readConversationMessages(ctx context.Context, scope nativeScope, id string, before int64, limit int) (json.RawMessage, error) {
+	record, err := s.conversations.loadConversation(ctx, s.database.db, scope, id)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := s.conversations.store.listMessages(ctx, s.database.db, record.ID, before, limit)
+	if err != nil {
+		return nil, err
+	}
+	page := conversationMessagesPage{Messages: projectMessages(messages)}
+	_, page.NextCursor = conversationOlderCursor(page.Messages)
+	return json.Marshal(page)
+}
+
+func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, filter conversationListQuery) (json.RawMessage, error) {
+	filter.Organization = scope.organization
+	filter.Principal = scope.credential.ID
+	records, next, err := s.conversations.store.listConversations(ctx, s.database.db, filter)
+	if err != nil {
+		return nil, err
+	}
+	page := conversationListPage{Conversations: make([]conversationResource, 0, len(records)), NextCursor: conversationOptional(next)}
+	for _, record := range records {
+		page.Conversations = append(page.Conversations, projectConversation(record))
+	}
+	return json.Marshal(page)
 }

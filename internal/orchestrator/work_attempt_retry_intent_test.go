@@ -195,7 +195,7 @@ func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
 
 func TestDurableRecoveryPreservesDispatchFailureBackoff(t *testing.T) {
 	t.Parallel()
-	for _, refusal := range []string{"global admission", "project capacity"} {
+	for _, refusal := range []string{"global admission", "project capacity", "first refill"} {
 		t.Run(refusal, func(t *testing.T) {
 			db := openWorkAttemptRecoveryStore(t, t.Context())
 			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
@@ -219,7 +219,11 @@ func TestDurableRecoveryPreservesDispatchFailureBackoff(t *testing.T) {
 				t.Fatalf("queue recovery = %#v, %v", response, err)
 			}
 			switch refusal {
-			case "global admission":
+			case "global admission", "first refill":
+				if refusal == "first refill" {
+					state = newState(host.cfg)
+					host.connector = completionRefillConnector{hydratingDispatchConnector: hydratingDispatchConnector{issue: issue}, fetch: func(context.Context) ([]connector.Issue, error) { return []connector.Issue{issue}, nil }}
+				}
 				gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
 				slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other", Weight: 1}, scheduler.SlotRequest{State: "Todo"}, now)
 				if err != nil || !acquired {
@@ -234,10 +238,17 @@ func TestDurableRecoveryPreservesDispatchFailureBackoff(t *testing.T) {
 			case "project capacity":
 				state.Running["other"] = Running{Issue: connector.Issue{ID: "other"}, StartedAt: now}
 			}
-			host.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if refusal == "first refill" {
+				host.refillProjectSlots(t.Context(), &state, now)
+			} else {
+				host.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			}
 			rescheduled, found := state.Retry[issue.ID]
 			if !found || !rescheduled.DueAt.After(now) {
 				t.Fatalf("dispatch refusal did not schedule backoff: found=%v due=%v blocked=%v decisions=%v", found, rescheduled.DueAt, state.Blocked, state.SchedulerDecisions)
+			}
+			if rescheduled.RecoveryAttemptID != attemptID || rescheduled.RetryMode != runpkg.RetryModeFresh {
+				t.Fatalf("dispatch lost persisted fresh retry intent: %#v", rescheduled)
 			}
 			host.restoreWorkAttemptRetryIntents(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Millisecond))
 			replayed := state.Retry[issue.ID]

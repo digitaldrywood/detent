@@ -108,6 +108,10 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if issueID == "" {
 			continue
 		}
+		if stickyReason := o.issueStickyBlockReason(ctx, state, issue); stickyReason != "" {
+			o.logDependencyAutoUnblockDecision(issue, "hold", stickyReason, nil, "")
+			continue
+		}
 		hydrated, ok, err := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
 		if err != nil {
 			o.recordDependencyAutoUnblockError(state, issue, err, now)
@@ -854,9 +858,13 @@ func (o *Orchestrator) resolveDependencyBlockersWithError(ctx context.Context, i
 	}
 	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, identifiers)
 	if err != nil {
-		return blockers, err
+		return dependencyBlockersWithIssues(blockers, nil), err
 	}
 
+	return dependencyBlockersWithIssues(blockers, issues), nil
+}
+
+func dependencyBlockersWithIssues(blockers []dependencyBlocker, issues []connector.Issue) []dependencyBlocker {
 	byIdentifier := make(map[string]connector.Issue, len(issues))
 	for _, blocker := range issues {
 		identifier := strings.ToLower(strings.TrimSpace(blocker.Identifier))
@@ -867,6 +875,10 @@ func (o *Orchestrator) resolveDependencyBlockersWithError(ctx context.Context, i
 	}
 	for index := range blockers {
 		identifier := strings.ToLower(strings.TrimSpace(blockers[index].Ref.Identifier))
+		if identifier != "" {
+			blockers[index].Ref.State, blockers[index].Ref.TrackerState = "", ""
+			blockers[index].Ref.HumanCompletionReady = false
+		}
 		blocker, ok := byIdentifier[identifier]
 		if !ok {
 			continue
@@ -883,7 +895,7 @@ func (o *Orchestrator) resolveDependencyBlockersWithError(ctx context.Context, i
 			blockers[index].Ref.TrackerState = connector.BlockedRefTrackerStateClosed
 		}
 	}
-	return blockers, nil
+	return blockers
 }
 
 func dependencyResolvedBlockerRefs(blockers []dependencyBlocker) []connector.BlockedRef {

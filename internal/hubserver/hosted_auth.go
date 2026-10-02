@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
 const hostedCookie = "detent_hosted_session"
@@ -154,10 +155,15 @@ func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Sessi
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
 	credential := apiCredential{Scope: apiScopeOperator, NativeOnly: true, Hosted: session.Identity, SessionHash: hash, HostedRole: membership.Role.Slug, HostedMembership: membership.ID}
-	err = s.database.db.QueryRowContext(ctx, "SELECT m.principal_id,t.token_hash FROM hosted_members m JOIN api_tokens t ON t.id = m.principal_id WHERE m.user_id = ? AND m.membership_id = ? AND m.active = 1 AND t.revoked_at IS NULL", session.Identity.Subject, membership.ID).Scan(&credential.ID, &credential.Hash)
+	var localRole string
+	err = s.database.db.QueryRowContext(ctx, "SELECT m.principal_id,t.token_hash,m.role FROM hosted_members m JOIN api_tokens t ON t.id = m.principal_id WHERE m.user_id = ? AND m.membership_id = ? AND m.active = 1 AND t.revoked_at IS NULL", session.Identity.Subject, membership.ID).Scan(&credential.ID, &credential.Hash, &localRole)
 	if err != nil {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
+	if !auth.ValidOrganizationRole(localRole) {
+		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
+	}
+	credential.HostedRole = lesserHostedRole(credential.HostedRole, localRole)
 	return credential, http.StatusOK, nil
 }
 
@@ -186,6 +192,8 @@ func hostedReadRequest(c echo.Context) bool {
 	return c.Request().Method == http.MethodGet || c.Request().Method == http.MethodHead
 }
 
+type hostedMutationContext struct{}
+
 func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		defer s.recordHostedRequest(c, time.Now())
@@ -201,7 +209,7 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 		if c.Path() == "/webhooks/stripe" && c.Request().Method == http.MethodPost {
 			return next(c)
 		}
-		bearerAPI := strings.HasPrefix(c.Request().URL.Path, "/api/v2/") && c.Request().Header.Get(echo.HeaderAuthorization) != ""
+		bearerAPI := (strings.HasPrefix(c.Request().URL.Path, "/api/v2/") || c.Path() == "/mcp") && c.Request().Header.Get(echo.HeaderAuthorization) != ""
 		if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindService {
 			return next(c)
 		}
@@ -211,6 +219,7 @@ func (s *Service) hostedBoundary(next echo.HandlerFunc) echo.HandlerFunc {
 		if !hostedReadRequest(c) && !bearerAPI {
 			s.hostedMutationMu.Lock()
 			defer s.hostedMutationMu.Unlock()
+			c.SetRequest(c.Request().WithContext(context.WithValue(c.Request().Context(), hostedMutationContext{}, true)))
 		}
 		return next(c)
 	}
@@ -240,6 +249,13 @@ WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ? AND g.project_id 
 // from this request's entry assertion, whose access token the entry verified,
 // so it is used as is; a dedicated tenant asks the provider.
 func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCredential) (auth.HostedIdentity, auth.Membership, error) {
+	if credential.HostedKeyScope != "" {
+		membership, err := s.hostedMembership(ctx, credential.Hosted)
+		if err != nil || membership.ID != credential.HostedMembership {
+			return auth.HostedIdentity{}, auth.Membership{}, auth.ErrHostedIdentity
+		}
+		return *credential.Hosted, membership, nil
+	}
 	if s.hostedShared() {
 		var membership auth.Membership
 		membership.ID, membership.Role.Slug = credential.HostedMembership, credential.HostedRole
@@ -271,10 +287,26 @@ func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope n
 		return auth.ErrHostedIdentity
 	}
 	var count int
-	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM hosted_sessions s, hosted_members m
+	if scope.credential.HostedKeyScope != "" {
+		required := apikey.ScopeWrite
+		if scope.requireHostedAdmin {
+			required = apikey.ScopeAdmin
+		}
+		if !hostedKeyAllows(scope.credential.HostedKeyScope, required) {
+			return auth.ErrHostedIdentity
+		}
+		var local, keyScope string
+		err = tx.QueryRowContext(ctx, `SELECT m.role,t.operator_key_scope FROM hosted_members m JOIN api_tokens t ON t.hosted_user_id=m.user_id AND t.hosted_membership_id=m.membership_id
+WHERE t.id=? AND t.token_hash=? AND t.revoked_at IS NULL AND t.native_only=1 AND t.scope IN ('operator','admin') AND t.hosted_organization_id=? AND julianday(t.expires_at)>julianday(?) AND m.user_id=? AND m.membership_id=? AND m.active=1`, scope.credential.ID, scope.credential.Hash, scope.organization, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&local, &keyScope)
+		if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required) || !hostedKeyAllows(apikey.Scope(keyScope), required) {
+			return auth.ErrHostedIdentity
+		}
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM hosted_sessions s, hosted_members m
 WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > julianday(?) AND m.user_id = ? AND m.membership_id = ? AND m.active = 1`, scope.credential.SessionHash, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&count)
-	if err != nil || count != 1 {
-		return auth.ErrHostedIdentity
+		if err != nil || count != 1 {
+			return auth.ErrHostedIdentity
+		}
 	}
 	if scope.project != "" {
 		return s.requireHostedProject(ctx, tx, scope, true)
@@ -298,9 +330,6 @@ func (s *Service) addHostedMember(ctx context.Context, identity auth.Identity, m
 }
 
 func (s *Service) storeHostedMember(ctx context.Context, identity auth.Identity, membership auth.Membership, organizationName string) (resultErr error) {
-	if !identity.EmailVerified || identity.Subject != membership.UserID || membership.Status != "active" || !auth.ValidOrganizationRole(membership.Role.Slug) {
-		return auth.ErrHostedIdentity
-	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -310,6 +339,16 @@ func (s *Service) storeHostedMember(ctx context.Context, identity auth.Identity,
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
+	if err := s.storeHostedMemberTx(ctx, tx, identity, membership, organizationName); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Service) storeHostedMemberTx(ctx context.Context, tx *sql.Tx, identity auth.Identity, membership auth.Membership, organizationName string) error {
+	if !identity.EmailVerified || identity.Subject != membership.UserID || membership.Status != "active" || !auth.ValidOrganizationRole(membership.Role.Slug) {
+		return auth.ErrHostedIdentity
+	}
 	stamp := s.config.now()
 	before, err := s.database.hostedConsumption(ctx, tx, stamp)
 	if err != nil {
@@ -358,7 +397,7 @@ VALUES (?,?,?,?,1,?,?,?) ON CONFLICT(user_id) DO UPDATE SET email=excluded.email
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 type hostedExecer interface {
@@ -377,7 +416,20 @@ func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identi
 	if identity.SupportActor != "" {
 		actor = identity.SupportActor
 	}
-	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(s.config.now()))
+	summary := "{}"
+	if m, ok := mutation.FromContext(ctx); ok {
+		m.PrincipalID, m.OrganizationID = actor, s.config.Hosted.OrganizationID
+		m.RetryIdentity, m.InputHash = "", ""
+		raw, err := json.Marshal(struct {
+			mutation.Metadata
+			Outcome string `json:"outcome"`
+		}{m, event})
+		if err != nil {
+			return err
+		}
+		summary = string(raw)
+	}
+	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(s.config.now()), summary)
 	return err
 }

@@ -2,14 +2,17 @@ package project
 
 import (
 	"context"
+	"log/slog"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
@@ -88,6 +91,56 @@ func TestWorkflowConfigWithGitHubTokenSupportsScheduleOwnership(t *testing.T) {
 	}
 }
 
+func TestBuildNativeScheduleOwnership(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		enabled    bool
+		repository string
+		wantError  bool
+	}{
+		{name: "disabled"},
+		{name: "implicit tracker repository", enabled: true, wantError: true},
+		{name: "explicit coordination repository", enabled: true, repository: "example/coordination"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+			cfg.Tracker.Repository = "example/project"
+			cfg.ScheduleOwnership.Enabled = tt.enabled
+			cfg.ScheduleOwnership.Key = "example/production"
+			cfg.ScheduleOwnership.Repository = tt.repository
+			deps := Dependencies{}
+			if tt.repository != "" {
+				deps.ScheduleStore = &constructorOnlyScheduleStore{t: t}
+			}
+			manager, _, _, err := buildScheduleOwnership(cfg, deps, slog.Default(), nil)
+			if tt.wantError {
+				if err == nil || !strings.Contains(err.Error(), "explicit schedule_ownership.repository") || manager != nil {
+					t.Fatalf("buildScheduleOwnership() = (%v, %v), want explicit repository error", manager, err)
+				}
+				return
+			}
+			if err != nil || (manager != nil) != tt.enabled {
+				t.Fatalf("buildScheduleOwnership() = (%v, %v), want manager enabled = %v", manager, err, tt.enabled)
+			}
+		})
+	}
+}
+
+type constructorOnlyScheduleStore struct{ t *testing.T }
+
+func (s *constructorOnlyScheduleStore) Get(context.Context, string) (coordination.Record, bool, error) {
+	s.t.Fatal("schedule ownership construction must not read the store")
+	return coordination.Record{}, false, nil
+}
+
+func (s *constructorOnlyScheduleStore) CompareAndSwap(context.Context, string, string, []byte) (coordination.Record, bool, error) {
+	s.t.Fatal("schedule ownership construction must not write the store")
+	return coordination.Record{}, false, nil
+}
+
 func TestWorkflowConfigWithProjectPathsResolvesArtifactWorkflowPaths(t *testing.T) {
 	t.Parallel()
 
@@ -117,54 +170,6 @@ func TestWorkflowConfigWithProjectPathsResolvesArtifactWorkflowPaths(t *testing.
 	}
 	if got.Deliverable.OutputRoot != filepath.Join(workdir, ".detent", "deliverables") {
 		t.Fatalf("Deliverable.OutputRoot = %q", got.Deliverable.OutputRoot)
-	}
-}
-
-func TestProjectOrchestratorConfigEnablesLessonCapture(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		lessonPath string
-		maxEntries int
-		wantPath   string
-		wantMax    int
-	}{
-		{
-			name:     "defaults",
-			wantPath: filepath.Join(".detent", "lessons.md"),
-			wantMax:  50,
-		},
-		{
-			name:       "workflow override",
-			lessonPath: filepath.Join("ops", "lessons.md"),
-			maxEntries: 12,
-			wantPath:   filepath.Join("ops", "lessons.md"),
-			wantMax:    12,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			workdir := t.TempDir()
-			cfg := workflowconfig.Default()
-			cfg.Agent.Lessons.Enabled = false
-			cfg.Agent.Lessons.Path = tt.lessonPath
-			cfg.Agent.Lessons.MaxEntries = tt.maxEntries
-
-			got := projectOrchestratorConfig(globalconfig.Project{ID: "detent", Workdir: workdir}, cfg)
-			if !got.Lessons.Enabled {
-				t.Fatal("Lessons.Enabled = false, want automatic capture enabled")
-			}
-			if got.Lessons.Path != filepath.Join(workdir, tt.wantPath) {
-				t.Fatalf("Lessons.Path = %q, want %q", got.Lessons.Path, filepath.Join(workdir, tt.wantPath))
-			}
-			if got.Lessons.MaxEntries != tt.wantMax {
-				t.Fatalf("Lessons.MaxEntries = %d, want %d", got.Lessons.MaxEntries, tt.wantMax)
-			}
-		})
 	}
 }
 
@@ -335,7 +340,7 @@ func TestWithMappedNativeTrackerUsesTheHubForMappedProjects(t *testing.T) {
 			t.Parallel()
 			workflow := workflowconfig.Config{}
 			workflow.Tracker.Kind = test.kind
-			if got := withMappedNativeTracker(workflow, test.scheduling, test.project).Tracker.Kind; got != test.want {
+			if got := WithMappedNativeTracker(workflow, test.scheduling, test.project).Tracker.Kind; got != test.want {
 				t.Fatalf("tracker kind = %q, want %q", got, test.want)
 			}
 		})

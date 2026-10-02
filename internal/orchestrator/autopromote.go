@@ -1,6 +1,9 @@
 package orchestrator
 
 import (
+	"context"
+	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 
 type AutoPromoteConfig struct {
 	Enabled               bool
+	HumanReview           *bool
 	QuietDuration         time.Duration
 	OptoutLabel           string
 	AllowedIssueLabels    []string
@@ -26,6 +30,17 @@ type AutoPromoteConfig struct {
 	NoProgressLimit       int
 	WorkpadStructuredOnly bool
 	Gate                  gate.Config
+}
+
+func (cfg AutoPromoteConfig) humanReviewEnabled() bool {
+	return cfg.HumanReview == nil || *cfg.HumanReview
+}
+
+func (cfg AutoPromoteConfig) reviewTargetState() string {
+	if !cfg.humanReviewEnabled() {
+		return blockedStatusState
+	}
+	return cfg.SourceState
 }
 
 type AutoPromoteSummary struct {
@@ -205,13 +220,6 @@ func EvaluateAutoPromote(
 	} else if strings.TrimSpace(summary.ArtifactStatus) == "" {
 		summary.ArtifactStatus = artifactStatusFromIssue(issue, cfg.Gate.Artifact.StatusField)
 	}
-	// Merging owns audits that have not run yet. A known failing or running
-	// audit still holds Rework through the normal gate evaluation.
-	if normalizeState(issue.State) == normalizeState(cfg.ReworkState) && normalizeState(cfg.PassState) == normalizeState(autoPromoteMergingState) && autoPromoteReworkHeadReady(issue) {
-		if audit, pending := gate.EvaluateSecurityAudit(cfg.Gate.SecurityAudit, summary.SecurityAudit); pending && audit.Reason == gate.ReasonSecurityAuditMissing {
-			cfg.Gate.SecurityAudit.Enabled = false
-		}
-	}
 	gateInput := gateSummary(summary)
 	if normalizeState(cfg.PassState) == normalizeState(autoPromoteMergingState) && issue.PullRequest != nil &&
 		summary.NativeQueueEligibleHeadSHA != "" && summary.NativeQueueEligibleHeadSHA == strings.TrimSpace(issue.PullRequest.HeadSHA) &&
@@ -233,7 +241,6 @@ func EvaluateAutoPromote(
 type operationalCompletion struct {
 	evidence   string
 	workpadURL string
-	recordedAt *time.Time
 }
 
 func operationalCompletionFromIssue(issue connector.Issue) (operationalCompletion, bool) {
@@ -265,12 +272,82 @@ func operationalCompletionWithAuthorization(issue connector.Issue, authorized bo
 	return operationalCompletion{
 		evidence:   evidence,
 		workpadURL: strings.TrimSpace(signal.CommentURL),
-		recordedAt: signal.RecordedAt,
 	}, true
+}
+
+func (o *Orchestrator) resolveMergedCompletionPullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, bool) {
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	if !ok || !workpad.MergedCompletionEvidence(signal) ||
+		issue.PullRequest != nil && (normalizePullRequestState(issue.PullRequest.State) != "closed" || pullRequestMerged(issue.PullRequest) || pullRequestHydrationBlocksProgress(issue.PullRequest)) {
+		return issue, false
+	}
+	if issue.PRNumber != nil && issue.PullRequest != nil && *issue.PRNumber != issue.PullRequest.Number {
+		return issue, false
+	}
+	resolver, ok := o.connector.(connector.IssueReferenceResolver)
+	if !ok {
+		return issue, false
+	}
+	repository := dependencyIssueRepo(issue.Identifier)
+	if workAttemptPRNumber(issue) != nil && !strings.EqualFold(pullRequestRepository(issue), repository) {
+		return issue, false
+	}
+	mergedURL := strings.TrimSpace(signal.Fields["completion_merged_pr"])
+	parsed, err := url.Parse(mergedURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return issue, false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) != 4 || parts[2] != "pull" {
+		return issue, false
+	}
+	identifier, err := workpad.ParseRef(parts[0]+"/"+parts[1]+"#"+parts[3], repository)
+	if err != nil || dependencyIssueRepo(identifier) != repository {
+		return issue, false
+	}
+	identifiers := []string{identifier}
+	previous := ""
+	if number := workAttemptPRNumber(issue); number != nil {
+		previous = fmt.Sprintf("%s#%d", repository, *number)
+		identifiers = append(identifiers, previous)
+	}
+	refs, err := resolver.FetchIssueStatesByIdentifiers(ctx, identifiers)
+	if err != nil {
+		return issue, false
+	}
+	var merged *connector.PullRequest
+	previousClosed := previous == ""
+	for _, ref := range refs {
+		pr := ref.PullRequest
+		if pr == nil || pullRequestHydrationBlocksProgress(pr) {
+			continue
+		}
+		if normalizedIssueIdentifier(ref.Identifier) == normalizedIssueIdentifier(previous) {
+			previousClosed = normalizedIssueIdentifier(fmt.Sprintf("%s#%d", repository, pr.Number)) == normalizedIssueIdentifier(previous) && normalizePullRequestState(pr.State) == "closed" && !pullRequestMerged(pr)
+		}
+		if normalizedIssueIdentifier(ref.Identifier) == normalizedIssueIdentifier(identifier) && pullRequestMerged(pr) &&
+			strings.TrimSpace(pr.HeadSHA) != "" && strings.TrimSpace(pr.BaseRef) == strings.TrimPrefix(strings.TrimSpace(signal.Fields["completion_branch"]), "origin/") {
+			prIdentifier := fmt.Sprintf("%s#%d", repository, pr.Number)
+			if strings.TrimSpace(pr.URL) == mergedURL && normalizedIssueIdentifier(prIdentifier) == normalizedIssueIdentifier(identifier) {
+				merged = pr
+			}
+		}
+	}
+	if !previousClosed || merged == nil {
+		return issue, false
+	}
+	issue = cloneIssue(issue)
+	issue.PullRequest = merged
+	issue.PRNumber = &merged.Number
+	issue.PRRepository = repository
+	return issue, true
 }
 
 func autoPromoteHumanReviewRequired(issue connector.Issue, cfg AutoPromoteConfig, gateCfg gate.Config) bool {
 	cfg = normalizeAutoPromoteConfig(cfg)
+	if !cfg.humanReviewEnabled() {
+		return false
+	}
 	if !cfg.Enabled {
 		return true
 	}
@@ -371,12 +448,9 @@ func normalizeAutoPromoteGateWaitState(state string) string {
 }
 
 func autoPromoteOptoutLabel(issue connector.Issue, cfg AutoPromoteConfig) bool {
-	if cfg.OptoutLabel == "" {
-		return false
-	}
-
 	for _, label := range issue.Labels {
-		if normalizeLabel(label) == cfg.OptoutLabel {
+		normalized := normalizeLabel(label)
+		if normalized == "requires-human-review" || cfg.OptoutLabel != "" && normalized == cfg.OptoutLabel {
 			return true
 		}
 	}
@@ -663,13 +737,10 @@ func autoPromoteIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool
 }
 
 func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
-	for index := len(issue.Comments) - 1; index >= 0; index-- {
+	if index := currentWorkpadCommentIndex(issue.Comments); index >= 0 {
 		comment := issue.Comments[index]
 		body := comment.Body
-		if !autoPromoteIsWorkpadComment(body) {
-			continue
-		}
-		if signal, ok := workpad.SignalFromComment(body, comment.URL, dependencyIssueRepo(issue.Identifier)); ok {
+		if signal, ok := workpad.SignalFromWorkpad(body, comment.URL, dependencyIssueRepo(issue.Identifier)); ok {
 			signal.RecordedAt = autoPromoteWorkpadRecordedAt(comment)
 			return signal, true
 		}
@@ -678,6 +749,10 @@ func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
 			return signal, true
 		}
 		return nil, false
+	}
+	if signal, ok := workpad.SignalFromWorkpad(issue.Description, issue.URL, dependencyIssueRepo(issue.Identifier)); ok {
+		signal.RecordedAt = autoPromoteWorkpadRecordedAt(connector.IssueComment{CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt})
+		return signal, true
 	}
 	if issue.WorkpadSignal != nil {
 		return workpad.CloneSignal(issue.WorkpadSignal), true
@@ -689,6 +764,30 @@ func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
 		}, true
 	}
 	return nil, false
+}
+
+func currentWorkpadCommentIndex(comments []connector.IssueComment) int {
+	selected := -1
+	fallback := -1
+	var recordedAt *time.Time
+	for index := len(comments) - 1; index >= 0; index-- {
+		comment := comments[index]
+		if !autoPromoteIsWorkpadComment(comment.Body) {
+			continue
+		}
+		if fallback < 0 {
+			fallback = index
+		}
+		updatedAt := autoPromoteWorkpadRecordedAt(comment)
+		if updatedAt == nil {
+			return fallback
+		}
+		if selected < 0 || updatedAt.After(*recordedAt) {
+			selected = index
+			recordedAt = updatedAt
+		}
+	}
+	return selected
 }
 
 func autoPromoteWorkpadRecordedAt(comment connector.IssueComment) *time.Time {

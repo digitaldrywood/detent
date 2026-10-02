@@ -222,6 +222,8 @@ WHERE id = sqlc.arg(id)
   AND completed_at IS NULL
   AND lower(trim(COALESCE(final_state, ''))) = 'running';
 
+-- Identity subqueries use their own indexes; NOT INDEXED on the outer table
+-- retains INTEGER PRIMARY KEY lookup instead of scanning a project/time index.
 -- name: GetLatestCompletedAgentResumeState :one
 SELECT
   s.id,
@@ -234,13 +236,13 @@ SELECT
   CAST(COALESCE(s.agent_role, '') AS TEXT) AS agent_role,
   CAST(COALESCE(s.runtime_identity_json, '') AS TEXT) AS runtime_identity_json,
   CAST(s.completed_at AS TEXT) AS completed_at
-FROM codex_sessions AS s
+FROM codex_sessions AS s NOT INDEXED
 JOIN work_attempts AS w ON w.id = s.work_attempt_id
 WHERE s.completed_at IS NOT NULL
   AND w.completed_at IS NOT NULL
   AND lower(trim(COALESCE(s.final_state, ''))) = 'completed'
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
-  AND COALESCE(s.project_id, '') = sqlc.arg(project_id)
+  AND s.project_id = sqlc.arg(project_id)
   AND COALESCE(
     CASE WHEN json_valid(w.worker_metadata_json)
       THEN CAST(json_extract(w.worker_metadata_json, '$.pr_number') AS INTEGER)
@@ -261,10 +263,18 @@ WHERE s.completed_at IS NOT NULL
   AND COALESCE(s.agent_backend_kind, '') = sqlc.arg(agent_backend_kind)
   AND COALESCE(s.agent_role, '') = sqlc.arg(agent_role)
   AND COALESCE(NULLIF(s.requested_model, ''), COALESCE(s.model, '')) = sqlc.arg(requested_model)
-  AND (
-    (sqlc.arg(issue_id) != '' AND COALESCE(s.issue_id, '') = sqlc.arg(issue_id))
-    OR (sqlc.arg(identifier) != '' AND COALESCE(s.identifier, '') = sqlc.arg(identifier))
-    OR (sqlc.arg(issue_url) != '' AND COALESCE(s.issue_url, '') = sqlc.arg(issue_url))
+  AND s.id IN (
+    SELECT session_by_id.id FROM codex_sessions AS session_by_id
+    WHERE sqlc.arg(issue_id) != ''
+      AND session_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT session_by_identifier.id FROM codex_sessions AS session_by_identifier
+    WHERE sqlc.arg(identifier) != ''
+      AND session_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT session_by_url.id FROM codex_sessions AS session_by_url
+    WHERE sqlc.arg(issue_url) != ''
+      AND session_by_url.issue_url = sqlc.arg(issue_url)
   )
 ORDER BY s.completed_at DESC, s.id DESC
 LIMIT 1;
@@ -282,15 +292,23 @@ SELECT
   CAST(COALESCE(agent_role, '') AS TEXT) AS agent_role,
   CAST(COALESCE(runtime_identity_json, '') AS TEXT) AS runtime_identity_json,
   CAST(completed_at AS TEXT) AS completed_at
-FROM codex_sessions
+FROM codex_sessions NOT INDEXED
 WHERE completed_at IS NOT NULL
   AND lower(trim(COALESCE(final_state, ''))) = 'completed'
-  AND COALESCE(project_id, '') = sqlc.arg(project_id)
+  AND codex_sessions.project_id = sqlc.arg(project_id)
   AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
-  AND (
-    (sqlc.arg(issue_id) != '' AND COALESCE(issue_id, '') = sqlc.arg(issue_id))
-    OR (sqlc.arg(identifier) != '' AND COALESCE(identifier, '') = sqlc.arg(identifier))
-    OR (sqlc.arg(issue_url) != '' AND COALESCE(issue_url, '') = sqlc.arg(issue_url))
+  AND codex_sessions.id IN (
+    SELECT session_by_id.id FROM codex_sessions AS session_by_id
+    WHERE sqlc.arg(issue_id) != ''
+      AND session_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT session_by_identifier.id FROM codex_sessions AS session_by_identifier
+    WHERE sqlc.arg(identifier) != ''
+      AND session_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT session_by_url.id FROM codex_sessions AS session_by_url
+    WHERE sqlc.arg(issue_url) != ''
+      AND session_by_url.issue_url = sqlc.arg(issue_url)
   )
 ORDER BY completed_at DESC, id DESC
 LIMIT 1;
@@ -303,14 +321,22 @@ SELECT
   CAST(COALESCE(provider_session_id, '') AS TEXT) AS provider_session_id,
   CAST(COALESCE(agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
   CAST(completed_at AS TEXT) AS completed_at
-FROM codex_sessions
+FROM codex_sessions NOT INDEXED
 WHERE completed_at IS NOT NULL
-  AND COALESCE(project_id, '') = sqlc.arg(project_id)
+  AND codex_sessions.project_id = sqlc.arg(project_id)
   AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
-  AND (
-    (sqlc.arg(issue_id) != '' AND COALESCE(issue_id, '') = sqlc.arg(issue_id))
-    OR (sqlc.arg(identifier) != '' AND COALESCE(identifier, '') = sqlc.arg(identifier))
-    OR (sqlc.arg(issue_url) != '' AND COALESCE(issue_url, '') = sqlc.arg(issue_url))
+  AND codex_sessions.id IN (
+    SELECT session_by_id.id FROM codex_sessions AS session_by_id
+    WHERE sqlc.arg(issue_id) != ''
+      AND session_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT session_by_identifier.id FROM codex_sessions AS session_by_identifier
+    WHERE sqlc.arg(identifier) != ''
+      AND session_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT session_by_url.id FROM codex_sessions AS session_by_url
+    WHERE sqlc.arg(issue_url) != ''
+      AND session_by_url.issue_url = sqlc.arg(issue_url)
   )
 ORDER BY completed_at DESC, id DESC
 LIMIT 1;
@@ -507,12 +533,17 @@ SELECT
   CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
-FROM codex_sessions
-WHERE COALESCE(project_id, '') = sqlc.arg(project_id)
-  AND (
-    issue_id = sqlc.arg(issue_id)
-    OR identifier = sqlc.arg(identifier)
-    OR issue_url = sqlc.arg(issue_url)
+FROM codex_sessions NOT INDEXED
+WHERE codex_sessions.project_id = sqlc.arg(project_id)
+  AND codex_sessions.id IN (
+    SELECT session_by_id.id FROM codex_sessions AS session_by_id
+    WHERE session_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT session_by_identifier.id FROM codex_sessions AS session_by_identifier
+    WHERE session_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT session_by_url.id FROM codex_sessions AS session_by_url
+    WHERE session_by_url.issue_url = sqlc.arg(issue_url)
   )
 GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
 ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '');
@@ -588,8 +619,12 @@ INSERT INTO usage_events (
   started_at,
   finished_at,
   event_day,
-  outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  outcome,
+  cpu_seconds,
+  avg_memory_bytes,
+  wall_seconds,
+  compute_usd
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetUsageEvent :one
@@ -615,9 +650,11 @@ WITH usage_report_rows AS (
     reasoning_output_tokens,
     total_tokens,
     model_context_window,
-    runtime_seconds
+    runtime_seconds,
+    compute_usd
   FROM usage_events
-  WHERE (sqlc.narg(from_day) IS NULL OR event_day >= sqlc.narg(from_day))
+  WHERE (sqlc.narg(project_ids_json) IS NULL OR project_id IN (SELECT value FROM json_each(sqlc.narg(project_ids_json))))
+    AND (sqlc.narg(from_day) IS NULL OR event_day >= sqlc.narg(from_day))
     AND (sqlc.narg(to_day) IS NULL OR event_day <= sqlc.narg(to_day))
 )
 SELECT
@@ -630,6 +667,8 @@ SELECT
   CAST(COALESCE(SUM(usage_report_rows.total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COALESCE(MAX(usage_report_rows.model_context_window), 0) AS INTEGER) AS model_context_window,
   CAST(COALESCE(SUM(usage_report_rows.runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
+  CAST(COALESCE(SUM(usage_report_rows.compute_usd), 0) AS REAL) AS compute_usd,
+  CAST(COUNT(usage_report_rows.compute_usd) AS INTEGER) AS compute_events,
   CAST(COUNT(*) AS INTEGER) AS events
 FROM usage_report_rows
 GROUP BY usage_report_rows.group_key, usage_report_rows.model
@@ -658,7 +697,7 @@ SELECT
   CAST(COUNT(*) AS INTEGER) AS sessions,
   CAST(COALESCE(MIN(usage_events.finished_at), '') AS TEXT) AS first_session_at,
   CAST(COALESCE(MAX(usage_events.finished_at), '') AS TEXT) AS last_session_at
-FROM usage_events
+FROM usage_events NOT INDEXED
 LEFT JOIN codex_sessions AS session ON session.id = usage_events.session_id
 LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
 WHERE usage_events.project_id = sqlc.arg(project_id)
@@ -673,9 +712,16 @@ WHERE usage_events.project_id = sqlc.arg(project_id)
   )
   AND lower(trim(COALESCE(attempt.error_class, ''))) NOT LIKE 'backend_startup_%'
   AND COALESCE(json_extract(CASE WHEN json_valid(attempt.worker_metadata_json) THEN attempt.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
-  AND (
-    (sqlc.arg(issue_id) != '' AND COALESCE(usage_events.issue_id, '') = sqlc.arg(issue_id))
-    OR (sqlc.arg(identifier) != '' AND COALESCE(usage_events.identifier, '') = sqlc.arg(identifier))
+  AND usage_events.id IN (
+    SELECT usage_by_id.id FROM usage_events AS usage_by_id
+    WHERE usage_by_id.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(issue_id) != ''
+      AND usage_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT usage_by_identifier.id FROM usage_events AS usage_by_identifier
+    WHERE usage_by_identifier.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(identifier) != ''
+      AND usage_by_identifier.identifier = sqlc.arg(identifier)
   );
 
 -- name: ListFairShareUsage :many
@@ -742,33 +788,55 @@ WHERE id = 1;
 
 -- name: WorkflowPhaseDurationRows :many
 SELECT *
-FROM workflow_phase_events
+FROM workflow_phase_events INDEXED BY workflow_phase_events_finished_at_idx
 WHERE finished_at IS NOT NULL
+  AND phase_type <> 'agent_activity'
   AND (sqlc.narg(project_id) IS NULL OR project_id = sqlc.narg(project_id))
   AND (sqlc.narg(from_time) IS NULL OR finished_at >= sqlc.narg(from_time))
-  AND (sqlc.narg(to_time) IS NULL OR finished_at < sqlc.narg(to_time))
-ORDER BY project_id, phase_type, phase_name, finished_at, id;
+  AND (sqlc.narg(to_time) IS NULL OR finished_at < sqlc.narg(to_time));
+
+-- name: WorkflowPhaseDurationRowsWithinWindow :many
+SELECT *
+FROM workflow_phase_events INDEXED BY workflow_phase_events_finished_at_idx
+WHERE finished_at >= sqlc.narg(from_time)
+  AND finished_at < sqlc.narg(to_time)
+  AND phase_type <> 'agent_activity'
+  AND (sqlc.narg(project_id) IS NULL OR project_id = sqlc.narg(project_id));
 
 -- name: WorkflowPhaseFlowRows :many
 SELECT event.*
-FROM workflow_phase_events AS event
+FROM workflow_phase_events AS event INDEXED BY workflow_phase_events_finished_at_idx
 WHERE event.finished_at IS NOT NULL
   AND event.phase_type IN ('agent_session', 'local_check', 'ci')
   AND (sqlc.narg(project_id) IS NULL OR event.project_id = sqlc.narg(project_id))
   AND (sqlc.narg(from_time) IS NULL OR event.finished_at > sqlc.narg(from_time))
-  AND (sqlc.narg(to_time) IS NULL OR event.started_at < sqlc.narg(to_time))
-ORDER BY event.project_id, event.phase_type, event.phase_name, event.finished_at, event.id;
+  AND (sqlc.narg(to_time) IS NULL OR event.started_at < sqlc.narg(to_time));
+
+-- name: WorkflowPhaseFlowRowsFrom :many
+SELECT event.*
+FROM workflow_phase_events AS event INDEXED BY workflow_phase_events_finished_at_idx
+WHERE event.finished_at > sqlc.narg(from_time)
+  AND event.phase_type IN ('agent_session', 'local_check', 'ci')
+  AND (sqlc.narg(project_id) IS NULL OR event.project_id = sqlc.narg(project_id))
+  AND (sqlc.narg(to_time) IS NULL OR event.started_at < sqlc.narg(to_time));
 
 -- name: IssueWorkflowTimelineRows :many
-SELECT *
-FROM workflow_phase_events
-WHERE project_id = sqlc.arg(project_id)
-  AND (
-    issue_id = sqlc.arg(issue_id)
-    OR identifier = sqlc.arg(identifier)
-    OR issue_url = sqlc.arg(issue_url)
-  )
-ORDER BY started_at, id;
+SELECT event.*
+FROM workflow_phase_events AS event
+WHERE event.id IN (
+  SELECT by_id.id
+  FROM workflow_phase_events AS by_id INDEXED BY workflow_phase_events_issue_idx
+  WHERE by_id.project_id = sqlc.arg(project_id) AND by_id.issue_id = sqlc.arg(issue_id)
+  UNION ALL
+  SELECT by_identifier.id
+  FROM workflow_phase_events AS by_identifier
+  WHERE by_identifier.project_id = sqlc.arg(project_id) AND by_identifier.identifier = sqlc.arg(identifier)
+  UNION ALL
+  SELECT by_url.id
+  FROM workflow_phase_events AS by_url
+  WHERE by_url.project_id = sqlc.arg(project_id) AND by_url.issue_url = sqlc.arg(issue_url)
+)
+ORDER BY event.started_at, event.id;
 
 -- name: CreateWorkAttempt :one
 INSERT INTO work_attempts (
@@ -935,12 +1003,23 @@ ORDER BY waiting.completed_at, waiting.id;
 
 -- name: ListIssueWorkAttempts :many
 SELECT *
-FROM work_attempts
-WHERE project_id = sqlc.arg(project_id)
-  AND (
-    (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
-    OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
-    OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
+FROM work_attempts NOT INDEXED
+WHERE work_attempts.project_id = sqlc.arg(project_id)
+  AND work_attempts.id IN (
+    SELECT attempt_by_id.id FROM work_attempts AS attempt_by_id
+    WHERE attempt_by_id.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(issue_id) != ''
+      AND attempt_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT attempt_by_identifier.id FROM work_attempts AS attempt_by_identifier
+    WHERE attempt_by_identifier.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(identifier) != ''
+      AND attempt_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT attempt_by_url.id FROM work_attempts AS attempt_by_url
+    WHERE attempt_by_url.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(issue_url) != ''
+      AND attempt_by_url.issue_url = sqlc.arg(issue_url)
   )
 ORDER BY started_at, id;
 
@@ -1021,20 +1100,35 @@ INSERT INTO scheduler_decisions (
 RETURNING *;
 
 -- name: ListRecentSchedulerDecisions :many
-SELECT *
-FROM scheduler_decisions
-WHERE sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id)
+SELECT * FROM scheduler_decisions
+ORDER BY decision_at DESC, id DESC
+LIMIT sqlc.arg(limit);
+
+-- name: ListRecentProjectSchedulerDecisions :many
+SELECT * FROM scheduler_decisions
+WHERE project_id = sqlc.arg(project_id)
 ORDER BY decision_at DESC, id DESC
 LIMIT sqlc.arg(limit);
 
 -- name: ListIssueSchedulerDecisions :many
 SELECT *
-FROM scheduler_decisions
-WHERE project_id = sqlc.arg(project_id)
-  AND (
-    (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
-    OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
-    OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
+FROM scheduler_decisions NOT INDEXED
+WHERE scheduler_decisions.project_id = sqlc.arg(project_id)
+  AND scheduler_decisions.id IN (
+    SELECT decision_by_id.id FROM scheduler_decisions AS decision_by_id
+    WHERE decision_by_id.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(issue_id) != ''
+      AND decision_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT decision_by_identifier.id FROM scheduler_decisions AS decision_by_identifier
+    WHERE decision_by_identifier.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(identifier) != ''
+      AND decision_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT decision_by_url.id FROM scheduler_decisions AS decision_by_url
+    WHERE decision_by_url.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(issue_url) != ''
+      AND decision_by_url.issue_url = sqlc.arg(issue_url)
   )
 ORDER BY decision_at DESC, id DESC
 LIMIT sqlc.arg(limit);
@@ -1105,11 +1199,19 @@ WITH issue_events AS (
     CAST(0 AS INTEGER) AS verbose
   FROM scheduler_decisions
   WHERE (sqlc.arg(project_id) = '' OR project_id = sqlc.arg(project_id))
-    AND (
-      (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
-      OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
-      OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
-    )
+    AND id IN (
+    SELECT decision_by_id.id FROM scheduler_decisions AS decision_by_id
+    WHERE sqlc.arg(issue_id) != ''
+      AND decision_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT decision_by_identifier.id FROM scheduler_decisions AS decision_by_identifier
+    WHERE sqlc.arg(identifier) != ''
+      AND decision_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT decision_by_url.id FROM scheduler_decisions AS decision_by_url
+    WHERE sqlc.arg(issue_url) != ''
+      AND decision_by_url.issue_url = sqlc.arg(issue_url)
+  )
 
   UNION ALL
 
@@ -1130,11 +1232,19 @@ WITH issue_events AS (
     CASE WHEN phase_type = 'agent_session' AND total_tokens > 0 THEN 1 ELSE 0 END
   FROM workflow_phase_events
   WHERE (sqlc.arg(project_id) = '' OR project_id = sqlc.arg(project_id))
-    AND (
-      (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
-      OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
-      OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
-    )
+    AND id IN (
+    SELECT event_by_id.id FROM workflow_phase_events AS event_by_id
+    WHERE sqlc.arg(issue_id) != ''
+      AND event_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT event_by_identifier.id FROM workflow_phase_events AS event_by_identifier
+    WHERE sqlc.arg(identifier) != ''
+      AND event_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT event_by_url.id FROM workflow_phase_events AS event_by_url
+    WHERE sqlc.arg(issue_url) != ''
+      AND event_by_url.issue_url = sqlc.arg(issue_url)
+  )
 
   UNION ALL
 
@@ -1155,11 +1265,19 @@ WITH issue_events AS (
     CAST(0 AS INTEGER)
   FROM work_attempts
   WHERE (sqlc.arg(project_id) = '' OR project_id = sqlc.arg(project_id))
-    AND (
-      (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
-      OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
-      OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
-    )
+    AND id IN (
+    SELECT attempt_by_id.id FROM work_attempts AS attempt_by_id
+    WHERE sqlc.arg(issue_id) != ''
+      AND attempt_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT attempt_by_identifier.id FROM work_attempts AS attempt_by_identifier
+    WHERE sqlc.arg(identifier) != ''
+      AND attempt_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT attempt_by_url.id FROM work_attempts AS attempt_by_url
+    WHERE sqlc.arg(issue_url) != ''
+      AND attempt_by_url.issue_url = sqlc.arg(issue_url)
+  )
 
   UNION ALL
 
@@ -1181,11 +1299,19 @@ WITH issue_events AS (
   FROM work_attempts
   WHERE completed_at IS NOT NULL
     AND (sqlc.arg(project_id) = '' OR project_id = sqlc.arg(project_id))
-    AND (
-      (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
-      OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
-      OR (sqlc.arg(issue_url) != '' AND issue_url = sqlc.arg(issue_url))
-    )
+    AND id IN (
+    SELECT attempt_by_id.id FROM work_attempts AS attempt_by_id
+    WHERE sqlc.arg(issue_id) != ''
+      AND attempt_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT attempt_by_identifier.id FROM work_attempts AS attempt_by_identifier
+    WHERE sqlc.arg(identifier) != ''
+      AND attempt_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT attempt_by_url.id FROM work_attempts AS attempt_by_url
+    WHERE sqlc.arg(issue_url) != ''
+      AND attempt_by_url.issue_url = sqlc.arg(issue_url)
+  )
 
   UNION ALL
 
@@ -1208,11 +1334,19 @@ WITH issue_events AS (
   LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
   WHERE session.started_at IS NOT NULL
     AND (sqlc.arg(project_id) = '' OR attempt.project_id = sqlc.arg(project_id) OR attempt.project_id IS NULL)
-    AND (
-      (sqlc.arg(issue_id) != '' AND session.issue_id = sqlc.arg(issue_id))
-      OR (sqlc.arg(identifier) != '' AND session.identifier = sqlc.arg(identifier))
-      OR (sqlc.arg(issue_url) != '' AND session.issue_url = sqlc.arg(issue_url))
-    )
+    AND session.id IN (
+    SELECT session_by_id.id FROM codex_sessions AS session_by_id
+    WHERE sqlc.arg(issue_id) != ''
+      AND session_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT session_by_identifier.id FROM codex_sessions AS session_by_identifier
+    WHERE sqlc.arg(identifier) != ''
+      AND session_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT session_by_url.id FROM codex_sessions AS session_by_url
+    WHERE sqlc.arg(issue_url) != ''
+      AND session_by_url.issue_url = sqlc.arg(issue_url)
+  )
 
   UNION ALL
 
@@ -1235,11 +1369,19 @@ WITH issue_events AS (
   LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
   WHERE session.completed_at IS NOT NULL
     AND (sqlc.arg(project_id) = '' OR attempt.project_id = sqlc.arg(project_id) OR attempt.project_id IS NULL)
-    AND (
-      (sqlc.arg(issue_id) != '' AND session.issue_id = sqlc.arg(issue_id))
-      OR (sqlc.arg(identifier) != '' AND session.identifier = sqlc.arg(identifier))
-      OR (sqlc.arg(issue_url) != '' AND session.issue_url = sqlc.arg(issue_url))
-    )
+    AND session.id IN (
+    SELECT session_by_id.id FROM codex_sessions AS session_by_id
+    WHERE sqlc.arg(issue_id) != ''
+      AND session_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT session_by_identifier.id FROM codex_sessions AS session_by_identifier
+    WHERE sqlc.arg(identifier) != ''
+      AND session_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT session_by_url.id FROM codex_sessions AS session_by_url
+    WHERE sqlc.arg(issue_url) != ''
+      AND session_by_url.issue_url = sqlc.arg(issue_url)
+  )
 
   UNION ALL
 
@@ -1260,10 +1402,15 @@ WITH issue_events AS (
     CAST(1 AS INTEGER)
   FROM usage_events
   WHERE (sqlc.arg(project_id) = '' OR project_id = sqlc.arg(project_id))
-    AND (
-      (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
-      OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
-    )
+    AND id IN (
+    SELECT usage_by_id.id FROM usage_events AS usage_by_id
+    WHERE sqlc.arg(issue_id) != ''
+      AND usage_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT usage_by_identifier.id FROM usage_events AS usage_by_identifier
+    WHERE sqlc.arg(identifier) != ''
+      AND usage_by_identifier.identifier = sqlc.arg(identifier)
+  )
 )
 SELECT
   event_id,
@@ -1582,3 +1729,42 @@ WHERE project_id = sqlc.arg(project_id)
   AND exit_status = 'success'
 ORDER BY recorded_at DESC, id DESC
 LIMIT 1;
+
+-- name: IssueCardAttemptsToday :one
+SELECT COUNT(*) FROM work_attempts NOT INDEXED
+WHERE id IN (
+    SELECT attempt_by_id.id FROM work_attempts AS attempt_by_id
+    WHERE attempt_by_id.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(issue_id) != '' AND attempt_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT attempt_by_identifier.id FROM work_attempts AS attempt_by_identifier
+    WHERE attempt_by_identifier.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(identifier) != '' AND attempt_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT attempt_by_url.id FROM work_attempts AS attempt_by_url
+    WHERE attempt_by_url.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(issue_url) != '' AND attempt_by_url.issue_url = sqlc.arg(issue_url)
+  )
+  AND julianday(started_at) >= julianday(sqlc.arg(from_time))
+  AND julianday(started_at) < julianday(sqlc.arg(to_time));
+
+-- name: IssueCardLaneReason :one
+SELECT reason, CAST(recorded_at AS TEXT) AS recorded_at FROM (
+ SELECT reason, written_at AS recorded_at, 1 AS source_priority, id FROM lane_ledger
+ WHERE lane_ledger.project_id = sqlc.arg(project_id) AND lane_ledger.issue_id = sqlc.arg(issue_id) AND result = 'applied'
+ UNION ALL
+ SELECT COALESCE(reason, ''), started_at, 0, id FROM workflow_phase_events NOT INDEXED
+ WHERE id IN (
+    SELECT event_by_id.id FROM workflow_phase_events AS event_by_id
+    WHERE event_by_id.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(issue_id) != '' AND event_by_id.issue_id = sqlc.arg(issue_id)
+    UNION
+    SELECT event_by_identifier.id FROM workflow_phase_events AS event_by_identifier
+    WHERE event_by_identifier.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(identifier) != '' AND event_by_identifier.identifier = sqlc.arg(identifier)
+    UNION
+    SELECT event_by_url.id FROM workflow_phase_events AS event_by_url
+    WHERE event_by_url.project_id = sqlc.arg(project_id)
+      AND sqlc.arg(issue_url) != '' AND event_by_url.issue_url = sqlc.arg(issue_url)
+  ) AND phase_type = 'lane' AND status = 'entered'
+) ORDER BY julianday(recorded_at) DESC, source_priority DESC, id DESC LIMIT 1;

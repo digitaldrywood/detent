@@ -24,30 +24,34 @@ func TestDoctorInvariantAdmission(t *testing.T) {
 		missing                                     bool
 		want                                        doctorStatus
 	}{
-		{name: "feature admitted", title: "feat(ui): add view", reason: "admission_proposal_accepted", want: doctorFail},
-		{name: "human feature", title: "feat: add view", origin: "human", want: doctorOK},
+		{name: "feature admitted", title: "feat(ui): add view", origin: "admission", reason: "admission_proposal_accepted", want: doctorOK},
+		{name: "assistant feature", title: "feat: add view", origin: "agent", reason: "operator_move", want: doctorOK},
+		{name: "feature declares brake", title: "feat: add view", body: "Add a new brake.", origin: "admission", reason: "admission_proposal_accepted", want: doctorFail},
+		{name: "assistant feature declares lease", title: "feat: add view", body: "Introduce a new lease.", origin: "agent", reason: "operator_move", want: doctorFail},
+		{name: "feature declares config key", title: "feat: add view", body: "Introduce a config key `worker.wait`.", origin: "admission", reason: "admission_proposal_accepted", want: doctorFail},
+		{name: "human mechanism", title: "feat: add a new lease", origin: "human", want: doctorOK},
 		{name: "evidenced removal fix", title: "fix: remove lease", body: "Attempt 5601 logged duplicate ownership. Remove the existing lease.", reason: "admission_proposal_accepted", want: doctorOK},
-		{name: "operator human", title: "perf: speed up dispatch", origin: "operator", reason: "operator_move", metadata: human, want: doctorOK},
-		{name: "current operator ledger blank origin", title: "refactor(core)!: new dispatch", reason: "kanban_move", metadata: human, want: doctorOK},
-		{name: "authenticated dashboard human without tracker actor", title: "feat: add view", reason: "kanban_move", metadata: `{"provenance":{"schema":2,"origin":"human","initiator":"human","basis":"authenticated_human_session"}}`, want: doctorOK},
-		{name: "dashboard agent session", title: "feat: add view", reason: "kanban_move", metadata: `{"provenance":{"schema":2,"origin":"agent","initiator":"detent_agent_session","basis":"active_agent_session"}}`, want: doctorFail},
-		{name: "operator without actor", title: "feat: add view", origin: "operator", reason: "operator_move", metadata: `{"provenance":{"origin":"human","initiator":"human"}}`, want: doctorFail},
-		{name: "assistant using human login", title: "feat: add view", origin: "agent", reason: "operator_move", metadata: human, want: doctorFail},
-		{name: "routine using human login", title: "feat: add view", origin: "operator_routine", reason: "operator_move", metadata: human, want: doctorFail},
-		{name: "admission actor is not scope approval", title: "feat: add view", origin: "human", reason: "admission_proposal_accepted", metadata: human, want: doctorFail},
+		{name: "operator human", title: "perf: add a new reservation", origin: "operator", reason: "operator_move", metadata: human, want: doctorOK},
+		{name: "current operator ledger blank origin", title: "refactor(core)!: expand the existing breaker", reason: "kanban_move", metadata: human, want: doctorOK},
+		{name: "authenticated dashboard human without tracker actor", title: "feat: add a new lease", reason: "kanban_move", metadata: `{"provenance":{"schema":2,"origin":"human","initiator":"human","basis":"authenticated_human_session"}}`, want: doctorOK},
+		{name: "dashboard agent session", title: "feat: add a new lease", reason: "kanban_move", metadata: `{"provenance":{"schema":2,"origin":"agent","initiator":"detent_agent_session","basis":"active_agent_session"}}`, want: doctorFail},
+		{name: "operator without actor", title: "feat: add a new lease", origin: "operator", reason: "operator_move", metadata: `{"provenance":{"origin":"human","initiator":"human"}}`, want: doctorFail},
+		{name: "assistant using human login", title: "feat: add a new lease", origin: "agent", reason: "operator_move", metadata: human, want: doctorFail},
+		{name: "routine using human login", title: "feat: add a new lease", origin: "operator_routine", reason: "operator_move", metadata: human, want: doctorFail},
+		{name: "admission actor is not scope approval", title: "feat: add a new lease", origin: "human", reason: "admission_proposal_accepted", metadata: human, want: doctorFail},
 		{name: "fix expands mechanism", title: "fix: recover dispatch", body: "Add a new recovery path for lost workers.", reason: "admission_proposal_accepted", want: doctorFail},
 		{name: "title declares recovery", title: "fix: add a new recovery path", reason: "admission_proposal_accepted", want: doctorFail},
 		{name: "removal plus addition", title: "fix: repair", body: "Remove the old lease and add a new breaker", reason: "admission_proposal_accepted", want: doctorFail},
-		{name: "unknown origin", title: "feat: add view", want: doctorFail},
-		{name: "old entry", title: "feat: add view", age: 8 * 24 * time.Hour, want: doctorOK},
-		{name: "window boundary", title: "feat: add view", age: 7 * 24 * time.Hour, want: doctorFail},
-		{name: "future entry", title: "feat: add view", age: -time.Hour, want: doctorOK},
-		{name: "failed write", title: "feat: add view", result: "failed", want: doctorOK},
-		{name: "prepared write", title: "feat: add view", result: "prepared", want: doctorOK},
-		{name: "other project", title: "feat: add view", project: "beta", want: doctorOK},
-		{name: "other lane", title: "feat: add view", target: "Backlog", want: doctorOK},
+		{name: "unknown origin", title: "feat: add a new lease", want: doctorFail},
+		{name: "old entry", title: "feat: add a new lease", age: 8 * 24 * time.Hour, want: doctorOK},
+		{name: "window boundary", title: "feat: add a new lease", age: 7 * 24 * time.Hour, want: doctorFail},
+		{name: "future entry", title: "feat: add a new lease", age: -time.Hour, want: doctorOK},
+		{name: "failed write", title: "feat: add a new lease", result: "failed", want: doctorOK},
+		{name: "prepared write", title: "feat: add a new lease", result: "prepared", want: doctorOK},
+		{name: "other project", title: "feat: add a new lease", project: "beta", want: doctorOK},
+		{name: "other lane", title: "feat: add a new lease", target: "Backlog", want: doctorOK},
 		{name: "missing issue", missing: true, want: doctorWarn},
-		{name: "later human event cannot approve earlier move", title: "feat: add view", reason: "operator_move", metadata: human, age: 2 * time.Hour, want: doctorFail},
+		{name: "later human event cannot approve earlier move", title: "feat: add a new lease", reason: "operator_move", metadata: human, age: 2 * time.Hour, want: doctorFail},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -110,7 +114,11 @@ func TestDoctorInvariantScopeClassification(t *testing.T) {
 		title, body string
 		want        bool
 	}{
-		{"feat(api)!: extend", "", true}, {"PERF: improve", "", true}, {"refactor: simplify", "", true},
+		{"feat(api)!: extend", "", false}, {"PERF: improve", "", false}, {"refactor: simplify", "", false},
+		{"feat: add a new lease", "", true},
+		{"perf: add a new reservation", "", true},
+		{"refactor: expand the existing breaker", "", true},
+		{"feat: add view", "No new config keys or leases.", false},
 		{"fix: repair", "Introduce a config key `worker.wait`.", true},
 		{"fix: repair", "Adds a reason code for waiting.", true},
 		{"fix: repair", "Expand the existing breaker to cover startup.", true},
@@ -149,7 +157,7 @@ func TestDoctorInvariantAdmissionRepeatedEntries(t *testing.T) {
 	cfg := workflowconfig.Config{}
 	cfg.Tracker.Kind = "memory"
 	cfg.Tracker.Issues = []connector.Issue{
-		{ID: "issue-1", Identifier: "owner/repo#1", Title: "feat: add view"},
+		{ID: "issue-1", Identifier: "owner/repo#1", Title: "feat: add a new lease"},
 		{ID: "issue-2", Identifier: "owner/repo#2", Title: "fix: recover", Description: "Introduce a new lease."},
 	}
 	checks := checkDoctorInvariantEvidence(t.Context(), "alpha", globalconfig.Project{}, cfg, path, doctorDeps{now: func() time.Time { return now }})
@@ -208,6 +216,7 @@ func TestDoctorInvariantAdmissionUnavailableEvidence(t *testing.T) {
 type doctorAdmissionBatchReader struct {
 	doctorAutoPromoteConnector
 	failID string
+	body   string
 }
 
 func (r doctorAdmissionBatchReader) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
@@ -219,7 +228,7 @@ func (r doctorAdmissionBatchReader) FetchIssueStatesByIDs(_ context.Context, ids
 		if id == r.failID {
 			return nil, fmt.Errorf("tracker unavailable for %s", id)
 		}
-		issues = append(issues, connector.Issue{ID: id, Identifier: id, Title: "feat: add view"})
+		issues = append(issues, connector.Issue{ID: id, Identifier: id, Title: "feat: add view", Description: r.body})
 	}
 	return issues, nil
 }
@@ -230,12 +239,13 @@ func TestDoctorInvariantAdmissionBatches(t *testing.T) {
 		name   string
 		count  int
 		failID string
+		body   string
 		want   doctorStatus
 	}{
-		{name: "at limit", count: 100, want: doctorFail},
-		{name: "over limit", count: 101, want: doctorFail},
-		{name: "multiple full batches", count: 200, want: doctorFail},
-		{name: "partial final batch", count: 205, want: doctorFail},
+		{name: "features at limit", count: 100, want: doctorOK},
+		{name: "mechanisms over limit", count: 101, body: "Introduce a new lease.", want: doctorFail},
+		{name: "features across multiple full batches", count: 200, want: doctorOK},
+		{name: "mechanisms in partial final batch", count: 205, body: "Add a new brake.", want: doctorFail},
 		{name: "later batch unavailable", count: 205, failID: "issue-150", want: doctorWarn},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -253,7 +263,7 @@ func TestDoctorInvariantAdmissionBatches(t *testing.T) {
 				}
 			}
 			deps := doctorDeps{autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
-				return doctorAdmissionBatchReader{failID: tt.failID}, nil
+				return doctorAdmissionBatchReader{failID: tt.failID, body: tt.body}, nil
 			}}
 			check := doctorInvariantAdmissionCheck(t.Context(), "alpha", workflowconfig.Config{}, deps, db, "2026-09-07T12:00:00Z", "2026-09-14T12:00:00Z")
 			if check.Status != tt.want {
@@ -265,10 +275,13 @@ func TestDoctorInvariantAdmissionBatches(t *testing.T) {
 				}
 				return
 			}
+			if !strings.Contains(check.Detail, fmt.Sprintf("%d applied Todo entries", tt.count)) {
+				t.Fatalf("missing entry count: %s", check.Detail)
+			}
 			for i := range tt.count {
 				want := fmt.Sprintf(`issue-%d origin="admission"`, i)
-				if !strings.Contains(check.Detail, want) {
-					t.Errorf("missing violation %s", want)
+				if strings.Contains(check.Detail, want) != (tt.want == doctorFail) {
+					t.Errorf("violation %s reported=%v; want %v", want, strings.Contains(check.Detail, want), tt.want == doctorFail)
 				}
 			}
 		})

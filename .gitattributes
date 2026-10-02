@@ -1,1 +1,5 @@
 *.jsonl text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.golden text eol=lf
+*.sh text eol=lf

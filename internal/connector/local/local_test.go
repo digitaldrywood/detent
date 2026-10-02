@@ -271,6 +271,10 @@ func TestConnectorFetchIssueCommentsReturnsEventMetadata(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("FetchIssueComments() len = %d, want 1", len(got))
 	}
+	issues, err := store.FetchIssueStatesByIDs(ctx, []string{issue.ID})
+	if err != nil || len(issues) != 1 || !issues[0].CommentsComplete || len(issues[0].Comments) != 1 {
+		t.Fatalf("current local comments = %+v, err = %v", issues, err)
+	}
 	comment := got[0]
 	if comment.ID != "1" ||
 		comment.Backend != connector.BackendLocalSQLite.String() ||

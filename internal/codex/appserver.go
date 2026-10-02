@@ -160,6 +160,7 @@ func (e *TurnFailedError) BackendErrorStatus() string {
 }
 
 type AppServer struct {
+	prepareThread    func(context.Context, string) error
 	transportFactory TransportFactory
 	clientInfo       ClientInfo
 	logger           *slog.Logger
@@ -180,6 +181,9 @@ type ClientInfo struct {
 }
 
 type RunTurnRequest struct {
+	Permissions           string
+	RuntimeWorkspaceRoots []string
+	Config                map[string]any
 	// ConversationControl, when set, wraps the transport so live conversation
 	// commands and provider questions are multiplexed into the turn.
 	ConversationControl *runner.AgentConversationControl
@@ -301,6 +305,8 @@ type Update struct {
 	ItemID              string
 	Tool                string
 	Command             string
+	NativeActions       []runner.NativeCommandAction
+	CWD                 string
 	Delta               string
 	Status              string
 	ExitCode            *int
@@ -428,10 +434,23 @@ func WithTurnTimeout(timeout time.Duration) AppServerOption {
 	}
 }
 
+// WithThreadPreparation makes persisted rollouts available before a thread is
+// read or resumed. Fresh threads do not need preparation.
+func WithThreadPreparation(prepare func(context.Context, string) error) AppServerOption {
+	return func(server *AppServer) {
+		server.prepareThread = prepare
+	}
+}
+
 func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate UpdateHandler) (result RunTurnResult, err error) {
 	ctx = contextOrBackground(ctx)
 	if req.ConversationControl != nil {
 		ctx = WithConversationTurn(ctx)
+	}
+	if threadID := strings.TrimSpace(req.ResumeThreadID); threadID != "" && s.prepareThread != nil {
+		if err := s.prepareThread(ctx, threadID); err != nil {
+			return RunTurnResult{}, fmt.Errorf("prepare Codex thread for resume: %w", err)
+		}
 	}
 
 	transport, err := s.transportFactory.NewTransport(ctx)
@@ -715,6 +734,11 @@ func (s *AppServer) VerifyThread(ctx context.Context, threadID string) (err erro
 	if threadID == "" {
 		return errors.New("codex thread id is required")
 	}
+	if s.prepareThread != nil {
+		if err := s.prepareThread(ctx, threadID); err != nil {
+			return fmt.Errorf("prepare Codex thread for verification: %w", err)
+		}
+	}
 	transport, err := s.transportFactory.NewTransport(ctx)
 	if err != nil {
 		return fmt.Errorf("start codex app-server transport: %w", err)
@@ -845,10 +869,8 @@ func (s *AppServer) startThread(
 		"cwd": req.Workspace,
 	}
 	setOptional(params, "approvalPolicy", wireApprovalPolicy(req.ApprovalPolicy))
-	if req.TerminalWaitTimeout > 0 {
-		params["config"] = map[string]any{
-			"background_terminal_max_timeout": req.TerminalWaitTimeout.Milliseconds(),
-		}
+	if settings := threadConfig(req); len(settings) > 0 {
+		params["config"] = settings
 	}
 	if req.DeveloperInstructions != "" {
 		params["developerInstructions"] = req.DeveloperInstructions
@@ -859,6 +881,7 @@ func (s *AppServer) startThread(
 	if req.ThreadSandbox != "" {
 		params["sandbox"] = req.ThreadSandbox
 	}
+	setIsolationProfile(params, req)
 	if req.Model != "" {
 		params["model"] = req.Model
 	}
@@ -918,10 +941,8 @@ func (s *AppServer) resumeThread(
 		"cwd":      req.Workspace,
 	}
 	setOptional(params, "approvalPolicy", wireApprovalPolicy(req.ApprovalPolicy))
-	if req.TerminalWaitTimeout > 0 {
-		params["config"] = map[string]any{
-			"background_terminal_max_timeout": req.TerminalWaitTimeout.Milliseconds(),
-		}
+	if settings := threadConfig(req); len(settings) > 0 {
+		params["config"] = settings
 	}
 	if req.DeveloperInstructions != "" {
 		params["developerInstructions"] = req.DeveloperInstructions
@@ -929,6 +950,7 @@ func (s *AppServer) resumeThread(
 	if req.ThreadSandbox != "" {
 		params["sandbox"] = req.ThreadSandbox
 	}
+	setIsolationProfile(params, req)
 	if req.Model != "" {
 		params["model"] = req.Model
 	}
@@ -998,6 +1020,7 @@ func (s *AppServer) startTurn(
 	}
 	setOptional(params, "approvalPolicy", wireApprovalPolicy(req.ApprovalPolicy))
 	setOptional(params, "sandboxPolicy", req.TurnSandboxPolicy)
+	setIsolationProfile(params, req)
 	if req.Model != "" {
 		params["model"] = req.Model
 	}
@@ -2054,19 +2077,21 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		ThreadID string `json:"threadId"`
 		TurnID   string `json:"turnId"`
 		Item     struct {
-			ID               string          `json:"id"`
-			Type             string          `json:"type"`
-			Command          string          `json:"command"`
-			Arguments        json.RawMessage `json:"arguments"`
-			Status           string          `json:"status"`
-			ExitCode         *int            `json:"exitCode"`
-			AggregatedOutput string          `json:"aggregatedOutput"`
-			Server           string          `json:"server"`
-			Tool             string          `json:"tool"`
-			Result           json.RawMessage `json:"result"`
-			Error            json.RawMessage `json:"error"`
-			Changes          json.RawMessage `json:"changes"`
-			ContentItems     json.RawMessage `json:"contentItems"`
+			ID               string                       `json:"id"`
+			Type             string                       `json:"type"`
+			Command          string                       `json:"command"`
+			CommandActions   []runner.NativeCommandAction `json:"commandActions"`
+			CWD              string                       `json:"cwd"`
+			Arguments        json.RawMessage              `json:"arguments"`
+			Status           string                       `json:"status"`
+			ExitCode         *int                         `json:"exitCode"`
+			AggregatedOutput string                       `json:"aggregatedOutput"`
+			Server           string                       `json:"server"`
+			Tool             string                       `json:"tool"`
+			Result           json.RawMessage              `json:"result"`
+			Error            json.RawMessage              `json:"error"`
+			Changes          json.RawMessage              `json:"changes"`
+			ContentItems     json.RawMessage              `json:"contentItems"`
 		} `json:"item"`
 	}
 	if err := json.Unmarshal(msg.Params, &params); err != nil {
@@ -2083,6 +2108,19 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		params.Item.Command,
 		compactNonNullJSON(params.Item.Arguments),
 	)
+	if msg.Method == "item/started" && params.Item.Type == "commandExecution" && len(params.Item.CommandActions) > 0 {
+		commands := make([]string, 0, len(params.Item.CommandActions))
+		for _, action := range params.Item.CommandActions {
+			if strings.TrimSpace(action.Command) == "" {
+				commands = nil
+				break
+			}
+			commands = append(commands, action.Command)
+		}
+		if len(commands) > 0 {
+			content = strings.Join(commands, "; ")
+		}
+	}
 	errorBody := ""
 	errorMessage := ""
 	updateType := UpdateToolStarted
@@ -2123,6 +2161,8 @@ func toolLifecycleUpdate(msg Message) (Update, bool, error) {
 		ItemID:              params.Item.ID,
 		Tool:                tool,
 		Command:             strings.TrimSpace(params.Item.Command),
+		NativeActions:       params.Item.CommandActions,
+		CWD:                 params.Item.CWD,
 		Delta:               content,
 		Status:              params.Item.Status,
 		ExitCode:            params.Item.ExitCode,

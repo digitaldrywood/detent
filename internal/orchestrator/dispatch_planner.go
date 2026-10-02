@@ -10,14 +10,22 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+// Limit expensive candidate evaluation to current capacity plus a small
+// lookahead, including candidates that fail hydration or cannot start.
+const dispatchCandidateLookahead = 8
+
 type dispatchPlanner struct {
+	nativeWorkflow       bool
+	workerHostAvailable  func(string) bool
 	operatorRejectedHead func(connector.Issue) (bool, error)
 	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
 	cfg                  Config
@@ -96,6 +104,20 @@ func (p dispatchPlanner) plan(
 	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
 	dueRetries = dueRetriesByIssue(state, now)
 	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
+	knownWaits := make(map[string]bool, len(plannedCandidates))
+	for _, issue := range plannedCandidates {
+		knownWaits[issue.ID] = knownDispatchWait(issue, state, dueRetries, p.cfg.TerminalStates)
+	}
+	slices.SortStableFunc(plannedCandidates, func(a, b connector.Issue) int {
+		waitingA, waitingB := knownWaits[a.ID], knownWaits[b.ID]
+		if waitingA == waitingB {
+			return 0
+		}
+		if waitingA {
+			return 1
+		}
+		return -1
+	})
 	logDecision := func(decision dispatchPlanDecision) {
 		decision.SelectionReason = mergePriority.reasons[strings.TrimSpace(decision.Issue.ID)]
 		p.logDecision(hooks, decision)
@@ -105,6 +127,8 @@ func (p dispatchPlanner) plan(
 	plan := DispatchPlan{}
 	continuations := 0
 	mergeControlAvailable := true
+	evaluationLimit := p.hardAvailableSlots(state) + dispatchCandidateLookahead
+	evaluated := 0
 	for index, issue := range plannedCandidates {
 		queuePosition := index + 1
 		if correctableDispatchEscalated(state, issue.ID, dispatchSkipOwnershipAssigneeRequired) {
@@ -129,6 +153,14 @@ func (p dispatchPlanner) plan(
 			logDecision(decision)
 			continue
 		}
+		if _, retryDue := dueRetries[issue.ID]; !retryDue && p.hardAvailableSlots(state) == 0 && !p.readyMergeControlCandidate(state, issue) {
+			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipProjectCapacityFull})
+			continue
+		}
+		if evaluated >= evaluationLimit {
+			break
+		}
+		evaluated++
 		if retry, ok := dueRetries[issue.ID]; ok {
 			if retry.Wait.Kind == retryWaitCurrentHeadCI || retry.Wait.Kind == retryWaitWorkspaceBranchHeld {
 				var handled bool
@@ -189,10 +221,6 @@ func (p dispatchPlanner) plan(
 			} else if hooks.retryDispatchFailed != nil {
 				hooks.retryDispatchFailed(action.issue, retry)
 			}
-			continue
-		}
-		if p.hardAvailableSlots(state) == 0 && !p.readyMergeControlCandidate(state, issue) {
-			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipProjectCapacityFull})
 			continue
 		}
 		if hooks.hydrate != nil {
@@ -257,6 +285,19 @@ func (p dispatchPlanner) plan(
 	return plan
 }
 
+func knownDispatchWait(issue connector.Issue, state *State, dueRetries map[string]Retry, terminalStates []string) bool {
+	if _, retryDue := dueRetries[issue.ID]; retryDue {
+		return false
+	}
+	_, running := state.Running[issue.ID]
+	_, deferred := state.deferredCompletions[issue.ID]
+	_, retry := state.Retry[issue.ID]
+	_, claimed := state.Claimed[issue.ID]
+	blocked, parked := state.Blocked[issue.ID]
+	return running || deferred || retry || claimed || (parked && !blockedFromDependency(blocked)) ||
+		(issue.DependencySource == connector.BlockedRefSourceNative && issueBlockedByNonTerminal(issue, terminalStates))
+}
+
 func clearBlockedUnblockerCounts(issues []connector.Issue, blocked map[string]Blocked) {
 	for index := range issues {
 		if _, ok := blocked[issues[index].ID]; ok {
@@ -308,10 +349,7 @@ func (p dispatchPlanner) retryAction(
 	if p.forgeAvailabilityBlocks(state, issue, retry, now) {
 		return dispatchAction{}, false, dispatchSkipForgeUnavailable
 	}
-	if workerGitHubMonitorBlocks(state, issue.ID, retry, now) {
-		return dispatchAction{}, false, dispatchSkipGitHubMonitor
-	}
-	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+	if outage, paused := activeGitHubRESTCapacityOutage(state, now); paused && p.githubRESTDependent(issue) {
 		if retry.DueAt.Before(outage.ResumeAt) {
 			retry.DueAt = outage.ResumeAt
 			state.Retry[retry.Issue.ID] = retry
@@ -384,19 +422,6 @@ func (p dispatchPlanner) retryAction(
 		}
 		return dispatchAction{}, false, dispatchSkipWorkerHostUnavailable
 	}
-	// Reserve only after eligibility and worker selection succeed. A carrier
-	// that cannot run must not consume attempts or renew an expired hold.
-	if retry.GitHubMonitor {
-		if _, active := state.GitHubMonitors[strings.TrimSpace(retry.GitHubCredential)]; active {
-			if _, reserved := reserveWorkerGitHubMonitorProbe(state, issue.ID, retry, now); !reserved {
-				state.Retry[retry.Issue.ID] = retry
-				if forgeProbeReserved {
-					releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchSkipGitHubMonitor, now)
-				}
-				return dispatchAction{}, false, dispatchSkipGitHubMonitor
-			}
-		}
-	}
 	return action, true, ""
 }
 
@@ -435,6 +460,12 @@ func (p dispatchPlanner) newDispatchAction(
 	if !ok && !allowMergeControl {
 		return dispatchAction{}, false
 	}
+	if retryState != nil && retryState.WorkerHost != workerHost {
+		copy := *retryState
+		copy.RetryMode = runpkg.RetryModeFresh
+		copy.ResumeState = store.AgentResumeState{}
+		retryState = &copy
+	}
 
 	return dispatchAction{
 		issue:               cloneIssue(issue),
@@ -449,7 +480,6 @@ func (p dispatchPlanner) newDispatchAction(
 
 func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now time.Time) {
 	issue := cloneIssue(action.issue)
-	reserveIdleWorkerGitHubMonitorProbe(state, issue.ID, now)
 	reserveCredentialCanaryForDispatch(state, issue.ID, now)
 	reserveMergeCandidate(state, issue, now)
 	state.Running[issue.ID] = Running{
@@ -457,7 +487,6 @@ func (p dispatchPlanner) markDispatched(state *State, action dispatchAction, now
 		Attempt:           action.attempt,
 		StartedAt:         now,
 		WorkerHost:        action.workerHost,
-		GitHubCredential:  reservedGitHubCredential(state, issue.ID),
 		ForgeProbeHost:    reservedForgeProbeHost(state, issue.ID),
 		ModelPermitExempt: !action.modelPermitRequired,
 	}
@@ -670,7 +699,6 @@ const (
 	dispatchSkipTrackerUnavailable        = scheduler.DecisionReasonTrackerUnavailable
 	dispatchSkipCompletionDeferred        = scheduler.DecisionReasonCompletionDeferred
 	dispatchSkipForgeUnavailable          = scheduler.DecisionReasonForgeUnavailable
-	dispatchSkipGitHubMonitor             = scheduler.DecisionReasonGitHubMonitor
 	dispatchSkipCIUnavailable             = scheduler.DecisionReasonCIUnavailable
 	dispatchSkipProjectFailureBreaker     = scheduler.DecisionReasonProjectFailureBreakerPaused
 	dispatchSkipRateWindowBackpressure    = scheduler.DecisionReasonProviderRateWindowBackpressure
@@ -685,6 +713,7 @@ func (p dispatchPlanner) previewCurrentHeadCIWait(
 	now time.Time,
 ) (Retry, bool) {
 	if !mergeWorkerProgrammaticMergeWaiting(issue) {
+		finishMergeWorkerCurrentHeadCIWait(state, issue, now)
 		retry.Attempt = nextAttempt(retry.Attempt)
 		retry.Wait = RetryWait{}
 		state.Retry[issue.ID] = retry
@@ -692,13 +721,13 @@ func (p dispatchPlanner) previewCurrentHeadCIWait(
 	}
 	timing := reconcileMergeWorkerCurrentHeadCIWait(state, issue, now)
 	retry.Issue = cloneIssue(issue)
-	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue)
+	retry.Error = mergeWorkerCurrentHeadCIWaitReason(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus)
 	if retry.Wait.StartedAt.IsZero() || !retry.Wait.StartedAt.Equal(timing.CIWaitStartedAt) {
 		retry.Wait.StartedAt = timing.CIWaitStartedAt
 		retry.Wait.PollCount = 0
 	}
 	retry.Wait.PollCount++
-	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue)
+	retry.Wait.PendingChecks = mergeWorkerCurrentHeadCIPendingChecks(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus)
 	retry.DueAt = mergeWorkerCurrentHeadCINextPollAt(retry.Wait.StartedAt, now, p.cfg.ContinuationRetryDelay)
 	state.Retry[issue.ID] = retry
 	return retry, true
@@ -748,13 +777,10 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if p.forgeAvailabilityBlocks(state, issue, Retry{}, now) {
 		return dispatchableDecision{reason: dispatchSkipForgeUnavailable}
 	}
-	if workerGitHubMonitorBlocks(state, issue.ID, Retry{}, now) {
-		return dispatchableDecision{reason: dispatchSkipGitHubMonitor}
-	}
 	if activeCIUnavailable(state) && ciDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipCIUnavailable}
 	}
-	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused {
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && p.githubRESTDependent(issue) {
 		return dispatchableDecision{reason: dispatchSkipGitHubRESTCapacity}
 	}
 	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
@@ -763,8 +789,10 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if pullRequestHydrationBlocksDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}
 	}
-	if normalizeState(issue.State) == normalizeState(p.cfg.AutoPromote.ReworkState) && issue.PullRequest != nil &&
-		(currentHeadCIStatusPending(issue.PullRequest.CIStatus) || len(mergeWorkerCurrentHeadCIPendingChecks(issue)) > 0) {
+	if (normalizeState(issue.State) == normalizeState(p.cfg.AutoPromote.ReworkState) ||
+		(normalizeState(issue.State) == "todo" && issue.PullRequest.HasMissingLocalStatus(gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus))) && issue.PullRequest != nil &&
+		!stateIn(issue.PullRequest.State, []string{"closed", "merged"}) &&
+		(currentHeadCIStatusPending(issue.PullRequest.CIStatus) || len(mergeWorkerCurrentHeadCIPendingChecks(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus)) > 0) {
 		return dispatchableDecision{reason: dispatchSkipCurrentHeadCIWait}
 	}
 	if artifactGateWaitStatusBlocksDispatch(issue, p.cfg.AutoPromote.Gate) {
@@ -784,7 +812,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if mergedPullRequestReconciliationPending(issue, p.cfg) {
 		return dispatchableDecision{reason: dispatchSkipMergedPullRequest}
 	}
-	if duplicatePullRequestWork(issue) {
+	if duplicatePullRequestWork(issue, gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus) {
 		return dispatchableDecision{reason: dispatchSkipDuplicatePullRequest}
 	}
 	if authorization := p.authorizationDecision(issue); !authorization.Matched {
@@ -817,7 +845,14 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		if reason == lifetimeLimitReason || strings.HasPrefix(reason, lifetimeLimitBlockedReasonPrefix) {
 			return dispatchableDecision{reason: dispatchSkipLifetimeLimit}
 		}
-		return dispatchableDecision{reason: dispatchSkipBlocked}
+		detail := strings.TrimSpace(blocked.Reason)
+		if recovery := strings.TrimSpace(blocked.RecoveryReason); recovery != "" {
+			if detail != "" {
+				detail += ": "
+			}
+			detail += recovery
+		}
+		return dispatchableDecision{reason: dispatchSkipBlocked, detail: detail}
 	}
 	if reason := p.budgetRefusalWaitReason(state, issue.ID, now); reason != "" {
 		return dispatchableDecision{reason: reason}
@@ -1178,7 +1213,7 @@ func (p dispatchPlanner) selectWorkerHost(state *State, preferredWorkerHost stri
 
 	availableHosts := make([]string, 0, len(p.cfg.WorkerHosts))
 	for _, host := range p.cfg.WorkerHosts {
-		if p.workerHostSlotsAvailable(state, host) {
+		if p.workerHostSlotsAvailable(state, host) && (p.workerHostAvailable == nil || p.workerHostAvailable(host)) {
 			availableHosts = append(availableHosts, host)
 		}
 	}
@@ -1187,6 +1222,9 @@ func (p dispatchPlanner) selectWorkerHost(state *State, preferredWorkerHost stri
 	}
 
 	preferredWorkerHost = strings.TrimSpace(preferredWorkerHost)
+	if p.cfg.WorkerHostSelection == "preference" {
+		return availableHosts[0], true
+	}
 	if preferredWorkerHost != "" {
 		if slices.Contains(availableHosts, preferredWorkerHost) {
 			return preferredWorkerHost, true
@@ -1197,11 +1235,19 @@ func (p dispatchPlanner) selectWorkerHost(state *State, preferredWorkerHost stri
 }
 
 func (p dispatchPlanner) workerHostSlotsAvailable(state *State, workerHost string) bool {
-	if p.cfg.MaxConcurrentAgentsPerHost <= 0 {
+	capacity := p.cfg.workerHostCapacity(workerHost)
+	if capacity <= 0 {
 		return true
 	}
 
-	return runningWorkerHostCount(state, workerHost) < p.cfg.MaxConcurrentAgentsPerHost
+	return runningWorkerHostCount(state, workerHost) < capacity
+}
+
+func (c Config) workerHostCapacity(host string) int {
+	if capacity := c.WorkerHostCaps[host]; capacity > 0 {
+		return capacity
+	}
+	return c.MaxConcurrentAgentsPerHost
 }
 
 func (p dispatchPlanner) scheduleRetry(
@@ -1304,6 +1350,10 @@ func (p dispatchPlanner) releaseClaim(state *State, issueID string) {
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+}
+
+func (p dispatchPlanner) githubRESTDependent(issue connector.Issue) bool {
+	return !p.nativeWorkflow || normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && p.cfg.Policy.Gates.GitHubPullRequest
 }
 
 // dispatchLabelSelector projects authorization onto labels. Other predicates

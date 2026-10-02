@@ -214,14 +214,18 @@ func (s *toolExecutorStub) ExecuteTool(context.Context, ToolCall) (ToolResult, e
 }
 
 type actionExecutorStub struct {
-	result string
-	err    error
-	calls  int
-	action Action
+	result    string
+	execution *ActionExecution
+	err       error
+	calls     int
+	action    Action
 }
 
-func (s *actionExecutorStub) ExecuteAction(_ context.Context, action Action) (string, error) {
+func (s *actionExecutorStub) ExecuteAction(_ context.Context, action Action) (ActionExecution, error) {
 	s.calls++
 	s.action = action
-	return s.result, s.err
+	if s.execution != nil {
+		return *s.execution, s.err
+	}
+	return ActionExecution{Message: s.result}, s.err
 }

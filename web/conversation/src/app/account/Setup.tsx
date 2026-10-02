@@ -23,16 +23,18 @@
 // history) is a real decision with a real endpoint. The stepper follows the
 // hub.
 import React from "react";
+import { GitHubIssueIntake } from "./IssueIntake.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
-import type { Onboarding, OnboardingStep } from "../../contracts/account.ts";
+import type { Onboarding, OnboardingStep, ProjectIntegration } from "../../contracts/account.ts";
 import { ONBOARDING_STEPS } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
 import { AccountError } from "./api.ts";
+import { ContextHelp } from "../components/ContextHelp.tsx";
 import { EnrollRunnerDialog } from "../fleet/EnrollRunner.tsx";
 import { ControlError, NativeSelect, StatusDot } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
@@ -146,6 +148,7 @@ export function OptionRow({
   name,
   detail,
   right,
+  help,
   disabled = false,
 }: {
   readonly checked?: boolean;
@@ -154,6 +157,7 @@ export function OptionRow({
   readonly name: React.ReactNode;
   readonly detail?: React.ReactNode;
   readonly right?: React.ReactNode;
+  readonly help?: string;
   readonly disabled?: boolean;
 }): React.ReactElement {
   const selectable = checked !== undefined && onCheckedChange !== undefined;
@@ -177,14 +181,14 @@ export function OptionRow({
     return (
       <div className="mb-2.5 flex items-center gap-3 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
         {body}
+        {help === undefined ? null : <ContextHelp label={label}>{help}</ContextHelp>}
       </div>
     );
   }
-  // The whole card is the control, so the selected state is where the reader
-  // is looking rather than only in a box at its edge.
+  // Keep the choice label and help button as siblings so reading help cannot
+  // change the selection.
   return (
-    <label
-      htmlFor={id}
+    <div
       data-checked={checked ? "" : undefined}
       className={cn(
         "mb-2.5 flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 transition-colors",
@@ -192,21 +196,25 @@ export function OptionRow({
         disabled && "cursor-not-allowed opacity-64",
       )}
     >
-      <Checkbox
-        id={id}
-        aria-label={label}
-        checked={checked}
-        disabled={disabled}
-        onCheckedChange={(next) => onCheckedChange(next === true)}
-      />
-      {body}
-    </label>
+      <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
+        <Checkbox
+          id={id}
+          aria-label={label}
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={(next) => onCheckedChange(next === true)}
+        />
+        {body}
+      </label>
+      {help === undefined ? null : <ContextHelp label={label}>{help}</ContextHelp>}
+    </div>
   );
 }
 
 export interface Choice {
   readonly value: string;
-  readonly name: React.ReactNode;
+  readonly name: string;
+  readonly help?: string;
   readonly detail?: React.ReactNode;
 }
 
@@ -235,7 +243,7 @@ export function ChoiceGroup({
         const selected = choice.value === value;
         const id = `${name}-${choice.value}`;
         return (
-          <label
+          <div
             key={choice.value}
             data-checked={selected ? "" : undefined}
             className={cn(
@@ -243,27 +251,31 @@ export function ChoiceGroup({
               selected ? "border-primary bg-primary/8" : "border-border/60 bg-muted hover:border-border",
             )}
           >
-            <input
-              type="radio"
-              name={name}
-              value={choice.value}
-              aria-labelledby={`${id}-name`}
-              aria-describedby={choice.detail === undefined ? undefined : `${id}-detail`}
-              checked={selected}
-              onChange={() => onValueChange(choice.value)}
-              className="size-4 shrink-0 accent-primary outline-none"
-            />
-            <span className="min-w-0 flex-1">
-              <span id={`${id}-name`} className="block text-[14.5px] text-foreground">
-                {choice.name}
-              </span>
-              {choice.detail === undefined ? null : (
-                <span id={`${id}-detail`} className="mt-px block font-mono text-[12.5px] text-muted-foreground">
-                  {choice.detail}
+            <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
+              <input
+                id={id}
+                type="radio"
+                name={name}
+                value={choice.value}
+                aria-labelledby={`${id}-name`}
+                aria-describedby={choice.detail === undefined ? undefined : `${id}-detail`}
+                checked={selected}
+                onChange={() => onValueChange(choice.value)}
+                className="size-4 shrink-0 accent-primary outline-none"
+              />
+              <span className="min-w-0 flex-1">
+                <span id={`${id}-name`} className="block text-[14.5px] text-foreground">
+                  {choice.name}
                 </span>
-              )}
-            </span>
-          </label>
+                {choice.detail === undefined ? null : (
+                  <span id={`${id}-detail`} className="mt-px block font-mono text-[12.5px] text-muted-foreground">
+                    {choice.detail}
+                  </span>
+                )}
+              </span>
+            </label>
+            {choice.help === undefined ? null : <ContextHelp label={choice.name}>{choice.help}</ContextHelp>}
+          </div>
         );
       })}
     </fieldset>
@@ -335,6 +347,7 @@ export function SetupRoute({
   const bootstrap = useAccountBootstrap();
   const project = bootstrap?.projects.find((candidate) => candidate.id === projectId) ?? null;
   const onboarding = useResource<Onboarding>(() => api.onboarding(projectId), [api, projectId]);
+  const integration = useResource<ProjectIntegration>(() => api.integration(projectId), [api, projectId]);
 
   const steps = orderedSteps(onboarding.value);
   const [activeIndex, setActiveIndex] = React.useState(0);
@@ -349,14 +362,10 @@ export function SetupRoute({
   // endpoint replaces the object, so sending half of it would clear the rest.
   const progress = onboarding.value?.progress;
   const [repository, setRepository] = React.useState("");
-  const [doctor, setDoctor] = React.useState(false);
-  const [provider, setProvider] = React.useState(false);
   const [artifacts, setArtifacts] = React.useState("");
   React.useEffect(() => {
     if (progress === undefined) return;
     setRepository(progress.repository);
-    setDoctor(progress.doctor);
-    setProvider(progress.provider);
     setArtifacts(progress.artifacts);
   }, [progress]);
 
@@ -370,7 +379,7 @@ export function SetupRoute({
   const [issueBody, setIssueBody] = React.useState("");
   const [issueState, setIssueState] = React.useState("");
   React.useEffect(() => {
-    const first = project?.states.find((state) => state.dispatchable) ?? project?.states[0];
+    const first = project?.profile === "native" ? project.states[0] : project?.states.find((state) => state.dispatchable) ?? project?.states[0];
     if (first !== undefined && issueState === "") setIssueState(first.name);
   }, [project, issueState]);
 
@@ -413,7 +422,7 @@ export function SetupRoute({
 
   const approve = useMutation(async () => {
     const current = onboarding.value?.policy?.policy;
-    const descriptor = pastedPolicy.trim().length > 0 ? parsePolicyDescriptor(pastedPolicy) : current;
+    const descriptor = pastedPolicy.trim().length > 0 ? parsePolicyDescriptor(pastedPolicy) : onboarding.value?.observed_policies?.[0]?.policy ?? current;
     if (descriptor === undefined) {
       throw new AccountError({
         status: 422,
@@ -435,16 +444,20 @@ export function SetupRoute({
   const bindRepository = useMutation(async (name: string) => {
     const current = onboarding.value;
     if (current === undefined) return null;
-    const integration = await api.integration(projectId);
-    const body = { expected_revision: integration.revision, repository: name };
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name)) {
+      throw new AccountError({ status: 422, code: "invalid_request", message: "Enter the repository as owner/name, then retry." });
+    }
+    const currentIntegration = await api.integration(projectId);
+    const body = { expected_revision: currentIntegration.revision, repository: name, source: "runner_checkout" };
     const bound = await withSetupKey(`${base}/onboarding/repository`, body, (key) =>
       api.bindRepository({
         projectId,
         repository: name,
-        revision: integration.revision,
+        revision: currentIntegration.revision,
         key,
       }),
     );
+    integration.set(bound);
     await onboarding.refresh();
     return bound;
   });
@@ -572,36 +585,62 @@ export function SetupRoute({
             {
               value: "existing",
               name: "Use an existing repository",
+              help: "Choose this if the execution host already has detent.yaml and WORKFLOW.md. This saves your setup choice; the runner reads those files on the host. Associate separately verifies the runner checkout.",
               detail: "Detent reads detent.yaml and WORKFLOW.md from it",
             },
             {
               value: "generate",
               name: "Generate the configuration",
-              detail: "Detent writes a starting detent.yaml and WORKFLOW.md",
+              help: "Choose this when you need starting detent.yaml and WORKFLOW.md files. This screen records that choice; create the files on the execution host before inspecting and approving the policy. Associate does not generate files.",
+              detail: "Create starting detent.yaml and WORKFLOW.md on the host",
             },
           ]}
         />
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5 sm:flex-row sm:items-end">
           <div className="flex flex-1 flex-col gap-1.5">
-            <Label htmlFor="setup-repository">Attach a GitHub repository</Label>
+            <div className="flex items-center gap-1">
+              <Label htmlFor="setup-repository">Associate the runner checkout</Label>
+              <ContextHelp label="Associate the runner checkout">
+                Associate verifies that an enrolled runner’s checkout has a Git origin matching owner/name, including private repositories. Clone the repository on the runner and start it first; GitHub API integration is optional. This does not write configuration files or approve policy.
+              </ContextHelp>
+            </div>
             <Input
               id="setup-repository"
               placeholder="owner/name"
               value={repositoryName}
               onChange={(event) => setRepositoryName(event.currentTarget.value)}
+              disabled={Boolean(integration.value?.checkout_repository)}
             />
+            <p className="text-[13px] text-muted-foreground">
+              Clone this repository on an enrolled runner, including private repositories, and start the runner. Its Git origin must match owner/name. GitHub API integration is optional.
+            </p>
+            {integration.value?.checkout_repository ? (
+              <p className="text-[13px] text-success-foreground">Verified runner checkout: <code className="font-mono">{integration.value.checkout_repository}</code></p>
+            ) : null}
           </div>
           <Button
             variant="outline"
-            disabled={bindRepository.pending || repositoryName.trim().length === 0}
+            disabled={bindRepository.pending || repositoryName.trim().length === 0 || Boolean(integration.value?.checkout_repository)}
             onClick={() => void bindRepository.call(repositoryName.trim())}
           >
-            {bindRepository.pending ? "Attaching…" : "Attach"}
+            {bindRepository.pending ? "Associating…" : "Associate"}
           </Button>
         </div>
         <ControlError message={bindRepository.error?.message ?? null} />
+        <ControlError message={integration.error?.message ?? null} />
+        {onboarding.value.observed_policies?.[0] ? (
+          <details className="mb-2.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
+            <summary className="cursor-pointer text-sm">Review runner-reported policy</summary>
+            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">{JSON.stringify(onboarding.value.observed_policies[0].policy, null, 2)}</pre>
+          </details>
+        ) : null}
         <div className="mb-2.5 flex flex-col gap-1.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
-          <Label htmlFor="setup-policy-descriptor">Resolved policy descriptor</Label>
+          <div className="flex items-center gap-1">
+            <Label htmlFor="setup-policy-descriptor">Resolved policy descriptor</Label>
+            <ContextHelp label="Resolved policy descriptor">
+              The CLI resolves detent.yaml and WORKFLOW.md on the execution host into this descriptor. Hub validates it when you approve; runners report the policy they actually resolve. A missing approval or policy mismatch prevents claims.
+            </ContextHelp>
+          </div>
           <Textarea
             id="setup-policy-descriptor"
             rows={3}
@@ -611,14 +650,14 @@ export function SetupRoute({
             onChange={(event) => setPastedPolicy(event.currentTarget.value)}
           />
           <p className="text-[13px] text-muted-foreground">
-            Run <code className="font-mono">{POLICY_INSPECT_COMMAND}</code> on the execution host and
-            paste what it prints. Approving records exactly that descriptor.
+            The runner reports its resolved policy above. If needed, run <code className="font-mono">{POLICY_INSPECT_COMMAND}</code> on the execution host and paste its output. Approving records the descriptor you reviewed.
           </p>
         </div>
         <OptionRow
           label="Approve the resolved policy"
-          name="Approved policy"
-          detail={onboarding.value.policy?.policy.policy_id ?? "Not approved yet"}
+          name="Approve resolved policy"
+          help="An owner or admin approves this exact resolved descriptor. Hub records its policy identity; runners must resolve a matching policy to claim work. Approval does not run doctor or sign in to a provider."
+          detail={<span className="break-all">{onboarding.value.observed_policies?.[0]?.policy.policy_id ?? onboarding.value.policy?.policy.policy_id ?? "Waiting for the runner to report its policy"}</span>}
           right={
             <Button size="sm" disabled={approve.pending} onClick={() => void approve.call()}>
               {approve.pending ? "Approving…" : "Approve"}
@@ -630,28 +669,42 @@ export function SetupRoute({
     ),
     "Local validation": (
       <>
-        <OptionRow
-          label="detent doctor passes on the execution host"
-          checked={doctor}
-          onCheckedChange={setDoctor}
-          name="`detent doctor` passes"
-          detail="Run it on the machine that will execute work"
-        />
-        <OptionRow
-          label="Signed in to the provider on the execution host"
-          checked={provider}
-          onCheckedChange={setProvider}
-          name="Signed in to your provider"
-          detail="Your ChatGPT, Claude or API credentials stay on that machine"
-        />
-        <p className="text-[13px] text-muted-foreground">
-          Detent never holds your provider credentials. These two are what you report, and the hub
-          records them as reported by you.
-        </p>
+        {(onboarding.value.runners ?? []).length === 0 ? (
+          <p className="mb-3 text-sm text-muted-foreground">Enroll a runner to observe checks on its execution host.</p>
+        ) : null}
+        {(onboarding.value.runners ?? []).map((entry) => {
+          const checks = entry.local_checks;
+          const offline = entry.runner.health !== "online";
+          return (
+            <div key={entry.runner.runner_id} className="mb-3">
+              <p className="mb-2 text-sm font-medium">{entry.runner.display_name}{offline ? " · Offline" : ""}</p>
+              {([
+                ["Project checkout and configuration", "The runner checks its project checkout and configuration on the execution host. Prepare the files there, restart the runner, then refresh these observations.", checks?.checkout, "Prepare the checkout with WORKFLOW.md and detent.yaml at the path printed by registration."],
+                ["detent doctor", "The runner runs detent doctor on the execution host and reports a sanitized result. Hub stores this observation, not a browser confirmation. Run doctor locally for details, restart the runner after fixes, then refresh.", checks?.doctor, "Run detent doctor --config <global.yaml> --project <project> on this host for details and fixes."],
+                ["Provider sign-in", "The runner checks sign-in to the configured provider on its execution host. Credentials and account details stay local. Sign in there, restart the runner, then refresh these observations.", checks?.provider, `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the selected provider"} on this host, then restart the runner.`],
+              ] as const).map(([name, help, state, hint]) => (
+                <OptionRow key={name} label={name} name={name} help={help}
+                  detail={state === "passed" ? "Observed on the execution host" : hint}
+                  right={<><StatusDot tone={state === "passed" && !offline ? "ok" : "warn"} />{state === "passed" ? "Passed" : state === "failed" ? "Failed" : state === "warning" ? "Warnings" : "Waiting"}</>} />
+              ))}
+              {checks?.observed_at ? <p className="text-xs text-muted-foreground">Reported {new Date(checks.observed_at).toLocaleString()}. {offline ? "Reconnect the host to use these results." : "Credentials and command output stay local."}</p> : null}
+            </div>
+          );
+        })}
+        <Button variant="outline" onClick={() => void onboarding.refresh()}>Refresh runner checks</Button>
       </>
     ),
     "Execution runner": (
       <>
+        <div className="mb-2 flex items-center gap-1 text-sm">
+          Runner eligibility
+          <ContextHelp label="Runner eligibility">
+            Hub evaluates administrator-approved project access, claim permission, enabled state,
+            policy selectors, runner-reported heartbeat and capacity, shared host capacity, and
+            reported provider capacity. Any listed exclusion prevents new claims; runners also
+            verify that their resolved policy matches approval.
+          </ContextHelp>
+        </div>
         {eligible.map((entry) => (
           <OptionRow
             key={entry.runner.runner_id}
@@ -684,6 +737,7 @@ export function SetupRoute({
                 >
                   Route here
                 </Button>
+                <ContextHelp label="Route here">Add this project to the runner’s routing scope, preserving its other projects. This can resolve missing project access; it does not fix a stale heartbeat, full capacity, disabled runner, or policy mismatch.</ContextHelp>
               </>
             }
           />
@@ -707,6 +761,7 @@ export function SetupRoute({
             onEnrolled={() => void onboarding.refresh()}
           />
         </div>
+        {(integration.value?.checkout_repository || integration.value?.repository) ? <GitHubIssueIntake projectId={projectId} repository={integration.value.checkout_repository || integration.value.repository || ""} runners={(onboarding.value?.runners ?? []).map(entry => ({ id: entry.runner.runner_id, name: entry.runner.display_name }))} /> : null}
       </>
     ),
     "Artifact history": (
@@ -720,11 +775,13 @@ export function SetupRoute({
             {
               value: "local",
               name: "Local history",
+              help: "Artifacts remain on the execution host that produced them. Choose this to start without a separate artifact service; access depends on that host being available.",
               detail: "Artifacts stay on the machine that produced them",
             },
             {
               value: "customer",
               name: "Customer service",
+              help: "Use an S3-compatible artifact service and independent gateway that you operate. Bind its details below. Hub records the binding but does not test storage or guarantee offline access.",
               detail: "An S3-compatible service and an independent gateway you run",
             },
           ]}
@@ -732,7 +789,12 @@ export function SetupRoute({
         {artifacts === "customer" ? (
           <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="setup-service-id">Service id</Label>
+              <div className="flex items-center gap-1">
+                <Label htmlFor="setup-service-id">Service id</Label>
+                <ContextHelp label="Service id">
+                  The identifier for the artifact service you operate. Binding it associates that service with this project; it does not provision or verify storage.
+                </ContextHelp>
+              </div>
               <Input
                 id="setup-service-id"
                 value={serviceId}
@@ -740,7 +802,12 @@ export function SetupRoute({
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="setup-service-origin">Gateway origin</Label>
+              <div className="flex items-center gap-1">
+                <Label htmlFor="setup-service-origin">Gateway origin</Label>
+                <ContextHelp label="Gateway origin">
+                  The HTTP(S) origin of your independent artifact gateway, for example https://artifacts.example.com. Use the gateway address, not the S3 bucket URL.
+                </ContextHelp>
+              </div>
               <Input
                 id="setup-service-origin"
                 placeholder="https://artifacts.example.com"
@@ -749,7 +816,12 @@ export function SetupRoute({
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="setup-service-token">Publisher token id</Label>
+              <div className="flex items-center gap-1">
+                <Label htmlFor="setup-service-token">Publisher token id</Label>
+                <ContextHelp label="Publisher token id">
+                  The id of an existing, unrevoked Hub API token with a grant for this project. Hub checks that grant when binding. Enter its id, not the secret token; your gateway and publisher still need their credentials configured.
+                </ContextHelp>
+              </div>
               <Input
                 id="setup-service-token"
                 value={servicePublisher}
@@ -821,7 +893,7 @@ export function SetupRoute({
 
   const saveAndContinue = () => {
     void saveProgress
-      .call({ repository, doctor, provider, artifacts })
+      .call({ repository, doctor: false, provider: false, artifacts })
       .then(() => {
         if (activeIndex < steps.length - 1) next();
       });

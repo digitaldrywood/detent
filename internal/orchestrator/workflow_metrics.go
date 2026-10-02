@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -37,9 +38,10 @@ type WorkflowMetricsMetadataUpdater interface {
 }
 
 type workflowLaneMetadata struct {
+	DeliveryTimeSource    string                                     `json:"delivery_time_source,omitempty"`
+	TerminalOutcome       string                                     `json:"terminal_outcome,omitempty"`
 	StateFieldID          int                                        `json:"-"`
 	StateFieldValue       string                                     `json:"-"`
-	LessonEvidence        reworkLessonEvidence                       `json:"-"`
 	Reconciliation        string                                     `json:"reconciliation,omitempty"`
 	PullRequest           *workflowLanePullRequestMetadata           `json:"pull_request,omitempty"`
 	DependencyAutoUnblock *workflowLaneDependencyAutoUnblockMetadata `json:"dependency_auto_unblock,omitempty"`
@@ -53,14 +55,15 @@ type workflowLaneMetadata struct {
 }
 
 type workflowLanePullRequestMetadata struct {
-	CIDurationSeconds    int64     `json:"ci_duration_seconds,omitempty"`
-	BaseRef              string    `json:"base_ref,omitempty"`
-	Repository           string    `json:"repository,omitempty"`
-	AssociationSource    string    `json:"association_source,omitempty"`
-	AssociationCheckedAt time.Time `json:"association_checked_at,omitzero"`
-	Number               int64     `json:"number,omitempty"`
-	HeadSHA              string    `json:"head_sha,omitempty"`
-	FailedChecks         []string  `json:"failed_checks,omitempty"`
+	MergedAt             *time.Time `json:"merged_at,omitempty"`
+	CIDurationSeconds    int64      `json:"ci_duration_seconds,omitempty"`
+	BaseRef              string     `json:"base_ref,omitempty"`
+	Repository           string     `json:"repository,omitempty"`
+	AssociationSource    string     `json:"association_source,omitempty"`
+	AssociationCheckedAt time.Time  `json:"association_checked_at,omitzero"`
+	Number               int64      `json:"number,omitempty"`
+	HeadSHA              string     `json:"head_sha,omitempty"`
+	FailedChecks         []string   `json:"failed_checks,omitempty"`
 }
 
 type workflowLaneDependencyAutoUnblockMetadata struct {
@@ -179,6 +182,22 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 ) error {
 	unlock := o.lockLaneWrites()
 	defer unlock()
+	if reason != string(AutoPromoteReasonOperationalCompletion) &&
+		(reason != string(AutoPromoteReasonReady) || gate.Effective(o.cfg.AutoPromote.Gate).Kind != gate.KindArtifact) &&
+		normalizeState(targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "merged" {
+		at = mergedDeliveryAt(issue, at)
+		if issue.PullRequest.MergedAt != nil && !issue.PullRequest.MergedAt.IsZero() {
+			metadata.DeliveryTimeSource = "forge_merged_at"
+		} else if reason == "merge_worker_programmatic_merge" {
+			metadata.DeliveryTimeSource = "post_api_observation"
+		} else {
+			metadata.DeliveryTimeSource = "completion_observation"
+		}
+	}
+	if !o.cfg.AutoPromote.humanReviewEnabled() &&
+		normalizeState(targetState) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState) {
+		targetState = blockedStatusState
+	}
 	if strings.TrimSpace(issue.ID) == "" {
 		issue.ID = issueID
 	}
@@ -256,9 +275,6 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	}
 	o.recordLaneTransition(ctx, issue, targetState, at, reason, metadata)
 	receiptErr = errors.Join(receiptErr, o.finishTrackerRecoveryPark(ctx, issueID, park, "applied"))
-	if normalizeState(targetState) == normalizeState(autoPromoteReworkState) && normalizeState(issue.State) != normalizeState(targetState) {
-		o.captureReworkLesson(issue, at, reason, metadata.LessonEvidence)
-	}
 	return receiptErr
 }
 
@@ -427,6 +443,13 @@ func (o *Orchestrator) recordLaneTransition(
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		reason = "state_transition"
+	}
+	// Persist the existing artifact gate's accepted terminal outcome in the lane
+	// history. Reports must not infer shipping from a mutable finalized receipt
+	// or an intermediate artifact promotion to Merging.
+	if reason == string(AutoPromoteReasonReady) && gate.Effective(o.cfg.AutoPromote.Gate).Kind == gate.KindArtifact &&
+		stateIn(targetState, o.cfg.TerminalStates) && normalizeState(targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) {
+		metadata.TerminalOutcome = "artifact"
 	}
 	metadata.Provenance = workflowLaneMutationAttribution(reason, metadata)
 	if err := workflowmetrics.RecordLaneTransition(ctx, o.workflowMetrics, workflowmetrics.LaneTransition{
@@ -831,6 +854,7 @@ func workflowLaneEntryMatchesCurrent(issue connector.Issue, event store.Workflow
 func BlockedIssueHasCurrentRecoveryPredicate(
 	issue connector.Issue,
 	phaseName string,
+	reason string,
 	enteredAt time.Time,
 	metadataJSON string,
 ) bool {
@@ -841,6 +865,10 @@ func BlockedIssueHasCurrentRecoveryPredicate(
 	metadata, ok := workflowLaneMetadataFromJSON(metadataJSON)
 	if !workflowLaneEntryMatchesCurrent(issue, store.WorkflowPhaseEvent{StartedAt: enteredAt, MetadataJSON: metadataJSON}) {
 		return false
+	}
+	if reason == attemptAllowanceExhaustedReason && ok && metadata.PullRequest != nil &&
+		metadata.PullRequest.Number > 0 && strings.TrimSpace(metadata.PullRequest.HeadSHA) != "" {
+		return true
 	}
 	return ok &&
 		metadata.BlockedRecovery != nil &&
@@ -901,6 +929,7 @@ func workflowLanePullRequestMetadataFromIssue(issue connector.Issue) *workflowLa
 		metadata.Number = *number
 	}
 	if issue.PullRequest != nil {
+		metadata.MergedAt = timePointerFromPtr(issue.PullRequest.MergedAt)
 		metadata.CIDurationSeconds = issue.PullRequest.CIDurationSeconds
 		metadata.BaseRef = issue.PullRequest.BaseRef
 		metadata.HeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)

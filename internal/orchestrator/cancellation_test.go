@@ -134,3 +134,25 @@ type cancellationDispatchGate struct {
 func (*cancellationDispatchGate) TryAcquire(context.Context, scheduler.ProjectCandidate, scheduler.SlotRequest, time.Time) (scheduler.Slot, bool, error) {
 	return scheduler.Slot{Weight: 1}, true, nil
 }
+
+func TestAvailabilityInterruptionsPreserveIssueBudgets(t *testing.T) {
+	cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}})
+	attempts := &recordingWorkAttemptStore{}
+	orch := Orchestrator{cfg: cfg, workAttempts: attempts}
+	state := newState(cfg)
+	issue := dispatchTestIssue("availability-worker", "Todo")
+	for i := range 6 {
+		now := time.Now().Add(time.Duration(i) * time.Minute)
+		state.Running[issue.ID] = Running{Issue: issue, Mode: runpkg.RunModeImplement, Attempt: 3, WorkAttemptID: int64(5000 + i), StartedAt: now.Add(-time.Minute), TurnCount: 1}
+		cause := runpkg.NewCancellationCause(context.Canceled, "runner.availability")
+		event := runpkg.Completion{IssueID: issue.ID, Request: RunRequest{Issue: issue, Mode: runpkg.RunModeImplement}, Result: runpkg.RunResult{TurnStarted: true}, Err: cause, CompletedAt: now, Retryable: true, RetryAttempt: 3, RetryDelay: 10 * time.Second}
+		orch.handleRunResult(t.Context(), &state, event)
+		if len(state.Running) != 0 || len(state.Retry) != 1 || state.Retry[issue.ID].Attempt != 3 || state.RepeatedFailures[issue.ID].Count != 0 {
+			t.Fatalf("running=%d, retry=%+v, failures=%+v", len(state.Running), state.Retry, state.RepeatedFailures)
+		}
+		completed := attempts.completions[len(attempts.completions)-1]
+		if completed.TerminalState != store.WorkAttemptTerminalCancelled || completed.Phase != "cancelled" {
+			t.Fatalf("scheduled stop = %+v", completed)
+		}
+	}
+}

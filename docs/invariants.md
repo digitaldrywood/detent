@@ -17,7 +17,564 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Native runtime evidence (#92) reuses the scoped work, explanation and Change
+application owners for API and MCP. Direct reads recheck current connection
+scope, project grants and work-item/attempt ownership, including local attempt
+selectors. Receipt snapshots preserve authentic native event actors, server
+timestamps, ordered attempt identity, dispatch generation and reviewed immutable
+version/head. Current lease freshness, routing/capacity authority and current
+Change readiness are distinct from recorded scheduler decisions. Missing
+historical decisions, activity or accounting are explicitly unavailable;
+terminal success and imported Done are not landing evidence. Only the existing
+exact-version Change landing authority can validate a landed receipt and merge
+SHA. Instruction activity is bounded, content-free and partially observed, with
+dropped/unpaired counts and explicit causality limits. REST operation headers
+and existing attribution windows identify selected-client coverage, not the
+account consumer. The runtime projection omits private bodies, raw commands,
+instruction contents, paths and credentials. Focused owner, grant, stale,
+pagination, redaction and refusal regressions cover these boundaries.
+
+Runtime activity checkpoints update the existing mutable attempt observation;
+they do not append cumulative profiles to immutable history. Idle and unchanged
+observations perform no checkpoint writes. Genuine phase/identity/landing changes,
+lifecycle checkpoints and completion retain timestamped history, including the
+final activity profile. Agent completion joins the final profile checkpoint before
+finishing the native attempt. Lease renewal does not manufacture activity freshness.
+Candidate previews remain reads. Actual scheduling attempts retain changed decisions
+through the existing history owner, deduplicated by runner, source, revision,
+Change version/head and decision evidence; genuine fenced claims remain distinct.
+This consolidates the observation producers without a new telemetry owner or
+mechanism (INV-3).
+
+The selected runtime read (#159) projects only the current immutable Change
+version and its review/check evidence through the existing summary authority.
+Indexed older-approval existence preserves stale review semantics without
+loading historical versions, discussion, reviews or checks; explicit Change
+detail still returns history. Merging eligibility shares the current summary.
+Runner identities retain project grants, routing, health and isolation evidence;
+shared host occupancy and organization-wide provider reports/reservations are
+read once per snapshot, including live occupancy outside the returned runner
+page. The 100-runner bound remains explicitly truncated and cannot establish a
+complete exclusion decision. `TestNativeRuntimeReadHistoryCost` and
+`TestNativeRuntimeReadSharedCapacityCost` cover indexed history-independent
+reads, shared occupancy, scope, expiry, fencing and truncation; the existing
+Change fixture compares current and full summary semantics.
+
+Scheduled diagnostics for the migrated Detent repository call the existing
+Cloud `file_issue`, revisioned `edit_item` priority and `add_comment` application
+owners using the selected project and current scoped API/MCP connection. New diagnostics enter only a
+configured nondispatchable Backlog; imported open items and operator holds
+receive occurrences without lane writes. Scheduled success comments are
+validation evidence, never completion, landing, admission or review authority.
+Parsed source/test blockers of deployment or the scheduled validated release
+receive at least High priority under this repository's operator policy;
+priority changes preserve Urgent and do not admit work or remove holds.
+Unknown infrastructure evidence remains instance-owned intake without priority
+promotion or source-repair authority. This policy adds no local merge gate and
+does not change scheduled all-job validation or pinned release provenance.
+Other repositories keep their existing GitHub reporting policy. No tool,
+scope, project configuration key or alternate tracker owner is introduced.
+
+Hosted project workflow configuration uses the existing administrator-owned
+integration settings command and revision/idempotency boundary. Reviewed
+NativeState definitions remain project-specific, retain existing workflow row
+identities and item/dependency records, and cannot remove states occupied by
+active or archived items. Compatibility workflows retain source ownership;
+worker operator-only transition rules and approved repository policy remain
+authoritative. Native creation forms use the first configured state as their
+initial lane. Workflow edits through MCP retain exact material-action approval.
+`TestHostedProjectWorkflowConfiguration`, `TestActionConfirmationClassification`
+and the client workflow settings/default-state regressions cover these boundaries.
+No tracker lane writer or recovery mechanism is introduced (INV-3).
+
+Luna project mutations reuse the hosted MCP chat action service and its exact
+browser/session/CSRF approval form. Each message binds the originating browser
+session, current role and project grants; previews stay within the conversation's
+project and approval rechecks that authority and resource revisions. Chat always
+requires explicit approval, including issue edits and comments. Native workflow
+moves delegate to the same application command as the workflow HTTP endpoint;
+workers gain no lane-writing authority. No parallel approval or recovery service
+is added (INV-3). `TestCoordinatorProjectActions` covers authorized changes,
+refusals, rejection and stale authority/revisions. The conversation browser
+journey covers approving GitHub PR mode and retrying a blocked issue.
+
+
+Permission outcome authority (#3758) belongs to the existing completion owners.
+Ordinary tracker runs use fresh canonical Workpad comments, dependencies,
+completion evidence and project gates; final prose or a final-only status block
+cannot supersede a canonical comment. Native runs retain their final-only
+contract: the existing native workflow completion owner settles human attention
+before unchanged work can finish, including outcomes with no produced change.
+Typed native landing results and immutable current-version review remain
+authoritative. Workers never write tracker lane state.
+
+Native concurrent-base merge refusals (#160) retain Merging and the current
+immutable Change/version/head and review. The exact merge endpoint's typed
+`Base branch was modified` evidence reaches the existing forge continuation
+owner, never Blocked, source Rework or a new review request. Retry fetches current base truth
+and repeats the atomic reviewed-head merge under the current lease and policy;
+only an actual successful landing receipt can finish the item. Original HTTP
+status, method, repository/PR and reviewed-head/fetched-base evidence remain in
+attempt history. Actual head movement, closure, proven source conflict and
+current protection/review/check refusals retain their existing owners; typed
+quota and reset evidence retain capacity precedence.
+Strict `Head branch is out of date` protection (#161) follows the existing native
+protection refusal owner to Human Review or Blocked according to project policy,
+without a same-version forge wait. The legacy connector retains its existing
+head-refresh/rebase outcome for this message; managed project protections remain
+binding.
+`TestNativeLandingRunCompletion` drives the real Runner and LocalGit from the
+recorded PUT merge 405 JSON through durable Merging continuation to a successful
+same-version landing after a concurrent base advance, with no agent turn or
+fabricated review.
+
+Project MCP parity (#3342) calls the same dashboard project, onboarding,
+integration, import, policy and budget application commands. Native command
+receipts are checked before revisions/provider reads and before repeat approval,
+with current role/scope/grant/resource ownership checked again. The current
+application context is bound by the shared authority resolver, never by tool
+arguments. Native and repository policy scopes resolve through the authorized
+project; change-review policy retains its principal/provenance checks. Hosted
+browser approval reuses the existing chat form with session, CSRF and exact
+payload tokens, including the shared organization's path. Browser viewers cannot
+inspect ungranted previews or toggle another principal's confirmation mode;
+current operators need their own connection or administrator authority and each
+action's current grant/scope. Created-project receipts recheck the returned
+resource on cached, reconnect and action-result paths. YOLO suppresses only
+confirmation. Approval by a different administrator retains the original
+requester's freshly resolved native command scope and attribution; fleet
+previews retain their existing explicit runner-grant authority. Unhosted hubs
+without that browser authority return opaque unavailable errors for material
+variants. Tools accept no credentials; browser
+setup returns navigation/requirements, and import/provider errors are redacted
+from reads, actions and replay results. This extends INV-1 authorization
+adapters without a tracker lane writer or an INV-3 recovery/revocation mechanism.
+`TestHostedProjectTools`, `TestProjectImportToolReceipts`,
+`TestHostedOperatorCurrentAuthority`, `TestProjectArgumentBounds`,
+`TestActionConfirmationClassification` and project/budget cases in
+`TestMCPActionApprovalBoundary` cover these boundaries.
+
+Runner batch intake reuses `commandGitHubBatchOperation` and the existing native
+receipt contract. Discovery and non-dispatchable apply execute directly;
+dispatchable apply and retry require exact operator approval. Current project
+administrator/write grants, matching runner checkout, revisions and destination
+lane checks remain application authority. Bounded batch reads/results redact
+stored provider diagnostics. `TestGitHubBatchIntakeRetryAndNativeOwnership` and
+`TestActionConfirmationClassification` cover the MCP adapter without adding an
+intake mechanism or tracker lane writer.
+
+Work/board MCP reads (#3340) share the dashboard application read models and
+native organization/project/item reads. Direct calls resolve current read
+scope and grants, then resource ownership; saved versions and history retain
+the same dependency visibility rules. A daemon's broader native connector
+credential does not expand its caller's local project grants; relationship
+projection requires both application boundaries. Bounded pages carry identifiers, URLs
+and source freshness. `work_history` reads durable application records;
+`recent_activity` retains its live snapshot semantics. Board activity marks
+durable and snapshot events explicitly. Review/diff/artifact bodies remain
+with #3347; this child exposes their authorized references. No read adapter
+writes tracker lanes, creates confirmations or adds a protection mechanism.
+`TestOperatorGitHubWorkReads`, `TestOperatorNativeWorkReads`,
+`TestHostedOperatorCurrentAuthority` and `TestProtocolWorkReadParity` exercise
+the application boundary and both transports, including direct-call denial.
+
+Billing/usage MCP parity (#3345) delegates checkout/portal, plan and usage reads,
+exports, and daemon budget overrides to the dashboard application operations.
+Organization billing remains owner-only without support impersonation; plan
+reads require owner/admin, while usage totals include only current project grants.
+Platform entitlement administration and publisher artifact allowance callbacks
+remain separate authority boundaries and are never organization tools. Material
+actions use the existing exact browser approval conversation; YOLO changes only
+confirmation. Approved checkout retries resume the existing durable purchase
+intent/provider key, including after response loss; uncertain portal effects keep
+their existing receipt. No billing ledger, recovery loop or tracker writer is
+introduced. `TestHostedBillingMCP`, `TestBillingCommandResponseLoss`,
+`TestMCPDaemonBilling`, `TestHostedOperatorCurrentAuthority`,
+`TestUsageReportAggregates`, `TestHostedArtifactAllowanceBoundary`, and
+`TestPlatformComplimentaryPlansThroughTenantHub` cover these boundaries.
+
+Work-item MCP parity (#3341) reuses the dashboard work creation, discussion,
+priority, native collaboration, park acknowledgement and security-disposition
+commands. Native edits keep expected revisions and workflow authority; connection
+approval and YOLO cannot bypass them. Compatibility dependencies, ordering and
+priority use the hub's existing application commands. Board removal now delegates
+project removal or lane-field clearing to `ReconcileOperatorMove`, consolidating
+the former dashboard tracker writes under the orchestrator. Hub-only deployments
+without a daemon lane owner or approval service return opaque unavailable results
+for those commands. No tracker capability or lane writer is added to MCP.
+The reviewed `applyOperatorMove` source digest changes for this consolidation;
+the existing move reasons are unchanged and no mechanism or reason code is added
+(INV-3).
+`TestMCPNativeWorkCommands`, `TestHubMCPWorkCommands`,
+`TestHubMCPCompatibilityCommands`, `TestMCPActionApprovalBoundary`,
+`TestOperatorRemovalCommand` and `TestWorkArgumentsDirectCallBounds` cover
+replay, native revisions, workflow refusal, ownership, bounded direct calls,
+real approval/rejection, authorized YOLO and orchestrator-owned removal.
+Change/review/artifact MCP parity (#3347) binds shared application reads/commands
+to freshly resolved connection authority. Nested work-item/change/version and
+exact artifact receipt ownership are checked before effects and replay. Native
+HTTP and MCP reuse the same transaction, policy, revision/bundle, attribution
+and retry commands; the existing chat browser approval owns material review and
+policy/service-binding decisions. Global discovery honors the freshly resolved
+lesser hosted role as direct calls do. Stored diffs and run detail match the
+named attempt to its work item; PR reads reuse the existing connector projection
+and its observation times without direct GitHub access. Diff pages bound encoded
+JSON bytes and mark patch truncation. The daemon artifact library reuses its
+project-scoped dashboard reads. Historical artifact downloads preserve read grants, retention,
+TTL and original session authority; tokens appear only in the usable client result,
+never in URLs, audit summaries or durable retry receipts. Publishing, expected CI
+attestation, publisher callbacks and landing reports remain producer/service
+operations, not operator MCP tools. No merger or tracker lane writer is introduced.
+`TestOperatorChangeCommands`, `TestOperatorArtifactResults`,
+`TestHostedOperatorPolicyApproval`, and the existing hosted artifact pilot cover
+these boundaries. This extracts application commands rather than adding a
+protection mechanism (INV-3).
+
+MCP transport parity (#3339) uses one permission-filtered, paginated typed
+registry with toolset metadata. The `2026-07-28` stateless protocol validates
+per-request metadata and mirrored HTTP headers; older handshakes retain their
+bound sessions. Discovery cursors and client metadata confer no authority.
+Modern HTTP binds the existing application approval conversation to authenticated
+principal/organization/credential/session identity, independently of the POST's
+lifetime; browser approval retains the application resolver for current authority.
+No protocol session, confirmation argument, persistence writer or tracker lane
+writer is introduced. `TestProtocolApplicationParity`,
+`TestModernHTTPMetadataValidation`, `TestCatalogCursorCurrentAuthority`, and
+modern cases in `TestMCPActionApprovalBoundary` cover transport parity, forged
+metadata, direct-call ownership, revoked authority and approval after a POST ends.
+
+Organization, membership/grant and credential administration (#3344) uses the
+same application commands as dashboard handlers. Dedicated bootstrap accounts
+and shared-entry account sessions carry no project grants; context selection
+returns a fresh authentication destination and leaves connection authority bound
+to its original context. Support entry returns the existing interactive provider
+flow only to configured support actors and grants no platform/customer powers.
+Access changes retain exact target/input previews in the existing chat approval
+service. Current role, scope, project grants and resource ownership are checked
+again on execution and cached result delivery. Account receipts reuse existing
+application audit ledgers; invitations and credentials retain the existing
+application retry contract. Credential values are omitted from conversation,
+browser, audit and durable retry records, and deliberate result delivery stays
+bound to the originating identity/session. Revoked or replaced credentials
+cannot deliver a stale secret. No lane writer or revocation/recovery mechanism
+is added. `TestAdministrationExecution`, `TestHostedAdministrationAuthority`,
+`TestNativeCredentialAdministration`, `TestDedicatedAdministrationSetup`,
+`TestEntryAdministrationContext` and `TestMCPCredentialAdministration` cover these
+boundaries with existing application identity fixtures.
+
+Hosted key administration (native #95) exposes only list/create/revoke through
+the organization-bound MCP connection, reusing the hosted API key owners.
+The shared administration/chat requirement identifies credential administration
+separately from general organization administration: members and viewers may
+manage their own keys within their existing allowed scopes. Bearer keys and
+support impersonation remain denied; account entry returns a destination and
+requires reconnecting without transferring its authority. Dedicated and shared
+key operations recheck the original provider session, current membership and
+lesser role, issuer grants, target ownership, expiry and revocation at execution
+and sensitive delivery. Exact browser approval and connection YOLO retain their
+existing owners. Durable business retries retain safe metadata without the
+created secret. `TestHostedCredentialMCP` and
+`TestHostedCredentialMCPAuthorityChanges` cover both transports and deployments,
+browser approval, current authority and connection-bound delivery. Native #48
+owns dynamic All projects semantics; this checkout's hosted key owner still
+uses explicit project IDs. Native #26 remains open for final parity acceptance.
+
+Invitation withdrawal revokes the provider invitation before atomically removing
+the local invitation and releasing its seat. Provider refusal preserves both;
+resend uses the existing invitation and the same owner/admin authority. Invitation
+acceptance requires the locally issued pending record, including after login has
+started. `TestHostedInvitationLifecycle`, `TestHostedLoginInvitationEmailEntry`
+and the account browser invitation spec cover these INV-1 boundaries.
+
+Organization invitations persist explicit project grants, bounded by the
+inviter's current project access and write/runner permissions. Pending grants
+can be edited through the same authorization boundary. Existing-member replacement
+also authorizes every omitted hosted or principal project grant as a revocation,
+using the existing member-grant authority before provider issuance and local
+persistence. Pending-invitation edits enforce the same complete replacement scope.
+Acceptance commits the
+local membership, exact project grants, principal grants and invitation marker
+in one transaction; revoked invitations cannot establish local access.
+`TestHostedInvitationGrants` covers creation, edits, acceptance, rollback and
+privilege escalation, and the account Playwright spec covers read-only access
+to one project with no access to another.
+
+Account/session parity (#3662) shares semantic landing/onboarding facts with browser
+account reads and binds destinations to current session/membership checks,
+including cached organization-switch delivery. `session_logout` shares browser
+logout execution and current-session revocation, retaining shared-entry tenant
+propagation; shared tenant hubs never substitute for shared-entry account
+logout. Access-ending sign-out uses the existing real browser approval or
+connection-bound human YOLO. Only the executing call/browser decision returns
+the content-free sign-out outcome after revocation; later reads and retries
+remain denied. Provider failure cannot restore local access or expose provider
+errors; browser form/provider exchange secrets stay outside typed results and
+audits. No new revocation or retry mechanism is added (INV-3).
+`TestEntryAdministrationContext`, `TestHostedAccountSessionOperations`,
+`TestSharedEntryLogoutRevokesLocalAndProviderSessions`,
+`TestHostedLoginLogoutRevokesLocalAndProviderSessions`, and
+`TestActionConfirmationClassification` cover these boundaries, including the
+real entry adapter through both transports.
+
+Creator provisioning parity (#3663) shares the browser's creator-bound allocation
+lookup and retryable resume command with the administration MCP executor. Current
+account session, managed allocation ownership and deployment availability are
+checked on direct calls, approval, execution and retry delivery. Resume is a
+material provisioning action: connection YOLO skips confirmation only, and the
+existing audit receipts prevent a retried command from resetting a later failed
+attempt. Status/results and previews omit allocation diagnostics, endpoints and
+provider credentials; ready status returns the current destination. The existing
+allocator retains admission, retry and capacity limits and its wake signal.
+`TestEntryProvisioningAdministration`, `TestAdministrationInputBounds`,
+`TestActionConfirmationClassification` and the existing provisioning capacity and
+tenant-start journeys cover these boundaries through shared stdio/HTTP dispatch.
+This extends INV-1 application authorization without adding an INV-3 mechanism.
+
+MCP mutations carry content-free, trusted audit/correlation context (#3338).
+Dashboard commands reuse durable operator events for retry receipts; native and
+hosted commands reuse `native_commands`, with existing billing intents/provider
+keys for resumable purchases. Replays reauthorize current authority and conflict
+on changed payloads; uncertain effects retain pending records without takeover
+or recovery. Audit records do not carry arguments, raw provider errors or secrets.
+These records are application effects/audit only and confer no tracker lane
+writing authority. The orchestrator remains the sole lane writer.
+
+MCP and the stdio daemon bridge resolve current application authority for each
+discovery/direct call (#3336). Principal, organization, credential and session
+are bound together; scope and project grants come from the existing credential
+and hosted membership services. HTTP dispatch preserves the request authority
+without retaining discovered permissions. Both hosted entry paths use the
+existing lesser-role rule, so local downgrades apply immediately. Workers and
+runners receive no operator authority, and neither transport writes tracker
+lanes. MCP action previews reuse the existing chat session and direct dashboard commands
+(#3337). Pending previews retain exact arguments, project/resource, client and
+original connection authority. Only a browser with an existing authenticated dashboard login/private session
+can confirm or reject them; public UI cookies and API credentials cannot approve; tools cannot approve themselves. Ordinary writes run directly, while
+material actions require confirmation unless the operator selected YOLO for that
+authenticated connection. Mode lives on the server, never in tool input, initialize
+metadata or mode headers. Move commands share the dashboard mutation lock and
+delegate tracker writes to `ReconcileOperatorMove`; stop commands use `StopRun`.
+Approved and YOLO actions call `operatortool.AuthorizeCurrent` again at execution;
+approval and YOLO never confer permission. This consolidates authorization in
+application adapters without adding a revocation/recovery mechanism (INV-3).
+`TestCurrentAuthorityExecution`, `TestRemoteMCPCurrentProjectAuthority`,
+`TestHostedOperatorCurrentAuthority` and the shared-origin pilot cover denial,
+resource projection and entry/session binding. `TestConnectionActions` and
+`TestMCPActionApprovalBoundary` cover exact preview, replay, rejection, stale
+targets, closed protocol sessions, self-approval and operator-selected YOLO.
+
+Cloud API and MCP setup (#3745) reuse expiring `api_tokens`, bound to the
+issuing user, organization and membership, with selected read/write/admin scope
+and existing project grants. The canonical organization MCP endpoint accepts
+bearer JSON POSTs without browser cookies or CSRF; shared-entry machine
+assertions authenticate transport, while the tenant resolves the operator key.
+Every API authentication and MCP discovery/call/approved execution resolves
+current provider membership, the lesser provider/local role, active issuer
+principal, key expiry/revocation and the intersection of key and user project
+grants. Keys cannot switch organizations, elevate their issuer, become runner
+credentials, manage keys through bearer traffic, or approve operations. Browser
+key creation/revocation retain session/CSRF authorization; listings expose only
+metadata and creation returns the secret once. Key-originated material previews
+retain their original credential authority and use the existing browser approval
+surface. No parallel credential system or lane writer is added.
+`TestHostedAPIKeyCurrentAuthority`, `TestHostedAPIKeyManagement`,
+`TestSharedOriginAPIKeyConnection` and key cases in
+`TestHostedOperatorPolicyApproval` cover these boundaries. The tested client
+handoff and release verification procedure are in [API & MCP setup](api-mcp-setup.md).
+
+Workspace/conversation/action MCP commands (#3346) share extracted native dashboard
+commands and the existing `native_commands` receipts. Direct calls and approved
+execution resolve current project/resource authority and runner grants; hosted
+checks use the same transaction to avoid reacquiring the hub's sole connection.
+Conversation command keys, attachment ownership/size rules and configured action
+revision checks remain application-owned. Successful action deletions replay their
+principal-bound, input-bound receipt after checking current project authority. Workspace paths and relay-session internals
+are omitted from MCP projections; terminal/file/SSE requests return explicit
+transport decisions with authorized state and polling alternatives. Bounded message
+history preserves continuation cursors, and attachment/output/recording reads use
+bounded byte chunks. Hosted confirmation reuses connection chat actions and existing
+browser session/CSRF authority; bearer credentials never approve. Only the originating hosted
+browser principal may choose that session connection's YOLO mode. Daemon chat history and provider turns
+bind to the current connection and durable retry identity. Action result payloads remain
+private to that session and are delivered only through authorized tool results; public
+previews and browser conversations omit them. Durable command receipts retain the
+application data for authorized reconnect retries. A nested provider receives
+only authorized read tools, while operator actions use the named command tools.
+`TestWorkspaceOperatorConversation`, `TestWorkspaceOperatorAttachments`,
+`TestWorkspaceOperatorActions`, `TestWorkspaceOperatorRunnerAuthority`,
+`TestWorkspaceOperatorHistoryBudget`, `TestWorkspaceOperatorBrowserApproval`,
+`TestWorkspaceOperatorUnavailable` and `TestMCPOperatorChatRetry` cover these boundaries.
+No MCP adapter writes tracker lanes or introduces a new protection/recovery mechanism.
+
+Ordinary native workers (native #145) create their canonical, empty shared
+conversation inside the existing lease-fenced bind transaction when none exists.
+The selected attempt/run/lease/fencing token remains the sole execution owner;
+existing conversation-origin history and private visibility are retained.
+Issue Activity/Surface and typed MCP work-item lookup resolve that canonical
+conversation independently of paginated conversation lists, with current
+project and conversation read authority. Comments and Workpads are never copied
+into current control messages. Steering and interrupt retain the existing
+delivery receipts, provider turn identity and material-action confirmation.
+Unsupported backends remain unsupported, including the separate Claude work.
+Workers that skipped binding before this change have no provider control object
+to attach remotely; this change does not restart or replace them.
+`TestConversationWorkerBind`, `TestWorkItemConversationLookup` and both origins
+in `TestConversationRunnerExecutesLiveTurns` cover binding, visibility,
+duplicate refusal, actual selected-turn delivery and preserved comments.
+Ordinary observational binding preserves the Code/Rework native completion owner
+(#165). The fenced bind response derives continuation intent from existing native
+link receipts and explicit Continue messages, preserving initial interactive work
+and lease-lost continuation ownership across consecutive replacement attempts even
+after the original Continue settles as interrupted or unknown. Existing ordered
+control events retain that intent until successful execution completion; replacement
+binding neither replays the control nor rewrites its original attempt identity.
+Matching-attempt Continue remains refused while execution is active.
+Registered-runner turn-event POSTs reuse
+`events` authorization and the unchanged scoped, runner/lease/fence/attempt owner
+checks. `TestNativeRunnerOpensChangeAndLeavesDispatch` exercises successful binding,
+host finalization, authenticated transcript events and exact-head version publication;
+`TestConversationRunnerExecutesLiveTurns` preserves interactive and explicit Continue
+ownership, and `TestConversationWorkerTurnEvents` exercises registered-runner middleware.
+This consolidates existing conversation/control owners (INV-3); no lane writer,
+recovery loop or second channel is introduced.
+
+Scoped Cloud workspace policy (native #144) survives tenant regeneration through
+the existing shared configuration builder. Only the matching organization's
+existing `workspaces` section is retained; new tenants stay disabled, and shared
+credentials and other settings keep their existing owners. Bootstrap workspace
+availability reflects the hosted service, current project/person grants, fresh
+active registered runner reports and the existing terminal isolation rule.
+Unknown availability disables Surface controls with a safe explanation. Surface
+requests name the selected attempt so retained-runner ownership and active-attempt
+read-only restrictions remain application-owned. Projection confers no authority:
+commands and relay traffic retain current role, grants, owner, path, lease and
+plan checks. Raw Mac terminals still report `user`; this change does not activate
+them under sandbox policy or authorize any tenant's terminal activation.
+`TestCloudAllocationGeneratesTenantConfiguration` and
+`TestAppBootstrapWorkspaceAvailability` cover persistence and truthful availability.
+No mechanism, control channel, configuration key or lane writer is introduced.
+
+Files selection (native #167) stays keyed to the native work item while its
+linked conversation becomes available. Navigating to another item restores that
+item's panel state before any surface can request its workspace. Workspace
+acquisition, event subscription and relay tickets share the current
+client/project/item/attempt/capability binding;
+changing that binding clears the previous workspace from the rendered surface
+before acquisition completes. Revoked availability and unavailable file channels
+use the existing Files explanation. `rightPanelWorkspace.test.tsx` follows the
+enabled picker through panel state, scoped workspace metadata, ticket minting,
+directory listing and a file read, and `workspaces.test.tsx` rejects stale attempt
+binding. Existing relay and filesystem authority is unchanged.
+
+Effective runner capacity (native #90) uses the existing runner administration,
+native command receipt, routing heartbeat, selected global configuration writer
+and runtime reload owners. UI routing capacity edits and MCP/API capacity requests
+deliver the same typed runner-bound application request. Capacity-only requests
+preserve grants, isolation, accounts, models and project execution policies.
+Expected runner/configuration revisions and current principal authority apply
+before effects, and current resource authority is rechecked before receipt replay.
+Reads do not record mutation usage. No raw file path, credential, shell command,
+new YAML configuration key, polling loop or recovery owner is exposed.
+
+Desired Cloud limits are distinct from observed saved/runtime limits and the
+effective runner configuration ceiling. Fresh runner/provider evidence is required;
+missing, future or stale evidence remains unknown. Shared host limits and plan
+execution permission retain their existing owners. Project, pool and lane admission
+remains authoritative at claim time. External provider-capacity producers are
+unmanaged: responses name the account/backend ceiling and instruct the operator to
+change the producer configuration, never the generated report.
+The selected configuration owner reads back saved limits and their revision
+after writing, while runtime limits retain reload authority. Application failures
+remain visible in subsequent heartbeat observations only for the same selected
+configuration revision; a changed configuration or corrected request replaces
+that outcome. This retains application evidence without another retry or recovery
+owner.
+
+Capacity mutation (native #142) reads the current configuration, rechecks its
+revision and enrollment, and changes only `global.max_concurrent_agents` and
+`client.capacity` under the global configuration writer's shared mutation lock.
+Supported in-process writes use that same lock and persistence implementation;
+the capacity callback's mutex only serializes its application evidence. Its
+former separate read/check/write could overwrite unrelated settings saved by
+another writer, so configuration synchronization belongs to the existing writer.
+An intervening saved edit rejects a stale request through the existing revision
+constraint; already-saved requested limits retain replay without another write.
+`TestRunnerCapacityOwner` deterministically saves credentials, pause, project
+settings and membership after observation and before mutation, verifies the save
+before resuming, and checks preservation and current-enrollment authority. This
+consolidates INV-1 enforcement without another writer or recovery mechanism
+(INV-3).
+
+`TestRunnerCapacityOwner`, `TestRunnerCapacityHeartbeat`,
+`TestRunnerCapacityApplication`, the capacity cases in `TestHostedMCPFleetControls`
+and `TestFleetArgumentBoundary` cover persistence, reload, old-Hub compatibility,
+current authority, bounded input, revisions, replay, redaction and real additional
+claims. This extends INV-1 adapters without another capacity policy or lane writer.
+
+Fleet/operator MCP adapters (#3343) share the dashboard refresh, availability
+clear, canary, update, progress-credit, warning-acknowledgment, recovery and
+runner administration commands. Runner display edits execute directly; capacity,
+scheduling, access, enrollment, revoke, stop and other material actions use the
+existing authenticated browser approval surface. Unknown action kinds still
+require confirmation. Fresh authority resolution binds application command
+credentials from the originating connection, including when another authorized
+browser approves. Hosted runner administration retains current all-project
+runner grants and transaction-time membership/credential checks. Browser previews
+containing fleet actions also require current runner grants, including for owners.
+Health and outbox reads retain dashboard deployment boundaries; AI debug projects
+its snapshot through current project grants. Missing runtime
+or approval services return opaque unavailable results; an unhosted hub bearer
+credential cannot stand in for a human. Worker enrollment redemption, credential
+renewal/rotation, claims, leases and heartbeat protocols remain worker-only.
+`TestMCPFleetReads`, `TestMCPFleetMutation`, `TestMCPOperatorControls`,
+`TestMCPStopExactRun`, `TestHostedMCPFleetControls`, `TestHubMCPFleetBoundary`
+and `TestFleetArgumentBoundary` cover current authority, bounded calls, exact
+targets, confirmation and safe retries. No adapter writes tracker lanes or adds
+a protection/recovery mechanism (INV-3); recovery/stop use existing services.
+
+SSH worker callbacks keep session persistence, Workpad tools, lane decisions, and execution authority on the central owner. Remote process IDs never become local reap authorities. `TestSSHCallbackDoesNotPublishRemotePID` and `TestSSHServiceProxyKeepsCentralAuthority` cover these transport boundaries (#3239).
+
+Hub-native SSH runs capture Git artifacts and attempt diffs on the selected
+host while the central execution owns upload journals, credentials, producer
+lease/fencing identity, Change Request publication, landing reports and provider
+reservations (#3358). SSH protocol version 2 prevents older workers from silently
+omitting native callbacks. `TestSSHNativePublication`, `TestSSHWorkerLifecycle`,
+`TestNativeExecutionLandsReviewedVersion` and `TestLocalProviderRevalidation`
+cover exact remote publication, retained journals and native capabilities.
+
 **Statement:** The orchestrator is the only writer of tracker lane state.
+
+Native worker finish prepares the result and Change Request while retaining the
+existing claim. The orchestrator publishes plan and review evidence, writes the
+lane through its ledger, and records `run.finished` when surrendering that claim
+(#3437). Authorized native code and rework retain that completion owner during
+graceful drain (#152); drain stops intake without discarding genuine publication
+or its allowed lane transition. Final diff, Change reads and creation failures
+remain publication diagnostics, while actual claim, lease and fencing loss keep
+their existing instance owner. Version refusals retain the diagnostic and code,
+enter the configured review lane, and cannot inherit an earlier version's approval.
+Automated native plans return their review section in the worker result;
+workers never publish approval comments or move lanes. Native workflows are
+resolved before planner dispatch: approved plans enter In Progress, while holds
+use the configured plan stop or review destination, including the existing
+In Progress intermediate transition when required. Incompatible destinations
+prevent planner dispatch. P1 plan rework retains planner provenance. Abandoned
+plan attempts cannot undo an operator's implementation handoff just because
+they have no PR. `TestNativePlannerAutomaticHandoff`,
+`TestNativePlanWorkflowHandoff`, and
+`TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt` cover these
+boundaries, including actual subsequent Change Request version publication.
+
+Merging promotion reads only the trusted audit verdict for the tick's hydrated
+PR head and base (#3436). Passing and running audits do not repeat PR, check,
+review, or thread hydration; merge preparation remains the owner of live merge
+eligibility. A lane-changing audit verdict still refreshes the live PR identity
+before routing to Rework, and degraded/unavailable snapshots cannot route it.
+`TestMergingPromotionUsesFetchedAuditIdentity` covers these ownership boundaries.
+Tick entry publishes the existing runtime overlay before blocking tracker reads;
+`TestPromotionReadKeepsRecoveredWorkersObservable` replays nine active attempts
+behind an empty prior snapshot and verifies fresh progress during slow promotion.
+
 
 Validator reviews now refresh the PR head before dispatch, seed a clean review
 workspace at that commit, and compare the current PR head again before storing
@@ -47,6 +604,16 @@ progress prose do not change identity; referenced qualification evidence does.
 cover these boundaries. This extends the existing validator lifecycle without
 adding a recovery mechanism or granting a gate waiver.
 
+Verified PR delivery uses immutable forge `MergedAt` when hydrated, otherwise a
+successful programmatic merge's post-API observation time (#3482). The existing
+lane ledger and phase metadata record delivery time and its source; worker attempt
+completion retains the worker's timestamp. Receipts and merge durations use the
+delivery clock. Historical ledger rows without integration evidence retain their
+recorded attribution. `TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalState`
+replays the #3445/#3465 audit and Chicago midnight; the operator, observed-merge,
+and merge-duration fixtures cover the other existing completion paths. Lane
+ownership, failure routing and verified outcome deduplication are unchanged.
+
 Completion classification preserves genuine diff progress even when a structured
 Workpad reports `in_progress`; current unfinished work cannot promote on completion or
 the Rework tick. Completion and promotion use the same forge-over-assertion
@@ -67,23 +634,18 @@ the tracker stops reporting a known conflict in a recognized mergeability state.
 Unknown includes tracker recomputation and credits progress without granting merge
 readiness. Attempt identity prevents stale-claim replay; tracker evidence provides
 the independent corroboration. The dispatch fingerprint and mergeability baseline
-persist with the attempt across restart, including merge-mode conflict repairs in active lanes
-(#2929); a changed head SHA alone is not implementation. No-progress
-outcomes consume the existing issue attempt allowance, including merge-mode
-conflict repairs dispatched in active lanes. Successful repairs also consume a
-started code session without requiring failure evidence. Merging-lane runs,
-legacy merge-mode rows without a lane, and historical merge-routing receipts
-remain excluded (`TestAttemptAllowanceExcludesMergeRouting` and
-`TestAttemptAllowanceDispatchAndRestart`, #2933). No-progress outcomes
-cannot enter Human Review or `awaiting_gate`, and reach the existing triage and
-Blocked handoff when the allowance is exhausted (#2922). Draft PRs remain
-ineligible for review and the tick never marks them ready.
+persist with the attempt across restart, including merge-mode conflict repairs
+in In Progress and ordinary implementation repairs in Rework (#2929, #3547);
+a changed head SHA alone is not implementation. No-progress outcomes retain
+classification under the existing configured signature limits and cannot enter
+Human Review or `awaiting_gate` as successful work. Historical lifetime session
+counts no longer override current completion and dispatch evidence. Draft PRs
+remain ineligible for review and the tick never marks them ready.
 `TestReworkLivePullRequestPromotion`, `TestReworkLiveDraftPromotion`,
-`TestUnfinishedCompletionClassification`,
-`TestCompletionRebaseProgress`, `TestUnfinishedSessionsExhaustAttemptAllowance`,
-and `TestCompletedActiveReviewRequiresFinishedWork` cover both active lanes,
-appended prose, durable allowance accounting, and ready-PR controls. This
-consolidates existing completion evidence without adding a mechanism.
+`TestUnfinishedCompletionClassification`, `TestCompletionRebaseProgress`,
+`TestUnfinishedSessionsRetainConfiguredDispatch`, and
+`TestCompletedActiveReviewRequiresFinishedWork` cover both active lanes,
+appended prose, current signature classification, and ready-PR controls.
 
 A persisted successful completion with a complete Workpad and ready PR remains
 owned by the existing active-lane gate until the matching head is eligible for
@@ -94,6 +656,67 @@ writes a Todo or Rework lane transition (#3238), removing its competing lane
 decision. `TestCompletedReadyPullRequestEntersMergeGate` and
 `TestTickDispatchesPlanApprovedIssueAfterLongRefresh` cover completion and
 next-cycle dispatch.
+
+A structured merged-completion receipt can replace an absent or closed-unmerged
+PR association only after native lookup verifies the exact repository, PR URL,
+number, merged state, head, and base branch. The injected receipt contract names
+the same fetched integration branch/head actually ancestry-tested, matching the
+merging PR's base rather than the worker workspace branch. Pending scheduled
+acceptance is not recorded as passed. The existing merged-PR owner scans
+active and observed lanes, including Blocked, and completes that verified work
+without another worker receipt. Completion classification shares that owner’s
+already-merged decision rather than waiting for new head checks after merge.
+Open associations, incomplete ancestry receipts,
+human actions, unavailable native evidence, and failing checks retain their
+existing behavior. `TestMergedCompletionReconcilesClosedDraft` covers stale draft
+associations, native reopening, and both completion and refusal controls.
+
+Successful persisted worker completion delegates an already-merged PR to this
+same owner before scheduling a continuation (#3576). A finished worker's retained
+claim no longer excludes merged delivery; running workers and claimed open PRs
+remain excluded. Resolving a merged operational receipt preserves its supplied
+attempt/generation attribution and requires native merged evidence, rather than
+falling back to assertion-only operational completion.
+`TestMergedCompletionRefreshReplacesClosedDraft` replays #3533's attempt 7516,
+generation 118, clean workspace and merged PR #3555: Done replaces the continuation
+that redispatched attempt 7522. Its stale-attribution and missing-evidence cases
+retain rejection without changing lane ownership or adding a recovery mechanism.
+
+Authorized no-PR operational delivery reads the structured receipt from the
+canonical issue-body Workpad as well as Workpad comments (#3425). GitHub
+hydration and completion classification share the section parser; protocol
+examples outside that section cannot complete an issue. Current canonical
+Workpad selection uses the comment's updated time, falling back to its created
+time. Equal timestamps retain reverse input precedence; unavailable ordering
+metadata retains that same precedence for the entire canonical comment set.
+Selection precedes parsing: a selected invalid, cleared, or human-held Workpad
+cannot fall back to older comments or issue-body evidence. Signal parsing,
+artifact receipt/status hashes, session progress, and current human clearance
+share this selection owner. Producer handoff instructions target that same
+canonical comment: edit it when permitted, otherwise publish a new comment
+through the existing tracker writer. Issue-body or final-answer completion
+cannot supersede a canonical comment. Native/local event ownership remains
+unchanged. Verified evidence for an unchanged PR head and test inputs can be
+referenced to publish its receipt without rerunning solely for publication;
+pending acceptance, project verification and human approvals remain required.
+The explicit completed-receipt history search keeps
+its existing reverse traversal and skip semantics. This consolidates current
+comment authority under INV-3 without changing authorization, native dependency
+proof, or adding a recovery mechanism. Acceptance still requires the dispatch-time
+and current operational authorization, clean delivered workspace, and matching
+attempt/generation when the receipt supplies them. The accepted signal and
+generation persist with the existing successful attempt. Both cached promotion
+and restart restoration require unchanged receipt fields; an unrelated issue
+timestamp update does not revoke an accepted delivery. Legacy successful
+unattributed receipts retain the existing timing check and cannot acquire a
+generation from current issue text. Historical no-progress receipts do not
+manufacture acceptance. The existing orchestrator completion transition retires
+accepted work to Done without another model session, retaining Human Review when
+required. `TestOperationalBodyCompletionSurvivesRestart` reproduces #3058's
+attempt 7018 / generation 25 publication and completion followed by the
+2026-09-30T14:14:11Z restart reclaiming unrelated work; it also covers refusal
+of changed evidence and stale attribution. Live attribution cases extend
+`TestHandleRunResultClassifiesImplementWorkerProgress`.
 
 An operator rejects a reviewed PR by moving its card to Rework, including through
 the dashboard. The existing lane history records the PR identity and hydrated
@@ -116,17 +739,24 @@ change to erase the remaining rejection evidence.
 unchanged and new heads, drafts, dashboard and observed moves, and repair dispatch
 (#2943).
 
-Human Review is entered only for PR-review outcomes or an explicit opt-out of
-an automated gate (including a configured `human_review` gate). Non-review
-human decisions, including attempt-allowance exhaustion and Workpad blockers,
-use the configured Blocked lane when the gate is not `human_review` and the
-issue has no auto-promote opt-out label. Projects without a configured Blocked
-lane retain their existing destination. Allowance triage notes and the
-`attempt_allowance_exhausted` reason are preserved; operator moves out of
-Blocked still reset the allowance and auto-promote decision memory (#2880).
+Human Review is entered only when the project explicitly sets `review.human: true`
+and a review outcome or gate requires it. With `review.human: false`, the
+orchestrator routes review holds, legacy triage publication, gate timeouts,
+and draft PRs to Blocked with their existing reasons. A legacy
+`requires-human-review` label and a configured `optout_label` are review holds,
+not permission to enter Human Review. New projects default to false. This
+consolidates review routing under the project setting (#3211). Allowance triage
+notes and historical `attempt_allowance_exhausted` receipts remain readable;
+operator moves still clear auto-promote decision memory.
 The dependency auto-unblock sweep retains these non-review decisions in Blocked
 even when an unconsumed body or native dependency is already Done; both reasons
 reuse the existing sticky-reason policy.
+Current recorded sticky reasons are evaluated before dependency hydration and
+comment reads; blocked cards that cannot auto-unblock do not consume tracker
+requests. Freshly hydrated workpad reasons still use the same sticky policy,
+and mismatched lane timestamps continue through ordinary hydration.
+`TestDependencyAutoUnblockRetainsNonReviewDecision` covers the absence of tracker
+reads for persisted allowance and workpad holds.
 
 Any closed issue, regardless of its closure reason, retains its
 non-terminal label snapshots in ordinary refresh reads, even without prior pipeline membership (#2865). The existing
@@ -134,6 +764,12 @@ non-terminal label snapshots in ordinary refresh reads, even without prior pipel
 continues to exclude closed issues. `TestTickReconcilesClosedLabelsWithoutPreviousPipeline`
 covers first-refresh and between-refresh closure without direct-ID retention.
 Any closed issue leaves non-terminal lanes on the first successful reconciliation.
+Transition refresh reuses the current successful candidate and status scans for
+retained pipeline, watched, and blocked identities. It fetches retained identities
+missing from those scans so external moves and closures still resolve; a failed
+status scan preserves the existing direct refresh and retention behavior.
+`TestRefreshTransitionSetsReusesStatusSnapshots` covers fresh closed and moved
+snapshots, missing identities, and failed status scans without duplicate reads.
 Non-completed closures are also removed from the board, pipeline, and active-work
 tracking, including the lane writer’s pending publication overlays (#2869).
 Completed closures retain their existing immediate Done transition visibility.
@@ -198,7 +834,162 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
 
+Native claim policy heartbeats (#151) share `nativeClaimError` with machine
+heartbeat and lease renewal. Contention on the enrolled runner's identity-file
+lock during credential rotation, policy transport failures, rate limits and Hub
+unavailability retain the active claim and worker without an issue failure or
+lane transition. These errors do not renew or extend the lease: existing native
+fencing and execution deadlines still reject expired authority. Local descriptor
+and runner-selector mismatches use the existing typed `policy_mismatch` and
+`selector_no_match` errors; actual policy, lease, identity and scope refusals
+remain fatal, and only the matching fencing token's cached claim is discarded.
+`TestRunnerClientEnrollmentSchedulingAndRotationRecovery` pauses the real
+credential rotation owner while a native execution is active, verifies unchanged
+issue and attempt records, and then renews with the same identity and grants.
+`TestNativeSchedulerReportsItsUnapprovedPolicyOnce`,
+`TestNativeDelayedResponsesPreserveSuccessor` and
+`TestNativeGuardDeadlineAndRenewal` retain mismatch, fencing and expiry coverage.
+This removes the blanket policy-error claim-loss classification under INV-3;
+credential rotation, atomic private persistence and pending-credential recovery
+keep their existing owners, with no new mechanism or authority bypass.
+
+Native code and rework completion (#152) requires a stored final diff and
+available fenced publication authority before a genuine deliverable advances.
+Missing diff and Change evidence retain their actual publication diagnostics
+through the existing completion handoff. Version publication refusals retain
+their diagnostic and code, preserve the previous immutable version, and move to
+the configured review lane without inheriting earlier approval or redispatching
+coding. Only actual claim, lease or fencing loss uses the existing
+execution-authority completion owner, without charging an issue failure.
+Absent native results remain with existing source and conversation continuation
+owners. Claim release retains failed publication preparation.
+`TestNativeExecutionSettlesFinishedRun` and
+`TestNativeChangeRunCompletion` cover these outcomes.
+
+Native runner GitHub PR landing (#89) uses the existing REST client classifier,
+response accounting, and instance REST capacity completion owner. Actual primary
+or secondary quota responses retain their credential identity, reset and
+Retry-After evidence in the existing persisted wait contract, without fabricated
+reserve or reset values. The reviewed Change Request/version/head stays in
+Merging across retries and restart; capacity completions consume no failed coding
+attempt allowance. Native coding and completions that need no exhausted GitHub
+operation continue normally. Pre-claim readiness, dispatch, retry and completion
+share the existing current-stage REST dependency decision (#150). Historical
+retry capacity scope is retained as evidence, not an independent applicability
+authority: due native Rework coding and Git-only landing remain eligible, while
+current native GitHub PR landing and non-native GitHub work remain held during
+an active REST outage. Retry ownership and immutable attempt history remain
+unchanged.
+Explicit native `worker.github_token` access retains
+the existing worker credential policy, isolated environment and capacity accounting;
+omitted access performs no worker credential lookup or GitHub request. Synthetic
+quota probes cannot clear actual landing response evidence; the runner retries
+through ordinary landing dispatch and fresh same-credential operation evidence
+establishes recovery. Quota evidence takes precedence over joined repository
+refusals while preserving the exact reviewed identity. Reviewed-head hydration
+and external PR validation use the same runner REST client as landing, so quota
+errors during workspace preparation retain that identity, actual usage and an
+honest failed native Finish for the existing capacity completion owner. External
+PR heads remain read-only and retain their repository/base authority. Authentication,
+review, check and repository refusals keep their existing handling. Runner
+credentials remain local. This consolidates classification and completion under
+INV-1/INV-2/INV-3 without a mechanism or lane writer.
+`TestLocalGitLandChangeViaGitHub`, `TestNativeLandingQuotaWait`,
+`TestLandNativeChange`, `TestNativeLandingQuotaFinishesRun`,
+`TestRunnerResolvesLandingBeforeWorkspace`, `TestLocalGitCreateReviewedLanding`,
+`TestNativeRunnerPublishesOnlyAfterRecovery` and `TestSSHErrorRoundTrip` exercise
+these boundaries.
+`TestHubSchedulingReadinessBeforeClaim` covers historical REST scopes through
+pre-claim readiness, retry planning and final dispatch admission.
+
+Native code commit and rework Git preparation/finalization failures (#141, #156)
+use the existing
+`workspace_preparation` outcome, including failures after a source-resolution
+turn. The existing instance failure owner retains the issue's runnable lane and
+excludes the attempt from its failure allowance; successful source turns retain
+their existing progress semantics. Genuine unresolved source conflicts remain
+resolution failures. `TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers`
+covers metadata/signing failures after resolution, issue allowance, and continued
+eligibility of other runnable work without a new failure family or scheduler.
+Host commit signing and authority failures preserve staged work and the existing
+checkpoint/retention owner, skip immutable artifact capture and version publication,
+and report a failed native Finish. They never become additional source findings
+or authorize another issue coding attempt. Current requested-change feedback and
+the prior immutable version remain intact; unavailable authority cannot write a
+new checkpoint. The staged/signing cases in
+`TestNativeReworkFinalizesBeforeImmutableEvidence` and
+`TestNativeRunnerOpensChangeAndLeavesDispatch` cover this completion boundary.
+Host staged commits suppress all repository hooks for that command with
+`core.hooksPath` set to the platform null device. Signing capability remains
+host-owned; tracked hooks cannot run with host credentials. Repository hooks
+configuration, author identity and signing policy remain unchanged, covered by
+`TestLocalGitNativeWorkDisablesTrackedHooks` for unsigned Code, SSH-signed Code
+and SSH-signed Rework.
+
+Native landing merge conflicts are repository refusals, not infrastructure
+failures or shipped work. Explicit merge-conflict evidence in the decoded GitHub
+HTTP 405 `message` uses the existing `LandRefusalConflict`; unspecified 405
+responses, actual branch protection, required checks and reviews retain their
+refusal classification.
+Metadata and malformed response text cannot establish conflict or closed-PR state.
+Quota responses retain their separate owner (#89) and never become conflict
+evidence. Unreadable workflow state or an unavailable refusal transition uses
+the existing deferred completion owner without inventing a successful landing.
+`TestLocalGitLandChangeViaGitHub` and `TestNativeLandingRunCompletion` exercise these
+classification and settlement boundaries (#96).
+
+Cloud shared provider capacity aggregates reports only from runners with current,
+unrevoked authority, using the existing runner validity interval contract.
+Expired and revoked identities retain their historical reports but cannot clamp
+live concurrency or availability. Draining and offline runners with valid
+authority still contribute. Live, unexpired lease reservations remain counted
+once per lease and retain their pinned concurrency bounds until release or
+expiry, independently of reporting authority. Current same-account exhaustion,
+unknown availability, organization scope and account isolation remain
+conservative. `TestProviderPoolIsolation` covers these boundaries alongside the
+existing provider observation and concurrent-claim fixtures. This consolidates
+report authority under the existing runner owner (INV-3), without a cleanup,
+recovery path or new capacity mechanism; provider capacity remains instance-owned.
+
+SSH host loss uses the existing host-scoped instance-capacity retry without incrementing issue failure counts or draining healthy hosts. `TestSSHHostLossUsesInstanceRetry`, `TestSSHHostLossClearsResumeOnSpillover`, and `TestSSHLocalTargetIntegration` cover attribution and retry behavior (#3239).
+
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
+
+Pi RPC launch, framing, correlation, and transport failures (#2469) reuse the
+existing instance backend-capacity outcome, including local providers. No Pi
+reason code or recovery mechanism is introduced. Restricted requests fail before
+process launch because Pi cannot enforce sandbox/read-only policies.
+`TestInfrastructureClassification`, `TestRestrictedRequestsNeverLaunchPi`, and
+`TestRunTurnReapsProcessGroup` cover attribution and subprocess ownership.
+
+Pull-request hydration failures retain the existing per-PR readiness refusal and
+credential-scoped REST reserve/backoff (#3497). Fresh successful reads restore
+normal admission without a project-wide worker-progress canary; missing or
+unavailable PR evidence remains conservative. Backend recovery remains unchanged.
+`TestPullRequestHydrationRecoveryKeepsAdmissionWithFreshEvidence` reproduces a
+quota-refused PR followed by three fresh candidates without waiting for a worker
+turn to admit the remaining candidates.
+
+Linked native GitHub issues hydrate title, body and complete paginated discussion
+with runner credentials before agent dispatch (#3257). Missing credentials,
+inaccessible sources, throttling, partial reads and failed persistence release
+the existing claim as `work_item_hydration_failed` and return the existing
+instance scheduling diagnostic, without changing the issue lane or spending an
+agent attempt. `TestNativeSourceIntakeRetryBeforeDispatch` covers failure,
+retry and zero source calls after successful intake. Atomic intake retains the
+source snapshot and imported comment provenance while native edit history
+preserves field ownership (`TestLinkedIssueIntakeAtomicAndNativeEdits`).
+
+Onboarding batch intake (#3258) reuses the same atomic source hydration and
+native field ownership. Explicit source requests ride the enrolled runner's
+existing heartbeat response; Hub never fetches GitHub issues or stores the
+source credential. Failed or throttled items remain incomplete until an
+operator retries, and completed intake delivers no further source tasks.
+`TestGitHubBatchIntakeRetryAndNativeOwnership` and
+`TestGitHubBatchDiscoveryFailureAndSourceValidation` cover these boundaries.
+Selection defaults to a configured non-dispatchable lane; dispatchable intake
+requires explicit operator approval and uses existing native scheduling,
+without an additional hold or lane writer (INV-1 and INV-3).
 
 Validator PR-diff provenance failures are production failures, not code findings (#3066).
 The validator uses a repository/PR/base/head snapshot whose file list and patch
@@ -217,9 +1008,9 @@ is zero.
 `TestValidatorDiffFetchFailureUsesInstancePath`, and
 `TestValidatorRetryDeadlineSurvivesReloadWithOneMaxAttempt` cover this boundary.
 
-`TestAttemptAllowanceCountsIssueJourney` excludes successful reports whose stored
-blocker evidence includes an instance owner from the issue session allowance.
-Other ownership, absent evidence, and malformed metadata do not grant that exclusion.
+Terminal failure accounting excludes successful reports whose stored blocker
+evidence includes an instance owner. Other ownership, absent evidence, and
+malformed metadata do not grant that exclusion.
 
 **Why:** Backend startup, protocol, and workspace-hook failures previously parked
 innocent issues and left the operator to return them to work.
@@ -250,9 +1041,16 @@ Git-index and hook failures, and `TestBoardAndHealthShowHostDiskExhaustionRetry`
 checks the operator signal. Other preparation failures remain instance-owned; their breaker
 uses `agent.failure_breaker.cooldown_seconds` rather than the separate
 blocked-recovery cooldown. A checked clean merge that needs no new workspace
-uses the no-workspace merge-control path under that breaker, even when worker
-capacity is free. The same checked merge may continue
-when the matching forge condition came from a Git read; forge write and
+always uses the existing no-workspace merge-control path, including when worker
+capacity is free and no breaker or forge condition exists. Fresh hydration must
+preserve the checked head and a non-strict base policy; advancement of a
+non-strict base does not require workspace synchronization or a CI retry.
+`TestReadyMergeAllowsNonStrictBaseAdvancement` covers the native merge of the
+unchanged checked head; the safety matrix retains changed-head, strict-policy,
+CI, draft, thread, and operator-withdrawal controls. A Git-read condition holds
+its failed operation retry, not unrelated merge preparation. Dirty or unchecked
+PRs still require their ordinary preparation and merge eligibility; removing
+the separate read hold does not make them ready to merge. Forge write and
 credential conditions retain their existing merge hold.
 `TestClassifyWorkspaceForgeReadFailure`,
 `TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
@@ -262,7 +1060,7 @@ and `TestCheckedMergeUnderForgeCondition` cover these boundaries (#3067).
 `TestAttemptAllowanceTriageInfrastructureFailure` applies the same instance-owned
 completion handlers to triage workspace, startup, transport, protocol, and capacity
 failures. These failures publish no triage comment and do not consume the triage
-pass; recovered admission uses the same durable allowance. The shared Codex
+pass; recovered admission uses normal configured dispatch. The shared Codex
 capacity classifier also sends typed in-turn transport/JSON-RPC failures through
 that existing instance wait; model-parameter rejection and operator cancellation
 retain their prior classification. `TestClassifyCapacityErrorTransportAndProtocol`
@@ -333,6 +1131,15 @@ SQLite restart, two-host coordination, artifact counts, and attempt attribution.
 publication checkpoint. Both run through the invariant manifest. Lane writes
 remain in the existing orchestrator ledger (INV-1).
 
+A permanently retired native fencing token uses the existing obsolete-completion
+rejection, rather than tracker-outage retries (#3437). Operator abandon clears
+the matching deferred completion as well as retry, running, and claimed state;
+it cannot resurrect an abandoned completion without a restart.
+`TestCompletionFenceDeferralOutcomes` and
+`TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits` cover rejection and
+cleanup. The native finish and lane handoff share the existing claim lifecycle
+instead of adding a retry or recovery mechanism (INV-3).
+
 **Change:** Edit INV-2 and its regression scenarios together in the same PR when
 changing the first-turn boundary, in-turn infrastructure classification, or attribution.
 
@@ -376,27 +1183,18 @@ writes followed by successful persistence and normal turn completion.
 Dispatch Workpad comment-read failures use the existing tracker availability observer
 and tracker-unavailable dispatch reason; they never become issue dependency evidence.
 
-Worker credential classification (#2846) uses the connector's shared GraphQL
-secondary cooldown, including Retry-After, instead of converting throttled probes
-into monitor failures. Cancellation during that wait does not register a monitor.
-Monitor eligibility resolves the issue's queued retry even when the caller supplies
-no retry; at `NextProbeAt` the carrier can reserve the existing single canary.
-An idle hold expires at `NextProbeAt` even when its carrier cannot dispatch;
-an in-flight canary retains ownership. Eligibility checks are read-only and retain
-the condition's attempt history, so a repeated failure after expiry increases
-backoff. Missing candidate batches preserve monitor carrier retries; a
-dispatchable carrier or the next eligible worker after an idle hold expires
-reserves the existing probe and consumes an attempt. Durable attempt recovery restores both the
-condition and its carrier retry, and a successful budget observation clears it.
-Completion without a budget observation settles an in-flight canary and schedules
-the next probe from its existing bounded backoff. A budget observation in the
-completion result can clear the condition before that settlement only when its
-observation is at least as recent as the active failure.
-`TestWorkerGitHubClassificationWaitsForSharedCooldown`,
-`TestWorkerGitHubMonitorCarrierEligibility`, and
-`TestDispatchableWorkerGitHubMonitorCarrier` cover cooldown, expiry, and dispatch
-through restart. This consolidates classification with the existing cooldown and
-uses the existing backend-capacity probe delay; it adds no new recovery loop.
+Worker credential classification uses the connector's shared GraphQL secondary
+cooldown, including Retry-After. The existing principal probe retains the generic
+credential contract, including GitHub App installation tokens; it does not require
+the narrower authenticated-user REST endpoint. A failed `GET /rate_limit`
+observation logs an instance-scoped diagnostic and leaves the worker turn running (#3248).
+A successful response still enforces the configured worker reserve. The old
+credential-wide monitor condition, canary, retry restoration, and scheduler
+skip reason are retired. Historical monitor attempts remain visible in attempt
+history without restoring a dispatch hold. `TestWorkerGitHubProbeFailureIsInstanceDiagnostic`,
+`TestWorkerGitHubPeriodicMonitorFailureThroughSupervisor`, and
+`TestTimedOutWorkerProbeDoesNotHoldDispatch` cover the timeout and dispatch
+sequence.
 
 Worker GitHub CLI preflight (#2741) checks that `gh auth token` can read the
 selected credential from its private per-attempt `hosts.yml`. Failures reuse
@@ -431,6 +1229,851 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Native base races (#160) consolidate merge refusal classification with the
+existing exact-endpoint `ErrPullRequestBaseOutOfDate` owner. The connector and
+native workspace share endpoint and JSON `message` validation, with native
+continuation scoped to `Base branch was modified` (#161). Strict
+`Head branch is out of date` retains native protection refusal ownership and the
+legacy connector's existing rebase ownership. Unrelated methods,
+resources, noncanonical PR identities, malformed bodies and metadata cannot
+supply base-race authority. Native landing reuses the existing forge wait,
+restart recovery and merge continuation, preserving immutable review and
+atomic head/lease/policy fences without a new reason code, retry loop, park,
+brake, configuration key or exception path. Required branch checks and reviews
+remain binding on every merge attempt; a clean source merge or base refusal
+never counts as a landing. `TestConnectorMergePullRequestClassifiesBaseRefusal`,
+`TestGitHubLandingAPIEndpointOwnership` and `TestNativeLandingRunCompletion`
+cover the shared classification and completion boundaries.
+
+Native runtime evidence (#92) records observations in the existing fenced
+attempt event stream and records evaluated Merging eligibility, routing,
+host/provider refusal and claim decisions in the existing scheduler
+transactions. Ordinary usage and activity checkpoints and lease renewals publish
+the bounded observation; no observer or polling loop is added. Reads take one
+snapshot through existing application services and never dispatch, write lanes
+or call the forge to manufacture history. Historical gaps stay unavailable.
+Scoped local explanation and operator discovery APIs use the current-grant
+application authority instead of the blanket aggregate-dashboard read refusal.
+Current runtime evidence (#159) consolidates existing Change summary and
+host/provider capacity reads inside that snapshot; it introduces no cache,
+poller, configuration, endpoint, reason code, or read-triggered mutation.
+The schema migration extends the existing append-only event vocabulary and
+preserves all prior evidence; rollback refuses to discard new event types.
+
+Native completion (#152) owns recorded publication results instead of falling
+through to legacy pull-request remote truth. A successful nil native result stays
+with existing dirty-source, interactive conversation and drain continuation owners; it does
+not replay an immutable tracker-unavailable completion. A version missing without
+a diagnostic remains an incomplete handoff. Clean preserved rework heads reuse
+the genuine current immutable Change version only under its current approved
+policy; a policy refusal cannot fabricate another version of unchanged source.
+Changed source retains the existing fenced and idempotent version publisher.
+The orchestrator alone selects an allowed review or landing lane, and landing
+revalidates the exact reviewed head through its existing owner. Successful-attempt
+revision/generation suppression stays intact. Graceful drain stops intake while
+already-authorized native code and rework retain that completion owner, including
+publication diagnostics and refused lane writes; drain never substitutes legacy PR
+remote truth for a genuine native completion. `TestNativeExecutionSettlesFinishedRun`,
+`TestNativeRunnerOpensChangeAndLeavesDispatch` and `TestNativeChangeRunCompletion`
+cover consolidation without a retry loop, reason code, or policy bypass.
+
+Native Rework context (#143) uses the same scoped current Change reader as
+landing. Recovery carries Change detail, including discussion and formal review
+findings with immutable version/head, actor and provenance, alongside existing
+issue discussion, history and attempts. Historical references cannot select the
+current version; historical feedback cannot become current approval or rejection.
+Feedback bodies remain untrusted task content, and discussion is not formal
+approval. Missing scoped reads return through the existing hydration error owner
+before dispatch. `TestNativeRecoveryUsesPublishedVersion` and the Rework cases in
+`TestNativeRunnerOpensChangeAndLeavesDispatch` cover the context through the real
+Hub, scheduler, execution and provider prompt without a feedback store, recovery
+loop, gate, configuration switch or tracker lane writer.
+
+Externally published native versions (#98) resolve the reviewed current version
+before the existing workspace owner prepares a landing. The target retains its
+External PR reference. The runner verifies its authorized source, clean owned
+worktree and immutable head, hydrates missing commits through authenticated Git,
+and rechecks current-version authority after preparation. An explicit PR is read
+directly and must match repository, branch, head and the authorized base; it is
+never replaced or force-published. Ordinary worker PR publication retains its
+atomic merge head authority below. Existing policy, scope, authentication,
+review/check refusals and actual landing receipts remain authoritative; the Hub
+receives no forge credentials and workers never write lanes. Source bundles and
+occupied worktrees remain intact. `TestNativeExecutionOperatorLandingTarget`,
+`TestLocalGitCreateReviewedLanding`, `TestLocalGitLandChangeViaGitHub`,
+`TestRunnerResolvesLandingBeforeWorkspace` and `TestLandNativeChange` cover these
+consolidated owners without a new mechanism.
+
+Native GitHub landing (#137) consolidates reviewed-head authority on the
+existing atomic merge PUT with `sha` equal to the immutable reviewed head.
+After the runner's lease-protected push, the selected open PR's list head may
+lag publication and cannot refuse landing. Repository, branch and base identity,
+worktree HEAD verification, source locks, current policy/version and ownership
+checks remain required. Only PUT on the exact
+`repos/{owner}/{repo}/pulls/{positive-number}/merge` endpoint owns atomic head
+refusals (#149). Its HTTP 409 response retains `LandRefusalHeadMoved` regardless
+of response body language or serialization; unrelated endpoint 409 responses
+remain generic errors. Explicit closed-PR HTTP 405 `message` evidence also
+retains `LandRefusalHeadMoved`; reviews, checks, protection and
+authentication remain enforced by GitHub. Typed quota evidence reaches the
+existing capacity owner before repository refusal classification. Only actual
+successful receipts reach the Hub, which receives no GitHub credentials.
+`TestLocalGitLandChangeViaGitHub`, `TestGitHubLandingAPIEndpointOwnership` and
+`TestLandNativeChange` cover stale list heads after rework publication, guarded
+remote head rejection, refusal identity and quota precedence. No retry loop,
+recovery path, reason code, policy bypass or lane writer is added.
+
+Native conflict completion selects the project's existing configured
+`ReworkState` through `CompletionLane` and the sole orchestrator lane writer
+(#96). Missing, disallowed, operator-only or terminal rework destinations retain
+the existing deferred completion handoff. Other refusals retain the configured
+review or Blocked destination. This consolidates landing refusal routing under
+the existing completion and rework owners; no configuration, reason code,
+recovery loop or worker lane writer is added.
+
+Explicit GitHub merge-conflict refusals (#155) establish source Rework only
+when a bounded refresh identifies the exact reviewed published head, PR
+repository/branch/base and current fetched and published base, and Git
+`merge-tree --write-tree` confirms a conflict for those immutable commits.
+Unknown, missing or contradictory source identity or Git refs remain with the
+existing forge infrastructure retry owner in Merging without source failure
+allowance changes. Clean Git evidence never authorizes landing after a refused
+atomic merge. The original HTTP refusal and native Change/version/head remain
+in attempt history; refresh quota evidence keeps capacity precedence. Existing
+protected/review/check refusals and exact-endpoint 409 ownership remain enforced.
+The existing forge wait survives restart and a successful same-version landing
+receipt clears its probe; source cleanliness alone cannot clear the refusal.
+`TestLocalGitLandChangeViaGitHub`, `TestLandNativeChange` and
+`TestNativeLandingRunCompletion` cover these consolidated authorities under
+INV-1 and INV-3 without a new reason, poller, configuration or recovery loop.
+
+Current Git base verification (#164) removes the equality pin to GitHub's
+projected PR base SHA. A stale base SHA alone cannot veto conflict evidence:
+the freshly fetched base must match the current published base in the same
+`ls-remote` read that verifies the exact immutable reviewed branch head.
+`merge-tree` uses that fetched commit. PR repository, base ref, head branch and
+head identity, worktree/source authority, policy and quota precedence remain
+required. Changing or unproven Git refs and clean source trees retain the
+existing forge wait; proven current source conflicts select configured Rework
+without reapproval. `TestLocalGitLandChangeViaGitHub` and
+`TestNativeLandingRunCompletion` cover advanced live bases with stale PR
+projections for conflicting matrix files and clean source trees.
+
+Native code/rework (#141, #156) consolidates commit finalization, rebase
+preparation and continuation under
+`LocalGit` and its existing source-operation lock. Workspace creation retains a
+verified paused transaction on the assigned branch. Workers resolve and stage
+authorized issue edits and source/index conflicts; the execution epilogue commits
+an unpaused staged repair and finalizes the rebase before
+capturing artifacts, diffs or the final checkpoint. Source diagnostics and the
+model turn run outside the source lock. Commit finalization verifies the owned
+worktree/common Git directory and assigned branch, then revalidates the active
+execution lease/policy authority under that lock. Ordinary host commits retain
+the project's effective signing configuration; unavailable signing fails as an
+instance capability without an unsigned fallback, configuration change or worker
+key access. Workers neither commit nor use signing workarounds. Ordinary tracker
+workflow remains unchanged. The staged host commit alone overrides
+`core.hooksPath` with the platform null device, disabling pre-commit,
+prepare-commit-msg, commit-msg and post-commit hooks without changing repository
+configuration, author identity or signing. `--no-verify` is insufficient for
+this host boundary. Paused rebase replay retains its existing ownership.
+Native machine replay explicitly avoids
+personal signing, including a signer option saved by an earlier paused rebase;
+host configuration and signer material remain untouched. Legacy Git signing and
+actual forge signing/protection requirements retain their existing owners.
+Paused transaction ownership, original branch head, additional ref updates and
+source-only replay instructions are checked before privileged continuation.
+Sandbox metadata roots grant only the assigned branch's ref, reflog and lock
+files, plus the existing worktree metadata and objects; they never grant branch
+parent directories, sibling ref writes or the common Git directory.
+`TestLocalGitNativeReworkOwnsPausedRebase`,
+`TestNativeReworkFinalizesBeforeImmutableEvidence` and
+`TestGitMetadataWritableRootsForLinkedWorktree` cover these boundaries. The source
+fixture attempts a nested macOS sandbox when the host permits it; a sandboxed
+worker that forbids nesting still exercises source/index resolution, explicit
+root authority, signer inheritance and transaction finalization. Nested sandbox
+denial is not OS sandbox enforcement evidence.
+Signed commit fixtures use real SSH signatures and verification; GPG-unavailable
+fixtures exercise actual Git commit failure and retained staged work. Runtime
+acceptance of a GPG-configured worker's OS denial of signer material and unrelated
+common refs remains with the integration owner when nested sandboxing is unavailable.
+
+`TestNativeRunnerOpensChangeAndLeavesDispatch` exercises rework preparation
+against a local Git transport while preserving the HTTPS repository identity.
+Its rework cases verify that the new immutable version names the final stored
+diff head, unchanged policy and matching code artifact, without external Git
+access or a duplicate publication fixture.
+
+The existing rework worker regenerates derived artifacts through their build
+owner when needed. It publishes a new
+immutable Change Request version with its actual head and artifact identity;
+the prior version's review cannot authorize that new version. Current-version
+review, project checks and exact-head landing authority remain required. Only
+an actual landing receipt establishes shipment; worker terminal success and
+landing refusal metadata do not. `TestNativeLandingRunCompletion` and the
+existing `TestNativeExecutionLandsReviewedVersion` cover those boundaries.
+The integration/release owner must still verify a controlled conflict through
+rework, regenerated output, new-version publication and exact-version landing
+after this source change is integrated; local fixture results are not that
+runtime receipt.
+
+Cloud provider report aggregation consolidates validity under the existing runner
+credential authority contract described in INV-2. Historical observations remain
+stored; the existing lease accounting owner retains live pinned reservations.
+No report cleanup, recovery loop, configuration or reason code is added.
+
+Workflow duration reports exclude `agent_activity` in their existing SQL owner
+before loading or converting the activity payloads that report aggregation does
+not use. A finite report window searches both inclusive-start/exclusive-end
+`finished_at` bounds through the existing index; absent bounds retain the
+optional query contract. Flow overlap reads likewise seek a present lower
+`finished_at` bound directly and retain the strict `started_at` upper bound.
+They do not constrain the upper `finished_at`: long sessions ending after the
+window still contribute their overlap. Absent lower bounds retain the optional
+query. Timeline/activity readers, history revision, trends and representatives
+are unchanged. Existing report fixtures check large activity exclusion, report
+equivalence, optional bounds, strict overlap boundaries and the actual lower
+index-seek operand. No index, cache, configuration or schema is added.
+
+The existing workflow-history UPDATE trigger invalidates cached projections on
+every non-activity update and on activity changes to event/project/issue
+identity, identifier, URL, PR number or completion time. Activity checkpoints
+that change only fields absent from those projections do not invalidate them.
+INSERT/DELETE invalidation and the revision counter remain unchanged. Runtime
+evidence retains table counts and completion bounds; detailed activity timelines
+read fresh checkpoints directly. The forward migration replaces only this
+trigger, and its rollback restores unconditional UPDATE invalidation.
+`TestWorkflowHistoryRevision` checks current timeline payloads, unchanged
+checkpoint evidence, NULL transitions, projected identity changes, other phase
+updates and both migration directions.
+
+Cycle-time reports and verified shipped outcomes share the existing global
+workflow-history cache entry rather than scanning completed sessions, attempt
+metadata or the lane ledger on each changed snapshot. Project views inherit
+those global projections; project history entries do not repeat their queries.
+Existing revision checks, coalesced loading, scope bounds and 30-second
+wall/window freshness apply. Direct session, attempt or applied lane-ledger
+changes without a phase revision remain bounded by that freshness limit.
+Latest-phase delivery identity, URL and PR changes retain revision invalidation.
+This read-only dashboard projection never supplies merge or lane authority.
+A failed component query leaves successful components available but does not
+cache the failed global composite; a failed shipped read preserves the input
+snapshot instead of fabricating deliveries. Existing cadence/concurrency/failure
+and changed-snapshot SSE fixtures preserve statistics, delivery identity and
+timestamps, and verify heartbeat reuse, scopes, revisions, independent ledger
+write bounds and failed-read retries. No cache, TTL, query, index or configuration
+is added.
+
+GitHub usage timing (#3767) extends the existing `RESTScope` owner, mutex,
+fixed stage/step/family/outcome aggregation and single aggregate log event.
+GraphQL timing adds only allowlisted existing query purposes, with unknown
+purposes grouped as `graphql`; no URL, query, variable, body, header, credential,
+or per-request row is retained. REST request/deferred/refused counts and GraphQL
+quota query/cost accounting keep their meanings. HTTP attempts are measured
+independently of quota points, including transport, body and close failures;
+refusal before `Do` produces no HTTP observation. Attribution is captured at
+request entry, before token resolution, and survives later scope stage changes.
+Counts and timing aggregates drain together under the existing owner, including
+timing-only outside-refresh cohorts. Completed observations carry attempt count,
+timed count, elapsed sum and maximum in nanoseconds; absent observations remain
+unknown and do not establish complete coverage of uninstrumented work.
+
+`http_transport` sums the actual `Do`, body-read/counting and existing deferred
+drain/close segments. Response logging, progress callbacks, header accounting,
+decoding and recursive auth retries between those segments are excluded. The
+existing request and cleanup order is unchanged.
+It includes any connection-pool wait, DNS/TLS and server time inside `Do`, without
+separately measuring those components or claiming pure network time.
+`token_resolution_inclusive` measures the existing request-entry `Token` call,
+including locking, fallback and nested installation-token HTTP. Cached token
+retrieval is timed as token resolution and creates no HTTP attempt. Concurrent
+HTTP sums can exceed stage wall elapsed, and token elapsed can contain HTTP
+elapsed. These overlapping/inclusive sums are work measurements, never wall,
+critical-path, busy-wall, savings, percentage attribution, or values to add as
+disjoint time. Existing refresh timing remains the wall owner; actor queue,
+local and uninstrumented work remain unknown without subtraction. No profiler,
+queue owner, timer, recovery mechanism, storage table or configuration is added.
+Existing scope, request/error/auth, quota, conditional, privacy, installation-token
+and pooled-client fixtures cover attribution, overlap, coverage and no extra calls.
+See [GitHub usage timing and privacy](diagnosis.md#github-usage-timing-and-privacy)
+for coverage and the integration/release owner's pending runtime acceptance.
+
+Permission completion consolidation (#3758) removes the competing global
+final-message permission invocation. Only the existing native completion owner
+reuses the final-outcome handler for native final-only human attention, including
+non-completed producer outcomes with no Change Request. Existing human-owned
+settlement and tracker-write deferral preserve attempt identity, usage and claim
+settlement; no parser, reason code, recovery mechanism or configuration is added.
+The existing PR-delivery failure predicate validates every joined error leaf for
+both native human attention and delivery reconciliation. Mixed workspace,
+checkpoint, lease or session failures retain their original error authority;
+a nested delivery error cannot erase an unrelated failure or create a permission
+park. The existing deferred-delivery receipt stores one summarized typed cause
+only after that whole-error proof; replay validates the same predicate. Existing
+Cause/Error diagnostics remain. Legacy text-only receipts cannot prove purity,
+so replay preserves their full original error instead of creating human attention
+or successful reconciliation. The same receipt retains the worker's typed forge
+scope/class separately from tracker-fence availability, reusing existing forge
+wait metadata. Replay restores that wrapper after its inner error and retains
+summarized approval-denial evidence, so existing credential/forge owners keep
+instance failures out of human holds and issue failure accounting. The same optional
+metadata is present and empty when the current encoder observed no forge wrapper.
+Absent or malformed metadata retains the full original error, including v35
+typed-delivery receipts that cannot prove outer availability. Missing authority
+is never reconstructed from text; no historical receipt is rewritten.
+No top-level schema or recovery owner is added.
+Historical Workpads, permission parks, allowance records and lanes are untouched.
+`TestHandleRunResultPermissionWait`, `TestNativeChangeRunCompletion` and
+`TestNativeLandingRunCompletion` cover canonical authority, nil-change human
+attention and typed landing success/refusal.
+
+Admission tool acceptance (#3756) belongs to the existing candidate validator,
+which the collector runs before acknowledging a submission. Strict JSON and
+semantic rejections receive bounded diagnostics without echoing candidate IDs,
+criteria, quotes, rationale or raw input. A valid correction in the same runner
+conversation retires the pending rejection; rejected calls do not count as
+accepted evaluations. The producer prompt requires one accepted terminal result
+and permits correcting rejected input within that same conversation, without
+another runner invocation. Two valid submissions still violate the exact-one
+contract, and an uncorrected later rejection remains malformed. All-invalid tool
+conversations cannot fall through to final text. The tool-unavailable typed
+final-text envelope uses the same validator, preserving candidate count and
+fail-closed behavior. Delayed tool validation is removed; final source, dependency,
+authorization, confidence, required-dimension and effort qualification retain
+their existing owners. Mixed findings do not establish automatic eligibility.
+Existing collector, per-candidate, mixed-result and final-text fixtures cover
+these boundaries. No reason code, provider retry, turn request, reservation,
+configuration, archive or recovery mechanism is added; existing malformed
+evidence persistence and redaction remain unchanged.
+
+Project state reads (#3748) use the existing published snapshot owner once the
+first publication is ready, including while the actor is blocked on synchronous
+refill. The competing actor state request and snapshot notification channels are
+removed, along with the read-routing refresh flag. The shared refill owner
+publishes confirmed operation state before its fresh candidate read; unresolved tracker writes remain unpublished. Completion
+snapshots retain priority over runtime and full publications during completion
+refill, until final publication clears the existing fence. Returned state remains
+independent, with live runtime ownership, persisted worker heartbeat and validator
+progress observable outside the fence. Full publication stores runtime ownership
+before the full snapshot and initial readiness, so a newly observed full snapshot
+cannot be overlaid with older runtime ownership. Reads do not advance tracker
+freshness, complete an unfinished refresh or establish dispatch eligibility.
+Drain and ForceQuit handlers publish their completed state before acknowledging
+the caller, so an immediate State read observes draining and force-quit ownership
+cleanup. The existing shutdown regressions assert this ordering (#3801).
+Existing publication, operator-move, queued-completion, defensive-copy, worker-progress,
+startup and promotion-read fixtures cover these boundaries. No new cache,
+timeout, configuration, guard, lane writer or recovery mechanism is added.
+
+Completion cleanliness (#3744) uses current, available workspace recovery
+evidence before classifying blocked Workpad text as an intentional remainder.
+After prior cleanliness rejections, verified zero-diff, zero-unpublished evidence
+retains the existing clean-retry owner, with or without a current completion
+declaration or committed/discarded metadata. Absent or unavailable recovery
+evidence and history failures retain their existing refusal semantics. Actual
+dirty or unpublished source remains refused; blocked intentional remainders
+retain their existing escalation owner. Independent human actions, project
+verification and PR promotion retain their existing owners: cleanliness alone
+does not establish approval or successful acceptance. Historical human-owned
+parks retain their authorized recovery lifecycle. The existing evaluator and
+run-completion cleanliness fixtures cover these boundaries. This consolidates
+classification order without a prose classifier, guard, reason, retry,
+configuration or recovery mechanism.
+
+Machine-issue authoring (#3742) exposes optional metadata labels through the
+existing intake draft and connector label normalization. The tool omits lane
+labels projected from the configured tracker prefix, lane states and state map,
+including Backlog, while preserving unrelated metadata. This consolidates the
+authoring contract with existing configured status ownership; it adds no policy
+configuration, reader, recovery mechanism or lane writer. Source stamping and
+fingerprint coordination retain their existing owners. Open fingerprint reuse
+remains comment-only, without body, label or lane changes; only newly published
+issues receive the orchestrator's Backlog state write. The existing
+`TestMachineIssueTool` fixture covers metadata, omitted labels, configured/mapped
+lane filtering, malformed requests, provenance, reuse and publication failures.
+
+Admission candidate evaluations use the runner's existing current-clock fallback
+for each logical session start (#3729). The admission batch no longer overrides
+that clock. Run start, dependency observations, evaluation history and malformed
+result history retain their batch observation time; budget, fingerprints, capacity
+and fresh final eligibility validation retain their existing owners. Session start
+remains distinct from physical provider launch. The existing mixed semantic-result
+and runner admission fixtures cover these boundaries without adding a clock field
+or mechanism.
+
+Dispatch reference evidence (#3696) consolidates dependency hydration and recorded
+predicate resolution under the existing per-plan blocker cache. Only successfully
+resolved issue snapshots seed predicates, keyed by the normalized actual issue
+identifier. Missing or failed references remain unknown and the existing resolver
+still reads missing predicate references (`referencesAttempted=false`). Fresh
+Workpad comment reads, PR/check hydration, native relation authority and human
+completion requirements retain their existing owners. The dispatch callback
+always discards reusable evidence on return, including a lane write followed by
+a failed launch; retry polling also discards it because an exhausted merge worker
+can write Blocked. Evidence never survives a dispatch plan or a mutation callback.
+Ordering, capacity acquisition and launch outcomes are unchanged. Existing
+`TestDispatchRecordedPullRequestBlocker` and
+`TestDispatchWorkpadDependencyEvidence` and
+`TestDispatchReadyIssuesRefreshesStaleBlocker` fixtures assert overlapping reads,
+normalization, unknown/error and human negatives, fresh subsequent plans and
+fresh reads after failed dispatch and retry-poll lane writes. No persistent cache,
+reader, configuration, recovery path or tracker lane writer is introduced.
+
+Retired-park recovery (#3687) consolidates its dependency and typed-predicate
+reference reads into one fresh phase cohort through the existing identifier
+resolver. Identifiers are deduplicated in first-request order, and GitHub's
+existing resolver groups PR discovery once per repository. A successful cohort
+replaces duplicate per-root resolver/discovery reads and repeat predicate
+lookups for absent evidence. Each root retains its dependency provenance,
+human/operator holds, predicate evidence and completion decisions. Missing
+results in a successful cohort remain unknown for their roots. A failed cohort
+is discarded, including any partial results, and the existing per-root recovery
+owner reads fresh authority independently. An unavailable reference therefore
+cannot hold an unrelated root whose predicate has cleared. Failed batches may
+add one bounded resolver attempt; the existing per-root owner retains error
+isolation without a new reader or recovery path. The existing dependency
+mapping owner clears identifier-addressable positive state and human-readiness
+fields before adopting fresh resolved authority; absent or failed reads cannot
+retain stale completion. ID-only refs and connectors without a reference
+resolver retain their existing inline authority. The existing request cap,
+reserve and first-read rules still apply. A successful lane write discards the
+cohort for remaining roots, which return to ordinary fresh reads; evidence
+never survives a phase or operation. Root body/comments, exact-head
+PR/status/reviews and operational receipt verification retain their existing
+owners. Dispatch's capacity/lookahead bound and rotating dependency-priority
+scan remain unchanged. `TestRetiredParkReferenceCohort` exercises repeated
+references/repositories, 500/403 failure isolation, absence, cancellation,
+finite cap/reserve, human holds, fresh subsequent phases and post-write reads;
+the existing capped dependency-progress fixture records the requests made
+available by this consolidation. No persistent cache, remote reader, recovery
+path, configuration or lane writer is introduced.
+
+Refresh dispatch (#3674) runs the existing retired-park and dependency-maintenance
+owners after unrelated active work has passed current authorization, dependency,
+human/operator, review and visual gates. One rotating dependency priority read remains before
+ordinary reads on alternating refreshes. Backend-capacity recovery and blocker
+promotion remain before dispatch because they can supply admission authority.
+Current candidate Blocked status is applied before admission; full blocked-status tracking and missing-retry cleanup
+remain after recovery, preserving started-work and park evidence. Authorization
+refusals retain every durable per-issue row in one transaction per observation.
+Schema-3 explanation reads preserve available evidence when a configured source
+hits its deadline and mark that source unavailable; request cancellation still
+propagates. This removes per-card commits and inapplicable pre-dispatch maintenance
+without a cache, timer, configuration key, reason code or recovery owner.
+
+Completion comment hydration (#3661) consumes the current producer's complete
+comment result instead of immediately reading it again. `CommentsComplete` is
+an operation-result contract excluded from JSON/YAML, not retained freshness
+or timestamp authority. GitHub marks only a successful full comment read;
+local results mark their current database read; composite results require both.
+The completion owner replaces body, comment count, comments and completeness
+from the matching fresh candidate, including empty values. Unknown, partial
+and failed reads retain the explicit fresh comment owner. Native dependencies,
+current head, Workpad edits and read-error refusal remain unchanged. Existing
+fresh-Workpad and local/composite comment fixtures cover edited same-comment
+negative evidence, cleared bodies, empty comments, marker reset and omission
+from persisted data. This removes a duplicate reader without a cache or new
+configuration, gate or recovery mechanism.
+
+Admission reconciliation (#3719) applies the same operation-result contract to
+decision comments returned by its current issue read. Complete results, including empty
+comments, retain that current evidence; incomplete results keep the explicit
+comment read and its error refusal. Comment identity and authorization, proposal
+fingerprints, dependency checks and lane writes retain their existing owners.
+This removes a duplicate comment reader without retaining evidence across runs.
+
+Final workspace diagnostics (#3658) use the existing workspace-preparation
+failure class even after a coding turn has finished. The existing runner error
+classifier also recognizes the strictly anchored legacy final-diffstat Git
+intent-to-add diagnostic receipt. Infrastructure terminal attribution reuses
+that classifier only for persisted generic runner errors; genuine worker Git
+failures remain chargeable. Existing allowance recovery returns corrected
+historical holds to their prior lane while retaining human and dependency holds.
+This consolidates failure ownership without a reset, reason code or recovery path.
+`TestRunnerWorkAttemptErrorClass`, `TestAttemptAllowanceTriageInfrastructureFailure`,
+`TestRetiredAttemptTriageParkRestoresPriorLane` and the runner final-diff fixture
+cover typed diagnostics, legacy receipts, genuine failures and prior-lane recovery.
+
+Workspace intent-to-add (#3653) uses ordinary Git ignore handling in the existing
+temporary index. Runtime exclusion pathspecs remain on subsequent diagnostic
+reads, but no longer cause Git add to reject an ignored scratch directory or
+symlink. Shared exclusions and real indexes remain untouched. The existing
+`TestWorkspaceDiagnosticsPreserveSharedGitMetadata` fixture covers both ignored
+scratch forms and their absence from diagnostic output. This removes misapplied
+exclusions without adding a retry, cleanup or recovery mechanism.
+
+GitHub budget recovery resolves current credentials and reserves through the
+existing policy constructor. Exact identical worker/orchestrator tokens already
+establish shared-pool ownership without a duplicate principal lookup; recovery
+only reads current budget evidence. Different-token principal comparisons and
+fresh launch identity remain unchanged. The shared reserve check has one owner.
+`TestRunnerWorkerGitHubBudgetRecoveryOwnership` covers ten recovery/launch pairs,
+parallel current-budget reads, reserve reload, revoked credentials, and mutable
+GitHub login names. It removes ten of twenty principal reads per batch while
+retaining all twenty budget observations, without a retained identity cache,
+configuration, or recovery mechanism. Post-deployment timings are separate
+acceptance evidence, not implied by request counts.
+
+Fallback dependency hydration uses the existing fresh comment reader when comment
+or Workpad evidence is missing. The former issue-timestamp comment cache is
+removed because its diagnostic comments also became Workpad decision authority.
+`TestDependencyCommentEvidenceFreshWorkpad` covers authorized edits of the same
+comment and cleared human action in Todo, including unchanged, missing, and zero
+issue timestamps. Native dependency relations remain authoritative and fresh;
+comment references remain diagnostic notes. No replacement cache or recovery
+mechanism is added.
+
+Epic completion (#3639) defers a parent when current tick evidence already
+contains a nonterminal child, before reading that parent's linked children and
+unresolved checklist references. This removes the duplicate completion scan for
+an epic that cannot close. Tick evidence is negative authority only: terminal
+tick evidence never replaces the existing fresh linked-child and identifier
+reads used to close a parent. Unknown children and lookup failures retain the
+existing completion and retry owners. `TestCloseCompletedEpics` covers a large
+unresolved checklist, a later child reopen, and independent parent completion;
+the existing affected-epic retry tests retain transient failure behavior. No
+cache, timer, configuration, or recovery mechanism is added.
+
+Rework gate restoration owns its fresh tracker and Workpad read once, retaining
+the refreshed issue for later tick consumers. Required-gate snapshots project
+that evidence without another tracker read. The existing completion reader still
+fetches current evidence for callers outside restoration; history selection
+consumes that evidence rather than reading it again. Fresh blocked Workpads and
+unavailable reads cannot restore a wait, and current-head validator hydration
+keeps its existing owner. `TestReworkGateWaitHistoryCannotResurrectSupersededWait`
+checks one tracker/comment read, failed reads, and fresh blocker propagation;
+the existing current-head restoration cases cover validator handoff. This
+consolidates readers without a cache, configuration, or recovery mechanism.
+
+Runner startup diagnostic reports (#3619) reuse the scheduler's heartbeat and
+existing optional feature negotiation. The `runner_local_checks` capability
+permits `local_checks`; older Hubs receive the original heartbeat without that
+field. Startup observations remain scoped to their project; missing or unsupported
+diagnostic authority remains absent, and current-Hub validation and admission
+requirements remain unchanged. Registration uses the same negotiated heartbeat
+encoder. `TestNativeOptionalReportsNegotiateHubSupport`,
+`TestRunnerSetupHeartbeatOwnership`, and `TestOnboardingRunnerLocalChecks` cover
+strict older/current schemas, failed/missing evidence, routing identity, and the
+single startup heartbeat owner. No compatibility retry loop or gate is added.
+
+Runner checkout readiness checks the source checkout's `.git` and shares the
+project owner's configured workflow loader with repository reporting. Readiness
+is independent of Git origin and forge; optional GitHub repository association
+requires readiness and a canonical GitHub origin from that source checkout.
+An explicitly configured workflow may live outside that checkout; registration
+defaults to checkout-local `WORKFLOW.md` only without a configured workflow.
+`TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin` and
+`TestCollectRunnerLocalChecks` cover external and ref-backed workflows, the
+registration default, invalid/missing workflows, missing Git checkouts, ready
+non-GitHub and origin-less checkouts with no association, and private-output
+redaction. This consolidates the existing reporting checks without another
+heartbeat owner or mechanism (native Cloud work item #2).
+
+Label-based refresh reads current body, comments, Workpad, and native dependency
+evidence through its existing combined hydration owner. The competing persistent
+label-evidence cache is removed: issue timestamps cannot authorize reuse of a
+previous human request or clearance. `TestLabelRefreshSharesFreshSchedulerEvidence`
+covers repeated edits of the same authorized Workpad comment from blocked through
+in-progress to complete, with unchanged issue/listing timestamps and cleared
+dependencies. Existing project-item/ref caches and fresh PR readers remain intact.
+
+Rework-breaker recovery reads its historical park only for a current Blocked
+issue with automatic promotion enabled. Current-cause recovery remains the
+first owner for every Blocked issue, including when promotion is disabled.
+Configured recovery source lanes retain their existing maintenance behavior
+without loading breaker history they cannot consume.
+`TestRecoverBlockedIssuesReworkBreakerGuards` covers omitted history reads and
+retained current park decisions. This consolidates the existing eligibility
+condition before its read without a cache or recovery mechanism.
+
+Scoped park summaries select physical rows through the existing identity
+indexes before aggregating history. A fixed two or three `json_each` identity
+branches serve any batch size; `rowid IN` deduplicates rows matching several
+aliases without collapsing distinct usage rows. Project boundaries, one-hop
+alias matching, list and invalid-identity behavior, park provenance, and
+acknowledgment receipts remain unchanged. The existing park summary, bridging,
+and acknowledgment tests cover these contracts, including a board-sized batch.
+This consolidates scoped readers without a new index, cache, or mechanism.
+
+Missing `gate.local_status` evidence is unproduced Detent-owned work (#3172).
+The connector shares the ownership predicate with current-head CI telemetry and
+merge missing-check accounting, removing that context from pending-CI suppression,
+missing-check streaks, parks, and park-recovery waits. Todo duplicate suppression
+and stale-PR routing also exclude heads with this worker-owned work, using the
+existing worker path and CI wait reason. Required-check evidence remains present
+until validation posts the status, so native queues and programmatic merges
+cannot bypass it. Other missing contexts and projects without a local status
+retain their behavior. `TestRequiredStatusCheckFailures`,
+`TestHydrateMergingRulesetStatus`, `TestReworkCurrentHeadCIDispatch`,
+`TestPostValidatedGateStatusOnlyForTheValidatedHead`, and
+`TestPersistentlyMissingRequiredCheckParkRecovery` cover the boundary.
+The existing missing-check mechanism remains for external required contexts that
+need a human configuration repair. No mechanism, reason, or configuration key
+is added.
+
+Provider transport overload remains instance-owned after a worker has started.
+Its completion no longer invokes the competing issue demotion/parking path;
+the existing provider retry keeps the current lane. Terminal failure counting
+and classification share the existing infrastructure attribution used by the
+terminal retry owner. Infrastructure interruptions neither count as issue
+failures nor reset earlier genuine failures. The existing terminal-limit
+recovery owner evaluates that same cause before applying its cooldown, so a
+historical instance-only park returns to its durable prior lane without manual
+allowance or tracker mutations (#3575). Existing human, operator, dependency,
+and genuine-failure holds remain authoritative. The SQLite restart matrix in
+`TestConfiguredTerminalRetryAfterStoreRestart` covers both corrected legacy
+parks and genuine failure cooldowns; completion cases cover configured zero
+limits, unavailable stores, and active provider retries. Existing restart and
+provider resumption eligibility remains independent of issue-failure accounting;
+the shared infrastructure attribution applies at the existing counting and
+issue-demotion callers, preserving resumability without charging or parking an
+issue for an instance interruption.
+Service-restart reconciliation uses the same existing source-lane restoration
+owner as pre-turn failures, carrying pushed-product evidence so completed work
+stays active. A recorded Rework source returns to Rework, legacy empty source
+returns to Todo, and neither path enters the issue failure limit, including a
+configured zero limit. `TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt`
+checks these existing restoration contracts.
+Legacy GitHub REST capacity attempts without durable wait metadata use that
+same source-lane restoration owner rather than the issue-failure demoter.
+Their existing pushed-product, unresolved-PR, and foreign-claim ownership
+checks remain authoritative. Durable capacity waits stay in their current lane.
+`TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibility`
+covers legacy Todo and Rework restoration, configured zero limits, pushed work,
+foreign claims, and durable wait preservation.
+
+Merged-completion ownership (#3529) resolves stale closed associations through
+existing native reference lookup and the existing merged-PR owner. Completion
+classification uses that same decision instead of a separate post-merge CI wait;
+no recovery loop, exception marker, reason, configuration, or lane writer is added.
+
+The hourly source-invariant failure (#3532) refreshes the reviewed digests for
+`handleSessionBrake`, `reworkMergeWorkerResult`, and
+`updateIssueStateByIDWithMetadataMode`. The reviewed changes remove automatic
+repository lesson evidence/writes (#3501) and attribute verified delivery time
+to existing merge evidence (#3485). Their lane-reason sources and forwarding
+remain unchanged; no mechanism or reason is added. `TestRepositorySources`
+continues to reject edits to these functions until reviewed.
+
+Human Workpad recovery (#3504) derives the existing human-action park from its
+durable `workpad_blocker` lane entry when older entries have no recovery metadata.
+The current Blocked entry already supplies the reason, prior active lane, and
+entry time; requiring duplicate metadata made an authorized clearance unreachable.
+The same clearance evaluator and recorded-blocker recovery restore the prior
+In Progress or Rework lane. Unauthorized, stale, uncleared actions and unresolved
+dependencies keep their existing holds. No new reason, loop, or configuration is
+introduced. `TestWorkpadHumanActionClearanceRecoversBlockedIssue` includes real
+SQLite legacy entries and both active lanes.
+The recorded recovery receipt carries the same human-action park it released.
+The existing park retainer recognizes that receipt across refresh and restart;
+it does not acknowledge unrelated or later human parks. Scheduler skips retain
+the stored cause and recovery reason instead of reporting an opaque Blocked
+hold. The Workpad clearance regression also checks retained-park replay.
+Older native `recorded_blocker_recovery` receipts may omit the duplicated park
+metadata. The same park owner recognizes their authorized Workpad clearance
+after a known fingerprinted human-action park. A later completed Workpad can
+preserve an earlier explicit `in_progress` clearance, but cannot authorize one
+by itself. Missing provenance, mismatched supplied park metadata, newer human
+requests, unauthorized or invalid Workpads, and current dependencies retain
+their holds. `TestLegacyRecordedHumanClearanceRetainsNativeAuthority` replays
+these receipts through SQLite before and after restarting the in-memory state.
+The existing workflow metadata updater persists the recognized park on that
+same native recovery receipt before releasing the retained hold. This preserves
+the accepted clearance when a worker edits the same Workpad comment to complete.
+Receipt identity, provenance, and unknown metadata remain unchanged; no history
+event is appended. Unsupported or failed persistence retains the hold, and write
+failure is logged against the instance. `TestLegacyHumanClearanceSurvivesWorkpadOverwrite`
+covers the same-comment edit and a new orchestrator using the same SQLite store.
+
+Session token ceilings record their existing typed outcome, usage, and agent
+session phase in the database without writing a repository lesson. Removing the
+automatic lesson append keeps runtime failure evidence out of committable files
+and prevents a filesystem error from changing the token ceiling failure.
+Rework transitions also use existing lane database events instead of automatic
+lesson captures in the primary project checkout. Project loading does not enable
+or resolve an orchestration lesson file. Configured agent lesson recall still
+reads project-authored knowledge when enabled.
+`TestRunnerRunKillsSessionAtTokenCeilingWithoutLessonWrites` covers absent and
+existing default/configured lesson paths with recall enabled or disabled.
+`TestReworkTransitionsKeepDatabaseOwnership` covers separate projects and issues
+recording their Rework exit/entry pairs and PR/provenance attribution.
+
+The pull-request hydration recovery ramp is removed (#3497). Request-family
+budget enforcement and each PR's existing hydration predicate own admission;
+a second project-wide ramp no longer limits healthy candidates after reads
+recover. No new recovery path, configuration, or reason is introduced.
+
+Label refresh (#3017) consolidates candidate and observed lane enumeration into
+one fresh pass. Routing lanes reuse the existing complete, paginated scheduler
+evidence batches for comments and native dependencies; incomplete observations
+retain the existing REST fallback. Non-routing observed lanes remain metadata
+only, matching ProjectV2 refresh. Overlapping PR reads use observed freshness
+once, preserving lane entry, actor, association, head and required-check policy.
+The existing author, assignee and label selectors run before enrichment and
+filter both returned routing sets; all lane metadata remains diagnostic input.
+Native off-selector human prerequisites retain their current authority.
+No cache, loop, reason or configuration is added.
+`TestLabelRefreshSharesFreshSchedulerEvidence` covers read counts, unchanged
+issue timestamps with changed comments, lane actors and incomplete evidence.
+`TestLabelRefreshSelectorsExcludeUnownedEvidence` covers all selector predicates
+in complete and fallback readers, including off-selector human dependencies.
+
+Full ID and prerequisite-identifier state reads (#3761) reuse that same complete
+scheduler evidence owner within each read operation, after fresh REST metadata.
+Incomplete, invalid or unavailable aliases retain the existing REST hydration
+and its read errors; unread native relations are never authoritative empties.
+ID batches remain bounded to 25 aliases, and identifier reads retain their
+per-issue ordering. No evidence survives the read operation or crosses the
+planner's hydration/evaluation/mutation boundary. Accepted complete comments set
+`CommentsComplete`; the final recorded-blocker canonical-comment reread and
+independent claim/merge validation still own freshness before mutation.
+`TestLabelRefreshSharesFreshSchedulerEvidence` also covers full-state request
+counts, preserved REST metadata/order, edited canonical human holds, pagination,
+conservative fallback and lightweight probes.
+
+Workspace Git-read failures no longer apply a second admission brake to
+unrelated merge workers (#3487). The affected operation retains its existing
+forge retry and backoff; ordinary preparation owns its actual remote reads,
+and normal merge policy owns eligibility. No probe, recovery loop, reason,
+or configuration is added. `TestCheckedMergeUnderForgeCondition` covers dirty,
+pending and failing heads without granting merge-control readiness, and
+retains write, credential and affected-retry holds.
+
+Review routing for projects with `review.human: false` uses the existing Blocked
+lane and existing decision reasons (#3211). The reviewed fingerprints cover the
+completed-run transition reason, merge-revocation destination, and the central
+lane writer. These changes consolidate Human Review routing under the project
+setting; they add no reason code or recovery mechanism.
+
+Completed work remains active when both automatic promotion and human review
+are disabled; that combination must not create a false Blocked handoff.
+A persisted successful current-head completion invokes the existing completed
+review/promotion owner before releasing its gate-wait claim. Gate eligibility
+alone does not postpone a ready result until a later project refresh. Actual
+CI, native checks, automated review, validator, human and unknown-evidence holds
+retain that owner's decisions and the existing no-continuation claim release.
+The persistence-failure, dirty, draining, spend and dependency ownership order
+is unchanged. This consolidates INV-3 completion handoff on the existing owner,
+without another promotion path, polling loop, reason, configuration or bypass.
+The existing promotion owner re-evaluates its own completed-review Blocked
+receipts against a successful implementation receipt for the same fresh PR and
+head. Later lane entries, operator stops, changed heads, active workers, and
+current Workpad requests retain their existing authority. This consolidates
+completion handoff and promotion without an additional recovery loop, reason,
+configuration, or lane writer. `TestCompletedReviewTransitionUsesExistingPromotionOwner`
+and `TestCompletedActiveReviewTargetState` cover these boundaries.
+
+Scheduled validation repairs (#3447, #3448, #3451) refresh the completed-run
+transition fingerprint after reviewing #3429's operational-receipt freshness
+check and #3281's opted-out review routing. The receipt check rejects changed
+completion evidence before review routing; removing only that check recreates
+the prior approved fingerprint. Its dynamic reason still selects an existing
+auto-promotion decision reason or `completed_active_review_transition`; the
+scanner's review boundary is retained. The orchestrator remains the sole lane
+writer; no transition reason or runtime behavior changes in these repairs.
+`TestRepositorySources` and `TestOperationalBodyCompletionSurvivesRestart`
+cover the source fingerprint and refusal of changed receipts.
+
+Runner credential expiry (#3382) no longer rejects the existing renewal
+operation for the same enrolled runner and organization. The host keeps its
+credential and machine binding across stops longer than 24 hours. Ordinary
+API calls and rotation still enforce expiry; renewal keeps timestamp validity,
+token-hash and revocation checks, including the existing transactional authority
+recheck. Revocation remains final. This removes renewal's expiry rule and its
+duplicate authority check without adding a recovery path or configuration.
+`TestRunnerCredentialExpiryBoundaries` and `TestRunnerRenewRotateRevokeRestart`
+cover expiry boundaries, extended stops and the recorded production sequence.
+
+Runner isolation (#3168) replaces the undeliverable default `container` declaration
+with `sandbox` and extends existing claim compatibility to backend-probed tiers.
+Missing or withdrawn tier reports use the existing no-compatible-work result;
+no new reason code, recovery path, lane writer, or configuration key is introduced.
+Backend policy mapping fails closed instead of retrying as a native process.
+Codex sandbox threads retain the selected `default_permissions` alongside the
+named profile in session configuration, so workspace-requirements reloads keep
+the same filesystem and limited command-network policy (#3753).
+The existing lease owns execution isolation; the mutable routing cache is removed
+from backend enforcement rather than adding another cache revision guard.
+Claude verifies effective policy on its worker before sending a model prompt.
+`TestRunnerIsolationClaims`, `TestRunnerIsolationHeartbeatWithdrawsTier`,
+`TestProbeBackendTiers`, and each backend's `TestIsolationSettings` cover dispatch,
+withdrawal, failed probes, and policy mapping. Raw workspace terminals still report
+their actual `user` isolation independently of agent sandbox support.
+
+Runner policy identity (#3273) preserves the historical digest representation
+of equivalent absent/default execution settings across binary upgrades. The
+policy config normalization treats absent and `least_loaded` host selection
+identically, omits empty host caps and unset local status, and retains the older
+`[]` representation for empty required checks. Runtime defaults remain intact.
+Explicit host preference, nonempty caps, local status, required checks, commands,
+workspace paths, and effective prompts remain policy inputs requiring the existing
+administrator approval. Source identity and administrator-authorized runner
+requirements still match exactly; no mismatch bypass or recovery path is added.
+`TestRunnerPolicyUpgradeKeepsApprovedID` pins a v0.117.1 approval with an explicit
+workspace root and execution shells so host defaults cannot change the fixture.
+Empty opt-out labels and the historical `requires-human-review` default share
+the approved representation: runtime label matching always recognizes that
+built-in label. Custom opt-out labels remain policy inputs. Zero-valued
+human-review settings are omitted from policy
+JSON, preserving the representation before that field existed, while enabling
+human review changes both the config digest and gate descriptor (#3451).
+Equivalent absent/default host and check settings still match; explicit policy
+changes require reapproval (#3447, #3451).
+
+Runner availability (#3169) reuses weekly-window evaluation and the existing
+runner-capacity exclusion: runners report zero capacity outside the cached
+window and do not claim new work locally. Active jobs retain lease authority
+and finish normally. An optional deadline after the window closes cancels the
+agent through its existing execution context, preserves and publishes unfinished
+work to a WIP branch after confirmed worker shutdown, and reports interruption
+through `Finish` without consuming failure retries. Publication reuses checkpoint
+path, content, and history checks; a final checkpoint records the published head
+under retained lease authority. Routing updates refresh the deadline in the
+existing execution guard. A failed WIP
+push retains local work and is logged as an instance failure. Sleep inhibition
+is held during jobs and released when they finish. “Outside hours” is a plain
+fleet status derived from the stored window; stale heartbeat, revoked, and
+expired states take precedence. This adds no lane writer, recovery loop, or
+exclusion reason.
+
+Home-project spillover (#3170, human-approved) is claim-time eligibility using
+one nullable `home_dry_since` timestamp per runner. Home projects are a subset
+of administrator-authorized projects; spillover never widens grants or selectors.
+Only dispatchable Todo/Rework home work counts, after dependency, policy,
+selector, lease, and provider checks. Claims retain normal ordering among home
+projects, clear the timestamp when home work is available, and start it only
+when home work runs dry. General work becomes eligible after the configured
+idle period. Active work finishes without preemption; workspace sessions do not
+participate. There is no background loop or capacity reservation for home work.
+`TestRunnerHomeClaims` and `TestRunnerHomeReturnAndOrdering` enforce this behavior.
+
+Runner problems (#3171, human-approved) are contextual diagnostics, never
+dispatch reason codes. Heartbeats replace the runner-reported `problems` list;
+each problem carries a stable code, message, fix hint, and first-seen time.
+Continuing codes retain their first-seen time, and omitted problems clear.
+The existing instance telemetry loop also triggers the enrolled runner's
+throttled heartbeat, so diagnostics remain reachable when every project fails
+to start. Heartbeat requests do not block local telemetry publication.
+The runner reports unavailable tiers, missing backends, unreachable host
+services, invalid local settings, and sleep-inhibition failures without sending
+local command output or service addresses in generated diagnostic messages.
+The Hub derives unservable home work from the existing isolation advertisement,
+rejected routing settings from the runner's application result, and unsupported
+versions from the native protocol major (an omitted major remains compatible
+with older heartbeats). Hub conditions clear when they no longer hold.
+Problems raise `needs_attention` above online, outside hours, and offline;
+revoked and expired credential states retain precedence. Separate connection
+health preserves the existing offline dispatch exclusion. Diagnostics never
+change grants, capacity, selectors, leases, or advertised isolation tiers.
+Only needs-attention rows produce an alert signal. Outside hours, offline
+outside the window, draining, and spillover remain plain statuses. The fleet
+header links its nonzero attention count to a filtered list; messages and fix
+hints remain on runner cards, with no global banner. Hosted readers do not see
+home-project diagnostics for home assignments outside their project access.
+`TestRunnerProblemsHeartbeat`, `TestRunnerHubProblems`, `TestMergeProblems`,
+`TestIsolationProblems`, and `TestKeepAwakeProblems` cover replacement,
+aggregation, timestamp stability, recovery, and dispatch independence.
+
 Dispatch ordering (#3298) consolidates urgency into the existing comparator.
 Merging remains first when the project config places it first; other lanes
 compare tracker priority and configured label rank before lane rank, then retain
@@ -448,6 +2091,20 @@ allowlist so the deleted lane writer cannot be restored under that reason.
 `TestTickDispatchesPlanApprovedIssueAfterLongRefresh` covers the reported
 approval-to-dispatch sequence.
 
+The worker GitHub REST budget monitor's credential-wide dispatch hold and
+recovery canary are removed (#3248). A failed budget observation is now an
+instance diagnostic; only a successful response can enforce the existing REST
+reserve. This removes a self-protection path that converted a transient probe
+timeout into a project-wide dispatch outage.
+
+Generic issue no-progress outcomes do not become a shared project failure class
+(#3489). Existing issue progress, retry, and workpad paths own those
+outcomes; unrelated unpushed work and external evidence waits cannot pause the
+whole project. Concrete backend, startup, deliverable, and durable error classes
+retain the configured project failure policy. Terminal attempt outcomes remain
+unchanged. `TestGenericNoProgressDoesNotPauseProject` covers repeated unrelated
+stalls and preservation of a concrete backend failure pause.
+
 Operator rejection (#2943) consolidates promotion eligibility with existing lane
 history (INV-1). The reviewed `applyOperatorMove` fingerprint changes to hydrate
 the PR best-effort before recording Rework and identify an otherwise unattributed
@@ -463,6 +2120,17 @@ when a preceding project has an invalid definition. Classification lives in the
 shared workflow loader instead of unconditional caller wrappers. The manager’s
 duplicate startup/reload pause-reference validator is removed; the existing pause
 monitor owns evaluation errors and keeps unresolved projects paused.
+Workspace backend construction errors that identify an unusable configured path
+(missing, non-directory, looping, too long, or unsupported) are project-definition
+failures; they leave that project unavailable while other projects start. Host storage
+and backend failures remain instance-fatal. An explicit manager reconciliation retries
+terminal pending definitions even when the global project entry is unchanged, so a
+corrected workflow path can recover without a restart. Runtime state-store failures
+remain instance-fatal.
+`TestStartupIsolatesWorkspacePathFailureAndReloads` covers both workspace and
+source paths, another running project, and correction on reconciliation. It
+asserts the failing backend stage and configured path across platforms rather
+than requiring POSIX filesystem error wording (#3551).
 `TestStartupIsolatesWorkflowLoadFailure` verifies healthy-project dispatch and
 unavailable-project dashboard snapshots in both project orders, including a paused
 project referencing the unavailable tracker. `TestStartupInfrastructureFailureRemainsFatal`
@@ -486,13 +2154,24 @@ links closure across direct completion and stale merged/Merging reconciliation.
 The reviewed transition fingerprints preserve existing reason
 selection and add no mechanism, reason code, or recovery path.
 
-Provider capacity retries use the existing provider resume deadline (including
-reset jitter) while it is in the future (#2912). Speculative probe backoff cannot
-shorten that pause; elapsed deadlines retain normal probe backoff and operator
-capacity clear still removes the outage immediately. This consolidates retry
-scheduling without adding a pause or recovery mechanism.
-`TestBackendCapacityProviderResetWindow` covers the reported dispatch times,
-reset boundary, and operator clear; safety fuzz seeds retain resume arithmetic.
+Provider capacity retries use the earlier future provider resume deadline
+(including reset jitter) or existing bounded probe deadline. A historical reset
+time cannot suppress recovery probes after an external quota reset or account
+change. The existing five-minute exponential backoff, capped at one hour, and
+single in-flight probe still prevent full-width retry storms. Failed probes retain
+the provider window and backoff; successful probes or authoritative available
+status release existing capacity retries. Credential-file changes keep their
+existing immediate probe notification. This replaces the deadline precedence from
+#2912 without adding a watcher, pause, configuration, or recovery mechanism.
+`TestBackendCapacityProviderResetWindow`,
+`TestBackendCapacityDispatchAllowsOneResetProbe`, and
+`TestBackendCapacityProbeFailureRefreshesProviderWindow` cover future reset
+metadata, early restored capacity, single-probe ownership, retry release, backoff,
+reset boundaries, and operator clear; safety fuzz seeds retain resume arithmetic.
+`TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike` also asserts the
+typed `usageLimitExceeded` completion keeps its provider reset and jittered
+resume timestamps while scheduling the earlier bounded probe, without issue
+failure strikes or a Blocked transition (#3680).
 
 Workspace cleanup (#2913) uses one cancellable background execution of the existing
 reaper instead of synchronous tick and completion sweeps. Each pass bounds tracker
@@ -508,6 +2187,15 @@ Shutdown cancels and joins cleanup. `TestWorkspaceCleanupBatch`,
 `TestWorkspaceUseAndCleanup`, and `TestFilesystemCleanupBatch` cover batch bounds,
 continued tick liveness, and workspace ownership. No configuration, lane writer,
 recovery path, or operator-facing reason is added.
+
+Cleanup delivery verification (#3484) uses the existing association reader with
+status enrichment disabled and one fresh scalar PR read. Cached association
+heads, issue closure, and branch deletion never prove delivery. Issue identity,
+repository and PR number binding, merged state, merge time, and head remain
+required before cleanup receives a delivered head. CI, workflow, review, and
+branch-policy reads remain enabled for live merge evaluation.
+`TestRevalidatePullRequestAssociationWithoutStatus` and
+`TestVerifyCleanupDelivery` cover this read consolidation and evidence boundary.
 
 PR conflict classification and conflict-cleared progress share connector helpers
 (#2934), replacing separate completion, spend, dispatch, and display checks.
@@ -569,22 +2257,29 @@ pacer, configuration key, or recovery loop is added.
 `TestCandidatePageObservation`, and
 `TestCandidatePRLargeCollectionsRemainAuthoritative` cover this consolidation.
 
-Non-draft dirty PRs in Rework or In Progress reuse the existing merge-mode precheck,
+Non-draft dirty PRs in In Progress reuse the existing merge-mode precheck,
 fallback rebase prompt, and deterministic verification (#2842), regardless of
 the programmatic merge fast-path flag. Verified repairs rejoin ordinary progress
 accounting with the changed PR head and retain their source lane without merge
 reservations or programmatic merging. Explicit fallback rework findings and a
 head replaced after verification use the existing Rework handoff. Merging keeps
-its existing CI wait and merge behavior. `TestDispatchModeMergingFastPathFlag`,
+its existing CI wait and merge behavior. Rework uses ordinary implementation
+routing even while the remote PR remains conflicted (#3475), so unfinished
+source and test changes receive an implementation worker instead of repeatedly
+entering conflict-only merge fallback. Same-lane Rework handoffs retain this
+routing without adding a retry mechanism or exception flag.
+`TestDispatchModeMergingFastPathFlag`,
 `TestMergeFallbackRoutesBoundedOutcomesToRework`, and
 `TestMergeFallbackResolvedHeadHandoff` cover this consolidation; no prompt, mode,
-reason code, or recovery mechanism is added. Repair runs retain the existing
-code-session allowance and triage boundary, covered by
-`TestAttemptAllowanceDispatchAndRestart`; head progress does not replenish the
-sessions-without-merge allowance. Draft PRs retain implementation routing so their
+reason code, or recovery mechanism is added. Repair runs retain existing
+configured progress and budget controls. Draft PRs retain implementation routing so their
 author can finish. Repairs share the existing merge duration bound and treat
 unstarted CI like implementation runs (waiting only after push or in waiting_ci).
 The dispatch, CI parity, and duration regressions cover these boundaries (#2845).
+`TestCompletionRebaseAfterRestart` preserves the persisted diff and conflict
+baseline through restart for both Rework implementation and In Progress merge
+repair. `TestRepairDurationBound` applies the merge duration ceiling only to
+merge-mode runs and verifies ordinary cancellation for Rework (#3548).
 
 Rework dispatch (#2800) reads the gate's live `AutomatedReviewPending()`
 predicate for clean, green PRs without actionable threads or findings. The existing
@@ -603,7 +2298,6 @@ transition on the first report (#2779). The repeated-report threshold is removed
 live blocker evaluation already suppresses the next dispatch, so a second
 completion cannot be required. `TestFirstHumanBlockerCompletionReachesBlocked`
 replays that conflict with and without a PR and preserves human-owned recovery.
-Automated Blocked transitions do not renew the attempt allowance.
 
 
 **Statement:** No new brake, breaker, lease, park, revocation, reason code, or reconciliation loop is allowed, unconditionally; any change to one must remove or consolidate an existing one, and the remedy is never a guard.
@@ -702,8 +2396,11 @@ existing model-selection level (#2597), inheriting omitted limits from the flat
 project values. This consolidates limit resolution into the existing selection
 and guard paths; it adds no guard or escalation mechanism. Running sessions keep
 the resolved limits across turns, checkpoints, and fallbacks; label/configuration
-changes do not reset attempts or lifetime usage. Turn inactivity and no-progress
-behavior remain unchanged. Covered by `TestModelSelectionSessionLimits`,
+changes do not reset attempts or lifetime usage. Turn inactivity remains
+unchanged. The separate session no-progress cancellation was removed (#3252):
+a live local gate wait relies on the gate lock deadline and absolute worker
+session bound, with no issue Rework transition for unchanged work product during
+the wait. Covered by `TestModelSelectionSessionLimits`,
 `TestRunnerSelectedSessionLimits`, and `TestResumedSelectionKeepsSessionLevel`.
 
 Issue-body effort is bounded by the selected complexity level's effective effort
@@ -732,8 +2429,8 @@ checks three unchanged passes and a later genuine return move. Failed observatio
 preserve the prior cached entry and provenance without falling back to stale
 runtime snapshots; the next refresh retries the board observation.
 
-Human Review conflict routing preserves durable `operator_move` and
-`attempt_allowance_exhausted` lane entries (#2814). This narrows the existing
+Human Review conflict routing preserves durable `operator_move` lane entries.
+Historical lifetime-allowance arrivals no longer veto ordinary conflict repair. This narrows the existing
 Rework route rather than introducing a park mechanism; ordinary arrivals still
 route conflicts to Rework, and ready PRs can still promote. Repeated ticks and
 reopened history are covered by `TestTickAutoPromoteHumanReviewIssuesConflictParks`.
@@ -748,12 +2445,77 @@ publication pending. A merge discovered during hydration uses the existing merge
 lifecycle; missing or running audit and validator stages leave publication pending
 while the existing stage producers run. `TestAttemptAllowanceLiveHead` covers this consolidation;
 no new lane reason, allowance reset, or recovery mechanism is introduced.
+The same fresh publication owner resolves an already-merged operational receipt
+against current forge references before applying that merged lifecycle, including
+a different merging PR from a closed draft. Its freshly read canonical comments
+remain authoritative through PR hydration. The existing fixture covers corrected
+receipts, wrong integration branches, missing references, current human action
+and preserved lanes. An invalid receipt remains unverified; this does not repair
+its ancestry assertion or erase historical failed attempts.
+Ready In Progress PRs also enter the existing repair evaluation before worker
+completion (#2976). Unresolved review threads and failing CI reuse the existing
+Rework decisions and audit comments, including during the final running attempt.
+Configured source, pass, and rework lanes retain their normal promotion behavior.
+This consolidates repair routing with Human Review; it does not authorize
+promotion of unfinished work or routing drafts. `TestAutoPromoteReadyPullRequestRepairs`
+and `TestAutoPromoteConfiguredInProgressSourcePromotesReadyPullRequest` cover
+both lanes, active workers, configured source lanes, draft exclusion, unfinished
+clean heads, pending checks, closed PRs, opt-out labels, and unavailable evidence.
 Idle Rework PRs enter the existing promotion evaluation without a worker completion
 record (#2688). Promotion reuses the merge worker readiness predicate and live PR
 hydration; unresolved threads and known audit failures still prevent promotion.
-Missing audits run in Merging. `TestReworkLivePullRequestPromotion`,
+Missing audits start while the completed Rework issue waits, and a trusted
+current-head pass is required before promotion to Merging. `TestReworkLivePullRequestPromotion`,
 `TestReworkLiveDraftPromotion`, and `TestReworkLiveSecurityAudit` cover this
 consolidation; no new transition reason or recovery loop is introduced.
+
+Legacy active triage retains its single durable result while current-head CI is
+queued or running and no required check is missing. It does not publish a stall
+note or park an issue for that Detent-owned wait. Existing blocked recovery
+retires historical lifetime-allowance parks to their recorded prior In Progress
+or Rework lane behind live human, dependency and uncertainty checks.
+`TestRetiredAttemptTriageParkRestoresPriorLane` preserves these boundaries with
+real SQLite attempt and lane history. Returning to an active lane does not
+accept sparse authored operational claims or closed drafts; verified completion
+and actual merge evidence keep their existing owners. Recovery does not
+synthesize a new allowance receipt for unavailable dependencies, database or PR
+reads, and does not reset historical records.
+A historical triage park with a recorded PR head still uses the same promotion gate:
+a clean, green unchanged or
+newer head returns to Merging for
+the exact-head audit. Recovery evaluates audit eligibility once through the
+shared Rework readiness predicate, then applies the remaining promotion gates.
+This local evaluation leaves the instance audit requirement enabled for Merging.
+Human actions, failing checks, running or failed audits, and known audit findings
+continue to hold. Historical parks cannot be removed from the tracker by the
+triage change alone, so this reuses the existing sweep and lane action rather
+than adding another recovery loop or reason code (#3064).
+`TestAttemptAllowanceLiveHead` and
+`TestAttemptTriageParkRecoversOnCleanGreenHead` cover the wait and recovery.
+
+The hourly source-invariant repair (#3656) refreshes the reviewed digest for
+`transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads` after
+PR #3590 consolidated already-merged completion under the existing merged-PR
+owner. Review confirms its fallback lane-reason selection is unchanged; the
+merged path reuses that owner's existing reasons and ledger. No mechanism,
+reason, or lane writer is added. `TestRepositorySources` still rejects further
+edits until reviewed.
+
+The scheduled source-invariant repair (#3771) refreshes two reviewed digests.
+`applyOperatorMove` now returns an outcome for the existing dispatch refill path
+(#3736); its reason remains the operator-supplied reason or `operator_move`,
+written through the same lane ledger. `blockDeliverableRecoveryFailure` now
+receives the delivery error classified by its caller (#3763), consolidating
+whole-error ownership there instead of extracting a nested error again. Its
+reason still comes from `deliverableRecoveryParkReason`, using the existing
+delivery hold reasons and evidence. Neither change adds a mechanism, lane
+writer, or reason source. The source check continues to reject further edits
+until reviewed; the reason vocabulary and enforcement logic are unchanged.
+
+The scheduled coverage repair (#3545) refreshes the reviewed digest for
+`updateIssueStateByIDWithMetadataMode` after #3560 rewrote `!(A && B)` as
+`!A || !B`. The equivalent delivery-time condition preserves reason sources
+and ledger ownership; no lane-transition vocabulary or mechanism changes.
 
 **Enforcement:** `TestRepositorySources` checks constant lane-transition reasons
 against [the existing vocabulary](../internal/invariants/source_policy.json).
@@ -844,8 +2606,19 @@ This covers squash commits, which cannot prove delivery through branch ancestry.
 Later commits, uncommitted files, nonterminal issues, and issues without a
 recorded landing retain the existing protection. The normal reaper removes the
 landed workspace and clears its cleanup failure; no new sweep or retention
-state is introduced (#3234). `TestLocalGitCleanupRecordedLanding` and
-`TestRunnerReapSquashLandedNativeWorkspace` cover this narrower decision.
+state is introduced (#3234).
+GitHub terminal cleanup and the supported `cleanup_workspace` action refresh
+the issue-to-PR association and hydrate the PR again before accepting the exact
+merged head (#3093). A verified repository/PR identity, successful merge time,
+and available current head are required. This proof exists only for that cleanup
+call and shares the native landing checks; it is never persisted as tracker
+state. Deleted branches, cached merged snapshots, and issue closure alone do
+not establish delivery. Both branch and worktree must still match the delivered
+head, and the normal `before_remove` lifecycle rechecks local work.
+`TestVerifyCleanupDelivery` covers unavailable and mismatched verification;
+`TestLocalGitCleanupRecordedLanding` reproduces squash delivery after source
+branch deletion and checks later/dirty/mismatched work and directory absence.
+`TestRunnerReapSquashLandedWorkspace` covers proof propagation through the runner.
 
 The operator-approved September 14 retention scope (#2681, INV-11 approval
 recorded in the issue) extends this same reaper sweep: completed workspaces
@@ -860,6 +2633,13 @@ archives a verified Git bundle, staged and working-tree diffs, and all working
 files. Active issues and live processes remain protected. Content-addressed
 archives prevent identical recovery copies from accumulating after removal
 failures while preserving earlier snapshots after partial deletion.
+Quarantine removal in this existing sweep makes read-only directories writable
+before deletion; persistent failures are warned once per path while later
+sweeps still retry (#3039). This does not add a sweep or recovery path.
+Warning deduplication uses native path separators on Windows as well as POSIX
+(#3551). `TestRetentionQuarantineWarningOncePerPath` replays repeated removal
+errors on every platform; the chmod-based filesystem fixture runs only on POSIX,
+where removing directory write permission prevents removal.
 `TestRetentionCompletionClock`, `TestRetentionCompletedWorkspace`, and
 `TestRetentionRemovalFailureDeduplicatesArchives` cover terminal-state clocks,
 lossless expiry, and repeated removal failures. See
@@ -896,6 +2676,58 @@ Doctor reports it per project. Null means no completed comparison; the count
 retains its last successful value on refresh failure and does not independently
 audit GitHub or include observed-only lanes. No additional polling or dispatch
 gate is introduced.
+
+Worker scratch cleanup (#3291, #3292) removes attempt data without deleting
+its workspace parent or shared group. Explicit workspace deletion removes only
+that workspace's scratch root. Keeping shared parents stable removes the
+creation-versus-cleanup race and the bounded scratch-creation retry; no lock,
+platform error retry, or new recovery path replaces them. Existing retention
+continues to sweep stale attempts and roots of removed workspaces.
+`TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup` covers concurrent
+attempt cleanup within one workspace and across siblings, plus sibling root
+removal. `TestRemoveWorkerScratchRootKeepsSharedGroup` covers explicit
+root deletion without shared-parent removal.
+
+The approved Cloud domain migration (#3241) consolidates shared hosted origin
+comparison around the explicit production and staging alias pairs. Reopening a
+shared tenant may use its environment's old or canonical hostname while keeping
+its immutable stored origin as history. Organization, provider, bootstrap identity,
+deployment mode and allocation generation must still match. This introduces no
+binding migration, revocation, configuration key or recovery path; self-hosted
+origin binding stays exact. `TestHostedDatabaseCloudAliases` covers forward
+migration, rollback, unchanged stored bindings and rejected environment/identity
+substitutions.
+
+The existing automatic backlog admission policy no longer shares the pending
+human proposal storage cap. Per-run evaluation/comment budgets and current
+criteria, confidence, author, effort and dependency checks remain authoritative;
+failed criteria or low confidence cannot overflow the human proposal queue.
+Prerequisite preference shares the existing dispatcher annotation and published
+owner evidence instead of another graph reader or promotion mechanism (#3519).
+Admission prerequisite ranking consumes the same fresh dependency readiness
+evidence as its criteria checks. The existing dispatcher annotation receives a
+ranking-only projection; unresolved, failed, or unverified human prerequisites
+remain nonterminal. Only the resulting unblocker counts return to the original
+candidate, preserving dependency identities, provenance, fingerprints and final
+revalidation without another read or ranking mechanism.
+The initial candidate window reuses successfully resolved canonical prerequisite
+facts from its operation-owned candidate evidence (#3730). Each candidate retains
+its own observation clock, readiness projection and fingerprint; missing or
+failed references and unqualified local aliases are resolved independently.
+Final candidate and dependency revalidation still reads fresh tracker evidence.
+GitHub admission source reads preserve own-issue hydration and canonical native/body
+prerequisite identities without final external state enrichment (#3737). Already-present
+native facts survive the source read but do not establish readiness. Admission's
+existing resolver owns current state, merged PR, and human completion authority
+before history, ranking, and fingerprints, and independently revalidates after
+model work. Missing, inaccessible, ambiguous, and failed references remain nonready.
+Normal tracker candidate, observed, and state refresh enrichment and local tracker
+delegation retain their existing behavior. `TestCandidateBodyDependencyRefresh`
+checks this intentionally narrower reader contract and normal refresh controls.
+This consolidates duplicate reference hydration without a separate cache or reader.
+`TestManagerAdmissionUsesAcceptedDependencyFrontier` covers shared-reference reads
+and unchanged evidence; `TestAdmissionRevalidatesDependenciesDuringEvaluation`
+rejects both candidates when their shared prerequisite changes after evaluation.
 
 **Change:** Edit INV-3 in the same PR with the removed/consolidated mechanism and
 why the final change complies. Review reason sources before changing the
@@ -934,83 +2766,42 @@ due retries, and queued grants wait while evidence holds or is unverifiable;
 cleared predicates release dispatch without a new park or recovery loop. Native
 relations and current body declarations share authority for issue-state dependencies.
 
-Issue #2595 consolidates `rework_limit`, `no_progress_limit`, and dispatch-loop
-attempt accounting into one fixed allowance: three code/rework sessions started
-since the last merged PR or operator lane move (#2692, #2729). The
-durable attempt log owns the count, with the window derived from existing lane
-history. Human-origin moves, and moves not initiated by the Detent instance,
-reset the window regardless of source or destination lane, including Merging or
-Blocked to Rework; Detent-instance moves and same-lane observations do not. Sessions
-started at the operator-move timestamp count in the renewed window because lane
-observation precedes dispatch in the same tick; merge boundaries remain exclusive. New commits,
-new PR heads, CI signatures, ordinary lane changes, and acknowledgements alone
-do not reset it. The existing triage comment receives a timestamped reset line
-when comment updates are supported; publication failure does not undo the move. Instance-attributed startup, transport, workspace and restart failures
-are excluded, as are successful reports with any instance-owned entry in recorded
-blocker evidence (#2813); other owners or evidence key presence alone do not suffice.
-Merge-worker attempts are excluded, including generic agent records with merge
-run-mode metadata and historical receipts routing the current head to Rework
-(#2907); those routing decisions are not implementation sessions.
-Previously recorded question-ending waits and sessions with a live structured
-human blocker are also excluded (#2789). Conflicted PR sessions count toward the
-allowance because conflict resolution is worker-owned Rework (#2807); a conflict
-does not override a genuine human-wait exclusion. The existing
-start record retains external-wait evidence through completion and restart;
-completion metadata can also record a wait observed at completion. This narrows
-the existing allowance rather than adding another brake or recovery path.
-Exclusions never synthesize operator moves or reset other chargeable sessions.
-Historical question receipts remain recognizable. Attempts already stamped
-with external-wait evidence remain excluded because the stored flag does not
-record its cause; the conflict correction bounds future sessions only. `TestAttemptAllowanceExternalWaits`,
-`TestAttemptAllowanceExternalEvidencePersistence`,
-`TestAttemptAllowanceExternalWaitRestart`, and
-`TestAttemptAllowanceDispatchAndRestart` cover exclusions and unchanged failure
-exhaustion. Immutable PR merge times and merge observations in the durable lane timeline
-reset prior work; subsequent activity on a merged PR is not a reset.
+The hardcoded lifetime ceiling of three implementation/rework sessions is retired.
+Dispatch and automatic promotion use their existing current-head, acceptance,
+gate, human, dependency, budget and ownership controls instead of reading all
+historical sessions and replacing the fourth worker with triage. The existing
+configured no-progress owner retains its evaluated signature and consecutive
+count; a duplicate dispatch-loop reset no longer erases that decision. Terminal
+no-product retries retain their configured limit (default three), and instance
+failures remain instance-attributed. There is no replacement global ceiling.
+With no-progress disabled (the default zero) and optional budgets disabled,
+progressing or pushed-product retries may continue under those project policies.
 
-The fourth code dispatch becomes one read-only triage turn using the existing
-code/rework role. Its durable attempt identity prevents another triage turn after
-restart, excluding instance-attributed failures. Triage uses the shared native
-reservation-aware selection and execution-start contract, plus metered budget
-admission and in-turn projection enforcement. The runner has no mutation tools,
-no resume state, no writable worktree,
-and no workspace or publication hooks. It returns one fixed-format explanation;
-the orchestrator persists that result, publishes one issue comment, and moves the
-issue to Human Review with `attempt_allowance_exhausted`. Publication checks the
-existing attempt marker before retrying; interrupted triage yields an explicit
-incomplete-diagnosis note, never another worker turn. Automatic promotion also
-honors exhaustion and existing running-worker ownership. Triage retains an
-operator lane change observed at completion, including across publication retries.
-Historical reason strings and progress records remain readable.
-`TestImplementProgressBlockComment` preserves historical clean-workspace and
-fingerprint-only evidence formatting without restoring dispatch-loop producers.
-Triage resolves the same selected session duration and token limits as workers,
-while retaining its single-turn, two-minute upper bound.
-`TestRunnerSelectedSessionLimits` covers inherited and level-specific limits,
-duration expiry, token usage, and configuration changes during triage.
+Historical `attempt_allowance_exhausted` receipts and active read-only triage
+attempts remain readable. Existing blocked-cause reconciliation returns retired
+allowance parks to their recorded In Progress or Rework lane only after current
+human, dependency and uncertain-evidence guards permit recovery. It does not
+reset history, infer acceptance, manufacture Todo work, or bypass PR/validator
+checks. Other recorded prior lanes retain the existing ready-PR recovery owner.
+Legacy triage publication remains idempotent and preserves operator lane changes.
+`TestDispatchRetainsConfiguredModeAfterPriorSessions`,
+`TestUnfinishedSessionsRetainConfiguredDispatch`,
+`TestRetiredAttemptTriageParkRestoresPriorLane`, and the existing implement
+progress and terminal retry matrices cover the retirement and retained controls.
+The invariant manifest requires the configured-dispatch and retired-park tests
+instead of the renamed or deleted lifetime-cap tests (#3833), preserving
+behavioral enforcement without restoring the retired mechanism.
+`TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`,
+`TestAttemptAllowancePreservesOperatorCompletionLane`, and
+`TestAttemptAllowanceTriageFallbackCompletion` preserve in-flight compatibility.
 
-This is the issue-authorized replacement reason and consolidation, not an
-additional breaker, configuration key, or recovery loop. Non-PR artifact and
-explicit operational completion workflows retain their own deliverable rules.
-Already-merged completion no longer requires pre-dispatch authorization (#2778):
-the worker records the merging PR, commit, tracked branch/head, successful ancestry
-check, and acceptance evidence. Existing operational completion and current-attempt
-checks persist and publish this evidence before Done; incomplete evidence retains
-the PR gate. `TestMergedCompletionEvidence` and
-`TestTransitionAlreadyMergedCompletion` cover this consolidation.
-`TestAttemptAllowanceCountsIssueJourney`, `TestAttemptAllowanceDispatchAndRestart`,
-`TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`, and
-`TestRunnerTriageIsReadOnly`, `TestAttemptAllowanceMergeTimeAndRunningOwnership`,
-`TestAttemptAllowancePreservesOperatorCompletionLane`,
-`TestAttemptAllowanceOperatorMove`, `TestAllowanceOperatorMoveBoundary`,
-`TestAllowanceResetAnnotation`, and
-`TestPullRequestMergeTimeSurvivesLaterActivity` enforce the allowance and restricted publication
-contract. `TestRunnerTriageNativeAdmission` and `TestRunnerTriageBudget` verify
-reservation identity, capacity loss, issue/daily budget refusal, and metered
-projection enforcement without launching an unauthorized backend turn.
-`TestRunnerTriageReportsTurnStart` preserves observed primary-turn evidence before
-usage arrives; `TestAttemptAllowanceTriageFallbackCompletion` keeps budget refusal,
-invalid output, tool refusal, and interrupted turns to one fallback comment.
+Non-PR artifact and explicit operational completion workflows retain their own
+deliverable rules. Already-merged completion does not require pre-dispatch
+authorization: the worker records the merging PR, commit, tracked branch/head,
+successful ancestry check, and acceptance evidence. Existing operational
+completion and current-attempt checks persist and publish this evidence before
+Done; incomplete evidence retains the PR gate. `TestMergedCompletionEvidence`
+and `TestTransitionAlreadyMergedCompletion` cover that contract.
 
 Scheduled routine occurrences advance from their durable `scheduled_for` identity
 regardless of success or failure. A selected occurrence whose existing ownership
@@ -1018,15 +2809,46 @@ context is already canceled is consumed without starting an agent. This removes 
 implicit same-slot retry and relies on the existing schedule-ownership context rather
 than adding a retry, backoff, or lease mechanism (#2526).
 
+The backlog human proposal cap bounds pending human decisions, not opted-in
+automatic evaluation. Automatic admission remains bounded by the existing run,
+comment and auto-admission budgets, and requires the configured confidence,
+criteria, author, effort and fresh dependency checks. Disabled automatic policy
+keeps the pending proposal capacity limit. Failed criteria and low confidence do
+not create extra human proposals when that queue is full. Durable proposal and
+orchestrator lane ownership remain unchanged (#3519).
+
+Validated admission outcomes are retained in the existing bounded run issue
+receipts after fresh eligibility and dependency checks (#3718). Confidence,
+historical threshold, effective automatic qualification, and bounded criterion
+indices/fingerprints/pass-fail results are audit evidence only. Truncated results
+retain their total; qualification still evaluates every configured dimension.
+Missing, malformed, stale and legacy evaluations remain unknown. No private
+criterion text or rationale is retained in these outcomes, and no reader, write,
+policy or admission authority is added.
+
+Admission prerequisite ranking uses the same unblocker annotation as dispatch,
+with the orchestrator's published active/Blocked dependency cohort. It performs
+no extra forge scan and authorizes no lane change; fresh admission checks remain
+authoritative. This removes a disconnected ranking path (#3519).
+
 Backlog admission selection uses the existing run issue records for evaluation
 identity, fingerprints, and stale verdicts. Unchanged stale candidates join the
-existing epic and malformed-result exclusions before the window is capped;
-remaining candidates rotate by last evaluation time. This replaces the fixed
-evaluation window with selection from run/skip bookkeeping, without a
-new routine, reason code, or suppression table (#2568).
-Saved stale verdicts and new evaluations share the same point-lookup revalidation;
-a candidate returning to its original eligible snapshot can re-enter the window.
-This removes unconditional historical suppression across eligibility cycles.
+existing epic exclusions before the window is capped; remaining candidates rotate
+by last evaluation time. This replaces the fixed evaluation window with selection
+from run/skip bookkeeping, without a new routine, reason code, or suppression table
+(#2568). Saved stale verdicts and new evaluations share the same point-lookup
+revalidation; a candidate returning to its original eligible snapshot can re-enter
+the window. This removes unconditional historical suppression across eligibility
+cycles.
+
+Malformed output has no lifetime eligibility veto (#3739). Unchanged candidates
+remain eligible for scheduled reevaluation through the same rotation, window cap,
+capacity and live budget checks. New unresolved observations stay retryable beyond
+four attempts, retaining counts, fingerprints, redacted error metadata,
+deduplication and timestamps. Legacy blocked observations remain readable as
+historical evidence; valid evaluations resolve them through the existing success
+owner. Malformed evidence grants no proposal or lane write, and valid evaluations
+retain every current admission requirement.
 
 Deliverable recovery opens a draft pull request when a worker already pushed an
 exact-head branch but failed before creating the PR, and returns a missing remote
@@ -1182,6 +3004,123 @@ from Merging, but withdrawal failure does not block the lane write (#2826). Its 
 without altering reason forwarding; operator destinations and reasons remain
 intact, covered by `TestNativeMergeQueueReviewReworkAfterEnqueue`.
 
+Planning-only prompts do not append source or merge implementation handoffs.
+The existing plan-only boundary owns those instructions; source workers continue
+to yield when current-head CI is the only unfinished work.
+`TestPlanOnlyPromptOmitsCIImplementationHandoff` covers this boundary (#3076).
+
+Slot refill reuses ordinary dispatch eligibility and releases deferred Hub claims
+through the existing claim writer. Fresh Hub scheduling results are already
+claimed and remain eligible even when absent from the previous refresh; excluded
+or ineligible claims are released. Ordinary tracker candidates use the same fresh
+cohort and eligibility owner, without a previous-snapshot membership bound.
+`TestHubRefillRetainsNewClaims` and
+`TestEventAndTickDispatchEligibilityParity` cover these boundaries (#3219).
+
+Successful owned operator lane writes into configured active lanes (#3732),
+including native Backlog admission, trigger that existing refill once alongside
+its Running-shrink trigger. The transition comes from the current issue state
+already obtained before the strict write, carried privately to the actor;
+request FromState and public Blocked-cleanup results retain their semantics.
+Failed writes, no-op transitions, removals, inactive destinations and foreign
+tracker writes do not trigger admission refill. Fresh candidates still pass
+ordinary dispatch policy, capacity, draining and quiescence checks.
+`TestRunDispatchesOperatorMovedIssue` covers admission before an hour-long poll
+and the refusal controls without adding a timer, reader or dispatch owner.
+
+Native issue archive (#3267) preserves workflow state and all issue, comment,
+attempt, change, version, and audit records. Archive refuses live ownership
+using the existing lease lifecycle (expired or released attempts are interrupted), and archived issues are
+excluded from tracker and claim candidates. Restore allocates an unarchived
+issue through the existing hosted transaction, as do native creation and import
+pages. Hosted usage counts native unarchived issues per organization across
+projects, including terminal issues; over-limit reads, exports, and reductions
+remain available. Archive reuses the completion mutation exemptions for its
+retained audit records. Catalogs predating the issue allowance default to 200
+without rewriting immutable plan versions. Self-hosted databases have no quota.
+`TestNativeArchiveLifecycle`, `TestNativeArchiveActiveWork`,
+`TestHostedIssueAllowanceBoundaries`, `TestHostedIssueArchiveAndDowngrade`,
+`TestHostedIssueConcurrentAllocation`, and `TestHostedIssueImportAllocation`
+exercise these boundaries without adding a brake, lease, or recovery mechanism.
+
+Active worker phase attribution retains the existing explicit validation lifecycle
+owner and recognizes CI waits from leading, bounded wait statements. Ordinary
+implementation words such as decisions or checking must not become CI waits or
+trigger CI-outage cancellation. Typed merge/pushed-work handling and live
+unstarted-check evidence remain unchanged. This removes a competing broad text
+heuristic without a new classifier, reason, configuration, or control mechanism.
+`TestCIUnavailableRepairImplementParity` covers phase and cancellation eligibility;
+`TestParkCIUnavailableWaiters` preserves real wait cancellation while ordinary
+implementation continues during the same outage.
+
+Post-integration acceptance uses the existing Workpad/final handoff and permitted
+Backlog follow-ups, rather than requiring a source worker to integrate or release
+its own unmerged change. The current prompt and orphan-resume contract record the
+pending criteria, exact source head, procedure, authorization, and existing owner.
+Pending acceptance is never claimed as passed; explicit pre-merge runtime
+requirements, human approvals, and project gates remain authoritative. Without a
+permitted post-integration owner, the original requirement remains. This is an
+instruction consolidation, not a new acceptance waiver, release owner, lane
+writer, or recovery mechanism. `TestBuildPromptDocumentsWorkpadStatusContract`
+and `TestRunnerRunCompletionLeaseOnOrphanResume` cover normal and resumed turns.
+
+Repository notes handoff (#3498) is removed from normal, planning and merge
+fallback prompts. Failed turns no longer append diagnostics to a repository
+file. The canonical handoff contract and orphan restart nudge explicitly revoke
+earlier notes instructions retained in provider history; normal completion
+ownership remains unchanged. Existing issue Workpads, native completion contracts, attempt outcomes,
+usage updates and provider/session records own handoff and diagnostics; no new
+artifact or coordination mechanism is added. Existing notes files remain intact.
+`TestPromptDoesNotUseRepositoryNotes`,
+`TestBuildPromptUsesPriorAttemptWithoutRepoNotes` and
+`TestRunnerFailureKeepsSessionDiagnosticsWithoutNotes` cover all prompt profiles,
+prior-attempt findings, retained output and durable failed-session outcomes without
+reading, creating or changing repository notes.
+
+Workspace diagnostics never rewrite shared Git metadata, including human-authored
+`info/exclude` (#3503). Diff statistics, fingerprints, patches, per-file diffs,
+and recovery path evidence apply the existing runtime exclusions through
+command-local pathspecs; tracked and untracked temporary artifacts stay excluded.
+The session-local progress fixture also counts committed project knowledge and
+excludes committed runtime scratch (#3547).
+Human-authored `.detent/notes.md` and `.detent/lessons.md` remain ordinary project
+files visible to diagnostics and recovery; removed automatic writers do not
+justify suppressing intentional documentation changes. Existing operator ignore
+rules remain untouched.
+Workspace creation and worker scratch preparation no longer install repository
+ignore rules. Diagnostic index copies live in worker-provided scratch and leave
+the real worktree indexes intact.
+`TestWorkspaceDiagnosticsPreserveSharedGitMetadata` runs diagnostics concurrently
+in two linked worktrees and checks unchanged shared exclusions (contents, inode,
+and modification time), unchanged real indexes, preserved human ignore behavior,
+and worktree-specific source and human documentation changes. Its source and
+worktree-root paths retain leading and embedded spaces on Windows, with trailing
+spaces and embedded newlines additionally exercised on POSIX.
+`TestPrepareWorkerScratchPreservesGitExclude`
+covers scratch preparation without installing exclusions.
+
+Workflow timeline reads consolidate identity matching through the existing
+issue ID, project/identifier, and project/URL indexes. The indexed identity
+union retains every matching durable event once, in timestamp/ID order, without
+adding a cache, table, index, or history limit. This prevents repeated project
+history scans during dispatch and lane observation.
+`TestIssueWorkflowTimelineIndexedIdentityUnion` covers aliases, overlap,
+complete history, ordering, and project isolation.
+
+Workspace cleanup and retention completion checks share the existing optional
+issue-ID probe owner without loading discussion or dependency evidence. The
+retention callback keeps its 100-ID batches, closure/lane completion clocks,
+unknown-clock retention, and existing transition-time fallback. Active ownership,
+process checks, and the seven-day workspace lifetime remain unchanged. This
+consolidates cleanup reads under INV-3 without a new reader or cleanup path.
+Dispatch and reconciliation retain complete evidence reads. The ID probe is an
+optional connector capability
+because the existing state-list probe cannot select exact workspace identities;
+connectors without it retain their current reader. Fresh scalar identity,
+current lane, closure, and update time remain necessary before cleanup, while
+existing association, merged PR, delivered head, and workspace usage checks own
+safe deletion. No cache, recovery loop, configuration, or CI bypass is added.
+
 ## INV-4 — Native merge queue
 
 Cached queue ownership belongs to its PR head; after provider inspection confirms a replacement head has no entry, discard old-head ownership so normal admission can enqueue the replacement.
@@ -1257,6 +3196,14 @@ changing the ownership or fallback behavior.
 
 ## INV-5 — Local pull-request validation and scheduled release evidence
 
+Scheduled and manual full validation always inspect the pinned current
+`develop` commit, including one carrying a release-provenance tag. Release
+annotations are not proof that the scheduled suite passed and do not suppress
+its run. The existing full-suite finalizer alone publishes scheduled success,
+creates a validated tag and reports scheduled evidence; ordinary shipping
+does not wait for that run. `TestRepositoryWorkflow` executes the preflight
+with an emergency provenance annotation for both event types.
+
 **Scope:** This is the Detent repository's development policy. Managed projects
 choose their own workflow triggers, required checks, validation commands, and
 release policies. Detent honors each project's configuration and branch rules;
@@ -1266,6 +3213,21 @@ PR CI, merge-group CI, and required status checks remain supported.
 `merge_group`, and no branch ruleset requires a status check. Pull requests do
 not wait for CI or local validation gates before push or merge. The self-hosted
 project uses the existing no-op command `true` and publishes no local status.
+It explicitly sets `gate.required_status_checks: []`, so pending optional or absent
+CI does not block progress. Reported failed CI still blocks, and native
+base-branch requirements remain authoritative;
+omitting the setting preserves aggregate CI behavior for other projects.
+The existing branch-policy enrichment projects applicable running and unstarted
+checks alongside CI status (#3477), so an optional queued housekeeping job
+cannot hold implementation Rework after CI status already passes that policy.
+Raw check observations and counts remain available for diagnosis; native
+required pending checks, strict branch information, and reported failures remain
+authoritative. `TestBranchPolicyProjectsApplicablePendingChecks` covers the
+projection and preserves omitted and named policies without a scheduler bypass.
+The operator also sets `gate.automated_review: "off"`; pending automated review
+does not create a completion wait in that mode. Required and optional modes
+retain their existing waits and timeout behavior; reported P1 findings still
+route to Rework. The existing review-mode matrix covers this consolidation.
 
 `make check-fast`, focused tests, and vet remain available for optional
 diagnostics. When invoked, checks preserve failures. The local tools take no
@@ -1274,27 +3236,64 @@ shared validation lock and support concurrent worktrees: lint uses
 while retaining file isolation and all tests. These tools do not become merge
 requirements.
 
+`TestMakeCheckFastOverlapsWorktrees` exercises the Make graph with controlled
+tools in two linked worktrees while the legacy common-directory lock is held.
+Both builds must start before either completes, and each writes its evidence
+inside its own worktree. The pinned-linter tests also require the parallel-runner
+flag (#3253).
+
 GitHub Actions schedules the full suite hourly from the repository's default branch.
-Preflight pins the current `develop` SHA and skips when that commit already has
-a validated release tag. Every full-suite job runs on the pinned commit. A green
-run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
+Preflight pins the current `develop` SHA for every scheduled or manual run,
+independently of existing release tags. Every full-suite job runs on the pinned
+commit. A green run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
 exact status evidence, and dispatches the release workflow. It does not merge
-to `main` or deploy production. A failing run opens or updates one fingerprinted
-Todo hotfix issue per failed job. A later green run closes those issues. Manual
-dispatch can force `verify-fast` to fail to exercise issue filing and closure.
+to `main` or deploy production. For this migrated repository a failing run
+files or appends one native Backlog diagnostic per normalized fingerprint,
+retaining pinned commit, run/attempt and job evidence. Unrecognized or unavailable
+diagnostics remain CI-instance intake with conservative job-level identity.
+A green run appends validation evidence through the same native comment owner;
+it never closes work or invents a landed receipt. Other repositories retain
+GitHub Todo source repairs, Backlog instance intake and green-result closure.
+Manual dispatch can force `verify-fast` to fail to exercise diagnostic filing.
+The finalizer retains publication payloads and original job results as artifacts
+for retry and never falls back to GitHub issue writes on Cloud failure.
 
 Every `develop` push deploys to staging even when that commit has not passed
 scheduled validation. Production release artifacts use validated tags only.
+
+Conversation output is generated by the existing build owners from their
+selected source and lockfile, and is ignored in feature commits (#140).
+`make check-app` retains source diagnostics and attribution without checking
+committed-output freshness. Staging, scheduled fresh-checkout consumers,
+GoReleaser releases and private operator builds prepare the embed inputs through
+`make app`. GoReleaser publishes a prepared source archive with the complete
+client and build identity for Go-only consumers. Raw module installation is
+retired; version tags and signed provenance retain the validated source commit.
+The focused conversation-build diagnostic merges independent source edits and
+exercises embedded HTTP delivery and the prepared source build. It adds no
+shipping gate, tracker lane writer, merge mechanism or project-wide CI policy.
+
+The scheduled NilAway audit selects all Go packages, including unchanged
+importers affected by a provider's inferred nilability. The real-analyzer
+provider/importer fixture verifies that boundary and the reviewed baseline:
+only diagnostics matching both location and source-line hash are accepted.
 
 **Enforcement:** `TestRepositoryWorkflow` checks schedule, manual dispatch,
 required full-suite jobs, pinned checkout, and finalizer. `TestRepositoryHasNoPullRequestActions`
 checks every workflow for forbidden pull-request and merge-group events.
 `TestWorkflowViolations` rejects trigger and coverage regressions.
 
+The obsolete portability-stress configuration-text test is removed (#3547) per
+the test-suite audit policy. It encoded the retired single-job layout instead of
+executing stress behavior; manual stress suites retain their existing selection
+and budgets. Scheduled workflow invariant checks remain in place.
+
 **Change:** Update this invariant and its workflow assertions in the same pull
 request when changing validation or release evidence.
 
 ## INV-6 — Isolated Codex home
+
+Remote SSH lifecycles run the same provider isolation and private temporary GitHub credential setup on the selected host. The transport carries configuration over encrypted stdin and removes bootstrap credentials after teardown. `TestSSHLocalTargetIntegration` exercises remote hooks, gates, push, cleanup, and disconnect cancellation (#3239).
 
 **Statement:** Workers run with an isolated Codex home; user-level instructions never reach a worker.
 
@@ -1303,7 +3302,17 @@ operator interventions unrelated to the assigned repository task.
 
 **Enforcement:** `TestPrepareCodexCommandForServiceIsolatesInstructions` and
 `TestPrepareWorkerCodexHomeExistingInstructions` exercise service profile
-isolation, per-worker SQLite state, and rejection of inherited instructions. The
+isolation, per-worker SQLite state, and rejection of inherited instructions.
+Worker and launchd profiles own real `sessions` and `archived_sessions`
+directories; sync replaces legacy symlinks without touching host transcripts.
+Before verification or resume, only the requested persisted legacy thread is
+copied into profile storage. Resumed writes leave the host rollout unchanged;
+existing profile rollouts take precedence. `TestPrepareLegacyCodexRollout` and
+`TestAppServerThreadPreparation` cover continuity across this migration.
+History prefers profile transcripts and falls back to host history. Startup
+retention removes profile rollouts older than 30 days, preserving unfinished
+threads, their resume sources, and descendants of retained parents. It never
+traverses shared transcript symlinks. The
 manifest runs both.
 Repository instructions and the Detent-provided worktree remain authoritative.
 
@@ -1327,6 +3336,53 @@ and `TestConnectorFindIntakeIssuePrefersOpenDuplicate` covers duplicate selectio
 including completed and not-planned GitHub issues. Use `file_machine_issue`, with a stable problem key,
 for worker discoveries. Review must ensure a fingerprint describes the problem
 rather than a timestamp, attempt, or wording variation.
+
+Scheduled validation (#3625, native #97) reuses `issueorigin.Fingerprint`, `Stamp`,
+`Parse`, and `Occurrence` across the selected destination's paginated open issues
+and native imported comments. Plain and JSON
+Go failures identify the package-qualified test; failed subtests replace a
+parent summary that has no independent assertion. Source diagnostics identify the repository-relative location
+and message. Run, attempt, commit, and job evidence describe occurrences rather
+than changing problem identity. Unknown evidence retains the existing job
+fingerprint. The reporter remembers issues created in the same run, so coverage
+and race failures attach to one repair without a new coordination mechanism.
+`TestParseProblems` and `TestReport` in `tools/cifailure` exercise the recorded
+missing `skip_reason=already_running` diagnostic, separate tests and diagnostics,
+repeated runs, repository-wide matching, and conservative fallback.
+Job-log fetches allow terminal escape sequences so colored output reaches the
+existing ANSI-stripping parser (#3709). `TestReport` replays the recorded
+colored-log refusal and verifies test identity and occurrence consolidation;
+unreadable logs retain job identity and CI-instance attribution.
+The repository scheduled reporter creates unknown or unreadable job fallbacks
+as Backlog intake, using the existing admission artifact contract (#3727).
+Parsed test and source diagnostics remain Todo hotfix repairs in GitHub mode;
+this migrated repository keeps all new diagnostics in native Backlog for existing
+operator admission. Fallbacks retain
+bounded log evidence and retrieval errors, their legacy fingerprints, and
+repository-wide occurrence matching. Existing issues receive occurrences without
+lane changes; this producer policy does not retroactively close or move an
+instance-owned report. `TestReport` covers destination labels and runner shutdown
+evidence alongside the existing fingerprint and repeated-run scenarios.
+
+Native reporting discovers the existing scoped MCP tools and reads configured
+workflow ownership before filing. Run/attempt/job/problem identities supply
+stable command request IDs and occurrence markers across reconnects and retries.
+Publication stops after a failed or ambiguous response; a retry reads durable
+bodies/comments before another write. `TestCloudReport`, `TestCloudTransport`
+and `TestCloudDestinationAuthority` cover imported provenance, response loss,
+replay, held items, current connection failure and destination isolation.
+For this repository's selected native reporting context, new parsed source/test
+diagnostics enter Backlog at High. Qualifying occurrences, including replays of
+existing imported evidence, promote unset or lower priority through `edit_item`
+with the observed expected revision and a stable occurrence-based request ID.
+High and Urgent remain unchanged. Conflicts stop publication through existing
+command semantics, without a reporter retry loop. These same regressions cover
+source priority, lost priority responses, replay identity, stale/missing
+revisions and infrastructure-only intake; other projects retain their defaults.
+Historical red evidence proves a pinned failure, not a current staging outage.
+The finalizer fixture covers native green evidence without GitHub closure and
+preserves scheduled tag/release publication. No capability parity changes or
+additional intake, recovery or reconciliation owner are introduced (INV-3).
 
 **Change:** Edit INV-7 and origin/deduplication scenarios in the same PR before
 changing identity format or duplicate handling.
@@ -1372,6 +3428,87 @@ is not an authorized resurrection.
 
 ## INV-10 — Priority only picks the next job
 
+Native claim and provider preview carry the project's existing dispatch state,
+label and unblocker policy to the shared `dispatchpriority` comparator before
+acquiring a lease. Merging overrides numeric priority only when that project
+configures Merging first; native queue rank remains a tie-breaker after the
+configured priorities. Both paths retain native scope, dependencies, live
+leases, current reviewed Change Request readiness and policy/runner authority.
+Runner home selection derives eligibility from each home project's dispatchable
+workflow and approved runner policy, independently of dispatch ranking. The
+requested project's state filter and comparator apply within that project;
+partial orders do not hide unlisted eligible states or impose the requesting
+project's ordering on another home project. Home grants and spillover rules
+remain authoritative. The existing native capability negotiation requires a
+Hub advertising `dispatch_priority` before a runner sends ranking fields to
+claim or preview. Older Hubs produce an instance scheduling wait before either
+request, preserving their strict request schema and issue failure budgets.
+Native admission fills a bounded batch during the existing refresh. The batch
+shares one free-slot plus eight-candidate evaluation allowance, and claims at
+most the available project slots (or one existing merge-control candidate when
+full), bounded by machine capacity. Each claim uses a distinct session from the
+existing session owner; atomic Hub claims account for earlier leases against
+machine, shared-host and provider capacity. Selected candidates update only a
+planner copy so subsequent readiness checks retain project, stage, worker and
+model limits. Preview ordering, filters, fairness, unblocker priority, immutable
+policy identity and lease fencing retain their existing owners. Batch hydration
+or claim errors release acquired leases through the existing native release
+owner; dispatch releases candidates it cannot select. No additional refresh,
+reservation, recovery path or configuration is introduced (#153).
+The existing preview evaluates local readiness before claim within that shared
+allowance. The planner's existing known-wait classification
+excludes known local waits from expensive evaluation. Unavailable local or
+provider candidates fall through without a lease or capacity hold. Claim rechecks current revisions and
+provider capacity, and dispatch retains its fresh checks. This consolidates
+selection under INV-3 without a new queue, configuration key, reservation,
+preemption or recovery mechanism. Landing protections and refusal evidence
+remain owned by the existing landing path.
+During a recorded active GitHub REST wait, the existing candidate-state owner
+excludes native GitHub PR landing before the bounded native claim boundary.
+Native coding and Git-only landing remain eligible, with the same dependency
+decision used by planner, retry and final dispatch admission, including due
+retries with historical REST capacity scopes (#150). Local merge slot
+exclusion remains in force. If filtering holds all states, intake returns no
+candidates without a claim; an empty Hub state filter means unrestricted work.
+Expired waits restore eligibility without a fresh GitHub probe. Other projects
+retain their tracker, CI and REST decisions and approved landing requirements.
+`TestProviderQueueOrderAndSelectors` covers native claim/preview ordering and
+unavailable-head fallthrough; `TestProviderSchedulerEndToEnd` covers pre-lease
+local readiness, provider fallback, mixed-provider batches, stage capacity and
+provider release on hydration failure. `TestNativeAdmissionBatch` and
+`TestNativeAdmissionCompetingRunners` cover actual bounded admission, shared
+lookahead, hydration release and competing claims. The batch case in
+`TestNativeExecutionLandsReviewedVersion` records coding and merge starts from
+one native fetch while retaining reviewed-version landing authority.
+`TestRunnerHomeClaims`, `TestHubSchedulingCycle`,
+`TestHubSchedulingReadinessBeforeClaim` and
+`TestNativeOptionalReportsNegotiateHubSupport` cover home policy isolation,
+recorded REST-wait fallthrough, empty-state intake and mixed-version negotiation.
+
+Project dispatch evaluates candidates in the existing priority order, with at
+most the initial free project slots plus eight candidates of lookahead per pass
+(#3190). Failed hydration, dependency waits, due retries, and rejected dispatches
+consume that same evaluation allowance; they cannot trigger a full-queue tracker
+scan. Existing native dependency waits, running or claimed work, parked work
+from non-dependency owners, deferred completions, and future retries are
+ordered behind candidates without known waits before bounded hydration,
+preserving priority within each group after merge ordering (#3570).
+Partitioning reads existing in-memory state; it does not call eligibility
+callbacks or replace the fresh dispatch decision. Dependency-derived Blocked
+entries retain their source provenance: only native dependency snapshots may
+change their ordering. Cached CI, artifact and completed-gate evidence retains
+fresh hydration and operator-rejection evaluation before refusal.
+`TestDispatchPlannerFindsReadyTailBeyondKnownWaits` covers each owner and a
+mixed front of unavailable candidates with six ready slots.
+`TestDispatchPlannerDependencyWaitProvenanceAcrossTicks` covers list-derived
+holds and fresh dependency clearance over consecutive scheduler passes.
+Due retries retain their polling order, and every admitted candidate still uses
+fresh dispatch hydration. Local label rejections and project-capacity skips need
+no evaluation.
+The existing merge-control path remains available when project slots are full.
+This bounds readiness discovery; it does not reserve or hold global capacity,
+and discovered ready work still uses the existing global acquisition lifecycle.
+
 **Statement:** Priority picks the next job. Nothing else.
 
 - If a task can be started, start one. Always. Free capacity is never held,
@@ -1379,6 +3516,27 @@ is not an authorized resurrection.
 - When a slot frees, dispatch the highest-ranked READY request; if none of the
   higher-ranked projects has anything ready, dispatch whatever is ready.
 - The system never cancels, stops, or preempts running work. Only a user cancels work.
+
+Provider capacity application (native #90) removes active reservation snapshots as
+a second ceiling when a fresh report covers the same provider, backend, account,
+sharing identity and reserved model. Reservations still count as occupied slots
+and keep their original execution identity and history. Without matching fresh
+evidence their existing conservative bound remains; shared reporter ceilings and
+exhaustion still apply. `TestRunnerCapacityApplication` raises concurrency with two
+active reservations intact, refuses a claim while the external producer remains at
+two, and admits six only after fresh authoritative evidence. This consolidates
+configuration ceiling authority under the current report owner (INV-3); it does
+not change expired report handling, introduce recovery, or alter priority.
+
+Hosted organization subscriptions price project and unarchived-issue capacity,
+never seats or concurrent agent work (#3268). The Hub removes plan membership
+and concurrent-work admission limits while preserving independent runner/host
+capacity and provider safety limits. Free refuses new AI turns at the existing
+execution feature boundary, including Luna coordinator chat and native claims;
+downgrades preserve safe completion. `TestCapacityCatalog`,
+`TestCoordinatorFreeRefusesLuna`, `TestCapacityPaidPlanChanges`, and
+`TestHostedConcurrentClaimsDowngradeRelease` cover this boundary. No new scheduler
+mechanism, reason code, reservation, or recovery loop is introduced.
 
 **Why:** Priority cancellation discarded running attempts, while selected-slot
 reservations refused ready work even with real global capacity available.
@@ -1394,6 +3552,21 @@ Owners consume grants in acquisition order and revalidate current candidates;
 refreshes retain standing requests and update their actions and slot requirements
 in place. Refreshed eligibility decisions remove obsolete requests; shutdown and
 explicit pause/configuration invalidation discard requests and release unused grants.
+Project run completion, lease release, and increased project capacity read fresh
+candidates on the orchestrator event loop. The pass uses the tick's eligibility
+planner before claiming, so stale snapshot membership cannot keep a newly ready
+candidate from a free project slot. The unused previous-candidate snapshot and
+membership restriction are removed (INV-3). After stop exclusions, the existing
+durable retry-intent owner restores first-seen recovery metadata before dispatch,
+including resume state and recovery attempt identity. Its early tick call remains
+because tick reconciliation needs that intent before evaluating terminal attempts.
+Refill adds the owner's local timeline read per retained candidate; further
+attempt and receipt reads occur only when an existing intent is found. Existing
+promotion, human, dependency, claim, budget, gate and stop owners remain in force.
+The same event-loop owner handles the bounded cohort of already queued worker
+completions before one fresh candidate refill. Each result retains its generation,
+completion fence and stop handling; all completed operator stops remain excluded
+from that refill. New arrivals wait for the next event-loop pass.
 All modes use the same lifecycle; strict priority is
 only an ordering rule. Authorization, dependencies, retry readiness, and local
 lane ceilings are checked by the callers before acquisition. Admission reads
@@ -1403,6 +3576,8 @@ and filters candidates before acquiring local or global capacity for evaluation.
 `TestQueuedDispatchRanksIndependentRequests`, `TestQueuedDispatchPreservesProjectCeilings`,
 `TestRunDispatchesQueuedRequestsWithoutPolling`,
 `TestRunDispatchesQueuedRequestsAcrossHostsWithoutPolling`,
+`TestCompletionRefillsProjectSlotWithoutRefresh`, `TestCapacityIncreaseRefillsWithoutRefresh`,
+`TestEventAndTickDispatchEligibilityParity`, `TestQueuedDispatchUsesCurrentWorkpad`,
 `TestQueuedDispatchChoosesAvailableHost`,
 `TestStandingDispatchSurvivesProjectRefresh`, `TestStandingDispatchRequestUpdates`, and
 `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` run through the
@@ -1453,6 +3628,13 @@ CI retry releases the worker and claim; a green head re-enters the same fairness
 order. `TestPushedMergeHeadRequeuesWithoutHoldingSlot` covers post-push admission
 of a same-repository peer and the older issue's return after CI, while
 `TestMergePromptHandsOffPushedHeadBeforeCI` covers the instruction boundary (#3045).
+With explicit `required_status_checks: []`, a freshly hydrated green head with
+no check runs or status contexts and a known base branch proceeds through the
+existing merge path after a push. The native branch-policy hydration owns CI
+eligibility; omitted configuration, observed producers, pending native checks,
+missing native checks, and failures retain their existing post-push wait.
+`TestMergingPushedHeadRespectsBranchPolicy` covers this removal of the unnecessary
+CI retry without making absent CI generally passable.
 The `merge_ci_reservation` dispatch reason is retired. Native merge queue admission
 still defers enqueueing behind a running merge in its repository, without holding
 a worker slot. `merge_fairness_head_reserved` remains retired from producers and
@@ -1473,7 +3655,10 @@ Rework candidates reuse the merge worker's current-head CI status and pending-ch
 view before acquiring capacity (#2639, operator-approved). Queued or running CI
 returns the existing `current_head_ci_wait` decision; the lane and retry attempt
 remain unchanged, with no new timer or reservation. Terminal CI or no PR retains
-normal eligibility. `TestReworkCurrentHeadCIDispatch` covers fresh and retry
+normal eligibility. Closed or merged PRs do not retain this CI wait; their
+historical pending statuses leave replacement work or merged reconciliation to
+the existing owner. Unknown PR state remains conservative, and open pending
+checks retain the wait. `TestReworkCurrentHeadCIDispatch` covers fresh and retry
 candidates, immediate dispatch of the next eligible candidate, and release after
 terminal CI. `TestReworkCurrentHeadCIConfiguredLane` preserves configured lane
 selection. This consolidates CI classification with the merge worker (INV-3).
@@ -1489,11 +3674,11 @@ candidate dispatch behavior.
 **Change:** Edit INV-10 and its tests in the same PR before changing priority or
 capacity semantics. New names or indirect equivalents remain a review boundary.
 
-## INV-11 — Human scope approval before Todo
+## INV-11 — Human mechanism scope approval before Todo
 
-**Statement:** No feature and no new or expanded operational mechanism enters
-Todo without a human's explicit approval of that scope, regardless of who filed
-the issue or how its title is typed. Only a fix with recorded runtime evidence
+**Statement:** No new or expanded operational mechanism enters Todo without a
+human's explicit approval of that scope, regardless of who filed the issue or
+how its title is typed. Only a mechanism fix with recorded runtime evidence
 whose remedy removes or consolidates may reach Todo without a human.
 
 **Why:** The operator's September 14, 2026 audit of 253 PRs merged between
@@ -1506,20 +3691,27 @@ orchestrator code. Non-test orchestrator code grew from 23,828 lines at v0.44.0
 to 51,369 at v0.114.8. The growth came through unapproved scope, not machine
 self-filing.
 
-**Enforcement:** Admission Criteria rule 9 in the operator-managed
-`detent-orchestration/WORKFLOW.md` leaves features and new or expanded mechanisms
-in Backlog until a human approves their scope by moving them. Assistants file
-that work to Backlog only. The rule applies regardless of title type or author;
-only evidenced fixes that remove or consolidate qualify for automatic admission.
-That workflow is outside this repository and was updated by the operator.
+On October 1, 2026, the operator removed the feature scope gate. Features that
+do not add or expand mechanisms may be filed straight to Todo. Human scope
+approval remains required for new or expanded mechanisms, and the rest of the
+mechanism moratorium remains in effect. The operator also updated Admission
+Criteria rule 9 in the out-of-repo `detent-orchestration/WORKFLOW.md` to gate only
+new or expanded mechanisms. This invariant and its doctor enforcement record
+the in-repo half of that decision.
+
+**Enforcement:** Admission Criteria rule 9 leaves new or expanded mechanisms in
+Backlog until a human approves their scope by moving them. Assistants file that
+work to Backlog only. The rule applies regardless of title type or author; only
+evidenced mechanism fixes that remove or consolidate qualify for automatic
+admission without human scope approval.
 
 The doctor check `INV-11 human scope approval` inspects every applied Todo
 ledger entry in the last seven days, including repeat entries. It fetches current
 issue titles and bodies by ID in batches of at most 100 so GitHub's identity
-lookup can audit busy projects. Conventional `feat`, `perf`, and `refactor` titles
-and declarations in either titles or bodies adding or expanding config keys,
-reason codes, brakes, breakers, leases, parks, recovery paths, or reservations
-require a human move. Each
+lookup can audit busy projects. Declarations in either titles or bodies adding
+or expanding config keys, reason codes, brakes, breakers, leases, parks, recovery
+paths, or reservations require a human move. Conventional `feat`, `perf`, and
+`refactor` title prefixes alone do not require scope approval. Each
 violation reports the issue, ledger origin, reason, and timestamp. Declaration
 clauses are separated at punctuation and coordinating words so removal or
 negation of one mechanism does not hide a later addition in the same sentence.
@@ -1538,8 +3730,8 @@ store/schema/tracker/issue evidence warns rather than passing silently. This is
 a diagnostic, not an admission gate: body classification is a conservative
 natural-language heuristic, current issue text can differ from admission-time
 scope, and historical tracker moves absent from the ledger cannot be audited.
-It does not prove that every ordinary fix contains sufficient runtime evidence;
-admission rule 9 and review enforce that broader requirement.
+It does not prove that every mechanism fix contains sufficient runtime evidence;
+admission rule 9 and review enforce that requirement.
 
 **Change:** Editing INV-11 requires updating the doctor check and the admission
 criteria in the same PR. Identify INV-11 in the PR template and record the
@@ -1547,12 +3739,20 @@ operator-managed workflow update when it lives outside the repository.
 
 ## INV-12 — Native toolchain caches
 
+SSH workers keep the remote host’s native toolchain caches and shared Go admission budget. Worker scratch uses only the host-provided TMPDIR/TMP/TEMP, and never points at the orchestrator’s scratch or caches. `TestSSHProbeRequiresProvidedScratch` and `TestSSHLocalTargetIntegration` exercise these boundaries (#3239).
+
 Detent never substitutes its own cache or state location for a toolchain's native
 one; bounding uses the toolchain's own mechanism. Workers inherit the host
 toolchain caches. Detent may house-keep a native cache (age or size trim that the
 toolchain tolerates) but never relocates it, never keys it per project or per
 attempt, and never introduces a configuration key that does either. Per-attempt
 isolation is limited to `TMPDIR`/`TMP`/`TEMP`.
+
+Sandbox isolation (#3168) grants normal backend turns access to the existing
+native Go build and module caches without relocating them. Restricted Codex turns
+keep cache writes and network access disabled. Claude resolves its subprocess
+temporary directory inside the existing worker scratch directory.
+`TestBackendAppliesRunnerIsolation` covers normal and restricted cache grants.
 
 Detent's former per-attempt and per-project Go caches duplicated a content-addressed,
 concurrency-safe host cache. Two Detent-owned caches of about 750 GB on one host,
@@ -1578,7 +3778,9 @@ and read-only diagnostics. All are registered in the invariant manifest.
 Doctor reports native Go cache paths and readable sizes once per host, the last completed
 reaper trim (or “not recorded”), and warns about legacy `.detent/cache` roots in
 the workspace root or workdirs, including former per-attempt cache components
-under `.detent/worker-tmp`. Reaper timing is recorded in `detent-trim.txt`
+under `.detent/worker-tmp` and under each workdir's worker scratch root in the
+OS temp directory (`detent-worker-scratch/`), where attempt scratch lives so
+toolchain churn stays out of file-watched workspace trees. Reaper timing is recorded in `detent-trim.txt`
 inside the native build cache; Go's own `trim.txt` is left untouched.
 The native build cache defaults to 10% of total cache-volume capacity with the
 existing 48-hour age trim; explicit bounds win, and unavailable capacity falls
@@ -1609,6 +3811,18 @@ checks one-line status layout in compact, cozy, and comfy densities, and verifie
 that effort is visible at Cozy/Comfy and may be hidden before model at Compact.
 
 ## INV-14 — Workers never wait on a human question
+
+Tracker human attention is authoritative only through the current canonical
+Workpad; final prose and final-only status cannot replace it (#3758). Native
+workers are explicitly forbidden to write Workpad comments and report blockers
+in their final outcome. The existing native completion owner uses that contract
+to settle human attention in Blocked, even without a produced change, rather
+than finishing Done, entering Merging or automatically repeating the decision.
+It retains existing human-owned recovery; final prose cannot fabricate a landed
+version or replace a typed refusal. Canonical human actions, authorized
+clearance, explicit operator pins, repository protections, configured human
+review and actual backend approval declines keep their existing owners. Forge
+authorization and infrastructure failures remain instance-owned.
 
 Workers receive no `ask_human_question` tool in any project. Dispatch and
 completion do not consult `human_questions` rows, including unanswered rows

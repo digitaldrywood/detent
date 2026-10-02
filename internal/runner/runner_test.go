@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -22,11 +23,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -243,8 +244,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			Branch: "detent/digitaldrywood_detent_22",
 		},
 		diffStats: []workspace.DiffStat{
-			{Files: 1, Added: 2, Fingerprint: "first-diff"},
-			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
+			{Files: 1, Added: 2, Fingerprint: "first-diff", HeadSHA: "first-physical-head", HeadObservedAt: startedAt},
+			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff", HeadSHA: "second-physical-head", HeadObservedAt: startedAt.Add(time.Second)},
 			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 		},
@@ -350,6 +351,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
+	measured := &compute.Usage{CPUSeconds: 3.4, AvgMemoryBytes: .43e9, WallSeconds: 10.1, ComputeUSD: .00012}
+	runner.startCompute = func(compute.Rates) func() *compute.Usage { return func() *compute.Usage { return measured } }
 	var usageUpdates []UsageUpdate
 	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
@@ -428,7 +431,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[1].LastEventAt.IsZero() {
 		t.Fatal("second usage update LastEventAt is zero")
 	}
-	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Fingerprint != "first-diff" || usageUpdates[1].DiffStats.Status != "ok" {
+	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Fingerprint != "first-diff" || usageUpdates[1].DiffStats.HeadSHA != "first-physical-head" || usageUpdates[1].DiffStats.Status != "ok" {
 		t.Fatalf("second usage update DiffStats = %#v, want live diff", usageUpdates[1].DiffStats)
 	}
 	if usageUpdates[2].TurnCount != 1 || usageUpdates[2].Tokens.TotalTokens != 125 {
@@ -440,7 +443,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if len(usageUpdates[2].RecentEvents) != 3 || usageUpdates[2].RecentEvents[2].Event != "token_usage" || usageUpdates[2].RecentEvents[2].Message != "125 total tokens (100 in, 25 out)" {
 		t.Fatalf("third usage update RecentEvents = %#v, want token-specific activity", usageUpdates[2].RecentEvents)
 	}
-	if usageUpdates[2].DiffStats.FilesChanged != 2 || usageUpdates[2].DiffStats.AddedLines != 5 || usageUpdates[2].DiffStats.RemovedLines != 1 {
+	if usageUpdates[2].DiffStats.FilesChanged != 2 || usageUpdates[2].DiffStats.AddedLines != 5 || usageUpdates[2].DiffStats.RemovedLines != 1 || usageUpdates[2].DiffStats.HeadSHA != "second-physical-head" {
 		t.Fatalf("third usage update DiffStats = %#v, want refreshed diff", usageUpdates[2].DiffStats)
 	}
 	if usageUpdates[3].RateLimits == nil || usageUpdates[3].RateLimits.LimitID != "codex-primary" {
@@ -573,6 +576,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.usage.ModelContextWindow == nil || *sessionStore.usage.ModelContextWindow != modelContextWindow {
 		t.Fatalf("UsageEvent ModelContextWindow = %#v, want %d", sessionStore.usage.ModelContextWindow, modelContextWindow)
+	}
+	if result.Compute != measured || sessionStore.usage.Compute != measured || math.Abs(result.TokenUSD-.00078) > 1e-12 {
+		t.Fatalf("compute/token costs = %+v / %+v", result, sessionStore.usage)
 	}
 	if math.Abs(sessionStore.usage.CostUSD-0.00078) > 0.000000000001 {
 		t.Fatalf("UsageEvent CostUSD = %.12f, want 0.000780000000", sessionStore.usage.CostUSD)
@@ -1466,10 +1472,18 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 				t.Fatalf("NewRunner() error = %v", err)
 			}
 
+			runner.startCompute = func(compute.Rates) func() *compute.Usage {
+				return func() *compute.Usage {
+					return &compute.Usage{CPUSeconds: 1, AvgMemoryBytes: 1e9, WallSeconds: 2, ComputeUSD: .001}
+				}
+			}
 			result, runErr := runner.Run(t.Context(), RunRequest{Issue: connector.Issue{
 				ID: "issue-18", Identifier: "acme/widgets#18", Title: "Recover delivery", State: "In Progress",
 				BranchName: branch, PRRepository: "acme/widgets",
 			}})
+			if result.Compute == nil || result.Compute.CPUSeconds != 2 || result.Compute.WallSeconds != 4 || result.Compute.ComputeUSD != .002 {
+				t.Fatalf("recovery compute = %+v, want both turns", result.Compute)
+			}
 			if tt.wantInterrupted != nil {
 				var recoveryErr *DeliverableRecoveryError
 				if !errors.Is(runErr, tt.wantInterrupted) || errors.As(runErr, &recoveryErr) || result.FinalState == FinalStateNeedsHumanAttention {
@@ -1685,6 +1699,7 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
 					t.Errorf("fixture scratch cleanup: %v", err)
 				}
+				_ = os.RemoveAll(workspace.WorkerScratchRoot(workspacePath))
 			})
 			reaped := false
 			r := &Runner{
@@ -1735,12 +1750,8 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 			if execution.cleanupErr != nil {
 				t.Fatalf("scratch removal error: %v (turn error: %v)", execution.cleanupErr, execution.err)
 			}
-			canonicalWorkspace, err := filepath.EvalSymlinks(workspacePath)
-			if err != nil {
-				t.Fatalf("EvalSymlinks() error = %v", err)
-			}
-			if backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, canonicalWorkspace+string(filepath.Separator)) {
-				t.Fatalf("worker temp directory = %q, want path under %q", backend.tempDir, canonicalWorkspace)
+			if scratchRoot := workspace.WorkerScratchRoot(workspacePath); backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, scratchRoot+string(filepath.Separator)) {
+				t.Fatalf("worker temp directory = %q, want path under %q", backend.tempDir, scratchRoot)
 			}
 			_, statErr := os.Stat(backend.tempDir)
 			if tt.wantScratch {
@@ -1860,6 +1871,7 @@ func TestRunAgentTurnRecreatesWorkerScratchForEveryAttempt(t *testing.T) {
 	t.Parallel()
 
 	workspacePath := t.TempDir()
+	t.Cleanup(func() { _ = os.RemoveAll(workspace.WorkerScratchRoot(workspacePath)) })
 	backend := &scratchWritingAgentBackend{}
 	r := &Runner{
 		now:    time.Now,
@@ -1898,6 +1910,12 @@ func TestRunAgentTurnRecreatesWorkerScratchForEveryAttempt(t *testing.T) {
 			}
 			if !backend.scratchReady[len(backend.scratchReady)-1] {
 				t.Fatal("worker scratch did not exist when backend turn started")
+			}
+			if filepath.Dir(backend.tempDir) != workspace.WorkerScratchRoot(workspacePath) {
+				t.Fatalf("worker scratch = %q, want attempt under %q", backend.tempDir, workspace.WorkerScratchRoot(workspacePath))
+			}
+			if !slices.Contains(backend.writableRoots, backend.tempDir) {
+				t.Fatalf("sandbox writable roots = %q, want worker scratch %q", backend.writableRoots, backend.tempDir)
 			}
 			if _, err := os.Stat(backend.tempDir); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("worker scratch stat error after turn = %v, want not exist", err)
@@ -2541,6 +2559,7 @@ func TestRunnerRunAdmissionPreservesScratchUntilDescendantsExit(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				if backend.request.Workspace != "" {
+					_ = os.RemoveAll(workspace.WorkerScratchRoot(backend.request.Workspace))
 					if _, err := os.Stat(backend.request.Workspace); errors.Is(err, os.ErrNotExist) {
 						return
 					}
@@ -2602,12 +2621,13 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 	agentBackend := &fakeCodexClient{
 		result: AgentTurnResult{ThreadID: "thread-admission", TurnID: "turn-1", SessionID: "thread-admission-turn-1"},
 	}
+	sessionStore := &fakeSessionStore{sessionID: 1535}
 	runner, err := NewRunner(Dependencies{
 		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Machine-local text must not appear."},
 		Workspace:    workspaceBackend,
 		AgentBackend: agentBackend,
-		Store:        &fakeSessionStore{sessionID: 1535},
-		Now:          newFakeClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second)).Now,
+		Store:        sessionStore,
+		Now:          func() time.Time { return startedAt },
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -2634,10 +2654,13 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 				Description: "Implement typed proposals.",
 			}},
 		},
-		StartedAt: startedAt,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	if sessionStore.startCalls != 1 || !sessionStore.started.StartedAt.Equal(startedAt) ||
+		!sessionStore.usage.StartedAt.Equal(startedAt) || !sessionStore.phase.StartedAt.Equal(startedAt) {
+		t.Fatalf("session attribution = %#v, usage = %#v, phase = %#v, want runner clock %v", sessionStore.started, sessionStore.usage, sessionStore.phase, startedAt)
 	}
 	if !agentBackend.request.ReadOnly {
 		t.Fatal("AgentTurnRequest.ReadOnly = false, want true for admission")
@@ -2677,7 +2700,10 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 		"Issue effort selection",
 		"recommended_effort",
 		"standard feature work",
-		"exactly one terminal evaluation for every supplied candidate",
+		"exactly one accepted terminal evaluation for every supplied candidate",
+		"correct it using the feedback and resubmit within this same conversation",
+		"Rejected input is not an accepted evaluation",
+		"After acceptance, do not submit another evaluation for that candidate",
 		`"evaluations"`,
 		`"disposition":"proposed"`,
 		"exactly one finding for every configured dimension",
@@ -2686,6 +2712,9 @@ func TestRunnerRunAdmissionRequestsTypedReadOnlyBackendTurn(t *testing.T) {
 		if !strings.Contains(agentBackend.request.Prompt, want) {
 			t.Fatalf("AgentTurnRequest.Prompt = %q, want %q", agentBackend.request.Prompt, want)
 		}
+	}
+	if strings.Contains(agentBackend.request.Prompt, "tool exactly once") {
+		t.Fatal("admission prompt forbids correcting rejected input")
 	}
 	if strings.Contains(agentBackend.request.Prompt, "Machine-local text must not appear.") {
 		t.Fatalf("AgentTurnRequest.Prompt includes merged workflow prompt: %q", agentBackend.request.Prompt)
@@ -2864,10 +2893,10 @@ func TestSessionTokenUsageNormalizesFreshAndResumedThreads(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			usage := newSessionTokenUsage(tt.resumed)
+			normalize := NewTokenUsageNormalizer(tt.resumed)
 			var got AgentTokenUsage
 			for _, update := range tt.updates {
-				got = usage.normalize(update)
+				got = normalize(update)
 			}
 			gotCounts := AgentTokenCounts{
 				InputTokens:           got.InputTokens,
@@ -3054,6 +3083,9 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 				fmt.Sprintf("completion_work_attempt_id: %q", strconv.FormatInt(tt.workAttemptID, 10)),
 				fmt.Sprintf("completion_generation: %q", strconv.FormatUint(tt.generation, 10)),
 				"The orchestrator is the only writer of tracker lane state",
+				repositoryHandoffContract,
+				"Pending acceptance remains unverified",
+				"Preserve explicit pre-merge runtime evidence, human approvals, and project gates",
 			} {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("prompt missing %q", want)
@@ -3131,6 +3163,9 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 	}
 	if agentBackend.request.Prompt != orphanResumePrompt {
 		t.Fatalf("AgentTurnRequest.Prompt = %q, want restart nudge", agentBackend.request.Prompt)
+	}
+	if !strings.Contains(agentBackend.request.Prompt, "Ignore earlier instructions to maintain repository notes") || !strings.Contains(agentBackend.request.Prompt, "Do not create, update, stage, or commit `.detent/notes.md`") {
+		t.Fatal("orphan resume retains the legacy repository notes instruction")
 	}
 	if sessionStore.started.ResumedFromSessionID != 1155 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryResumed {
 		t.Fatalf("SessionStart resume metadata = %#v", sessionStore.started)
@@ -3456,126 +3491,151 @@ func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
 	}
 }
 
-func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
+func TestRunnerRunKillsSessionAtTokenCeilingWithoutLessonWrites(t *testing.T) {
 	t.Parallel()
 
-	workspacePath := t.TempDir()
-	startedAt := time.Date(2026, 7, 2, 14, 0, 0, 0, time.UTC)
-	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: workspacePath, Key: "issue-853", Branch: "detent/issue-853"},
+	tests := []struct {
+		name     string
+		path     string
+		enabled  bool
+		existing string
+	}{
+		{name: "disabled default absent"},
+		{name: "disabled default existing", existing: "human-authored lesson\n"},
+		{name: "enabled default existing", enabled: true, existing: "human-authored lesson\n"},
+		{name: "enabled configured existing", path: "project-lessons.md", enabled: true, existing: "configured human-authored lesson\n"},
 	}
-	agentBackend := &fakeCodexClient{
-		updates: []AgentUpdate{
-			{
-				Type:     AgentUpdateTokenUsage,
-				ThreadID: "thread-853",
-				TurnID:   "turn-1",
-				Tokens: AgentTokenUsage{
-					InputTokens:  80,
-					OutputTokens: 10,
-					TotalTokens:  90,
-				},
-			},
-			{
-				Type:     AgentUpdateTokenUsage,
-				ThreadID: "thread-853",
-				TurnID:   "turn-1",
-				Tokens: AgentTokenUsage{
-					InputTokens:  100,
-					OutputTokens: 20,
-					TotalTokens:  120,
-				},
-			},
-		},
-	}
-	sessionStore := &fakeSessionStore{sessionID: 853}
-	clock := newFakeClock(
-		startedAt,
-		startedAt,
-		startedAt.Add(time.Second),
-		startedAt.Add(2*time.Second),
-		startedAt.Add(3*time.Second),
-	)
-
-	runner, err := NewRunner(Dependencies{
-		Workflow: config.Workflow{
-			Config: config.Config{
-				Agent: config.Agent{
-					MaxSessionTokens: 100,
-					Lessons: config.Lessons{
-						Path:       ".detent/lessons.md",
-						MaxEntries: 5,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workspacePath := t.TempDir()
+			lessonPath := tt.path
+			if lessonPath == "" {
+				lessonPath = ".detent/lessons.md"
+			}
+			lessonPath = filepath.Join(workspacePath, lessonPath)
+			if tt.existing != "" {
+				if err := os.MkdirAll(filepath.Dir(lessonPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(lessonPath, []byte(tt.existing), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			startedAt := time.Date(2026, 7, 2, 14, 0, 0, 0, time.UTC)
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: workspacePath, Key: "issue-853", Branch: "detent/issue-853"},
+			}
+			agentBackend := &fakeCodexClient{
+				updates: []AgentUpdate{
+					{
+						Type:     AgentUpdateTokenUsage,
+						ThreadID: "thread-853",
+						TurnID:   "turn-1",
+						Tokens: AgentTokenUsage{
+							InputTokens:  80,
+							OutputTokens: 10,
+							TotalTokens:  90,
+						},
+					},
+					{
+						Type:     AgentUpdateTokenUsage,
+						ThreadID: "thread-853",
+						TurnID:   "turn-1",
+						Tokens: AgentTokenUsage{
+							InputTokens:  100,
+							OutputTokens: 20,
+							TotalTokens:  120,
+						},
 					},
 				},
-			},
-			Prompt: "Work on {{ issue.identifier }}",
-		},
-		Workspace:    workspaceBackend,
-		AgentBackend: agentBackend,
-		Store:        sessionStore,
-		Now:          clock.Now,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
-	}
+			}
+			sessionStore := &fakeSessionStore{sessionID: 853}
+			clock := newFakeClock(
+				startedAt,
+				startedAt,
+				startedAt.Add(time.Second),
+				startedAt.Add(2*time.Second),
+				startedAt.Add(3*time.Second),
+			)
 
-	var usageUpdates []UsageUpdate
-	result, err := runner.Run(context.Background(), RunRequest{
-		Issue: connector.Issue{
-			ID:         "issue-853",
-			Identifier: "digitaldrywood/detent#853",
-			Title:      "Per-session token ceiling",
-		},
-		StartedAt: startedAt,
-		OnUsageUpdate: func(update UsageUpdate) error {
-			usageUpdates = append(usageUpdates, update)
-			return nil
-		},
-	})
-	if err == nil {
-		t.Fatal("Run() error = nil, want token ceiling error")
-	}
-	if !errors.Is(err, ErrSessionTokenCeilingExceeded) {
-		t.Fatalf("Run() error = %v, want ErrSessionTokenCeilingExceeded", err)
-	}
-	var ceilingErr *SessionTokenCeilingError
-	if !errors.As(err, &ceilingErr) {
-		t.Fatalf("Run() error = %T, want SessionTokenCeilingError", err)
-	}
-	if ceilingErr.TotalTokens != 120 || ceilingErr.CeilingTokens != 100 || ceilingErr.Source != TokenCeilingSourceAbsolute {
-		t.Fatalf("ceiling error = %#v, want total 120 ceiling 100 absolute source", ceilingErr)
-	}
-	if result.FinalState != FinalStateTokenCeilingExceeded {
-		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateTokenCeilingExceeded)
-	}
-	if sessionStore.finished.FinalState != FinalStateTokenCeilingExceeded || sessionStore.finished.TotalTokens != 120 {
-		t.Fatalf("SessionFinish = %#v, want token ceiling final state and 120 tokens", sessionStore.finished)
-	}
-	if sessionStore.usage.Outcome != FinalStateTokenCeilingExceeded || sessionStore.usage.TotalTokens != 120 {
-		t.Fatalf("UsageEvent = %#v, want token ceiling outcome and 120 tokens", sessionStore.usage)
-	}
-	if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
-		t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
-	}
-	if len(usageUpdates) != 5 {
-		t.Fatalf("usage update count = %d, want workspace start, dispatch baseline, configured identity, and 2 token updates", len(usageUpdates))
-	}
-	if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
-		t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
-	}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{
+					Config: config.Config{
+						Agent: config.Agent{
+							MaxSessionTokens: 100,
+							Lessons: config.Lessons{
+								Path:       tt.path,
+								Enabled:    tt.enabled,
+								MaxEntries: 5,
+							},
+						},
+					},
+					Prompt: "Work on {{ issue.identifier }}",
+				},
+				Workspace:    workspaceBackend,
+				AgentBackend: agentBackend,
+				Store:        sessionStore,
+				Now:          clock.Now,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
 
-	lesson, err := os.ReadFile(filepath.Join(workspacePath, ".detent", "lessons.md"))
-	if err != nil {
-		t.Fatalf("ReadFile(lessons) error = %v", err)
-	}
-	for _, want := range []string{
-		"Failure kind:** token_ceiling_exceeded",
-		"session reached 120 tokens",
-		"configured ceiling 100",
-	} {
-		if !strings.Contains(string(lesson), want) {
-			t.Fatalf("lesson missing %q:\n%s", want, lesson)
-		}
+			var usageUpdates []UsageUpdate
+			result, err := runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-853",
+					Identifier: "digitaldrywood/detent#853",
+					Title:      "Per-session token ceiling",
+				},
+				StartedAt: startedAt,
+				OnUsageUpdate: func(update UsageUpdate) error {
+					usageUpdates = append(usageUpdates, update)
+					return nil
+				},
+			})
+			if err == nil {
+				t.Fatal("Run() error = nil, want token ceiling error")
+			}
+			if !errors.Is(err, ErrSessionTokenCeilingExceeded) {
+				t.Fatalf("Run() error = %v, want ErrSessionTokenCeilingExceeded", err)
+			}
+			var ceilingErr *SessionTokenCeilingError
+			if !errors.As(err, &ceilingErr) {
+				t.Fatalf("Run() error = %T, want SessionTokenCeilingError", err)
+			}
+			if ceilingErr.TotalTokens != 120 || ceilingErr.CeilingTokens != 100 || ceilingErr.Source != TokenCeilingSourceAbsolute {
+				t.Fatalf("ceiling error = %#v, want total 120 ceiling 100 absolute source", ceilingErr)
+			}
+			if result.FinalState != FinalStateTokenCeilingExceeded {
+				t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateTokenCeilingExceeded)
+			}
+			if sessionStore.finished.FinalState != FinalStateTokenCeilingExceeded || sessionStore.finished.TotalTokens != 120 {
+				t.Fatalf("SessionFinish = %#v, want token ceiling final state and 120 tokens", sessionStore.finished)
+			}
+			if sessionStore.usage.Outcome != FinalStateTokenCeilingExceeded || sessionStore.usage.TotalTokens != 120 {
+				t.Fatalf("UsageEvent = %#v, want token ceiling outcome and 120 tokens", sessionStore.usage)
+			}
+			if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
+				t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
+			}
+			if len(usageUpdates) != 5 {
+				t.Fatalf("usage update count = %d, want workspace start, dispatch baseline, configured identity, and 2 token updates", len(usageUpdates))
+			}
+			if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
+				t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
+			}
+
+			lesson, err := os.ReadFile(lessonPath)
+			if tt.existing == "" {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("ReadFile(lessons) error = %v, want absent file", err)
+				}
+			} else if err != nil || string(lesson) != tt.existing {
+				t.Fatalf("lesson = %q, error = %v; want unchanged %q", lesson, err, tt.existing)
+			}
+		})
 	}
 }
 
@@ -4735,8 +4795,10 @@ func TestRunnerRunReportsGitMetadataFailuresByWorkspaceKind(t *testing.T) {
 				t.Fatalf("Run() error = %v", err)
 			}
 
-			if len(agentBackend.request.ExtraWritableRoots) != 0 {
-				t.Fatalf("ExtraWritableRoots = %#v, want none", agentBackend.request.ExtraWritableRoots)
+			roots := agentBackend.request.ExtraWritableRoots
+			scratch := agentBackend.request.TempDir
+			if len(roots) != 1 || roots[0] != scratch || filepath.Dir(scratch) != workspace.WorkerScratchRoot(workspacePath) {
+				t.Fatalf("ExtraWritableRoots = %#v, want only owned scratch %q", roots, scratch)
 			}
 			gotWarning := strings.Contains(logs.String(), "workspace git metadata writable roots unavailable")
 			if gotWarning != tt.wantWarning {
@@ -5859,8 +5921,10 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	}
 	codeBackend := &fakeCodexClient{}
 	workspaceReaped := ""
+	sessionStore := &fakeSessionStore{sessionID: 522}
 
 	runner, err := NewRunner(Dependencies{
+		Store:             sessionStore,
 		ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
 		Workflow: config.Workflow{
 			Config: config.Config{
@@ -5900,6 +5964,8 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
+	measured := &compute.Usage{CPUSeconds: 3, AvgMemoryBytes: 1e9, WallSeconds: 4, ComputeUSD: .001}
+	runner.startCompute = func(compute.Rates) func() *compute.Usage { return func() *compute.Usage { return measured } }
 	result, err := runner.Validate(context.Background(), ValidatorRequest{
 		Issue: connector.Issue{
 			ID:          "issue-522",
@@ -5920,6 +5986,9 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 		t.Fatalf("Validate() error = %v", err)
 	}
 
+	if sessionStore.usage.Compute != measured {
+		t.Fatalf("validator compute = %+v", sessionStore.usage.Compute)
+	}
 	if !result.Submitted || result.Verdict != gate.ValidatorVerdictPass || result.Score != 0.93 {
 		t.Fatalf("Validate() result = %#v, want submitted pass score 0.93", result)
 	}
@@ -7054,76 +7123,76 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	}
 }
 
-func TestRunnerRunRecordsFailedOutputTailNote(t *testing.T) {
+func TestRunnerFailureKeepsSessionDiagnosticsWithoutNotes(t *testing.T) {
 	t.Parallel()
+	for _, exists := range []bool{false, true} {
+		t.Run(strconv.FormatBool(exists), func(t *testing.T) {
+			t.Parallel()
+			workspacePath := t.TempDir()
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: workspacePath, Key: "issue-856", Branch: "detent/issue-856"},
+			}
+			notesPath := filepath.Join(workspacePath, ".detent", "notes.md")
+			const existing = "Existing user notes"
+			if exists {
+				if err := os.MkdirAll(filepath.Dir(notesPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(notesPath, []byte(existing), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sessionStore := &fakeSessionStore{sessionID: 42}
+			var lastMessage string
+			oldOutput := strings.Repeat("old output ", 2048)
+			codexClient := &fakeCodexClient{
+				updates: []AgentUpdate{{
+					Type:   AgentUpdateMessageDelta,
+					ItemID: "msg-1",
+					Delta:  oldOutput + "useful failure tail",
+				}},
+				err: errors.New("codex failed"),
+			}
+			nowValue := time.Date(2026, 7, 2, 21, 50, 0, 0, time.UTC)
+			now := newFakeClock(nowValue, nowValue, nowValue, nowValue, nowValue)
 
-	workspacePath := t.TempDir()
-	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: workspacePath, Key: "issue-856", Branch: "detent/issue-856"},
-	}
-	oldOutput := strings.Repeat("old output ", 2048)
-	codexClient := &fakeCodexClient{
-		updates: []AgentUpdate{{
-			Type:   AgentUpdateMessageDelta,
-			ItemID: "msg-1",
-			Delta:  oldOutput + "useful failure tail",
-		}},
-		err: errors.New("codex failed"),
-	}
-	nowValue := time.Date(2026, 7, 2, 21, 50, 0, 0, time.UTC)
-	now := newFakeClock(nowValue, nowValue, nowValue, nowValue, nowValue)
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{}},
+				Workspace:    workspaceBackend,
+				Store:        sessionStore,
+				AgentBackend: codexClient,
+				Now:          now.Now,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
 
-	runner, err := NewRunner(Dependencies{
-		Workflow:     config.Workflow{Config: config.Config{}},
-		Workspace:    workspaceBackend,
-		AgentBackend: codexClient,
-		Now:          now.Now,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
-	}
+			result, err := runner.Run(context.Background(), RunRequest{
+				OnUsageUpdate: func(update UsageUpdate) error { lastMessage = update.LastMessage; return nil },
+				Issue: connector.Issue{
+					ID:         "issue-856",
+					Identifier: "digitaldrywood/detent#856",
+					Title:      "Failure handoff",
+				},
+			})
+			if err == nil {
+				t.Fatal("Run() error = nil, want codex failure")
+			}
 
-	_, err = runner.Run(context.Background(), RunRequest{
-		Issue: connector.Issue{
-			ID:         "issue-856",
-			Identifier: "digitaldrywood/detent#856",
-			Title:      "Failure handoff",
-		},
-	})
-	if err == nil {
-		t.Fatal("Run() error = nil, want codex failure")
-	}
-
-	notesPath, err := notes.WorkspacePath(workspacePath)
-	if err != nil {
-		t.Fatalf("notes path: %v", err)
-	}
-	content, err := notes.Read(notesPath, notes.ReadOptions{})
-	if err != nil {
-		t.Fatalf("read notes: %v", err)
-	}
-	for _, want := range []string{
-		"## 2026-07-02T21:50:00Z - Failed run output tail",
-		"- final_state: failed",
-		"- error: codex failed",
-		"useful failure tail",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("notes missing %q:\n%s", want, content)
-		}
-	}
-	if strings.Contains(content, oldOutput) {
-		t.Fatalf("notes included unbounded old output")
-	}
-
-	prompt, err := BuildPrompt(config.Workflow{Prompt: "Retry prompt"}, connector.Issue{
-		Identifier: "digitaldrywood/detent#856",
-	}, PromptOptions{WorkspacePath: workspacePath})
-	if err != nil {
-		t.Fatalf("BuildPrompt() error = %v", err)
-	}
-	if !strings.Contains(prompt, "useful failure tail") {
-		t.Fatalf("retry prompt missing failure tail:\n%s", prompt)
+			if !strings.Contains(result.Output, "useful failure tail") || !strings.Contains(lastMessage, "useful failure tail") {
+				t.Fatal("existing diagnostic output lost")
+			}
+			if sessionStore.finished.FinalState != FinalStateFailed || sessionStore.finishCalls != 1 {
+				t.Fatalf("failed session outcome not persisted: %+v", sessionStore.finished)
+			}
+			content, err := os.ReadFile(notesPath)
+			if exists && (err != nil || string(content) != existing) {
+				t.Fatalf("failed turn modified existing notes: %v", err)
+			}
+			if !exists && !os.IsNotExist(err) {
+				t.Fatalf("failed turn created repository notes: %v", err)
+			}
+		})
 	}
 }
 
@@ -7275,6 +7344,15 @@ func TestRunnerRunTreatsMissingWorkspaceFinalDiffAsCompleted(t *testing.T) {
 			t.Fatalf("log output missing %q:\n%s", want, logOutput)
 		}
 	}
+	failure := errors.New("git add intent to add: git add failed: exit status 1")
+	workspaceBackend.diffErr = failure
+	result, err = runner.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "issue-453", Identifier: "digitaldrywood/detent#453"}, StartedAt: startedAt})
+	if !errors.Is(err, ErrWorkspacePreparation) || !errors.Is(err, failure) || !result.TurnStarted {
+		t.Fatalf("Run() error=%v result=%+v, want post-turn instance diagnostic failure", err, result)
+	}
+	if result.FinalState != FinalStateFailed || sessionStore.finished.FinalState != FinalStateFailed {
+		t.Fatalf("result=%+v session=%+v, want preserved failed diagnostic outcome", result, sessionStore.finished)
+	}
 }
 
 func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
@@ -7420,6 +7498,7 @@ func initRunnerSourceRepo(t *testing.T) string {
 	runRunnerGit(t, dir, "config", "core.autocrlf", "false")
 	runRunnerGit(t, dir, "config", "user.name", "Test User")
 	runRunnerGit(t, dir, "config", "user.email", "test@example.com")
+	runRunnerGit(t, dir, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {
 		t.Fatalf("write README.md: %v", err)
 	}
@@ -7633,12 +7712,14 @@ type deliverableRecoveryAgentBackend struct {
 type scratchWritingAgentBackend struct {
 	runErr        error
 	tempDir       string
+	writableRoots []string
 	workerProcess procgroup.Identity
 	scratchReady  []bool
 }
 
 func (b *scratchWritingAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	b.tempDir = req.TempDir
+	b.writableRoots = req.ExtraWritableRoots
 	_, scratchErr := os.Stat(req.TempDir)
 	b.scratchReady = append(b.scratchReady, scratchErr == nil)
 	if b.workerProcess.PID > 0 {
@@ -8049,9 +8130,6 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 				t.Fatalf("terminal PR must use default base only: %+v", got)
 			}
 			wantLanded := ""
-			if state == "MERGED" {
-				wantLanded = "old-head"
-			}
 			if got.LandedHeadSHA != wantLanded {
 				t.Fatalf("landed head = %q, want %q", got.LandedHeadSHA, wantLanded)
 			}
@@ -8069,7 +8147,8 @@ func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
 		wantPreserved bool
 	}{
 		{name: "hub landed metadata", evidence: "hub"},
-		{name: "merged pull request with deleted branch", evidence: "pull", pullState: "MERGED"},
+		{name: "cached merged pull request with deleted branch", evidence: "pull", pullState: "MERGED", wantPreserved: true},
+		{name: "verified merged PR", evidence: "verified"},
 		{name: "closed unmerged pull request", evidence: "pull", pullState: "CLOSED", wantPreserved: true},
 		{name: "work after merged pull request", evidence: "pull", pullState: "MERGED", laterCommit: true, wantPreserved: true},
 		{name: "no landing evidence", wantPreserved: true},
@@ -8105,6 +8184,8 @@ func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
 			runRunnerGit(t, source, "push", "origin", "main")
 			runRunnerGit(t, source, "push", "origin", "--delete", info.Branch)
 			switch tt.evidence {
+			case "verified":
+				issue.CleanupDeliveredHeadSHA = landedHead
 			case "hub":
 				issue.Metadata = map[string]string{"hub_landed_head_sha": landedHead}
 			case "pull":

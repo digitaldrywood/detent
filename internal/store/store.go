@@ -9,6 +9,7 @@ import (
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/retro"
@@ -48,6 +49,7 @@ type Config struct {
 }
 
 type Store interface {
+	ProtectedCodexThreadIDs(context.Context) ([]string, error)
 	auth.Store
 	StatsStore
 	FairShareStore
@@ -112,7 +114,14 @@ type DailyDigestWindow struct {
 	To   time.Time
 }
 
+// DailyDigestDay separates calendar-window runtime usage from the lifetime
+// receipt metrics of its unique verified shipped cohort. Efficiency.Issues is
+// receipt coverage, which can be smaller than IssuesShipped.
 type DailyDigestDay struct {
+	IssuesShipped        int64
+	ShippedByProject     map[string]int64
+	Efficiency           efficiency.RollupWindow
+	UnknownDwellSeconds  int64
 	Date                 string
 	Sessions             int64
 	InputTokens          int64
@@ -184,6 +193,12 @@ type ForgeAvailabilityWaitStore interface {
 
 type ConcurrencyStore interface {
 	ConcurrencyReport(context.Context, ConcurrencyQuery) (ConcurrencyReport, error)
+}
+
+// SchedulerDecisionBatchStore records one observation's per-issue evidence in a
+// single transaction. IDs correspond to input order; failure commits no rows.
+type SchedulerDecisionBatchStore interface {
+	RecordSchedulerDecisions(context.Context, []SchedulerDecision) ([]int64, error)
 }
 
 type IssueSchedulerDecisionStore interface {
@@ -296,8 +311,7 @@ type AdmissionStore interface {
 	LatestAdmissionRun(context.Context, string) (admissionmodel.RunRecord, bool, error)
 	AdmissionCandidateHistory(context.Context, string) (map[string]admissionmodel.IssueRecord, error)
 	RecentAdmissionRuns(context.Context, string, int) ([]admissionmodel.RunRecord, error)
-	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult, int) (admissionmodel.MalformedResult, error)
-	BlockedAdmissionMalformedResult(context.Context, string, string) (admissionmodel.MalformedResult, bool, error)
+	RecordAdmissionMalformedResult(context.Context, admissionmodel.MalformedResult) (admissionmodel.MalformedResult, error)
 	ResolveAdmissionMalformedResults(context.Context, string, string, time.Time) error
 }
 
@@ -584,6 +598,7 @@ type APIUsageLog struct {
 }
 
 type UsageEvent struct {
+	Compute                *compute.Usage
 	ProjectID              string
 	RunID                  int64
 	SessionID              int64
@@ -993,9 +1008,11 @@ const (
 )
 
 type UsageReportQuery struct {
-	By   UsageReportGroup
-	From time.Time
-	To   time.Time
+	// Nil preserves the application-wide report; a non-nil empty slice selects no projects.
+	ProjectIDs []string
+	By         UsageReportGroup
+	From       time.Time
+	To         time.Time
 }
 
 type UsageReport struct {
@@ -1007,6 +1024,8 @@ type UsageReport struct {
 }
 
 type UsageReportTotals struct {
+	ComputeUSD            float64
+	ComputeEvents         int64
 	InputTokens           int64
 	CachedInputTokens     int64
 	OutputTokens          int64
@@ -1019,6 +1038,8 @@ type UsageReportTotals struct {
 }
 
 type UsageReportRow struct {
+	ComputeUSD            float64
+	ComputeEvents         int64
 	Key                   string
 	InputTokens           int64
 	CachedInputTokens     int64
@@ -1032,6 +1053,8 @@ type UsageReportRow struct {
 }
 
 type UsageReportModel struct {
+	ComputeUSD            float64
+	ComputeEvents         int64
 	Model                 string
 	InputTokens           int64
 	CachedInputTokens     int64

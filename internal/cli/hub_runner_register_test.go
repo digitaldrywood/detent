@@ -2,11 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,6 +22,79 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, remote, want string
+		externalWorkflow   bool
+		missingWorkflow    bool
+		invalidWorkflow    bool
+		missingGit         bool
+		refWorkflow        bool
+		wantReady          bool
+	}{
+		{name: "registration default workflow", remote: "git@github.com:Acme/Private.git", want: "Acme/Private", wantReady: true},
+		{name: "private HTTPS origin", remote: "https://alice:private-secret@github.com/Acme/Private.git", want: "Acme/Private", wantReady: true},
+		{name: "unsupported origin", remote: "https://alice:private-secret@example.test/Acme/Private.git", wantReady: true},
+		{name: "GitLab origin with external workflow", remote: "git@gitlab.com:Acme/Private.git", externalWorkflow: true, wantReady: true},
+		{name: "local origin", remote: "../source.git", wantReady: true},
+		{name: "configured workflow outside checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, want: "Acme/Private", wantReady: true},
+		{name: "missing configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingWorkflow: true},
+		{name: "invalid configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, invalidWorkflow: true},
+		{name: "missing default workflow", remote: "git@github.com:Acme/Private.git", missingWorkflow: true},
+		{name: "missing Git origin", externalWorkflow: true, wantReady: true},
+		{name: "missing Git checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingGit: true},
+		{name: "configured Git ref workflow absent locally", remote: "git@github.com:Acme/Private.git", refWorkflow: true, want: "Acme/Private", wantReady: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			workdir := filepath.Join(root, "checkout")
+			checkout(t, workdir)
+			runDoctorWorkflowSourceGit(t, workdir, "remote", "remove", "origin")
+			if test.remote != "" {
+				runDoctorWorkflowSourceGit(t, workdir, "remote", "add", "origin", test.remote)
+			}
+			selected := globalconfig.Project{Workdir: workdir}
+			if test.externalWorkflow {
+				selected.Workflow = filepath.Join(root, "WORKFLOW.md")
+				if test.invalidWorkflow {
+					if err := os.WriteFile(selected.Workflow, []byte("---\ntracker: [\n---\nPRIVATE WORKFLOW\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else if !test.missingWorkflow {
+					if err := os.WriteFile(selected.Workflow, []byte(mustRead(t, filepath.Join(workdir, "WORKFLOW.md"))), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Remove(filepath.Join(workdir, "WORKFLOW.md")); err != nil {
+						t.Fatal(err)
+					}
+					runDoctorWorkflowSourceGit(t, workdir, "add", "-u")
+					runDoctorWorkflowSourceGit(t, workdir, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "externalize workflow")
+				}
+			} else if test.missingWorkflow || test.refWorkflow {
+				if err := os.Remove(filepath.Join(workdir, "WORKFLOW.md")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.refWorkflow {
+				selected.Workflow, selected.WorkflowRef = "WORKFLOW.md", "HEAD"
+			}
+			if test.missingGit {
+				if err := os.RemoveAll(filepath.Join(workdir, ".git")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := runnerCheckoutRepository(t.Context(), selected); got != test.want || strings.Contains(got, "private-secret") {
+				t.Fatalf("repository = %q, want %q", got, test.want)
+			}
+			if got := runnerCheckoutReady(t.Context(), selected); got != test.wantReady {
+				t.Fatalf("checkout ready = %v, want %v", got, test.wantReady)
+			}
+		})
+	}
+}
+
 func TestRunnerHubTarget(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -30,14 +105,16 @@ func TestRunnerHubTarget(t *testing.T) {
 		wantOrg      tracker.OrganizationID
 		wantErr      bool
 	}{
-		{name: "shared entry URL", url: "https://hub.detent.build/organizations/org_abc/", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "shared entry URL", url: "https://cloud.detent.build/organizations/org_abc/", wantBase: "https://cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "legacy hosted URL remains stable", url: "https://hub.detent.build/organizations/org_abc", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "staging Cloud URL", url: "https://staging.cloud.detent.build/organizations/org_abc", wantBase: "https://staging.cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
 		{name: "self-hosted with flag", url: "https://hub.example.test", organization: "org_self", wantBase: "https://hub.example.test", wantOrg: "org_self"},
-		{name: "flag agrees with URL", url: "https://hub.detent.build/organizations/org_abc", organization: "org_abc", wantBase: "https://hub.detent.build/organizations/org_abc", wantOrg: "org_abc"},
-		{name: "flag disagrees with URL", url: "https://hub.detent.build/organizations/org_abc", organization: "org_other", wantErr: true},
+		{name: "flag agrees with URL", url: "https://cloud.detent.build/organizations/org_abc", organization: "org_abc", wantBase: "https://cloud.detent.build/organizations/org_abc", wantOrg: "org_abc"},
+		{name: "flag disagrees with URL", url: "https://cloud.detent.build/organizations/org_abc", organization: "org_other", wantErr: true},
 		{name: "no organization", url: "https://hub.example.test", wantErr: true},
 		{name: "not an organization ID", url: "https://hub.example.test/organizations/acme", wantErr: true},
 		{name: "empty", url: " ", wantErr: true},
-		{name: "query string", url: "https://hub.detent.build/organizations/org_abc?x=1", wantErr: true},
+		{name: "query string", url: "https://cloud.detent.build/organizations/org_abc?x=1", wantErr: true},
 		{name: "no host", url: "/organizations/org_abc", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -137,13 +214,13 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 
 func runRegister(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
 	t.Helper()
-	return executeRegister(t, newHubRunnerRegisterCommand("test", func(name string) string { return env[name] }, starter), args...)
+	return executeRegister(t, newHubRunnerRegisterCommandWithReporter("test", func(name string) string { return env[name] }, starter, runnerPrivateLocation, func(context.Context, globalconfig.Config, string) error { return nil }), args...)
 }
 
 // Registration fixtures stay under t.TempDir even when worker TMPDIR is inside this repository.
 func runRegisterInTestWorkspace(t *testing.T, env map[string]string, starter runnerServiceStarter, args ...string) (string, error) {
 	t.Helper()
-	return executeRegister(t, newHubRunnerRegisterCommandWithPrivateLocation("test", func(name string) string { return env[name] }, starter, func(string) error { return nil }), args...)
+	return executeRegister(t, newHubRunnerRegisterCommandWithReporter("test", func(name string) string { return env[name] }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }), args...)
 }
 
 func executeRegister(t *testing.T, command *cobra.Command, args ...string) (string, error) {
@@ -176,7 +253,12 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	if strings.Contains(output, "det_enroll_example") {
 		t.Fatal("register output echoed the enrollment token")
 	}
-	if len(started) != 0 || !strings.Contains(output, "Clone the ops-tools repository into "+filepath.Join(workspaces, "ops-tools")) || !strings.Contains(output, "detent start --config") {
+	var registration runnerRegistration
+	if err := json.Unmarshal([]byte(output), &registration); err != nil {
+		t.Fatal(err)
+	}
+	steps := strings.Join(registration.NextSteps, "\n")
+	if len(started) != 0 || !strings.Contains(steps, "Clone the ops-tools repository into "+filepath.Join(workspaces, "ops-tools")) || !strings.Contains(steps, "detent start --config") {
 		t.Fatalf("service started before every checkout exists (%v):\n%s", started, output)
 	}
 
@@ -185,7 +267,7 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 		t.Fatalf("written config = %+v, %v", written, err)
 	}
 	info, err := os.Stat(configPath)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %v, %v", info, err)
 	}
 
@@ -233,14 +315,107 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	}
 }
 
+func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name            string
+		ready           bool
+		workspaceRoot   bool
+		absentPaths     bool
+		relativeWorkdir bool
+		missingWorkflow bool
+	}{
+		{name: "kept checkout with default root", ready: true},
+		{name: "kept checkout overrides supplied root", ready: true, workspaceRoot: true},
+		{name: "missing kept checkout ignores supplied checkout", workspaceRoot: true},
+		{name: "absent kept workdir and workflow", absentPaths: true},
+		{name: "absent kept paths with relative workdir", absentPaths: true, relativeWorkdir: true},
+		{name: "kept workdir without workflow", missingWorkflow: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build"})
+			root := t.TempDir()
+			configPath := filepath.Join(root, "config", "global.yaml")
+			workdir := filepath.Join(root, "actual-checkout")
+			paths := runnerPaths{config: configPath, identity: filepath.Join(root, "config", "identity.json"), workspaces: filepath.Join(root, "unused-root")}
+			kept := runnerConfig(hub.server.URL+"/organizations/org_example", "org_example", "Build host", 2, paths, []runnerRegisteredCheck{{Name: "local-project", ID: "prj_site", Workdir: workdir}})
+			if test.relativeWorkdir {
+				cwd, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				// This case only inspects an absent checkout. Keep its relative path
+				// on the current drive when Windows scratch lives on another drive.
+				kept.Projects[0].Workdir = filepath.Join("missing-checkout", filepath.Base(filepath.Dir(root)))
+				workdir = filepath.Join(cwd, kept.Projects[0].Workdir)
+			}
+			if _, err := writeRunnerConfig(configPath, kept); err != nil {
+				t.Fatal(err)
+			}
+			kept.ServiceName = "" // Runner configs predating service_name remain supported.
+			body, err := yaml.Marshal(kept)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !test.absentPaths {
+				checkout(t, workdir)
+			}
+			if !test.ready && !test.absentPaths {
+				if err := os.RemoveAll(filepath.Join(workdir, ".git")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.missingWorkflow {
+				if err := os.Remove(filepath.Join(workdir, "WORKFLOW.md")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{"--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--service"}
+			if test.workspaceRoot {
+				checkout(t, filepath.Join(paths.workspaces, "detent.build"))
+				args = append(args, "--workspace-root", paths.workspaces)
+			}
+			started := false
+			output, err := runRegisterInTestWorkspace(t, nil, func(_ *cobra.Command, path string) error { started = true; return nil }, args...)
+			if err != nil {
+				t.Fatalf("register: %v\n%s", err, output)
+			}
+			var result runnerRegistration
+			if err := json.Unmarshal([]byte(output), &result); err != nil {
+				t.Fatal(err)
+			}
+			if started != test.ready || result.ServiceRun != test.ready || len(result.Projects) != 1 || result.Projects[0].Workdir != workdir || result.Projects[0].Checkout != test.ready {
+				t.Fatalf("started %v, registration %+v", started, result)
+			}
+			if !test.ready {
+				steps := strings.Join(result.NextSteps, "\n")
+				if !strings.Contains(steps, "Clone the local-project repository into "+workdir) || !strings.Contains(steps, "detent start --config "+shellQuote(configPath)+" --yes") {
+					t.Fatalf("next steps = %v", result.NextSteps)
+				}
+			}
+			if mustRead(t, configPath) != string(body) {
+				t.Fatal("kept config was rewritten")
+			}
+		})
+	}
+}
+
 func checkout(t *testing.T, dir string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "WORKFLOW.md"), []byte("Work the issue.\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "WORKFLOW.md"), []byte("---\ntracker:\n  kind: memory\n  repository: acme/orders\n---\nWork the issue.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	runDoctorWorkflowSourceGit(t, dir, "init")
+	runDoctorWorkflowSourceGit(t, dir, "add", "WORKFLOW.md")
+	runDoctorWorkflowSourceGit(t, dir, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "initial workflow")
+	runDoctorWorkflowSourceGit(t, dir, "remote", "add", "origin", "git@github.com:acme/orders.git")
 }
 
 func TestHubRunnerRegisterRejectsBadInput(t *testing.T) {
@@ -315,22 +490,6 @@ func TestHubRunnerRegisterRefusesAnotherRunnersFiles(t *testing.T) {
 	})
 }
 
-func TestRunnerCheckoutReady(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	repository := filepath.Join(root, "repository")
-	if err := os.MkdirAll(filepath.Join(repository, ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if runnerCheckoutReady(filepath.Join(root, "missing")) || runnerCheckoutReady(repository) {
-		t.Fatal("a missing directory or a repository without WORKFLOW.md counted as ready")
-	}
-	checkout(t, repository)
-	if !runnerCheckoutReady(repository) {
-		t.Fatal("a repository with WORKFLOW.md did not count as ready")
-	}
-}
-
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	body, err := os.ReadFile(path)
@@ -338,4 +497,41 @@ func mustRead(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(body)
+}
+
+func TestHubRunnerRegisterReportsBeforeService(t *testing.T) {
+	t.Parallel()
+	hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "orders"})
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "global.yaml")
+	workspaces := filepath.Join(root, "work")
+	checkout(t, filepath.Join(workspaces, "orders"))
+	reported := false
+	reporter := func(_ context.Context, cfg globalconfig.Config, version string) error {
+		if _, err := os.Stat(cfg.Path); err != nil {
+			t.Fatal("diagnostics ran before config was written", err)
+		}
+		if version != "test" || cfg.Client.NativeProjects["orders"] != "prj_orders" {
+			t.Fatalf("wrong diagnostic context: %+v", cfg)
+		}
+		reported = true
+		return nil
+	}
+	starter := func(_ *cobra.Command, path string) error {
+		if !reported {
+			t.Fatal("service started before diagnostics")
+		}
+		return nil
+	}
+	cmd := newHubRunnerRegisterCommandWithReporter("test", func(string) string { return "" }, starter, func(string) error { return nil }, reporter)
+	_, err := executeRegister(t, cmd, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", workspaces, "--service")
+	if err != nil || !reported {
+		t.Fatalf("reported=%v err=%v", reported, err)
+	}
+	if got, err := cmd.Flags().GetInt("capacity"); err != nil || cmd.Flags().Lookup("capacity").DefValue != "1" || got != 2 {
+		t.Fatalf("capacity=%d %v", got, err)
+	}
 }

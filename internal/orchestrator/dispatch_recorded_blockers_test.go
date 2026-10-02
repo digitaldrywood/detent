@@ -18,13 +18,16 @@ import (
 
 func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		missing bool
-		retry   bool
+		name     string
+		mutation string
+		missing  bool
+		retry    bool
 	}{
 		{name: "open PR across ten ticks"},
 		{name: "unverifiable reference", missing: true},
 		{name: "due retry", retry: true},
+		{name: "dispatch failure after lane write", mutation: "dispatch"},
+		{name: "retry poll lane write", mutation: "poll"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
@@ -32,8 +35,11 @@ func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 			issue.Identifier = "digitaldrywood/detent#2470"
 			issue.Fields = map[string]string{"Status": "Todo"}
 			issue.DependencySource = connector.BlockedRefSourceNative
+			if !tt.missing {
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#2635", Source: connector.BlockedRefSourceNative}}
+			}
 			issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{typedTestBlocker(workpad.Predicate{Type: workpad.PredicatePullRequestState, Identifier: "digitaldrywood/detent#2635", States: []string{"open"}})}}
-			blocker := connector.Issue{ID: "2635", Identifier: "digitaldrywood/detent#2635", State: "In Progress", PullRequest: &connector.PullRequest{State: "open"}}
+			blocker := connector.Issue{ID: "2635", Identifier: "digitaldrywood/detent#2635", State: "Done", Closed: true, PullRequest: &connector.PullRequest{State: "open"}}
 			tracker := &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{hydratedIssues: []connector.Issue{issue}, blockers: []connector.Issue{blocker}}}
 			if tt.missing {
 				tracker.blockers = nil
@@ -46,8 +52,49 @@ func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 			if tt.retry {
 				state.Retry[issue.ID] = savedRetry
 			}
+			if tt.mutation != "" {
+				cfg = normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "Merging", "In Progress"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Todo", "Merging", "In Progress"}, MergeFastPathEnabled: true})
+				orch.cfg = cfg
+				state = newState(cfg)
+				state.Retry[issue.ID] = savedRetry
+				writer := dispatchTestIssue("2472", "Todo")
+				writer.Fields = map[string]string{"Status": "Todo"}
+				if tt.mutation == "poll" {
+					writer = nativeMergeQueueTestIssue(2472, "pending")
+					writer.Fields = map[string]string{"Status": "Merging"}
+					writer.PullRequest.MergeableState = "blocked"
+					writer.PullRequest.UnstartedChecks = []connector.PullRequestCheck{{Name: "required-check", Status: "queued", QueueSeconds: 47 * 60}}
+					started := now.Add(-mergeWorkerCurrentHeadCIWaitTimeout)
+					state.MergeTimings[writer.ID] = MergeTiming{CIWaitStartedAt: started}
+					state.Retry[writer.ID] = Retry{Issue: writer, Attempt: 7, DueAt: now, Wait: RetryWait{Kind: retryWaitCurrentHeadCI, StartedAt: started}}
+				}
+				later := cloneIssue(issue)
+				later.ID, later.Identifier, later.State = "2471", "digitaldrywood/detent#2471", "In Progress"
+				later.Fields = map[string]string{"Status": "In Progress"}
+				orch.connector = &dispatchReferenceMutationConnector{blockerEvidenceTestConnector: tracker, writerID: writer.ID, failAfterWrite: tt.mutation == "dispatch"}
+				orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue, writer, later}, now)
+				if tracker.identifierBatches != 2 {
+					t.Fatalf("reference reads = %d, want one before and one after mutation; decisions=%+v", tracker.identifierBatches, state.SchedulerDecisions)
+				}
+				if len(tracker.updates) != 1 || tracker.updates[0].issueID != writer.ID {
+					t.Fatalf("lane writes = %+v, want writer %s", tracker.updates, writer.ID)
+				}
+				if len(state.Running) != 1 || state.Running[later.ID].Issue.ID != later.ID {
+					t.Fatalf("fresh post-write predicate did not launch subsequent candidate: running=%+v decisions=%+v", state.Running, state.SchedulerDecisions)
+				}
+				if tt.mutation == "poll" {
+					if _, ok := state.Blocked[writer.ID]; !ok {
+						t.Fatal("exhausted merge worker was not blocked")
+					}
+				}
+				return
+			}
+
 			for tick := range 10 {
 				orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Duration(tick)*time.Minute))
+				if !tt.missing && tracker.identifierBatches != tick+1 {
+					t.Fatalf("tick %d: reference reads = %d, want %d", tick, tracker.identifierBatches, tick+1)
+				}
 				if len(state.Running) != 0 {
 					t.Fatalf("tick %d launched a worker while PR blocker remained unresolved", tick)
 				}
@@ -68,9 +115,37 @@ func TestDispatchRecordedPullRequestBlocker(t *testing.T) {
 	}
 }
 
+type dispatchReferenceMutationConnector struct {
+	*blockerEvidenceTestConnector
+	writerID       string
+	failAfterWrite bool
+}
+
+func (c *dispatchReferenceMutationConnector) UpdateIssueState(ctx context.Context, id, lane string) error {
+	if err := c.dependencyAutoUnblockConnector.UpdateIssueState(ctx, id, lane); err != nil {
+		return err
+	}
+	if id == c.writerID {
+		c.blockers[0].PullRequest = &connector.PullRequest{State: "merged"}
+		if c.failAfterWrite {
+			return errors.New("lane written, response lost")
+		}
+	}
+	return nil
+}
+
 type queuedRecordedBlockerConnector struct {
 	*blockerEvidenceTestConnector
 	fresh connector.Issue
+}
+
+type queuedCurrentWorkpadConnector struct {
+	*queuedRecordedBlockerConnector
+	comments []connector.IssueComment
+}
+
+func (c *queuedCurrentWorkpadConnector) FetchIssueComments(context.Context, connector.Issue) ([]connector.IssueComment, error) {
+	return cloneIssueComments(c.comments), nil
 }
 
 func (c *queuedRecordedBlockerConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
@@ -87,7 +162,6 @@ func TestQueuedDispatchRechecksRecordedBlockers(t *testing.T) {
 			issue.DependencySource = connector.BlockedRefSourceNative
 			issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{typedTestBlocker(workpad.Predicate{Type: workpad.PredicatePullRequestState, Identifier: "digitaldrywood/detent#2635", States: []string{"open"}})}}
 			fresh := cloneIssue(issue)
-			fresh.WorkpadSignal = nil
 			blocker := connector.Issue{ID: "2635", Identifier: "digitaldrywood/detent#2635", PullRequest: &connector.PullRequest{State: "merged"}}
 			tracker := &queuedRecordedBlockerConnector{blockerEvidenceTestConnector: &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{hydratedIssues: []connector.Issue{issue}, blockers: []connector.Issue{blocker}}}, fresh: fresh}
 			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
@@ -114,6 +188,61 @@ func TestQueuedDispatchRechecksRecordedBlockers(t *testing.T) {
 			}
 			if !wantRunning && gate.PoolSnapshot().Used != 0 {
 				t.Fatal("blocked grant leaked capacity")
+			}
+		})
+	}
+}
+
+func TestQueuedDispatchUsesCurrentWorkpad(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		current     string
+		wantRunning bool
+	}{
+		{name: "new human hold", current: "blocked", wantRunning: false},
+		{name: "still ready", current: "in_progress", wantRunning: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Now()
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "project"}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			issue := dispatchTestIssue("workpad", "Todo")
+			issue.Identifier = "digitaldrywood/detent#2470"
+			fresh := cloneIssue(issue)
+			fresh.WorkpadSignal = nil
+			fresh.CommentsComplete = true
+			tracker := &queuedCurrentWorkpadConnector{queuedRecordedBlockerConnector: &queuedRecordedBlockerConnector{
+				blockerEvidenceTestConnector: &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{hydratedIssues: []connector.Issue{issue}}},
+				fresh:                        fresh,
+			}}
+			comment := func(status, action string) connector.IssueComment {
+				return connector.IssueComment{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: " + status + "\nblockers: []\nhuman_action: " + action + "\n```"}
+			}
+			tracker.comments = []connector.IssueComment{comment("in_progress", "null")}
+			tracker.fresh.Comments = append([]connector.IssueComment(nil), tracker.comments...)
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+			held, ok, err := gate.TryAcquire(t.Context(), scheduler.ProjectCandidate{ID: "holder"}, scheduler.SlotRequest{State: "Todo"}, now)
+			if err != nil || !ok {
+				t.Fatalf("hold slot: %t %v", ok, err)
+			}
+			o := Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: gate, globalDispatchReady: make(chan struct{}, 1), globalDispatchPending: make(map[string]pendingGlobalDispatch), supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1)}
+			state := newState(cfg)
+			defer o.releaseRunningSlots(&state)
+			defer o.cancelPendingGlobalDispatches()
+			o.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if len(o.globalDispatchPending) != 1 {
+				t.Fatal("candidate was not queued")
+			}
+			action := "null"
+			if tt.current == "blocked" {
+				action = "needs operator input"
+			}
+			tracker.comments = []connector.IssueComment{comment(tt.current, action)}
+			if err := gate.Release(held); err != nil {
+				t.Fatal(err)
+			}
+			o.dispatchGrantedRequests(t.Context(), &state, now.Add(time.Second))
+			if got := len(state.Running) == 1; got != tt.wantRunning {
+				t.Fatalf("running = %t, want %t", got, tt.wantRunning)
 			}
 		})
 	}
@@ -183,7 +312,7 @@ func TestDispatchCommentFailureRecordsInstanceEvidence(t *testing.T) {
 			for tick := range 2 {
 				if retrying {
 					state.Retry[issue.ID] = saved
-					_, _, reason := o.liveDispatchPlanner(t.Context()).retryAction(&state, issue, saved, now.Add(time.Duration(tick)*time.Second))
+					_, _, reason := o.liveDispatchPlanner(t.Context(), nil).retryAction(&state, issue, saved, now.Add(time.Duration(tick)*time.Second))
 					if reason != dispatchSkipTrackerUnavailable {
 						t.Fatalf("reason = %s", reason)
 					}
@@ -191,7 +320,7 @@ func TestDispatchCommentFailureRecordsInstanceEvidence(t *testing.T) {
 						t.Fatal("tracker failure discarded retry")
 					}
 				} else {
-					decision := o.liveDispatchPlanner(t.Context()).dispatchableIssueDecision(issue, &state, false, now.Add(time.Duration(tick)*time.Second), "")
+					decision := o.liveDispatchPlanner(t.Context(), nil).dispatchableIssueDecision(issue, &state, false, now.Add(time.Duration(tick)*time.Second), "")
 					if decision.reason != dispatchSkipTrackerUnavailable {
 						t.Fatalf("decision = %+v", decision)
 					}
@@ -288,6 +417,30 @@ func TestWorkpadHumanActionSnapshot(t *testing.T) {
 			}
 			if tc.want && (len(evaluated.Evidence) != 1 || !reflect.DeepEqual(*snapshot.WorkpadHumanAction, evaluated.Evidence[0]) || snapshot.WorkpadHumanAction.AgeSeconds != 3600) {
 				t.Fatalf("snapshot=%+v evaluation=%+v", snapshot.WorkpadHumanAction, evaluated)
+			}
+		})
+	}
+}
+
+func TestDispatchParkReasonRemainsVisible(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, reason, recovery, want string
+	}{
+		{name: "park and recovery", reason: workpadBlockedUnactionedReason, recovery: "park_acknowledgement_required", want: workpadBlockedUnactionedReason + ": park_acknowledgement_required"},
+		{name: "park only", reason: noProgressLimitReason, want: noProgressLimitReason},
+		{name: "recovery only", recovery: "park_acknowledgement_required", want: "park_acknowledgement_required"},
+		{name: "legacy unknown hold"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Rework"}, TerminalStates: []string{"Done"}})
+			issue := dispatchTestIssue("held", "Rework")
+			state := newState(cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: tc.reason, RecoveryReason: tc.recovery}
+			p := dispatchPlanner{cfg: cfg}
+			got := p.dispatchableIssueDecision(issue, &state, false, time.Now(), "")
+			if got.dispatchable || got.reason != dispatchSkipBlocked || got.detail != tc.want {
+				t.Fatalf("decision=%+v, want existing blocked reason with detail %q", got, tc.want)
 			}
 		})
 	}

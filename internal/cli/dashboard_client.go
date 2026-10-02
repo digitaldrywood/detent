@@ -9,12 +9,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -23,7 +23,7 @@ import (
 const (
 	dashboardReadTimeout     = 10 * time.Second
 	dashboardResponseBodyMax = 1 << 20
-	stateCollectionLimit     = 100
+	stateCollectionLimit     = serviceapi.StateCollectionLimit
 )
 
 type dashboardHTTPClient interface {
@@ -31,11 +31,12 @@ type dashboardHTTPClient interface {
 }
 
 type DashboardReadClient struct {
-	baseURL    *url.URL
-	address    dashboardAddress
-	credential string
-	http       dashboardHTTPClient
-	timeout    time.Duration
+	baseURL              *url.URL
+	address              dashboardAddress
+	credential           string
+	operatorConnectionID string
+	http                 dashboardHTTPClient
+	timeout              time.Duration
 }
 
 type dashboardAPIProblem struct {
@@ -61,6 +62,26 @@ func (e *DashboardResponseError) Error() string {
 	return fmt.Sprintf("dashboard API returned HTTP %d", e.StatusCode)
 }
 
+// Preserve the application's safe error categories through the authenticated
+// bridge. MCP formats these sentinels, never the HTTP service's raw message.
+func (e *DashboardResponseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	switch e.Code {
+	case "access_denied", "unauthorized", "token_revoked", "token_expired", "read_scope_required":
+		return operatortool.ErrAccessDenied
+	case "invalid_arguments":
+		return operatortool.ErrInvalidArguments
+	case "idempotency_conflict":
+		return mutation.ErrConflict
+	case "idempotency_in_progress":
+		return mutation.ErrUncertain
+	default:
+		return nil
+	}
+}
+
 type DashboardTransportError struct {
 	Timeout bool
 	Err     error
@@ -72,16 +93,8 @@ type DashboardState struct {
 	Truncation StateTruncation
 }
 
-type StateTruncation struct {
-	Limit       int                         `json:"limit"`
-	Truncated   bool                        `json:"truncated"`
-	Collections []StateCollectionTruncation `json:"collections"`
-}
-
-type StateCollectionTruncation struct {
-	Path    string `json:"path"`
-	Omitted int    `json:"omitted"`
-}
+type StateTruncation = serviceapi.StateTruncation
+type StateCollectionTruncation = serviceapi.StateCollectionTruncation
 
 func (e *DashboardTransportError) Error() string {
 	if e == nil {
@@ -239,15 +252,32 @@ func (c *DashboardReadClient) State(ctx context.Context, projectID string) (Dash
 		requestURL.Path = "/api/v1/projects/" + projectID + "/state"
 		requestURL.RawPath = "/api/v1/projects/" + url.PathEscape(projectID) + "/state"
 	}
+	query := requestURL.Query()
+	query.Set("projection", serviceapi.StateProjection)
+	requestURL.RawQuery = query.Encode()
 
 	payload := map[string]any{}
 	if _, err := c.readJSON(ctx, requestURL, &payload); err != nil {
 		return DashboardState{}, err
 	}
-	delete(payload, "board_issues")
-	truncation := StateTruncation{Limit: stateCollectionLimit, Collections: []StateCollectionTruncation{}}
-	truncateStateCollections(payload, "", &truncation)
-	truncation.Truncated = len(truncation.Collections) > 0
+	if _, ok := payload["truncation"]; !ok {
+		// Small responses from older services remain compatible. The hard
+		// transport limit still rejects their unbounded large responses.
+		var err error
+		payload, err = serviceapi.BoundedState(payload)
+		if err != nil {
+			return DashboardState{}, err
+		}
+	}
+	data, err := json.Marshal(payload["truncation"])
+	if err != nil {
+		return DashboardState{}, fmt.Errorf("encode state truncation: %w", err)
+	}
+	var truncation StateTruncation
+	if err := json.Unmarshal(data, &truncation); err != nil {
+		return DashboardState{}, fmt.Errorf("decode state truncation: %w", err)
+	}
+	delete(payload, "truncation")
 	return DashboardState{payload: payload, Truncation: truncation}, nil
 }
 
@@ -289,6 +319,9 @@ func (c *DashboardReadClient) requestJSON(ctx context.Context, method string, re
 		return 0, fmt.Errorf("create dashboard API request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
+	if c.operatorConnectionID != "" {
+		request.Header.Set("X-Detent-Connection-ID", c.operatorConnectionID)
+	}
 	if c.credential != "" {
 		request.Header.Set("Authorization", "Bearer "+c.credential)
 	}
@@ -337,39 +370,18 @@ func decodeDashboardJSON(reader io.Reader, result any) error {
 	return nil
 }
 
-func truncateStateCollections(value any, path string, truncation *StateTruncation) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		if typed == nil {
-			return typed
-		}
-		keys := make([]string, 0, len(typed))
-		for key := range typed {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			typed[key] = truncateStateCollections(typed[key], path+"/"+jsonPointerToken(key), truncation)
-		}
-		return typed
-	case []any:
-		if len(typed) > stateCollectionLimit {
-			truncation.Collections = append(truncation.Collections, StateCollectionTruncation{
-				Path:    path,
-				Omitted: len(typed) - stateCollectionLimit,
-			})
-			typed = typed[:stateCollectionLimit]
-		}
-		for index := range typed {
-			typed[index] = truncateStateCollections(typed[index], path+"/"+strconv.Itoa(index), truncation)
-		}
-		return typed
+// ListTools delegates discovery to the same daemon authority as execution.
+func (c *DashboardReadClient) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
+	if c == nil || c.baseURL == nil {
+		return nil, errors.New("dashboard API client is not configured")
 	}
-	return value
-}
-
-func jsonPointerToken(value string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(value, "~", "~0"), "/", "~1")
+	requestURL := *c.baseURL
+	requestURL.Path = "/api/v1/operator-tools"
+	var result struct {
+		Tools []operatortool.Definition `json:"tools"`
+	}
+	_, err := c.requestJSON(ctx, http.MethodGet, requestURL, &result)
+	return result.Tools, err
 }
 
 func (c *DashboardReadClient) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
@@ -407,6 +419,9 @@ func (c *DashboardReadClient) Execute(ctx context.Context, call operatortool.Cal
 		return operatortool.Result{}, fmt.Errorf("create dashboard API request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
+	if c.operatorConnectionID != "" {
+		request.Header.Set("X-Detent-Connection-ID", c.operatorConnectionID)
+	}
 	request.Header.Set("Content-Type", "application/json")
 	if c.credential != "" {
 		request.Header.Set("Authorization", "Bearer "+c.credential)
@@ -467,4 +482,31 @@ type dashboardHTTPClientFunc func(*http.Request) (*http.Response, error)
 
 func (f dashboardHTTPClientFunc) Do(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+// OpenConnection establishes an authenticated stdio connection in default
+// confirmation mode. YOLO selection remains a browser operator action.
+func (c *DashboardReadClient) OpenConnection(ctx context.Context) error {
+	if c == nil || c.baseURL == nil {
+		return errors.New("dashboard API client is not configured")
+	}
+	requestURL := *c.baseURL
+	requestURL.Path = "/api/v1/operator-connections"
+	var result struct {
+		ID string `json:"connection_id"`
+	}
+	status, err := c.requestJSON(ctx, http.MethodPost, requestURL, &result)
+	if status == http.StatusNotFound || status == http.StatusNotImplemented {
+		// Read adapters without application commands preserve the existing
+		// read bridge. They expose no confirmation mode or write authority.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if result.ID == "" {
+		return errors.New("operator connection is unavailable")
+	}
+	c.operatorConnectionID = result.ID
+	return nil
 }

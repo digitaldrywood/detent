@@ -1,7 +1,9 @@
 package global
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -45,6 +48,8 @@ const (
 )
 
 const plainWorkflowPathRequirement = "must be absolute or home-relative when workflow_ref is empty"
+
+var mutationMu sync.Mutex
 
 var schedulingModes = []string{
 	SchedulingWeighted,
@@ -286,6 +291,7 @@ type options struct {
 	relativeTo                string
 	projectPathLiterals       bool
 	allowMissingWorkflowFiles bool
+	allowMissingProjectPaths  bool
 }
 
 type pathOptions struct {
@@ -316,6 +322,14 @@ func WithProjectPathLiterals() Option {
 func WithMissingWorkflowFiles() Option {
 	return func(opts *options) {
 		opts.allowMissingWorkflowFiles = true
+	}
+}
+
+// WithMissingProjectPaths permits not-yet-cloned project paths during runner
+// setup while preserving path expansion and all other configuration validation.
+func WithMissingProjectPaths() Option {
+	return func(opts *options) {
+		opts.allowMissingProjectPaths = true
 	}
 }
 
@@ -395,6 +409,43 @@ func ReadProject(path string, projectID string, opts ...Option) (Config, []strin
 }
 
 func Write(path string, cfg Config, opts ...Option) error {
+	mutationMu.Lock()
+	defer mutationMu.Unlock()
+	return write(path, cfg, opts...)
+}
+
+func Mutate(path string, mutate func(*Config, string) bool, opts ...Option) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("global config path is required")
+	}
+
+	mutationMu.Lock()
+	defer mutationMu.Unlock()
+
+	readOptions := defaultOptions()
+	for _, opt := range opts {
+		opt(&readOptions)
+	}
+	expandedPath, err := expandPath(path, readOptions)
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(expandedPath)
+	if err != nil {
+		return MissingFileError{Path: expandedPath, Err: err}
+	}
+	cfg, err := Parse(raw, expandedPath, opts...)
+	if err != nil {
+		return err
+	}
+	revision := sha256.Sum256(raw)
+	if !mutate(&cfg, hex.EncodeToString(revision[:])) {
+		return nil
+	}
+	return write(expandedPath, cfg, opts...)
+}
+
+func write(path string, cfg Config, opts ...Option) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("global config path is required")
 	}
@@ -1701,6 +1752,9 @@ func projectPathErrors(path string, field string, opts options, expected pathExp
 	}
 
 	info, err := os.Stat(expanded) // #nosec G703 -- validation intentionally inspects the operator-configured project path after expansion.
+	if opts.allowMissingProjectPaths && errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return []string{field + ": path does not exist"}
 	}

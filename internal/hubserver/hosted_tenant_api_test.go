@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -47,6 +51,10 @@ func TestHostedTenantAPIAuthorization(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
 	owner := f.cookies["owner"]
+	viewer := f.cookies["viewer"]
+	if owner == nil || viewer == nil {
+		t.Fatal("owner or viewer session cookie is missing")
+	}
 	csrf := map[string]string{"X-CSRF-Token": hostedCSRF(owner.Value)}
 	invite := `{"email":"boundary@example.test","role":"member","idempotency_key":"boundary"}`
 	project := `{"name":"Boundary project","grant_access":true,"idempotency_key":"boundary"}`
@@ -69,9 +77,9 @@ func TestHostedTenantAPIAuthorization(t *testing.T) {
 		{name: "project without CSRF", account: "owner", method: http.MethodPost, path: "/projects", body: project, status: http.StatusForbidden, code: "invalid_csrf"},
 		{name: "bearer on the session API", method: http.MethodPost, path: "/members/invitations", body: invite, headers: map[string]string{"Authorization": "Bearer " + testHubAdminToken}, status: http.StatusForbidden, code: "forbidden"},
 		{name: "bearer member read", method: http.MethodGet, path: "/members", headers: map[string]string{"Authorization": "Bearer " + testHubAdminToken}, status: http.StatusForbidden, code: "forbidden"},
-		{name: "viewer invites", account: "viewer", method: http.MethodPost, path: "/members/invitations", body: invite, headers: map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["viewer"].Value)}, status: http.StatusForbidden, code: "forbidden"},
-		{name: "viewer revokes an invitation", account: "viewer", method: http.MethodDelete, path: "/members/invitations/invitation_browser_1", headers: map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["viewer"].Value)}, status: http.StatusForbidden, code: "forbidden"},
-		{name: "viewer creates a project", account: "viewer", method: http.MethodPost, path: "/projects", body: project, headers: map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["viewer"].Value)}, status: http.StatusNotFound, code: "not_found"},
+		{name: "viewer invites", account: "viewer", method: http.MethodPost, path: "/members/invitations", body: invite, headers: map[string]string{"X-CSRF-Token": hostedCSRF(viewer.Value)}, status: http.StatusForbidden, code: "forbidden"},
+		{name: "viewer revokes an invitation", account: "viewer", method: http.MethodDelete, path: "/members/invitations/invitation_browser_1", headers: map[string]string{"X-CSRF-Token": hostedCSRF(viewer.Value)}, status: http.StatusForbidden, code: "forbidden"},
+		{name: "viewer creates a project", account: "viewer", method: http.MethodPost, path: "/projects", body: project, headers: map[string]string{"X-CSRF-Token": hostedCSRF(viewer.Value)}, status: http.StatusNotFound, code: "not_found"},
 		{name: "invite without idempotency key", account: "owner", method: http.MethodPost, path: "/members/invitations", body: `{"email":"key@example.test","role":"member"}`, headers: csrf, status: http.StatusUnprocessableEntity, code: "invalid_request"},
 		{name: "invite with unknown field", account: "owner", method: http.MethodPost, path: "/members/invitations", body: `{"email":"key@example.test","role":"member","idempotency_key":"k","admin":true}`, headers: csrf, status: http.StatusUnprocessableEntity, code: "invalid_request"},
 		{name: "invite staff address", account: "owner", method: http.MethodPost, path: "/members/invitations", body: `{"email":"staff@example.test","role":"member","idempotency_key":"staff"}`, headers: csrf, status: http.StatusUnprocessableEntity, code: "invalid_request"},
@@ -104,9 +112,56 @@ func TestHostedTenantAPIAuthorization(t *testing.T) {
 	})
 }
 
+func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
+	t.Parallel()
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
+			service, provider := f.service, f.provider
+			var created []hostedInvitationView
+			for _, email := range []string{"older@example.test", "newest@example.test"} {
+				var view hostedInvitationView
+				browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/members/invitations", map[string]any{
+					"email": email, "role": "member", "idempotency_key": email,
+				}, http.StatusCreated), &view)
+				issued, err := provider.Invitation(t.Context(), view.ID)
+				if err != nil || view.ExpiresAt != formatHubTime(issued.ExpiresAt) {
+					t.Fatalf("response expiry = %q, provider expiry = %v: %v", view.ExpiresAt, issued.ExpiresAt, err)
+				}
+				var storedExpiry string
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT expires_at FROM hosted_invitations WHERE id=?", view.ID).Scan(&storedExpiry); err != nil || storedExpiry != view.ExpiresAt {
+					t.Fatalf("stored expiry = %q, response expiry = %q: %v", storedExpiry, view.ExpiresAt, err)
+				}
+				if legacy {
+					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE hosted_invitations SET expires_at='' WHERE id=?", view.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				created = append(created, view)
+			}
+			for _, releaseSeat := range []bool{false, true} {
+				if releaseSeat {
+					if _, err := service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_member_reservations"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				listed, err := service.hostedPendingInvitations(t.Context())
+				if err != nil || len(listed) != len(created) {
+					t.Fatalf("listed invitations = %#v: %v", listed, err)
+				}
+				for index, view := range listed {
+					if !reflect.DeepEqual(view, created[len(created)-1-index]) {
+						t.Fatalf("listed invitation = %#v, created = %#v", view, created[len(created)-1-index])
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestHostedInvitationLifecycle(t *testing.T) {
 	t.Parallel()
-	f := newBrowserHostedFixture(t, true)
+	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
 	var created hostedInvitationView
 	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/members/invitations", map[string]any{
 		"email": "Pending@Example.test", "role": "member", "idempotency_key": "pending",
@@ -133,7 +188,7 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 			if !slices.Equal(users, test.members) || len(members.Invitations) != test.invitations {
 				t.Fatalf("members = %v, invitations = %#v", users, members.Invitations)
 			}
-			if test.invitations == 1 && (members.Invitations[0].ID != created.ID || members.Invitations[0].ExpiresAt == "") {
+			if test.invitations == 1 && (members.Invitations[0].ID != created.ID || members.Invitations[0].ExpiresAt != created.ExpiresAt) {
 				t.Fatalf("pending invitation = %#v", members.Invitations[0])
 			}
 		})
@@ -143,7 +198,56 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 		t.Fatalf("reserved seats = %d: %v", seats, err)
 	}
 	path := browserHostedOrganizationBase + "/members/invitations/" + url.PathEscape(created.ID)
+	for _, action := range []string{"resend", "revoke"} {
+		t.Run(action+" refusal preserves invitation and seat", func(t *testing.T) {
+			method, target := http.MethodDelete, path
+			if action == "resend" {
+				method, target = http.MethodPost, path+"/resend"
+			}
+			f.api(t, "viewer", method, target, map[string]any{"idempotency_key": action + "-viewer"}, http.StatusForbidden)
+			calls := 0
+			f.provider.invitationDelivery = func(ctx context.Context, id, gotAction string) error {
+				calls++
+				if id != created.ID || gotAction != action {
+					t.Fatalf("provider invitation action = %s %s", gotAction, id)
+				}
+				var pending, held int
+				if err := f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND accepted_user_id=''", id).Scan(&pending); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_member_reservations WHERE email=?", created.Email).Scan(&held); err != nil || pending != 1 || held != 1 {
+					t.Fatalf("provider called after local removal: pending=%d held=%d err=%v", pending, held, err)
+				}
+				return auth.ErrHostedIdentity
+			}
+			defer func() { f.provider.invitationDelivery = nil }()
+			f.api(t, "owner", method, target, map[string]any{"idempotency_key": action + "-failure"}, http.StatusServiceUnavailable)
+			var members hostedMembersResponse
+			browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/members", nil, http.StatusOK), &members)
+			if calls != 1 || len(members.Invitations) != 1 || members.Invitations[0].ID != created.ID {
+				t.Fatalf("failed provider action: calls=%d invitations=%#v", calls, members.Invitations)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_member_reservations WHERE email=?", created.Email).Scan(&seats); err != nil || seats != 1 {
+				t.Fatalf("failed provider action released seat: %d %v", seats, err)
+			}
+		})
+	}
+	f.api(t, "owner", http.MethodPost, path+"/resend", map[string]any{"idempotency_key": "resend"}, http.StatusNoContent)
+	called := false
+	f.provider.invitationDelivery = func(ctx context.Context, id, action string) error {
+		called = true
+		var pending int
+		if err := f.service.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=?", id).Scan(&pending); err != nil || pending != 1 || action != "revoke" {
+			t.Fatalf("revoke called after local deletion: pending=%d action=%s err=%v", pending, action, err)
+		}
+		return nil
+	}
 	response := f.api(t, "owner", http.MethodDelete, path, map[string]any{"idempotency_key": "revoke"}, http.StatusNoContent)
+	f.provider.invitationDelivery = nil
+	providerInvitation, err := f.provider.Invitation(t.Context(), created.ID)
+	if err != nil || !called || providerInvitation.State != "revoked" {
+		t.Fatalf("provider revoke: called=%t invitation=%#v err=%v", called, providerInvitation, err)
+	}
 	if response.Body.Len() != 0 {
 		t.Fatalf("revocation body = %q", response.Body.String())
 	}
@@ -383,6 +487,53 @@ func TestHostedInvitationIdempotency(t *testing.T) {
 			}
 		})
 	}
+	t.Run("provider sends before its response is lost", func(t *testing.T) {
+		f.service.config.Hosted.Provider = sendAndLoseInviteProvider{f.provider}
+		input := map[string]any{"email": "lost@example.test", "role": "member", "idempotency_key": "lost"}
+		failure := f.api(t, "owner", http.MethodPost, path, input, http.StatusServiceUnavailable)
+		if strings.Contains(failure.Body.String(), "credential-invitation-support-billing-sensitive-sentinel") {
+			t.Fatal("provider secret in error")
+		}
+		f.service.config.Hosted.Provider = f.provider
+		f.api(t, "owner", http.MethodPost, path, input, http.StatusConflict)
+		if count := f.providerInvitations(); count != 3 {
+			t.Fatalf("duplicate invitation after lost response: %d", count)
+		}
+	})
+	t.Run("hosted audit consumes content-free context", func(t *testing.T) {
+		session, err := f.service.hostedSessions.Authenticate(t.Context(), f.cookies["owner"].Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := mutation.Metadata{PrincipalID: "untrusted-actor", OrganizationID: "untrusted-org", ProjectID: f.project, ResourceID: first.ID, Action: "invite_member", Source: "mcp", Mode: "confirmation", Confirmation: "approved", CorrelationID: "audit-correlation"}
+		m, err = m.Bind("secret-business-key", map[string]string{"body": "credential-invitation-support-billing-sensitive-sentinel"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.hostedAudit(mutation.WithContext(t.Context(), m), session.Identity, "succeeded", "invite_member", f.project, http.StatusCreated); err != nil {
+			t.Fatal(err)
+		}
+		var summary string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT mutation_json FROM hosted_audit WHERE event='succeeded' ORDER BY id DESC LIMIT 1").Scan(&summary); err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{"untrusted-actor", "untrusted-org", "secret-business-key", "credential-invitation-support-billing-sensitive-sentinel"} {
+			if strings.Contains(summary, secret) {
+				t.Fatalf("audit leaked %s", secret)
+			}
+		}
+		var got struct {
+			mutation.Metadata
+			Outcome string `json:"outcome"`
+		}
+		if err := json.Unmarshal([]byte(summary), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.PrincipalID != session.Identity.Subject || got.OrganizationID != f.service.config.Hosted.OrganizationID || got.CorrelationID != "audit-correlation" || got.Confirmation != "approved" || got.Source != "mcp" {
+			t.Fatalf("audit context=%+v; expected actor=%q organization=%q", got, session.Identity.Subject, f.service.config.Hosted.OrganizationID)
+		}
+	})
+
 }
 
 func TestHostedInvitationFailureKeepsHeldSeat(t *testing.T) {
@@ -404,6 +555,11 @@ func TestHostedInvitationFailureKeepsHeldSeat(t *testing.T) {
 			}
 			f.service.config.Hosted.Provider = failingInviteProvider{f.provider}
 			f.api(t, "owner", http.MethodPost, path, map[string]any{"email": "seat@example.test", "role": "member", "idempotency_key": "failed"}, http.StatusServiceUnavailable)
+			f.api(t, "owner", http.MethodPost, path, map[string]any{"email": "seat@example.test", "role": "member", "idempotency_key": "failed"}, http.StatusConflict)
+			var pending string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT response_json FROM native_commands WHERE command_key='failed'").Scan(&pending); err != nil || pending != hostedPendingCommand {
+				t.Fatalf("uncertain invitation receipt=%q %v", pending, err)
+			}
 			if got := f.invitationSeats(t, "seat@example.test"); got != test.seats {
 				t.Fatalf("seats = %d, want %d", got, test.seats)
 			}
@@ -466,7 +622,7 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "shared-host", DisplayName: "Shared runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
+	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "shared-host", DisplayName: "Shared runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organization+"/runner-enrollments/redeem", issued.Token, redemption), http.StatusCreated)
 	response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "private-run"}, Title: "Private run", State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -556,8 +712,24 @@ func TestHostedInvitationKeyClaim(t *testing.T) {
 			},
 		},
 		{
-			name:   "a provider failure gives the key back so the same key succeeds",
+			name:   "a reservation failure before inviting releases the key so the same key succeeds",
 			status: http.StatusCreated, invitations: 1,
+			prepare: func(t *testing.T, f *browserHostedFixture) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_invitation_seat BEFORE INSERT ON hosted_member_reservations BEGIN SELECT RAISE(ABORT, 'fixture reservation failure'); END`); err != nil {
+					t.Fatal(err)
+				}
+				f.api(t, "owner", http.MethodPost, path, body, http.StatusServiceUnavailable)
+				if got := f.providerInvitations(); got != 0 {
+					t.Fatalf("reservation failure sent %d provider invitations", got)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `DROP TRIGGER reject_invitation_seat`); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:   "a provider failure retains the key because the outcome is uncertain",
+			status: http.StatusConflict, code: "idempotency_in_progress", invitations: 0,
 			prepare: func(t *testing.T, f *browserHostedFixture) {
 				provider := f.service.config.Hosted.Provider
 				f.service.config.Hosted.Provider = failingInviteProvider{f.provider}
@@ -588,9 +760,13 @@ func TestHostedInvitationKeyClaim(t *testing.T) {
 func TestHostedInvitationConcurrentKeyInvitesOnce(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
+	owner := f.cookies["owner"]
+	if owner == nil {
+		t.Fatal("owner session cookie is missing")
+	}
 	path := browserHostedOrganizationBase + "/members/invitations"
 	body := `{"email":"race@example.test","role":"member","idempotency_key":"race"}`
-	headers := map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["owner"].Value)}
+	headers := map[string]string{"X-CSRF-Token": hostedCSRF(owner.Value)}
 	const requests = 8
 	start := make(chan struct{})
 	responses := make(chan *httptest.ResponseRecorder, requests)
@@ -661,4 +837,13 @@ func TestClaimHostedCommandIsExclusive(t *testing.T) {
 	if owners != 1 {
 		t.Fatalf("%d callers claimed the key, want exactly one", owners)
 	}
+}
+
+type sendAndLoseInviteProvider struct{ *browserHostedProvider }
+
+func (p sendAndLoseInviteProvider) Invite(ctx context.Context, org, email, role, actor string) (auth.Invitation, error) {
+	if _, err := p.browserHostedProvider.Invite(ctx, org, email, role, actor); err != nil {
+		return auth.Invitation{}, err
+	}
+	return auth.Invitation{}, errors.New("credential-invitation-support-billing-sensitive-sentinel")
 }

@@ -34,6 +34,8 @@ type apiCredential struct {
 	// HostedMembership is the provider membership the credential was
 	// resolved from; mutation rechecks compare it against the member row.
 	HostedMembership string
+	HostedPrincipal  string
+	HostedKeyScope   apikey.Scope
 	ManageRunners    bool
 	SessionHash      string
 	Hash             string
@@ -42,6 +44,9 @@ type apiCredential struct {
 	Scope            apiScope
 	NativeOnly       bool
 	Runner           runnerauth.Identity
+	// runnerRenewal is set only for POST renewal of this bound identity.
+	// Expiry limits ordinary API use, but must not strand a stopped host.
+	runnerRenewal bool
 }
 
 type apiErrorResponse struct {
@@ -50,18 +55,31 @@ type apiErrorResponse struct {
 }
 
 type tokenRequest struct {
-	Name  string   `json:"name"`
-	Scope apiScope `json:"scope"`
+	Name       string         `json:"name"`
+	Scope      apiScope       `json:"scope"`
+	Issuer     *apiCredential `json:"-"`
+	KeyScope   apikey.Scope   `json:"-"`
+	ExpiresAt  *time.Time     `json:"-"`
+	ProjectIDs []string       `json:"-"`
 }
 
+type tokenGrantResponse struct {
+	OrganizationID string `json:"organization_id"`
+	ProjectID      string `json:"project_id"`
+}
 type tokenResponse struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Scope       apiScope  `json:"scope"`
-	Token       string    `json:"token"`
-	Fingerprint string    `json:"fingerprint"`
-	CreatedAt   time.Time `json:"created_at"`
-	RotatedAt   time.Time `json:"rotated_at,omitempty"`
+	ExpiresAt   *time.Time           `json:"expires_at,omitempty"`
+	KeyScope    apikey.Scope         `json:"key_scope,omitempty"`
+	NativeOnly  bool                 `json:"native_only"`
+	RevokedAt   *time.Time           `json:"revoked_at,omitempty"`
+	Grants      []tokenGrantResponse `json:"grants"`
+	ID          string               `json:"id"`
+	Name        string               `json:"name"`
+	Scope       apiScope             `json:"scope"`
+	Token       string               `json:"token,omitempty"`
+	Fingerprint string               `json:"fingerprint"`
+	CreatedAt   time.Time            `json:"created_at"`
+	RotatedAt   time.Time            `json:"rotated_at,omitempty"`
 }
 
 func (d *database) ensureInitialAdminToken(ctx context.Context, token []byte) error {
@@ -101,6 +119,9 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 					return s.nativeAPIError(c, nativeNotFound())
 				}
 			}
+			if credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite) && !hostedReadRequest(c) {
+				return c.NoContent(http.StatusForbidden)
+			}
 			if credential.Runner.RunnerID != "" && !runnerOperationAllowed(c, credential.Runner.Operations) {
 				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "Runner does not permit this operation"})
 			}
@@ -131,11 +152,20 @@ func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, er
 	if err != nil {
 		return apiCredential{}, http.StatusUnauthorized, err
 	}
+	renewalRunner, renewalOrganization := "", ""
+	if c.Request().Method == http.MethodPost && c.Path() == runnerBase+"/:runner/renew" {
+		renewalRunner, renewalOrganization = c.Param("runner"), c.Param("organization")
+	}
+	return s.authenticateAPIToken(c.Request().Context(), token, renewalRunner, renewalOrganization)
+}
+
+// authenticateAPIToken is shared by HTTP authentication and operator execution.
+func (s *Service) authenticateAPIToken(ctx context.Context, token, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
 	hash := apikey.HashToken(token)
 	var credential apiCredential
 	var storedHash, createdAt, operations string
 	var revokedAt, expiresAt sql.NullString
-	err = s.database.db.QueryRowContext(c.Request().Context(), `
+	err := s.database.db.QueryRowContext(ctx, `
 SELECT t.id, t.name, t.scope, t.token_hash, t.revoked_at, t.native_only, t.expires_at, t.created_at,
 coalesce(r.id, ''), coalesce(r.machine_id, ''), coalesce(r.organization_id, ''), coalesce(r.operations_json, '[]')
 FROM api_tokens t LEFT JOIN runner_identities r ON r.token_id = t.id
@@ -154,10 +184,11 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 	if err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, err
 	}
+	credential.runnerRenewal = credential.Runner.Valid() && renewalRunner != "" && credential.Runner.RunnerID == renewalRunner && string(credential.Runner.OrganizationID) == renewalOrganization
+	if !credential.timeValid(now, createdAt, expiresAt) {
+		return apiCredential{}, http.StatusUnauthorized, errors.New("token is outside its validity interval")
+	}
 	if expiresAt.Valid {
-		if !runnerTimeValid(now, createdAt, expiresAt.String) {
-			return apiCredential{}, http.StatusUnauthorized, errors.New("token is outside its validity interval")
-		}
 		credential.Runner.ExpiresAt, err = parseTimeValue(expiresAt.String)
 		if err != nil {
 			return apiCredential{}, http.StatusServiceUnavailable, err
@@ -167,10 +198,31 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 		return apiCredential{}, http.StatusServiceUnavailable, err
 	}
 	credential.Hash = hash
-	if _, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), credential.ID); err != nil {
+	if s.config.Hosted != nil {
+		credential, err = s.hostedAPITokenCredential(ctx, credential, createdAt, expiresAt)
+		if err != nil {
+			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
+		}
+	}
+	if _, err := s.database.db.ExecContext(ctx, "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", formatHubTime(now), credential.ID); err != nil {
 		return apiCredential{}, http.StatusServiceUnavailable, fmt.Errorf("record hub API token use: %w", err)
 	}
 	return credential, http.StatusOK, nil
+}
+
+func (credential apiCredential) timeValid(now time.Time, created string, expires sql.NullString) bool {
+	if !expires.Valid {
+		return !credential.runnerRenewal
+	}
+	if !credential.runnerRenewal {
+		return runnerTimeValid(now, created, expires.String)
+	}
+	start, err := parseTimeValue(created)
+	if err != nil {
+		return false
+	}
+	end, err := parseTimeValue(expires.String)
+	return err == nil && start.Before(end) && !now.Before(start)
 }
 
 func apiBearerToken(c echo.Context) (string, error) {
@@ -198,94 +250,26 @@ func (s *Service) createAPIToken(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	request.Name = strings.TrimSpace(request.Name)
-	if request.Name == "" || !validAPIScope(request.Scope) {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_token", Message: "Token name and scope are required"})
-	}
-	token, err := s.config.generateToken()
+	response, err := s.createAPITokenFor(c.Request().Context(), request)
 	if err != nil {
-		return s.internalAPIError(c, "token_create_failed", "API token could not be created", err)
-	}
-	now, err := s.database.currentTime()
-	if err != nil {
-		return s.internalAPIError(c, "token_create_failed", "API token could not be created", err)
-	}
-	id := strings.TrimSpace(s.config.newTokenID())
-	if id == "" {
-		return s.internalAPIError(c, "token_create_failed", "API token could not be created", errors.New("generated token ID is empty"))
-	}
-	hash := apikey.HashToken(token)
-	_, err = s.database.db.ExecContext(c.Request().Context(), `
-INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, request.Name, hash, tokenFingerprint(hash), request.Scope, formatHubTime(now), formatHubTime(now),
-	)
-	if err != nil {
-		return c.JSON(http.StatusConflict, apiErrorResponse{Code: "token_conflict", Message: "API token name already exists"})
+		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusCreated, tokenResponse{ID: id, Name: request.Name, Scope: request.Scope, Token: token, Fingerprint: tokenFingerprint(hash), CreatedAt: now})
+	return c.JSON(http.StatusCreated, response)
 }
 
 func (s *Service) rotateAPIToken(c echo.Context) error {
-	id := strings.TrimSpace(c.Param("id"))
-	if id == "" {
-		return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "token_not_found", Message: "API token was not found"})
-	}
-	token, err := s.config.generateToken()
+	response, err := s.rotateAPITokenFor(c.Request().Context(), strings.TrimSpace(c.Param("id")))
 	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
+		return s.nativeAPIError(c, err)
 	}
-	now, err := s.database.currentTime()
-	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
-	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), `
-UPDATE api_tokens
-SET token_hash = ?, token_fingerprint = ?, rotated_at = ?, revoked_at = NULL, updated_at = ?
-WHERE id = ? AND NOT EXISTS (SELECT 1 FROM runner_identities WHERE token_id = api_tokens.id)`, apikey.HashToken(token), tokenFingerprint(apikey.HashToken(token)), formatHubTime(now), formatHubTime(now), id)
-	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
-	}
-	if rows != 1 {
-		return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "token_not_found", Message: "API token was not found"})
-	}
-	var response tokenResponse
-	var createdAt string
-	err = s.database.db.QueryRowContext(c.Request().Context(), "SELECT id, name, scope, token_fingerprint, created_at FROM api_tokens WHERE id = ?", id).Scan(&response.ID, &response.Name, &response.Scope, &response.Fingerprint, &createdAt)
-	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
-	}
-	response.CreatedAt, err = parseTimeValue(createdAt)
-	if err != nil {
-		return s.internalAPIError(c, "token_rotate_failed", "API token could not be rotated", err)
-	}
-	response.Token = token
-	response.RotatedAt = now
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return c.JSON(http.StatusOK, response)
 }
 
 func (s *Service) revokeAPIToken(c echo.Context) error {
-	id := strings.TrimSpace(c.Param("id"))
-	now, err := s.database.currentTime()
-	if err != nil {
-		return s.internalAPIError(c, "token_revoke_failed", "API token could not be revoked", err)
-	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE api_tokens SET revoked_at = ?, updated_at = ? WHERE id = ? AND revoked_at IS NULL AND NOT EXISTS (SELECT 1 FROM runner_identities WHERE token_id = api_tokens.id)", formatHubTime(now), formatHubTime(now), id)
-	if err != nil {
-		return s.internalAPIError(c, "token_revoke_failed", "API token could not be revoked", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return s.internalAPIError(c, "token_revoke_failed", "API token could not be revoked", err)
-	}
-	if rows != 1 {
-		return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "token_not_found", Message: "Active API token was not found"})
+	if err := s.revokeAPITokenFor(c.Request().Context(), strings.TrimSpace(c.Param("id"))); err != nil {
+		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }

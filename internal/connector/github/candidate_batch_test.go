@@ -350,16 +350,10 @@ func TestCandidateEvidenceFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// ReadCandidates resolves body refs after all candidate evidence is collected.
-			resolved := []connector.Issue{got}
-			if err := c.resolveBlockedByProjectState(t.Context(), resolved); err != nil {
-				t.Fatal(err)
-			}
-			got = resolved[0]
-			if len(got.BlockedBy) != 1 || got.BlockedBy[0].Identifier != "owner/repo#90" || got.DependencySource != connector.BlockedRefSourceNative || len(got.Comments) != 2 || len(got.DependencyNotes) != 2 {
+			if len(got.BlockedBy) != 1 || got.BlockedBy[0].Identifier != "owner/repo#90" || got.BlockedBy[0].State != "" || got.DependencySource != connector.BlockedRefSourceNative || len(got.Comments) != 2 || len(got.DependencyNotes) != 2 {
 				t.Fatalf("fallback evidence=%+v", got)
 			}
-			if graphql != 1 || rest != 4 {
+			if graphql != 1 || rest != 3 {
 				t.Fatalf("GraphQL=%d REST=%d", graphql, rest)
 			}
 		})
@@ -483,114 +477,183 @@ func TestCandidateBoardBatchedCursor(t *testing.T) {
 }
 
 func TestCandidateBodyDependencyRefresh(t *testing.T) {
-	for _, mode := range []string{"shared prose", "native", "reopened", "closed", "expired", "snapshot", "rate limited"} {
-		t.Run(mode, func(t *testing.T) {
-			now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
-			var refresh, rest, fields int
-			var logs bytes.Buffer
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				if r.Method == http.MethodGet {
-					rest++
-					if r.URL.Path != "/repos/owner/repo/issues/99" {
-						t.Errorf("unexpected REST %s", r.URL.Path)
-					}
-					state := "closed"
-					if (mode == "reopened" && refresh == 2) || (mode == "closed" && refresh == 1) {
-						state = "open"
-					}
-					fmt.Fprintf(w, `{"node_id":"B99","number":99,"state":%q,"body":"","labels":[],"html_url":"https://github.com/owner/repo/issues/99"}`, state)
-					return
-				}
-				var request struct {
-					Query     string
-					Variables map[string]any
-				}
-				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-					t.Error(err)
-				}
-				assertCandidateQueryShape(t, request.Query, request.Variables)
-				if strings.Contains(request.Query, "projectItems(") {
-					fields++
-					if mode == "rate limited" {
-						w.WriteHeader(http.StatusTooManyRequests)
-						fmt.Fprint(w, `{"message":"rate limited"}`)
+	for _, read := range []string{"candidates", "refresh"} {
+		for _, mode := range []string{"shared prose", "external prose", "native", "reopened", "closed", "expired", "snapshot", "rate limited"} {
+			t.Run(read+"/"+mode, func(t *testing.T) {
+				now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
+				var refresh, prerequisiteReads, fields int
+				var logs bytes.Buffer
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if r.Method == http.MethodGet {
+						if r.URL.Path == "/repos/owner/repo/pulls" {
+							fmt.Fprint(w, `[]`)
+							return
+						}
+						prerequisiteReads++
+						dependencyRepo := "owner/repo"
+						if mode == "external prose" {
+							dependencyRepo = "other/repo"
+						}
+						if r.URL.Path != "/repos/"+dependencyRepo+"/issues/99" {
+							t.Errorf("unexpected REST %s", r.URL.Path)
+						}
+						state := "closed"
+						if (mode == "reopened" && refresh == 2) || (mode == "closed" && refresh == 1) {
+							state = "open"
+						}
+						fmt.Fprintf(w, `{"node_id":"B99","number":99,"state":%q,"body":"","labels":[],"html_url":"https://github.com/%s/issues/99"}`, state, dependencyRepo)
 						return
 					}
-					state := "Done"
-					if (mode == "reopened" && refresh == 2) || mode == "closed" {
-						state = "Todo"
+					var request struct {
+						Query     string
+						Variables map[string]any
 					}
-					fmt.Fprintf(w, `{"data":{"node":{"projectItems":{"nodes":[{"id":"PB99","project":{"id":"PVT_1"},"statusValue":{"name":%q}}]}}}}`, state)
-					return
-				}
-				refresh++
-				items := []string{}
-				for n := 1; n <= 3; n++ {
-					body, native := "Depends on: #99", `[]`
-					if n == 3 {
-						body = ""
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Error(err)
 					}
-					if mode == "native" && n < 3 {
-						native = `[{"id":"B99","number":99,"state":"CLOSED","repository":{"nameWithOwner":"owner/repo"}}]`
+					assertCandidateQueryShape(t, request.Query, request.Variables)
+					if !strings.Contains(request.Query, "CandidateHydration") && strings.Contains(request.Query, "projectItems(") {
+						fields++
+						if mode == "rate limited" {
+							w.WriteHeader(http.StatusTooManyRequests)
+							fmt.Fprint(w, `{"message":"rate limited"}`)
+							return
+						}
+						state := "Done"
+						if (mode == "reopened" && refresh == 2) || mode == "closed" {
+							state = "Todo"
+						}
+						fmt.Fprintf(w, `{"data":{"node":{"projectItems":{"nodes":[{"id":"PB99","project":{"id":"PVT_1"},"statusValue":{"name":%q}}]}}}}`, state)
+						return
 					}
-					items = append(items, fmt.Sprintf(`{"id":"P%d","content":{"__typename":"Issue","id":"I%d","number":%d,"title":"Candidate","body":%q,"state":"OPEN","repository":{"nameWithOwner":"owner/repo"},"comments":{"nodes":[]},"blockedBy":{"nodes":%s}},"statusValue":{"name":"Todo"}}`, n, n, n, body, native))
-				}
-				if mode == "snapshot" {
-					items = append(items, `{"id":"PB99","content":{"__typename":"Issue","id":"B99","number":99,"state":"OPEN","repository":{"nameWithOwner":"owner/repo"},"comments":{"nodes":[]},"blockedBy":{"nodes":[]}},"statusValue":{"name":"Todo"}}`)
-				}
-				fmt.Fprint(w, projectItemsPageResponseWithTotal(len(items), false, "", items))
-			}))
-			t.Cleanup(server.Close)
-			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "owner/repo", ActiveStates: []string{"Todo"}, Now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
-			c.projectCache = newProjectCache(time.Minute, func() time.Time { return now })
-			passes := 2
-			if mode == "rate limited" {
-				passes = 1
-			}
-			for pass := 1; pass <= passes; pass++ {
-				if mode == "expired" && pass == 2 {
-					now = now.Add(2 * time.Minute)
-				}
-				got, err := c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 10})
-				wantLen := 3
-				if mode == "snapshot" {
-					wantLen = 4
-				}
-				if err != nil || len(got.Issues) != wantLen {
-					t.Fatalf("pass %d: result=%+v err=%v", pass, got, err)
-				}
-				want := "Done"
-				if mode == "snapshot" || (mode == "reopened" && pass == 2) || (mode == "closed" && pass == 1) {
-					want = "Todo"
-				}
+					if !strings.Contains(request.Query, "CandidateHydration") {
+						refresh++
+					}
+					items := []string{}
+					for n := 1; n <= 3; n++ {
+						body, native := "Depends on: #99", `[]`
+						if mode == "external prose" {
+							body = "Depends on: other/repo#99"
+						}
+						if n == 3 {
+							body = ""
+						}
+						if mode == "native" && n < 3 {
+							native = `[{"id":"B99","number":99,"state":"CLOSED","repository":{"nameWithOwner":"owner/repo"}}]`
+						}
+						items = append(items, fmt.Sprintf(`{"id":"P%d","content":{"__typename":"Issue","id":"I%d","number":%d,"title":"Candidate","body":%q,"state":"OPEN","repository":{"nameWithOwner":"owner/repo"},"comments":{"nodes":[]},"blockedBy":{"nodes":%s}},"statusValue":{"name":"Todo"}}`, n, n, n, body, native))
+					}
+					if mode == "snapshot" {
+						items = append(items, `{"id":"PB99","content":{"__typename":"Issue","id":"B99","number":99,"state":"OPEN","repository":{"nameWithOwner":"owner/repo"},"comments":{"nodes":[]},"blockedBy":{"nodes":[]}},"statusValue":{"name":"Todo"}}`)
+					}
+					if strings.Contains(request.Query, "CandidateHydration") {
+						data := map[string]any{}
+						for _, item := range items {
+							var node struct{ Content githubIssueNode }
+							if err := json.Unmarshal([]byte(item), &node); err != nil {
+								t.Error(err)
+								return
+							}
+							for key, value := range request.Variables {
+								if strings.HasPrefix(key, "id") && value == node.Content.ID {
+									data["issue"+strings.TrimPrefix(key, "id")] = node.Content
+								}
+							}
+						}
+						addHydratedProjectFields(data, request.Variables)
+						if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+							t.Error(err)
+						}
+						return
+					}
+					fmt.Fprint(w, projectItemsPageResponseWithTotal(len(items), false, "", items))
+				}))
+				t.Cleanup(server.Close)
+				c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "owner/repo", ActiveStates: []string{"Todo"}, Now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+				c.projectCache = newProjectCache(time.Minute, func() time.Time { return now })
+				passes := 2
 				if mode == "rate limited" {
-					want = ""
+					passes = 1
 				}
-				for _, issue := range got.Issues {
-					if issue.ID == "I1" || issue.ID == "I2" {
-						if len(issue.BlockedBy) != 1 || issue.BlockedBy[0].State != want {
-							t.Fatalf("pass %d: blockers=%+v want %q", pass, issue.BlockedBy, want)
+				for pass := 1; pass <= passes; pass++ {
+					if mode == "expired" && pass == 2 {
+						now = now.Add(2 * time.Minute)
+					}
+					var issues []connector.Issue
+					var err error
+					if read == "candidates" {
+						var got connector.CandidateResult
+						got, err = c.ReadCandidates(t.Context(), connector.CandidateRequest{Selector: connector.CandidateSelectorStates, States: []string{"Todo"}, Limit: 10})
+						issues = got.Issues
+					} else {
+						refreshed := c.FetchRefreshIssues(t.Context(), []string{"Todo"}, nil, connector.IssueFilterHint{})
+						issues, err = refreshed.Candidates, refreshed.CandidateError
+						if refreshed.StatusError != nil {
+							t.Fatal(refreshed.StatusError)
+						}
+					}
+					wantLen := 3
+					if mode == "snapshot" {
+						wantLen = 4
+					}
+					if err != nil || len(issues) != wantLen {
+						t.Fatalf("pass %d: result=%+v err=%v", pass, issues, err)
+					}
+					want := "Done"
+					if mode == "snapshot" || (mode == "reopened" && pass == 2) || (mode == "closed" && pass == 1) {
+						want = "Todo"
+					}
+					if mode == "rate limited" {
+						want = ""
+					}
+					if read == "candidates" {
+						want = ""
+						if mode == "native" {
+							want = "Done"
+						}
+					}
+					for _, issue := range issues {
+						if issue.ID == "I1" || issue.ID == "I2" {
+							wantIdentifier := "owner/repo#99"
+							if mode == "external prose" {
+								wantIdentifier = "other/repo#99"
+							}
+							if len(issue.BlockedBy) != 1 || issue.BlockedBy[0].State != want || issue.BlockedBy[0].Identifier != wantIdentifier {
+								t.Fatalf("pass %d: blockers=%+v want %q", pass, issue.BlockedBy, want)
+							}
+							if read == "candidates" && mode != "native" && (issue.BlockedBy[0].ID != "" || issue.BlockedBy[0].HumanOwned || issue.BlockedBy[0].HumanCompletionReady || issue.BlockedBy[0].Source != connector.BlockedRefSourceProse) {
+								t.Fatalf("source prerequisite facts=%+v", issue.BlockedBy[0])
+							}
+							if read == "candidates" && mode == "native" && (issue.BlockedBy[0].ID != "B99" || issue.BlockedBy[0].Source != connector.BlockedRefSourceNative) {
+								t.Fatalf("native prerequisite facts=%+v", issue.BlockedBy[0])
+							}
+						}
+						if issue.ID == "I3" && len(issue.BlockedBy) != 0 {
+							t.Fatalf("reference-free candidate blockers=%+v", issue.BlockedBy)
 						}
 					}
 				}
-			}
-			wantREST, wantFields := 2, 1
-			switch mode {
-			case "native", "snapshot":
-				wantREST, wantFields = 0, 0
-			case "reopened", "expired":
-				wantFields = 2
-			case "rate limited":
-				wantREST = 1
-			}
-			if rest != wantREST || fields != wantFields {
-				t.Fatalf("REST=%d fields=%d; want %d/%d", rest, fields, wantREST, wantFields)
-			}
-			if mode == "rate limited" && strings.Count(logs.String(), "github blocked-by states unresolved") != 1 {
-				t.Fatalf("want one aggregate warning: %s", logs.String())
-			}
-		})
+				wantREST, wantFields := 2, 1
+				switch mode {
+				case "native", "snapshot":
+					wantREST, wantFields = 0, 0
+				case "reopened", "expired":
+					wantFields = 2
+				case "rate limited":
+					wantREST = 1
+				}
+				if read == "candidates" {
+					wantREST, wantFields = 0, 0
+				}
+				if prerequisiteReads != wantREST || fields != wantFields {
+					t.Fatalf("prerequisite REST=%d fields=%d; want %d/%d", prerequisiteReads, fields, wantREST, wantFields)
+				}
+				if read == "refresh" && mode == "rate limited" && strings.Count(logs.String(), "github blocked-by states unresolved") != 1 {
+					t.Fatalf("want one aggregate warning: %s", logs.String())
+				}
+			})
+		}
 	}
 }
 

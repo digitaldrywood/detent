@@ -2,8 +2,10 @@ package admission
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -219,6 +222,206 @@ func TestManagerPartialReadWithStaleHistory(t *testing.T) {
 			}
 			if len(result.Proposals) != want || result.Proposals[0].IssueID != "fresh" {
 				t.Fatalf("partial read discarded or stale candidate admitted: %#v", result)
+			}
+		})
+	}
+}
+
+func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, source, prerequisite, snapshotState                                       string
+		enabled, human, unknown, bodyOnly, shared, localAlias, extraMissing, extraError bool
+		wantReady                                                                       bool
+		wantFirst                                                                       string
+	}{
+		{name: "active frontier", source: "Rework", enabled: true, wantFirst: "frontier"},
+		{name: "blocked frontier", source: "Blocked", enabled: true, wantFirst: "frontier"},
+		{name: "disabled ranking", source: "Rework", wantFirst: "older"},
+		{name: "unaccepted backlog dependent", source: "Backlog", enabled: true, wantFirst: "older"},
+		{name: "human dependent", source: "Blocked", enabled: true, human: true, wantFirst: "older"},
+		{name: "unavailable owner", source: "Rework", enabled: true, unknown: true, wantFirst: "older"},
+		{name: "fresh closed prerequisite", source: "Todo", enabled: true, prerequisite: "closed", wantReady: true, wantFirst: "frontier"},
+		{name: "fresh merged prerequisite", source: "Todo", enabled: true, prerequisite: "merged", wantReady: true, wantFirst: "frontier"},
+		{name: "fresh open prerequisite", source: "Todo", enabled: true, prerequisite: "open", snapshotState: "Done", wantFirst: "older"},
+		{name: "missing prerequisite", source: "Todo", enabled: true, prerequisite: "missing", snapshotState: "Done", wantFirst: "older"},
+		{name: "failed prerequisite read", source: "Todo", enabled: true, prerequisite: "error", snapshotState: "Done", wantFirst: "older"},
+		{name: "closed unverified human prerequisite", source: "Todo", enabled: true, prerequisite: "human", snapshotState: "Done", wantFirst: "older"},
+		{name: "body-only closed prerequisite", source: "Todo", enabled: true, prerequisite: "closed", bodyOnly: true, wantReady: true, wantFirst: "frontier"},
+		{name: "body-only open prerequisite", source: "Todo", enabled: true, prerequisite: "open", bodyOnly: true, wantFirst: "older"},
+		{name: "shared closed prerequisite", source: "Todo", enabled: true, prerequisite: "closed", shared: true, wantReady: true, wantFirst: "frontier"},
+		{name: "shared merged prerequisite", source: "Todo", enabled: true, prerequisite: "merged", shared: true, bodyOnly: true, wantReady: true, wantFirst: "frontier"},
+		{name: "shared open prerequisite", source: "Todo", enabled: true, prerequisite: "open", shared: true, snapshotState: "Done", wantFirst: "older"},
+		{name: "shared missing prerequisite", source: "Todo", enabled: true, prerequisite: "missing", shared: true, wantFirst: "older"},
+		{name: "shared failed prerequisite read", source: "Todo", enabled: true, prerequisite: "error", shared: true, wantFirst: "older"},
+		{name: "shared unverified human prerequisite", source: "Todo", enabled: true, prerequisite: "human", shared: true, wantFirst: "older"},
+		{name: "shared prerequisite with missing peer prerequisite", source: "Todo", enabled: true, prerequisite: "closed", shared: true, extraMissing: true, wantReady: true, wantFirst: "frontier"},
+		{name: "shared prerequisite with inaccessible peer prerequisite", source: "Todo", enabled: true, prerequisite: "closed", shared: true, extraError: true, wantReady: true, wantFirst: "frontier"},
+		{name: "shared local alias", source: "Todo", enabled: true, prerequisite: "closed", shared: true, bodyOnly: true, localAlias: true, wantReady: true, wantFirst: "frontier"},
+		{name: "ambiguous shared local alias", source: "Todo", enabled: true, prerequisite: "ambiguous", shared: true, bodyOnly: true, localAlias: true, wantFirst: "older"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 30, 22, 30, 0, 0, time.UTC)
+			older := admissionIssueFixture("older", "owner/repo#1", 0, now.Add(-time.Hour))
+			frontier := admissionIssueFixture("frontier", "owner/repo#3242", 0, now)
+			prerequisite := admissionIssueFixture("prerequisite", "owner/repo#2", 0, now)
+			prerequisite.State = "Todo"
+			prerequisite.Number = 2
+			if tt.localAlias {
+				frontier.Identifier = "local-frontier"
+			}
+			switch tt.prerequisite {
+			case "closed", "human":
+				prerequisite.Closed = true
+				prerequisite.State = "Done"
+			case "merged":
+				prerequisite.PullRequest = &connector.PullRequest{State: "merged"}
+			}
+			if tt.prerequisite == "human" {
+				prerequisite.Labels = []string{"human-owned"}
+			}
+			if tt.prerequisite != "" {
+				if tt.bodyOnly {
+					frontier.Description += "\nDepends on: #2"
+				} else {
+					state := tt.snapshotState
+					if state == "" {
+						state = "Backlog"
+					}
+					frontier.BlockedBy = []connector.BlockedRef{{ID: prerequisite.ID, Identifier: prerequisite.Identifier, State: state, Source: connector.BlockedRefSourceNative}}
+				}
+			}
+			dependent := admissionIssueFixture("dependent", "owner/repo#3187", 0, now)
+			dependent.State = tt.source
+			dependent.BlockedBy = []connector.BlockedRef{{ID: frontier.ID, Identifier: frontier.Identifier, State: "Backlog"}}
+			if tt.human {
+				dependent.Labels = []string{"human-owned"}
+			}
+			cohort := []connector.Issue{dependent, dependent}
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{older, frontier, prerequisite}, Stateful: true})
+			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{})
+			resolver := &dependencyAdmissionTracker{IssueStore: tracker, issues: []connector.Issue{prerequisite}}
+			if tt.prerequisite == "ambiguous" {
+				other := prerequisite
+				other.Identifier = "elsewhere/repo#2"
+				resolver.issues = append(resolver.issues, other)
+			}
+			if tt.prerequisite == "missing" {
+				resolver.issues = nil
+			}
+			if tt.prerequisite == "error" {
+				resolver.err = errors.New("inaccessible prerequisite")
+			}
+			if tt.extraError {
+				resolver.resolve = func(refs []string) ([]connector.Issue, error) {
+					if reflect.DeepEqual(refs, []string{"owner/repo#3"}) {
+						return []connector.Issue{prerequisite}, errors.New("inaccessible prerequisite")
+					}
+					return resolver.issues, nil
+				}
+			}
+			settings.Issues = resolver
+			settings.dependencies = make(map[string]*runner.AdmissionDependencies)
+			settings.DispatchStates = []string{"Merging", "Rework", "In Progress", "Todo"}
+			settings.TerminalStates = []string{"Done"}
+			settings.PrioritizeBlockers = tt.enabled
+			calls := 0
+			settings.DependencyIssues = func(context.Context) []connector.Issue {
+				calls++
+				if tt.unknown {
+					return nil
+				}
+				return cohort
+			}
+			backend := openManagerTestStore(t)
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+			candidates := []connector.Issue{older, frontier}
+			peer := frontier
+			peer.ID = "peer"
+			peer.Identifier = "owner/repo#3243"
+			if tt.extraMissing || tt.extraError {
+				peer.Description += "\nDepends on: owner/repo#3"
+			}
+			if tt.localAlias {
+				peer.Identifier = "local-peer"
+			}
+			if tt.shared {
+				candidates = append(candidates, peer)
+			}
+			got, err := manager.orderCandidateWindow(t.Context(), settings, candidates, map[string]int{}, now)
+			if err != nil || len(got) != len(candidates) || got[0].ID != tt.wantFirst {
+				t.Fatalf("order=%+v err=%v", got, err)
+			}
+			wantCalls := 0
+			if tt.enabled {
+				wantCalls = 1
+			}
+			if calls != wantCalls || cohort[0].ID != dependent.ID || cohort[1].ID != dependent.ID {
+				t.Fatalf("callback=%d cohort=%+v", calls, cohort)
+			}
+			if got[0].ID == "frontier" && got[0].UnblockerCount != 1 {
+				t.Fatalf("duplicate-dependent count=%d", got[0].UnblockerCount)
+			}
+			wantReads := 0
+			if tt.prerequisite != "" {
+				wantReads = 1
+				if evidence := settings.dependencies[frontier.ID]; evidence == nil || evidence.Ready != tt.wantReady {
+					t.Fatalf("fresh dependency evidence=%+v", evidence)
+				}
+			}
+			if tt.shared && (tt.prerequisite == "missing" || tt.prerequisite == "error" || tt.localAlias || tt.extraMissing || tt.extraError) {
+				wantReads = 2
+			}
+			if resolver.calls != wantReads {
+				t.Fatalf("dependency reads=%d want=%d", resolver.calls, wantReads)
+			}
+			if wantReads > 0 {
+				ref := "owner/repo#2"
+				if tt.localAlias {
+					ref = "#2"
+				}
+				for i, request := range resolver.requests {
+					if i == 1 && (tt.extraMissing || tt.extraError) {
+						ref = "owner/repo#3"
+					}
+					if !reflect.DeepEqual(request, []string{ref}) {
+						t.Fatalf("dependency read=%+v", request)
+					}
+				}
+			}
+			if tt.shared {
+				frontierEvidence := settings.dependencies[frontier.ID]
+				peerEvidence := settings.dependencies[peer.ID]
+				baseline := frontierEvidence
+				if tt.extraMissing || tt.extraError {
+					expected := *frontierEvidence
+					expected.Ready = false
+					entry := runner.AdmissionDependency{Identifier: "owner/repo#3", Error: "dependency was not returned by tracker"}
+					if tt.extraError {
+						entry.Error = "dependency resolution failed: inaccessible prerequisite"
+					}
+					expected.References = append(append([]runner.AdmissionDependency(nil), frontierEvidence.References...), entry)
+					baseline = &expected
+				}
+				if !reflect.DeepEqual(baseline, peerEvidence) || !peerEvidence.ObservedAt.Equal(now) || dependencyFingerprint("candidate", baseline) != dependencyFingerprint("candidate", peerEvidence) {
+					t.Fatalf("shared evidence changed: frontier=%+v peer=%+v", frontierEvidence, peerEvidence)
+				}
+				if !tt.extraError {
+					baseline = resolveAdmissionDependencies(t.Context(), settings, peer, now)
+					if !reflect.DeepEqual(peerEvidence, baseline) || issueFingerprint(peer, peerEvidence) != issueFingerprint(peer, baseline) {
+						t.Fatalf("shared resolution changed candidate fingerprint: %+v", peerEvidence)
+					}
+				}
+			}
+			for _, candidate := range got {
+				if candidate.ID == frontier.ID {
+					expected := frontier
+					expected.UnblockerCount = candidate.UnblockerCount
+					if !reflect.DeepEqual(candidate, expected) || issueFingerprint(candidate, settings.dependencies[frontier.ID]) != issueFingerprint(frontier, settings.dependencies[frontier.ID]) {
+						t.Fatalf("ranking changed candidate authority or fingerprint: %+v", candidate)
+					}
+				}
 			}
 		})
 	}

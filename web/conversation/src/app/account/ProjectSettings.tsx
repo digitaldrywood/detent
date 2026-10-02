@@ -1,15 +1,19 @@
 import React from "react";
+import * as Schema from "effect/Schema";
+
+import { SpritesCard } from "./SpritesCard.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
 import type { ObservedPolicy, PolicyApproval, ProjectIntegration } from "../../contracts/account.ts";
-import { INTAKE_CHOICES, PROJECTION_CHOICES } from "../../contracts/account.ts";
+import { INTAKE_CHOICES, PROJECTION_CHOICES, WorkflowState } from "../../contracts/account.ts";
 import {
   SettingsPageContainer,
   SettingsRow,
   SettingsSection,
   SettingsWarning,
 } from "../settings/settingsLayout.tsx";
+import { RUNNER_HELP } from "../fleet/runnerHelp.ts";
 import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect, PathValue, ToggleControl } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
@@ -76,6 +80,65 @@ const PROJECTION_OPTIONS = PROJECTION_CHOICES.map((value) => ({
   label: value === "summary" ? "Summary" : "Disabled",
 }));
 
+export function WorkflowSettings({
+  integration,
+  canManage,
+  saving,
+  error,
+  onSave,
+}: {
+  readonly integration: ProjectIntegration;
+  readonly canManage: boolean;
+  readonly saving: boolean;
+  readonly error: string | null;
+  readonly onSave: (states: readonly WorkflowState[]) => void;
+}): React.ReactElement {
+  const stored = JSON.stringify(integration.states ?? [], null, 2);
+  const [draft, setDraft] = React.useState(stored);
+  const [parseError, setParseError] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    setDraft(stored);
+    setParseError(null);
+  }, [stored]);
+  const native = integration.profile === "native";
+  return (
+    <SettingsSection title="Workflow">
+      <SettingsRow
+        title="Project states"
+        description={native ? "The first state is the initial lane for new issues. Review dispatch, operator ownership and allowed transitions before saving." : "This workflow is owned by the source tracker."}
+        status={
+          <ul className="text-sm">
+            {(integration.states ?? []).map((state, index) => (
+              <li key={state.name}>
+                {state.name}{index === 0 ? " · Initial" : ""} · {state.terminal ? "Terminal" : state.dispatchable ? "Dispatchable" : "Nondispatchable"}{state.operator_only ? " · Operator only" : ""}
+              </li>
+            ))}
+          </ul>
+        }
+      >
+        {native && canManage ? (
+          <div className="flex flex-col gap-2 pb-3">
+            <Textarea aria-label="Workflow definition" rows={12} className="font-mono text-xs" value={draft} disabled={saving} onChange={(event) => { setDraft(event.currentTarget.value); setParseError(null); }} />
+            <ControlError message={parseError ?? error} />
+            <div>
+              <Button size="sm" disabled={saving || draft === stored} onClick={() => {
+                let states: readonly WorkflowState[];
+                try {
+                  states = Schema.decodeUnknownSync(Schema.Array(WorkflowState))(JSON.parse(draft));
+                } catch {
+                  setParseError("Enter a JSON array of states with names, terminal and dispatchable flags, and transition names.");
+                  return;
+                }
+                onSave(states);
+              }}>{saving ? "Saving…" : "Save workflow"}</Button>
+            </div>
+          </div>
+        ) : null}
+      </SettingsRow>
+    </SettingsSection>
+  );
+}
+
 export function PolicyRow({
   policy,
   observed,
@@ -98,13 +161,17 @@ export function PolicyRow({
   const [pasted, setPasted] = React.useState("");
   const description =
     observed.length > 0
-      ? "A runner resolved an updated policy and is waiting for owner approval. Repository settings or a runner upgrade can change the policy. Nothing runs on this project until it is approved."
+      ? "A runner reported an updated policy that needs approval."
       : policy === null
-        ? "No policy is approved. Start a runner for this project and it reports the policy it resolved here, or paste the output of the inspect command."
-        : "The resolved policy descriptor a human approved. When the repository's detent.yaml or WORKFLOW.md changes, the runner reports the new policy here for approval.";
+        ? "No policy is approved. Start a runner or paste an inspected descriptor."
+        : "The repository policy descriptor approved for execution.";
   return (
     <SettingsRow
       title="Repository policy"
+      help={{
+        label: "Repository policy",
+        text: "The runner reports the policy descriptor it resolves from the trusted repository revision, including detent.yaml and WORKFLOW.md. Repository changes or a runner upgrade can change that descriptor and make the prior approval stale. Execution is blocked when the runner’s resolved policy does not match an approved descriptor; an owner or admin must approve the current policy.",
+      }}
       description={description}
       status={
         <>
@@ -196,6 +263,8 @@ export function ProjectSettingsView({
   approveError,
   onOpenFleet,
   header,
+  sprites,
+  workflow,
 }: {
   readonly projectName: string;
   readonly integration: ProjectIntegration;
@@ -218,6 +287,8 @@ export function ProjectSettingsView({
    * side by side would be two scrolling columns rather than one page.
    */
   readonly header?: React.ReactNode;
+  readonly sprites?: React.ReactNode;
+  readonly workflow?: React.ReactNode;
 }): React.ReactElement {
   const unbound = (integration.repository ?? "").length === 0;
   const dirty = draftChanged(draft, draftOf(integration));
@@ -283,7 +354,11 @@ export function ProjectSettingsView({
         />
         <SettingsRow
           title="Repository and pull request integration"
-          description="Let Detent read and write this repository's pull requests. Attach a repository first."
+          help={{
+            label: "Repository and pull request integration",
+            text: "Enabling this permits repository and pull request operations, including reading, creating and merging pull requests subject to GitHub permissions and branch protections. Disabling it stops these operations but keeps the immutable repository binding. Intake and summary projection are separate settings.",
+          }}
+          description="Allow repository and pull request operations."
           control={
             <ToggleControl
               label="Repository and pull request integration"
@@ -298,7 +373,11 @@ export function ProjectSettingsView({
       <SettingsSection title="Issue flow">
         <SettingsRow
           title="Intake"
-          description="Whether issues opened on GitHub are pulled into this project's board."
+          help={{
+            label: "Intake",
+            text: "Manual intake imports a GitHub issue and its discussion into Detent when you request it; it does not automatically import every new issue. Disabled prevents new manual imports and keeps previously imported work. The project profile determines who owns the imported fields.",
+          }}
+          description="Import selected GitHub issues into this project."
           control={
             <NativeSelect
               aria-label="Intake"
@@ -311,7 +390,11 @@ export function ProjectSettingsView({
         />
         <SettingsRow
           title="Projection"
-          description="Whether Detent writes a summary of each work item back to the GitHub issue. Summary projection requires native authority."
+          help={{
+            label: "Projection",
+            text: "Summary sends a work-item summary from Detent to the linked GitHub issue. Disabled stops new summary writes and leaves existing GitHub content in place. Summary requires native authority; it does not transfer field ownership to GitHub.",
+          }}
+          description="Write work-item summaries back to GitHub."
           control={
             <NativeSelect
               aria-label="Projection"
@@ -324,6 +407,10 @@ export function ProjectSettingsView({
         />
         <SettingsRow
           title="Authority"
+          help={{
+            label: "Authority",
+            text: "The native profile gives Detent ownership of issue title, body, discussion, dependencies, authors, workflow, labels, assignees and priority; the github_compatible profile gives GitHub ownership of those fields. Detent always owns scheduling, progress and native approval. Source timestamps retain their source, repository policy comes from the trusted repository revision, and GitHub controls merge protections. Intake and projection do not change these owners.",
+          }}
           description="Which side owns each field. Set by the project's profile, not by this page."
           status={
             <span className="font-mono text-[11px]">
@@ -335,6 +422,8 @@ export function ProjectSettingsView({
           control={<span className="text-sm capitalize text-muted-foreground">{integration.profile}</span>}
         />
       </SettingsSection>
+
+      {workflow}
 
       <SettingsSection title="Execution">
         <PolicyRow
@@ -348,13 +437,15 @@ export function ProjectSettingsView({
         />
         <SettingsRow
           title="Runner routing"
-          description="Which hosts may take this project's work, and the tags that select them. Routing lives with the fleet, because a runner serves more than one project."
+          help={{ label: "Runner routing", text: RUNNER_HELP.routing }}
+          description="Select authorized runners that can take this project’s work."
           control={
             <Button size="sm" variant="outline" onClick={onOpenFleet}>
               Open the fleet
             </Button>
           }
         />
+        {sprites}
       </SettingsSection>
     </SettingsPageContainer>
   );
@@ -417,6 +508,28 @@ export function ProjectSettingsRoute({
     } catch (cause) {
       // The conflict's own body carries nothing to recover from, so the screen
       // re-reads and shows the reader what is actually stored.
+      if (cause instanceof AccountError && cause.isConflict) await integration.refresh();
+      throw cause;
+    }
+  });
+
+  const saveWorkflow = useMutation(async (states: readonly WorkflowState[]) => {
+    const current = integration.value;
+    if (current === undefined) return null;
+    try {
+      const saved = await api.saveIntegration({
+        projectId,
+        key: newKey(),
+        revision: current.revision,
+        intake: current.intake,
+        projection: current.projection,
+        repositoryEnabled: current.repository_enabled,
+        states,
+      });
+      integration.set(saved);
+      globalThis.location.reload();
+      return saved;
+    } catch (cause) {
       if (cause instanceof AccountError && cause.isConflict) await integration.refresh();
       throw cause;
     }
@@ -514,6 +627,8 @@ export function ProjectSettingsRoute({
       approveError={approve.error?.message ?? null}
       header={header}
       onOpenFleet={() => onNavigate?.("/settings/runners")}
+      sprites={<SpritesCard key={projectId} projectId={projectId} canManage={canManage} />}
+      workflow={<WorkflowSettings integration={integration.value} canManage={canManage && project?.can_write === true} saving={saveWorkflow.pending} error={saveMessage(saveWorkflow.error)} onSave={(states) => void saveWorkflow.call(states)} />}
     />
   );
 }

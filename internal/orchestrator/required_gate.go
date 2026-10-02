@@ -11,19 +11,12 @@ import (
 )
 
 func (o *Orchestrator) refreshRequiredGateEvidence(ctx context.Context, state *State, issues []connector.Issue) []connector.Issue {
-	issues = cloneIssues(issues)
 	now := time.Now()
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	state.RequiredGates = make(map[string]telemetry.RequiredGate, len(issues))
-	for i, issue := range issues {
+	for _, issue := range issues {
 		if issue.PullRequest == nil {
 			continue
-		}
-		if normalizeState(issue.State) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState) {
-			if refreshed, current := o.refreshImplementCompletionIssue(ctx, issue); current {
-				issue = refreshed
-				issues[i] = refreshed
-			}
 		}
 		summary := AutoPromoteSummaryFromIssue(issue)
 		summary.SecurityAudit = o.securityAuditEvaluation(ctx, issue)

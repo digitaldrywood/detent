@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -91,6 +93,7 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	}
 	lease, err := s.database.claimNext(c.Request().Context(), tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
 		PolicyID: request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
+		DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers,
 		NativeScope: &scope, Scope: string(scope.project), WorkflowStates: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees, LabelInclude: request.LabelInclude, LabelExclude: request.LabelExclude,
 		// Only a lane that declares the workspace capability is offered
 		// workspace items (decisions section 18.1).
@@ -119,7 +122,18 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 	if reserved {
 		providerReservation = &reservation
 	}
-	return c.JSON(http.StatusOK, tracker.NativeLease{ProviderReservation: providerReservation, ServerTime: s.config.now().UTC(), PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
+	var policy *isolation.Policy
+	if scope.credential.Runner.RunnerID != "" {
+		var encoded string
+		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT isolation_policy_json FROM lease_runners WHERE lease_id = ? AND runner_id = ?", lease.ID, scope.credential.Runner.RunnerID).Scan(&encoded); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		policy = &isolation.Policy{}
+		if err := json.Unmarshal([]byte(encoded), policy); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	return c.JSON(http.StatusOK, tracker.NativeLease{IsolationPolicy: policy, ProviderReservation: providerReservation, ServerTime: s.config.now().UTC(), PolicyID: policyID, ID: lease.ID, WorkItemID: id, MachineID: lease.Machine.ID, SessionID: lease.SessionID, FencingToken: lease.FencingToken, AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt})
 }
 
 func (s *Service) requireNativeLease(c echo.Context) error {
@@ -168,20 +182,22 @@ func (s *Service) releaseNativeLease(c echo.Context) error {
 
 func (s *Service) registerNativeMachine(c echo.Context) error {
 	var request struct {
-		ID              tracker.MachineID         `json:"id"`
-		Hostname        string                    `json:"hostname"`
-		DisplayName     string                    `json:"display_name"`
-		Capacity        int                       `json:"capacity"`
-		Version         string                    `json:"version"`
-		OS              string                    `json:"os,omitempty"`
-		Architecture    string                    `json:"architecture,omitempty"`
-		ProviderReports []providercapacity.Report `json:"provider_reports,omitempty"`
+		BackendIsolation isolation.Report          `json:"backend_isolation,omitempty"`
+		ID               tracker.MachineID         `json:"id"`
+		Hostname         string                    `json:"hostname"`
+		DisplayName      string                    `json:"display_name"`
+		Capacity         int                       `json:"capacity"`
+		Version          string                    `json:"version"`
+		OS               string                    `json:"os,omitempty"`
+		Architecture     string                    `json:"architecture,omitempty"`
+		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
 		// WorkspaceCapabilities and WorkspaceIsolation are what this runner
 		// can serve for a workspace session, reported beside the provider
 		// reports (decisions section 18.10). A runner that never reports them
 		// serves no surface and is never handed a workspace item.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
+		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -195,17 +211,26 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if !workspacesession.ValidIsolation(request.WorkspaceIsolation) {
-		return s.nativeAPIError(c, nativeInvalid("Workspace isolation must be user or container"))
+		return s.nativeAPIError(c, nativeInvalid("Workspace isolation must be sandbox, container or user"))
 	}
 	if scope.credential.Runner.RunnerID != "" {
 		return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+			if err := updateRunnerIsolationReport(ctx, tx, scope, request.BackendIsolation); err != nil {
+				return nil, err
+			}
 			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}
 			if err := updateRunnerWorkspaceReport(ctx, tx, scope, request.WorkspaceCapabilities, request.WorkspaceIsolation); err != nil {
 				return nil, err
 			}
-			return request, updateProviderReports(ctx, tx, scope, request.ProviderReports, now)
+			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
+				return nil, err
+			}
+			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
+				return nil, err
+			}
+			return readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID)
 		})
 	}
 	if request.WorkspaceCapabilities != nil {
@@ -213,6 +238,9 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	}
 	if len(request.ProviderReports) != 0 {
 		return s.nativeAPIError(c, nativeInvalid("Provider reports require an enrolled runner"))
+	}
+	if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
+		return s.nativeAPIError(c, nativeInvalid("Checkout reports require an enrolled runner"))
 	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

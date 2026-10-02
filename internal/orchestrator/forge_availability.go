@@ -209,8 +209,6 @@ func forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, f
 	return retry.ForgeUnavailable || mergeWorkerIssue(issue)
 }
 
-// A checked clean PR can merge through the existing API path without the Git
-// read that opened this condition. Write failures still hold the merge lane.
 func (p dispatchPlanner) forgeAvailabilityBlocks(state *State, issue connector.Issue, retry Retry, now time.Time) bool {
 	if !forgeAvailabilityBlocks(state, issue, retry, p.cfg.ForgeHost, now) {
 		return false
@@ -219,9 +217,6 @@ func (p dispatchPlanner) forgeAvailabilityBlocks(state *State, issue connector.I
 }
 
 func (p dispatchPlanner) forgeReadAllowsMerge(state *State, issue connector.Issue) bool {
-	if !p.readyMergeControlCandidate(state, issue) {
-		return false
-	}
 	condition, active := forgeCondition(state, forgeHostForIssue(issue, p.cfg.ForgeHost))
 	return active && forgeRetryReadOperation(condition.Operation) && condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable
 }
@@ -362,7 +357,7 @@ func (o *Orchestrator) handleForgeUnavailableCompletion(ctx context.Context, sta
 	forgeRetry := forgeRetryFromCompletion(event, running, condition)
 	o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	message := strings.TrimSpace(availabilityErr.Error())
-	o.persistForgeAvailabilityWait(ctx, state, running, event.CompletedAt, condition, forgeRetry, message)
+	o.persistForgeAvailabilityWait(ctx, state, running, event.CompletedAt, condition, forgeRetry, message, event.Result.NativeLanding)
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		return true
 	}
@@ -395,6 +390,7 @@ func (o *Orchestrator) persistForgeAvailabilityWait(
 	condition ForgeCondition,
 	forgeRetry *runpkg.ForgeRetry,
 	message string,
+	landing *runpkg.NativeLanding,
 ) bool {
 	if forgeRetry == nil {
 		return false
@@ -409,7 +405,7 @@ func (o *Orchestrator) persistForgeAvailabilityWait(
 		message,
 		"waiting",
 		message,
-		forgeAvailabilityWaitMetadata(condition, forgeRetry),
+		mergeWorkAttemptMetadata(forgeAvailabilityWaitMetadata(condition, forgeRetry), nativeLandingMetadata(landing)),
 	)
 }
 

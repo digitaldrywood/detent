@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -72,6 +74,10 @@ func (f changeFixture) detail(t *testing.T) tracker.ChangeDetail {
 	requireNativeStatus(t, response, http.StatusOK)
 	var detail tracker.ChangeDetail
 	decodeHubResponse(t, response, &detail)
+	current, err := readCurrentChangeDetail(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
+	if err != nil || !reflect.DeepEqual(current.Summary, detail.Summary) {
+		t.Fatalf("current summary = %#v, full summary = %#v, error = %v", current.Summary, detail.Summary, err)
+	}
 	return detail
 }
 
@@ -484,6 +490,61 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 			decodeHubResponse(t, response, &issue)
 			if issue.State != test.want {
 				t.Fatalf("after approval the item is in %s, want %s", issue.State, test.want)
+			}
+			if test.want == "Merging" {
+				r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+				r.enroll(t)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "Landing runner", "state": "active", "capacity_limit": 0, "project_ids": []tracker.ProjectID{f.project.ID}}), http.StatusOK)
+				runtimePath := f.base + "/work-items/" + string(issue.WorkItemID) + "/runtime"
+				response = performHubAPIRequest(t, f.service, http.MethodGet, runtimePath, f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var evidence tracker.NativeRuntimeEvidence
+				decodeHubResponse(t, response, &evidence)
+				if evidence.Attempt != nil || evidence.LatestDecision != nil || evidence.Scheduling.Outcome != "skipped" || len(evidence.Capacity) != 1 || evidence.Capacity[0].Available != 0 || evidence.Change.Change.CurrentVersion != version.ID || len(evidence.Capacity[0].Exclusions) == 0 {
+					t.Fatalf("unclaimed landing evidence=%#v", evidence)
+				}
+				claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "capacity-refusal", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+				assertUnchangedDecision := func() {
+					t.Helper()
+					var before, after int64
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&before); err != nil {
+						t.Fatal(err)
+					}
+					for range 16 {
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+					}
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT total_changes()").Scan(&after); err != nil || after-before != 16 {
+						t.Fatalf("unchanged decisions wrote %d rows beyond authentication metadata, err=%v", after-before-16, err)
+					}
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+				assertUnchangedDecision()
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath, f.token, nil), &evidence)
+				if evidence.Attempt != nil || evidence.LatestDecision == nil || evidence.LatestDecision.Actor.Kind != "runner" || evidence.LatestDecision.Data.Decision.Source != "native_runner_routing" || evidence.LatestDecision.Data.Decision.Outcome != "skipped" || evidence.LatestDecision.Data.Decision.RunnerID != r.binding.RunnerID || evidence.LatestDecision.Data.Decision.WorkItemRevision != issue.Revision {
+					t.Fatalf("recorded routing refusal=%#v", evidence)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE id=?", r.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+				assertUnchangedDecision()
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath, f.token, nil), &evidence)
+				if evidence.LatestDecision.Data.Decision.Source != "native_host_capacity" || evidence.Attempt != nil {
+					t.Fatalf("recorded host refusal=%#v", evidence)
+				}
+				previousDecision := evidence.LatestDecision.ID
+				if evidence.LatestDecision.Data.Change == nil || evidence.LatestDecision.Data.Change.VersionID != version.ID {
+					t.Fatalf("decision lost Change evidence=%#v", evidence.LatestDecision)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+				assertUnchangedDecision()
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath, f.token, nil), &evidence)
+				if evidence.LatestDecision.ID == previousDecision || evidence.LatestDecision.Data.Decision.WorkItemRevision != issue.Revision+1 {
+					t.Fatalf("changed revision lost decision=%#v", evidence.LatestDecision)
+				}
 			}
 		})
 	}

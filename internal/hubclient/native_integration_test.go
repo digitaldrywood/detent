@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -191,8 +192,8 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.CreateComment(t.Context(), issue.ID, "stale worker comment"); err == nil {
-		t.Fatal("released worker mutated native discussion")
+	if err := conn.CreateComment(t.Context(), issue.ID, "stale worker comment"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("released worker mutation = %v, want permanent authority loss", err)
 	}
 	events, err := conn.FetchIssueEvents(t.Context(), issue)
 	if err != nil || len(events) < 30 {

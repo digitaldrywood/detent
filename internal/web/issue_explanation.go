@@ -11,7 +11,10 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -22,6 +25,11 @@ type IssueExplainer interface {
 }
 
 func (s *Server) apiIssueExplanation(c echo.Context) error {
+	ctx, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: c.Param("project_id")})
+	if err != nil {
+		return writeAPIAuthError(c, http.StatusForbidden, "access_denied", operatortool.ErrAccessDenied.Error())
+	}
+	c.SetRequest(c.Request().WithContext(ctx))
 	explanation, ok, err := s.issueExplanation(c)
 	if !ok {
 		return err
@@ -34,9 +42,17 @@ func (s *Server) apiIssueParkAcknowledgement(c echo.Context) error {
 	if !ok {
 		return err
 	}
+	explanation, err = s.acknowledgeIssueParks(c.Request().Context(), explanation)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue park acknowledgement store is unavailable"))
+	}
+	return c.JSON(http.StatusOK, explanation)
+}
+
+func (s *Server) acknowledgeIssueParks(ctx context.Context, explanation explain.IssueExplanation) (explain.IssueExplanation, error) {
 	acknowledger, ok := s.store.(store.ParkSummaryStore)
 	if !ok {
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue park acknowledgement store is unavailable"))
+		return explain.IssueExplanation{}, errOperatorCommandUnavailable
 	}
 	identity := store.IssueIdentity{
 		ProjectID:  explanation.Identity.ProjectID,
@@ -45,17 +61,17 @@ func (s *Server) apiIssueParkAcknowledgement(c echo.Context) error {
 		IssueURL:   explanation.Identity.IssueURL,
 	}
 	acknowledgedAt := time.Now().UTC()
-	if err := acknowledger.AcknowledgeIssueParks(c.Request().Context(), identity, explanation.ParkSummary.ParkCount, acknowledgedAt); err != nil {
+	if err := acknowledger.AcknowledgeIssueParks(ctx, identity, explanation.ParkSummary.ParkCount, acknowledgedAt); err != nil {
 		s.logger.Error("issue park acknowledgement failed", slog.Any("error", err))
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue park acknowledgement store is unavailable"))
+		return explain.IssueExplanation{}, errOperatorCommandUnavailable
 	}
-	acknowledged, err := acknowledger.IssueParkSummary(c.Request().Context(), identity)
+	acknowledged, err := acknowledger.IssueParkSummary(ctx, identity)
 	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Park acknowledgement was recorded; current park summary is unavailable, retry inspection"))
+		return explain.IssueExplanation{}, errOperatorCommandUnavailable
 	}
 	explanation.ParkSummary.AcknowledgedParkSequence = acknowledged.AcknowledgedParkSequence
 	explanation.ParkSummary.AcknowledgedAt = acknowledged.AcknowledgedAt
-	return c.JSON(http.StatusOK, explanation)
+	return explanation, nil
 }
 
 func (s *Server) apiIssueProgressCredit(c echo.Context) error {
@@ -63,22 +79,30 @@ func (s *Server) apiIssueProgressCredit(c echo.Context) error {
 	if !ok {
 		return err
 	}
-	credits, ok := s.store.(store.ProgressCreditStore)
-	if !ok {
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue progress credit store is unavailable"))
-	}
-	identity := store.IssueIdentity{
-		ProjectID:  explanation.Identity.ProjectID,
-		IssueID:    explanation.Identity.IssueID,
-		Identifier: explanation.Identity.Identifier,
-		IssueURL:   explanation.Identity.IssueURL,
-	}
-	credit, err := credits.CreditIssueProgress(c.Request().Context(), identity, s.now().UTC())
+	credit, err := s.creditOperatorProgress(c.Request().Context(), explanation.Identity)
 	if err != nil {
-		s.logger.Error("issue progress credit failed", slog.Any("error", err))
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue progress credit store is unavailable"))
+		return writeControlProblem(c, err)
 	}
 	return c.JSON(http.StatusOK, credit)
+}
+
+func (s *Server) creditOperatorProgress(ctx context.Context, identitySource explain.Identity) (store.IssueProgressCredit, error) {
+	credits, ok := s.store.(store.ProgressCreditStore)
+	if !ok {
+		return store.IssueProgressCredit{}, &controlProblem{http.StatusServiceUnavailable, "runtime_unavailable", "Issue progress credit store is unavailable"}
+	}
+	identity := store.IssueIdentity{
+		ProjectID:  identitySource.ProjectID,
+		IssueID:    identitySource.IssueID,
+		Identifier: identitySource.Identifier,
+		IssueURL:   identitySource.IssueURL,
+	}
+	credit, err := credits.CreditIssueProgress(ctx, identity, s.now().UTC())
+	if err != nil {
+		s.logger.Error("issue progress credit failed", slog.Any("error", mutation.ErrorText(ctx, err)))
+		return store.IssueProgressCredit{}, &controlProblem{http.StatusServiceUnavailable, "runtime_unavailable", "Issue progress credit store is unavailable"}
+	}
+	return credit, nil
 }
 
 func (s *Server) issueExplanation(c echo.Context) (explain.IssueExplanation, bool, error) {
@@ -90,13 +114,9 @@ func (s *Server) issueExplanation(c echo.Context) (explain.IssueExplanation, boo
 	if response, ok := issueExplanationVersionProblem(c.QueryParam("schema")); ok {
 		return explain.IssueExplanation{}, false, c.JSON(response.status, errorResponse(response.code, response.message))
 	}
-	if s.issueExplainer == nil {
-		return explain.IssueExplanation{}, false, c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue explanation runtime is unavailable"))
-	}
-
 	ctx, cancel := context.WithTimeout(c.Request().Context(), issueExplanationTimeout)
 	defer cancel()
-	explanation, err := s.issueExplainer.Explain(ctx, explain.Query{ProjectID: projectID, Reference: reference})
+	explanation, err := (nativeIssueExplainer{server: s, fallback: s.issueExplainer}).Explain(ctx, explain.Query{ProjectID: projectID, Reference: reference})
 	if err == nil {
 		return explanation, true, nil
 	}

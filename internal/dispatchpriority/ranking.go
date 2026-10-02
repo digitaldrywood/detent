@@ -1,6 +1,11 @@
 package dispatchpriority
 
-import "strings"
+import (
+	"cmp"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+)
 
 const UnmappedPriorityRank = 5
 
@@ -10,15 +15,80 @@ type LabelMatch struct {
 }
 
 type Ranker struct {
-	stateRanks map[string]int
-	labelRanks map[string]LabelMatch
+	stateRanks   map[string]int
+	labelRanks   map[string]LabelMatch
+	mergingFirst bool
 }
 
 func New(states []string, labels []string) Ranker {
 	return Ranker{
-		stateRanks: stateRanks(states),
-		labelRanks: labelRanks(labels),
+		stateRanks:   stateRanks(states),
+		mergingFirst: len(states) > 0 && normalize(states[0]) == "merging",
+		labelRanks:   labelRanks(labels),
 	}
+}
+
+type Candidate struct {
+	Issue connector.Issue
+	Rank  string
+}
+
+func (r Ranker) Compare(left, right Candidate, prioritizeUnblockers bool) int {
+	a, b := left.Issue, right.Issue
+	aMerging := r.mergingFirst && normalize(a.State) == "merging"
+	bMerging := r.mergingFirst && normalize(b.State) == "merging"
+	if aMerging != bMerging {
+		if aMerging {
+			return -1
+		}
+		return 1
+	}
+	if order := cmp.Compare(Priority(a.Priority), Priority(b.Priority)); order != 0 {
+		return order
+	}
+	aLabel, aLabeled := r.MatchLabel(a.Labels)
+	bLabel, bLabeled := r.MatchLabel(b.Labels)
+	if aLabeled != bLabeled {
+		if aLabeled {
+			return -1
+		}
+		return 1
+	}
+	if aLabeled {
+		if order := cmp.Compare(aLabel.Rank, bLabel.Rank); order != 0 {
+			return order
+		}
+	}
+	if order := cmp.Compare(r.State(a.State), r.State(b.State)); order != 0 {
+		return order
+	}
+	if prioritizeUnblockers && !aLabeled {
+		if order := cmp.Compare(b.UnblockerCount, a.UnblockerCount); order != 0 {
+			return order
+		}
+	}
+	aRank, bRank := strings.TrimSpace(left.Rank), strings.TrimSpace(right.Rank)
+	if (aRank == "") != (bRank == "") {
+		if aRank != "" {
+			return -1
+		}
+		return 1
+	}
+	if order := cmp.Compare(aRank, bRank); order != 0 {
+		return order
+	}
+	if a.CreatedAt != nil && b.CreatedAt != nil {
+		if order := a.CreatedAt.Compare(*b.CreatedAt); order != 0 {
+			return order
+		}
+	}
+	if (a.CreatedAt == nil) != (b.CreatedAt == nil) {
+		if a.CreatedAt != nil {
+			return -1
+		}
+		return 1
+	}
+	return cmp.Compare(a.Identifier, b.Identifier)
 }
 
 func (r Ranker) State(state string) int {
@@ -89,4 +159,95 @@ func labelRanks(labels []string) map[string]LabelMatch {
 
 func normalize(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func AnnotateUnblockerCounts(targets []connector.Issue, issues []connector.Issue, activeStates []string, terminalStates []string, enabled bool) {
+	for index := range targets {
+		targets[index].UnblockerCount = 0
+	}
+	if !enabled || len(targets) == 0 || len(issues) == 0 {
+		return
+	}
+
+	targetsByRef := make(map[string]int, len(targets)*2)
+	for index, issue := range targets {
+		if issue.Closed || normalize(issue.State) == "blocked" || !inStates(issue.State, activeStates) || dependencyWaiting(issue, terminalStates) {
+			continue
+		}
+		for _, ref := range issueReferenceKeys(issue.ID, issue.Identifier) {
+			targetsByRef[ref] = index
+		}
+	}
+
+	counted := make(map[int]map[string]struct{})
+	for _, dependent := range issues {
+		if normalize(dependent.State) != "blocked" && !dependencyWaiting(dependent, terminalStates) {
+			continue
+		}
+		dependentKey := strings.TrimSpace(dependent.ID)
+		if dependentKey == "" {
+			dependentKey = strings.TrimSpace(dependent.Identifier)
+		}
+		if dependentKey == "" {
+			continue
+		}
+		for _, blocker := range dependent.BlockedBy {
+			index, ok := unblockerTargetIndex(targetsByRef, blocker)
+			if !ok || inStates(blocker.State, terminalStates) {
+				continue
+			}
+			if counted[index] == nil {
+				counted[index] = map[string]struct{}{}
+			}
+			if _, ok := counted[index][dependentKey]; ok {
+				continue
+			}
+			counted[index][dependentKey] = struct{}{}
+			targets[index].UnblockerCount++
+		}
+	}
+}
+
+func dependencyWaiting(issue connector.Issue, terminalStates []string) bool {
+	for _, blocker := range issue.BlockedBy {
+		if strings.TrimSpace(blocker.State) == "" || !inStates(blocker.State, terminalStates) {
+			return true
+		}
+	}
+	return false
+}
+
+func unblockerTargetIndex(targets map[string]int, blocker connector.BlockedRef) (int, bool) {
+	for _, ref := range issueReferenceKeys(blocker.ID, blocker.Identifier) {
+		if index, ok := targets[ref]; ok {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
+func issueReferenceKeys(values ...string) []string {
+	keys := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		key := strings.ToLower(strings.TrimSpace(value))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func inStates(value string, states []string) bool {
+	for _, state := range states {
+		if normalize(value) == normalize(state) {
+			return true
+		}
+	}
+	return false
 }

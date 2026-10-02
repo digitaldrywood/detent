@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -45,12 +46,12 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 		{name: "zero parks failed persistence", limit: new(0), issue: terminalRetryTestIssue("zero-store-error"), runError: errors.New("runner failed"), completionErr: true, wantBlocked: true},
 		{name: "zero parks missing store", limit: new(0), issue: terminalRetryTestIssue("zero-no-store"), runError: errors.New("runner failed"), noStore: true, wantBlocked: true},
 		{name: "zero parks missing attempt ID", limit: new(0), issue: terminalRetryTestIssue("zero-no-id"), runError: errors.New("runner failed"), noAttemptID: true, wantBlocked: true},
-		{name: "zero parks overload without store", limit: new(0), issue: terminalRetryTestIssue("zero-overload-no-store"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")), noStore: true, wantBlocked: true},
+		{name: "zero preserves overload without store", limit: new(0), issue: terminalRetryTestIssue("zero-overload-no-store"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")), noStore: true, wantState: "In Progress"},
 		{name: "zero preserves capacity without store", limit: new(0), issue: terminalRetryTestIssue("zero-capacity-no-store"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Kind: "usageLimitExceeded", ResetAt: &capacityReset}, errors.New("provider usage limit reached")), noStore: true, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero preserves pushed work without store", limit: new(0), issue: terminalRetryTestIssue("zero-pushed-no-store"), result: runpkg.RunResult{PullRequestHeadPushed: true}, runError: errors.New("runner failed"), noStore: true, wantState: "In Progress"},
 		{name: "default preserves failed persistence retry", issue: terminalRetryTestIssue("default-store-error"), runError: errors.New("runner failed"), completionErr: true, wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero parks runner failure", limit: new(0), issue: terminalRetryTestIssue("zero-failure"), runError: errors.New("runner failed"), wantBlocked: true},
-		{name: "zero parks transient overload", limit: new(0), issue: terminalRetryTestIssue("zero-overload"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")), wantBlocked: true},
+		{name: "zero preserves transient overload", limit: new(0), issue: terminalRetryTestIssue("zero-overload"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")), wantState: "In Progress"},
 		{name: "zero preserves capacity wait", limit: new(0), issue: terminalRetryTestIssue("zero-capacity"), runError: backendcapacity.NewError(scope, backendcapacity.Details{Kind: "usageLimitExceeded", ResetAt: &capacityReset}, errors.New("provider usage limit reached")), wantState: "Todo", wantTransitions: []string{"Todo"}},
 		{name: "zero preserves pushed work", limit: new(0), issue: terminalRetryTestIssue("zero-pushed"), result: runpkg.RunResult{PullRequestHeadPushed: true}, runError: errors.New("runner failed"), wantState: "In Progress"},
 		{name: "zero preserves linked PR", limit: new(0), issue: terminalRetryTestIssueWithPullRequest("zero-pr"), runError: errors.New("runner failed"), wantState: "In Progress"},
@@ -62,18 +63,16 @@ func TestHandleRunResultRoutesTerminalRetryByWorkProduct(t *testing.T) {
 			wantTransitions: []string{"Todo"},
 		},
 		{
-			name:            "transient overload returns to todo",
-			issue:           terminalRetryTestIssue("overload"),
-			runError:        backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")),
-			wantState:       "Todo",
-			wantTransitions: []string{"Todo"},
+			name:      "transient overload retains current lane",
+			issue:     terminalRetryTestIssue("overload"),
+			runError:  backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: "serverOverloaded"}, errors.New("provider overloaded")),
+			wantState: "In Progress",
 		},
 		{
-			name:            "startup timeout returns to todo",
-			issue:           terminalRetryTestIssue("startup-timeout"),
-			runError:        backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupTimeoutKind}, context.DeadlineExceeded),
-			wantState:       "Todo",
-			wantTransitions: []string{"Todo"},
+			name:      "started turn timeout retains current lane",
+			issue:     terminalRetryTestIssue("startup-timeout"),
+			runError:  backendcapacity.NewError(scope, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload, Kind: backendcapacity.StartupTimeoutKind}, context.DeadlineExceeded),
+			wantState: "In Progress",
 		},
 		{
 			name:            "provider capacity returns to todo",
@@ -192,6 +191,8 @@ func TestTerminalAttemptRetryableFailureExcludesBackendCapacity(t *testing.T) {
 		wantRetryable bool
 	}{
 		{name: "service restart remains resumable", terminal: store.WorkAttemptTerminalAbandoned, errorClass: "service_restart", wantRetryable: true},
+		{name: "transient provider failure remains resumable", terminal: store.WorkAttemptTerminalFailure, errorClass: backendcapacity.TransientOverloadErrorClass, wantRetryable: true},
+		{name: "protocol interruption remains resumable", terminal: store.WorkAttemptTerminalFailure, errorClass: "backend_protocol_error", wantRetryable: true},
 		{name: "ordinary failure", terminal: store.WorkAttemptTerminalFailure, errorClass: workAttemptErrorRunner, wantRetryable: true},
 		{name: "provider capacity", terminal: store.WorkAttemptTerminalCapacity, errorClass: backendcapacity.ErrorClass},
 	}
@@ -485,6 +486,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		errorMessage     string
 		commitsAhead     int
 		remoteBranch     bool
+		joinedErr        error
 	}{
 		{
 			name: "open pull request on exact current head reconciles",
@@ -495,6 +497,30 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			wantPRNumber:    18,
 			commitsAhead:    1,
 			remoteBranch:    true,
+		},
+		{
+			name:      "recovery preserves joined workspace failure",
+			lookup:    &connector.PullRequest{Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA},
+			joinedErr: runpkg.ErrWorkspacePreparation,
+			wantRetry: true, commitsAhead: 1, remoteBranch: true,
+		},
+		{
+			name:      "recovery preserves joined checkpoint failure",
+			lookup:    &connector.PullRequest{Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA},
+			joinedErr: errors.New("checkpoint persistence failed"),
+			wantRetry: true, commitsAhead: 1, remoteBranch: true,
+		},
+		{
+			name:      "recovery preserves joined lease failure",
+			lookup:    &connector.PullRequest{Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA},
+			joinedErr: errors.New("native execution lease lost"),
+			wantRetry: true, commitsAhead: 1, remoteBranch: true,
+		},
+		{
+			name:      "recovery preserves joined session failure",
+			lookup:    &connector.PullRequest{Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA},
+			joinedErr: errors.New("session persistence failed"),
+			wantRetry: true, commitsAhead: 1, remoteBranch: true,
 		},
 		{
 			name: "no pull request opens draft",
@@ -678,9 +704,11 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				errorMessage = "HTTP 503: unavailable"
 			}
 			commandErr := &runpkg.DeliverableCommandError{
-				Operation: "codex_apps/github.create_pull_request", Arguments: `{"head":"` + branch + `"}`,
+				OperationClass: "pull_request", Operation: "codex_apps/github.create_pull_request", Arguments: `{"head":"` + branch + `"}`,
 				Status: "failed", Message: errorMessage,
 			}
+
+			runErr := errors.Join(&runpkg.DeliverableRecoveryError{Branch: branch, Err: commandErr}, tt.joinedErr)
 
 			o.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID: issue.ID,
@@ -691,7 +719,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 						DeliveryStateChecked: true, CommitsAhead: tt.commitsAhead, RemoteBranchExists: tt.remoteBranch,
 					},
 				},
-				Err:         &runpkg.DeliverableRecoveryError{Branch: branch, Err: commandErr},
+				Err:         runErr,
 				CompletedAt: now,
 			})
 
@@ -792,6 +820,11 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				}
 				return
 			}
+			if tt.joinedErr != nil {
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalFailure || !strings.Contains(attempts.completions[0].ErrorMessage, tt.joinedErr.Error()) || attempts.completions[0].ErrorClass == permissionWaitReason {
+					t.Fatalf("joined failure outcome = %#v", attempts.completions)
+				}
+			}
 			if tt.wantRetry {
 				if _, retrying := state.Retry[issue.ID]; !retrying {
 					t.Fatalf("Retry[%q] missing after machine-recoverable delivery failure", issue.ID)
@@ -812,18 +845,22 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
 				t.Fatalf("work attempt completions = %#v, want successful reconciliation", attempts.completions)
 			}
+			if tt.wantMergedReason {
+				record := implementProgressRecordFromCompletion(t, attempts.completions[0])
+				if record.Reason != implementMergedCompletionReason {
+					t.Fatalf("completion reason = %q, want %q", record.Reason, implementMergedCompletionReason)
+				}
+				if got := tracker.transitionStates(); !slices.Equal(got, []string{"Done"}) || len(state.Retry) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 {
+					t.Fatalf("merged recovery: transitions=%v retry=%d claimed=%d completed=%d, want Done without continuation", got, len(state.Retry), len(state.Claimed), len(state.Completed))
+				}
+				return
+			}
 			completed := state.Completed[issue.ID]
 			if completed.Issue.PullRequest == nil || completed.Issue.PullRequest.Number != tt.wantPRNumber {
 				t.Fatalf("Completed[%q].Issue.PullRequest = %#v, want reconciled PR %d", issue.ID, completed.Issue.PullRequest, tt.wantPRNumber)
 			}
 			if tt.wantActive && completed.FinalState != issue.State {
 				t.Fatalf("Completed[%q].FinalState = %q, want active state %q", issue.ID, completed.FinalState, issue.State)
-			}
-			if tt.wantMergedReason {
-				record := implementProgressRecordFromCompletion(t, attempts.completions[0])
-				if record.Reason != implementMergedCompletionReason {
-					t.Fatalf("completion reason = %q, want %q", record.Reason, implementMergedCompletionReason)
-				}
 			}
 		})
 	}
@@ -862,7 +899,69 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 	event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
 	event.Result.PullRequestHeadPushed = true
 	event.Result.DiffStats = running.DiffStats
-	event.Err = &runpkg.DeliverableRecoveryError{Branch: branch, Err: errors.New("gh pr create failed")}
+	event.Err = &runpkg.DeliverableRecoveryError{Branch: branch, Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Operation: "gh pr create", Message: "gh pr create failed"}}
+	for _, test := range []struct {
+		name         string
+		joinedErr    error
+		legacy       bool
+		legacyTyped  bool
+		invalidClass bool
+		invalidScope bool
+		wantPure     bool
+	}{
+		{name: "pure typed receipt", wantPure: true},
+		{name: "legacy v35 typed receipt", legacyTyped: true},
+		{name: "unknown availability class", invalidClass: true},
+		{name: "nonempty availability without class", invalidScope: true},
+		{name: "workspace join", joinedErr: runpkg.ErrWorkspacePreparation},
+		{name: "checkpoint join", joinedErr: errors.New("checkpoint persistence failed")},
+		{name: "lease join", joinedErr: errors.New("native execution lease lost")},
+		{name: "session join", joinedErr: errors.New("session persistence failed")},
+		{name: "legacy plain receipt", legacy: true},
+		{name: "legacy mixed receipt", joinedErr: runpkg.ErrWorkspacePreparation, legacy: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := event
+			input.Err = errors.Join(event.Err, test.joinedErr)
+			record := newDeferredCompletion(input, running, tracker.createErr, now)
+			if test.legacy {
+				record.DeliverableRecovery = &deferredDeliverableRecovery{Branch: branch, Cause: "gh pr create failed"}
+			}
+			if test.legacy || test.legacyTyped {
+				record.ForgeAvailability = nil
+			}
+			if test.invalidClass {
+				record.ForgeAvailability.ErrorClass = "unknown"
+			}
+			if test.invalidScope {
+				record.ForgeAvailability.Host = "forge.example.test"
+			}
+			data, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded deferredCompletion
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			replayed := decoded.completion()
+			if _, pure := runpkg.PullRequestDeliverableFailure(replayed.Err); pure != test.wantPure {
+				t.Fatalf("replayed pure delivery = %v, want %v", pure, test.wantPure)
+			}
+			if test.wantPure && (decoded.ForgeAvailability == nil || *decoded.ForgeAvailability != (forgeWaitMetadata{})) {
+				t.Fatal("new bare delivery receipt lost explicit availability absence")
+			}
+			if decoded.Error != input.Err.Error() {
+				t.Fatalf("stored full error = %q, want %q", decoded.Error, input.Err.Error())
+			}
+			if !test.wantPure && replayed.Err.Error() != input.Err.Error() {
+				t.Fatalf("replayed full error = %q, want %q", replayed.Err.Error(), input.Err.Error())
+			}
+			if test.joinedErr != nil && !test.legacy && decoded.DeliverableRecovery != nil {
+				t.Fatal("mixed error acquired a typed recovery receipt")
+			}
+		})
+	}
 
 	orch.handleRunResult(t.Context(), &state, event)
 	if _, deferred := state.deferredCompletions[issue.ID]; !deferred {
@@ -892,6 +991,9 @@ func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
 		t.Fatal("deliverable recovery completion deferral was not restored")
 	}
 	var restoredRecovery *runpkg.DeliverableRecoveryError
+	if _, pure := runpkg.PullRequestDeliverableFailure(record.completion().Err); !pure {
+		t.Fatal("restored completion lost pure typed delivery authority")
+	}
 	if !errors.As(record.completion().Err, &restoredRecovery) || restoredRecovery == nil || restoredRecovery.Branch != branch {
 		t.Fatalf("restored completion error = %#v, want deliverable recovery for %q", record.completion().Err, branch)
 	}
@@ -916,14 +1018,36 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 	now := time.Date(2026, 7, 18, 13, 0, 0, 0, time.UTC)
 	empty := terminalRetryTestIssue("service-restart-empty")
 	pushed := terminalRetryTestIssue("service-restart-pushed")
+	resumedRework := terminalRetryTestIssue("service-restart-rework")
+	planned := terminalRetryTestIssue("operator-recovered-plan")
+	successfulPlan := terminalRetryTestIssue("successful-plan")
 	tracker := &terminalRetryConnector{issues: map[string]connector.Issue{
-		empty.ID:  cloneIssue(empty),
-		pushed.ID: cloneIssue(pushed),
+		empty.ID:          cloneIssue(empty),
+		pushed.ID:         cloneIssue(pushed),
+		resumedRework.ID:  cloneIssue(resumedRework),
+		planned.ID:        cloneIssue(planned),
+		successfulPlan.ID: cloneIssue(successfulPlan),
 	}}
-	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}, Recovery: workflowconfig.Recovery{TerminalAttemptRetryLimit: new(0)}})
 	o := &Orchestrator{cfg: cfg, connector: tracker}
 	state := newState(cfg)
 	state.WorkAttempts = []telemetry.WorkAttempt{
+		{
+			AttemptID: 5, IssueID: resumedRework.ID, Identifier: resumedRework.Identifier,
+			Status: string(store.WorkAttemptStatusTerminal), TerminalState: string(store.WorkAttemptTerminalAbandoned),
+			ErrorClass: "service_restart", CompletedAt: timePointer(now.Add(-time.Minute)),
+			WorkerMetadataJSON: `{"dispatch_source_state":"Rework"}`,
+		},
+		{
+			AttemptID: 4, IssueID: planned.ID, Status: string(store.WorkAttemptStatusTerminal),
+			TerminalState: string(store.WorkAttemptTerminalAbandoned), ErrorClass: "operator_abandoned",
+			CompletedAt: timePointer(now.Add(-time.Minute)), WorkerMetadataJSON: `{"run_mode":"plan"}`,
+		},
+		{
+			AttemptID: 3, IssueID: successfulPlan.ID, Status: string(store.WorkAttemptStatusTerminal),
+			TerminalState: string(store.WorkAttemptTerminalSuccess), CompletedAt: timePointer(now.Add(-time.Minute)),
+			WorkerMetadataJSON: `{"run_mode":"plan"}`,
+		},
 		{
 			AttemptID:          2,
 			IssueID:            pushed.ID,
@@ -932,7 +1056,7 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 			TerminalState:      string(store.WorkAttemptTerminalAbandoned),
 			ErrorClass:         "service_restart",
 			CompletedAt:        timePointer(now.Add(-time.Minute)),
-			WorkerMetadataJSON: `{"work_product_pushed":true}`,
+			WorkerMetadataJSON: `{"dispatch_source_state":"Rework","work_product_pushed":true}`,
 		},
 		{
 			AttemptID:     1,
@@ -945,13 +1069,22 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 		},
 	}
 
-	transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{pushed, empty}, now)
+	transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{pushed, empty, planned, successfulPlan, resumedRework}, now)
 
-	if len(transitions) != 1 || transitions[0].ID != empty.ID || transitions[0].State != "Todo" {
-		t.Fatalf("transitions = %#v, want empty attempt moved to Todo", transitions)
+	if len(transitions) != 2 || transitions[0].ID != empty.ID || transitions[0].State != "Todo" || transitions[1].ID != resumedRework.ID || transitions[1].State != "Rework" {
+		t.Fatalf("transitions = %#v, want empty legacy attempt in Todo and recorded source restored to Rework", transitions)
 	}
-	if got := tracker.transitionStates(); !slices.Equal(got, []string{"Todo"}) {
-		t.Fatalf("state transitions = %v, want [Todo]", got)
+	if got := tracker.transitionStates(); !slices.Equal(got, []string{"Todo", "Rework"}) {
+		t.Fatalf("state transitions = %v, want [Todo Rework]", got)
+	}
+	if len(state.Blocked) != 0 || tracker.issues[pushed.ID].State != "In Progress" {
+		t.Fatalf("restart entered failure park or moved pushed work: blocked=%+v pushed=%s", state.Blocked, tracker.issues[pushed.ID].State)
+	}
+	o.cfg.Plan = gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated}
+	for _, issue := range []connector.Issue{planned, successfulPlan} {
+		if mode := o.dispatchMode(t.Context(), &state, tracker.issues[issue.ID]); mode != RunModeImplement {
+			t.Fatalf("recovered plan dispatched mode %s, want implementation", mode)
+		}
 	}
 }
 
@@ -1211,11 +1344,25 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 	tests := []struct {
 		name         string
 		metadata     string
+		errorClass   string
+		foreignClaim bool
+		ownClaim     bool
+		unhydrated   bool
+		limit        *int
 		wantState    string
 		wantDemotion bool
 	}{
 		{name: "legacy metadata-less attempt", wantState: "Todo", wantDemotion: true},
+		{name: "legacy zero limit", limit: new(0), wantState: "Todo", wantDemotion: true},
+		{name: "legacy recorded Rework source", metadata: `{"dispatch_source_state":"Rework"}`, limit: new(0), wantState: "Rework", wantDemotion: true},
+		{name: "legacy pushed product", metadata: `{"dispatch_source_state":"Rework","work_product_pushed":true}`, limit: new(0), wantState: "In Progress"},
+		{name: "legacy foreign claim", foreignClaim: true, wantState: "In Progress"},
+		{name: "legacy unhydrated PR", unhydrated: true, wantState: "In Progress"},
+		{name: "service restart foreign claim", errorClass: "service_restart", foreignClaim: true, wantState: "In Progress"},
+		{name: "pre-turn foreign claim", errorClass: workAttemptErrorWorkspace, foreignClaim: true, wantState: "In Progress"},
+		{name: "service restart own claim", errorClass: "service_restart", ownClaim: true, wantState: "Todo", wantDemotion: true},
 		{name: "durable wait metadata", metadata: durableMetadata, wantState: "In Progress"},
+		{name: "durable wait zero limit", metadata: durableMetadata, limit: new(0), wantState: "In Progress"},
 	}
 
 	for _, tt := range tests {
@@ -1223,17 +1370,36 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 			t.Parallel()
 
 			issue := terminalRetryTestIssue(strings.ReplaceAll(tt.name, " ", "-"))
+			if tt.foreignClaim {
+				issue.Assignees = []string{"other-worker"}
+				issue.Fields["Lease"] = formatClaimTime(now.Add(-30 * time.Second))
+			}
+			if tt.ownClaim {
+				issue.Assignees = []string{"detent-worker"}
+				issue.Fields["Lease"] = formatClaimTime(now.Add(-30 * time.Second))
+			}
+			if tt.unhydrated {
+				issue.PullRequest = &connector.PullRequest{HydrationUnavailableReason: connector.PullRequestHydrationReasonRateLimited}
+			}
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
-			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+			cfg := normalizeConfig(Config{
+				ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"},
+				Recovery: workflowconfig.Recovery{TerminalAttemptRetryLimit: tt.limit},
+				Claiming: ClaimingConfig{Enabled: tt.foreignClaim || tt.ownClaim, AssigneeLogin: "detent-worker", LeaseField: "Lease", LeaseTTL: time.Minute},
+			})
 			o := &Orchestrator{cfg: cfg, connector: tracker}
 			state := newState(cfg)
+			errorClass := tt.errorClass
+			if errorClass == "" {
+				errorClass = githubRESTCapacityError
+			}
 			state.WorkAttempts = []telemetry.WorkAttempt{{
 				AttemptID:          1,
 				IssueID:            issue.ID,
 				Identifier:         issue.Identifier,
 				Status:             string(store.WorkAttemptStatusTerminal),
 				TerminalState:      string(store.WorkAttemptTerminalCapacity),
-				ErrorClass:         githubRESTCapacityError,
+				ErrorClass:         errorClass,
 				CompletedAt:        timePointer(now.Add(-time.Minute)),
 				WorkerMetadataJSON: tt.metadata,
 			}}
@@ -1250,6 +1416,9 @@ func TestReconcileTerminalAttemptRetryStatesHandlesGitHubRESTCapacityCompatibili
 				t.Fatalf("state transitions = %v, want [%s]", got, tt.wantState)
 			} else if !tt.wantDemotion && len(got) != 0 {
 				t.Fatalf("state transitions = %v, want none", got)
+			}
+			if len(state.Blocked) != 0 || tracker.issues[issue.ID].State != tt.wantState {
+				t.Fatalf("capacity restoration entered issue failure park or wrong lane: blocked=%+v lane=%s", state.Blocked, tracker.issues[issue.ID].State)
 			}
 		})
 	}
@@ -1515,10 +1684,11 @@ func terminalRetryMetadataPushed(raw string) bool {
 func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name      string
-		limit     *int
-		sequence  string
-		wantState string
+		name       string
+		limit      *int
+		sequence   string
+		wantState  string
+		legacyPark bool
 	}{
 		{name: "zero first failure", limit: new(0), sequence: "F", wantState: "Blocked"},
 		{name: "one permits recovery", limit: new(1), sequence: "F", wantState: "Todo"},
@@ -1531,10 +1701,15 @@ func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 		{name: "zero GitHub wait", limit: new(0), sequence: "G", wantState: "In Progress"},
 		{name: "zero forge wait", limit: new(0), sequence: "A", wantState: "In Progress"},
 		{name: "zero service restart", limit: new(0), sequence: "RRR", wantState: "Todo"},
+		{name: "zero overload remains instance-owned", limit: new(0), sequence: "OOO", wantState: "In Progress"},
+		{name: "overloads never park the issue", sequence: "OOOOOO", wantState: "In Progress"},
+		{name: "overload does not reset failed outcomes", limit: new(1), sequence: "FOF", wantState: "Blocked"},
+		{name: "legacy instance-only park recovers before issue cooldown", sequence: "OOO", legacyPark: true, wantState: "In Progress"},
+		{name: "legacy genuine failure park retains cooldown", sequence: "FFF", legacyPark: true, wantState: "Blocked"},
 		{name: "capacity does not consume", limit: new(1), sequence: "CCF", wantState: "Todo"},
 		{name: "GitHub does not consume", limit: new(1), sequence: "GGF", wantState: "Todo"},
 		{name: "forge does not consume", limit: new(1), sequence: "AAF", wantState: "Todo"},
-		{name: "capacity retains reset behavior", limit: new(1), sequence: "FCF", wantState: "Todo"},
+		{name: "capacity does not reset failed outcomes", limit: new(1), sequence: "FCF", wantState: "Blocked"},
 		{name: "success resets", limit: new(1), sequence: "FSF", wantState: "Todo"},
 		{name: "pushed work resets", limit: new(1), sequence: "FPF", wantState: "Todo"},
 		{name: "pushed work prevents retry", limit: new(0), sequence: "P", wantState: "In Progress"},
@@ -1580,6 +1755,10 @@ func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 				case 'R':
 					completion.TerminalState = store.WorkAttemptTerminalAbandoned
 					completion.ErrorClass = "service_restart"
+				case 'O':
+					completion.ErrorClass = backendcapacity.TransientOverloadErrorClass
+					completion.Phase = "waiting"
+					completion.ErrorMessage = "stream turn: EOF: codex app-server process exited (signal: terminated)"
 				case 'C':
 					completion.TerminalState = store.WorkAttemptTerminalCapacity
 					completion.ErrorClass = backendcapacity.ErrorClass
@@ -1616,7 +1795,19 @@ func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 			state := newState(cfg)
 			state.WorkAttempts = []telemetry.WorkAttempt{telemetryWorkAttempt(latest, now)}
 			at := now.Add(24 * time.Hour)
-			o.reconcileTerminalAttemptRetryStates(ctx, &state, []connector.Issue{issue}, at)
+			if tt.legacyPark {
+				o.workflowMetrics = db
+				parked, ok := o.parkRetryCycleLimit(ctx, &state, issue, RunModeImplement, DiffStats{}, terminalAttemptRetryLimitCause, 3, telemetryWorkAttempt(latest, at), at)
+				if !ok {
+					t.Fatal("cannot reproduce durable legacy terminal park")
+				}
+				parked.StageUpdatedAt = &at
+				restarted := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: db, workflowMetrics: db}
+				restartedState := newState(cfg)
+				restarted.recoverBlockedIssues(ctx, &restartedState, []connector.Issue{parked}, at.Add(time.Minute))
+			} else {
+				o.reconcileTerminalAttemptRetryStates(ctx, &state, []connector.Issue{issue}, at)
+			}
 			if got := tracker.issues[issue.ID].State; got != tt.wantState {
 				t.Fatalf("state after reopening store = %q, want %q", got, tt.wantState)
 			}
@@ -1662,7 +1853,7 @@ func TestConsecutiveRetryCycleCountAcrossServiceRestarts(t *testing.T) {
 		{name: "pushed restart resets", sequence: "FFRPRF", wantCount: 1, wantLatest: 6},
 		{name: "linked PR restart resets", sequence: "FFRLRF", wantCount: 1, wantLatest: 6},
 		{name: "workspace failures straddle restarts", sequence: "WRWRW", cause: workspacePreparationRetryLimitCause},
-		{name: "workspace failure resets terminal", sequence: "FFRWRF", wantCount: 1, wantLatest: 6},
+		{name: "workspace interruption preserves terminal failures", sequence: "FFRWRF", wantCount: 3, wantLatest: 6},
 		{name: "implementation resets workspace", sequence: "WWRFRW", cause: workspacePreparationRetryLimitCause},
 	}
 	for _, tt := range tests {

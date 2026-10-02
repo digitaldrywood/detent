@@ -235,7 +235,7 @@ func TestSelectGoInstallActionParsesReleaseChoice(t *testing.T) {
 
 	output := stdout.String()
 	for _, want := range []string{
-		"Run the Go install for me",
+		"Build the prepared source archive manually",
 		"Switch to the release binary",
 		"Abort",
 		"WARNING:",

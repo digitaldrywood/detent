@@ -2,6 +2,10 @@
 #
 # Every supported project key is commented out. Copy only the settings you
 # intend to override into detent.yaml or detent.local.yaml.
+# # review | type: object | default: see child fields | required: No | validation: agent.auto_promote.gate_wait_state must be one of source, review
+# review:
+#   # review.human | type: boolean | default: false | required: No | validation: None
+#   human: false
 # # runners | type: object | default: see child fields | required: No | validation: None
 # runners:
 #   # runners.profile | type: string | default: none | required: No | validation: must name a declared runner profile
@@ -595,6 +599,8 @@
 #   kind: "pull_request"
 #   # deliverable.merge_method | type: string | default: "squash" | required: No | validation: must be one of squash, merge, rebase
 #   merge_method: "squash"
+#   # deliverable.github_pull_request | type: boolean | default: false | required: No | validation: None
+#   github_pull_request: false
 #   # deliverable.output_root | type: string | default: none | required: No | validation: None
 #   output_root: null
 #   # deliverable.review_url | type: string | default: none | required: No | validation: None
@@ -609,8 +615,14 @@
 #   terminal_attempt_retry_limit: 3
 # # worker | type: object | default: see child fields | required: No | validation: None
 # worker:
-#   # worker.ssh_hosts | type: list<string> | default: [] | required: No | validation: None
+#   # worker.compute_rates | type: mapping<string, mapping> | default: {} | required: No | validation: None
+#   compute_rates: {}
+#   # worker.ssh_hosts | type: list<string> | default: [] | required: No | validation: must contain unique SSH destinations or local; worker.host_caps.__invalid__ must name a configured worker.ssh_hosts entry
 #   ssh_hosts: []
+#   # worker.host_selection | type: string | default: "least_loaded" | required: No | validation: must be least_loaded or preference
+#   host_selection: "least_loaded"
+#   # worker.host_caps | type: mapping<string, integer> | default: {} | required: No | validation: .__invalid__ must be greater than 0; .__invalid__ must name a configured worker.ssh_hosts entry
+#   host_caps: {}
 #   # worker.max_concurrent_agents_per_host | type: integer | default: none | required: No | validation: must be greater than 0
 #   max_concurrent_agents_per_host: null
 #   # worker.github_token | type: string | default: top-level github_token | required: No | validation: None
@@ -717,8 +729,8 @@
 #     enabled: false
 #     # agent.auto_promote.quiet_seconds | type: integer | default: 600 | required: No | validation: must be greater than or equal to 0
 #     quiet_seconds: 600
-#     # agent.auto_promote.optout_label | type: string | default: "requires-human-review" | required: No | validation: must not be blank
-#     optout_label: "requires-human-review"
+#     # agent.auto_promote.optout_label | type: string | default: none | required: No | validation: None
+#     optout_label: null
 #     # agent.auto_promote.allowed_issue_labels | type: list<string> | default: [] | required: No | validation: labels must not be blank
 #     allowed_issue_labels: []
 #     # agent.auto_promote.gate_wait_state | type: string | default: "source" | required: No | validation: must be one of source, review
@@ -813,7 +825,7 @@
 #       id: null
 #       # agents.backends[].kind | type: string | default: none | required: Conditional | validation: is required
 #       kind: null
-#       # agents.backends[].protocol | type: string | default: none | required: No | validation: must be app-server for codex; must be headless for claude_code
+#       # agents.backends[].protocol | type: string | default: none | required: No | validation: must be app-server for codex; must be headless for claude_code; must be rpc for pi_agent
 #       protocol: null
 #       # agents.backends[].command | type: string | default: none | required: Conditional | validation: is required
 #       command: null
@@ -821,7 +833,7 @@
 #       provider: null
 #       # agents.backends[].options | type: mapping | default: see child fields | required: No | validation: None
 #       options:
-#         # agents.backends[].options.shell | type: string | default: Codex: platform default shell; Claude Code: none | required: No | validation: None
+#         # agents.backends[].options.shell | type: string | default: platform default shell | required: No | validation: None
 #         shell: null
 #         # agents.backends[].options.model_provider | type: string | default: none for Codex | required: No | validation: must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens
 #         model_provider: null
@@ -842,11 +854,11 @@
 #         thread_sandbox: "workspace-write"
 #         # agents.backends[].options.turn_sandbox_policy | type: mapping<string, value> | default: {} for Codex | required: No | validation: None
 #         turn_sandbox_policy: {}
-#         # agents.backends[].options.turn_timeout_ms | type: integer | default: Codex: 3600000; Claude Code: 0 | required: No | validation: must be greater than or equal to 0
+#         # agents.backends[].options.turn_timeout_ms | type: integer | default: Codex: 3600000; Claude Code: 0; Pi: 0 | required: No | validation: must be greater than or equal to 0
 #         turn_timeout_ms: 3600000
 #         # agents.backends[].options.read_timeout_ms | type: integer | default: 5000 for Codex | required: No | validation: must be greater than or equal to 0
 #         read_timeout_ms: 5000
-#         # agents.backends[].options.stall_timeout_ms | type: integer | default: Codex: 300000; Claude Code: 0 | required: No | validation: must be greater than or equal to 0
+#         # agents.backends[].options.stall_timeout_ms | type: integer | default: Codex: 300000; Claude Code: 0; Pi: 0 | required: No | validation: must be greater than or equal to 0
 #         stall_timeout_ms: 300000
 #         # agents.backends[].options.permission_mode | type: string | default: "bypassPermissions" for Claude Code | required: No | validation: must be one of default, acceptEdits, bypassPermissions; must not be plan for unattended workers
 #         permission_mode: "bypassPermissions"
@@ -860,6 +872,12 @@
 #         include_partial_messages: false
 #         # agents.backends[].options.extra_args | type: list<string> | default: [] for Claude Code | required: No | validation: None
 #         extra_args: []
+#         # agents.backends[].options.thinking_level | type: string | default: none for Pi | required: No | validation: must be one of off, minimal, low, medium, high, xhigh, max
+#         thinking_level: null
+#         # agents.backends[].options.tools | type: list<string> | default: ["read","bash","edit","write","grep","find","ls"] for Pi | required: No | validation: must contain only Pi built-in tools: read, bash, edit, write, grep, find, ls
+#         tools: ["read","bash","edit","write","grep","find","ls"]
+#         # agents.backends[].options.session_dir | type: string | default: none for Pi | required: No | validation: None
+#         session_dir: null
 #   # agents.routes | type: list<object> | default: [] | required: No | validation: None
 #   routes:
 #     -

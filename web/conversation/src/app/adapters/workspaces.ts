@@ -88,11 +88,12 @@ export function workspaceKey(
   projectId: string,
   workItemId: string,
   requires: readonly string[],
+  attemptId: string | null = null,
 ): string {
   // Panels asking for different surfaces send different bodies, and the hub
   // refuses one key carrying two bodies, so each relayed set has its own key.
   const surfaces = relayedRequires(requires).join(",");
-  const storageKey = `${KEY_STORAGE_PREFIX}:${projectId}:${workItemId}:${surfaces}`;
+  const storageKey = `${KEY_STORAGE_PREFIX}:${projectId}:${workItemId}:${surfaces}:${attemptId ?? ""}`;
   try {
     const existing = globalThis.localStorage?.getItem(storageKey);
     if (existing !== null && existing !== undefined && existing.length > 0) return existing;
@@ -177,12 +178,14 @@ async function acquire(
   projectId: string,
   workItemId: string,
   requires: readonly string[],
+  attemptId: string | null,
 ): Promise<Workspace> {
   const existing = await http
     .listWorkspaces({ projectId, workItemId })
     .then((page) =>
       page.workspaces.find(
         (candidate) =>
+          (candidate.attempt_id ?? null) === attemptId &&
           isWorkspaceUsable(candidate.state) && workspaceSatisfies(candidate, requires),
       ),
     )
@@ -191,8 +194,9 @@ async function acquire(
   try {
     return await http.createWorkspace({
       projectId,
-      key: workspaceKey(projectId, workItemId, requires),
+      key: workspaceKey(projectId, workItemId, requires, attemptId),
       workItemId,
+      ...(attemptId === null ? {} : { attemptId }),
       requires,
     });
   } catch (cause) {
@@ -208,7 +212,7 @@ async function acquire(
       const id = cause.details?.["workspace_id"];
       if (typeof id === "string") {
         const adopted = await http.getWorkspace(projectId, id);
-        if (workspaceSatisfies(adopted, requires)) return adopted;
+        if ((adopted.attempt_id ?? null) === attemptId && workspaceSatisfies(adopted, requires)) return adopted;
       }
     }
     throw cause;
@@ -232,6 +236,7 @@ function describe(cause: unknown): string {
 export interface UseWorkspaceInput {
   readonly projectId: string | null;
   readonly workItemId: string | null;
+  readonly attemptId?: string | null;
   /** What the runner must report to be allowed to claim it (§18.1). */
   readonly requires: readonly string[];
   /** False keeps the hook idle, so opening a panel is what spends a slot. */
@@ -241,44 +246,48 @@ export interface UseWorkspaceInput {
 export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
   const http = useWorkHttp();
   const { projectId, workItemId } = input;
+  const attemptId = input.attemptId ?? null;
   const enabled = input.enabled ?? true;
   // The array identity changes on every render at most call sites; the key is
   // what the effect actually depends on.
   const requiresKey = [...input.requires].sort().join(",");
 
-  const [workspace, setWorkspace] = React.useState<Workspace | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  const binding = React.useMemo(
+    () => ({ http, projectId, workItemId, attemptId, requiresKey, enabled }),
+    [http, projectId, workItemId, attemptId, requiresKey, enabled],
+  );
+  const [result, setResult] = React.useState<{
+    binding: typeof binding;
+    workspace: Workspace | null;
+    loading: boolean;
+    error: string | null;
+  }>(() => ({ binding, workspace: null, loading: false, error: null }));
+  const workspace = result.binding === binding ? result.workspace : null;
+  const loading = result.binding === binding ? result.loading : enabled;
+  const error = result.binding === binding ? result.error : null;
   const [nonce, setNonce] = React.useState(0);
   const retry = React.useCallback(() => setNonce((value) => value + 1), []);
 
   React.useEffect(() => {
     if (!enabled || projectId === null || workItemId === null) {
-      setWorkspace(null);
-      setError(null);
-      setLoading(false);
+      setResult({ binding, workspace: null, error: null, loading: false });
       return;
     }
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    void acquire(http, projectId, workItemId, requiresKey.split(","))
+    setResult({ binding, workspace: null, error: null, loading: true });
+    void acquire(http, projectId, workItemId, requiresKey.split(","), attemptId)
       .then((next) => {
         if (cancelled) return;
-        setWorkspace(next);
+        setResult({ binding, workspace: next, error: null, loading: false });
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        setWorkspace(null);
-        setError(describe(cause));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        setResult({ binding, workspace: null, error: describe(cause), loading: false });
       });
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, workItemId, requiresKey, enabled, nonce]);
+  }, [binding, http, projectId, workItemId, attemptId, requiresKey, enabled, nonce]);
 
   // Readiness by subscription (§18.1). The stream is the project's, so every
   // frame is filtered down to this workspace's id before it is believed.
@@ -292,7 +301,9 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
     const onWorkspaceEvent = (event: MessageEvent<string>) => {
       const next = workspaceFromEvent(event.data, workspaceId);
       if (next === null) return;
-      setWorkspace(next);
+      setResult((current) => current.binding === binding
+        ? { ...current, workspace: next }
+        : current);
     };
     for (const type of WORKSPACE_EVENT_TYPES) {
       source.addEventListener(type, onWorkspaceEvent as EventListener);
@@ -303,7 +314,7 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
       }
       source.close();
     };
-  }, [http, projectId, workspaceId]);
+  }, [binding, http, projectId, workspaceId]);
 
   const relayUrl = React.useMemo(
     () =>

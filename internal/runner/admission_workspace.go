@@ -72,6 +72,9 @@ func (w *admissionWorkspace) Cleanup(ctx context.Context, path string) error {
 	if _, err := removePathWithRetry(ctx, w.path, removeAll, wait); err != nil {
 		return err
 	}
+	if err := workspace.RemoveWorkerScratchRoot(w.path); err != nil {
+		return err
+	}
 	if w.leaks != nil {
 		w.leaks.remove(w.path)
 	}

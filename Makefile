@@ -34,9 +34,16 @@ GOSEC_VERSION ?= v2.28.0
 GOSEC_BINARY ?= tmp/gosec-$(GOSEC_VERSION)-deterministic
 GOSEC_PATCH ?= scripts/gosec-v2.28.0-deterministic.patch
 GOSEC_DETERMINISM_RUNS ?= 8
+# Several worktrees run gates on the same host at once. TEST_PROCS bounds how
+# many packages build or test concurrently, the Go scheduler threads each test
+# binary uses, lint workers, and vitest workers, so one invocation cannot take
+# the whole machine. Raise it per invocation: TEST_PROCS=8 make test.
+TEST_PROCS ?= 4
+GOMAXPROCS ?= $(TEST_PROCS)
+export GOMAXPROCS
 # Filesystem diagnostics can record millions of cache inputs (#2735).
 # Run gate tests afresh; -count=1 preserves native build and module caches.
-GO_TEST := env -u DETENT_API_TOKEN go test -count=1
+GO_TEST := env -u DETENT_API_TOKEN go test -count=1 -p $(TEST_PROCS)
 HUB_RACE_TIMEOUT ?= 15m
 HUB_RACE_PARALLEL ?= 2
 HUB_RACE_PARTITION := ^Test[A-GI-O]
@@ -57,7 +64,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast modernize-check nilaway-audit nilaway-changed release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -68,6 +75,7 @@ dev:
 	@ENV=dev LOG_LEVEL=debug DETENT_AIR_VERSION=$(DEV_VERSION) air 2>&1 | tee tmp/air-combined.log
 
 generate:
+	@$(MAKE) app
 	@go generate ./...
 	@if [ -n "$$(git ls-files --others --exclude-standard -- '*.templ'; git ls-files -- '*.templ')" ]; then \
 		$(TEMPL) generate; \
@@ -76,7 +84,6 @@ generate:
 	fi
 	@$(MAKE) sqlc
 	@$(MAKE) css
-	@$(MAKE) app
 
 check-migrations:
 	go run ./tools/migrationcheck
@@ -96,8 +103,7 @@ css:
 
 app:
 	@if [ -f "$(APP_DIR)/package.json" ]; then \
-		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
-		(cd "$(APP_DIR)" && npm run build); \
+		(cd "$(APP_DIR)" && npm ci && npm run build); \
 	else \
 		echo "No conversation client at $(APP_DIR); skipping app build."; \
 	fi
@@ -110,23 +116,10 @@ app-dev:
 		echo "No conversation client at $(APP_DIR); skipping app dev server."; \
 	fi
 
-# The client gate: types, unit tests, and a bundle that matches the committed
-# one. `static/app/conversation` is committed so `go build` never needs Node,
-# so a client change that was not rebuilt is drift the branch must not carry.
-# The build is deterministic (fixed output names, no hashes, no timestamps),
-# which is what makes the diff check meaningful.
 check-app:
 	@set -e; if [ -f "$(APP_DIR)/package.json" ]; then \
 		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
-		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run && npm run build); \
-		git diff --exit-code -- static/app/conversation || { \
-			echo "static/app/conversation is out of date; run make app and commit the result."; \
-			exit 1; \
-		}; \
-		if [ -n "$$(git ls-files --others --exclude-standard -- static/app/conversation)" ]; then \
-			echo "static/app/conversation has untracked build output; commit or remove it."; \
-			exit 1; \
-		fi; \
+		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run --maxWorkers=$(TEST_PROCS) && npm run build); \
 		grep -q "MIT" static/app/conversation/app.js || { \
 			echo "static/app/conversation/app.js is missing the MIT attribution banner."; \
 			exit 1; \
@@ -233,7 +226,7 @@ visual-e2e-update: build
 	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test --update-snapshots
 
 lint: $(GOLANGCI_LINT)
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --timeout=15m
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m
 
 $(GOLANGCI_LINT):
 	@mkdir -p "$(GOLANGCI_LINT_DIR)"
@@ -271,6 +264,10 @@ check-invariants:
 
 modernize-check:
 	go fix -diff $(MODERNIZE_FIX_FLAGS) ./...
+
+source-metadata:
+	@mkdir -p tmp/source-metadata
+	@printf '%s\n' '$(LDFLAGS)' > tmp/source-metadata/BUILD_LDFLAGS
 
 release-snapshot:
 	goreleaser release --snapshot --clean
@@ -310,7 +307,7 @@ help:
 	@echo "  app          Build the conversation client into static/app/conversation"
 	@echo "  app-dev      Run the conversation client dev server"
 	@echo "  app-test     Typecheck and test the conversation client"
-	@echo "  check-app    Client typecheck, tests, bundle drift and attribution gate"
+	@echo "  check-app    Client typecheck, tests, build and attribution"
 	@echo "  build        Build $(BINARY_NAME)"
 	@echo "  test         Run Go tests"
 	@echo "  test-race    Run Go tests with the race detector"

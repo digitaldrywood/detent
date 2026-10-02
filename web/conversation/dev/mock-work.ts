@@ -57,6 +57,7 @@ interface MockIssue {
   dependencies: string[];
   blockers: { work_item_id: string; project_id: string; state: string; terminal: boolean }[];
   external_references: unknown[];
+  provenance?: { provider: string; external_id: string; author_id: string; created_at: string };
 }
 
 const STATES: readonly MockState[] = [
@@ -150,6 +151,9 @@ export function createWorkMock(options: {
 }): WorkMock {
   const now = new Date("2026-09-09T12:00:00Z").getTime();
   let issues: MockIssue[] = [];
+  let pagination = false;
+  let revoked = false;
+  let expired = false;
   let sequence = 40;
   let conflictOn: string | null = null;
   // Reviews and discussion posted through the mock, per change id, so a
@@ -162,10 +166,10 @@ export function createWorkMock(options: {
     issues = [];
     let number = 3300;
     for (const project of options.projects) {
-      const count = project.id === options.projects[0]?.id ? 32 : 8;
+      const count = pagination ? (project.id === options.projects[0]?.id ? 137 : 4) : project.id === options.projects[0]?.id ? 32 : 8;
       for (let index = 0; index < count; index += 1) {
         number += 1;
-        const lane = LANES[index % LANES.length]!;
+        const lane = pagination ? (index === 136 ? "In Progress" : index === 120 ? "Done" : index === 2 ? "In Review" : "Todo") : LANES[index % LANES.length]!;
         const id = `wi_${pad(number)}`;
         const created = new Date(now - (index + 1) * 3_600_000).toISOString();
         issues.push({
@@ -175,7 +179,7 @@ export function createWorkMock(options: {
           number,
           revision: "1",
           profile: "native",
-          title: `${TITLES[index % TITLES.length]}`,
+          title: pagination ? (index === 136 ? "Observed later-page worker" : `Queue item ${index + 1}`) : `${TITLES[index % TITLES.length]}`,
           body:
             "The renewal path returns before the handoff completes, so a runner that lost its lease still believes it holds one.\n\n" +
             "## Acceptance\n\n- The renewal blocks until the handoff is acknowledged.\n- A lost lease is reported as lost within one tick.\n- The board says which runner holds the lease.\n",
@@ -185,11 +189,14 @@ export function createWorkMock(options: {
           labels: index % 3 === 0 ? [LABELS[index % LABELS.length]!, "effort:medium"] : [],
           assignees: ASSIGNEES[index % ASSIGNEES.length] === "" ? [] : [ASSIGNEES[index % ASSIGNEES.length]!],
           actor: { kind: "human", principal_id: "tok_mock" },
-          created_at: created,
+          created_at: pagination && index === 120 ? "2019-01-01T00:00:00Z" : created,
           updated_at: new Date(now - index * 600_000).toISOString(),
           dependencies: [],
           blockers: [],
           external_references: [],
+          ...(pagination && index === 120 ? { provenance: {
+            provider: "github", external_id: String(number), author_id: "imported-operator", created_at: "2019-01-01T00:00:00Z",
+          } } : {}),
         });
       }
     }
@@ -466,7 +473,7 @@ export function createWorkMock(options: {
     response.writeHead(status, {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
-      "Content-Length": Buffer.byteLength(body),
+      "Content-Length": new TextEncoder().encode(body).length,
     });
     response.end(body);
   }
@@ -531,7 +538,23 @@ export function createWorkMock(options: {
         json(response, 200, { armed: conflictOn });
         return true;
       }
+      if (path === "/__mock/work/pagination" && method === "POST") {
+        const body = await readBody();
+        if (!pagination) {
+          pagination = true;
+          build();
+          const active = issues.find((issue) => issue.title === "Observed later-page worker");
+          if (active !== undefined) active.updated_at = new Date(now).toISOString();
+        }
+        revoked = body.revoked === true;
+        expired = body.expired === true;
+        json(response, 200, { ready: true });
+        return true;
+      }
       if (path === "/__mock/work/reset" && method === "POST") {
+        pagination = false;
+        revoked = false;
+        expired = false;
         build();
         conflictOn = null;
         reviews.clear();
@@ -568,6 +591,10 @@ export function createWorkMock(options: {
       // `.../conversations...` belongs to the conversation mock.
       if (segments[1] === "conversations") return false;
       if (found === null) return false;
+      if (pagination && revoked) {
+        json(response, 403, { code: "forbidden", message: "Project access revoked" });
+        return true;
+      }
 
       if (segments.length === 1 && method === "GET") {
         json(response, 200, found);
@@ -611,7 +638,7 @@ export function createWorkMock(options: {
       const scoped = issues.filter((issue) => issue.project_id === projectId);
 
       if (segments.length === 2 && method === "GET") {
-        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include"]);
+        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived"]);
         if (problem !== null) {
           invalid(response, problem);
           return true;
@@ -621,8 +648,20 @@ export function createWorkMock(options: {
         const assignee = url.searchParams.get("assignee");
         const priority = url.searchParams.get("priority");
         const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), 200);
-        const after = Number(url.searchParams.get("cursor") ?? "0");
+        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, url.searchParams.get("archived")]);
+        let after = Number(url.searchParams.get("cursor") ?? "0");
+        if (pagination && url.searchParams.has("cursor")) {
+          try {
+            const cursor = JSON.parse(atob(url.searchParams.get("cursor")!));
+            if (expired || cursor.scope !== cursorScope || !Number.isSafeInteger(cursor.after)) throw new Error("cursor");
+            after = cursor.after;
+          } catch {
+            invalid(response, "Cursor is invalid or expired for this project/filter");
+            return true;
+          }
+        }
         const matching = scoped
+          .filter(() => url.searchParams.get("archived") !== "true")
           .filter((issue) => state === null || issue.state === state)
           .filter((issue) => label === null || issue.labels.includes(label))
           .filter((issue) => assignee === null || issue.assignees.includes(assignee))
@@ -634,7 +673,7 @@ export function createWorkMock(options: {
         json(response, 200, {
           items: page,
           ...(last !== undefined && matching.length > page.length
-            ? { next_cursor: String(last.number) }
+            ? { next_cursor: pagination ? btoa(JSON.stringify({ scope: cursorScope, after: last.number })) : String(last.number) }
             : {}),
         });
         return true;
@@ -647,6 +686,10 @@ export function createWorkMock(options: {
         return true;
       }
       const action = segments[3];
+      if (pagination && issue.number === 3303 && action === "changes" && segments.length === 5 && method === "GET") {
+        json(response, 503, { code: "unavailable", message: "Change detail unavailable" });
+        return true;
+      }
 
       if (action === undefined && method === "GET") {
         json(response, 200, issue);
@@ -785,7 +828,11 @@ export function createWorkMock(options: {
       }
 
       if (action === "attempts" && method === "GET") {
-        json(response, 200, { items: attemptsFor(issue) });
+        if (pagination && issue.number === 3301) {
+          json(response, 503, { code: "unavailable", message: "Attempt observation unavailable" });
+          return true;
+        }
+        json(response, 200, { items: attemptsFor(issue), ...(pagination && issue.number === 3302 ? { next_cursor: "older-attempt-page" } : {}) });
         return true;
       }
 

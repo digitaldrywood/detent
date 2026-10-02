@@ -17,6 +17,9 @@ import (
 )
 
 func (s *Service) registerOnboardingRoutes(e *echo.Echo) {
+	e.GET(nativeBase+"/onboarding/issue-intake", s.getGitHubBatch, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
+	e.POST(nativeBase+"/onboarding/issue-intake", s.commandGitHubBatch, s.requireOnboardingAdmin())
+	e.POST(nativeBase+"/onboarding/issue-intake/result", s.reportGitHubBatch, s.requireNativeScope(apiScopeWorker))
 	read := s.requireNativeScope(apiScopeOperator, apiScopeWorker, apiScopeAdmin)
 	write := s.requireNativeScope(apiScopeOperator, apiScopeAdmin)
 	e.PUT(nativeBase+"/onboarding/integration", s.updateProjectIntegration, s.requireOnboardingAdmin())
@@ -89,7 +92,15 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		runner.ProjectIDs = []tracker.ProjectID{scope.project}
 		runner.Leases = nil
 		runner.ProviderCapacity = nil
-		result.Runners = append(result.Runners, runnerauth.Eligibility{Runner: runner, Exclusions: exclusions})
+		var checksJSON string
+		if err := s.database.db.QueryRowContext(ctx, "SELECT local_checks_json FROM runner_identities WHERE id=? AND organization_id=?", id, scope.organization).Scan(&checksJSON); err != nil {
+			return result, err
+		}
+		var checks map[tracker.ProjectID]*runnerauth.LocalChecks
+		if err := json.Unmarshal([]byte(checksJSON), &checks); err != nil {
+			return result, err
+		}
+		result.Runners = append(result.Runners, runnerauth.Eligibility{Runner: runner, Exclusions: exclusions, LocalChecks: checks[scope.project]})
 	}
 	rows, err = s.database.db.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id", scope.organization, scope.project)
 	if err != nil {
@@ -127,18 +138,27 @@ func (s *Service) getOnboarding(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
+type saveOnboardingRequest struct {
+	tracker.Mutation
+	Progress onboarding.Progress `json:"progress"`
+}
+
 func (s *Service) saveOnboarding(c echo.Context) error {
-	var request struct {
-		tracker.Mutation
-		Progress onboarding.Progress `json:"progress"`
-	}
+	var request saveOnboardingRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
 	if err := request.Progress.Validate(); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.nativeMutation(c, request.Mutation, request, s.saveOnboardingOperation(request))
+}
+
+func (s *Service) saveOnboardingOperation(request saveOnboardingRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
+	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		if err := request.Progress.Validate(); err != nil {
+			return nil, nativeInvalid(err.Error())
+		}
 		current, err := readOnboardingProgress(ctx, tx, scope)
 		if err != nil {
 			return nil, err
@@ -155,7 +175,7 @@ func (s *Service) saveOnboarding(c echo.Context) error {
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO project_onboarding(organization_id,project_id,revision,progress_json,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(organization_id,project_id) DO UPDATE SET revision=excluded.revision,progress_json=excluded.progress_json,updated_at=excluded.updated_at`, scope.organization, scope.project, progress.Revision, raw, progress.UpdatedAt)
 		return progress, err
-	})
+	}
 }
 
 func (s *Service) requireOnboardingAdmin() echo.MiddlewareFunc {

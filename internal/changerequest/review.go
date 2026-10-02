@@ -100,6 +100,14 @@ func ValidateResult(version tracker.ChangeVersion, result tracker.ChangeCheckRes
 }
 
 func Summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time) tracker.ChangeSummary {
+	return summarize(detail, policyID, reviewPolicyID, now, false)
+}
+
+func SummarizeCurrentVersion(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) tracker.ChangeSummary {
+	return summarize(detail, policyID, reviewPolicyID, now, priorApproval)
+}
+
+func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) tracker.ChangeSummary {
 	summary := tracker.ChangeSummary{NativeReview: "pending", ExternalReview: "not_linked", Checks: "missing", Status: "draft", Messages: []string{}}
 	var current *tracker.ChangeVersion
 	for i := range detail.Versions {
@@ -129,7 +137,7 @@ func Summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 		summary.NativeReview = "not_required"
 	}
 	latest := map[string]string{}
-	staleApproval := false
+	staleApproval := priorApproval
 	for _, review := range detail.Reviews {
 		if review.VersionID == current.ID && review.Decision != "commented" {
 			latest[review.Actor.PrincipalID] = review.Decision

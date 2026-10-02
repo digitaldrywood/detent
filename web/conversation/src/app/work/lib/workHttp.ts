@@ -13,6 +13,7 @@
 // `X-CSRF-Token` from the bootstrap payload, which the hosted boundary
 // requires of any non-GET without an `Authorization` header.
 import * as Schema from "effect/Schema";
+import { ConversationSnapshot } from "../../../contracts/conversation.ts";
 
 import {
   Action,
@@ -141,6 +142,7 @@ export function serverFilter(values: readonly string[]): string | undefined {
 }
 
 export interface ListWorkItemsInput {
+  readonly signal?: AbortSignal;
   readonly projectId: string;
   readonly state?: string | undefined;
   readonly label?: string | undefined;
@@ -150,6 +152,7 @@ export interface ListWorkItemsInput {
   readonly limit?: number | undefined;
   /** Coordinator work items are excluded unless this is on. */
   readonly includeCoordinator?: boolean;
+  readonly archived?: boolean;
 }
 
 export interface WorkHttp {
@@ -160,9 +163,10 @@ export interface WorkHttp {
    * emits `event: activity` with a bare decimal sequence as its data.
    */
   readonly eventsUrl: (projectId: string) => string;
-  readonly getProject: (projectId: string) => Promise<NativeProject>;
+  readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
+  readonly getWorkItemConversation: (projectId: string, itemId: string) => Promise<ConversationSnapshot>;
   readonly patchWorkItem: (input: {
     projectId: string;
     itemId: string;
@@ -190,6 +194,13 @@ export interface WorkHttp {
     state: string;
     reason?: TransitionReason;
   }) => Promise<NativeIssue>;
+  readonly setArchived: (input: {
+    projectId: string;
+    itemId: string;
+    key: string;
+    expectedRevision: string;
+    archived: boolean;
+  }) => Promise<NativeIssue>;
   readonly setDependency: (input: {
     projectId: string;
     itemId: string;
@@ -202,6 +213,7 @@ export interface WorkHttp {
     projectId: string,
     itemId: string,
     limit?: number,
+    signal?: AbortSignal,
   ) => Promise<AttemptPage>;
   /**
    * The latest stored diff on one issue (decisions.md §18.5), or `{diff: null}`
@@ -234,11 +246,12 @@ export interface WorkHttp {
     key: string;
     body: string;
   }) => Promise<NativeComment>;
-  readonly listChanges: (projectId: string, itemId: string) => Promise<ChangeRequestList>;
+  readonly listChanges: (projectId: string, itemId: string, signal?: AbortSignal) => Promise<ChangeRequestList>;
   readonly getChange: (
     projectId: string,
     itemId: string,
     changeId: string,
+    signal?: AbortSignal,
   ) => Promise<ChangeDetail>;
   /**
    * One attempt's stored diff (decisions.md §18.5), attempt-addressed. A
@@ -444,6 +457,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     method: string,
     target: string,
     body?: unknown,
+    signal?: AbortSignal,
   ): Promise<A> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -454,6 +468,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         method,
         credentials: "same-origin",
         headers,
+        ...(signal === undefined ? {} : { signal }),
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch (cause) {
@@ -524,13 +539,14 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     apiBase: options.apiBase,
     eventsUrl: (projectId) =>
       `${options.origin}${hubPath(`/projects/${encodeURIComponent(projectId)}/events`)}`,
-    getProject: (projectId) => send(NativeProject, "GET", url(projectBase(projectId))),
+    getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
     listWorkItems: (input) =>
       send(
         WorkItemPage,
         "GET",
         url(`${projectBase(input.projectId)}/work-items`, {
           state: input.state,
+          archived: input.archived === true ? "true" : undefined,
           label: input.label,
           assignee: input.assignee,
           priority: input.priority,
@@ -538,9 +554,13 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
           limit: input.limit,
           include: input.includeCoordinator === true ? "coordinator" : undefined,
         }),
+        undefined,
+        input.signal,
       ),
     getWorkItem: (projectId, itemId) =>
       send(NativeIssue, "GET", url(itemBase(projectId, itemId))),
+    getWorkItemConversation: (projectId, itemId) =>
+      send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`)),
     listLabels: (projectId) =>
       send(NativeLabelList, "GET", url(`${projectBase(projectId)}/labels`)),
     patchWorkItem: (input) =>
@@ -563,6 +583,11 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         // would put a lie in the history.
         reason: input.reason ?? "user_requested",
       }),
+    setArchived: (input) =>
+      send(NativeIssue, "POST", url(`${itemBase(input.projectId, input.itemId)}/${input.archived ? "archive" : "restore"}`), {
+        idempotency_key: input.key,
+        expected_revision: input.expectedRevision,
+      }),
     setDependency: (input) =>
       send(NativeIssue, "POST", url(`${itemBase(input.projectId, input.itemId)}/dependencies`), {
         idempotency_key: input.key,
@@ -570,8 +595,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         related_work_item_id: input.relatedWorkItemId,
         operation: input.operation,
       }),
-    listAttempts: (projectId, itemId, limit) =>
-      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit })),
+    listAttempts: (projectId, itemId, limit, signal) =>
+      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit }), undefined, signal),
     getWorkItemDiff: (projectId, itemId) =>
       send(WorkItemDiff, "GET", url(`${itemBase(projectId, itemId)}/diff`)),
     listHistory: (input) =>
@@ -590,13 +615,15 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         body: input.body,
       }),
     // The one native list with no envelope: a bare array, no cursor.
-    listChanges: (projectId, itemId) =>
-      send(ChangeRequestList, "GET", url(`${itemBase(projectId, itemId)}/changes`)),
-    getChange: (projectId, itemId, changeId) =>
+    listChanges: (projectId, itemId, signal) =>
+      send(ChangeRequestList, "GET", url(`${itemBase(projectId, itemId)}/changes`), undefined, signal),
+    getChange: (projectId, itemId, changeId, signal) =>
       send(
         ChangeDetail,
         "GET",
         url(`${itemBase(projectId, itemId)}/changes/${encodeURIComponent(changeId)}`),
+        undefined,
+        signal,
       ),
     getAttemptDiff: (projectId, attemptId) =>
       send(

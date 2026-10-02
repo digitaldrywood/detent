@@ -539,6 +539,26 @@ func TestWorkOSCreationRecoversCommittedProviderWrites(t *testing.T) {
 	}
 }
 
+func TestWorkOSInvitationAccountLookup(t *testing.T) {
+	t.Parallel()
+	f := newWorkOSFixture(t)
+	p := f.provider(t)
+	for _, tt := range []struct {
+		name            string
+		exists, wantErr bool
+	}{
+		{name: "existing", exists: true}, {name: "new"}, {name: "wrong email", wantErr: true}, {name: "invalid id", wantErr: true}, {name: "unavailable", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f.mode.Store("user-lookup-" + tt.name)
+			exists, err := p.HasUser(t.Context(), "Customer@Example.com")
+			if exists != tt.exists || (err != nil) != tt.wantErr {
+				t.Fatalf("HasUser = %v,%v", exists, err)
+			}
+		})
+	}
+}
+
 func TestWorkOSInvitationSecurity(t *testing.T) {
 	t.Parallel()
 	f := newWorkOSFixture(t)
@@ -556,18 +576,25 @@ func TestWorkOSInvitationSecurity(t *testing.T) {
 		{name: "invitation-wrong-user", wantErr: true}, {name: "invitation-accepted-wrong-user", wantErr: true},
 		{name: "invitation-accepted-wrong-org", wantErr: true}, {name: "invitation-accepted-wrong-id", wantErr: true},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f.mode.Store(tt.name)
-			before := f.accepted.Load()
-			err := p.AcceptInvitation(t.Context(), "invitation_token", "user_customer")
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("AcceptInvitation() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if tt.wantErr && !strings.HasPrefix(tt.name, "invitation-accepted-") && f.accepted.Load() != before {
-				t.Fatal("invalid invitation reached provider acceptance")
-			}
-		})
+	for _, byID := range []bool{false, true} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%s/byID=%t", tt.name, byID), func(t *testing.T) {
+				f.mode.Store(tt.name)
+				before := f.accepted.Load()
+				var err error
+				if byID {
+					err = auth.AcceptInvitationID(t.Context(), p, "invitation_customer", "user_customer")
+				} else {
+					err = p.AcceptInvitation(t.Context(), "invitation_token", "user_customer")
+				}
+				if (err != nil) != tt.wantErr {
+					t.Fatalf("AcceptInvitation() error = %v, wantErr %v", err, tt.wantErr)
+				}
+				if tt.wantErr && !strings.HasPrefix(tt.name, "invitation-accepted-") && f.accepted.Load() != before {
+					t.Fatal("invalid invitation reached provider acceptance")
+				}
+			})
+		}
 	}
 }
 
@@ -582,10 +609,11 @@ func TestWorkOSInvitationLookupSupportsAcceptanceRecovery(t *testing.T) {
 	}{
 		{name: "valid", state: "pending"},
 		{name: "invitation-reused", state: "accepted"},
-		{name: "invitation-accepted-expired", wantErr: true},
+		{name: "invitation-accepted-expired", state: "accepted"},
 		{name: "invitation-accepted-missing-user", wantErr: true},
 		{name: "invitation-accepted-invalid-user", wantErr: true},
-		{name: "invitation-revoked", wantErr: true},
+		{name: "invitation-revoked", state: "revoked"},
+		{name: "invitation-expired", state: "pending"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f.mode.Store(tt.name)
@@ -598,6 +626,52 @@ func TestWorkOSInvitationLookupSupportsAcceptanceRecovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWorkOSInvitationDelivery(t *testing.T) {
+	t.Parallel()
+	f := &workosFixture{t: t, now: time.Now().UTC()}
+	p, err := auth.NewHostedProvider("workos", auth.WorkOSConfig{
+		ClientID: "client_detent", APIKey: "fixture-secret", RedirectURL: "https://app.example.com/auth/callback",
+		HTTPClient: &http.Client{Transport: workosFixtureTransport{handler: http.HandlerFunc(f.serveHTTP)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"revoke", "resend"} {
+		for _, test := range []struct {
+			mode    string
+			wantErr bool
+		}{
+			{mode: "valid"},
+			{mode: "invitation-delivery-unavailable", wantErr: true},
+			{mode: "invitation-delivery-wrong-state", wantErr: true},
+			{mode: "invitation-delivery-wrong-id", wantErr: true},
+		} {
+			t.Run(action+"/"+test.mode, func(t *testing.T) {
+				f.mode.Store(test.mode)
+				var err error
+				if action == "revoke" {
+					err = auth.RevokeInvitationID(t.Context(), p, "invitation_customer")
+				} else {
+					err = auth.ResendInvitationID(t.Context(), p, "invitation_customer")
+				}
+				if (err != nil) != test.wantErr {
+					t.Fatalf("%s error = %v, wantErr %t", action, err, test.wantErr)
+				}
+			})
+		}
+	}
+}
+
+type workosFixtureTransport struct {
+	handler http.Handler
+}
+
+func (t workosFixtureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response := httptest.NewRecorder()
+	t.handler.ServeHTTP(response, request)
+	return response.Result(), nil
 }
 
 func TestWorkOSInvalidArgumentsAndRedirects(t *testing.T) {
@@ -624,6 +698,8 @@ func TestWorkOSInvalidArgumentsAndRedirects(t *testing.T) {
 		{name: "invitation", run: func() error { _, err := p.Invitation(t.Context(), "../other"); return err }},
 		{name: "accept invitation", run: func() error { return p.AcceptInvitation(t.Context(), "invitation_token", "../other") }},
 		{name: "revoke session", run: func() error { return p.RevokeSession(t.Context(), "../other") }},
+		{name: "revoke invitation", run: func() error { return auth.RevokeInvitationID(t.Context(), p, "../other") }},
+		{name: "resend invitation", run: func() error { return auth.ResendInvitationID(t.Context(), p, "../other") }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -757,8 +833,28 @@ func (f *workosFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.writeJSON(w, organization)
-	case "/user_management/invitations", "/user_management/invitations/by_token/invitation_token", "/user_management/invitations/invitation_customer/accept":
+	case "/user_management/invitations", "/user_management/invitations/by_token/invitation_token", "/user_management/invitations/invitation_customer", "/user_management/invitations/invitation_customer/accept", "/user_management/invitations/invitation_customer/revoke", "/user_management/invitations/invitation_customer/resend":
 		f.invitation(w, r, mode)
+	case "/user_management/users":
+		if r.Method != http.MethodGet || r.URL.Query().Get("email") != "customer@example.com" || r.URL.Query().Get("limit") != "1" {
+			f.t.Error("incorrect account lookup filter")
+		}
+		if mode == "user-lookup-unavailable" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		users := []map[string]string{}
+		if mode != "user-lookup-new" {
+			user := map[string]string{"id": "user_customer", "email": "customer@example.com"}
+			if mode == "user-lookup-wrong email" {
+				user["email"] = "other@example.com"
+			}
+			if mode == "user-lookup-invalid id" {
+				user["id"] = "../other"
+			}
+			users = append(users, user)
+		}
+		f.writeJSON(w, map[string]any{"data": users})
 	case "/user_management/users/user_customer":
 		user := map[string]any{"id": "user_customer", "email": "customer@example.com", "email_verified": true}
 		switch mode {
@@ -1001,6 +1097,24 @@ func (f *workosFixture) invitation(w http.ResponseWriter, r *http.Request, mode 
 	if strings.HasSuffix(r.URL.Path, "/accept") {
 		f.accepted.Add(1)
 		invitation.State, invitation.AcceptedUserID = "accepted", "user_customer"
+	}
+	if strings.HasSuffix(r.URL.Path, "/revoke") || strings.HasSuffix(r.URL.Path, "/resend") {
+		if r.Method != http.MethodPost {
+			f.t.Errorf("invitation delivery method = %s", r.Method)
+		}
+		if mode == "invitation-delivery-unavailable" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/revoke") {
+			invitation.State = "revoked"
+		}
+		if mode == "invitation-delivery-wrong-state" {
+			invitation.State, invitation.AcceptedUserID = "accepted", "user_customer"
+		}
+		if mode == "invitation-delivery-wrong-id" {
+			invitation.ID = "invitation_other"
+		}
 	}
 	switch mode {
 	case "invitation-reused":

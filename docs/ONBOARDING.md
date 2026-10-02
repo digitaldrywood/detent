@@ -533,6 +533,17 @@ passes, append the pending `GITHUB_MODE` answer and run
 without re-asking. For an early "use label for this repo" answer, record
 `GITHUB_MODE=label` immediately after the identity gate passes.
 
+Recommend repository label mode (`github_status_source: label`) when several
+projects on the instance share one GitHub token, including `github_token: gh`,
+or when the operator expects a board beyond a few hundred items. Use confirmed
+instance facts and operator expectations for this recommendation; do not query
+target boards before the status-source decision. Explain that ProjectV2 cost
+scales with total unarchived board items multiplied by refresh rate, and Done
+items still cost every cycle. A large board can consume the GraphQL budget
+shared by all projects and the operator's `gh` CLI. Label mode avoids board
+inventory reads; archiving Done items also reduces ProjectV2 cost. The
+recommendation is not authorization to select or mutate a mode.
+
 Ask: "Use ProjectV2 board mode, boardless issue-field mode, or repository label
 mode?" Explain that this answer maps to `tracker.github_status_source:
 project_v2`, `tracker.github_status_source: issue_field`, or
@@ -569,6 +580,13 @@ writes. Label mode uses REST for repository label discovery, issue reads by
 label, and status-label writes. GitHub still reports REST and GraphQL budgets
 separately, and `detent doctor` surfaces both so operators can see whether
 boardless work is healthy without spending ProjectV2 GraphQL inventory budget.
+
+ProjectV2 polling re-reads the full unarchived board, including Done items,
+on every refresh. Hiding Done items in a view does not reduce this cost.
+`detent doctor` reads total and Done board item counts once and warns above
+300 items. This advisory threshold is not a budget guarantee: refresh rate
+and all other consumers of the token affect headroom. Prefer label mode for
+large boards and shared-token multi-project instances, or archive Done items.
 
 GitHub's documented primary GraphQL limit for user-backed tokens is 5,000
 points per hour. GitHub App installation tokens receive their own
@@ -1469,12 +1487,11 @@ authorization.
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-   Use `MAX_TURNS`, `MAX_SESSION_DURATION_MS`, and `NO_PROGRESS_TIMEOUT_MS`
-   as the independent per-session catastrophe bounds. Their defaults allow 20
-   turns, two hours of wall-clock time, and 90 minutes without a workspace or
-   Workpad change. Keep `MAX_SESSION_TOKENS` as an additional token-consumption
-   backstop. Codex re-counts cached context on every turn, so do not emit
-   `MAX_SESSION_CONTEXT_MULTIPLIER` by default and do not recommend small
+   Use `MAX_TURNS` and `MAX_SESSION_DURATION_MS` as the per-session catastrophe
+   bounds. Their defaults allow 20 turns and two hours of wall-clock time.
+   Keep `MAX_SESSION_TOKENS` as an additional token-consumption backstop. Codex
+   re-counts cached context on every turn, so do not emit
+   `MAX_SESSION_CONTEXT_MULTIPLIER` by default or recommend small
    values such as `4`. The multiplier is a coarse, advanced opt-in that caps
    roughly how many full-context turns fit; record it only when the operator
    explicitly requests that additional ceiling.
@@ -2554,11 +2571,11 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    Keep `agent.max_session_context_multiplier` absent unless the operator
    explicitly requested the coarse ceiling. The primary catastrophe bounds are
-   `agent.max_turns`, `agent.max_session_duration_ms`, and
-   `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an
-   additional token-consumption backstop because cached context is counted
-   again on every Codex turn. A small multiplier can terminate otherwise
-   healthy sessions after only a few full-context turns. Whenever
+   `agent.max_turns` and `agent.max_session_duration_ms`; keep
+   `agent.max_session_tokens` as an additional token-consumption backstop
+   because cached context is counted again on every Codex turn. A small
+   multiplier can terminate otherwise healthy sessions after only a few
+   full-context turns. Whenever
    `MAX_SESSION_TOKENS` is positive, record the per-issue escape hatch that the
    generated config will reference:
 
@@ -3462,7 +3479,7 @@ the card instead of auto-resolving it.
 | Per-role reasoning effort | Optional `agent.effort.code`, `agent.effort.rework`, and `agent.effort.merge` defaults in `detent.yaml`. |
 | Pull request merge strategy | `deliverable.merge_method: squash`, `merge`, or `rebase`; defaults to `squash`. Onboarding records the repository's enabled methods and, with explicit interview and mutation approval, aligns GitHub to the selected method. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `detent.yaml`. |
-| Session catastrophe bounds | `agent.max_turns`, `agent.max_session_duration_ms`, and `agent.no_progress_timeout_ms`; keep `agent.max_session_tokens` as an additional token-consumption backstop, while `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
+| Session catastrophe bounds | `agent.max_turns` and `agent.max_session_duration_ms`; keep `agent.max_session_tokens` as an additional token-consumption backstop, while `agent.max_session_context_multiplier` remains absent unless explicitly requested as a coarse ceiling. |
 | Hard-stop review policy | `agent.auto_promote.enabled: false` in `detent.yaml`. |
 | Criteria-based auto-promote | `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and `allowed_issue_labels` in `detent.yaml`. |
 | Work-intake profile | `INTAKE_PROFILE` selects `manual_intake`, `assisted_intake`, or `autonomous_intake`. |

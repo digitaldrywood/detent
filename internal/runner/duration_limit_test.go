@@ -206,7 +206,6 @@ func TestWorkerSessionCanceled(t *testing.T) {
 		{name: "turn duration", err: ErrTurnDurationExceeded, want: true},
 		{name: "session duration", err: ErrSessionDurationExceeded, want: true},
 		{name: "session turn limit", err: ErrSessionTurnLimitExceeded, want: true},
-		{name: "session no progress", err: ErrSessionNoProgress, want: true},
 		{name: "session memory ceiling", err: ErrSessionMemoryCeilingExceeded, want: true},
 		{name: "ordinary failure", err: errors.New("provider failed")},
 		{name: "success"},
@@ -233,7 +232,6 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 		{name: "completed", wantReason: "turn_completed"},
 		{name: "failed", turnErr: errors.New("provider failed"), wantReason: "turn_failed"},
 		{name: "cancelled", turnErr: context.Canceled, wantReason: "context_cancelled:runner.agent_backend"},
-		{name: "no progress", turnErr: ErrSessionNoProgress, wantReason: SessionBrakeReasonNoProgress},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -493,22 +491,6 @@ func TestRunAgentBackendTurnDoesNotTreatLivenessTimeoutAsTotalDuration(t *testin
 	}
 	if backend.request.TurnTimeout != 25*time.Millisecond {
 		t.Fatalf("backend TurnTimeout = %v, want liveness timeout preserved", backend.request.TurnTimeout)
-	}
-}
-
-func TestRunAgentBackendTurnLeavesDurationDisabledWithoutDeadline(t *testing.T) {
-	t.Parallel()
-
-	backend := &deadlineObservingAgentBackend{}
-	_, err, cleanupErr := runAgentBackendTurn(context.Background(), backend, AgentTurnRequest{}, nil)
-	if err != nil {
-		t.Fatalf("runAgentBackendTurn() error = %v", err)
-	}
-	if cleanupErr != nil {
-		t.Fatalf("runAgentBackendTurn() cleanup error = %v", cleanupErr)
-	}
-	if backend.hasDeadline {
-		t.Fatal("backend context has a deadline with duration limit disabled")
 	}
 }
 

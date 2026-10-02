@@ -17,6 +17,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -49,6 +50,10 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 }
 
 func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithReporter(version, lookupEnv, startService, privateLocation, reportRunnerSetup)
+}
+
+func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot string
 	var capacity int
 	var service bool
@@ -57,7 +62,7 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 		Short: "Register this host as a runner with one command from the Enroll dialog",
 		Long: "Generates this host's runner identity locally, redeems the one-time enrollment token, writes the runner configuration, and with --service installs and starts it as a background service. " +
 			"The token is single-use and expires within 15 minutes; the credential the host generates is sent once and stored only as a hash by the Hub.",
-		Example:      `detent hub runner register --url https://hub.detent.build/organizations/org_example --token det_enroll_example --name "Build host" --service`,
+		Example:      `detent hub runner register --url https://cloud.detent.build/organizations/org_example --token det_enroll_example --name "Build host" --service`,
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -89,7 +94,14 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 			if err := prepareRunnerIdentity(paths.identity, base, org); err != nil {
 				return err
 			}
-			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev")})
+			configuration := globalconfig.Config{}
+			if _, err := os.Lstat(paths.config); err == nil {
+				configuration, err = readRunnerSetupConfig(paths.config)
+				if err != nil {
+					return err
+				}
+			}
+			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev"), BackendIsolation: probeRunnerIsolation(cmd.Context(), configuration)})
 			if err != nil {
 				return err
 			}
@@ -100,7 +112,7 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 			result := runnerRegistration{RunnerID: identity.RunnerID, MachineID: identity.MachineID, Config: paths.config, Identity: paths.identity}
 			for _, project := range projects {
 				workdir := filepath.Join(paths.workspaces, project.Name)
-				result.Projects = append(result.Projects, runnerRegisteredCheck{Name: project.Name, ID: project.ID, Workdir: workdir, Checkout: runnerCheckoutReady(workdir)})
+				result.Projects = append(result.Projects, runnerRegisteredCheck{Name: project.Name, ID: project.ID, Workdir: workdir, Checkout: runnerCheckoutReady(cmd.Context(), globalconfig.Project{Workdir: workdir})})
 			}
 			config := runnerConfig(base, org, name, capacity, paths, result.Projects)
 			result.Created, err = writeRunnerConfig(paths.config, config)
@@ -111,6 +123,24 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 				if err := existingRunnerConfigMatches(paths.config, config, true); err != nil {
 					return err
 				}
+				configuration, err = readRunnerSetupConfig(paths.config)
+				if err != nil {
+					return err
+				}
+				result.Projects = nil
+				for _, project := range configuration.Projects {
+					result.Projects = append(result.Projects, runnerRegisteredCheck{
+						Name: project.ID, ID: tracker.ProjectID(configuration.Client.NativeProjects[project.ID]),
+						Workdir: project.Workdir, Checkout: runnerCheckoutReady(cmd.Context(), project),
+					})
+				}
+			}
+			loaded, err := readRunnerSetupConfig(paths.config)
+			if err == nil {
+				err = report(cmd.Context(), loaded, version)
+			}
+			if err != nil {
+				return fmt.Errorf("runner enrolled; report local setup: %w", err)
 			}
 			missing := false
 			for _, project := range result.Projects {
@@ -126,7 +156,10 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 					return err
 				}
 				result.ServiceRun = true
-				result.Service = runnerServiceName
+				result.Service = serviceNameForConfig(configuration)
+				if result.Created {
+					result.Service = runnerServiceName
+				}
 			case service:
 				result.NextSteps = append(result.NextSteps, "Then start the runner service: "+start)
 			default:
@@ -139,7 +172,7 @@ func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv fu
 	cmd.Flags().StringVar(&token, "token", "", "one-time enrollment token (or set DETENT_RUNNER_ENROLLMENT_TOKEN)")
 	cmd.Flags().StringVar(&organization, "organization", "", "organization ID, when the URL does not name one")
 	cmd.Flags().StringVar(&name, "name", "", "display name shown in the Hub (default: host name)")
-	cmd.Flags().IntVar(&capacity, "capacity", 1, "how many work items this runner takes at once")
+	cmd.Flags().IntVar(&capacity, "capacity", 1, "independent work items this host may run concurrently, each with its own workspace and agent")
 	cmd.Flags().StringVar(&configPath, "config", "", "runner configuration path (default: ~/.config/detent-runner/global.yaml)")
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "where project checkouts live (default: ~/detent-runner)")
 	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service ("+runnerServiceName+")")
@@ -167,13 +200,17 @@ func prepareRunnerIdentity(path, base string, org tracker.OrganizationID) error 
 	return nil
 }
 
-// runnerCheckoutReady reports whether a project's checkout can boot: a
-// repository with its WORKFLOW.md.
-func runnerCheckoutReady(workdir string) bool {
-	if _, err := os.Stat(filepath.Join(workdir, ".git")); err != nil {
+func runnerCheckoutReady(ctx context.Context, selected globalconfig.Project) bool {
+	if selected.Workdir == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(workdir, "WORKFLOW.md"))
+	if _, err := os.Stat(filepath.Join(selected.Workdir, ".git")); err != nil {
+		return false
+	}
+	if strings.TrimSpace(selected.Workflow) == "" && strings.TrimSpace(selected.WorkflowRef) == "" {
+		selected.Workflow = filepath.Join(selected.Workdir, "WORKFLOW.md")
+	}
+	_, err := project.LoadWorkflowContext(ctx, selected)
 	return err == nil
 }
 
@@ -219,7 +256,7 @@ func runnerHubTarget(raw, organization string) (string, tracker.OrganizationID, 
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", "", errors.New("--url must be the organization's Hub URL, for example https://hub.detent.build/organizations/org_example")
+		return "", "", errors.New("--url must be the organization's Hub URL, for example https://cloud.detent.build/organizations/org_example")
 	}
 	org := strings.TrimSpace(organization)
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")

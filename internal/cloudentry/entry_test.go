@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +14,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +42,7 @@ type fakeProvider struct {
 	sessions        map[string]auth.HostedIdentity
 	memberships     map[string]auth.Membership
 	invitations     map[string]auth.Invitation
+	revokeErr       error
 	revoked         []string
 	sequence        int
 	authorizeBase   string
@@ -267,8 +272,11 @@ func (p *fakeProvider) AcceptInvitation(_ context.Context, token, user string) e
 func (p *fakeProvider) RevokeSession(_ context.Context, id string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.sessions, id)
 	p.revoked = append(p.revoked, id)
+	if p.revokeErr != nil {
+		return p.revokeErr
+	}
+	delete(p.sessions, id)
 	return nil
 }
 
@@ -394,7 +402,9 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	t.Helper()
 	path := filepath.Join(t.TempDir(), id+".db")
 	hosted := func(shared bool) *hubserver.HostedConfig {
-		config := &hubserver.HostedConfig{OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
+		plans := pilotPlans()
+		plans.Plans[0].Allowances["projects"] = 10
+		config := &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: map[string]string{"org_alpha": "http://127.0.0.1:19001", "org_beta": "http://127.0.0.1:19002"}[id], Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}}
 		if shared {
 			config.PublicURL = testPublicURL
 			config.SharedEntry = &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}
@@ -449,7 +459,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 	provider.member("user_bob", "porg_beta", "member")
 	alpha, alphaHandler := newTenant(t, provider, key, "org_alpha", "porg_alpha", "user_alice", "Alpha secret project")
 	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project")
-	tenants := map[string]http.Handler{"unix:/tenants/alpha.sock": alphaHandler, "unix:/tenants/beta.sock": betaHandler}
+	tenants := map[string]http.Handler{testSocketEndpoint("alpha.sock"): alphaHandler, testSocketEndpoint("beta.sock"): betaHandler}
 	service, err := Open(t.Context(), Config{
 		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
 		Logger: logger, clientFS: fstest.MapFS{},
@@ -465,7 +475,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 		fixture  tenantFixture
 		endpoint string
 		name     string
-	}{{alpha, "unix:/tenants/alpha.sock", "Alpha"}, {beta, "unix:/tenants/beta.sock", "Beta"}} {
+	}{{alpha, testSocketEndpoint("alpha.sock"), "Alpha"}, {beta, testSocketEndpoint("beta.sock"), "Beta"}} {
 		if _, err := service.Registry().Register(t.Context(), Organization{ID: tenant.fixture.id, ProviderID: tenant.fixture.provider, Name: tenant.name, Endpoint: tenant.endpoint, Generation: 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -583,6 +593,101 @@ func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
 	}
 }
 
+func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		wantStatus int
+	}{
+		{name: "customer", wantStatus: http.StatusSeeOther},
+		{name: "support", wantStatus: http.StatusSeeOther},
+		{name: "expired local session", wantStatus: http.StatusSeeOther},
+		{name: "provider failure", wantStatus: http.StatusServiceUnavailable},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			client := newBrowser(t, f.service.Handler())
+			if tt.name == "support" {
+				client.login("/organizations", "user_support:")
+				_, page := client.get("/support")
+				client.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "reason": {"customer-request"}, "csrf": {csrfFrom(t, page)}}, nil)
+				callback, _ := client.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|customer-request"))
+				if callback.StatusCode != http.StatusSeeOther {
+					t.Fatalf("support callback = %d %s", callback.StatusCode, callback.Body)
+				}
+			} else {
+				client.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			}
+			_, page := client.get("/organizations/org_alpha/organization")
+			var hash string
+			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT token_hash FROM sessions WHERE revoked_at IS NULL").Scan(&hash); err != nil {
+				t.Fatal(err)
+			}
+			session, err := f.service.auth.session(t.Context(), hash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authorization, err := f.service.auth.authorization(t.Context(), session, "org_alpha")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.name == "expired local session" {
+				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET expires_at = ? WHERE token_hash = ?", formatTime(time.Now().Add(-time.Minute)), hash); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.auth.session(t.Context(), hash); !errors.Is(err, errNoSession) {
+					t.Fatalf("expired session authenticated before logout: %v", err)
+				}
+			}
+			if tt.name == "provider failure" {
+				f.provider.revokeErr = errors.New("private provider credential")
+			}
+			response := client.do(http.MethodPost, "/organizations/org_alpha/logout?return=https%3A%2F%2Fattacker.example.test", url.Values{"csrf": {csrfFrom(t, page)}, "redirect": {"https://attacker.example.test"}}, nil)
+			if response.StatusCode != tt.wantStatus {
+				t.Fatalf("logout status = %d, want %d", response.StatusCode, tt.wantStatus)
+			}
+			wantLocation := "https://detent.build"
+			if tt.wantStatus == http.StatusServiceUnavailable {
+				wantLocation = ""
+				if !strings.Contains(response.Body, "Provider sign-out could not be confirmed") {
+					t.Fatal("provider failure did not retain the sign-out error page")
+				}
+			}
+			if location := response.Header.Get("Location"); location != wantLocation {
+				t.Fatalf("logout location = %q, want %q", location, wantLocation)
+			}
+			if strings.Contains(response.Body, "private provider credential") {
+				t.Fatal("logout exposed provider error")
+			}
+			cleared := false
+			for _, cookie := range (&http.Response{Header: response.Header}).Cookies() {
+				if cookie.Name == f.service.cookieName("session") && cookie.Value == "" && cookie.MaxAge == -1 {
+					cleared = true
+				}
+			}
+			if !cleared {
+				t.Fatal("logout did not clear browser session")
+			}
+			var revoked bool
+			if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT revoked_at IS NOT NULL FROM sessions WHERE token_hash = ?", hash).Scan(&revoked); err != nil || !revoked {
+				t.Fatalf("local session not revoked: %v", err)
+			}
+			if _, err := f.service.auth.authorization(t.Context(), session, "org_alpha"); !errors.Is(err, errNoSession) {
+				t.Fatalf("logged-out organization authorization remains active: %v", err)
+			}
+			for _, id := range []string{session.Identity.SessionID, authorization.Identity.SessionID} {
+				found := false
+				for _, revokedID := range f.provider.revoked {
+					found = found || revokedID == id
+				}
+				if !found {
+					t.Fatalf("provider session %q was not revoked: %v", id, f.provider.revoked)
+				}
+			}
+		})
+	}
+}
+
 func TestSharedEntryBoundaries(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
@@ -627,6 +732,28 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
 	alice := newBrowser(t, f.service.Handler())
+	for _, tt := range []struct{ name, query, organization, screenHint string }{
+		{name: "sign in"},
+		{name: "create account", query: "screen_hint=sign-up", screenHint: "sign-up"},
+		{name: "organization create account", query: "organization=org_alpha&screen_hint=sign-up", organization: "porg_alpha", screenHint: "sign-up"},
+		{name: "unknown hint", query: "screen_hint=unexpected"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response, _ := alice.get("/auth/oidc/start?" + tt.query)
+			location, err := url.Parse(response.Header.Get("Location"))
+			if response.StatusCode != http.StatusSeeOther || err != nil {
+				t.Fatalf("authorization redirect = %d %q: %v", response.StatusCode, response.Header.Get("Location"), err)
+			}
+			query := location.Query()
+			if query.Get("organization_id") != tt.organization || query.Get("screen_hint") != tt.screenHint || query.Has("screen_hint") != (tt.screenHint != "") {
+				t.Fatalf("authorization query = %v", query)
+			}
+			if query.Get("state") == "" || query.Get("verifier") == "" {
+				t.Fatal("authorization lost state or PKCE")
+			}
+		})
+	}
+
 	first, _ := alice.get("/auth/oidc/start?organization=org_alpha")
 	second, _ := alice.get("/auth/oidc/start?organization=org_beta")
 	firstState := stateOf(t, first)
@@ -667,35 +794,114 @@ func stateOf(t *testing.T, response page) string {
 
 func TestSharedEntryInvitation(t *testing.T) {
 	t.Parallel()
-	f := newEntryFixture(t)
-	alice := newBrowser(t, f.service.Handler())
-	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	_, page := alice.get("/organizations/org_alpha/organization")
-	invite := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {"member"}, "csrf": {csrfFrom(t, page)}}, nil)
-	if invite.StatusCode != http.StatusSeeOther {
-		t.Fatalf("invite status = %d: %s", invite.StatusCode, invite.Body)
-	}
-	bob := newBrowser(t, f.service.Handler())
-	start, _ := bob.get("/invite?invitation_token=inv_carol")
-	if response, _ := bob.get("/auth/oidc/callback?" + url.Values{"code": {"user_bob:"}, "state": {stateOf(t, start)}}.Encode()); response.StatusCode != http.StatusForbidden {
-		t.Fatalf("wrong recipient status = %d", response.StatusCode)
-	}
-	carol := newBrowser(t, f.service.Handler())
-	start, _ = carol.get("/invite?invitation_token=inv_carol")
-	accepted, _ := carol.get("/auth/oidc/callback?" + url.Values{"code": {"user_carol:"}, "state": {stateOf(t, start)}}.Encode())
-	if accepted.StatusCode != http.StatusSeeOther || !strings.HasPrefix(accepted.Header.Get("Location"), "/auth/oidc/start?organization=org_alpha") {
-		t.Fatalf("accepted invitation = %d %q", accepted.StatusCode, accepted.Header.Get("Location"))
-	}
-	carol.login(accepted.Header.Get("Location"), "user_carol:porg_alpha")
-	response, body := carol.get("/organizations/org_alpha/organization")
-	if response.StatusCode != http.StatusOK || strings.Contains(body, "Alpha secret project") {
-		t.Fatalf("invited member page = %d (project content must need an explicit grant)", response.StatusCode)
-	}
-	if response, _ := carol.get("/organizations/org_beta/organization"); response.StatusCode != http.StatusSeeOther {
-		t.Fatalf("invited member reached another organization: %d", response.StatusCode)
-	}
-	if response, _ := bob.get("/invite?invitation_token=inv_unknown"); response.StatusCode != http.StatusForbidden {
-		t.Fatalf("unknown invitation = %d", response.StatusCode)
+	for _, tt := range []struct {
+		name, message           string
+		entryCode, callbackCode int
+	}{
+		{name: "new user sign-up", entryCode: 303, callbackCode: 303},
+		{name: "existing user sign-in", entryCode: 303, callbackCode: 303},
+		{name: "legacy token alias", entryCode: 303, callbackCode: 303},
+		{name: "wrong account", entryCode: 303, callbackCode: 403, message: "different account at example.test"},
+		{name: "expired", entryCode: 403, message: "has expired"},
+		{name: "used", entryCode: 403, message: "already been used"},
+		{name: "provider rejected expired invitation", entryCode: 303, callbackCode: 403, message: "has expired"},
+		{name: "expired during login", entryCode: 303, callbackCode: 403, message: "has expired"},
+		{name: "unknown", entryCode: 403, message: "unavailable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			alice := newBrowser(t, f.service.Handler())
+			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			_, page := alice.get("/organizations/org_alpha/organization")
+			invite := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"carol@example.test"}, "role": {"member"}, "csrf": {csrfFrom(t, page)}}, nil)
+			if invite.StatusCode != http.StatusSeeOther {
+				t.Fatalf("invite = %d: %s", invite.StatusCode, invite.Body)
+			}
+			invitation := f.provider.invitations["inv_carol"]
+			switch tt.name {
+			case "new user sign-up":
+				delete(f.provider.users, "user_carol")
+			case "expired":
+				invitation.ExpiresAt = time.Now().Add(-time.Hour)
+			case "used":
+				invitation.State, invitation.AcceptedUserID = "accepted", "user_carol"
+			}
+			f.provider.invitations["inv_carol"] = invitation
+			browser := newBrowser(t, f.service.Handler())
+			path := "/invite?invitation_token=inv_carol"
+			if tt.name == "legacy token alias" {
+				path = "/invite?token=inv_carol"
+			}
+			if tt.name == "unknown" {
+				path = "/invite?invitation_token=inv_unknown"
+			}
+			start, body := browser.get(path)
+			if start.StatusCode != tt.entryCode {
+				t.Fatalf("entry = %d, want %d: %s", start.StatusCode, tt.entryCode, body)
+			}
+			assertExplanation := func(body string) {
+				t.Helper()
+				for _, want := range []string{tt.message, "Ask the person who invited you for a new invitation", `href="https://detent.build"`} {
+					if !strings.Contains(body, want) {
+						t.Errorf("explanation missing %q", want)
+					}
+				}
+				if strings.Contains(body, "carol@example.test") || strings.Contains(body, "inv_carol") {
+					t.Fatal("explanation leaked recipient or token")
+				}
+			}
+			if start.StatusCode != http.StatusSeeOther {
+				assertExplanation(body)
+				return
+			}
+			authorization, _ := url.Parse(start.Header.Get("Location"))
+			wantHint := ""
+			if tt.name == "new user sign-up" {
+				wantHint = "sign-up"
+				f.provider.users["user_carol"] = "carol@example.test"
+			}
+			if authorization.Query().Get("invitation_token") != "inv_carol" || authorization.Query().Get("screen_hint") != wantHint {
+				t.Fatalf("AuthKit invitation URL = %s", authorization)
+			}
+			if tt.name == "expired during login" || tt.name == "provider rejected expired invitation" {
+				invitation.ExpiresAt = time.Now().Add(-time.Hour)
+				f.provider.invitations["inv_carol"] = invitation
+			}
+			code := "user_carol:"
+			if tt.name == "wrong account" {
+				code = "user_bob:"
+			}
+			query := url.Values{"code": {code}, "state": {stateOf(t, start)}, "invitation_token": {"attacker_token"}}
+			if tt.name == "provider rejected expired invitation" {
+				query.Set("error", "access_denied")
+			}
+			accepted, body := browser.get("/auth/oidc/callback?" + query.Encode())
+			if accepted.StatusCode != tt.callbackCode {
+				t.Fatalf("callback = %d, want %d: %s", accepted.StatusCode, tt.callbackCode, body)
+			}
+			if accepted.StatusCode != http.StatusSeeOther {
+				assertExplanation(body)
+				memberships, _ := f.provider.Memberships(t.Context(), "user_carol", "porg_alpha")
+				if len(memberships) != 0 {
+					t.Fatal("failed invitation granted membership")
+				}
+				return
+			}
+			if !strings.HasPrefix(accepted.Header.Get("Location"), "/auth/oidc/start?organization=org_alpha") {
+				t.Fatalf("next = %s", accepted.Header.Get("Location"))
+			}
+			browser.login(accepted.Header.Get("Location"), "user_carol:porg_alpha")
+			response, body := browser.get("/organizations/org_alpha/organization")
+			if response.StatusCode != http.StatusOK || strings.Contains(body, "Alpha secret project") {
+				t.Fatalf("member page = %d (project access must require explicit grant)", response.StatusCode)
+			}
+			if response, _ := browser.get("/organizations/org_beta/organization"); response.StatusCode != http.StatusSeeOther {
+				t.Fatalf("member reached other organization = %d", response.StatusCode)
+			}
+			if response, body := browser.get(path); response.StatusCode != http.StatusForbidden || !strings.Contains(body, "already been used") {
+				t.Fatalf("used link = %d: %s", response.StatusCode, body)
+			}
+		})
 	}
 }
 
@@ -706,7 +912,7 @@ func TestRegistryRegister(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = registry.Close() })
-	base := Organization{ID: "org_a", ProviderID: "porg_a", Name: "A", Endpoint: "unix:/run/a.sock", Generation: 1}
+	base := Organization{ID: "org_a", ProviderID: "porg_a", Name: "A", Endpoint: testSocketEndpoint("a.sock"), Generation: 1}
 	tests := []struct {
 		name    string
 		mutate  func(*Organization)
@@ -718,8 +924,12 @@ func TestRegistryRegister(t *testing.T) {
 		{"rename", func(o *Organization) { o.Name = "A renamed" }, true, false},
 		{"other provider", func(o *Organization) { o.ProviderID = "porg_other" }, false, true},
 		{"provider reuse", func(o *Organization) { o.ID = "org_b" }, false, true},
-		{"same generation move", func(o *Organization) { o.Name = "A renamed"; o.Endpoint = "unix:/run/b.sock" }, false, true},
-		{"generation move", func(o *Organization) { o.Name = "A renamed"; o.Endpoint = "unix:/run/b.sock"; o.Generation = 2 }, true, false},
+		{"same generation move", func(o *Organization) { o.Name = "A renamed"; o.Endpoint = testSocketEndpoint("b.sock") }, false, true},
+		{"generation move", func(o *Organization) {
+			o.Name = "A renamed"
+			o.Endpoint = testSocketEndpoint("b.sock")
+			o.Generation = 2
+		}, true, false},
 		{"generation rollback", func(o *Organization) { o.Name = "A renamed"; o.Generation = 1 }, false, true},
 		{"public endpoint", func(o *Organization) { o.Endpoint = "http://10.0.0.1:80"; o.Generation = 3 }, false, true},
 		{"loopback tcp", func(o *Organization) { o.Endpoint = "http://127.0.0.1:7777"; o.Generation = 3 }, false, true},
@@ -840,4 +1050,86 @@ func TestSharedEntrySupportAccess(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStoreDSN(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ path, want, escaped string }{
+		{"/tmp/registry.db", "/tmp/registry.db", "/tmp/registry.db"},
+		{"/tmp/cloud entry/café #?%.db", "/tmp/cloud entry/café #?%.db", "/tmp/cloud%20entry/caf%C3%A9%20%23%3F%25.db"},
+		{"C:/entry/registry.db", "/C:/entry/registry.db", "/C:/entry/registry.db"},
+		{"c:/entry/a #?.db", "/c:/entry/a #?.db", "/c:/entry/a%20%23%3F.db"},
+		{"C:/cloud entry/数据库 %23.db", "/C:/cloud entry/数据库 %23.db", "/C:/cloud%20entry/%E6%95%B0%E6%8D%AE%E5%BA%93%20%2523.db"},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			if tt.want != tt.path {
+				// The former URL construction makes the drive letter an authority.
+				// SQLite rejects it at the first query, before touching the file.
+				legacy := &url.URL{Scheme: "file", Path: tt.path}
+				db, err := sql.Open("sqlite", legacy.String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := db.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				var applicationID int64
+				if err := db.QueryRowContext(t.Context(), "PRAGMA application_id").Scan(&applicationID); err == nil || !strings.Contains(err.Error(), "invalid uri authority: "+tt.path[:2]) {
+					t.Fatalf("legacy store query = %v; want invalid drive authority", err)
+				}
+			}
+			parsed, err := url.Parse(storeDSN(tt.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed.Scheme != "file" || parsed.Host != "" || parsed.Path != tt.want || parsed.Fragment != "" || parsed.EscapedPath() != tt.escaped {
+				t.Fatalf("store URI = %v; want local path %q escaped as %q", parsed, tt.want, tt.escaped)
+			}
+			wantPragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "locking_mode(EXCLUSIVE)", "synchronous(FULL)"}
+			if len(parsed.Query()) != 1 || !slices.Equal(parsed.Query()["_pragma"], wantPragmas) {
+				t.Fatalf("pragmas = %v", parsed.Query())
+			}
+		})
+	}
+}
+
+func testSocketEndpoint(name string) string {
+	root := string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		root = `C:\`
+	}
+	return "unix:" + filepath.Join(root, "tenants", name)
+}
+
+func pilotPlans() *hubserver.HostedPlansConfig {
+	free := map[string]int64{
+		"members": 10, "projects": 1, "repositories": 10, "registered_runners": 4, "connected_runners": 4, "concurrent_work": 2,
+		"api_mutations": 10000, "ingested_events": 10000, "collaboration_bytes": 64 << 20, "history_records": 10000,
+	}
+	plus := make(map[string]int64, len(free))
+	for name, limit := range free {
+		plus[name] = limit
+	}
+	plus["projects"] = 5
+	features := []string{"collaboration", "native_execution"}
+	return &hubserver.HostedPlansConfig{
+		Base: hubserver.PlanReference{ID: "pilot_free", Version: 1}, WindowSeconds: 3600, RetentionWindows: 24, ConnectedSeconds: 90, InvitationSeconds: 86400,
+		Plans: []hubserver.HostedPlan{
+			{PlanReference: hubserver.PlanReference{ID: "pilot_free", Version: 1}, Features: features, Allowances: free},
+			{PlanReference: hubserver.PlanReference{ID: "pilot_plus", Version: 1}, Features: features, Allowances: plus},
+		},
+	}
+}
+
+func (p *fakeProvider) HasUser(_ context.Context, email string) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, existing := range p.users {
+		if strings.EqualFold(existing, email) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

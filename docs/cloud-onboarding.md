@@ -1,6 +1,6 @@
 # Project onboarding
 
-The shared product journey starts at `https://hub.detent.build`: sign in, create
+The shared product journey starts at `https://cloud.detent.build`: sign in, create
 or join an organization, then open a project explicitly shared with you. The
 organization chooser, creation/provisioning state, scoped Work/project navigation
 and billing reuse the existing Templ/HTMX shell. There is no forced tenant-domain
@@ -17,33 +17,32 @@ page to resume setup; infrastructure errors do not require another organization
 or host identity.
 
 A new hosted project starts with the workflow `Todo` → `In Progress` →
-`Merging` → `Done`, with `Human Review` beside it. `Todo`, `In Progress` and
-`Merging` dispatch work; `Human Review` neither dispatches nor ends it. By
-default nobody has to review a run: the project's review policy follows its
-repository gate and asks for a person only under a `human_review` gate. A run
+`Merging` → `Done`, with `Blocked` and `Human Review` beside it. `Todo`, `In Progress` and
+`Merging` dispatch work; `Blocked` and `Human Review` neither dispatch nor end it. By
+default `review.human` is false, so nobody has to review a run. A run
 that committed a change publishes a version the policy already accepts, and the
 runner's orchestrator moves it straight to `Merging`, where the runner that
 holds the project lands the head on the base branch with plain git and the Hub
 finishes the issue in `Done`. A run that committed nothing moves to `Done`.
 
-`Human Review` is where a Change Request waits for a person: in a project whose
-repository gate is `human_review` (opt in by setting that gate in the project's
-`detent.yaml` and approving the policy), and when a landing was refused, for
-example because the base branch requires pull requests. A person approves the
+`Human Review` is where a Change Request waits for a person only when the
+project sets `review.human: true`. With the default `false`, an unaccepted
+version or refused landing moves to `Blocked` with its reason. A person approves the
 change in the client, which moves it to `Merging`, or requests changes, which
 sends it back to `In Progress`. `Human Review` is the default
 `auto_promote.source_state`.
 
-Hub migrations 36, 38 and 39 move projects whose workflow is exactly an earlier
+Hub migrations 36, 38, 39 and 41 move projects whose workflow is exactly an earlier
 template onto this one. A customized workflow is left unchanged; it needs a
-lane matching the runner's `auto_promote.source_state` that `In Progress` can
-move to, or a completed run's Change Request has no review lane and its
-completion waits, and it needs a dispatchable `Merging` lane reachable from
-`In Progress` and from the review lane, or accepted changes stay in review for a
-person to land by hand. Hub migration 40 gives every project with an approved
-repository policy the default review policy: projects approved before the Hub
-seeded one could not publish versions, and projects seeded while the default
-required review now follow their repository gate.
+`Blocked` lane reachable from `In Progress` and `Merging` when `review.human` is
+false, or a review lane matching `auto_promote.source_state` when it is true.
+Accepted changes need a dispatchable `Merging` lane reachable from `In Progress`.
+Hub migration 40 gives every project with an approved repository policy a
+default review policy; approving the policy again now seeds `require_review`
+from `review.human`.
+
+The hosted hostname migration is tracked in the [Cloud domain runbook](cloud-domain-migration.md).
+Its provisioning results and pending browser cutover are recorded there.
 
 ## Organization provisioning and recovery
 
@@ -105,7 +104,7 @@ host. Inspect existing files before using `detent onboarding draft-answers`,
 output options. Review generated files before applying them. Cloud neither stores
 workflow source nor writes repository files.
 
-For the shared-site target, use `client.hub_url: https://hub.detent.build`
+For the shared-site target, use `client.hub_url: https://cloud.detent.build`
 and the selected immutable organization ID. Configure `client.organization_id` and
 `client.native_projects` mapping in the instance configuration. The project's
 page shows its native ID. Run `detent doctor` against that configuration; resolve
@@ -143,7 +142,7 @@ a name, pick its projects, and copy the one command the dialog shows. Run it on
 the host:
 
 ```sh
-detent hub runner register --url https://hub.detent.build/organizations/ORGANIZATION_ID \
+detent hub runner register --url https://cloud.detent.build/organizations/ORGANIZATION_ID \
   --token TOKEN --name "Build host" --service
 ```
 
@@ -227,12 +226,12 @@ configured portable artifact service rather than overloading local/customer.
 
 This is a test specification for #2341/#2342/#2343 and the expanded #2199 evidence,
 not a claim that current reserved-tenant fixtures pass it. Use synthetic providers,
-ephemeral services and one test hostname representing `hub.detent.build`.
+ephemeral services and one test hostname representing `cloud.detent.build`.
 
 Alice and Bob are unrelated verified identities. Alice creates A, Bob creates B,
 and Casey receives separate invitations to both. A has project PA and B has PB.
 Each tenant owns a separate database and process. Every application URL below is
-on **https://hub.detent.build**; WorkOS/Stripe hosted screens may temporarily leave
+on **https://cloud.detent.build**; WorkOS/Stripe hosted screens may temporarily leave
 the site only for their authenticated provider flow and return to that same host.
 
 | Step | Action and expected evidence |

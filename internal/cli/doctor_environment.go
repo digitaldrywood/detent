@@ -612,6 +612,10 @@ func doctorAgentBinaryCheckJobs(ctx context.Context, cfg *globalconfig.Config, d
 		switch kind {
 		case workflowconfig.AgentBackendCodex:
 			jobs = append(jobs, doctorCodexBinaryCheckJob(deps, environment))
+		case workflowconfig.AgentBackendPiAgent:
+			jobs = append(jobs, doctorCheckJob{Name: "pi binary", Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorBinary(jobCtx, deps, environment, "pi", "pi binary", "--version", "Install Pi and authenticate its configured provider with pi /login. Pi workers require native-trusted isolation; RPC resume, Detent dynamic tools and persisted history are not supported.")}
+			}})
 		case workflowconfig.AgentBackendClaudeCode:
 			jobs = append(jobs, doctorClaudeCodeBinaryCheckJob(deps, environment))
 		}

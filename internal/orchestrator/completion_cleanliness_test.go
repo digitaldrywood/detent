@@ -38,6 +38,13 @@ func TestEvaluateCompletionCleanliness(t *testing.T) {
 			},
 		}}
 	}
+	blockedIssue := func(resolution string) connector.Issue {
+		issue := resolvedIssue(resolution)
+		issue.WorkpadSignal.Status = workpad.StatusBlocked
+		issue.WorkpadSignal.HumanAction = "approve the worker merge tool"
+		issue.WorkpadSignal.Blockers = []workpad.Blocker{{Reason: "waiting for merge-tool approval"}}
+		return issue
+	}
 	tests := []struct {
 		name           string
 		evidence       DiffStats
@@ -51,6 +58,7 @@ func TestEvaluateCompletionCleanliness(t *testing.T) {
 		withoutLane    bool
 		wantWarning    bool
 		wantSkipped    bool
+		wantReason     string
 	}{
 		{
 			name:           "clean tree",
@@ -111,6 +119,83 @@ func TestEvaluateCompletionCleanliness(t *testing.T) {
 			history:        []store.WorkAttempt{previousRejected, previousRejected},
 			wantOutcome:    completionCleanlinessAccepted,
 			wantResolution: completionCleanlinessClean,
+		},
+		{
+			name:           "clean retry with unrelated blocked approval",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "resolved-head"},
+			history:        []store.WorkAttempt{previousRejected, previousRejected},
+			issue:          blockedIssue(""),
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessClean,
+		},
+		{
+			name:           "blocked committed retry without another completion declaration",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "resolved-head"},
+			history:        []store.WorkAttempt{previousRejected, previousRejected},
+			issue:          blockedIssue(completionCleanlinessCommitted),
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessClean,
+			withoutLane:    true,
+		},
+		{
+			name:           "blocked discarded retry without another completion declaration",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "original-head"},
+			history:        []store.WorkAttempt{previousRejected},
+			issue:          blockedIssue(completionCleanlinessDiscarded),
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessClean,
+			withoutLane:    true,
+		},
+		{
+			name:        "blocked approval with absent recovery evidence after rejection",
+			history:     []store.WorkAttempt{previousRejected},
+			issue:       blockedIssue(""),
+			withoutLane: true,
+			wantSkipped: true,
+		},
+		{
+			name:         "blocked approval with unavailable recovery evidence",
+			evidence:     DiffStats{Status: "clean", RecoveryStateExpected: true},
+			issue:        blockedIssue(""),
+			wantOutcome:  completionCleanlinessRejected,
+			wantRejected: 1,
+			wantReason:   "workspace_recovery_state_unavailable",
+		},
+		{
+			name:         "blocked approval with unavailable recovery evidence after rejection",
+			evidence:     DiffStats{Status: "clean", RecoveryStateExpected: true},
+			history:      []store.WorkAttempt{previousRejected},
+			issue:        blockedIssue(""),
+			wantOutcome:  completionCleanlinessEscalated,
+			wantRejected: 2,
+			wantBlock:    true,
+			wantReason:   dirtyCompletionEscalationReason,
+			withoutLane:  true,
+		},
+		{
+			name:         "blocked approval with audit history failure",
+			evidence:     DiffStats{Status: "clean", HeadSHA: "head"},
+			historyErr:   errors.New("history unavailable"),
+			issue:        blockedIssue(""),
+			wantOutcome:  completionCleanlinessEscalated,
+			wantRejected: 1,
+			wantBlock:    true,
+			wantWarning:  true,
+		},
+		{
+			name:     "blocked unpublished remainder after rejection",
+			evidence: DiffStats{Status: "clean", HeadSHA: "unpublished-head", UnpushedCommits: 1},
+			history:  []store.WorkAttempt{previousRejected},
+			issue: connector.Issue{WorkpadSignal: &workpad.Signal{
+				Source:      workpad.SourceStructured,
+				Status:      workpad.StatusBlocked,
+				HumanAction: "preserve the unpublished commit for operator inspection",
+			}},
+			wantOutcome:    completionCleanlinessEscalated,
+			wantResolution: completionCleanlinessIntentionallyLeft,
+			wantRejected:   2,
+			wantBlock:      true,
+			withoutLane:    true,
 		},
 		{
 			name:           "repeated unpushed completion escalates",
@@ -219,6 +304,12 @@ func TestEvaluateCompletionCleanliness(t *testing.T) {
 			}
 			if (decision.Warning != "") != tt.wantWarning {
 				t.Fatalf("evaluateCompletionCleanliness().Warning = %q", decision.Warning)
+			}
+			if tt.wantReason != "" && decision.Reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", decision.Reason, tt.wantReason)
+			}
+			if tt.wantOutcome == completionCleanlinessAccepted && (decision.Reason != "" || decision.Statement != "") {
+				t.Fatalf("clean acceptance retained dirty classification: %#v", decision)
 			}
 			metadata := completionCleanlinessMetadata(decision)
 			persisted := store.WorkAttempt{WorkerMetadataJSON: marshalWorkAttemptJSON(metadata)}
@@ -360,13 +451,34 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 
 func TestHandleRunResultCleanRetryUsesPRGate(t *testing.T) {
 	t.Parallel()
-	for _, rejections := range []int{1, 2} {
-		t.Run(fmt.Sprintf("after_%d_rejections", rejections), func(t *testing.T) {
+	tests := []struct {
+		name       string
+		rejections int
+		blocked    bool
+		resolution string
+	}{
+		{name: "after one rejection", rejections: 1},
+		{name: "after two rejections", rejections: 2},
+		{name: "blocked approval after two rejections", rejections: 2, blocked: true},
+		{name: "blocked committed retry", rejections: 2, blocked: true, resolution: completionCleanlinessCommitted},
+		{name: "blocked discarded retry", rejections: 1, blocked: true, resolution: completionCleanlinessDiscarded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			issue := completionTransitionIssue("In Progress", "OPEN")
 			issue.PullRequest = &connector.PullRequest{Number: 2493, State: "OPEN", CIStatus: "pass", UnresolvedReviewThreads: []connector.PullRequestReviewThread{{Path: "worker.go", Line: 1}}}
 			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_work_attempt_id: \"2493\"\n  completion_generation: \"7\"\nblockers: []\nhuman_action: null\n```"}}
-			history := make([]store.WorkAttempt, rejections)
+			if tt.blocked {
+				issue.PullRequest.HeadSHA = "head"
+				issue.PullRequest.UnresolvedReviewThreads = nil
+				issue.Comments[0].Body = fmt.Sprintf("## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nfields:\n  completion_work_attempt_id: \"2493\"\n  completion_generation: \"7\"\n  completion_cleanliness_resolution: %q\nblockers: []\nhuman_action: approve the worker merge tool\n```", tt.resolution)
+				if tt.resolution == "" {
+					issue.Comments[0].Body = strings.ReplaceAll(issue.Comments[0].Body, "  completion_cleanliness_resolution: \"\"\n", "")
+				}
+			}
+			originalWorkpad := issue.Comments[0].Body
+			history := make([]store.WorkAttempt, tt.rejections)
 			for i := range history {
 				history[i] = store.WorkAttempt{TerminalState: store.WorkAttemptTerminalSuccess, WorkerMetadataJSON: marshalWorkAttemptJSON(completionCleanlinessMetadata(completionCleanlinessDecision{Attempted: true, Outcome: completionCleanlinessRejected}))}
 			}
@@ -379,20 +491,36 @@ func TestHandleRunResultCleanRetryUsesPRGate(t *testing.T) {
 			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 2493, Generation: 7, Mode: runpkg.RunModeImplement, StartedAt: now.Add(-time.Minute)}
 			state.Claimed[issue.ID] = Claimed{Issue: issue}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeImplement, WorkAttemptID: 2493, Generation: 7}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "head", RecoveryStateExpected: true, RecoveryStateAvailable: true}}})
-			if _, blocked := state.Blocked[issue.ID]; blocked {
-				t.Fatal("clean retry was parked")
-			}
-			if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" {
-				t.Fatalf("updates = %#v, want Rework", tracker.updates)
-			}
-			if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "unresolved review thread") {
-				t.Fatalf("comments = %#v, want PR gate reason", tracker.comments)
+			if tt.blocked {
+				if len(tracker.updates) != 1 || tracker.updates[0].state != "Blocked" {
+					t.Fatalf("updates = %#v, want independent Workpad blocker", tracker.updates)
+				}
+				blocked, ok := state.Blocked[issue.ID]
+				if !ok || blocked.Reason != workpadBlockedUnactionedReason || blocked.Issue.WorkpadSignal == nil || blocked.Issue.WorkpadSignal.Status != workpad.StatusBlocked || blocked.Issue.WorkpadSignal.HumanAction != "approve the worker merge tool" {
+					t.Fatalf("blocked = %#v, want preserved human action", blocked)
+				}
+				if len(blocked.Issue.Comments) != 1 || blocked.Issue.Comments[0].Body != originalWorkpad {
+					t.Fatal("independent blocked Workpad was changed")
+				}
+			} else {
+				if _, blocked := state.Blocked[issue.ID]; blocked {
+					t.Fatal("clean retry was parked")
+				}
+				if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" {
+					t.Fatalf("updates = %#v, want Rework", tracker.updates)
+				}
+				if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "unresolved review thread") {
+					t.Fatalf("comments = %#v, want PR gate reason", tracker.comments)
+				}
 			}
 			if len(attempts.completions) != 1 {
 				t.Fatalf("completions = %#v", attempts.completions)
 			}
+			if tt.blocked && (attempts.completions[0].TerminalState != store.WorkAttemptTerminalNoProgress || state.Completed[issue.ID].FinalState != runpkg.FinalStateNoProgress) {
+				t.Fatalf("human-blocked work was recorded as successful acceptance: %#v", attempts.completions[0])
+			}
 			record, ok := completionCleanlinessRecordFromAttempt(store.WorkAttempt{WorkerMetadataJSON: attempts.completions[0].WorkerMetadataJSON})
-			if !ok || record.Outcome != completionCleanlinessAccepted {
+			if !ok || record.Outcome != completionCleanlinessAccepted || record.Resolution != completionCleanlinessClean || record.Reason != "" || record.ConsecutiveRejections != 0 || record.Statement != "" {
 				t.Fatalf("cleanliness = %#v", record)
 			}
 		})

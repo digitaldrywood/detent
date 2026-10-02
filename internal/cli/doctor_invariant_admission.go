@@ -15,7 +15,6 @@ import (
 )
 
 // This is diagnostic scope evidence, not a natural-language admission policy.
-var doctorFeatureTitle = regexp.MustCompile(`(?i)^\s*(feat|perf|refactor)(\([^\r\n)]*\))?!?:`)
 var doctorMechanismDeclaration = regexp.MustCompile(`(?i)\b(new|add|adds|adding|introduce|introduces|introducing|expand|expands|expanding)\b[^.!?;\n]*\b(config(uration)?\s+keys?|reason\s+codes?|brakes?|breakers?|leases?|parks?|recovery\s+paths?|reservations?)\b`)
 var doctorNegatedDeclaration = regexp.MustCompile(`(?i)\b(no|not|never|without|remove|removes|removing|delete|deletes|deleting|consolidate|consolidates|consolidating)\b`)
 var doctorDeclarationBoundary = regexp.MustCompile(`(?i)[.!?;,\n]|\b(and|but|then)\b`)
@@ -128,18 +127,15 @@ func doctorInvariantAdmissionCheck(ctx context.Context, id string, cfg workflowc
 	}
 	if len(violations) > 0 {
 		check.Status = doctorFail
-		check.Detail += "; unapproved feature/mechanism scope: " + strings.Join(violations, "; ")
+		check.Detail += "; unapproved mechanism scope: " + strings.Join(violations, "; ")
 	}
 	if check.Status != doctorOK {
-		check.Hint = "See docs/invariants.md INV-11; features and mechanisms require a human scope-approved Todo move."
+		check.Hint = "See docs/invariants.md INV-11; new or expanded mechanisms require a human scope-approved Todo move."
 	}
 	return check
 }
 
 func doctorIssueRequiresScopeApproval(title, body string) bool {
-	if doctorFeatureTitle.MatchString(title) {
-		return true
-	}
 	// A removal or negation in an earlier coordinated clause does not govern
 	// a later addition ("remove the lease and add a breaker").
 	for _, clause := range doctorDeclarationBoundary.Split(title+"\n"+body, -1) {

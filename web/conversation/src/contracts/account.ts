@@ -14,6 +14,8 @@
 // are recorded in README.md ("Contract ambiguities resolved").
 import * as Schema from "effect/Schema";
 
+import { ChatUsage } from "./usage.ts";
+
 import { ApiError } from "./conversation.ts";
 
 // --- Roles and grants -------------------------------------------------------
@@ -163,7 +165,11 @@ export type UpdatesReport = typeof UpdatesReport.Type;
  * loads it once.
  */
 export const AccountBootstrap = Schema.Struct({
-  organization: Schema.Struct({ id: Schema.String, name: Schema.String }),
+  organization: Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    public_url: Schema.optional(Schema.String),
+  }),
   organizations: Schema.Array(BootstrapOrganization),
   actor: AccountActor,
   projects: Schema.Array(AccountProject),
@@ -202,6 +208,7 @@ export const Invitation = Schema.Struct({
   role: Schema.String,
   created_at: Schema.String,
   expires_at: Schema.String,
+  grants: Schema.optional(Schema.Array(ProjectGrant)),
 });
 export type Invitation = typeof Invitation.Type;
 
@@ -252,12 +259,14 @@ export type SupportResponse = typeof SupportResponse.Type;
  * so recovering means re-reading, never guessing.
  */
 export const ProjectIntegration = Schema.Struct({
+  states: Schema.optional(Schema.Array(WorkflowState)),
   profile: Schema.String,
   revision: Schema.String,
   intake: Schema.String,
   projection: Schema.String,
   repository_enabled: Schema.Boolean,
   repository: Schema.optional(Schema.String),
+  checkout_repository: Schema.optional(Schema.String),
   authority: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type ProjectIntegration = typeof ProjectIntegration.Type;
@@ -284,6 +293,7 @@ export const PolicyGates = Schema.Struct({
   validator: Schema.Boolean,
   security_audit: Schema.Boolean,
   merge_method: Schema.String,
+  github_pull_request: Schema.optional(Schema.Boolean),
 });
 export type PolicyGates = typeof PolicyGates.Type;
 
@@ -347,9 +357,9 @@ export type OnboardingStep = typeof OnboardingStep.Type;
 
 /** The four steps `Evaluate()` emits, in its order. */
 export const ONBOARDING_STEPS = [
-  "Repository configuration",
-  "Local validation",
   "Execution runner",
+  "Local validation",
+  "Repository configuration",
   "Artifact history",
 ] as const;
 
@@ -374,7 +384,16 @@ export type RunnerExclusion = typeof RunnerExclusion.Type;
  * take this project's work. An empty `exclusions` is what makes step three
  * ready.
  */
+export const RunnerLocalChecks = Schema.Struct({
+  checkout: Schema.String,
+  doctor: Schema.String,
+  provider: Schema.String,
+  provider_kinds: Schema.optional(Schema.Array(Schema.String)),
+  observed_at: Schema.String,
+});
+
 export const RunnerEligibility = Schema.Struct({
+  local_checks: Schema.optional(Schema.NullOr(RunnerLocalChecks)),
   runner: Schema.Struct({
     runner_id: Schema.String,
     machine_id: Schema.optional(Schema.String),
@@ -501,6 +520,7 @@ export const RunnerRouting = Schema.Struct({
   state: Schema.String,
   capacity_limit: Schema.Number,
   project_ids: Schema.Array(Schema.String),
+  home_project_ids: Schema.optional(Schema.Array(Schema.String)),
   isolation_tier: Schema.String,
   host_services: Schema.Array(Schema.String),
   availability: RunnerAvailability,
@@ -518,6 +538,12 @@ export const FleetRunner = Schema.Struct({
   display_name: Schema.String,
   hostname: Schema.String,
   health: Schema.String,
+  problems: Schema.optional(Schema.Array(Schema.Struct({
+    code: Schema.String,
+    message: Schema.String,
+    fix_hint: Schema.String,
+    first_seen: Schema.String,
+  }))),
   state: Schema.String,
   os: Schema.String,
   architecture: Schema.String,
@@ -536,6 +562,9 @@ export const FleetRunner = Schema.Struct({
   leases: Schema.Array(RunnerLease),
   isolation_tier: Schema.optional(Schema.String),
   availability: Schema.optional(RunnerAvailability),
+  home_project_ids: Schema.optional(Schema.Array(Schema.String)),
+  home_status: Schema.optional(Schema.String),
+  home_dry_since: Schema.optional(Schema.NullOr(Schema.String)),
   routing: Schema.optional(RunnerRouting),
   revision: Schema.optional(Schema.Number),
 });
@@ -611,6 +640,8 @@ export type PlanGrant = typeof PlanGrant.Type;
 
 /** `GET /plan`: `hubserver.HostedEntitlement`, verbatim. */
 export const PlanReport = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  monthly_usd_cents: Schema.optional(Schema.NullOr(Schema.Number)),
   organization_id: Schema.String,
   base: PlanReference,
   effective_base: PlanReference,
@@ -664,6 +695,23 @@ export const BillingPrice = Schema.Struct({
 });
 export type BillingPrice = typeof BillingPrice.Type;
 
+export const AICredits = Schema.Struct({
+  balance_micros: Schema.Number,
+  auto_enabled: Schema.Boolean,
+  threshold_cents: Schema.Number,
+  price_id: Schema.String,
+  failure: Schema.String,
+  in_flight: Schema.Boolean,
+  can_auto_fund: Schema.Boolean,
+  packs: Schema.Array(Schema.Struct({
+    price_id: Schema.String, label: Schema.String, usd_cents: Schema.Number,
+  })),
+  history: Schema.Array(Schema.Struct({
+    amount_micros: Schema.Number, kind: Schema.String, at: Schema.String,
+  })),
+});
+export type AICredits = typeof AICredits.Type;
+
 /**
  * `GET /billing`: `hubserver.hostedBillingReport` plus `prices`. The report
  * alone cannot render the screen — the hosted Templ page read the configured
@@ -671,6 +719,8 @@ export type BillingPrice = typeof BillingPrice.Type;
  * "checkout buttons per configured price" needs the list on the payload.
  */
 export const BillingReport = Schema.Struct({
+  ai_credits: Schema.optional(AICredits),
+  chat_usage: Schema.optional(ChatUsage),
   organization_id: Schema.String,
   state: BillingState,
   entitlement: PlanReport,
@@ -707,3 +757,25 @@ export const decodeIntegration = Schema.decodeUnknownSync(ProjectIntegration);
 export const decodePolicy = Schema.decodeUnknownSync(PolicyApproval);
 
 export { ApiError };
+
+/** Provider secret presence; credentials are write-only. */
+export const ProjectSecretStatus = Schema.Struct({
+ kind: Schema.String,
+ present: Schema.Boolean,
+ organization_slug: Schema.optional(Schema.String),
+ key_version: Schema.optional(Schema.Number),
+});
+export type ProjectSecretStatus = typeof ProjectSecretStatus.Type;
+
+export const OperatorAPIKey = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  scope: Schema.Literals(["read", "write", "admin"]),
+  expires_at: Schema.String,
+  fingerprint: Schema.String,
+  revoked: Schema.Boolean,
+  project_ids: Schema.Array(Schema.String),
+});
+export type OperatorAPIKey = typeof OperatorAPIKey.Type;
+export const OperatorAPIKeys = Schema.Struct({ keys: Schema.Array(OperatorAPIKey) });
+export const CreatedOperatorAPIKey = Schema.Struct({ token: Schema.String });

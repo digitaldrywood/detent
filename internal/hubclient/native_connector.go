@@ -137,6 +137,10 @@ func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.N
 
 func nativeMutationKey() tracker.Mutation { return tracker.Mutation{IdempotencyKey: uuid.NewString()} }
 
+func nativeMutationKeyForContext(ctx context.Context) tracker.Mutation {
+	return tracker.MutationForContext(ctx, nativeMutationKey().IdempotencyKey)
+}
+
 func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.IssueDraft) (connector.Issue, error) {
 	project, err := c.client.Project(ctx)
 	if err != nil {
@@ -145,7 +149,7 @@ func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.Issue
 	if len(project.States) == 0 {
 		return connector.Issue{}, errors.New("native project has no workflow states")
 	}
-	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: project.States[0].Name})
+	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKeyForContext(ctx), Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: project.States[0].Name})
 	return issueFromNative(issue), err
 }
 
@@ -162,7 +166,7 @@ func (c *NativeConnector) ChangeReviewed(ctx context.Context, issueID, changeID,
 }
 
 func (c *NativeConnector) CreateComment(ctx context.Context, id, body string) error {
-	_, err := c.client.CreateComment(ctx, tracker.NativeWorkItemID(id), tracker.CreateComment{Mutation: nativeMutationKey(), Body: body})
+	_, err := c.client.CreateComment(ctx, tracker.NativeWorkItemID(id), tracker.CreateComment{Mutation: nativeMutationKeyForContext(ctx), Body: body})
 	return err
 }
 
@@ -171,10 +175,17 @@ func (c *NativeConnector) UpdateIssueState(ctx context.Context, id, state string
 	if err != nil {
 		return err
 	}
+	expected := tracker.ExpectedRevision(ctx)
+	if expected > 0 && expected != issue.Revision {
+		return errors.New("native issue revision is stale")
+	}
+	if expected <= 0 {
+		expected = issue.Revision
+	}
 	if issue.State == state {
 		return nil
 	}
-	_, err = c.client.Transition(ctx, issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision, State: state, Reason: "worker_progress"})
+	_, err = c.client.Transition(ctx, issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: expected, State: state, Reason: "worker_progress"})
 	return err
 }
 
@@ -187,7 +198,7 @@ func (c *NativeConnector) SetAssignee(ctx context.Context, id, login string) err
 	if login != "" {
 		assignees = append(assignees, login)
 	}
-	_, err = c.client.UpdateIssue(ctx, issue.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision, Assignees: &assignees})
+	_, err = c.client.UpdateIssue(ctx, issue.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: issue.Revision, Assignees: &assignees})
 	return err
 }
 
@@ -202,7 +213,7 @@ func (c *NativeConnector) SetField(ctx context.Context, id, field, value string)
 	if err != nil {
 		return err
 	}
-	request := tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision}
+	request := tracker.UpdateIssue{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: issue.Revision}
 	switch field {
 	case "title":
 		request.Title = &value
@@ -268,7 +279,7 @@ func (c *NativeConnector) UpdateIssueComment(ctx context.Context, id, commentID,
 		}
 		for _, comment := range page.Items {
 			if comment.ID == commentID {
-				_, err := c.client.UpdateComment(ctx, tracker.NativeWorkItemID(id), commentID, tracker.UpdateComment{Mutation: nativeMutationKey(), ExpectedRevision: comment.Revision, Body: body})
+				_, err := c.client.UpdateComment(ctx, tracker.NativeWorkItemID(id), commentID, tracker.UpdateComment{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: comment.Revision, Body: body})
 				return err
 			}
 		}
@@ -318,7 +329,7 @@ func (c *NativeConnector) dependency(ctx context.Context, id, blockerID, operati
 	if err != nil {
 		return err
 	}
-	_, err = c.client.Dependency(ctx, issue.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision, RelatedWorkItemID: tracker.NativeWorkItemID(blockerID), Operation: operation})
+	_, err = c.client.Dependency(ctx, issue.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: issue.Revision, RelatedWorkItemID: tracker.NativeWorkItemID(blockerID), Operation: operation})
 	return err
 }
 
@@ -334,6 +345,7 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue.Identifier = nativeIssueIdentifier(native)
 	issue.Number = native.Number
 	issue.Title, issue.Description, issue.State = native.Title, native.Body, native.State
+	issue.DependencySource = connector.BlockedRefSourceNative
 	issue.AuthorID = native.Actor.PrincipalID
 	issue.Closed = native.Terminal
 	issue.Labels, issue.Assignees = native.Labels, native.Assignees

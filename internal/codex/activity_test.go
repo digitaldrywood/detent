@@ -2,8 +2,12 @@ package codex
 
 import (
 	"encoding/json"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/runner"
 )
 
 func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
@@ -16,6 +20,8 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 		wantType         UpdateType
 		wantTool         string
 		wantCommand      string
+		wantActions      []runner.NativeCommandAction
+		wantCWD          string
 		wantExitCode     *int
 		wantContent      string
 		wantErrorBody    string
@@ -31,17 +37,56 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 			wantType:    UpdateToolStarted,
 			wantTool:    "commandExecution",
 			wantCommand: "go test ./...",
+			wantCWD:     "/tmp",
 			wantContent: "go test ./...",
+		},
+		{
+			name:        "native command actions preserve input and original command",
+			method:      "item/started",
+			params:      `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"/bin/zsh -lc 'go test ./...'","commandActions":[{"type":"unknown","command":"go test ./..."}],"status":"inProgress"}}`,
+			wantType:    UpdateToolStarted,
+			wantTool:    "commandExecution",
+			wantCommand: "/bin/zsh -lc 'go test ./...'",
+			wantContent: "go test ./...",
+			wantActions: []runner.NativeCommandAction{{Type: "unknown", Command: "go test ./..."}},
+		},
+		{
+			name:        "mixed native actions retain every command",
+			method:      "item/started",
+			params:      `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"/bin/zsh -lc 'cat AGENTS.md; go test ./...'","commandActions":[{"type":"read","command":"cat AGENTS.md","name":"AGENTS.md","path":"AGENTS.md"},{"type":"unknown","command":"go test ./..."}],"status":"inProgress"}}`,
+			wantType:    UpdateToolStarted,
+			wantTool:    "commandExecution",
+			wantCommand: "/bin/zsh -lc 'cat AGENTS.md; go test ./...'",
+			wantContent: "cat AGENTS.md; go test ./...",
+			wantActions: []runner.NativeCommandAction{{Type: "read", Command: "cat AGENTS.md", Name: "AGENTS.md", Path: "AGENTS.md"}, {Type: "unknown", Command: "go test ./..."}},
+		},
+		{
+			name:        "incomplete native actions stay opaque",
+			method:      "item/started",
+			params:      `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"/bin/zsh -lc 'cat AGENTS.md; go test ./...'","commandActions":[{"type":"read","command":"cat AGENTS.md"},{"type":"unknown"}],"status":"inProgress"}}`,
+			wantType:    UpdateToolStarted,
+			wantTool:    "commandExecution",
+			wantCommand: "/bin/zsh -lc 'cat AGENTS.md; go test ./...'",
+			wantContent: "/bin/zsh -lc 'cat AGENTS.md; go test ./...'",
+			wantActions: []runner.NativeCommandAction{{Type: "read", Command: "cat AGENTS.md"}, {Type: "unknown"}},
+		},
+		{
+			name:     "native read without command retains path and type",
+			method:   "item/started",
+			params:   `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"private wrapper","cwd":"/private/workspace/nested","commandActions":[{"type":"read","name":"CLAUDE.md","path":"CLAUDE.md"},{"type":"futureOpaque","name":"private name"}],"status":"inProgress"}}`,
+			wantType: UpdateToolStarted, wantTool: "commandExecution", wantCommand: "private wrapper", wantContent: "private wrapper", wantCWD: "/private/workspace/nested",
+			wantActions: []runner.NativeCommandAction{{Type: "read", Name: "CLAUDE.md", Path: "CLAUDE.md"}, {Type: "futureOpaque", Name: "private name"}},
 		},
 		{
 			name:         "failed command retains command and exit code",
 			method:       "item/completed",
-			params:       `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"git push origin HEAD && exit 19","status":"failed","exitCode":19,"aggregatedOutput":"branch updated; later assertion failed"}}`,
+			params:       `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"commandExecution","command":"git push origin HEAD && exit 19","commandActions":[{"type":"unknown","command":"git push origin HEAD"},{"type":"unknown","command":"exit 19"}],"status":"failed","exitCode":19,"aggregatedOutput":"branch updated; later assertion failed"}}`,
 			wantType:     UpdateToolCompleted,
 			wantTool:     "commandExecution",
 			wantCommand:  "git push origin HEAD && exit 19",
 			wantExitCode: intPointer(19),
 			wantContent:  "branch updated; later assertion failed",
+			wantActions:  []runner.NativeCommandAction{{Type: "unknown", Command: "git push origin HEAD"}, {Type: "unknown", Command: "exit 19"}},
 		},
 		{
 			name:        "command output streams",
@@ -126,6 +171,16 @@ func TestUpdateFromMessageEmitsToolActivity(t *testing.T) {
 				update.BackendErrorBody != tt.wantErrorBody || (tt.wantMaxBytes == 0 && update.BackendErrorMessage != tt.wantErrorMessage) {
 				t.Fatalf("update = %#v, want type %q tool %q content %q", update, tt.wantType, tt.wantTool, tt.wantContent)
 			}
+			if len(update.NativeActions) != len(tt.wantActions) || (len(tt.wantActions) > 0 && !reflect.DeepEqual(update.NativeActions, tt.wantActions)) {
+				t.Fatalf("native actions = %+v, want %+v", update.NativeActions, tt.wantActions)
+			}
+			agent := agentUpdateFromCodex(update)
+			if !reflect.DeepEqual(agent.NativeActions, update.NativeActions) || agent.CWD != update.CWD {
+				t.Fatal("native action evidence lost at backend boundary")
+			}
+			if update.CWD != tt.wantCWD {
+				t.Fatalf("cwd = %q, want %q", update.CWD, tt.wantCWD)
+			}
 			if update.Command != tt.wantCommand || !equalIntPointers(update.ExitCode, tt.wantExitCode) {
 				t.Fatalf("command evidence = command %q exit %#v, want command %q exit %#v", update.Command, update.ExitCode, tt.wantCommand, tt.wantExitCode)
 			}
@@ -161,4 +216,20 @@ func equalIntPointers(left *int, right *int) bool {
 		return left == right
 	}
 	return *left == *right
+}
+
+func BenchmarkToolLifecycleNativeActions(b *testing.B) {
+	for _, size := range []int{32, 8100} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			command := "go test " + strings.Repeat("x", size)
+			params, _ := json.Marshal(map[string]any{"threadId": "thread", "turnId": "turn", "item": map[string]any{"id": "tool", "type": "commandExecution", "command": "/bin/zsh -lc '" + command + "'", "commandActions": []map[string]string{{"type": "unknown", "command": command}}, "status": "inProgress"}})
+			message := Message{Method: "item/started", Params: params}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, ok, err := toolLifecycleUpdate(message); !ok || err != nil {
+					b.Fatalf("tool lifecycle: ok=%v err=%v", ok, err)
+				}
+			}
+		})
+	}
 }

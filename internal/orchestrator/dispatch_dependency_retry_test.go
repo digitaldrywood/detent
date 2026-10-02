@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,16 +109,19 @@ func TestDispatchWorkpadDependencySelection(t *testing.T) {
 func TestDispatchWorkpadDependencyEvidence(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name        string
-		blockers    []connector.Issue
-		err         error
-		body        bool
-		wantBlocked bool
+		name            string
+		blockers        []connector.Issue
+		err             error
+		body            bool
+		legacyPredicate bool
+		wantBlocked     bool
 	}{
 		{name: "lookup error", err: errors.New("lookup unavailable"), wantBlocked: true},
 		{name: "missing issue", wantBlocked: true},
 		{name: "body and workpad open terminal lane", body: true, blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done"}}, wantBlocked: true},
 		{name: "open terminal lane", blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done"}}, wantBlocked: true},
+		{name: "normalized actual identifier", blockers: []connector.Issue{{Identifier: " DigitalDrywood/Detent#2680 ", State: "Done", Closed: true}}},
+		{name: "closed human without verification", legacyPredicate: true, blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done", Closed: true, Labels: []string{"human-owned"}}}, wantBlocked: true},
 		{name: "closed terminal lane", blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680", State: "Done", Closed: true}}},
 		{name: "open empty lane", blockers: []connector.Issue{{Identifier: "digitaldrywood/detent#2680"}}, wantBlocked: true},
 	} {
@@ -126,14 +130,32 @@ func TestDispatchWorkpadDependencyEvidence(t *testing.T) {
 			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
 			issue := dispatchTestIssue("issue", "In Progress")
 			issue.Identifier = "digitaldrywood/detent#2699"
-			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers:\n  - ref: '#2680'\n    predicate: {type: issue_state, states: [open]}\n```"}}
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '#2680'\n    predicate: {type: issue_state, states: [open]}\n```"}}
+			if tt.legacyPredicate {
+				issue.Comments[0].Body = strings.ReplaceAll(issue.Comments[0].Body, ", states: [open]", "")
+			}
 			if tt.body {
 				issue.Description = "Depends on: digitaldrywood/detent#2680"
 			}
-			o := &Orchestrator{cfg: cfg, connector: dispatchEvidenceConnector{hydratingDispatchConnector: hydratingDispatchConnector{blockers: tt.blockers}, err: tt.err}}
-			hydrated := o.hydrateDispatchDependencies(t.Context(), issue, make(map[string]dependencyBlocker))
+			reads := 0
+			o := &Orchestrator{cfg: cfg, connector: dispatchEvidenceConnector{hydratingDispatchConnector: hydratingDispatchConnector{blockers: tt.blockers}, err: tt.err, reads: &reads}}
+			cache := make(map[string]dependencyBlocker)
+			hydrated := o.hydrateDispatchDependencies(t.Context(), issue, cache)
 			if got := issueBlockedByNonTerminal(hydrated, cfg.TerminalStates); got != tt.wantBlocked {
 				t.Fatalf("blocked=%t, want %t; refs=%+v", got, tt.wantBlocked, hydrated.BlockedBy)
+			}
+
+			predicateState := newState(cfg)
+			evaluation, err := o.liveDispatchPlanner(t.Context(), cache).recordedBlockers(hydrated, &predicateState, time.Now())
+			if err != nil || !evaluation.Found || (evaluation.Holds || evaluation.Unverifiable) != tt.wantBlocked {
+				t.Fatalf("predicate evidence = %+v, err=%v, want blocked=%t", evaluation, err, tt.wantBlocked)
+			}
+			wantReads := 1
+			if tt.err != nil || len(tt.blockers) == 0 {
+				wantReads = 2
+			}
+			if reads != wantReads {
+				t.Fatalf("reference reads = %d, want %d", reads, wantReads)
 			}
 
 			for _, retry := range []bool{false, true} {
@@ -161,10 +183,14 @@ func TestDispatchWorkpadDependencyEvidence(t *testing.T) {
 
 type dispatchEvidenceConnector struct {
 	hydratingDispatchConnector
-	err error
+	err   error
+	reads *int
 }
 
 func (c dispatchEvidenceConnector) FetchIssueStatesByIdentifiers(ctx context.Context, refs []string) ([]connector.Issue, error) {
+	if c.reads != nil {
+		*c.reads++
+	}
 	if c.err != nil {
 		return nil, c.err
 	}

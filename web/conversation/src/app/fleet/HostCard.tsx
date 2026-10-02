@@ -11,25 +11,31 @@ import { cn } from "../../lib/utils.ts";
 import type { FleetRunner } from "../../contracts/account.ts";
 import { PathValue } from "../account/controls.tsx";
 import { RUNNER_UPGRADE_COMMAND, runnerUpdateLabel } from "../lib/detentUpdates.ts";
+import { SettingsHelp } from "../settings/SettingsHelp.tsx";
+import { RUNNER_HELP } from "./runnerHelp.ts";
 import { formatLocalTime, formatRelativeTime } from "./format.ts";
 
-/** Healthy pulses; anything degraded is amber; anything unknown is inert. */
 function healthTone(health: string): string {
   if (health === "healthy") return "bg-success motion-safe:animate-status-pulse";
-  if (health === "stale" || health === "paused" || health === "degraded") return "bg-warning";
+  if (health === "needs_attention") return "bg-warning";
   return "bg-muted-foreground";
 }
 
 function Field({
   label,
+  help,
   children,
 }: {
   readonly label: string;
+  readonly help?: { readonly label: string; readonly text: string };
   readonly children: React.ReactNode;
 }): React.ReactElement {
   return (
     <div>
-      {label}
+      <div className="flex flex-wrap items-center gap-1">
+        {label}
+        {help ? <SettingsHelp label={help.label}>{help.text}</SettingsHelp> : null}
+      </div>
       <b className="block text-[13px] font-medium tabular-nums text-foreground">{children}</b>
     </div>
   );
@@ -79,18 +85,31 @@ export function HostCard({
         <Monitor aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium">{runner.display_name}</div>
-          <div className="text-xs text-muted-foreground">{runner.health}</div>
+          <div className={cn("text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning")}>
+            {runner.health === "needs_attention" ? <span className="rounded border border-warning/40 px-1.5">Needs attention</span> : runner.health === "outside_hours" ? "Outside hours" : runner.health}
+          </div>
         </div>
         <div className="text-right text-xs text-muted-foreground">
           {runner.state} · {runner.hostname} · {runner.os}/{runner.architecture}
         </div>
       </div>
 
+      {(runner.problems?.length ?? 0) > 0 ? (
+        <ul aria-label="Runner problems" role={runner.health === "needs_attention" ? "alert" : undefined} className="space-y-2 text-xs">
+          {runner.problems?.map((problem) => (
+            <li key={problem.code} data-problem={problem.code}>
+              <p className="font-medium">{problem.message}</p>
+              <p className="text-muted-foreground">{problem.fix_hint}</p>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
       <div className="grid grid-cols-3 gap-2 text-xs text-muted-foreground">
-        <Field label="Slots">
+        <Field label="Slots" help={{ label: "Shared host capacity", text: RUNNER_HELP.host }}>
           {runner.host_used} / {runner.host_capacity} in use
         </Field>
-        <Field label="Runner limit">
+        <Field label="Runner limit" help={{ label: "Runner limit and reported capacity", text: RUNNER_HELP.reported }}>
           {runner.capacity_limit}
           {runner.reported_capacity !== runner.capacity_limit
             ? ` (reports ${runner.reported_capacity})`
@@ -101,12 +120,19 @@ export function HostCard({
 
       {runner.isolation_tier === undefined ? null : (
         <div className="text-xs text-muted-foreground">
-          {`Configured (not yet enforced): ${runner.isolation_tier === "native-trusted" ? "Trusted only: full host access" : "Sandbox"}`}
+          {`Isolation setting: ${runner.isolation_tier === "native-trusted" ? "Trusted only: full host access" : "Sandbox"}`}
           {runner.availability?.windows.length
             ? ` · ${runner.availability.windows.join(", ")} (${runner.availability.timezone})`
             : " · Always available"}
         </div>
       )}
+
+      {(runner.home_project_ids?.length ?? 0) > 0 ? (
+        <div className="text-xs text-muted-foreground" data-testid="home-status">
+          <span>Home projects: {runner.home_project_ids?.join(", ")}</span>
+          {runner.home_status ? <span className="block">{runner.home_status}</span> : null}
+        </div>
+      ) : null}
 
       {behind ? (
         // Where the footer's update pill sends a reader. Nothing here can
@@ -160,6 +186,7 @@ export function HostCard({
               className="flex min-w-0 items-baseline gap-1.5"
             >
               <span className="shrink-0 text-foreground">{capacity.provider}</span>
+              <SettingsHelp label={`${capacity.provider} account capacity`}>{RUNNER_HELP.provider}</SettingsHelp>
               <span className="truncate">{capacity.account_alias}</span>
               <span className="ml-auto shrink-0 tabular-nums">
                 {capacity.availability} · {capacity.state} · {capacity.used}/

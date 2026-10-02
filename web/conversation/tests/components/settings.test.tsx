@@ -7,7 +7,8 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as Schema from "effect/Schema";
 
 import { SettingsSidebarNav } from "../../src/components/settings/SettingsSidebarNav.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
@@ -30,8 +31,18 @@ import { ExpandableText } from "../../src/app/settings/ExpandableText.tsx";
 import { summarizeProviders } from "../../src/app/fleet/RunnersSection.tsx";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 import type { FleetResponse } from "../../src/contracts/account.ts";
+import { AccountBootstrap } from "../../src/contracts/account.ts";
+import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
+import { SettingsRoute } from "../../src/app/settings/Settings.tsx";
+import { organizationMCPEndpoint } from "../../src/app/settings/MCPSettings.tsx";
+import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  resetHubPaths();
+});
 
 if (typeof globalThis.PointerEvent === "undefined") {
   globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
@@ -53,6 +64,7 @@ describe("which sections an actor gets", () => {
       "Projects",
       "Providers & runners",
       "Integrations",
+      "API & MCP",
       "Plan",
       "Billing",
       "Keybindings",
@@ -98,7 +110,7 @@ describe("which sections an actor gets", () => {
   });
 });
 
-function renderSidebarNav(pathname = "/settings/projects", account: unknown = OWNER_ACCOUNT) {
+function renderSidebarNav(pathname = "/settings/projects", account: unknown = OWNER_ACCOUNT, content: React.ReactNode = null) {
   const navigated: string[] = [];
   const root = createRootRoute();
   const section = createRoute({
@@ -107,6 +119,7 @@ function renderSidebarNav(pathname = "/settings/projects", account: unknown = OW
     component: () => (
       <SidebarProvider>
         <SettingsSidebarNav pathname={pathname} />
+        {content}
       </SidebarProvider>
     ),
   });
@@ -129,6 +142,140 @@ const OWNER_ACCOUNT = {
   account: { actor: { can_manage: true }, support: null },
 };
 
+describe("MCP setup", () => {
+  const account = accountFixture as unknown as AccountBootstrap;
+
+  it.each([
+    ["dedicated", "", "https://threefold.detent.cloud/", "https://threefold.detent.cloud/mcp"],
+    ["shared origin", "/organizations/org_threefold", "https://app.detent.cloud", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["shared entry", "/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["shared trailing slash", "/organizations/org_threefold/", "https://app.detent.cloud/organizations/org_threefold/", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["mounted public URL without runtime mount", "", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["another organization's URL", "/organizations/org_threefold", "https://app.detent.cloud/organizations/org_parable", null],
+    ["another organization's URL without runtime mount", "", "https://app.detent.cloud/organizations/org_parable", null],
+    ["another organization's mount", "/organizations/org_parable", "https://app.detent.cloud", null],
+    ["conflicting public path", "/organizations/org_threefold", "https://app.detent.cloud/projects/proj_parable", null],
+    ["HTTP", "", "http://threefold.detent.cloud", null],
+    ["credentials in URL", "/organizations/org_threefold", "https://user:secret@threefold.detent.cloud", null],
+    ["query credential", "/organizations/org_threefold", "https://threefold.detent.cloud?token=secret", null],
+    ["fragment", "/organizations/org_threefold", "https://threefold.detent.cloud#secret", null],
+    ["malformed", "", "not a URL", null],
+  ])("uses only a safe canonical %s organization endpoint", (_name, mount, publicURL, expected) => {
+    applyHubPaths({ base_path: mount });
+    const decoded = Schema.decodeUnknownSync(AccountBootstrap)({ ...account, organization: { ...account.organization, public_url: publicURL }, organizations: [] });
+    expect(organizationMCPEndpoint(decoded)).toBe(expected);
+  });
+
+  it("matches the active organization's identity rather than another directory entry", () => {
+    expect(organizationMCPEndpoint({ ...account, organizations: [...account.organizations].reverse() })).toBe("https://threefold.detent.cloud/mcp");
+    expect(organizationMCPEndpoint({ ...account, organization: { id: "org_unknown", name: "Unknown" } })).toBeNull();
+    expect(organizationMCPEndpoint(null)).toBeNull();
+  });
+
+  it.each([
+    ["", "https://threefold.detent.cloud", "https://threefold.detent.cloud/mcp"],
+    ["/organizations/org_threefold", "https://app.detent.cloud", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
+    ["/organizations/org_threefold", "https://app.detent.cloud/organizations/org_parable", null],
+  ])("routes a viewer to setup at %j and copies only a matching organization URL or placeholder examples using shared key metadata", async (mount, publicURL, expected) => {
+    applyHubPaths({ base_path: mount });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ keys: [] }), { status: 200 }));
+    const activeAccount = {
+      ...account,
+      organization: { ...account.organization, public_url: publicURL },
+      actor: { ...account.actor, can_manage: false, role: "viewer" },
+      csrf_token: "private-csrf-credential",
+      token: "private-api-credential",
+    };
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Shared API keys" })).toBeTruthy());
+    expect(screen.getByRole("button", { name: "API & MCP" }).getAttribute("aria-current")).toBe("true");
+    expect(document.body.textContent).not.toContain("private-csrf-credential");
+    expect(document.body.textContent).not.toContain("private-api-credential");
+    if (expected) {
+      fireEvent.click(screen.getByRole("button", { name: "Copy Organization MCP endpoint" }));
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(expected));
+      expect(screen.getByRole("status", { name: "Organization MCP endpoint copy status" }).textContent).toContain("copied");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Copy API setup prompt" })).toBeTruthy());
+      for (const label of ["API setup prompt", "MCP setup prompt"]) {
+        fireEvent.click(screen.getByRole("button", { name: `Copy ${label}` }));
+        await waitFor(() => expect(writeText.mock.lastCall![0]).toContain("DETENT_API_KEY"));
+        const copied = writeText.mock.lastCall![0];
+        expect(copied).toContain(expected.replace(/\/mcp$/, "/settings/mcp"));
+        expect(copied).not.toContain("private-csrf-credential");
+        expect(copied).not.toContain("private-api-credential");
+        expect(copied).toContain(label.startsWith("API") ? "/work-items?limit=20" : "work_list");
+      }
+    } else {
+      expect(screen.queryByRole("button", { name: "Copy Organization MCP endpoint" })).toBeNull();
+      expect(screen.getByText(/The organization HTTPS URL is unavailable/)).toBeTruthy();
+      expect(writeText).not.toHaveBeenCalled();
+    }
+    fireEvent.click(screen.getByText("Connect to your own Detent daemon"));
+    fireEvent.click(screen.getByRole("button", { name: "Copy Local stdio configuration" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(expected ? 4 : 1));
+    expect(JSON.parse(writeText.mock.lastCall![0]).mcpServers.detent.env.DETENT_API_TOKEN).toBe("YOUR_DETENT_API_TOKEN");
+    for (const [url, options] of fetch.mock.calls) {
+      expect(String(url)).not.toMatch(/tokens|credentials/);
+      expect(options?.method ?? "GET").toBe("GET");
+    }
+  });
+
+  it("creates and revokes a shared scoped key on the existing settings route while keeping it out of copied prompts", async () => {
+    const secret = "detent_synthetic_once_only_key";
+    const metadata = { id: "key1", name: "agent", scope: "read", expires_at: "2026-11-01T00:00:00Z", fingerprint: "fingerprint", revoked: false, project_ids: [account.projects[0]!.id] };
+    let created = false;
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
+      if (options?.method === "POST") { created = true; return new Response(JSON.stringify({ token: secret }), { status: 201 }); }
+      if (options?.method === "DELETE") return new Response(null, { status: 204 });
+      return new Response(JSON.stringify({ keys: created ? [metadata] : [] }));
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: "browser-csrf" }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create API key" })).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("Key name"), { target: { value: "agent" } });
+    fireEvent.click(screen.getAllByRole("checkbox")[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Create API key" }));
+    await waitFor(() => expect(screen.getByLabelText("New API key")).toBeTruthy());
+    expect(screen.getByLabelText("New API key").getAttribute("type")).toBe("password");
+    expect(document.body.textContent).not.toContain(secret);
+    fireEvent.click(screen.getByRole("button", { name: "Copy key privately" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(secret));
+    const post = fetch.mock.calls.find((call) => call[1]?.method === "POST")!;
+    expect(post[0]).toBe(`${account.api_base}/api-keys`);
+    expect(post[1]?.headers).toMatchObject({ "X-CSRF-Token": "browser-csrf" });
+    expect(JSON.parse(post[1]!.body as string)).toMatchObject({ name: "agent", scope: "read", expires_days: 30, project_ids: [account.projects[0]!.id] });
+    for (const label of ["API setup prompt", "MCP setup prompt"]) {
+      fireEvent.click(screen.getByRole("button", { name: `Copy ${label}` }));
+      await waitFor(() => expect(writeText).toHaveBeenCalled());
+      expect(writeText.mock.lastCall![0]).not.toContain(secret);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Revoke agent" }));
+    await waitFor(() => expect(screen.queryByLabelText("New API key")).toBeNull());
+    expect(fetch.mock.calls.some((call) => call[0] === `${account.api_base}/api-keys/key1` && call[1]?.method === "DELETE")).toBe(true);
+  });
+
+  it("keeps setup unavailable when shared key authentication is not installed", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 404 }));
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("unavailable"));
+    expect(screen.queryByRole("button", { name: "Copy MCP setup prompt" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create API key" })).toBeNull();
+  });
+
+  it("offers manual copying when clipboard access fails", async () => {
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy Organization MCP endpoint" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Copy Organization MCP endpoint" }));
+    await waitFor(() => expect(screen.getByRole("status", { name: "Organization MCP endpoint copy status" }).textContent).toContain("Select the text"));
+  });
+});
+
 describe("the settings navigation in the sidebar", () => {
   it("lists every section the actor gets, in the reading order", async () => {
     renderSidebarNav();
@@ -140,6 +287,7 @@ describe("the settings navigation in the sidebar", () => {
       "Projects",
       "Providers & runners",
       "Integrations",
+      "API & MCP",
       "Plan",
       "Billing",
       "Keybindings",

@@ -1,8 +1,34 @@
 # AGENTS.md - Detent Agent Notes
 
 - For future requested product or code changes, do not implement directly by default.
-- Create a focused GitHub issue in `digitaldrywood/detent`, add `detent:todo`, and let Detent dogfood the work.
+- File focused work through the selected project's issue authority using its provided supported MCP/API context, and let Detent dogfood the work (see [Issue authoring](#issue-authoring)).
 - Only make direct code changes when the human explicitly asks for manual implementation, asks to finish an already-started fix, or asks for local review and diagnostics that require edits.
+
+## Issue authoring
+
+Use the selected project's actual tracker and supplied project context.
+A GitHub repository identity or PR/merge landing path does not make GitHub
+the issue authority.
+
+- For a native project, file through its provided project-scoped `file_issue`
+  or supported application owner. Keep issue content, discussion, typed
+  dependencies, workflow and deduplication with that native owner, including
+  imported provenance. Follow the supplied scoped connection and request
+  contracts; see [API & MCP setup](docs/api-mcp-setup.md) and
+  [Hub API](docs/hub-api.md).
+- File GitHub issues only when the selected tracker/project context makes
+  GitHub the issue authority. Retain that project's configured filing path
+  and workflow mapping, including `detent:todo` only where configured and
+  authorized. Preserve the Backlog scope rules below.
+- Preserve origin stamps, stable problem fingerprints and duplicate checks
+  in the selected tracker. Match open work before filing; comment on a
+  matching issue instead of creating a duplicate when authorized.
+
+Respect supplied authority, grants and the current completion contract.
+If the required supported context is missing or contradictory, record that
+limitation through the existing workflow; do not silently write to another
+tracker. Do not invent endpoints, project IDs, credentials or routing, or
+extract credentials from hidden browser state or raw runtime databases.
 
 ## Issue effort selection
 
@@ -34,6 +60,7 @@ of interacting self-protection mechanisms (brakes, breakers, leases, parks,
 recovery sweeps, revocations, reconcilers). Their interactions are now the main
 source of incidents.
 
+- INV-11: only new or expanded mechanisms require explicit human scope approval before Todo; assistants file them to Backlog. Features that do not add or expand mechanisms may be filed straight to Todo.
 - Do not add a new brake, breaker, lease, park, recovery path, revocation,
   reason code, or reconciliation loop.
 - A fix for a misbehaving mechanism must remove or consolidate a mechanism, or
@@ -59,16 +86,55 @@ The operator has disabled blocking CI and local validation gates for this
 repository. Do not require `make check`, `make check-fast`, a coverage gate,
 or a local commit status before pushing or merging. The self-hosted project's
 configured `gate.run` is `true`; it runs no validation and publishes no status.
+Every `make` test, lint, vet, and build target is still capped by `TEST_PROCS`
+(default 4) so worktrees that do run gates share the host (see
+[docs/development.md](docs/development.md)).
 
-Focused `go test ./<touched-package>/...`, `go vet`, and targeted regressions
+Add a test only when it asserts a behavior no existing test asserts. Before
+writing one, name the failure it would catch; if you cannot, do not write it.
+Extend an existing table or fixture with a case instead of adding a sibling
+function that rebuilds the same setup. Do not add tests for generated code,
+for the text of documentation or configuration, or to move a coverage number.
+A test that only re-executes a path another test already asserts is removed in
+review (see [docs/test-suite-audit.md](docs/test-suite-audit.md)).
+
+Focused `go test ./<touched-package>/...`, `go vet`, targeted regressions, and
+[safety-critical coverage and fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)
 are available for diagnostics during edits; they do not become completion
-gates. The scheduled full suite validates pinned `develop` commits and tags
-only green commits. Every `develop` push still deploys to staging.
+gates. Ordinary submission, completion, admission, and merge do not wait for a
+coverage percentage, fuzz duration, local status, or scheduled run. The scheduled
+full suite validates pinned `develop` commits and tags only green commits.
+Every `develop` push still deploys to staging.
 
 Other projects using Detent choose their own validation commands, required
 checks, workflow triggers, and release policies. Do not introduce a product-wide
 bypass to implement this repository's policy.
 
 Detent workers must use their provided `TMPDIR`, `TMP`, or `TEMP`; never
-fall back to host scratch space in a worker. See CLAUDE.md for safety-critical
-coverage and fuzz diagnostics.
+fall back to host scratch space in a worker.
+
+## Deployment and release failure reporting
+
+For `digitaldrywood/detent` and its selected native Cloud project, reproducible
+source or test failures that prevent deployment or the scheduled validated
+release require at least High priority. File new diagnostics in Backlog through
+the existing selected reporting context. Match open fingerprints and imported
+occurrences first; raise unset, Normal or Low priority through the existing
+expected-revision priority owner, preserving High and Urgent. Preserve pinned
+commit, run, attempt, job, source, fingerprint and occurrence evidence, stable
+replay identity, and imported history. Do not create duplicates to change priority.
+
+Priority does not authorize admission, remove migration/operator holds, or
+change tracker lanes. Unknown setup, network, backend and protocol failures
+remain instance-owned intake; they authorize no source repair and consume no
+issue failure allowance. A historical pinned failure does not prove that the
+current head fails or staging is down: staging deploys independently on develop
+pushes, while validated release tags require all configured scheduled jobs to
+succeed. Repair guidance must not demand a local-gate status, blocking CI or CI
+waiting in ordinary issue merging. Other projects retain their chosen reporting
+priority and validation policy.
+
+The operator retired the private Mac hourly producer for Detent on 2026-10-02;
+it continues to serve other repositories. Do not restore its Detent selection
+or copy its private configuration into this repository. The existing native
+scheduled reporter owns durable Detent failure reporting.

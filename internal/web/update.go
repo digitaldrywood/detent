@@ -8,6 +8,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/mutation"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -38,26 +39,15 @@ func (s *Server) apiUpdateApply(c echo.Context) error {
 		return updateApplyError(c, http.StatusPreconditionRequired, "confirmation_required", "Confirm the update restart with confirm=true")
 	}
 
-	var status detentupdate.Status
-	var err error
-	if request.Release {
-		applier, ok := s.updateApplier.(interface {
-			ApplyRelease(context.Context, bool) (detentupdate.Status, error)
-		})
-		if !ok {
-			return updateApplyError(c, http.StatusServiceUnavailable, "update_unavailable", "Runtime release apply is unavailable")
-		}
-		status, err = applier.ApplyRelease(c.Request().Context(), request.FromRelease)
-	} else {
-		status, err = s.updateApplier.ApplyPending(c.Request().Context())
-	}
+	status, err := s.applyOperatorUpdate(c.Request().Context(), request.Release, request.FromRelease)
 	if err != nil {
-		if errors.Is(err, detentupdate.ErrNoPendingUpdate) {
-			return updateApplyError(c, http.StatusConflict, "update_not_pending", "No Detent update is pending")
+		var problem *controlProblem
+		if errors.As(err, &problem) {
+			return updateApplyError(c, problem.status, problem.code, problem.message)
 		}
-		s.logger.Error("apply pending Detent update failed", "error", err)
-		return updateApplyError(c, http.StatusInternalServerError, "update_apply_failed", "Detent update apply failed")
+		return updateApplyError(c, http.StatusServiceUnavailable, "update_unavailable", "Update apply is unavailable")
 	}
+
 	response := updateApplyResponse{Status: "applying", Version: status.LatestVersion}
 	if htmxRequest(c) {
 		return c.HTML(http.StatusAccepted, `<span class="font-medium text-ok">Update applied; Detent is restarting.</span>`)
@@ -66,6 +56,33 @@ func (s *Server) apiUpdateApply(c echo.Context) error {
 		return c.JSON(http.StatusAccepted, status)
 	}
 	return c.JSON(http.StatusAccepted, response)
+}
+
+func (s *Server) applyOperatorUpdate(ctx context.Context, release, fromRelease bool) (detentupdate.Status, error) {
+	if s.updateApplier == nil {
+		return detentupdate.Status{}, errOperatorCommandUnavailable
+	}
+	var status detentupdate.Status
+	var err error
+	if release {
+		applier, ok := s.updateApplier.(interface {
+			ApplyRelease(context.Context, bool) (detentupdate.Status, error)
+		})
+		if !ok {
+			return detentupdate.Status{}, &controlProblem{http.StatusServiceUnavailable, "update_unavailable", "Runtime release apply is unavailable"}
+		}
+		status, err = applier.ApplyRelease(ctx, fromRelease)
+	} else {
+		status, err = s.updateApplier.ApplyPending(ctx)
+	}
+	if err != nil {
+		if errors.Is(err, detentupdate.ErrNoPendingUpdate) {
+			return detentupdate.Status{}, &controlProblem{http.StatusConflict, "update_not_pending", "No Detent update is pending"}
+		}
+		s.logger.Error("apply pending Detent update failed", "error", mutation.ErrorText(ctx, err))
+		return detentupdate.Status{}, &controlProblem{http.StatusInternalServerError, "update_apply_failed", "Detent update apply failed"}
+	}
+	return status, nil
 }
 
 func updateApplyError(c echo.Context, status int, code string, message string) error {

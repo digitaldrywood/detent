@@ -16,24 +16,27 @@ import type { BoardStats } from "../lib/model.ts";
 export function StatsRow({
   stats,
   truncated,
-  enriched,
+  loadedCount,
+  loading,
 }: {
   stats: BoardStats;
   truncated: boolean;
-  enriched: number;
+  loadedCount: number;
+  loading: boolean;
 }): React.ReactElement {
   const counters: readonly { key: string; value: number; label: string }[] = [
-    { key: "running", value: stats.running, label: "running" },
-    { key: "ready", value: stats.ready, label: "ready" },
-    { key: "waiting", value: stats.waiting, label: "waiting" },
-    { key: "blocked", value: stats.blocked, label: "blocked" },
-    { key: "completed", value: stats.completed, label: "completed" },
+    { key: "running", value: stats.running, label: "observed running" },
+    { key: "ready", value: stats.ready, label: "dispatchable items" },
+    { key: "waiting", value: stats.waiting, label: "other open items" },
+    { key: "blocked", value: stats.blocked, label: "blocked items" },
+    { key: "completed", value: stats.completed, label: "terminal items" },
   ];
   return (
     <div
       data-testid="work-stats"
       className="flex flex-wrap items-center gap-x-5 gap-y-1 px-5 pb-3 text-muted-foreground text-xs"
     >
+      <span>{loading ? "Refreshing current pages…" : "Current pages"}</span>
       {counters.map((counter) => (
         <span key={counter.key} data-testid={`stat-${counter.key}`}>
           <b className="mr-1 font-semibold text-foreground tabular-nums">{counter.value}</b>
@@ -41,9 +44,18 @@ export function StatsRow({
         </span>
       ))}
       <span className="flex-1" />
-      <span className="font-mono text-[11px] tabular-nums" data-testid="stat-coverage">
-        {stats.total} issues
-        {truncated ? " (first page)" : ""} · {enriched} checked for a worker and a change
+      <span className="font-mono text-[11px] tabular-nums" data-testid="stat-loaded">
+        {stats.total} shown / {loadedCount} loaded items{truncated ? " (page subset)" : ""}
+      </span>
+      <span className="w-full" data-testid="stat-coverage">
+        <span className="mr-2">Shown item observations:</span>
+        {(["worker", "change"] as const).map((kind) => {
+          const coverage = stats.observations[kind];
+          return <span key={kind} className="mr-4">
+            {kind === "worker" ? "Workers" : "Changes"}: {coverage.known} known · {coverage.unchecked} unchecked
+            {" · "}{coverage.unavailable} unavailable · {coverage.partial} partial
+          </span>;
+        })}
       </span>
     </div>
   );

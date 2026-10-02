@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 const appShellTestBody = `<!doctype html><html><head><link rel="icon" href="/static/app/conversation/favicon.svg"><script type="module" crossorigin src="/static/app/conversation/app.js"></script><link rel="stylesheet" crossorigin href="/static/app/conversation/app.css"></head><body><div id="root"></div></body></html>`
@@ -84,7 +85,8 @@ func TestAppShellServing(t *testing.T) {
 		{name: "anonymous project", path: "/projects/prj_any", status: http.StatusSeeOther, location: "/login"},
 		{name: "templ organization keeps its page", account: "owner", path: "/organization", status: http.StatusOK},
 		{name: "staff root keeps the organization page", account: "staff", path: "/", status: http.StatusOK},
-		{name: "templ login keeps its page", path: "/login", status: http.StatusOK},
+		{name: "anonymous login serves client", path: "/login", status: http.StatusOK, shell: true},
+		{name: "login error serves client", path: "/login?error=no_membership", status: http.StatusOK, shell: true},
 		{name: "unknown api", account: "owner", path: "/api/v2/unknown", status: http.StatusNotFound},
 		{name: "unknown v1 api", account: "owner", path: "/api/v1/unknown", status: http.StatusNotFound},
 		{name: "reserved auth", account: "owner", path: "/auth/unknown", status: http.StatusNotFound},
@@ -321,7 +323,7 @@ func TestAppBootstrapPayload(t *testing.T) {
 			}
 			for field, want := range map[string]string{
 				"capabilities": `{"coordinator":false,"attachments":false}`,
-				"feature":      `{"conversation":false}`,
+				"feature":      `{"conversation":false,"workspaces":false}`,
 				"preferences":  `{"models":[],"efforts":[],"access":[]}`,
 				"support":      `null`,
 			} {
@@ -527,11 +529,12 @@ func grantAppRunners(t *testing.T, f *browserHostedFixture) {
 	}
 }
 
-func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version string) appTestRunner {
+func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version string, operations ...string) appTestRunner {
 	t.Helper()
 	organization := "/api/v2/organizations/org_browser_preview"
 	binding := runnerauth.NewBinding()
 	request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project)}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 900}
+	request.Operations = append(request.Operations, operations...)
 	response := f.setupRequest(t, "owner", http.MethodPost, organization+"/runner-enrollments", request)
 	browserHostedStatus(t, response, http.StatusCreated)
 	var enrollment runnerauth.Enrollment
@@ -543,6 +546,71 @@ func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version
 	redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: strings.ToLower(name) + ".example.test", DisplayName: name, Capacity: 1, Version: version}
 	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organization+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 	return appTestRunner{Binding: binding, Credential: credential}
+}
+
+func TestAppBootstrapWorkspaceAvailability(t *testing.T) {
+	for _, test := range []struct {
+		name                         string
+		service, terminal            bool
+		isolation, account, mutation string
+		wantFiles, wantTerminal      bool
+	}{
+		{name: "disabled service", isolation: "container"},
+		{name: "terminal disabled", service: true, isolation: "container", wantFiles: true},
+		{name: "supported terminal", service: true, terminal: true, isolation: "container", wantFiles: true, wantTerminal: true},
+		{name: "Mac user under sandbox policy", service: true, terminal: true, isolation: "user", wantFiles: true},
+		{name: "viewer", service: true, terminal: true, isolation: "container", account: "viewer"},
+		{name: "stale report", service: true, terminal: true, isolation: "container", mutation: "UPDATE runner_identities SET last_heartbeat_at = '2000-01-01T00:00:00Z'"},
+		{name: "revoked runner", service: true, terminal: true, isolation: "container", mutation: "UPDATE api_tokens SET revoked_at = created_at WHERE id IN (SELECT token_id FROM runner_identities)"},
+		{name: "missing project grant", service: true, terminal: true, isolation: "container", mutation: "DELETE FROM token_grants WHERE token_id IN (SELECT token_id FROM runner_identities)"},
+		{name: "disabled runner", service: true, terminal: true, isolation: "container", mutation: "UPDATE runner_identities SET state = 'disabled'"},
+		{name: "missing claim operation", service: true, terminal: true, isolation: "container", mutation: `UPDATE runner_identities SET operations_json = '["read","heartbeat"]'`},
+		{name: "missing runner grant", service: true, terminal: true, isolation: "container", mutation: "UPDATE hosted_project_grants SET manage_runner = 0", wantFiles: true},
+		{name: "missing write grant", service: true, terminal: true, isolation: "container", mutation: "UPDATE hosted_project_grants SET can_write = 0"},
+		{name: "split capabilities", service: true, terminal: true, isolation: "container", mutation: `UPDATE runner_identities SET workspace_capabilities_json = '{"files":true,"exec":false,"terminal":true}'`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(config *Config) {
+				if test.service {
+					config.Workspace = &WorkspaceConfig{Enabled: true, Terminal: WorkspaceTerminalConfig{Enabled: test.terminal}}
+				}
+			})
+			grantAppRunners(t, f)
+			runner := enrollAppRunner(t, f, "Workspace", "test", runnerauth.Claim)
+			capabilities, err := json.Marshal(workspacesession.Capabilities{Files: true, Exec: true, Terminal: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET workspace_capabilities_json = ?, workspace_isolation = ? WHERE id = ?", string(capabilities), test.isolation, runner.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			if test.mutation != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), test.mutation); err != nil {
+					t.Fatal(err)
+				}
+			}
+			account := test.account
+			if account == "" {
+				account = "owner"
+			}
+			response := f.appRequest(t, account, http.MethodGet, "/app/bootstrap")
+			browserHostedStatus(t, response, http.StatusOK)
+			var payload appBootstrap
+			decodeHubResponse(t, response, &payload)
+			if payload.Feature.Workspaces != test.service {
+				t.Fatalf("workspace feature = %t, want %t", payload.Feature.Workspaces, test.service)
+			}
+			for _, project := range payload.Projects {
+				wantFiles, wantTerminal := test.wantFiles, test.wantTerminal
+				if project.ID != f.project {
+					wantFiles, wantTerminal = false, false
+				}
+				if project.Capabilities.Files != wantFiles || project.Capabilities.Terminal != wantTerminal {
+					t.Fatalf("project %s workspace capabilities = %+v, want files=%t terminal=%t", project.ID, project.Capabilities, wantFiles, wantTerminal)
+				}
+			}
+		})
+	}
 }
 
 func sha256Hex(body string) string {

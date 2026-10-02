@@ -250,3 +250,115 @@ func TestFilteredRefreshBlockerLookupFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestLabelRefreshSelectorsExcludeUnownedEvidence(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fallback=%t", fallback), func(t *testing.T) {
+			const repo = "fixture/selector"
+			enriched := map[string]int{}
+			dependency := map[string]any{"id": "H1", "number": 99, "state": "CLOSED", "repository": map[string]any{"nameWithOwner": repo}, "labels": map[string]any{"nodes": []any{map[string]any{"name": "human-owned"}}}}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					switch {
+					case r.URL.Path == "/repos/fixture/selector/issues":
+						rows := []any{}
+						for n := 1; n <= 6; n++ {
+							lane := "detent:todo"
+							if n == 6 {
+								lane = "detent:human-review"
+							}
+							if lane != r.URL.Query().Get("labels") {
+								continue
+							}
+							author, assignee := "alice", "worker"
+							if n == 2 {
+								author = "bob"
+							}
+							if n == 3 {
+								assignee = "other"
+							}
+							labels := []any{map[string]any{"name": lane}}
+							if n != 5 {
+								labels = append(labels, map[string]any{"name": "owned"})
+							}
+							if n == 4 {
+								labels = append(labels, map[string]any{"name": "skip"})
+							}
+							rows = append(rows, map[string]any{"node_id": fmt.Sprintf("I%d", n), "number": n, "state": "open", "body": "body", "user": map[string]any{"login": author}, "assignees": []any{map[string]any{"login": assignee}}, "labels": labels})
+						}
+						json.NewEncoder(w).Encode(rows)
+					case strings.HasSuffix(r.URL.Path, "/dependencies/blocked_by"):
+						var n int
+						fmt.Sscanf(r.URL.Path, "/repos/fixture/selector/issues/%d/dependencies/blocked_by", &n)
+						if n != 1 && n != 6 {
+							t.Errorf("excluded dependency evidence read for I%d", n)
+						}
+						enriched[fmt.Sprintf("I%d", n)]++
+						fmt.Fprint(w, `[{"node_id":"H1","number":99,"state":"closed","labels":[{"name":"human-owned"}]}]`)
+					case strings.HasSuffix(r.URL.Path, "/pulls"):
+						fmt.Fprint(w, `[]`)
+					default:
+						t.Errorf("unexpected REST read: %s", r.URL)
+						http.NotFound(w, r)
+					}
+					return
+				}
+				var req struct {
+					Query     string
+					Variables map[string]any
+				}
+				json.NewDecoder(r.Body).Decode(&req)
+				data := map[string]any{}
+				if strings.Contains(req.Query, "CandidateHydration") {
+					if fallback {
+						fmt.Fprint(w, `{"errors":[{"message":"fixture incomplete scheduler observation"}]}`)
+						return
+					}
+					for key, value := range req.Variables {
+						if !strings.HasPrefix(key, "id") {
+							continue
+						}
+						id := value.(string)
+						if id != "I1" && id != "I6" {
+							t.Errorf("excluded scheduler evidence read for %s", id)
+						}
+						enriched[id]++
+						data["issue"+strings.TrimPrefix(key, "id")] = map[string]any{"id": id, "body": "body", "comments": map[string]any{"nodes": []any{}}, "blockedBy": map[string]any{"nodes": []any{dependency}}}
+					}
+				} else {
+					ids, ok := req.Variables["ids"].([]any)
+					if !ok {
+						ids, _ = req.Variables["issueIds"].([]any)
+					}
+					nodes := []any{}
+					for _, id := range ids {
+						if id != "I1" && id != "I6" {
+							t.Errorf("excluded PR evidence read for %s", id)
+						}
+						var n int
+						fmt.Sscanf(id.(string), "I%d", &n)
+						nodes = append(nodes, map[string]any{"__typename": "Issue", "id": id, "number": n, "repository": map[string]any{"nameWithOwner": repo}, "closedByPullRequestsReferences": map[string]any{"totalCount": 0, "nodes": []any{}}})
+					}
+					data["nodes"] = nodes
+					data["repo0"] = map[string]any{"pullRequests": map[string]any{}}
+				}
+				json.NewEncoder(w).Encode(map[string]any{"data": data})
+			}))
+			defer server.Close()
+			c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: repo, ActiveStates: []string{"Todo"}, ObservedStates: []string{"Human Review"}})
+			hint := connector.IssueFilterHint{Authors: []string{"alice"}, Assignees: []string{"worker"}, LabelInclude: []string{"owned"}, LabelExclude: []string{"skip"}, SchedulerStates: []string{"Human Review"}}
+			got := c.FetchRefreshIssues(t.Context(), []string{"Todo"}, []string{"Human Review"}, hint)
+			if got.CandidateError != nil || got.StatusError != nil || len(got.Candidates) != 1 || got.Candidates[0].ID != "I1" || len(got.Statuses) != 1 || got.Statuses[0].ID != "I6" || len(got.LaneSignalCandidates) != 6 {
+				t.Fatalf("selected output: %+v", got)
+			}
+			if len(enriched) != 2 || enriched["I1"] != 1 || enriched["I6"] != 1 {
+				t.Fatalf("excluded or duplicate scheduler enrichment: %v", enriched)
+			}
+			for _, issue := range append(got.Candidates, got.Statuses...) {
+				if len(issue.BlockedBy) != 1 || issue.BlockedBy[0].ID != "H1" || !issue.BlockedBy[0].HumanOwned || issue.BlockedBy[0].HumanCompletionReady {
+					t.Fatalf("off-selector human dependency lost: %+v", issue.BlockedBy)
+				}
+			}
+		})
+	}
+}

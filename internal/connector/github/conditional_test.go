@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestClientRESTConditionalRequestUsesCachedResponseBelowReserve(t *testing.T) {
@@ -48,21 +51,29 @@ func TestClientRESTConditionalRequestUsesCachedResponseBelowReserve(t *testing.T
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
+	scope := &connector.RESTScope{Name: "refresh"}
+	ctx := connector.WithRESTScope(t.Context(), scope)
 	path := "/repos/digitaldrywood/detent/issues?state=open"
 	var first []restIssue
-	if err := client.REST(context.Background(), http.MethodGet, path, nil, &first); err != nil {
+	if err := client.REST(ctx, http.MethodGet, path, nil, &first); err != nil {
 		t.Fatalf("first REST() error = %v", err)
 	}
 	client.FlushRESTRateLimitUsage()
 
 	var second []restIssue
-	if err := client.REST(context.Background(), http.MethodGet, path, nil, &second); err != nil {
+	if err := client.REST(ctx, http.MethodGet, path, nil, &second); err != nil {
 		t.Fatalf("conditional REST() error = %v", err)
 	}
 	if len(second) != 1 || second[0].Number != 1133 || second[0].Title != "Fresh board" {
 		t.Fatalf("conditional REST() response = %#v, want cached issue", second)
 	}
 
+	assertScopeTiming(t, scope, "http_transport", "repository issues", "200", 1)
+	assertScopeTiming(t, scope, "http_transport", "repository issues", "304", 1)
+	assertScopeTiming(t, scope, "token_resolution_inclusive", "repository issues", "200", 2)
+	if calls.Load() != 2 {
+		t.Fatalf("requests = %d, want 2", calls.Load())
+	}
 	usage := client.FlushRESTRateLimitUsage()
 	if usage.TotalRequests != 1 || usage.ConditionalRequests != 1 || usage.NotModifiedRequests != 1 || usage.BillableRequests != 0 {
 		t.Fatalf("conditional usage = %#v, want one free not-modified request", usage)
@@ -237,6 +248,86 @@ func TestClientRESTConditionalCacheIsBounded(t *testing.T) {
 	}
 	if got := len(client.restCache); got != restConditionalCacheMaxEntries {
 		t.Fatalf("conditional cache size = %d, want %d", got, restConditionalCacheMaxEntries)
+	}
+}
+
+func TestClientRESTConditionalEvictionUsesSuccessfulReads(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		readFirst     bool
+		noOutput      bool
+		invalidOutput bool
+		wantEvicted   string
+	}{
+		{name: "oldest entry is evicted", wantEvicted: "/resource/0"},
+		{name: "304 keeps a recently read entry", readFirst: true, wantEvicted: "/resource/1"},
+		{name: "304 without output keeps a recently read entry", readFirst: true, noOutput: true, wantEvicted: "/resource/1"},
+		{name: "failed decode does not change recency", readFirst: true, invalidOutput: true, wantEvicted: "/resource/0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("ETag", `"value"`)
+				if r.Header.Get("If-None-Match") == `"value"` {
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+				_, _ = w.Write([]byte(`{"lane":"Todo","pull":"fixture/repo#2","blocked_by":"fixture/repo#1"}`))
+			}))
+			t.Cleanup(server.Close)
+			client, err := NewClient(ClientConfig{Endpoint: server.URL, TokenSource: StaticTokenSource("fixture"), HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			headers := http.Header{"Etag": []string{`"value"`}}
+			for index := range restConditionalCacheMaxEntries {
+				path := "/resource/" + strconv.Itoa(index)
+				client.storeRESTConditionalEntry(http.MethodGet, path, headers, []byte(`{"lane":"Todo","pull":"fixture/repo#2","blocked_by":"fixture/repo#1"}`))
+				// Fix the initial ordering without depending on clock resolution.
+				key := restCacheKey(http.MethodGet, path)
+				entry := client.restCache[key]
+				entry.lastUsedAt = time.Unix(int64(index), 0)
+				client.restCache[key] = entry
+			}
+			if test.readFirst {
+				var evidence struct {
+					Lane string `json:"lane"`
+				}
+				var out any = &evidence
+				if test.noOutput {
+					out = nil
+				} else if test.invalidOutput {
+					out = new([]string)
+				}
+				err := client.REST(t.Context(), http.MethodGet, "/resource/0", nil, out)
+				if test.invalidOutput {
+					if !errors.Is(err, ErrInvalidResponse) {
+						t.Fatalf("304 decode error = %v, want ErrInvalidResponse", err)
+					}
+				} else if err != nil || !test.noOutput && evidence.Lane != "Todo" {
+					t.Fatalf("304 evidence = %+v, error = %v", evidence, err)
+				}
+			}
+			client.storeRESTConditionalEntry(http.MethodGet, "/resource/new", headers, []byte(`{}`))
+			if _, ok := client.restConditionalEntry(http.MethodGet, test.wantEvicted); ok {
+				t.Fatalf("%s remained cached", test.wantEvicted)
+			}
+			if got := len(client.restCache); got != restConditionalCacheMaxEntries {
+				t.Fatalf("cache size = %d, want %d", got, restConditionalCacheMaxEntries)
+			}
+			var evidence struct {
+				Lane      string `json:"lane"`
+				Pull      string `json:"pull"`
+				BlockedBy string `json:"blocked_by"`
+			}
+			if err := client.REST(t.Context(), http.MethodGet, test.wantEvicted, nil, &evidence); err != nil {
+				t.Fatal(err)
+			}
+			if evidence.Lane != "Todo" || evidence.Pull != "fixture/repo#2" || evidence.BlockedBy != "fixture/repo#1" {
+				t.Fatalf("evidence after eviction = %+v", evidence)
+			}
+		})
 	}
 }
 

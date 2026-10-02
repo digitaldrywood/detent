@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
+	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
@@ -83,7 +84,7 @@ const (
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
 	DefaultMergeFairnessAgeSeconds           = 2 * 60 * 60
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
-	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000
+	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000 // Retained only to preserve existing policy IDs.
 
 	DefaultPollingIntervalMS               = 120000
 	DefaultRefreshFailureThreshold         = 3
@@ -148,6 +149,7 @@ type WorkflowOverlay struct {
 
 type Config struct {
 	Policy            policy.Descriptor    `yaml:"-" json:"-"`
+	Review            Review               `yaml:"review,omitempty" json:",omitzero"`
 	Runners           Runners              `yaml:"runners,omitempty"`
 	Identity          Identity             `yaml:"identity,omitempty"`
 	ActiveHours       activehours.Config   `yaml:"active_hours,omitempty"`
@@ -176,7 +178,12 @@ type Config struct {
 	Operator          Operator             `yaml:"operator,omitempty"`
 	BacklogAdmission  BacklogAdmission     `yaml:"backlog_admission,omitempty"`
 
-	configuredFields map[string]struct{}
+	configuredFields                    map[string]struct{}
+	scheduleOwnershipRepositoryExplicit bool
+}
+
+type Review struct {
+	Human bool `yaml:"human"`
 }
 
 type Recovery struct {
@@ -312,6 +319,7 @@ type Workpad struct {
 type Deliverable struct {
 	Kind                  string `yaml:"kind"`
 	MergeMethod           string `yaml:"merge_method,omitempty"`
+	GitHubPullRequest     bool   `yaml:"github_pull_request,omitempty" json:"github_pull_request,omitempty"`
 	OutputRoot            string `yaml:"output_root,omitempty"`
 	ReviewURL             string `yaml:"review_url,omitempty"`
 	mergeMethodConfigured bool
@@ -324,12 +332,15 @@ type DeliverableElicitationRule struct {
 }
 
 type Worker struct {
-	SSHHosts                       []string `yaml:"ssh_hosts"`
-	MaxConcurrentAgentsPerHost     *int     `yaml:"max_concurrent_agents_per_host"`
-	GitHubToken                    string   `yaml:"github_token,omitempty"`
-	GitHubTokenResolutionTimeoutMS int      `yaml:"github_token_resolution_timeout_ms"`
-	GitHubRESTMinReserve           int      `yaml:"github_rest_min_remaining_reserve"`
-	GitHubRESTPollIntervalMS       int      `yaml:"github_rest_poll_interval_ms"`
+	ComputeRates                   map[string]compute.Rates `yaml:"compute_rates,omitempty" json:"ComputeRates,omitempty"`
+	SSHHosts                       []string                 `yaml:"ssh_hosts"`
+	HostSelection                  string                   `yaml:"host_selection,omitempty" json:"HostSelection,omitempty"`
+	HostCaps                       map[string]int           `yaml:"host_caps,omitempty" json:"HostCaps,omitempty"`
+	MaxConcurrentAgentsPerHost     *int                     `yaml:"max_concurrent_agents_per_host"`
+	GitHubToken                    string                   `yaml:"github_token,omitempty"`
+	GitHubTokenResolutionTimeoutMS int                      `yaml:"github_token_resolution_timeout_ms"`
+	GitHubRESTMinReserve           int                      `yaml:"github_rest_min_remaining_reserve"`
+	GitHubRESTPollIntervalMS       int                      `yaml:"github_rest_poll_interval_ms"`
 }
 
 type Agent struct {
@@ -338,7 +349,7 @@ type Agent struct {
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxTurnDurationMS            int                          `yaml:"max_turn_duration_ms"`
 	MaxSessionDurationMS         int                          `yaml:"max_session_duration_ms"`
-	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"`
+	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"` // Legacy input; ignored since the session no-progress timer was removed.
 	CheckpointIntervalMS         int                          `yaml:"checkpoint_interval_ms"`
 	MergeWorkerStartupTimeoutMS  int                          `yaml:"merge_worker_startup_timeout_ms"`
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
@@ -804,6 +815,11 @@ func (b *AgentBackend) decodeOptions() {
 		}
 		b.codexOptions = options
 		b.codexOptionsSet = true
+	case AgentBackendPiAgent:
+		_, err := b.decodedPiAgentOptions()
+		if err != nil {
+			b.optionsProblem = err.Error()
+		}
 	case AgentBackendClaudeCode:
 		options, err := b.decodedClaudeCodeOptions()
 		if err != nil {
@@ -1362,6 +1378,8 @@ func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
 		cfg.Budget.perDayMaxUSDConfigured = perDayMaxUSDConfigured
 		cfg.Budget.perIssueMaxUSDConfigured = perIssueMaxUSDConfigured
 		cfg.configuredFields = configuredFieldPaths(root)
+		// Capture the opt-in before normalization can fill a blank repository.
+		cfg.scheduleOwnershipRepositoryExplicit = strings.TrimSpace(cfg.ScheduleOwnership.Repository) != ""
 	}
 	cfg.normalize()
 	if err := cfg.validateEffectiveSandboxPolicies(); err != nil {
@@ -1500,6 +1518,7 @@ func Default() Config {
 		},
 		Worker: Worker{
 			SSHHosts:                       []string{},
+			HostSelection:                  "least_loaded",
 			GitHubTokenResolutionTimeoutMS: 15000,
 			GitHubRESTMinReserve:           1250,
 			GitHubRESTPollIntervalMS:       60000,
@@ -1538,7 +1557,7 @@ func Default() Config {
 			PrioritizeUnblockers:       true,
 			AutoPromote: AutoPromote{
 				QuietSeconds:           600,
-				OptoutLabel:            "requires-human-review",
+				OptoutLabel:            "",
 				AllowedIssueLabels:     []string{},
 				GateWaitState:          AutoPromoteGateWaitStateSource,
 				GateWaitTimeoutSeconds: DefaultAutoPromoteGateWaitTimeoutSeconds,
@@ -1662,6 +1681,22 @@ func (c *Config) Validate() error {
 	validatePollingInterval(c.Polling.IntervalMS, &problems)
 	validatePositive("polling.refresh_failure_threshold", c.Polling.RefreshFailureThreshold, &problems)
 	c.Workspace.validate(&problems)
+	if c.Worker.HostSelection != "" && c.Worker.HostSelection != "least_loaded" && c.Worker.HostSelection != "preference" {
+		problems = append(problems, "worker.host_selection must be least_loaded or preference")
+	}
+	seenHosts := make(map[string]bool)
+	for _, host := range c.Worker.SSHHosts {
+		if host == "" || strings.TrimSpace(host) != host || strings.HasPrefix(host, "-") || strings.ContainsAny(host, " \t\r\n/\\;\"'`$") || seenHosts[host] {
+			problems = append(problems, "worker.ssh_hosts must contain unique SSH destinations or local")
+		}
+		seenHosts[host] = true
+	}
+	for host, cap := range c.Worker.HostCaps {
+		validatePositive("worker.host_caps."+host, cap, &problems)
+		if !seenHosts[host] {
+			problems = append(problems, "worker.host_caps."+host+" must name a configured worker.ssh_hosts entry")
+		}
+	}
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
@@ -1669,6 +1704,11 @@ func (c *Config) Validate() error {
 	validatePositive("worker.github_rest_min_remaining_reserve", c.Worker.GitHubRESTMinReserve, &problems)
 	if c.Worker.GitHubRESTPollIntervalMS < 60000 {
 		problems = append(problems, "worker.github_rest_poll_interval_ms must be greater than or equal to 60000")
+	}
+	for host, rates := range c.Worker.ComputeRates {
+		if err := rates.Validate(); err != nil {
+			problems = append(problems, "worker.compute_rates."+host+": "+err.Error())
+		}
 	}
 	c.Agent.validate("agent", &problems)
 	c.validateStopRun(&problems)
@@ -1704,7 +1744,14 @@ func (c *Config) Validate() error {
 	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
 		coordinationEndpoint = c.Tracker.Endpoint
 	}
-	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(c.Tracker.Repository, coordinationEndpoint)
+	coordinationRepository := c.Tracker.Repository
+	if c.Tracker.Kind == TrackerHubNative {
+		coordinationRepository = ""
+		if c.ScheduleOwnership.Enabled && strings.TrimSpace(c.ScheduleOwnership.Repository) == "" {
+			problems = append(problems, "native schedule ownership requires an explicit schedule_ownership.repository to opt into GitHub coordination")
+		}
+	}
+	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(coordinationRepository, coordinationEndpoint)
 	problems = append(problems, c.ScheduleOwnership.Validate("schedule_ownership")...)
 	states := make([]string, 0, len(c.configuredWorkflowStates()))
 	for _, state := range c.configuredWorkflowStates() {
@@ -1943,7 +1990,11 @@ func (c *Config) normalize() {
 	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
 		coordinationEndpoint = c.Tracker.Endpoint
 	}
-	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(c.Tracker.Repository, coordinationEndpoint)
+	coordinationRepository := c.Tracker.Repository
+	if c.Tracker.Kind == TrackerHubNative {
+		coordinationRepository = ""
+	}
+	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(coordinationRepository, coordinationEndpoint)
 	c.Intake.Normalize()
 	c.Retro.Normalize()
 	c.Routines = NormalizeRoutines(c.Routines)
@@ -1960,6 +2011,16 @@ func (c Config) SchedulersEnabled() bool {
 		}
 	}
 	return false
+}
+
+// ForNativeTracker applies a Hub mapping without carrying an implicit GitHub
+// coordination repository from a committed GitHub workflow into native mode.
+func (c Config) ForNativeTracker() Config {
+	c.Tracker.Kind = TrackerHubNative
+	if c.configuredFields != nil && !c.scheduleOwnershipRepositoryExplicit {
+		c.ScheduleOwnership.Repository = ""
+	}
+	return c
 }
 
 func (c *Config) validateTracker(problems *[]string) {
@@ -2391,6 +2452,14 @@ func (a *Agents) normalize() {
 		if backend.Command == "" && backend.Kind == AgentBackendClaudeCode {
 			backend.Command = defaultClaudeCodeCommand
 		}
+		if backend.Kind == AgentBackendPiAgent {
+			if backend.Protocol == "" {
+				backend.Protocol = "rpc"
+			}
+			if backend.Command == "" {
+				backend.Command = "pi"
+			}
+		}
 		backend.decodeOptions()
 	}
 	for index := range a.Routes {
@@ -2438,14 +2507,18 @@ func (a *Agents) validate(problems *[]string) {
 		switch backend.Kind {
 		case "":
 			*problems = append(*problems, "agents.backends.kind is required")
-		case AgentBackendCodex, AgentBackendClaudeCode:
+		case AgentBackendCodex, AgentBackendClaudeCode, AgentBackendPiAgent:
 		default:
-			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code")
+			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code, pi_agent")
 		}
 		switch backend.Kind {
 		case AgentBackendCodex:
 			if backend.Protocol != defaultCodexProtocol {
 				*problems = append(*problems, "agents.backends.protocol must be app-server for codex")
+			}
+		case AgentBackendPiAgent:
+			if backend.Protocol != "rpc" {
+				*problems = append(*problems, "agents.backends.protocol must be rpc for pi_agent")
 			}
 		case AgentBackendClaudeCode:
 			if backend.Protocol != defaultClaudeCodeProtocol {
@@ -2492,6 +2565,13 @@ func normalizeAgentRouteRole(role string) string {
 
 func (b AgentBackend) validateOptions(prefix string, problems *[]string) {
 	switch b.Kind {
+	case AgentBackendPiAgent:
+		options, err := b.decodedPiAgentOptions()
+		if err != nil {
+			*problems = append(*problems, prefix+" must decode for pi_agent: "+err.Error())
+			return
+		}
+		options.validate(prefix, problems)
 	case AgentBackendCodex:
 		options, err := b.decodedCodexOptions()
 		if err != nil {
@@ -2715,9 +2795,6 @@ func validatePriorityValues(field string, priorities []int, problems *[]string) 
 func (a *AutoPromote) validate(prefix string, problems *[]string) {
 	if a.QuietSeconds < 0 {
 		*problems = append(*problems, prefix+".quiet_seconds must be greater than or equal to 0")
-	}
-	if strings.TrimSpace(a.OptoutLabel) == "" {
-		*problems = append(*problems, prefix+".optout_label must not be blank")
 	}
 	for _, label := range a.AllowedIssueLabels {
 		if strings.TrimSpace(label) == "" {

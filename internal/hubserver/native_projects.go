@@ -20,22 +20,33 @@ type nativeOrganization struct {
 }
 
 func (s *Service) nativeCapabilities(c echo.Context) error {
-	var serverID string
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
+	response, err := s.readNativeCapabilities(c.Request().Context())
+	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	features := []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability}
+	return c.JSON(http.StatusOK, response)
+}
+
+type nativeCapabilitiesResponse struct {
+	ServerID        string   `json:"server_id"`
+	ProtocolMajors  []int    `json:"protocol_majors"`
+	EventSchemas    []int    `json:"event_schema_versions"`
+	Features        []string `json:"features"`
+	MaxRequestBytes int      `json:"max_request_bytes"`
+	MaxPageSize     int      `json:"max_page_size"`
+}
+
+func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitiesResponse, error) {
+	var serverID string
+	if err := s.database.db.QueryRowContext(ctx, "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
+		return nativeCapabilitiesResponse{}, err
+	}
+	features := []string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", "scoped_runner_identity", "repository_policy", "change_requests", tracker.NativeExecutionCapability, tracker.NativeRuntimeEvidenceCapability, tracker.NativeProviderCapacityCapability, tracker.NativeCheckoutRepositoryCapability, tracker.NativeLocalChecksCapability, tracker.NativeRunnerCapacityCapability}
 	if s.workspaces != nil {
 		features = append(features, tracker.NativeWorkspaceCapability)
 	}
-	return c.JSON(http.StatusOK, struct {
-		ServerID        string   `json:"server_id"`
-		ProtocolMajors  []int    `json:"protocol_majors"`
-		EventSchemas    []int    `json:"event_schema_versions"`
-		Features        []string `json:"features"`
-		MaxRequestBytes int      `json:"max_request_bytes"`
-		MaxPageSize     int      `json:"max_page_size"`
-	}{serverID, []int{1, 2}, []int{1}, features, maxAPIRequestBodyBytes, maxAPIPageLimit})
+	features = append(features, tracker.NativeDispatchPriorityCapability)
+	return nativeCapabilitiesResponse{serverID, []int{1, 2}, []int{1}, features, maxAPIRequestBodyBytes, maxAPIPageLimit}, nil
 }
 
 func (s *Service) nativeOrganizations(c echo.Context) error {
@@ -65,24 +76,22 @@ func (s *Service) createNativeOrganization(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if strings.TrimSpace(request.Name) == "" || len(request.Name) > 200 {
-		return s.nativeAPIError(c, nativeInvalid("Organization name is required and limited to 200 bytes"))
-	}
-	result := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: request.Name}
-	_, err := s.database.db.ExecContext(c.Request().Context(), "INSERT INTO organizations (id, name, created_at) VALUES (?, ?, ?)", result.ID, result.Name, formatHubTime(s.config.now()))
+	result, err := s.createNativeOrganizationFor(c.Request().Context(), request.Name)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusCreated, result)
 }
 
+type createNativeProjectRequest struct {
+	tracker.Mutation
+	Name                string                `json:"name"`
+	States              []tracker.NativeState `json:"states"`
+	RequireDependencies *bool                 `json:"require_dependencies,omitempty"`
+}
+
 func (s *Service) createNativeProject(c echo.Context) error {
-	var request struct {
-		tracker.Mutation
-		Name                string                `json:"name"`
-		States              []tracker.NativeState `json:"states"`
-		RequireDependencies *bool                 `json:"require_dependencies,omitempty"`
-	}
+	var request createNativeProjectRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
@@ -92,7 +101,11 @@ func (s *Service) createNativeProject(c echo.Context) error {
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
 	c.Set("native_scope", scope)
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.nativeMutation(c, request.Mutation, request, s.createNativeProjectOperation(request))
+}
+
+func (s *Service) createNativeProjectOperation(request createNativeProjectRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
+	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if strings.TrimSpace(request.Name) == "" || len(request.Name) > 200 {
 			return nil, nativeInvalid("Project name is required and limited to 200 bytes")
 		}
@@ -123,7 +136,7 @@ func (s *Service) createNativeProject(c echo.Context) error {
 			}
 		}
 		return project, nil
-	})
+	}
 }
 
 func validateNativeStates(states []tracker.NativeState) error {
@@ -155,29 +168,7 @@ func (s *Service) grantNativeToken(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	if c.Param("id") == bootstrapTokenID {
-		return s.nativeAPIError(c, nativeInvalid("Bootstrap administrator cannot be converted to a project token"))
-	}
-	ctx := c.Request().Context()
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer tx.Rollback()
-	var runnerCount int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM runner_identities WHERE token_id = ?", c.Param("id")).Scan(&runnerCount); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if runnerCount != 0 {
-		return s.nativeAPIError(c, nativeInvalid("Runner grants are fixed at enrollment; revoke and enroll a new identity to change authority"))
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants (token_id, organization_id, project_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", c.Param("id"), request.OrganizationID, request.ProjectID); err != nil {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE api_tokens SET native_only = 1 WHERE id = ?", c.Param("id")); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := tx.Commit(); err != nil {
+	if err := s.grantNativeTokenFor(c.Request().Context(), c.Param("id"), string(request.OrganizationID), string(request.ProjectID)); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -206,4 +197,41 @@ func (s *Service) getNativeProject(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, project)
+}
+
+func updateNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope, states []tracker.NativeState, now time.Time) error {
+	project, err := readNativeProject(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	if project.Profile != "native" {
+		return nativeInvalid("Compatibility project workflow is externally owned")
+	}
+	if err := validateNativeStates(states); err != nil {
+		return err
+	}
+	encoded, err := marshalNative(states)
+	if err != nil {
+		return err
+	}
+	var occupied int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id
+WHERE i.project_id=? AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.name')=w.detent_state)`, scope.project, encoded).Scan(&occupied); err != nil {
+		return err
+	}
+	if occupied != 0 {
+		return nativeInvalid("Workflow states used by work items cannot be removed")
+	}
+	for _, state := range states {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now)); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_states WHERE project_id=?
+AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.name')=workflow_states.detent_state)`, scope.project, encoded); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, "UPDATE projects SET states_json=? WHERE organization_id=? AND id=?", encoded, scope.organization, scope.project)
+	return err
 }

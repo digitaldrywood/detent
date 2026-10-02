@@ -131,7 +131,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 				return err
 			}
 		}
-		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, path, update, r.now().UTC()); err != nil {
+		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, update); err != nil {
 			return err
 		}
 		observedModel := effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model, model)

@@ -23,6 +23,17 @@ describe("the board's view state", () => {
     expect(isDefaultViewState(DEFAULT_VIEW_STATE)).toBe(true);
   });
 
+  it("links archived lists and preserves their filter on reload", () => {
+    const state = parseViewState("view=list&archived=true&state=Done");
+    expect(state.archived).toBe(true);
+    expect(state.view).toBe("list");
+    expect(state.state).toEqual(["Done"]);
+    expect(parseViewState(serializeViewState(state))).toEqual(state);
+    expect(isDefaultViewState(state)).toBe(false);
+    expect(parseViewState("archived=invalid").archived).toBeUndefined();
+    expect(serializeViewState({ ...DEFAULT_VIEW_STATE, archived: false })).toBe("");
+  });
+
   it("reads every control out of the query string", () => {
     const state = parseViewState(
       "view=list&q=lease&state=Todo,Review&label=bug&assignee=michael&priority=High&sort=updated&lanes=Todo,Done",
@@ -52,6 +63,8 @@ describe("the board's view state", () => {
     const query =
       "view=list&q=lease&state=Review%2CTodo&label=bug&assignee=michael&priority=High&sort=updated&lanes=Done%2CTodo";
     expect(serializeViewState(parseViewState(query))).toBe(query);
+    const paged = { ...parseViewState(query), pages: { proj_alpha: { cursor: "opaque+/=?token", number: 2 } } };
+    expect(parseViewState(serializeViewState(paged))).toEqual(paged);
   });
 
   it("treats two orderings of the same filter as one URL", () => {
@@ -94,9 +107,12 @@ describe("the remembered view", () => {
   afterEach(() => globalThis.localStorage?.clear());
 
   it("remembers and reads back a view per project", () => {
-    writeStoredViewState("proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", q: "lease" });
+    writeStoredViewState("proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", q: "lease",
+      pages: { proj_alpha: { cursor: "session-cursor", number: 2 } },
+    });
     expect(readStoredViewState("proj_alpha")?.view).toBe("list");
     expect(readStoredViewState("proj_alpha")?.q).toBe("lease");
+    expect(readStoredViewState("proj_alpha")?.pages).toEqual({});
     expect(readStoredViewState("proj_beta")).toBeNull();
   });
 

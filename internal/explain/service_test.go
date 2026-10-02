@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	admissionmodel "github.com/digitaldrywood/detent/internal/admission/model"
@@ -440,20 +441,30 @@ func TestServiceDegradesOnlyFailedSection(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 7, 18, 0, 0, 0, time.UTC)
-	reader := &evidenceReader{
-		observation: liveIssueObservation(now, telemetry.Issue{ID: "issue-1", ProjectID: "detent", State: "Rework"}),
-		workflowErr: errors.New("database unavailable"),
-	}
-	got, err := newTestService(now, reader).Explain(context.Background(), Query{ProjectID: "detent", IssueID: "issue-1"})
-	if err != nil {
-		t.Fatalf("Explain() error = %v", err)
-	}
-	if !got.Found || got.CurrentLane.Name != "Rework" || got.LatestTransition != nil {
-		t.Fatalf("partial explanation = %#v, want known lane with unavailable workflow", got)
-	}
-	status := findSourceStatus(got.Sources, "workflow")
-	if status.State != SourceUnavailable || status.Code != "read_failed" {
-		t.Fatalf("workflow status = %#v", status)
+	for _, sourceErr := range []error{errors.New("database unavailable"), context.DeadlineExceeded, context.Canceled} {
+		t.Run(sourceErr.Error(), func(t *testing.T) {
+			reader := &evidenceReader{
+				observation: liveIssueObservation(now, telemetry.Issue{ID: "issue-1", ProjectID: "detent", State: "Rework"}),
+				workflowErr: sourceErr,
+			}
+			got, err := newTestService(now, reader).Explain(t.Context(), Query{ProjectID: "detent", IssueID: "issue-1"})
+			if errors.Is(sourceErr, context.Canceled) {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancellation swallowed: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Explain() error = %v", err)
+			}
+			if !got.Found || got.CurrentLane.Name != "Rework" || got.LatestTransition != nil {
+				t.Fatalf("partial explanation = %#v, want known lane with unavailable workflow", got)
+			}
+			status := findSourceStatus(got.Sources, "workflow")
+			if status.State != SourceUnavailable || status.Code != "read_failed" || findSourceStatus(got.Sources, "scheduler").State != SourceAvailable {
+				t.Fatalf("source failure escaped workflow: %#v", got.Sources)
+			}
+		})
 	}
 }
 
@@ -739,4 +750,73 @@ func TestServiceExplainsRetryWithoutNumberDuringDegradedRefresh(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExplanationReasonsMissingCIProducer(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name string
+		pr   telemetry.PullRequest
+		want int
+	}{
+		{name: "no producer", want: 1},
+		{name: "native policy evaluated", pr: telemetry.PullRequest{CIStatus: "success"}},
+		{name: "pending producer", pr: telemetry.PullRequest{CIStatus: "pending", CheckRunCount: 1}},
+		{name: "failed producer", pr: telemetry.PullRequest{CIStatus: "failure"}},
+		{name: "unavailable", pr: telemetry.PullRequest{HydrationUnavailableReason: "unavailable"}},
+		{name: "degraded", pr: telemetry.PullRequest{HydrationDegradedReason: "degraded"}},
+		{name: "required check missing", pr: telemetry.PullRequest{RequiredCheckFailures: []telemetry.PullRequestCheck{{Name: "build", Status: "missing"}}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshot := telemetry.Snapshot{BoardIssues: []telemetry.Issue{{ID: "issue-1", ProjectID: "alpha", State: "In Progress", PullRequest: &tt.pr}}}
+			got := explanationReasons(Identity{ProjectID: "alpha", IssueID: "issue-1"}, snapshot)
+			if len(got) != tt.want {
+				t.Fatalf("reasons = %#v, want %d", got, tt.want)
+			}
+			if tt.want > 0 && (got[0].Code != "ci_not_green" || !strings.Contains(got[0].Detail, "No CI producer") || !strings.Contains(got[0].Action, "required_status_checks: []")) {
+				t.Fatalf("reason = %#v", got[0])
+			}
+			if other := explanationReasons(Identity{ProjectID: "other", IssueID: "issue-1"}, snapshot); len(other) != 0 {
+				t.Fatalf("cross-project reasons = %#v", other)
+			}
+		})
+	}
+}
+
+// A workflow read queued behind slow maintenance used to erase the already
+// published snapshot and report the entire runtime as unavailable.
+func TestServiceScopesWorkflowDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now()
+		reader := &evidenceReader{observation: liveIssueObservation(now, telemetry.Issue{ID: "issue-1", ProjectID: "detent", State: "In Progress"})}
+		workflow := &deadlineWorkflowReader{}
+		service := New(Dependencies{Snapshots: reader, Workflow: workflow, Attempts: reader, Scheduler: reader, Sessions: reader, Admission: reader, Provenance: reader, Parks: staticParkSummaryReader{}})
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		start := time.Now()
+		got, err := service.Explain(ctx, Query{ProjectID: "detent", IssueID: "issue-1"})
+		if err != nil || got.Schema != 3 || got.CurrentLane.Name != "In Progress" || time.Since(start) > 5*time.Second {
+			t.Fatalf("scoped deadline: %#v %v", got, err)
+		}
+		for _, source := range got.Sources {
+			if source.Name == "snapshot" {
+				if source.State != SourceLive {
+					t.Fatalf("discarded snapshot: %+v", source)
+				}
+			} else if source.State != SourceUnavailable || source.Code != "read_failed" {
+				t.Fatalf("inaccurate deadline evidence: %+v", source)
+			}
+		}
+		if workflow.calls != 1 {
+			t.Fatalf("workflow calls=%d", workflow.calls)
+		}
+	})
+}
+
+type deadlineWorkflowReader struct{ calls int }
+
+func (r *deadlineWorkflowReader) IssueWorkflowTimeline(ctx context.Context, _ store.IssueIdentity) (store.WorkflowTimeline, error) {
+	r.calls++
+	<-ctx.Done()
+	return store.WorkflowTimeline{}, ctx.Err()
 }

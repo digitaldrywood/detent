@@ -86,9 +86,6 @@ func (s *State) ensureInitialized(cfg Config) {
 	if s.ForgeUnavailable == nil {
 		s.ForgeUnavailable = map[string]ForgeCondition{}
 	}
-	if s.GitHubMonitors == nil {
-		s.GitHubMonitors = map[string]GitHubMonitor{}
-	}
 	if s.DependencyAutoUnblocks == nil {
 		s.DependencyAutoUnblocks = map[string]DependencyAutoUnblockRecord{}
 	}

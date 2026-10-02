@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -15,9 +16,43 @@ type policyChecker interface {
 }
 
 func ResolvePolicy(cfg globalconfig.Project, workflow workflowconfig.Workflow) (policy.Descriptor, error) {
-	workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget)
-	workflow.Config = workflowConfigWithProjectIdentity(cfg, workflow.Config)
+	workflow.Config = EffectivePolicyConfig(cfg, workflow.Config)
+	if err := ValidateNativeTrackerFeatures(workflow.Config); err != nil {
+		return policy.Descriptor{}, err
+	}
 	return workflowconfig.ResolvePolicy(workflow)
+}
+
+// EffectivePolicyConfig applies the project settings used when resolving a
+// policy, including the global intake override.
+func EffectivePolicyConfig(cfg globalconfig.Project, workflow workflowconfig.Config) workflowconfig.Config {
+	workflow = workflow.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget)
+	return workflowConfigWithProjectIdentity(cfg, workflow)
+}
+
+// MapNativeTracker applies the same tracker selection used at project startup.
+// A local tracker choice remains authoritative even for a mapped project.
+func MapNativeTracker(workflow workflowconfig.Config, mapped bool) workflowconfig.Config {
+	if mapped && (workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal) {
+		workflow = workflow.ForNativeTracker()
+	}
+	return workflow
+}
+
+// ValidateNativeTrackerFeatures explains required migrations before a mapped
+// project can be approved or started.
+func ValidateNativeTrackerFeatures(workflow workflowconfig.Config) error {
+	if workflow.Tracker.Kind != workflowconfig.TrackerHubNative {
+		return nil
+	}
+	var problems []error
+	if workflow.Intake.Enabled() {
+		problems = append(problems, errors.New("intake.sources requires tracker.kind github; migrate intake to a separate GitHub-tracked project before using hub_native"))
+	}
+	if len(workflow.Routines) > 0 {
+		problems = append(problems, errors.New("routines requires tracker.kind github or memory; migrate scheduled routines to a supported project before using hub_native"))
+	}
+	return errors.Join(problems...)
 }
 
 func configureProjectPolicy(ctx context.Context, cfg globalconfig.Project, workflow *workflowconfig.Workflow, scheduling orchestrator.SchedulingSource) error {

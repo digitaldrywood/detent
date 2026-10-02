@@ -33,13 +33,21 @@ func TestSessionLocalCommitProgress(t *testing.T) {
 		{name: "tracked implementation edit", wantProgress: true, change: func(t *testing.T, path, _ string) {
 			writeLocalProgressFile(t, path, "implementation.txt", "tracked implementation\n")
 		}},
-		{name: "committed handoff only", change: func(t *testing.T, path, _ string) {
+		{name: "committed project knowledge", wantProgress: true, change: func(t *testing.T, path, _ string) {
 			if err := os.MkdirAll(filepath.Join(path, ".detent"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			writeLocalProgressFile(t, path, ".detent/notes.md", "handoff\n")
+			writeLocalProgressFile(t, path, ".detent/notes.md", "project knowledge\n")
 			runRunnerGit(t, path, "add", "-f", ".detent/notes.md")
-			runRunnerGit(t, path, "commit", "-m", "update handoff")
+			runRunnerGit(t, path, "commit", "-m", "update project knowledge")
+		}},
+		{name: "committed runtime scratch", change: func(t *testing.T, path, _ string) {
+			if err := os.MkdirAll(filepath.Join(path, ".detent", "tmp"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeLocalProgressFile(t, path, ".detent/tmp/scratch", "runtime output\n")
+			runRunnerGit(t, path, "add", "-f", ".detent/tmp/scratch")
+			runRunnerGit(t, path, "commit", "-m", "commit runtime scratch fixture")
 		}},
 		{name: "unchanged observation", change: func(*testing.T, string, string) {}},
 		{name: "empty commit", change: func(t *testing.T, path, _ string) {
@@ -88,19 +96,19 @@ func TestSessionLocalCommitProgress(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
 			controller := &sessionBrakeController{
-				startedAt: started, lastProgressAt: started, noProgressTimeout: time.Minute,
+				startedAt: started, lastProgressAt: started,
 				initial: before, current: before, probe: probe, cancelSession: cancel,
 				now: func() time.Time { return started.Add(time.Minute) },
 			}
 			observation := sessionProgressObservation(before, started)
 			controller.observation = &observation
-			controller.checkProgress(ctx, started.Add(time.Minute))
+			controller.refreshSnapshot(ctx)
 			if got := controller.lastProgressAt.After(started); got != tt.wantProgress {
 				t.Fatalf("progress = %t, want %t; before=%+v after=%+v", got, tt.wantProgress, before, controller.current)
 			}
-			controller.checkProgress(ctx, controller.lastProgressAt.Add(time.Minute))
-			if controller.breach == nil {
-				t.Fatal("unchanged observation did not expire")
+			controller.refreshSnapshot(ctx)
+			if controller.breach != nil {
+				t.Fatal("unchanged observation canceled session")
 			}
 		})
 	}

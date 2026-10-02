@@ -22,7 +22,7 @@ import {
   DialogTitle,
 } from "../../components/ui/dialog.tsx";
 import { Switch } from "../../components/ui/switch.tsx";
-import type { Member, MembersResponse, ProjectGrant } from "../../contracts/account.ts";
+import type { Invitation, Member, MembersResponse, ProjectGrant } from "../../contracts/account.ts";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
 import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect } from "./controls.tsx";
@@ -38,14 +38,72 @@ const ROLE_OPTIONS = ROLES.map((role) => ({
   label: role.charAt(0).toUpperCase() + role.slice(1),
 }));
 
-/** The grant a member holds on one project, or the absent one. */
-export function grantFor(member: Member, projectId: string): ProjectGrant {
+type AccessProject = {
+  readonly id: string;
+  readonly name: string;
+  readonly can_write: boolean;
+  readonly can_manage_runners: boolean;
+};
+
+function replaceGrant(grants: readonly ProjectGrant[], projectId: string, grant: ProjectGrant | null): ProjectGrant[] {
+  const next = grants.filter((current) => current.project_id !== projectId);
+  if (grant !== null) next.push(grant);
+  return next;
+}
+
+function ProjectAccess({ projects, grants, identity, canManage, busy, onChange }: {
+  readonly projects: readonly AccessProject[];
+  readonly grants: readonly ProjectGrant[];
+  readonly identity: string;
+  readonly canManage: boolean;
+  readonly busy: boolean;
+  readonly onChange: (projectId: string, grant: ProjectGrant | null) => void;
+}): React.ReactElement {
   return (
-    member.grants.find((grant) => grant.project_id === projectId) ?? {
-      project_id: projectId,
-      write: false,
-      runner: false,
-    }
+    <ul className="flex flex-col gap-1.5">
+      {projects.map((project) => {
+        const grant = grants.find((current) => current.project_id === project.id);
+        const level = grant === undefined ? "none" : grant.write ? "write" : "read";
+        return (
+          <li key={project.id} className="flex flex-wrap items-center gap-3 text-xs">
+            <span className="min-w-24 text-foreground">{project.name}</span>
+            {canManage ? (
+              <>
+                <NativeSelect
+                  aria-label={`Access to ${project.name} for ${identity}`}
+                  value={level}
+                  disabled={busy}
+                  options={[
+                    { value: "none", label: "No access" },
+                    { value: "read", label: "Read" },
+                    { value: "write", label: "Write", disabled: !project.can_write },
+                  ]}
+                  onValueChange={(access) => onChange(project.id, access === "none" ? null : {
+                    project_id: project.id, write: access === "write", runner: grant?.runner ?? false,
+                  })}
+                />
+                <label className="flex items-center gap-1.5 text-muted-foreground">
+                  <Switch
+                    size="sm"
+                    aria-label={`Runner management on ${project.name} for ${identity}`}
+                    checked={grant?.runner ?? false}
+                    disabled={busy || grant === undefined || !project.can_manage_runners}
+                    onCheckedChange={(runner) => {
+                      if (grant !== undefined) onChange(project.id, { ...grant, runner });
+                    }}
+                  />
+                  runners
+                </label>
+              </>
+            ) : (
+              <span className="text-muted-foreground">
+                {level === "none" ? "no access" : level}{grant?.runner ? " · runners" : ""}
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -200,11 +258,11 @@ export function MembersTable({
   errorFor,
 }: {
   readonly members: readonly Member[];
-  readonly projects: readonly { readonly id: string; readonly name: string }[];
+  readonly projects: readonly AccessProject[];
   readonly canManage: boolean;
   readonly actorRole: string;
   readonly onRoleChange: (member: Member, role: string) => void;
-  readonly onGrantChange: (member: Member, projectId: string, grant: ProjectGrant) => void;
+  readonly onGrantChange: (member: Member, projectId: string, grant: ProjectGrant | null) => void;
   readonly onRemove: (member: Member) => void;
   readonly busyMember: string | null;
   readonly errorFor: (member: Member) => string | null;
@@ -256,49 +314,14 @@ export function MembersTable({
                 )}
               </TableCell>
               <TableCell>
-                <ul className="flex flex-col gap-1.5">
-                  {projects.map((project) => {
-                    const grant = grantFor(member, project.id);
-                    return (
-                      <li key={project.id} className="flex flex-wrap items-center gap-3 text-xs">
-                        <span className="min-w-24 text-foreground">{project.name}</span>
-                        {canManage ? (
-                          <>
-                            <label className="flex items-center gap-1.5 text-muted-foreground">
-                              <Switch
-                                size="sm"
-                                aria-label={`Write access to ${project.name} for ${member.email}`}
-                                checked={grant.write}
-                                disabled={busy}
-                                onCheckedChange={(write) =>
-                                  onGrantChange(member, project.id, { ...grant, write })
-                                }
-                              />
-                              write
-                            </label>
-                            <label className="flex items-center gap-1.5 text-muted-foreground">
-                              <Switch
-                                size="sm"
-                                aria-label={`Runner management on ${project.name} for ${member.email}`}
-                                checked={grant.runner}
-                                disabled={busy}
-                                onCheckedChange={(runner) =>
-                                  onGrantChange(member, project.id, { ...grant, runner })
-                                }
-                              />
-                              runners
-                            </label>
-                          </>
-                        ) : (
-                          <span className="text-muted-foreground">
-                            {grant.write ? "write" : "read"}
-                            {grant.runner ? " · runners" : ""}
-                          </span>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
+                <ProjectAccess
+                  projects={projects}
+                  grants={member.grants}
+                  identity={member.email}
+                  canManage={canManage}
+                  busy={busy}
+                  onChange={(projectId, grant) => onGrantChange(member, projectId, grant)}
+                />
               </TableCell>
               {canManage ? (
                 <TableCell className="text-right">
@@ -322,23 +345,35 @@ export function MembersTable({
 
 export function InviteForm({
   onInvite,
+  projects = [],
+  actorRole = "owner",
   pending = false,
   error = null,
 }: {
-  readonly onInvite: (input: { email: string; role: string }) => void;
+  readonly onInvite: (input: { email: string; role: string; grants: readonly ProjectGrant[] }) => Promise<boolean>;
+  readonly projects?: readonly AccessProject[];
+  readonly actorRole?: string;
   readonly pending?: boolean;
   readonly error?: string | null;
 }): React.ReactElement {
   const [email, setEmail] = React.useState("");
   const [role, setRole] = React.useState<string>("member");
+  const [grants, setGrants] = React.useState<ProjectGrant[]>([]);
+  const [invitedEmail, setInvitedEmail] = React.useState<string | null>(null);
   return (
     <form
-      className="flex flex-col gap-2 py-3 sm:flex-row sm:items-end"
-      onSubmit={(event) => {
+      className="flex flex-col gap-2 py-3"
+      onSubmit={async (event) => {
         event.preventDefault();
         const value = email.trim();
-        if (value.length === 0) return;
-        onInvite({ email: value, role });
+        if (pending || value.length === 0) return;
+        setInvitedEmail(null);
+        if (await onInvite({ email: value, role, grants })) {
+          setEmail("");
+          setRole("member");
+          setGrants([]);
+          setInvitedEmail(value);
+        }
       }}
     >
       <div className="flex flex-1 flex-col gap-1.5">
@@ -347,6 +382,7 @@ export function InviteForm({
           id="invite-email"
           type="email"
           value={email}
+          disabled={pending}
           placeholder="colleague@example.com"
           onChange={(event) => setEmail(event.currentTarget.value)}
         />
@@ -356,17 +392,31 @@ export function InviteForm({
         <NativeSelect
           id="invite-role"
           value={role}
-          options={ROLE_OPTIONS}
+          disabled={pending}
+          options={ROLE_OPTIONS.map((option) => ({ ...option, disabled: option.value === "owner" && actorRole !== "owner" }))}
           onValueChange={setRole}
           className="min-w-[130px]"
         />
       </div>
+      <ProjectAccess
+        projects={projects}
+        grants={grants}
+        identity="invitation"
+        canManage
+        busy={pending}
+        onChange={(projectId, grant) => setGrants((current) => replaceGrant(current, projectId, grant))}
+      />
       <Button type="submit" disabled={pending || email.trim().length === 0}>
         {pending ? "Inviting…" : "Send invitation"}
       </Button>
       <div className="w-full sm:w-auto">
         <ControlError message={error} />
       </div>
+      {invitedEmail === null ? null : (
+        <p role="status" className="w-full text-sm text-muted-foreground">
+          Invitation sent to {invitedEmail}.
+        </p>
+      )}
     </form>
   );
 }
@@ -409,6 +459,9 @@ export function OrganizationRoute(): React.ReactElement {
   const [removing, setRemoving] = React.useState<Member | null>(null);
   const [busyMember, setBusyMember] = React.useState<string | null>(null);
   const [memberErrors, setMemberErrors] = React.useState<Record<string, string>>({});
+  const [revoking, setRevoking] = React.useState<Invitation | null>(null);
+  const [activeInvitation, setActiveInvitation] = React.useState<string | null>(null);
+  const [resentInvitation, setResentInvitation] = React.useState<string | null>(null);
 
   const canManage = bootstrap?.actor.can_manage ?? false;
   const actorRole = bootstrap?.actor.role ?? "viewer";
@@ -416,7 +469,7 @@ export function OrganizationRoute(): React.ReactElement {
   const sharedEntry = behindSharedEntry();
   const organizations = shared ?? bootstrap?.organizations ?? [];
   const projects = React.useMemo(
-    () => (bootstrap?.projects ?? []).map((project) => ({ id: project.id, name: project.name })),
+    () => bootstrap?.projects ?? [],
     [bootstrap],
   );
 
@@ -451,11 +504,33 @@ export function OrganizationRoute(): React.ReactElement {
     [members, noteFailure],
   );
 
-  const invite = useMutation(async (input: { email: string; role: string }) => {
+  const invite = useMutation(async (input: { email: string; role: string; grants: readonly ProjectGrant[] }) => {
     const created = await api.invite({ ...input, key: newKey() });
     await members.refresh();
     return created;
   });
+
+  const editInvitation = useMutation(async (input: { invitation: string; grants: readonly ProjectGrant[] }) => {
+    await api.setInvitationGrants({ ...input, key: newKey() });
+    await members.refresh();
+  });
+
+  const invitationAction = useMutation(
+    async (invitation: Invitation, action: "revoke" | "resend") => {
+      setActiveInvitation(invitation.id);
+      setResentInvitation(null);
+      const input = { invitation: invitation.id, key: newKey() };
+      if (action === "revoke") {
+        await api.revokeInvitation(input);
+        setRevoking(null);
+      } else {
+        await api.resendInvitation(input);
+        setResentInvitation(invitation.id);
+      }
+      await members.refresh();
+      return true;
+    },
+  );
 
   const create = useMutation(async (name: string) => {
     if (sharedEntry) {
@@ -567,11 +642,9 @@ export function OrganizationRoute(): React.ReactElement {
                 api.setMemberGrant({
                   member: member.id,
                   projectId,
-                  write: grant.write,
-                  runner: grant.runner,
-                  // A grant with neither flag is no grant: revoking it is what
-                  // the hub understands, and leaves no empty row behind.
-                  revoke: !grant.write && !grant.runner,
+                  write: grant?.write ?? false,
+                  runner: grant?.runner ?? false,
+                  revoke: grant === null,
                   key: newKey(),
                 }),
               )
@@ -582,12 +655,53 @@ export function OrganizationRoute(): React.ReactElement {
       </SettingsSection>
 
       <SettingsSection title="Invitations">
+        <ControlError message={editInvitation.error?.message ?? null} />
         {(members.value?.invitations ?? []).map((invitation) => (
           <SettingsRow
             key={invitation.id}
             title={invitation.email}
             description={`Invited as ${invitation.role}. Expires ${invitation.expires_at}.`}
-          />
+          >
+            <ProjectAccess
+              projects={projects}
+              grants={invitation.grants ?? []}
+              identity={invitation.email}
+              canManage={canManage}
+              busy={editInvitation.pending || invitationAction.pending}
+              onChange={(projectId, grant) => void editInvitation.call({
+                invitation: invitation.id,
+                grants: replaceGrant(invitation.grants ?? [], projectId, grant),
+              })}
+            />
+            {canManage ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={invitationAction.pending}
+                  onClick={() => void invitationAction.call(invitation, "resend")}
+                >
+                  Resend
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive-outline"
+                  disabled={invitationAction.pending}
+                  onClick={() => {
+                    invitationAction.clearError();
+                    setActiveInvitation(invitation.id);
+                    setRevoking(invitation);
+                  }}
+                >
+                  Revoke
+                </Button>
+                {activeInvitation === invitation.id ? (
+                  <ControlError message={invitationAction.error?.message ?? null} />
+                ) : null}
+                {resentInvitation === invitation.id ? <span role="status">Invitation resent.</span> : null}
+              </div>
+            ) : null}
+          </SettingsRow>
         ))}
         {(members.value?.invitations ?? []).length === 0 ? (
           <SettingsRow title="No pending invitations" description="Nobody is waiting to join." />
@@ -595,13 +709,52 @@ export function OrganizationRoute(): React.ReactElement {
         {canManage ? (
           <SettingsRow title="Invite somebody" description="They receive a link and join with their own account.">
             <InviteForm
-              onInvite={(input) => void invite.call(input)}
+              projects={projects}
+              actorRole={actorRole}
+              onInvite={async (input) => (await invite.call(input)) !== null}
               pending={invite.pending}
               error={invite.error?.message ?? null}
             />
           </SettingsRow>
         ) : null}
       </SettingsSection>
+
+      <Dialog
+        open={revoking !== null}
+        onOpenChange={(open) => {
+          if (!open) setRevoking(null);
+        }}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Revoke invitation to {revoking?.email}?</DialogTitle>
+            <DialogDescription>
+              The invitation link will no longer let them join this organization.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <ControlError message={invitationAction.error?.message ?? null} />
+          </DialogPanel>
+          <DialogFooter>
+            <DialogClose
+              render={
+                <Button variant="outline" disabled={invitationAction.pending}>
+                  Keep invitation
+                </Button>
+              }
+            />
+            <Button
+              variant="destructive"
+              disabled={invitationAction.pending}
+              onClick={() => {
+                if (revoking !== null) void invitationAction.call(revoking, "revoke");
+              }}
+            >
+              {invitationAction.pending ? "Revoking…" : "Revoke invitation"}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
 
       <RemoveMemberDialog
         member={removing}

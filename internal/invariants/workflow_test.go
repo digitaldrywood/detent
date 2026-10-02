@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,6 +76,55 @@ func TestRepositoryWorkflow(t *testing.T) {
 	if err := checkWorkflow(data); err != nil {
 		t.Fatal(err)
 	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				ID  string `yaml:"id"`
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var script string
+	for _, step := range workflow.Jobs["preflight"].Steps {
+		if step.ID == "scope" {
+			script = step.Run
+		}
+	}
+	if script == "" {
+		t.Fatal("preflight scope script missing")
+	}
+	for _, event := range []string{"schedule", "workflow_dispatch"} {
+		t.Run(event+" with emergency provenance tag", func(t *testing.T) {
+			dir := t.TempDir()
+			git := `#!/usr/bin/env bash
+case "$1" in
+  ls-remote) printf '%s\trefs/heads/develop\n' 0123456789012345678901234567890123456789 ;;
+  tag) printf 'v0.1.0\n' ;;
+  for-each-ref) printf '<!-- detent-release-provenance:{"checks":[]} -->\n' ;;
+  *) exit 1 ;;
+esac
+`
+			if err := os.WriteFile(filepath.Join(dir, "git"), []byte(git), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			outputPath := filepath.Join(dir, "output")
+			cmd := exec.CommandContext(t.Context(), "bash", "-c", script)
+			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_EVENT_NAME="+event, "GITHUB_OUTPUT="+outputPath)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("preflight: %v: %s", err, output)
+			}
+			output, err := os.ReadFile(outputPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(output) != "develop_sha=0123456789012345678901234567890123456789\nshould_run=true\n" {
+				t.Fatalf("preflight output = %q, want pinned SHA and validation enabled", output)
+			}
+		})
+	}
 }
 
 func TestRepositoryHasNoPullRequestActions(t *testing.T) {
@@ -140,8 +190,9 @@ func TestWorkflowViolations(t *testing.T) {
 		{"malformed", "name: CI", "name: ["},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			changed := strings.Replace(string(data), tt.old, tt.replacement, 1)
-			if changed == string(data) {
+			original := strings.ReplaceAll(string(data), "\r\n", "\n")
+			changed := strings.Replace(original, tt.old, tt.replacement, 1)
+			if changed == original {
 				t.Fatal("fixture replacement did not match")
 			}
 			if err := checkWorkflow([]byte(changed)); err == nil {

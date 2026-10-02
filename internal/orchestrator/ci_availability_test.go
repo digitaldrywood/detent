@@ -158,7 +158,7 @@ func TestParkCIUnavailableWaiters(t *testing.T) {
 	working := ciAvailabilityIssue("working", 22, 1, []connector.PullRequestCheck{{Name: "Lint", Status: "queued", QueueSeconds: 3_600}})
 	working.State = "In Progress"
 	state.Running[waiting.ID] = Running{Issue: waiting, LastMessage: "waiting for CI checks", stop: waitingStop}
-	state.Running[working.ID] = Running{Issue: working, LastMessage: "editing implementation", stop: workingStop}
+	state.Running[working.ID] = Running{Issue: working, LastMessage: "Consolidating operation decisions and checking authority", stop: workingStop}
 
 	orch.parkCIUnavailableWaiters(&state, []connector.Issue{waiting, working}, now)
 
@@ -242,16 +242,30 @@ func TestCIUnavailableRepairImplementParity(t *testing.T) {
 				name    string
 				pushed  bool
 				message string
+				phase   string
 				waiting bool
 			}{
 				{name: "implementing"},
 				{name: "pushed", pushed: true, waiting: true},
-				{name: "waiting phase", message: "waiting for CI", waiting: true},
+				{name: "waiting phase", message: "waiting for CI", phase: "waiting_ci", waiting: true},
+				{name: "current head wait", message: "waiting on current-head CI", phase: "waiting_ci", waiting: true},
+				{name: "GitHub wait", message: "waiting for GitHub checks", phase: "waiting_ci", waiting: true},
+				{name: "CI tests wait", message: "Waiting for current-head CI tests", phase: "waiting_ci", waiting: true},
+				{name: "city approval is not CI", message: "waiting for city approval", phase: "implementing"},
+				{name: "ordinary decisions", message: "Consolidating operation decisions and correcting authority", phase: "implementing"},
+				{name: "source inspection", message: "Checking authorization decisions", phase: "implementing"},
+				{name: "negated wait", message: "Not waiting for CI; implementing source changes", phase: "implementing"},
+				{name: "local validation wait", message: "validation gate waiting: position=2", phase: "waiting_validation"},
 			} {
 				t.Run(fmt.Sprintf("%s/%s/%s", lane, mode, tt.name), func(t *testing.T) {
 					t.Parallel()
 					state := newState(normalizeConfig(Config{}))
 					running := Running{Issue: connector.Issue{State: lane, PullRequest: &connector.PullRequest{UnstartedCheckCount: 1}}, Mode: mode, WorkProductPushed: tt.pushed, LastMessage: tt.message}
+					if tt.phase != "" && lane != "Merging" && mode == runpkg.RunModeImplement {
+						if got := runningWorkAttemptPhase(running, &state); got != tt.phase {
+							t.Fatalf("phase = %q, want %q", got, tt.phase)
+						}
+					}
 					want := lane == "Merging" || (mode != runpkg.RunModePlan && tt.waiting)
 					if got := ciUnavailableWaitingRun(running, &state); got != want {
 						t.Fatalf("waiting = %t, want %t", got, want)

@@ -308,6 +308,7 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	state *State,
 	issue connector.Issue,
 	now time.Time,
+	cohort ...*blockedRecoveryDependencyEvidence,
 ) bool {
 	if normalizeState(issue.State) != normalizeState(blockedStatusState) {
 		return false
@@ -329,19 +330,27 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	if !currentParkFound {
 		park, currentParkFound, derivedLaneReason, derivationFailure = o.deriveCurrentBreakerRecoveryPark(ctx, state, issue)
 	}
-	withDependencies := o.issueWithDependencyRefs(issue)
-	withDependencies, workpadRefs, workpadCurrent := o.issueWithCurrentWorkpadDependencyRefs(ctx, withDependencies)
-	blockers := o.resolveDependencyBlockers(ctx, withDependencies)
-	withDependencies.BlockedBy = dependencyResolvedBlockerRefs(blockers)
-	references := make(map[string]connector.Issue, len(blockers))
-	for _, blocker := range blockers {
-		if blocker.Resolved {
-			references[normalizedIssueIdentifier(blocker.Issue.Identifier)] = blocker.Issue
-		}
+	var evidence *blockedRecoveryDependencyEvidence
+	if len(cohort) > 0 {
+		evidence = cohort[0]
 	}
+	if evidence == nil {
+		withDependencies, workpadRefs, current := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
+		blockers := o.resolveDependencyBlockers(ctx, withDependencies)
+		references := make(map[string]connector.Issue, len(blockers))
+		for _, blocker := range blockers {
+			if blocker.Resolved {
+				references[normalizedIssueIdentifier(blocker.Issue.Identifier)] = blocker.Issue
+			}
+		}
+		evidence = &blockedRecoveryDependencyEvidence{issue: withDependencies, workpadRefs: workpadRefs, workpadCurrent: current, blockers: blockers, references: references}
+	}
+	withDependencies, workpadRefs, workpadCurrent := evidence.issue, evidence.workpadRefs, evidence.workpadCurrent
+	blockers := evidence.blockers
+	withDependencies.BlockedBy = dependencyResolvedBlockerRefs(blockers)
 	recorded := recordedBlockerEvaluation{}
 	if issue.WorkpadSignal == nil || len(issue.WorkpadSignal.Blockers) == 0 || workpadCurrent {
-		recorded = o.evaluateRecordedBlockers(ctx, state, issue, references, now)
+		recorded = o.evaluateRecordedBlockers(ctx, state, issue, evidence.references, now, len(cohort) > 0 && cohort[0] != nil)
 	}
 	if recorded.Found {
 		if recorded.Unverifiable {
@@ -387,6 +396,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			return false
 		}
 		if !currentParkFound {
+			if handled, transitioned := o.reconcileAttemptTriagePark(ctx, state, withDependencies, now); handled {
+				return transitioned
+			}
 			if o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now) {
 				return true
 			}
@@ -435,6 +447,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			o.logSchedulerBreakerRecoveryDerivationFailure(issue, derivedLaneReason, derivationFailure)
 			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, nil, "")
 			return false
+		}
+		if handled, transitioned := o.reconcileAttemptTriagePark(ctx, state, issue, now); handled {
+			return transitioned
 		}
 		recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
 		reasonCode, reasonFound := o.latestWorkflowLaneReason(ctx, issue, issue.State)
@@ -520,7 +535,16 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			return false
 		}
 		cooldown := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery).BreakerCooldown
-		if now.Before(parkedAt.Add(cooldown)) {
+		causeActive := true
+		if park.Cause == terminalAttemptRetryLimitCause {
+			count, _, known := o.consecutiveRetryCycleCount(ctx, state, issue, park.Cause, now)
+			if !known {
+				o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, &park, park.CauseFingerprint)
+				return false
+			}
+			causeActive = count >= o.retryCycleFailureLimit(park.Cause)
+		}
+		if causeActive && now.Before(parkedAt.Add(cooldown)) {
 			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedRecoveryReasonBreakerCooldownActive, &park, park.CauseFingerprint)
 			return false
 		}
@@ -559,6 +583,85 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	delete(state.Blocked, issue.ID)
 	o.logBlockedRecoveryDecision(issue, "transition", "recovery_predicate_satisfied", &park, currentFingerprint)
 	return true
+}
+
+// A historical allowance park has no blocked-cause metadata. Its lane entry
+// still records the triage reason and PR head, so use the existing promotion
+// gate to reconcile it once Detent-owned waits have cleared.
+func (o *Orchestrator) reconcileAttemptTriagePark(ctx context.Context, state *State, issue connector.Issue, now time.Time) (bool, bool) {
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok || entry.Event.Reason != attemptAllowanceExhaustedReason ||
+		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
+		return false, false
+	}
+	if BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel) != "" {
+		return true, false
+	}
+	if stateIn(entry.Event.PreviousPhaseName, normalizedStates([]string{"In Progress", autoPromoteReworkState})) {
+		if err := o.updateIssueState(ctx, state, issue, entry.Event.PreviousPhaseName, now, workflowActionRecordedBlockerRecovery); err != nil {
+			return true, false
+		}
+		delete(state.Blocked, issue.ID)
+		o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
+		return true, true
+	}
+	if entry.Metadata.PullRequest == nil || strings.TrimSpace(entry.Metadata.PullRequest.HeadSHA) == "" || o.mergeLaneUnavailableReason() != "" {
+		return true, false
+	}
+	hydrator, ok := o.connector.(connector.PullRequestHydrator)
+	if !ok {
+		return true, false
+	}
+	live, err := hydrator.HydratePullRequest(ctx, issue)
+	if err != nil || live.PullRequest == nil || pullRequestHydrationBlocksProgress(live.PullRequest) {
+		return true, false
+	}
+	live, ok = o.hydrateAutoPromoteReviewThreads(ctx, live)
+	if !ok || !mergeWorkerProgrammaticMergeReady(live, o.cfg) || !reworkBreakerCIGreen(live.PullRequest) ||
+		len(live.PullRequest.StaleSuccessfulChecks) > 0 ||
+		entry.Metadata.PullRequest.Number != int64(pullRequestNumber(live)) ||
+		entry.Metadata.PullRequest.Repository != pullRequestRepository(live) {
+		return true, false
+	}
+	if entry.Metadata.PullRequest.HeadSHA != strings.TrimSpace(live.PullRequest.HeadSHA) &&
+		!pullRequestHeadAfter(live, workflowLaneTransitionAt(entry.Event)) {
+		return true, false
+	}
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	if !cfg.Enabled || autoPromoteHumanReviewRequired(live, cfg, cfg.Gate) {
+		return true, false
+	}
+	candidate := cloneIssue(live)
+	candidate.State = cfg.ReworkState
+	summary := AutoPromoteSummaryFromIssue(candidate)
+	summary.SecurityAudit = o.securityAuditEvaluation(ctx, candidate)
+	summary.CompletedFinalState = autoPromoteCompletedFinalState(state, live.ID)
+	summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, live.ID, cfg, now)
+	if !reworkGateWaitAuditReady(cfg.Gate, summary.SecurityAudit) {
+		return true, false
+	}
+	// The recovery predicate owns audit eligibility here: a missing audit can
+	// run in Merging. Evaluate the remaining gates without repeating that check;
+	// the instance config still requires the exact-head audit before merging.
+	cfg.Gate.SecurityAudit.Enabled = false
+	candidate, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, candidate, summary, cfg, now)
+	var validatorReady bool
+	decision, validatorReady = o.applyValidatorStage(ctx, state, candidate, &summary, decision, cfg, now)
+	if !validatorReady || decision.Action != AutoPromoteActionPromote {
+		return true, false
+	}
+	signature := blockedReadyPullRequestSignature(live, workflowLaneBlockedRecoveryMetadata{Cause: attemptAllowanceExhaustedReason})
+	if _, consumed := o.workflowTimelineActionSignature(ctx, live, workflowActionBlockedReadyPRReconciliation, signature); consumed {
+		return true, false
+	}
+	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedReadyPRReconciliation, signature)
+	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, live.ID, live, autoPromoteMergingState, now, workflowActionBlockedReadyPRReconciliation, metadata); err != nil {
+		return true, false
+	}
+	delete(state.Blocked, live.ID)
+	o.clearAutoPromotedIssueDispatchMemory(state, live.ID)
+	o.recordMergeQueueEntered(state, promotedIssue(live, autoPromoteMergingState, now), now, workflowActionBlockedReadyPRReconciliation)
+	return true, true
 }
 
 func (o *Orchestrator) reconcileLegacyDeliverableCredentialPark(
@@ -1335,11 +1438,23 @@ func (o *Orchestrator) currentBlockedRecoveryPark(
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
 	if !ok ||
 		normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
-		!workflowLaneEntryMatchesCurrent(issue, entry.Event) ||
-		entry.Metadata.BlockedRecovery == nil {
+		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
 		return workflowLaneBlockedRecoveryMetadata{}, false
 	}
-	return *entry.Metadata.BlockedRecovery, true
+	if entry.Metadata.BlockedRecovery != nil {
+		return *entry.Metadata.BlockedRecovery, true
+	}
+	previousState := strings.TrimSpace(entry.Event.PreviousPhaseName)
+	parkedAt := workflowLaneTransitionAt(entry.Event)
+	if entry.Event.Reason != string(AutoPromoteReasonWorkpadBlocker) || !stateIn(previousState, normalizedStates([]string{"In Progress", autoPromoteReworkState})) ||
+		clearedHumanActionRecordedAt(issue, parkedAt, false) == nil {
+		return workflowLaneBlockedRecoveryMetadata{}, false
+	}
+	return workflowLaneBlockedRecoveryMetadata{
+		Owner:       blockedRecoveryOwnerHuman,
+		Cause:       workpadBlockedUnactionedReason,
+		TargetState: previousState,
+	}, true
 }
 
 func (o *Orchestrator) currentBlockedRecoveryParkedAt(
@@ -1358,11 +1473,9 @@ func (o *Orchestrator) currentBlockedRecoveryParkedAt(
 	}
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
 	parkedAt := workflowLaneTransitionAt(entry.Event)
-	_, schedulerPark := breakerParkCauseFromLaneReason(entry.Event.Reason)
 	if ok &&
 		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
 		workflowLaneEntryMatchesCurrent(issue, entry.Event) &&
-		(entry.Metadata.BlockedRecovery != nil || schedulerPark) &&
 		!parkedAt.IsZero() {
 		return parkedAt, true
 	}

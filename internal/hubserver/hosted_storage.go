@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/cloudorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -32,7 +33,12 @@ func (d *database) bindHostedDatabase(ctx context.Context, cfg *HostedConfig) er
 	var generation int64
 	err := d.db.QueryRowContext(ctx, "SELECT organization_id, provider_id, bootstrap_subject, public_url, deployment, allocation_generation FROM hosted_tenant WHERE singleton = 1").Scan(&organization, &provider, &bootstrap, &publicURL, &deployment, &generation)
 	if err == nil {
-		if cfg == nil || organization != cfg.OrganizationID || publicURL != cfg.PublicURL || bootstrap != cfg.BootstrapSubject {
+		if cfg == nil || organization != cfg.OrganizationID || bootstrap != cfg.BootstrapSubject {
+			return ErrHostedDatabaseBinding
+		}
+		// Cloud's hostname change retains the same shared allocation. Preserve the
+		// immutable stored origin as deployment history, including on rollback.
+		if publicURL != cfg.PublicURL && (deployment != "shared" || cfg.SharedEntry == nil || !cloudorigin.Aliases(publicURL, cfg.PublicURL)) {
 			return ErrHostedDatabaseBinding
 		}
 		wantDeployment, wantGeneration := cfg.deployment()

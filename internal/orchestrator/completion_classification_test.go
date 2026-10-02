@@ -123,7 +123,7 @@ func TestCompletionRebaseProgress(t *testing.T) {
 	}
 }
 
-func TestUnfinishedSessionsExhaustAttemptAllowance(t *testing.T) {
+func TestUnfinishedSessionsRetainConfiguredDispatch(t *testing.T) {
 	t.Parallel()
 	for _, lane := range []string{"In Progress", "Rework"} {
 		t.Run(lane, func(t *testing.T) {
@@ -138,7 +138,7 @@ func TestUnfinishedSessionsExhaustAttemptAllowance(t *testing.T) {
 			tracker := &attemptTriageConnector{implementProgressConnector: implementProgressConnector{refreshed: issue, hydrated: issue}}
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
 			state := newState(cfg)
-			for i := range sessionsWithoutMergeAllowance {
+			for i := range 3 {
 				started := now.Add(time.Duration(i) * time.Minute)
 				if i > 0 {
 					var err error
@@ -165,36 +165,24 @@ func TestUnfinishedSessionsExhaustAttemptAllowance(t *testing.T) {
 					t.Fatalf("unexpected transition: %#v", tracker.updates)
 				}
 			}
-			// Restart from durable history; the fourth dispatch must be triage, never implementation.
 			orch = newLaneMutationTestOrchestrator(cfg, tracker, db, db, now.Add(time.Hour))
 			orch.supervisor = newTestSupervisor(t, attemptTriageRunner{}, cfg)
 			orch.runResults = make(chan runpkg.Completion, 1)
 			state = newState(cfg)
 			if !orch.dispatchIssue(t.Context(), &state, issue, 4, now.Add(time.Hour), "") {
-				t.Fatal("triage dispatch refused")
+				t.Fatal("implementation dispatch refused")
 			}
 			select {
 			case result := <-orch.runResults:
-				if result.Request.Mode != runpkg.RunModeTriage {
+				if result.Request.Mode != runpkg.RunModeImplement {
 					t.Fatalf("fourth mode = %s", result.Request.Mode)
 				}
-				orch.handleRunResult(t.Context(), &state, result)
 			case <-time.After(5 * time.Second):
-				t.Fatal("triage did not complete")
+				t.Fatal("implementation did not complete")
 			}
-			if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
-				t.Fatalf("allowance did not stop issue: %#v", tracker.updates)
+			if len(tracker.updates) != 0 || len(tracker.comments) != 0 {
+				t.Fatalf("retired lifetime allowance wrote issue state: updates=%+v comments=%+v", tracker.updates, tracker.comments)
 			}
-			timeline, err := db.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: cfg.Project.ID, IssueID: issue.ID})
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, event := range timeline.Events {
-				if event.Reason == attemptAllowanceExhaustedReason {
-					return
-				}
-			}
-			t.Fatal("allowance stop reason missing")
 		})
 	}
 }
@@ -249,12 +237,15 @@ func TestCompletionDiffFingerprint(t *testing.T) {
 func TestCompletionRebaseAfterRestart(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, status, mergeAfter string
-		want                     store.WorkAttemptTerminalState
+		name, lane, mode, status, mergeAfter string
+		want                                 store.WorkAttemptTerminalState
 	}{
-		{"unfinished unchanged", "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"stale completion", "complete", "dirty", store.WorkAttemptTerminalNoProgress},
-		{"conflict cleared", "in_progress", "clean", store.WorkAttemptTerminalSuccess},
+		{"unfinished unchanged/Rework", "Rework", runpkg.RunModeImplement, "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"stale completion/Rework", "Rework", runpkg.RunModeImplement, "complete", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"conflict cleared/Rework", "Rework", runpkg.RunModeImplement, "in_progress", "clean", store.WorkAttemptTerminalSuccess},
+		{"unfinished unchanged/In Progress", "In Progress", runpkg.RunModeMerge, "in_progress", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"stale completion/In Progress", "In Progress", runpkg.RunModeMerge, "complete", "dirty", store.WorkAttemptTerminalNoProgress},
+		{"conflict cleared/In Progress", "In Progress", runpkg.RunModeMerge, "in_progress", "clean", store.WorkAttemptTerminalSuccess},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -264,7 +255,7 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := implementProgressIssue("before")
-			before.State = "Rework"
+			before.State = tt.lane
 			before.PullRequest.MergeableState = "dirty"
 			before.PullRequest.DiffFingerprint = "same-diff"
 			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Rework"}})
@@ -272,8 +263,8 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, workAttempts: db}
 			state := newState(cfg)
 			mode := orch.dispatchMode(t.Context(), &state, before)
-			if mode != runpkg.RunModeMerge {
-				t.Fatalf("conflict repair mode = %s", mode)
+			if mode != tt.mode {
+				t.Fatalf("conflict repair mode = %s, want %s", mode, tt.mode)
 			}
 			start := newDispatchLoopStartRecord(before, mode)
 			start.PRDiffFingerprint = before.PullRequest.DiffFingerprint
@@ -309,7 +300,7 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			orch = &Orchestrator{cfg: cfg, connector: tracker, workAttempts: db}
 			state = newState(cfg)
 			// No in-memory dispatch baseline survives. Even the issue snapshot is current.
-			state.Running[after.ID] = Running{Issue: after, WorkAttemptID: id, Attempt: 1, Mode: mode, DispatchSourceState: "Rework", StartedAt: time.Now().Add(-time.Minute)}
+			state.Running[after.ID] = Running{Issue: after, WorkAttemptID: id, Attempt: 1, Mode: mode, DispatchSourceState: tt.lane, StartedAt: time.Now().Add(-time.Minute)}
 			state.Claimed[after.ID] = Claimed{Issue: after}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: after.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: mode}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "rebased"}}})
 			attempt, err := db.WorkAttempt(t.Context(), id)

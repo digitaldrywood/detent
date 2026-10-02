@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -18,81 +16,6 @@ import (
 )
 
 const attemptAllowanceExhaustedReason = "attempt_allowance_exhausted"
-const sessionsWithoutMergeAllowance = 3
-
-type attemptAllowance struct {
-	Sessions int
-	Attempts []store.WorkAttempt
-	Triage   *store.WorkAttempt
-}
-
-func (a attemptAllowance) exhausted() bool { return a.Sessions >= sessionsWithoutMergeAllowance }
-
-// Started code/rework attempts consume the issue allowance unless they were
-// merge routing, infrastructure failures, or external waits.
-// The window starts at the last merge or operator lane move;
-// ordinary head, Detent lane, and diff changes do not replenish it.
-func countSessionsWithoutMerge(attempts []store.WorkAttempt, mergedAt, resetAt time.Time) attemptAllowance {
-	var result attemptAllowance
-	for _, attempt := range attempts {
-		if !mergedAt.IsZero() && !attempt.StartedAt.After(mergedAt) {
-			continue
-		}
-		// Operator moves are observed before dispatch in the same tick, so a
-		// session at resetAt belongs to the renewed window. Merges stay exclusive.
-		if !resetAt.IsZero() && attempt.StartedAt.Before(resetAt) {
-			continue
-		}
-		// Active-lane conflict repairs are code sessions, even in merge mode.
-		// Preserve merge routing and legacy rows without a recorded lane.
-		lane := normalizeState(attempt.Lane)
-		if (workAttemptRunMode(telemetry.WorkAttempt{WorkerMetadataJSON: attempt.WorkerMetadataJSON}) == runpkg.RunModeMerge &&
-			(lane == "" || lane == normalizeState(autoPromoteMergingState))) ||
-			(attempt.Phase == "rework" && attempt.StatusMessage == "merge worker routed current head to Rework") {
-			continue
-		}
-		if allowanceInfrastructureAttempt(attempt) {
-			continue
-		}
-		if attempt.WorkerType == runpkg.RunModeTriage {
-			if result.Triage == nil || attempt.ID > result.Triage.ID {
-				copy := attempt
-				result.Triage = &copy
-			}
-			continue
-		}
-		switch attempt.WorkerType {
-		case "agent", "code", "rework", "implementation":
-		default:
-			continue
-		}
-		if allowanceExternalWaitAttempt(attempt) {
-			continue
-		}
-		result.Sessions++
-		result.Attempts = append(result.Attempts, attempt)
-	}
-	return result
-}
-
-// Keep historical question receipts readable without interpreting arbitrary wait phases.
-func allowanceExternalWaitAttempt(attempt store.WorkAttempt) bool {
-	if attempt.TerminalState == store.WorkAttemptTerminalSuccess && attempt.Phase == "waiting" &&
-		attempt.StatusMessage == "waiting for a human reply on the original issue" {
-		return true
-	}
-	var metadata struct {
-		Start        dispatchLoopStartRecord `json:"dispatch_loop_start"`
-		ExternalWait bool                    `json:"allowance_external_wait"`
-	}
-	return json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil &&
-		(metadata.Start.AllowanceExternalWait || metadata.ExternalWait)
-}
-
-func allowanceExternalWait(issue connector.Issue) bool {
-	_, humanAction := implementProgressBlockedHumanAction(issue)
-	return humanAction != ""
-}
 
 func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 	if preTurnAttempt(telemetry.WorkAttempt{ErrorClass: attempt.ErrorClass, MetricsJSON: attempt.MetricsJSON, WorkerMetadataJSON: attempt.WorkerMetadataJSON}) {
@@ -102,6 +25,9 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		return true
 	}
 	class := strings.ToLower(strings.TrimSpace(attempt.ErrorClass))
+	if class == workAttemptErrorRunner {
+		class = runnerWorkAttemptErrorClass(errors.New(attempt.ErrorMessage))
+	}
 	if strings.HasPrefix(class, "backend_startup_") {
 		return true
 	}
@@ -111,13 +37,14 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		return true
 	}
 	var metadata struct {
+		Cancellation    *runpkg.CancellationCause   `json:"cancellation"`
 		BlockerEvidence []telemetry.BlockerEvidence `json:"blocker_evidence"`
 		Fence           struct {
 			Excluded bool `json:"excluded_from_worker_outcomes"`
 		} `json:"historical_completion_fence"`
 	}
 	if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil {
-		if metadata.Fence.Excluded {
+		if metadata.Fence.Excluded || attempt.TerminalState == store.WorkAttemptTerminalCancelled && metadata.Cancellation.IsAvailabilityInterruption() {
 			return true
 		}
 		for _, evidence := range metadata.BlockerEvidence {
@@ -127,135 +54,6 @@ func allowanceInfrastructureAttempt(attempt store.WorkAttempt) bool {
 		}
 	}
 	return false
-}
-
-func (o *Orchestrator) issueAttemptAllowance(ctx context.Context, issue connector.Issue) (attemptAllowance, error) {
-	if _, operational := operationalCompletionFromIssue(issue); operational {
-		return attemptAllowance{}, nil
-	}
-	if o.workAttempts == nil {
-		return attemptAllowance{}, nil
-	}
-	var mergeEvents []store.WorkflowPhaseEvent
-	if reader, ok := o.workflowMetrics.(WorkflowMetricsTimelineReader); ok {
-		timeline, err := reader.IssueWorkflowTimeline(ctx, store.IssueIdentity{ProjectID: o.workflowMetricsProjectID(), IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL})
-		if err != nil {
-			return attemptAllowance{}, err
-		}
-		mergeEvents = timeline.Events
-	}
-	resetAt := lastAllowanceOperatorMoveAt(mergeEvents)
-	mergedAt := lastAllowanceMergeAt(issue, mergeEvents)
-	// No recent-history cap: excluded infrastructure attempts must never hide the
-	// three chargeable sessions, even after a prolonged instance outage.
-	attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
-		ProjectID: o.cfg.Project.ID, IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL, Limit: math.MaxInt32,
-	})
-	if err != nil {
-		return attemptAllowance{}, err
-	}
-	active, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: o.cfg.Project.ID})
-	if err != nil {
-		return attemptAllowance{}, err
-	}
-	for _, attempt := range active {
-		if attempt.IssueID == issue.ID && issue.ID != "" || attempt.Identifier == issue.Identifier && issue.Identifier != "" || attempt.IssueURL == issue.URL && issue.URL != "" {
-			attempts = append(attempts, attempt)
-		}
-	}
-	if !resetAt.IsZero() {
-		prior := countSessionsWithoutMerge(attempts, time.Time{}, time.Time{})
-		if prior.Triage != nil && !prior.Triage.StartedAt.After(resetAt) {
-			if err := o.annotateAllowanceReset(ctx, issue, prior.Triage.ID, resetAt); err != nil && o.logger != nil {
-				o.logger.Warn("annotate operator allowance reset", "issue_id", issue.ID, "error", err)
-			}
-		}
-	}
-	return countSessionsWithoutMerge(attempts, mergedAt, resetAt), nil
-}
-
-// Use the existing durable lane history so the operator's decision survives restart.
-func lastAllowanceOperatorMoveAt(events []store.WorkflowPhaseEvent) time.Time {
-	var latest time.Time
-	for _, event := range events {
-		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(event.Status, "entered") ||
-			normalizeState(event.PreviousPhaseName) == normalizeState(event.PhaseName) || strings.TrimSpace(event.PhaseName) == "" {
-			continue
-		}
-		metadata, _ := workflowLaneMetadataFromJSON(event.MetadataJSON)
-		attribution := provenance.Prepare(metadata.Provenance)
-		if attribution.Origin != provenance.OriginHuman && (metadata.Provenance.Initiator == provenance.InitiatorDetentInstance || attribution.Initiator == provenance.InitiatorDetentInstance) {
-			continue
-		}
-		latest = laterDispatchLoopTime(latest, workflowLaneTransitionAt(event))
-	}
-	return latest
-}
-
-func (o *Orchestrator) annotateAllowanceReset(ctx context.Context, issue connector.Issue, triageID int64, at time.Time) error {
-	reader, ok := o.connector.(connector.IssueCommentReader)
-	if !ok {
-		return nil
-	}
-	updater, ok := o.connector.(connector.IssueCommentUpdater)
-	if !ok {
-		return nil
-	}
-	comments, err := reader.FetchIssueComments(ctx, issue)
-	if err != nil {
-		return err
-	}
-	marker := fmt.Sprintf("<!-- detent-attempt-triage:%d -->", triageID)
-	line := "allowance reset by operator move at " + at.UTC().Format(time.RFC3339Nano)
-	for _, comment := range comments {
-		if strings.Contains(comment.Body, marker) && !strings.Contains(comment.Body, line) {
-			return updater.UpdateIssueComment(ctx, issue.ID, comment.ID, comment.Body+"\n\n"+line)
-		}
-	}
-	return nil
-}
-
-func lastAllowanceMergeAt(issue connector.Issue, events []store.WorkflowPhaseEvent) time.Time {
-	// A repeated observation of an already merged PR is not another merge.
-	// Historical events without immutable provider timestamps use their first
-	// observation for that PR; current provider evidence refines that boundary.
-	merges := map[int64]time.Time{}
-	for _, event := range events {
-		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(event.Status, "entered") ||
-			(event.Reason != "merge_worker_programmatic_merge" && event.Reason != "pull_request_merged") {
-			continue
-		}
-		var number int64
-		if event.PRNumber != nil {
-			number = *event.PRNumber
-		}
-		if metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON); ok && metadata.PullRequest != nil {
-			number = metadata.PullRequest.Number
-		}
-		at := workflowLaneTransitionAt(event)
-		if previous, found := merges[number]; !found || at.Before(previous) {
-			merges[number] = at
-		}
-	}
-	if pr := issue.PullRequest; pr != nil && strings.EqualFold(pr.State, "merged") && pr.MergedAt != nil {
-		merges[int64(pr.Number)] = *pr.MergedAt
-	}
-	var latest time.Time
-	for _, at := range merges {
-		latest = laterDispatchLoopTime(latest, at)
-	}
-	return latest
-}
-
-func attemptTriageContext(issue connector.Issue, allowance attemptAllowance) (string, error) {
-	// Connector hydration supplies PR checks and review-thread links. Preserve
-	// prior output and failure summaries as evidence, never as executable policy.
-	data, err := json.Marshal(struct {
-		Issue                connector.Issue
-		SessionsWithoutMerge int
-		PriorSessions        []store.WorkAttempt
-	}{issue, allowance.Sessions, allowance.Attempts})
-	return string(data), err
 }
 
 func validAttemptTriageNote(note string) bool {
@@ -359,6 +157,10 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		if issue.PullRequest == nil || pullRequestHydrationUnavailableReason(issue.PullRequest) != "" || issue.PullRequest.HydrationDegradedReason != "" {
 			return errors.New("triage pull request evidence unavailable")
 		}
+		issue.Comments = comments
+		if resolved, ok := o.resolveMergedCompletionPullRequest(ctx, issue); ok {
+			issue = resolved
+		}
 		if autoPromotePullRequestMerged(issue.PullRequest) {
 			if !metadata.PreserveLane {
 				o.reconcileStaleLinkedPullRequestIssues(ctx, state, []connector.Issue{issue}, now)
@@ -376,6 +178,11 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issue.ID)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issue.ID, cfg, now)
 		issue, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		// CI that is still running belongs to the gate, not the exhausted
+		// source-worker allowance. Re-evaluate this durable triage on the next tick.
+		if decision.Reason == AutoPromoteReasonCINotGreen && attemptTriageCIPending(issue.PullRequest) {
+			return nil
+		}
 		if decision.Reason == AutoPromoteReasonSecurityAuditMissing {
 			o.startSecurityAuditStage(ctx, issue, now)
 			return nil
@@ -407,11 +214,43 @@ func (o *Orchestrator) publishAttemptTriage(ctx context.Context, state *State, i
 			return err
 		}
 	}
-	targetState := o.nonReviewDecisionTargetState(issue, autoPromoteSourceState)
+	targetState := o.nonReviewDecisionTargetState(issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState())
 	if metadata.PreserveLane || normalizeState(issue.State) == normalizeState(targetState) {
 		return nil
 	}
 	return o.updateIssueState(ctx, state, issue, targetState, now, attemptAllowanceExhaustedReason)
+}
+
+func attemptTriageCIPending(pr *connector.PullRequest) bool {
+	if pr == nil || !currentHeadCIStatusPending(pr.CIStatus) {
+		return false
+	}
+	for _, check := range pr.RequiredCheckFailures {
+		if !attemptTriageCheckRunning(check) {
+			return false
+		}
+	}
+	if len(pr.RunningChecks) > 0 {
+		return true
+	}
+	for _, check := range pr.Checks {
+		if attemptTriageCheckRunning(check) {
+			return true
+		}
+	}
+	return false
+}
+
+func attemptTriageCheckRunning(check connector.PullRequestCheck) bool {
+	if strings.EqualFold(strings.TrimSpace(check.Conclusion), "missing") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(check.Status)) {
+	case "pending", "queued", "waiting", "in_progress", "in progress", "requested":
+		return true
+	default:
+		return false
+	}
 }
 
 // Observation timestamps qualify the historical worker explanation without

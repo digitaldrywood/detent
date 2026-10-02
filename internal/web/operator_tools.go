@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -37,7 +37,7 @@ func (s *Server) apiOperatorTool(c echo.Context) error {
 
 	ctx, cancel := context.WithTimeout(s.chatContext(c), operatorToolTimeout)
 	defer cancel()
-	result, err := s.operatorTools.Execute(ctx, operatortool.Call{
+	result, err := dashboardOperatorExecutor{server: s}.Execute(ctx, operatortool.Call{
 		Name:      strings.TrimSpace(c.Param("tool_name")),
 		Arguments: arguments,
 	})
@@ -47,10 +47,16 @@ func (s *Server) apiOperatorTool(c echo.Context) error {
 
 	var ambiguous *explain.AmbiguousIdentityError
 	switch {
+	case errors.Is(err, mutation.ErrConflict):
+		return c.JSON(http.StatusConflict, errorResponse("idempotency_conflict", mutation.ErrConflict.Error()))
+	case errors.Is(err, mutation.ErrUncertain):
+		return c.JSON(http.StatusConflict, errorResponse("idempotency_in_progress", mutation.ErrUncertain.Error()))
+	case errors.Is(err, operatortool.ErrAccessDenied):
+		return c.JSON(http.StatusForbidden, errorResponse("access_denied", operatortool.ErrAccessDenied.Error()))
 	case errors.Is(err, operatortool.ErrUnknownTool):
 		return c.JSON(http.StatusNotFound, errorResponse("unknown_operator_tool", "Read-only operator tool not found"))
 	case errors.Is(err, operatortool.ErrInvalidArguments), errors.Is(err, explain.ErrProjectRequired), errors.Is(err, explain.ErrIssueReferenceNeeded):
-		return c.JSON(http.StatusBadRequest, errorResponse("invalid_arguments", err.Error()))
+		return c.JSON(http.StatusBadRequest, errorResponse("invalid_arguments", "Invalid operator tool arguments"))
 	case errors.As(err, &ambiguous):
 		return c.JSON(http.StatusConflict, errorResponse("ambiguous_reference", "Issue reference is ambiguous"))
 	case errors.Is(err, explain.ErrNotFound):
@@ -58,7 +64,17 @@ func (s *Server) apiOperatorTool(c echo.Context) error {
 	case errors.Is(err, operatortool.ErrSnapshotUnavailable):
 		return c.JSON(http.StatusServiceUnavailable, errorResponse("snapshot_unavailable", "Operator telemetry snapshot is unavailable"))
 	default:
-		s.logger.Error("operator read tool failed", slog.String("tool", c.Param("tool_name")), slog.Any("error", err))
+		s.logger.Error("operator tool unavailable")
 		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Operator read runtime is unavailable"))
 	}
+}
+
+func (s *Server) apiOperatorTools(c echo.Context) error {
+	definitions, err := dashboardOperatorExecutor{server: s}.ListTools(c.Request().Context())
+	if err != nil {
+		return c.JSON(http.StatusForbidden, errorResponse("access_denied", operatortool.ErrAccessDenied.Error()))
+	}
+	return c.JSON(http.StatusOK, struct {
+		Tools []operatortool.Definition `json:"tools"`
+	}{definitions})
 }

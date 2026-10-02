@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const (
@@ -70,12 +71,11 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 			o.logger.Warn("work attempt history recovery failed", "project_id", projectID, "error", err)
 		}
 	} else {
-		for index := len(recent) - 1; index >= 0; index-- {
-			o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(recent[index], now))
+		for _, attempt := range slices.Backward(recent) {
+			o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(attempt, now))
 		}
 		o.recoverWorkspaceBranchHolds(ctx, state, recent, now)
 		o.recoverGitHubRESTCapacityWaits(ctx, state, recent, now)
-		o.recoverWorkerGitHubMonitorWaits(ctx, state, recent, now)
 		o.recoverWorkerGitHubTokenResolutionWaits(ctx, state, recent, now)
 	}
 	if waits, ok := o.workAttempts.(store.ForgeAvailabilityWaitStore); ok {
@@ -556,11 +556,13 @@ func (o *Orchestrator) workAttemptLeaseExpiresAt(now time.Time) time.Time {
 }
 
 func (o *Orchestrator) recordSchedulerDecision(ctx context.Context, state *State, now time.Time, decision dispatchPlanDecision, result string, reason string) {
+	record := o.schedulerDecisionRecord(state, now, decision, result, reason)
+	o.recordSchedulerDecisions(ctx, state, []store.SchedulerDecision{record}, false)
+}
+
+func (o *Orchestrator) schedulerDecisionRecord(state *State, now time.Time, decision dispatchPlanDecision, result, reason string) store.SchedulerDecision {
 	if o == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
+		return store.SchedulerDecision{}
 	}
 	if now.IsZero() {
 		now = time.Now()
@@ -615,18 +617,44 @@ func (o *Orchestrator) recordSchedulerDecision(ctx context.Context, state *State
 	if len(metadata) > 0 {
 		record.MetadataJSON = marshalWorkAttemptJSON(metadata)
 	}
-	snapshot := telemetrySchedulerDecision(record)
-	if o.workAttempts != nil {
-		id, err := o.workAttempts.RecordSchedulerDecision(ctx, record)
-		if err != nil {
-			if o.logger != nil {
-				o.logger.Warn("record scheduler decision failed", "issue_id", decision.Issue.ID, "reason", reason, "error", err)
-			}
-		} else {
-			snapshot.ID = id
-		}
+	return record
+}
+
+func (o *Orchestrator) recordSchedulerDecisions(ctx context.Context, state *State, records []store.SchedulerDecision, batch bool) {
+	if o == nil || len(records) == 0 {
+		return
 	}
-	appendSchedulerDecisionSnapshot(state, snapshot)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if writer, ok := o.workAttempts.(store.SchedulerDecisionBatchStore); batch && ok {
+		ids, err := writer.RecordSchedulerDecisions(ctx, records)
+		if err != nil && o.logger != nil {
+			o.logger.Warn("record scheduler evidence failed", "count", len(records), "error", err)
+		}
+		for i, record := range records {
+			snapshot := telemetrySchedulerDecision(record)
+			if err == nil && i < len(ids) {
+				snapshot.ID = ids[i]
+			}
+			appendSchedulerDecisionSnapshot(state, snapshot)
+		}
+		return
+	}
+	for _, record := range records {
+		snapshot := telemetrySchedulerDecision(record)
+		if o.workAttempts != nil {
+			id, err := o.workAttempts.RecordSchedulerDecision(ctx, record)
+			if err != nil {
+				if o.logger != nil {
+					o.logger.Warn("record scheduler decision failed", "issue_id", record.IssueID, "reason", record.Reason, "error", err)
+				}
+			} else {
+				snapshot.ID = id
+			}
+		}
+		appendSchedulerDecisionSnapshot(state, snapshot)
+	}
 }
 
 func (o *Orchestrator) recordRecoveredWorkAttempt(state *State, attempt store.WorkAttempt, now time.Time) {
@@ -893,9 +921,6 @@ func (o *Orchestrator) capacitySnapshotJSON(state *State, issue connector.Issue)
 	if state != nil && len(state.ForgeUnavailable) > 0 {
 		snapshot["forge_unavailable"] = forgeUnavailableSnapshots(state.ForgeUnavailable)
 	}
-	if state != nil && len(state.GitHubMonitors) > 0 {
-		snapshot["worker_github_budget_monitor_unavailable"] = workerGitHubMonitorSnapshots(state.GitHubMonitors)
-	}
 	if state != nil && len(state.DispatchRecoveries) > 0 {
 		snapshot["dispatch_recoveries"] = dispatchRecoveriesCapacitySnapshot(state.DispatchRecoveries, pool.Name, pool.Capacity)
 	}
@@ -1016,15 +1041,18 @@ func runningWorkAttemptPhase(running Running, state *State) string {
 		return "reviewing"
 	}
 	text := strings.ToLower(strings.TrimSpace(running.LastEvent + " " + running.LastMessage))
+	message := strings.TrimRight(strings.ToLower(strings.TrimSpace(running.LastMessage)), ".:;") + " "
 	switch {
+	case strings.HasPrefix(message, "waiting for ci ") || strings.HasPrefix(message, "waiting on ci ") ||
+		strings.HasPrefix(message, "waiting for current-head ci ") || strings.HasPrefix(message, "waiting on current-head ci ") ||
+		strings.HasPrefix(message, "waiting for github checks ") || strings.HasPrefix(message, "waiting on github checks "):
+		return "waiting_ci"
 	case strings.Contains(text, "checkout"):
 		return "checkout"
 	case strings.Contains(text, "rebase"):
 		return "rebase"
 	case strings.Contains(text, "test"):
 		return "testing"
-	case strings.Contains(text, "ci") || strings.Contains(text, "check"):
-		return "waiting_ci"
 	default:
 		return "implementing"
 	}
@@ -1076,13 +1104,21 @@ func workAttemptCIState(issue connector.Issue) string {
 }
 
 func runningWorkAttemptMetricsJSON(running Running) string {
-	return marshalWorkAttemptJSON(map[string]any{
+	metrics := map[string]any{
+		"token_usd":       running.TokenUSD,
 		"turns":           running.TurnCount,
 		"input_tokens":    running.Tokens.InputTokens,
 		"output_tokens":   running.Tokens.OutputTokens,
 		"total_tokens":    running.Tokens.TotalTokens,
 		"runtime_seconds": running.Tokens.RuntimeSeconds,
-	})
+	}
+	if c := running.Compute; c != nil {
+		metrics["cpu_seconds"] = c.CPUSeconds
+		metrics["avg_memory_bytes"] = c.AvgMemoryBytes
+		metrics["wall_seconds"] = c.WallSeconds
+		metrics["compute_usd"] = c.ComputeUSD
+	}
+	return marshalWorkAttemptJSON(metrics)
 }
 
 func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) string {
@@ -1090,9 +1126,6 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 		"run_mode":            strings.TrimSpace(running.Mode),
 		"issue_title":         strings.TrimSpace(running.Issue.Title),
 		"work_product_pushed": running.WorkProductPushed,
-	}
-	if allowanceExternalWait(running.Issue) {
-		out["allowance_external_wait"] = true
 	}
 	if running.ForgeWriteCompleted && strings.TrimSpace(running.ForgeProbeHost) != "" {
 		out["forge_write_completed_host"] = forgeavailability.NormalizeHost(running.ForgeProbeHost)
@@ -1109,6 +1142,11 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 			continue
 		}
 		out[key] = value
+	}
+	if record, ok := metadata[implementProgressMetadataKey].(implementProgressRecord); ok &&
+		record.Outcome == string(store.WorkAttemptTerminalSuccess) && record.CompletionKind == workpad.CompletionOperational {
+		signal, _ := autoPromoteIssueWorkpadSignal(running.Issue)
+		out["operational_completion_receipt"] = operationalCompletionReceipt{Generation: running.Generation, Signal: workpad.CloneSignal(signal)}
 	}
 	if running.Policy.ID != "" {
 		out["policy"] = running.Policy
@@ -1165,6 +1203,9 @@ func runnerWorkAttemptErrorClass(err error) string {
 	var deliverableErr *runpkg.DeliverableCommandError
 	if errors.As(err, &deliverableErr) && deliverableErr != nil && deliverableErr.OperationClass == "post_push" {
 		return workAttemptErrorPostPushCommand
+	}
+	if errors.Is(err, runpkg.ErrWorkspacePreparation) || err != nil && strings.HasPrefix(err.Error(), "workspace diff stat: git add intent to add: git ") {
+		return workAttemptErrorWorkspace
 	}
 	var statusCarrier interface {
 		BackendErrorStatus() string

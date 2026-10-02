@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,7 +47,9 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 		e.Use(s.hostedBoundary)
 		s.registerHostedRoutes(e)
 	}
+	s.registerOperatorTools(e)
 	s.registerNativeRoutes(e)
+	s.registerProjectSecretRoutes(e)
 	s.registerRunnerRoutes(e)
 	s.registerConversationRoutes(e)
 	read := s.requireAPIScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin)
@@ -101,6 +104,9 @@ func decodeAPIJSON(c echo.Context, target any) error {
 
 // apiRequestBodyLimit is how many bytes this route's body may carry.
 func apiRequestBodyLimit(c echo.Context) int64 {
+	if c.Path() == nativeBase+"/work-items/:item/source-intake" || c.Path() == nativeBase+"/onboarding/issue-intake/result" {
+		return 64 << 20
+	}
 	if c.Path() == nativeBase+"/attempts/:attempt/diff" {
 		return maxAttemptDiffRequestBytes
 	}
@@ -147,10 +153,6 @@ func apiTTL(seconds int64) (time.Duration, error) {
 }
 
 func (s *Service) outboxHealth(c echo.Context) error {
-	health, err := s.OutboxHealth(c.Request().Context())
-	if err != nil {
-		return s.internalAPIError(c, "outbox_health_unavailable", "Outbox health could not be read", err)
-	}
 	limit, err := parsePageLimit(c.QueryParam("limit"))
 	if err != nil {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
@@ -158,6 +160,18 @@ func (s *Service) outboxHealth(c echo.Context) error {
 	cursor, err := decodeTimelineCursor(c.QueryParam("cursor"))
 	if err != nil {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_cursor", Message: "Outbox cursor is invalid"})
+	}
+	response, err := s.readOutboxHealthPage(c.Request().Context(), limit, cursor)
+	if err != nil {
+		return s.internalAPIError(c, "outbox_health_unavailable", "Outbox health could not be read", err)
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (s *Service) readOutboxHealthPage(ctx context.Context, limit int, cursor timelineCursor) (outboxHealthResponse, error) {
+	health, err := s.OutboxHealth(ctx)
+	if err != nil {
+		return outboxHealthResponse{}, err
 	}
 	actions := health.OperatorActions[:0]
 	for _, action := range health.OperatorActions {
@@ -171,10 +185,10 @@ func (s *Service) outboxHealth(c echo.Context) error {
 		response.OperatorActions = response.OperatorActions[:limit]
 		response.NextCursor, err = encodeTimelineCursor(timelineCursor{Version: 1, ID: response.OperatorActions[len(response.OperatorActions)-1].ID})
 		if err != nil {
-			return s.internalAPIError(c, "outbox_health_unavailable", "Outbox health could not be read", err)
+			return outboxHealthResponse{}, err
 		}
 	}
-	return c.JSON(http.StatusOK, response)
+	return response, nil
 }
 
 type outboxHealthResponse struct {

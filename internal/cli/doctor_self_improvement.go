@@ -535,6 +535,7 @@ func defaultDoctorProposalConnector(cfg workflowconfig.Config) (doctorWorkflowPr
 		StateMap:                    doctorTrackerStateMap(cfg.Tracker.StateMap),
 		PriorityMap:                 doctorTrackerPriorityMap(cfg.Tracker.PriorityMap),
 		RequiredStatusChecks:        cfg.Gate.RequiredStatusChecks,
+		LocalStatus:                 cfg.Gate.LocalStatus,
 	})
 	if err != nil {
 		return nil, err

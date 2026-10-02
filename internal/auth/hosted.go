@@ -77,6 +77,7 @@ type HostedProvider interface {
 	RevokeMembership(context.Context, string) error
 	Invite(context.Context, string, string, string, string) (Invitation, error)
 	Invitation(context.Context, string) (Invitation, error)
+	HasUser(context.Context, string) (bool, error)
 	AcceptInvitation(context.Context, string, string) error
 	RevokeSession(context.Context, string) error
 }

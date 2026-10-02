@@ -1,0 +1,174 @@
+[
+  {
+    "query": "ListRecentSchedulerDecisions",
+    "rows": 50,
+    "seconds": 0.433,
+    "plan": [
+      "SCAN scheduler_decisions",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 193732713,
+    "write_bytes": 0
+  },
+  {
+    "query": "ListIssueSchedulerDecisions",
+    "rows": 0,
+    "seconds": 0.003,
+    "plan": [
+      "SEARCH scheduler_decisions USING INDEX scheduler_decisions_project_at_idx (project_id=?)"
+    ],
+    "rchar": 7413869,
+    "write_bytes": 0
+  },
+  {
+    "query": "IssueTokenSpend",
+    "rows": 0,
+    "seconds": 0.04,
+    "plan": [
+      "SCAN codex_sessions",
+      "USE TEMP B-TREE FOR GROUP BY"
+    ],
+    "rchar": 13406317,
+    "write_bytes": 0
+  },
+  {
+    "query": "GetLatestIssueAgentSession",
+    "rows": 0,
+    "seconds": 0.004,
+    "plan": [
+      "SCAN codex_sessions",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 13402221,
+    "write_bytes": 0
+  },
+  {
+    "query": "GetLatestIssueAgentResumeState",
+    "rows": 0,
+    "seconds": 0.005,
+    "plan": [
+      "SCAN codex_sessions",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 13402221,
+    "write_bytes": 0
+  },
+  {
+    "query": "ListIssueWorkAttempts",
+    "rows": 0,
+    "seconds": 0.001,
+    "plan": [
+      "SEARCH work_attempts USING INDEX work_attempts_project_issue_url_idx (project_id=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 389229,
+    "write_bytes": 0
+  },
+  {
+    "query": "IssueSpendSince",
+    "rows": 1,
+    "seconds": 0.001,
+    "plan": [
+      "SEARCH usage_events USING INDEX usage_events_project_finished_at_idx (project_id=?)",
+      "SEARCH session USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+      "SEARCH attempt USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN"
+    ],
+    "rchar": 168045,
+    "write_bytes": 0
+  },
+  {
+    "query": "IssueWorkflowTimelineRows",
+    "rows": 1,
+    "seconds": 0.0,
+    "plan": [
+      "SEARCH event USING INTEGER PRIMARY KEY (rowid=?)",
+      "LIST SUBQUERY 3",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SEARCH by_id USING INDEX workflow_phase_events_issue_idx (issue_id=?)",
+      "UNION ALL",
+      "SEARCH by_identifier USING COVERING INDEX workflow_phase_events_project_identifier_idx (project_id=? AND identifier=?)",
+      "UNION ALL",
+      "SEARCH by_url USING COVERING INDEX workflow_phase_events_project_issue_url_idx (project_id=? AND issue_url=?)",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 57453,
+    "write_bytes": 0
+  },
+  {
+    "query": "ListIssueActivityEvents",
+    "rows": 1,
+    "seconds": 0.402,
+    "plan": [
+      "CO-ROUTINE issue_events",
+      "COMPOUND QUERY",
+      "LEFT-MOST SUBQUERY",
+      "SCAN scheduler_decisions",
+      "UNION ALL",
+      "SCAN workflow_phase_events",
+      "UNION ALL",
+      "SCAN work_attempts",
+      "UNION ALL",
+      "SCAN work_attempts",
+      "UNION ALL",
+      "SCAN session",
+      "SEARCH attempt USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+      "UNION ALL",
+      "SCAN session",
+      "SEARCH attempt USING INTEGER PRIMARY KEY (rowid=?) LEFT-JOIN",
+      "UNION ALL",
+      "SCAN usage_events",
+      "SCAN issue_events",
+      "USE TEMP B-TREE FOR ORDER BY"
+    ],
+    "rchar": 358531181,
+    "write_bytes": 0
+  },
+  {
+    "query": "WorkflowPhaseDurationRows",
+    "rows": 5,
+    "seconds": 0.029,
+    "plan": [
+      "SCAN workflow_phase_events USING INDEX workflow_phase_events_project_phase_day_idx",
+      "USE TEMP B-TREE FOR RIGHT PART OF ORDER BY"
+    ],
+    "rchar": 15917167,
+    "write_bytes": 0
+  },
+  {
+    "query": "WorkflowPhaseFlowRows",
+    "rows": 2,
+    "seconds": 0.014,
+    "plan": [
+      "SCAN event USING INDEX workflow_phase_events_project_phase_day_idx",
+      "USE TEMP B-TREE FOR RIGHT PART OF ORDER BY"
+    ],
+    "rchar": 12591215,
+    "write_bytes": 0
+  },
+  {
+    "query": "LifetimeTotals",
+    "rows": 1,
+    "seconds": 0.006,
+    "plan": [
+      "SCAN codex_sessions",
+      "SCALAR SUBQUERY 1",
+      "SCAN detent_runs"
+    ],
+    "rchar": 13410415,
+    "write_bytes": 0
+  },
+  {
+    "query": "ListPendingForgeAvailabilityWaits",
+    "rows": 0,
+    "seconds": 0.0,
+    "plan": [
+      "SEARCH waiting USING INDEX work_attempts_active_project_idx (project_id=? AND completed_at>?)",
+      "CORRELATED SCALAR SUBQUERY 1",
+      "SEARCH newer USING INDEX work_attempts_active_project_idx (project_id=? AND completed_at>?)",
+      "USE TEMP B-TREE FOR RIGHT PART OF ORDER BY"
+    ],
+    "rchar": 385135,
+    "write_bytes": 0
+  }
+]

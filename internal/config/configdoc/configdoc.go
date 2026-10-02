@@ -252,6 +252,7 @@ func backendOptionNodes(prefix string) []*schemaNode {
 	types := []reflect.Type{
 		reflect.TypeFor[config.CodexOptions](),
 		reflect.TypeFor[config.ClaudeCodeOptions](),
+		reflect.TypeFor[config.PiAgentOptions](),
 	}
 	byKey := map[string]*schemaNode{}
 	var order []string
@@ -473,50 +474,57 @@ func trackerEndpointDefault() (string, string) {
 
 func optionDefault(path string) (string, string) {
 	key := path[strings.LastIndex(path, ".")+1:]
-	codexBackend := config.CodexAgentBackend(config.Default().Codex)
-	codexValue, codexOK := yamlFieldValue(reflect.ValueOf(codexBackend.CodexOptions()), key)
-
 	claudeConfig := config.Default()
-	claudeConfig.Agents.Backends = []config.AgentBackend{{
-		ID:      "claude",
-		Kind:    config.AgentBackendClaudeCode,
-		Command: "claude",
-	}}
-	var claudeValue reflect.Value
-	claudeOK := false
-	normalizedClaude, err := normalized(claudeConfig)
-	if err == nil {
-		claudeBackends := normalizedClaude.AgentBackendConfigs()
-		if len(claudeBackends) > 0 {
-			claudeValue, claudeOK = yamlFieldValue(reflect.ValueOf(claudeBackends[0].ClaudeCodeOptions()), key)
-		}
+	claudeConfig.Agents.Backends = []config.AgentBackend{{ID: "claude", Kind: config.AgentBackendClaudeCode, Command: "claude"}}
+	claude := config.ClaudeCodeOptions{}
+	if cfg, err := normalized(claudeConfig); err == nil {
+		claude = cfg.AgentBackendConfigs()[0].ClaudeCodeOptions()
 	}
-
-	switch {
-	case codexOK && claudeOK:
-		codexDescription, codexLiteral := describeValue(codexValue)
-		claudeDescription, _ := describeValue(claudeValue)
+	variants := []struct {
+		name  string
+		value any
+	}{
+		{"Codex", config.CodexAgentBackend(config.Default().Codex).CodexOptions()},
+		{"Claude Code", claude},
+		{"Pi", (config.AgentBackend{Kind: config.AgentBackendPiAgent}).PiAgentOptions()},
+	}
+	descriptions := make([]string, 0, len(variants))
+	names := make([]string, 0, len(variants))
+	literal := "null"
+	for _, variant := range variants {
+		value, ok := yamlFieldValue(reflect.ValueOf(variant.value), key)
+		if !ok {
+			continue
+		}
+		description, currentLiteral := describeValue(value)
 		if key == "shell" {
-			codexDescription = "platform default shell"
-			codexLiteral = "null"
+			description, currentLiteral = "platform default shell", "null"
 		}
-		if codexDescription == claudeDescription {
-			return codexDescription, codexLiteral
+		if len(descriptions) == 0 {
+			literal = currentLiteral
 		}
-		return "Codex: " + codexDescription + "; Claude Code: " + claudeDescription, codexLiteral
-	case codexOK:
-		description, literal := describeValue(codexValue)
-		if key == "shell" {
-			description = "platform default shell"
-			literal = "null"
-		}
-		return description + " for Codex", literal
-	case claudeOK:
-		description, literal := describeValue(claudeValue)
-		return description + " for Claude Code", literal
-	default:
+		descriptions = append(descriptions, description)
+		names = append(names, variant.name)
+	}
+	if len(descriptions) == 0 {
 		return "backend-dependent", "null"
 	}
+	if len(descriptions) == 1 {
+		return descriptions[0] + " for " + names[0], literal
+	}
+	same := true
+	for _, description := range descriptions[1:] {
+		if description != descriptions[0] {
+			same = false
+		}
+	}
+	if same {
+		return descriptions[0], literal
+	}
+	for i := range descriptions {
+		descriptions[i] = names[i] + ": " + descriptions[i]
+	}
+	return strings.Join(descriptions, "; "), literal
 }
 
 func yamlFieldValue(value reflect.Value, key string) (reflect.Value, bool) {
@@ -849,7 +857,7 @@ func candidates(typ reflect.Type) []reflect.Value {
 	case reflect.String:
 		values := []string{
 			"", " ", "\n", "__invalid__", "github", "github_local", "linear",
-			"local_sqlite", "memory", "command", "artifact", "codex", "claude_code",
+			"local_sqlite", "memory", "command", "artifact", "codex", "claude_code", "pi_agent",
 			"plan", "invalid/value/extra", "0 0",
 		}
 		out := make([]reflect.Value, 0, len(values))
@@ -934,6 +942,19 @@ func candidates(typ reflect.Type) []reflect.Value {
 
 func backendOptionProblems() ([]string, error) {
 	documents := []string{
+		`tracker:
+  kind: memory
+agents:
+  backends:
+    - id: pi
+      kind: pi_agent
+      protocol: invalid
+      options:
+        thinking_level: invalid
+        tools: [invalid]
+        turn_timeout_ms: -1
+        stall_timeout_ms: -1
+`,
 		`tracker:
   kind: memory
 agents:

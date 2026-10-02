@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -39,12 +40,14 @@ type deferredCompletion struct {
 	DeferredAt          time.Time                      `json:"deferred_at"`
 	Availability        deferredCompletionAvailability `json:"availability"`
 	DeliverableRecovery *deferredDeliverableRecovery   `json:"deliverable_recovery,omitempty"`
+	ForgeAvailability   *forgeWaitMetadata             `json:"worker_forge_availability,omitempty"`
 	Persisted           bool                           `json:"-"`
 }
 
 type deferredDeliverableRecovery struct {
-	Branch string `json:"branch,omitempty"`
-	Cause  string `json:"cause,omitempty"`
+	Branch     string                          `json:"branch,omitempty"`
+	Cause      string                          `json:"cause,omitempty"`
+	TypedCause *runpkg.DeliverableCommandError `json:"typed_cause,omitempty"`
 }
 
 type deferredCompletionRequest struct {
@@ -84,14 +87,28 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 		RetryDelay:   event.RetryDelay,
 		DeferredAt:   deferredAt,
 	}
+	record.ForgeAvailability = &forgeWaitMetadata{}
 	if fenceErr != nil {
 		record.Availability = deferredCompletionAvailability{Class: "completion_fence_unavailable", Message: fenceErr.Error()}
 	}
+	if availabilityErr, unavailable := forgeavailability.As(event.Err); unavailable {
+		record.ForgeAvailability = &forgeWaitMetadata{
+			Host:       availabilityErr.Scope.Host,
+			Operation:  availabilityErr.Scope.Operation,
+			ErrorClass: availabilityErr.Class,
+		}
+	}
 	var recoveryErr *runpkg.DeliverableRecoveryError
-	if errors.As(event.Err, &recoveryErr) && recoveryErr != nil {
+	if commandErr, deliveryFailure := runpkg.PullRequestDeliverableFailure(event.Err); deliveryFailure && errors.As(event.Err, &recoveryErr) && recoveryErr != nil {
 		record.DeliverableRecovery = &deferredDeliverableRecovery{
 			Branch: strings.TrimSpace(recoveryErr.Branch),
 			Cause:  errorString(recoveryErr.Err),
+			TypedCause: &runpkg.DeliverableCommandError{
+				OperationClass: commandErr.OperationClass,
+				Operation:      commandErr.Operation,
+				Message:        errorString(recoveryErr.Err),
+				ApprovalDenied: commandErr.ApprovalDenied,
+			},
 		}
 	}
 	if availabilityErr, ok := connector.AsTrackerAvailability(fenceErr); ok {
@@ -148,14 +165,21 @@ func (r deferredCompletion) completion() runpkg.Completion {
 		RetryAttempt: r.RetryAttempt,
 		RetryDelay:   r.RetryDelay,
 	}
-	if r.DeliverableRecovery != nil {
-		var cause error
-		if strings.TrimSpace(r.DeliverableRecovery.Cause) != "" {
-			cause = errors.New(r.DeliverableRecovery.Cause)
-		}
-		event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: cause}
-	} else if strings.TrimSpace(r.Error) != "" {
+	if strings.TrimSpace(r.Error) != "" {
 		event.Err = errors.New(r.Error)
+	}
+	workerAvailabilityKnown := r.ForgeAvailability != nil && (*r.ForgeAvailability == (forgeWaitMetadata{}) || validForgeAvailabilityClass(r.ForgeAvailability.ErrorClass))
+	if r.DeliverableRecovery != nil {
+		if commandErr, deliveryFailure := runpkg.PullRequestDeliverableFailure(r.DeliverableRecovery.TypedCause); workerAvailabilityKnown && deliveryFailure && commandErr != nil {
+			event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: r.DeliverableRecovery.TypedCause}
+		} else if event.Err == nil {
+			event.Err = &runpkg.DeliverableRecoveryError{Branch: r.DeliverableRecovery.Branch, Err: errors.New(r.DeliverableRecovery.Cause)}
+		}
+	}
+	if r.ForgeAvailability != nil && validForgeAvailabilityClass(r.ForgeAvailability.ErrorClass) {
+		event.Err = forgeavailability.NewError(forgeavailability.Scope{
+			Host: r.ForgeAvailability.Host, Operation: r.ForgeAvailability.Operation,
+		}, r.ForgeAvailability.ErrorClass, event.Err)
 	}
 	return event
 }
@@ -167,6 +191,17 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	running Running,
 	fenceErr error,
 ) {
+	// A retired native lease is an obsolete completion, not a tracker outage.
+	// Reuse completion rejection rather than enqueueing the same dead token.
+	if errors.Is(fenceErr, runpkg.ErrExecutionAuthorityUnavailable) {
+		o.rejectWorkerCompletion(ctx, state, event, running, "worker lease is no longer active", fenceErr)
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalAbandoned, workAttemptErrorInterrupted, fenceErr.Error(), "interrupted", "native execution authority ended")
+		o.clearLiveWorkAttemptState(state, telemetry.WorkAttempt{IssueID: event.IssueID, AttemptID: running.WorkAttemptID})
+		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
+			o.logger.Warn("release obsolete completion claim failed", "issue_id", event.IssueID, "error", err)
+		}
+		return
+	}
 	deferredAt := o.clockNow().UTC()
 	if deferredAt.IsZero() {
 		deferredAt = event.CompletedAt.UTC()

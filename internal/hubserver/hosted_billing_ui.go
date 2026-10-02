@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 )
 
 type hostedBillingReport struct {
+	AICredits      *aiCreditView                  `json:"ai_credits,omitempty"`
+	ChatUsage      chatUsageSummary               `json:"chat_usage"`
 	OrganizationID string                         `json:"organization_id"`
 	State          hostedBillingState             `json:"state"`
 	Entitlement    HostedEntitlement              `json:"entitlement"`
@@ -34,6 +37,16 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 	report.Entitlement, err = s.database.hostedPlanUsage(ctx, s.config.now())
 	if err != nil {
 		return report, err
+	}
+	report.ChatUsage, err = s.database.chatUsageSummary(ctx, s.database.hostedOrganization, chatBillingWindow(s.config.now(), report.State.Snapshot), nil)
+	if err != nil {
+		return report, err
+	}
+	if s.database.aiCreditMode != "" {
+		report.AICredits, err = s.readAICredits(ctx)
+		if err != nil {
+			return report, err
+		}
 	}
 	var checked sql.NullString
 	err = s.database.db.QueryRowContext(ctx, "SELECT reconciled_at FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&checked)
@@ -97,10 +110,32 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 	}
 	now := s.config.now()
 	data := templates.HostedPageData{Mode: "billing", Title: "Organization billing", CanManage: true, CanManageOwnership: true}
-	data.PlanName = fmt.Sprintf("%s · version %d", report.Entitlement.EffectiveBase.ID, report.Entitlement.EffectiveBase.Version)
+	data.PlanName = report.Entitlement.Name
+	data.PlanPrice = hostedPlanPrice(report.Entitlement.MonthlyUSDCents)
+	for _, name := range []string{"projects", "unarchived_issues"} {
+		used, limit := report.Entitlement.Usage[name], report.Entitlement.Allowances[name]
+		data.Allowances = append(data.Allowances, templates.HostedAllowanceRow{Label: strings.ReplaceAll(name, "_", " "), Consumption: strconv.FormatInt(used, 10), Allowance: strconv.FormatInt(limit, 10), Remaining: strconv.FormatInt(max(limit-used, 0), 10), OverLimit: used > limit})
+	}
+	if credits := report.AICredits; credits != nil {
+		data.AICredits = &templates.HostedAICredits{Returned: c.QueryParam("credits") == "returned", Balance: fmt.Sprintf("$%.6f USD", float64(credits.BalanceMicros)/1000000), Enabled: credits.AutoEnabled, Threshold: strconv.FormatInt(credits.ThresholdCents, 10), PriceID: credits.PriceID, Failure: credits.Failure, InFlight: credits.InFlight, CanAutoFund: credits.CanAutoFund}
+		for _, pack := range credits.Packs {
+			data.AICredits.Packs = append(data.AICredits.Packs, templates.HostedBillingPrice{ID: pack.PriceID, Label: fmt.Sprintf("%s · $%.2f USD", pack.Label, float64(pack.USDCents)/100)})
+		}
+		for _, item := range credits.History {
+			data.AICredits.History = append(data.AICredits.History, templates.HostedBillingAudit{Action: item.Kind, Summary: fmt.Sprintf("$%.6f USD", float64(item.AmountMicros)/1000000), At: item.At.Format(time.RFC3339)})
+		}
+	}
 	data.BillingStatus, data.BillingMessage = hostedBillingMessage(report.State, now)
+	if (report.State.Status == "free" || report.State.Status == "") && report.Entitlement.EffectiveBase.ID != "free" {
+		data.BillingStatus, data.BillingMessage = "Complimentary access", "Your existing plan access is complimentary. No paid subscription is active."
+	}
 	data.BillingAudit = report.Audit
 	data.BillingCheckedAt = report.ReconciledAt
+	data.ChatUsage = fmt.Sprintf("%d tokens · $%.6f USD · turns: %d", report.ChatUsage.Tokens, report.ChatUsage.CostUSD, report.ChatUsage.Turns)
+	data.ChatUsagePeriod = report.ChatUsage.Range.From.Format("Jan 2, 2006") + " – " + report.ChatUsage.Range.To.Format("Jan 2, 2006")
+	if report.ChatUsage.UnpricedTurns > 0 {
+		data.ChatUsage += fmt.Sprintf(" · turns awaiting pricing: %d", report.ChatUsage.UnpricedTurns)
+	}
 	if report.PendingEvents > 0 {
 		data.Notice = "A billing update is awaiting verification. Current access follows the last verified subscription deadline."
 	}
@@ -120,7 +155,7 @@ func (s *Service) hostedBillingPage(c echo.Context) error {
 		data.BillingEnabled = true
 		data.BillingCanPurchase = report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
 		for _, price := range cfg.Prices {
-			data.BillingPrices = append(data.BillingPrices, templates.HostedBillingPrice{ID: price.PriceID, Label: price.Label})
+			data.BillingPrices = append(data.BillingPrices, templates.HostedBillingPrice{ID: price.PriceID, Label: s.hostedPriceLabel(c.Request().Context(), price)})
 		}
 	}
 	return s.renderHosted(c, http.StatusOK, data)
@@ -179,14 +214,32 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	if err := s.hostedAudit(ctx, credential.Hosted, "billing_viewed", c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	report, err := s.hostedBillingReport(ctx)
+	view, err := s.readBillingView(ctx)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing information is temporarily unavailable"})
 	}
+
+	return c.JSON(http.StatusOK, view)
+}
+
+func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice) string {
+	plan, err := readHostedPlan(ctx, s.database.db, price.Plan)
+	if err != nil || plan.MonthlyUSDCents == nil {
+		return price.Label
+	}
+	return plan.Name + " · " + hostedPlanPrice(plan.MonthlyUSDCents)
+}
+
+func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error) {
+	report, err := s.hostedBillingReport(ctx)
+	if err != nil {
+		return hostedBillingView{}, err
+	}
+
 	view := hostedBillingView{hostedBillingReport: report, Prices: []hostedBillingPriceView{}}
 	if cfg := s.config.Hosted.Billing; cfg != nil {
 		for _, price := range cfg.Prices {
-			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: price.Label})
+			view.Prices = append(view.Prices, hostedBillingPriceView{ID: price.PriceID, Label: s.hostedPriceLabel(ctx, price)})
 		}
 		view.CanCheckout = !cfg.CheckoutDisabled && report.State.Snapshot.SubscriptionID == "" && report.State.Status != "multiple_subscriptions"
 		if _, err := s.database.hostedBillingBinding(ctx, cfg); err == nil {
@@ -201,5 +254,5 @@ func (s *Service) hostedBillingJSON(c echo.Context) error {
 	if view.Audit == nil {
 		view.Audit = []templates.HostedBillingAudit{}
 	}
-	return c.JSON(http.StatusOK, view)
+	return view, nil
 }

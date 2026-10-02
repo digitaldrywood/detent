@@ -500,6 +500,9 @@ func (c *Connector) FetchRefreshIssues(
 	observedStates []string,
 	hint connector.IssueFilterHint,
 ) connector.RefreshIssueResult {
+	if c.usesLabelStatus() {
+		return c.fetchLabelRefreshIssues(ctx, candidateStates, observedStates, hint)
+	}
 	if c.statusSource != GitHubStatusSourceProjectV2 {
 		candidates, err := c.FetchCandidateIssuesByStatesWithFilter(ctx, candidateStates, hint)
 		result := connector.RefreshIssueResult{Candidates: candidates, CandidateError: err}
@@ -514,7 +517,91 @@ func (c *Connector) FetchRefreshIssues(
 }
 
 func (c *Connector) CombinedRefreshEnabled() bool {
-	return c != nil && c.statusSource == GitHubStatusSourceProjectV2
+	return c != nil && (c.statusSource == GitHubStatusSourceProjectV2 || c.usesLabelStatus())
+}
+
+func (c *Connector) fetchLabelRefreshIssues(ctx context.Context, candidateStates, observedStates []string, hint connector.IssueFilterHint) connector.RefreshIssueResult {
+	matches := refreshSelector(hint)
+	candidateStates = normalizeStateList(candidateStates, nil)
+	observedStates = normalizeStateList(observedStates, nil)
+	allStates := normalizeStateList(append(append([]string(nil), candidateStates...), observedStates...), nil)
+	issues, err := c.fetchLabelIssuesByStates(ctx, allStates, 0)
+	if err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	selected := make([]connector.Issue, 0, len(issues))
+	fallback := make([]connector.Issue, 0, len(issues))
+	var indexes, fallbackIndexes []int
+	var nodes []githubIssueNode
+	for i, issue := range issues {
+		if !matches(issue) || stateInList(issue.State, c.terminalStates) || (!stateInList(issue.State, candidateStates) && !stateInList(issue.State, c.activeStates) && !stateInList(issue.State, hint.SchedulerStates)) {
+			continue
+		}
+		selected = append(selected, issue)
+		indexes = append(indexes, i)
+		ref, ok := issueRefFromIdentifier(issue.Identifier)
+		if ok {
+			nodes = append(nodes, githubIssueNode{ID: issue.ID, Number: ref.Number, CandidateState: issue.State, Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name}})
+		}
+	}
+	evidence := c.candidateEvidence(ctx, nodes, true)
+	for i, issue := range selected {
+		if node, ok := evidence[issue.ID]; ok {
+			selected[i], err = c.applySchedulerEvidence(issue, node)
+			if err != nil {
+				return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+			}
+		} else {
+			fallback = append(fallback, issue)
+			fallbackIndexes = append(fallbackIndexes, i)
+		}
+	}
+	if err := c.populateBlockerReasons(ctx, fallback); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	if err := c.hydrateBlockedByRefs(ctx, fallback); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	for i, index := range fallbackIndexes {
+		selected[index] = fallback[i]
+	}
+	if err := c.resolveBlockedByProjectState(ctx, selected); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	candidates := make([]connector.Issue, 0, len(selected))
+	statuses := make([]connector.Issue, 0, len(selected))
+	var candidateIndexes, statusIndexes []int
+	for i, issue := range selected {
+		if stateInList(issue.State, observedStates) && pullRequestStatusPolicy(issue.State, false) != pullRequestStatusSkip {
+			statuses = append(statuses, issue)
+			statusIndexes = append(statusIndexes, i)
+		} else if stateInList(issue.State, candidateStates) {
+			candidates = append(candidates, issue)
+			candidateIndexes = append(candidateIndexes, i)
+		}
+	}
+	if err := c.hydrateRefreshPullRequests(ctx, candidates, evidence, true); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	if err := c.hydrateRefreshPullRequests(ctx, statuses, evidence, false); err != nil {
+		return connector.RefreshIssueResult{CandidateError: err, StatusError: err}
+	}
+	for i, index := range candidateIndexes {
+		selected[index] = candidates[i]
+	}
+	for i, index := range statusIndexes {
+		selected[index] = statuses[i]
+	}
+	for i, index := range indexes {
+		issues[index] = selected[i]
+	}
+	eligible := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if matches(issue) {
+			eligible = append(eligible, issue)
+		}
+	}
+	return connector.RefreshIssueResult{Candidates: issuesInStates(eligible, candidateStates), Statuses: issuesInStates(eligible, observedStates), LaneSignalCandidates: issues}
 }
 
 func (c *Connector) fetchProjectRefreshIssues(
@@ -998,6 +1085,14 @@ func (c *Connector) VerifyStatusOptions(ctx context.Context, stateNames []string
 }
 
 func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]connector.Issue, error) {
+	return c.fetchIssueStatesByIDs(ctx, issueIDs, true)
+}
+
+func (c *Connector) FetchIssueStateProbeByIDs(ctx context.Context, issueIDs []string) ([]connector.Issue, error) {
+	return c.fetchIssueStatesByIDs(ctx, issueIDs, false)
+}
+
+func (c *Connector) fetchIssueStatesByIDs(ctx context.Context, issueIDs []string, includeDependencies bool) ([]connector.Issue, error) {
 	ids := uniqueNonBlank(issueIDs)
 	if len(ids) == 0 {
 		return []connector.Issue{}, nil
@@ -1018,12 +1113,17 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 			if err != nil {
 				return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
 			}
+			if ok && !includeDependencies && issue.ID != id {
+				return nil, fmt.Errorf("fetch github cleanup issue identity: %w", ErrInvalidResponse)
+			}
 			if ok {
 				issues = append(issues, c.normalizeLabelIssueStateRead(issue))
 			}
 		}
-		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
-			return nil, err
+		if includeDependencies {
+			if err := c.hydrateIssueStatesWithEvidence(ctx, issues); err != nil {
+				return nil, err
+			}
 		}
 		sortIssuesByRequestedIDs(issues, ids)
 		return issues, nil
@@ -1044,12 +1144,17 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 			if err != nil {
 				return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
 			}
+			if ok && !includeDependencies && issue.ID != id {
+				return nil, fmt.Errorf("fetch github cleanup issue identity: %w", ErrInvalidResponse)
+			}
 			if ok {
 				issues = append(issues, issue)
 			}
 		}
-		if err := c.hydrateBlockedByRefs(ctx, issues); err != nil {
-			return nil, err
+		if includeDependencies {
+			if err := c.hydrateIssueStatesWithEvidence(ctx, issues); err != nil {
+				return nil, err
+			}
 		}
 		sortIssuesByRequestedIDs(issues, ids)
 		return issues, nil
@@ -1076,9 +1181,16 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 		if err != nil {
 			return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
 		}
+		if ok && !includeDependencies && issue.ID != id {
+			return nil, fmt.Errorf("fetch github cleanup issue identity: %w", ErrInvalidResponse)
+		}
 		if ok {
-			if err := c.hydrateIssueBlockedByRefs(ctx, &issue); err != nil {
-				return nil, err
+			if includeDependencies {
+				current := []connector.Issue{issue}
+				if err := c.hydrateIssueStatesWithEvidence(ctx, current); err != nil {
+					return nil, err
+				}
+				issue = current[0]
 			}
 			issues = append(issues, issue)
 		}
@@ -1113,9 +1225,11 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 				issues = append(issues, issue)
 				continue
 			}
-			if err := c.hydrateIssueBlockedByRefs(ctx, &issue); err != nil {
+			current := []connector.Issue{issue}
+			if err := c.hydrateIssueStatesWithEvidence(ctx, current); err != nil {
 				return nil, err
 			}
+			issue = current[0]
 			issues = append(issues, issue)
 		}
 	}
@@ -1216,6 +1330,11 @@ func (c *Connector) appendBodyReferencedIssueParents(
 ) ([]connector.Issue, error) {
 	childRepo := childRef.Owner + "/" + childRef.Name
 	childIdentifier := buildIdentifier(childRepo, childRef.Number)
+	type searchCandidate struct {
+		ref  issueRef
+		item restIssue
+	}
+	candidates := []searchCandidate{}
 	for page := 1; ; page++ {
 		var response restIssueSearchResponse
 		if err := c.client.REST(ctx, http.MethodGet, restIssueSearchPath(childRef, page), nil, &response); err != nil {
@@ -1226,37 +1345,83 @@ func (c *Connector) appendBodyReferencedIssueParents(
 			if !ok || sameIssueRef(ref, childRef) {
 				continue
 			}
-			var issue connector.Issue
-			var found bool
-			var err error
+			candidate := connector.Issue{Title: item.Title, Labels: labelNames(nodeConnection[label]{Nodes: item.Labels})}
+			if !githubEpicIssue(candidate) || !bodyReferencesIssue(restStringValue(item.Body), ref.Owner+"/"+ref.Name, childIdentifier) {
+				continue
+			}
+			candidates = append(candidates, searchCandidate{ref: ref, item: item})
+		}
+		if len(response.Items) == 0 || page*bodyParentSearchPageSize >= response.TotalCount {
+			break
+		}
+	}
+	if !c.usesLabelStatus() && !c.usesIssueFieldStatus() {
+		ids := make([]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			if id := strings.TrimSpace(candidate.item.NodeID); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) > 1 {
+			if err := c.ensureProjectFieldsCached(ctx, ids); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		ref, item := candidate.ref, candidate.item
+		var issue connector.Issue
+		var found bool
+		var err error
+		if strings.TrimSpace(item.NodeID) == "" {
 			if c.usesLabelStatus() || c.usesIssueFieldStatus() {
 				issue, found, err = c.fetchIssueByRef(ctx, ref)
 			} else {
 				issue, found, err = c.fetchProjectIssueByRef(ctx, ref)
 			}
-			if err != nil {
-				return nil, err
-			}
-			if !found || !githubEpicIssue(issue) {
-				continue
-			}
-			if !bodyReferencesIssue(issue.Description, issueRepo(issue.Identifier), childIdentifier) {
-				continue
-			}
-			key := connectorIssueKey(issue)
-			if key == "" {
-				continue
-			}
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			parents = append(parents, issue)
+		} else {
+			issue, found, err = c.bodyReferencedParentFromSearchItem(ctx, ref, item)
 		}
-		if len(response.Items) == 0 || page*bodyParentSearchPageSize >= response.TotalCount {
-			return parents, nil
+		if err != nil {
+			return nil, err
+		}
+		if !found || !githubEpicIssue(issue) || !bodyReferencesIssue(issue.Description, issueRepo(issue.Identifier), childIdentifier) {
+			continue
+		}
+		key := connectorIssueKey(issue)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		parents = append(parents, issue)
+	}
+	return parents, nil
+}
+
+func (c *Connector) bodyReferencedParentFromSearchItem(ctx context.Context, ref issueRef, item restIssue) (connector.Issue, bool, error) {
+	node := githubIssueNodeFromREST(ref, item)
+	c.cacheIssueRef(node)
+	if c.usesLabelStatus() {
+		return c.buildLabelIssue(node, c.githubIssueStateToDetentState(node.State)), true, nil
+	}
+	if c.usesIssueFieldStatus() {
+		return c.fetchIssueFieldIssueFromNode(ctx, ref, node)
+	}
+	stateName, priorityName, statusUpdatedAt, fields, ok, known := c.cachedIssueProjectFields(node.ID)
+	if !known {
+		var err error
+		stateName, priorityName, statusUpdatedAt, fields, ok, err = c.fetchProjectFieldsPage(ctx, node.ID, nil)
+		if err != nil {
+			return connector.Issue{}, false, err
 		}
 	}
+	if !ok {
+		return connector.Issue{}, false, nil
+	}
+	return c.buildIssue(node, stateName, priorityName, statusUpdatedAt, fields), true, nil
 }
 
 func (c *Connector) appendIssueParent(

@@ -779,9 +779,11 @@ each. These amend earlier sections; where they conflict, this section wins.
     linking to `/chat` when the conversation product is enabled. The
     single-tenant dashboard's operator chat drawer is a different product
     and stays as is.
-15. **Client tests gate the branch.** `make check` runs the client typecheck,
-    unit tests and a bundle drift check (`make app` must leave
-    `static/app/conversation` unchanged).
+15. **Build owners generate the client.** Feature commits carry source only.
+    `make check-app` retains source and attribution diagnostics in scheduled
+    validation, without a committed-output freshness requirement. Staging,
+    releases and private operator builds regenerate from their selected source;
+    prepared release source archives preserve Go-only end-user builds.
 16. **Delivered-after-revocation is deliberate.** A control accepted before
     the actor lost access is still delivered to the bound worker; acceptance
     is durable and the audit shows who sent it. The actor's later requests
@@ -961,8 +963,9 @@ On main: the list accepts the `state`, `label`, `assignee` and `priority` filter
    including T3's sidebar provider, tooltips, hover preview cards and row
    icons; adaptation is only allowed for data bindings, handlers and
    Detent-only content.
-4. The review dock ships as Diff / State / Receipt / Activity first; visual
-   review later.
+4. The issue retains the original Properties aside and mobile layout. Diff
+   opens through the user-selected Surface; Change Request review and round
+   history stay on the linked change page (operator correction, October 1).
 5. Naming stays: Chat, New chat, Needs you.
 6. Sharing rules stand (private by default, whole history on link).
 7. One conversation per issue and one issue per conversation, but
@@ -1096,6 +1099,25 @@ Michael's review items and the contract for each:
    labelled "API estimate" as T3 does.
 
    On main: `00030_attempt_usage.sql` keys the table by `period` rather than `day` and adds `organization_id`, `project_id`, `currency` and `updated_at`; the price table is the hosted config's `usage:` section (`internal/cli/hub_usage.go`, `internal/hubserver/hosted_usage_config.go`).
+
+   Coordinator chat is metered separately from runner attempts. Each turn stores
+   its organization, project, conversation, provider, model, start time, outcome,
+   input, cached input, output, and reasoning output in the same transaction as
+   the turn outcome. Reasoning is a subset of
+   output and is billed once. Versioned USD price rows are selected by the turn's
+   start time; stored costs and cache savings are retained when prices change.
+   Initial OpenAI `gpt-6-luna` rates per million tokens are $0.10 input,
+   $0.01 cached input, and $0.50 output. Unknown models retain tokens and report
+   unpriced turns rather than inventing a price.
+
+   The usage report includes chat in its totals, provider/model breakdowns and
+   time series, with a `chat` summary for the requested range. Runner rows
+   remain runner-only. Chat reads follow the same project grants as runner
+   usage. Billing exports include `chat_usage` for the current verified
+   subscription period, or the UTC calendar month without a current subscription
+   period. Periods include their start and exclude their end. The billing page
+   shows tokens, turns and USD cost with fractional-cent precision. This is
+   metering only; it does not provide allowances, credits or refusal.
 
 ## 18. Right panel surfaces, workspace sessions and review sandboxes (September 11, 2026)
 
@@ -1730,6 +1752,29 @@ Resource and API.
   section 18.10 — so it is neither deferred nor live: it is not carried.)
 
 ### 18.10 Capabilities and keybindings
+
+Cloud workspace availability (native #144) is published as `feature.workspaces`
+and `projects[].capabilities`. Missing service or unknown capabilities leave
+Files and Terminal disabled with an explanation. The project projection uses
+fresh, active, unrevoked registered runners with a current project grant and
+claim operation. Files availability requires one runner serving both files and
+exec; Terminal additionally requires that same runner's terminal capability,
+the hosted person's write/runners grants, enabled terminal policy and the
+existing isolation rule. Once a workspace exists, its own capabilities further
+narrow availability. Opening Surface sends the selected attempt ID and reuses
+only workspaces on that attempt; running attempts request files read-only.
+Every command and relay request still rechecks application authority.
+
+The shared tenant generator retains the matching tenant's deliberate
+`workspaces` policy through regeneration; absent policy stays disabled and is
+never copied to another tenant. It regenerates shared settings and secret
+environment references through their existing owners. A reviewed activation
+must use a runner's actual supported terminal isolation and explicitly authorize
+that scoped tenant policy. Mac terminals report `user`, which default sandbox
+policy refuses. After integration, the operator must review the isolation and
+activation, then verify the selected runner/workspace identity with a benign
+command through the genuine relay after any active attempt ends. Source tests
+do not establish live activation or that runtime acceptance.
 
 - **No Agents surface (September 12, 2026).** Michael, reviewing the right
   panel: "I think for our purposes we don't need an agents tab." T3's `agents`

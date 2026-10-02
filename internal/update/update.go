@@ -32,9 +32,7 @@ import (
 
 const (
 	defaultAPIBase           = "https://api.github.com/repos/digitaldrywood/detent"
-	moduleInstallPackage     = "github.com/digitaldrywood/detent/cmd/detent"
-	moduleInstallTarget      = moduleInstallPackage + "@latest"
-	moduleInstallCommand     = "go install " + moduleInstallTarget
+	sourceUpdateCommand      = "detent update --from-release"
 	homebrewUpdateCommand    = "brew upgrade digitaldrywood/tap/detent"
 	defaultChecksumName      = "checksums.txt"
 	provenanceAssetName      = "detent_release_provenance.json"
@@ -103,7 +101,6 @@ type ReleaseClient interface {
 }
 
 type ProcessStarter func(context.Context, string, []string) error
-type CommandRunner func(context.Context, string, []string, io.Writer, io.Writer) error
 type BinaryVerifier func(context.Context, string) (string, error)
 type BinaryPreflight func(context.Context, string) error
 type BinarySigner func(context.Context, string) error
@@ -261,7 +258,7 @@ func DetectInstallSource(opts DetectionOptions) InstallInfo {
 	if isGoInstallPath(executable, goos, opts.HomeDir, opts.Env) || isGoInstallPath(realExecutable, goos, opts.HomeDir, opts.Env) {
 		return InstallInfo{
 			Source:  InstallSourceGoInstall,
-			Command: moduleInstallCommand,
+			Command: sourceUpdateCommand,
 			Binary:  opts.ExecutablePath,
 		}
 	}
@@ -294,7 +291,6 @@ type Config struct {
 	GOOS                      string
 	GOARCH                    string
 	Client                    ReleaseClient
-	CommandRunner             CommandRunner
 	BinaryVerifier            BinaryVerifier
 	BinarySigner              BinarySigner
 	ChecksumSignatureVerifier ChecksumSignatureVerifier
@@ -369,9 +365,6 @@ func NewService(cfg Config) *Service {
 	if cfg.Client == nil {
 		cfg.Client = NewGitHubClient(GitHubClientConfig{})
 	}
-	if cfg.CommandRunner == nil {
-		cfg.CommandRunner = runCommand
-	}
 	if cfg.BinaryVerifier == nil {
 		cfg.BinaryVerifier = verifyBinaryVersion
 	}
@@ -408,7 +401,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 		return status, nil
 	case InstallSourceRelease:
 	case InstallSourceGoInstall:
-		status.Command = moduleInstallCommand
+		status.Command = sourceUpdateCommand
 		return s.applyGoInstallUpdate(ctx, status, release, opts)
 	case InstallSourceDevelopment:
 		status.Action = ActionRefused
@@ -443,7 +436,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 }
 
 func (s *Service) applyGoInstallUpdate(ctx context.Context, status Status, release Release, opts ApplyOptions) (Status, error) {
-	status.Command = goInstallCommand(status)
+	status.Command = sourceUpdateCommand
 	action, err := goInstallAction(status, opts)
 	if err != nil {
 		status.Action = ActionRefused
@@ -453,7 +446,9 @@ func (s *Service) applyGoInstallUpdate(ctx context.Context, status Status, relea
 
 	switch action {
 	case GoInstallActionRun:
-		return s.runGoInstallUpdate(ctx, status, opts)
+		status.Action = ActionRefused
+		status.Message = "Go module archives no longer contain the conversation assets. Build the prepared release source archive with Go, or run detent update --from-release."
+		return status, ErrRefused
 	case GoInstallActionRelease:
 		return s.applyReleaseUpdate(ctx, status, release, opts, true, opts.FromRelease)
 	case GoInstallActionAbort:
@@ -475,36 +470,9 @@ func goInstallAction(status Status, opts ApplyOptions) (GoInstallAction, error) 
 		return GoInstallActionRun, nil
 	}
 	if opts.SelectGoInstallAction == nil {
-		return GoInstallActionAbort, fmt.Errorf("%w: this Detent binary appears to be managed by go install. Rerun with --yes to run go install, or --from-release to switch to the release binary", ErrConfirmationRequired)
+		return GoInstallActionAbort, fmt.Errorf("%w: this Detent binary appears to be managed by go install. Build the prepared release source archive with Go, or rerun with --from-release to switch to the release binary", ErrConfirmationRequired)
 	}
 	return opts.SelectGoInstallAction(status)
-}
-
-func (s *Service) runGoInstallUpdate(ctx context.Context, status Status, opts ApplyOptions) (Status, error) {
-	target := goInstallTarget(status)
-	status.Command = "go install " + target
-	if err := s.cfg.CommandRunner(ctx, "go", []string{"install", target}, outputWriter(opts.Stdout), outputWriter(opts.Stderr)); err != nil {
-		status.Action = ActionRefused
-		status.Message = fmt.Sprintf("go install failed: %v", err)
-		return status, err
-	}
-
-	versionOutput, err := s.cfg.BinaryVerifier(ctx, s.cfg.ExecutablePath)
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = fmt.Sprintf("go install completed, but verifying Detent failed: %v", err)
-		return status, err
-	}
-	installed := installedVersion(status, versionOutput)
-	if err := verifyInstalledVersion(status, installed); err != nil {
-		status.Action = ActionRefused
-		status.Message = fmt.Sprintf("go install completed, but installed Detent version is not the planned update: %v", err)
-		return status, err
-	}
-
-	status.Action = ActionUpdated
-	status.Message = goInstallAppliedMessage(status, installed)
-	return status, nil
 }
 
 func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release Release, opts ApplyOptions, releaseSwap bool, emitWarning bool) (Status, error) {
@@ -653,8 +621,8 @@ func (s *Service) plan(ctx context.Context) (Status, Release, error) {
 		status.Action = ActionRefused
 		switch info.Source {
 		case InstallSourceGoInstall:
-			status.Message = "This Detent binary appears to be managed by go install and does not include release metadata. Run the Go install command instead."
-			status.Command = moduleInstallCommand
+			status.Message = "This Detent binary appears to be managed by go install and does not include release metadata. Build the prepared release source archive with Go instead."
+			status.Command = ""
 		default:
 			status.Message = "This Detent binary does not include release version metadata. Install a published release before using self-update."
 		}
@@ -1211,16 +1179,6 @@ func startProcess(ctx context.Context, command string, args []string) error {
 	return exec.CommandContext(ctx, command, args...).Start() // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
 }
 
-func runCommand(ctx context.Context, command string, args []string, stdout io.Writer, stderr io.Writer) error {
-	cmd := exec.CommandContext(ctx, command, args...) // #nosec G204 -- updater commands and arguments are resolved internally and bypass a shell.
-	cmd.Stdout = outputWriter(stdout)
-	cmd.Stderr = outputWriter(stderr)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("run %s: %w", strings.Join(append([]string{command}, args...), " "), err)
-	}
-	return nil
-}
-
 func verifyBinaryVersion(ctx context.Context, path string) (string, error) {
 	cmd := exec.CommandContext(ctx, path, "version") // #nosec G204 -- the downloaded binary path is verified before installation and bypasses a shell.
 	output, err := cmd.CombinedOutput()
@@ -1356,26 +1314,6 @@ func updateAppliedMessage(status Status, goos string, releaseSwap bool) string {
 	return fmt.Sprintf("Updated Detent from %s to %s. %s", status.CurrentVersion, status.LatestVersion, restartNote())
 }
 
-func goInstallAppliedMessage(status Status, installed string) string {
-	return fmt.Sprintf("Ran %s. Installed Detent version: %s. %s", status.Command, installed, restartNote())
-}
-
-func goInstallCommand(status Status) string {
-	return "go install " + goInstallTarget(status)
-}
-
-func goInstallTarget(status Status) string {
-	tag := strings.TrimSpace(status.LatestTag)
-	if tag == "" {
-		return moduleInstallTarget
-	}
-	version, err := parseVersion(tag)
-	if err != nil || len(version.prerelease) == 0 {
-		return moduleInstallTarget
-	}
-	return moduleInstallPackage + "@" + tag
-}
-
 func verifyInstalledVersion(status Status, installed string) error {
 	expected := firstNonEmpty(status.LatestTag, status.LatestVersion)
 	if expected == "" {
@@ -1389,23 +1327,6 @@ func verifyInstalledVersion(status Status, installed string) error {
 		return fmt.Errorf("installed version %s does not match expected %s", installed, expected)
 	}
 	return nil
-}
-
-func installedVersion(status Status, versionOutput string) string {
-	for line := range strings.SplitSeq(versionOutput, "\n") {
-		key, value, ok := strings.Cut(line, ":")
-		if ok && strings.EqualFold(strings.TrimSpace(key), "version") {
-			if version := strings.TrimSpace(value); version != "" {
-				return version
-			}
-		}
-	}
-	for line := range strings.SplitSeq(versionOutput, "\n") {
-		if value := strings.TrimSpace(line); value != "" {
-			return value
-		}
-	}
-	return firstNonEmpty(status.LatestVersion, status.LatestTag, "unknown")
 }
 
 func restartNote() string {

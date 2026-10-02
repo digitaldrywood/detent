@@ -10,6 +10,7 @@ import {
   Link2Icon,
   PaletteIcon,
   PanelsTopLeftIcon,
+  PlugIcon,
   ReceiptTextIcon,
   Settings2Icon,
   UsersIcon,
@@ -48,6 +49,7 @@ export const SETTINGS_SECTION_IDS = [
   "projects",
   "runners",
   "integrations",
+  "mcp",
   "plan",
   "billing",
   "keybindings",
@@ -68,6 +70,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsSectionId, string>
   projects: "Projects",
   runners: "Providers & runners",
   integrations: "Integrations",
+  mcp: "API & MCP",
   plan: "Plan",
   billing: "Billing",
   keybindings: "Keybindings",
@@ -98,6 +101,7 @@ export function settingsNavItems({
     { id: "projects", label: SETTINGS_SECTION_LABELS.projects, icon: PanelsTopLeftIcon },
     { id: "runners", label: SETTINGS_SECTION_LABELS.runners, icon: BotIcon },
     { id: "integrations", label: SETTINGS_SECTION_LABELS.integrations, icon: BlocksIcon },
+    { id: "mcp", label: SETTINGS_SECTION_LABELS.mcp, icon: PlugIcon },
   ];
   if (canManage) {
     items.push({ id: "plan", label: SETTINGS_SECTION_LABELS.plan, icon: ReceiptTextIcon });

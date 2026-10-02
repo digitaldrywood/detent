@@ -1,3 +1,4 @@
+import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts";
 // The hosted account API client.
 //
 // `runtime/rpc/http.ts` is the conversation client's own transport and stays
@@ -10,6 +11,8 @@
 import * as Schema from "effect/Schema";
 
 import {
+  CreatedOperatorAPIKey,
+  OperatorAPIKeys,
   BillingReport,
   CheckoutResponse,
   CreateOrganizationResponse,
@@ -22,9 +25,12 @@ import {
   PlanReport,
   PolicyApproval,
   ProjectIntegration,
+  ProjectSecretStatus,
   ProjectsResponse,
+  type ProjectGrant,
   RunnerEnrollment,
   SupportResponse,
+  type WorkflowState,
 } from "../../contracts/account.ts";
 import { isApiError } from "../../contracts/index.ts";
 import { hubPath } from "../../runtime/basePath.ts";
@@ -150,16 +156,26 @@ export function makeAccountApi(options: AccountApiOptions) {
   const project = (projectId: string) => `${base}/projects/${encodeURIComponent(projectId)}`;
 
   return {
+    apiKeys: () => send(OperatorAPIKeys, "GET", `${base}/api-keys`),
+    createAPIKey: (input: { name: string; scope: string; expires_days: number; project_ids: readonly string[] }) =>
+      send(CreatedOperatorAPIKey, "POST", `${base}/api-keys`, input),
+    revokeAPIKey: (id: string) => send(null, "DELETE", `${base}/api-keys/${encodeURIComponent(id)}`),
     origin: options.origin,
     apiBase: base,
     csrfToken: options.csrfToken,
 
     // --- Organization -------------------------------------------------------
     members: () => send(MembersResponse, "GET", `${base}/members`),
-    invite: (input: { email: string; role: string; key: string }) =>
+    invite: (input: { email: string; role: string; key: string; grants?: readonly ProjectGrant[] }) =>
       send(Schema.Unknown, "POST", `${base}/members/invitations`, {
         email: input.email,
         role: input.role,
+        grants: input.grants ?? [],
+        idempotency_key: input.key,
+      }),
+    setInvitationGrants: (input: { invitation: string; grants: readonly ProjectGrant[]; key: string }) =>
+      send(null, "PUT", `${base}/members/invitations/${encodeURIComponent(input.invitation)}`, {
+        grants: input.grants,
         idempotency_key: input.key,
       }),
     revokeInvitation: (input: { invitation: string; key: string }) =>
@@ -167,6 +183,13 @@ export function makeAccountApi(options: AccountApiOptions) {
         null,
         "DELETE",
         `${base}/members/invitations/${encodeURIComponent(input.invitation)}`,
+        { idempotency_key: input.key },
+      ),
+    resendInvitation: (input: { invitation: string; key: string }) =>
+      send(
+        null,
+        "POST",
+        `${base}/members/invitations/${encodeURIComponent(input.invitation)}/resend`,
         { idempotency_key: input.key },
       ),
     removeMember: (input: { member: string; key: string }) =>
@@ -223,6 +246,12 @@ export function makeAccountApi(options: AccountApiOptions) {
       }),
 
     // --- Project settings ---------------------------------------------------
+    spritesSecret: (projectId: string) =>
+      send(ProjectSecretStatus, "GET", `${project(projectId)}/secrets/fly_sprites_token`),
+    setSpritesSecret: (projectId: string, token: string) =>
+      send(ProjectSecretStatus, "PUT", `${project(projectId)}/secrets/fly_sprites_token`, { token }),
+    removeSpritesSecret: (projectId: string) =>
+      send(ProjectSecretStatus, "DELETE", `${project(projectId)}/secrets/fly_sprites_token`),
     integration: (projectId: string) =>
       send(ProjectIntegration, "GET", `${project(projectId)}/integration`),
     /**
@@ -238,12 +267,14 @@ export function makeAccountApi(options: AccountApiOptions) {
       intake: string;
       projection: string;
       repositoryEnabled: boolean;
+      states?: readonly WorkflowState[];
     }) =>
       send(ProjectIntegration, "PUT", `${project(input.projectId)}/integration`, {
         expected_revision: input.revision,
         intake: input.intake,
         projection: input.projection,
         repository_enabled: input.repositoryEnabled,
+        ...(input.states !== undefined ? { states: input.states } : {}),
         idempotency_key: input.key,
       }),
     policy: (projectId: string) => send(PolicyApproval, "GET", `${project(projectId)}/policy`),
@@ -267,6 +298,8 @@ export function makeAccountApi(options: AccountApiOptions) {
       ),
 
     // --- Onboarding (the first-run wizard) ----------------------------------
+    issueIntake: (projectId: string) => send(IssueIntake, "GET", `${project(projectId)}/onboarding/issue-intake`),
+    commandIssueIntake: (projectId: string, command: IntakeCommand, key: string) => send(IssueIntake, "POST", `${project(projectId)}/onboarding/issue-intake`, { ...command, idempotency_key: key }),
     onboarding: (projectId: string) => send(Onboarding, "GET", `${project(projectId)}/onboarding`),
     /**
      * The progress save. The response is the stored `Progress` alone, with the
@@ -294,12 +327,14 @@ export function makeAccountApi(options: AccountApiOptions) {
       }),
     createFirstIssue: (input: {
       projectId: string;
+	  githubIssueUrl?: string;
       title: string;
       body: string;
       state: string;
       key: string;
     }) =>
       send(Schema.Unknown, "POST", `${project(input.projectId)}/work-items`, {
+	    github_issue_url: input.githubIssueUrl,
         title: input.title,
         body: input.body,
         state: input.state,
@@ -347,6 +382,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       state: string;
       capacityLimit: number;
       projectIds: readonly string[];
+      homeProjectIds?: readonly string[];
       isolationTier?: string;
       hostServices?: readonly string[];
       availability?: { timezone: string; windows: readonly string[]; hard_deadline: string };
@@ -359,6 +395,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         state: input.state,
         capacity_limit: input.capacityLimit,
         project_ids: input.projectIds,
+        ...(input.homeProjectIds !== undefined ? { home_project_ids: input.homeProjectIds } : {}),
         ...(input.isolationTier !== undefined ? { isolation_tier: input.isolationTier } : {}),
         ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}),
         ...(input.availability !== undefined ? { availability: input.availability } : {}),
@@ -373,6 +410,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(ProjectIntegration, "POST", `${project(input.projectId)}/onboarding/repository`, {
         expected_revision: input.revision,
         repository: input.repository,
+        source: "runner_checkout",
         idempotency_key: input.key,
       }),
     bindArtifactService: (input: {
@@ -402,6 +440,12 @@ export function makeAccountApi(options: AccountApiOptions) {
         price: input.price,
         idempotency_key: input.key,
       }),
+    creditCheckout: (input: { price: string; key: string }) =>
+      send(CheckoutResponse, "POST", `${base}/billing/credits/checkout`, {
+        price: input.price, idempotency_key: input.key,
+      }),
+    creditAutoFund: (input: { enabled: boolean; threshold_cents: number; price: string }) =>
+      send(Empty, "PUT", `${base}/billing/credits/auto-fund`, input),
     portal: (input: { key: string }) =>
       send(CheckoutResponse, "POST", `${base}/billing/portal`, { idempotency_key: input.key }),
   };

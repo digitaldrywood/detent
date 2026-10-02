@@ -11,7 +11,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -194,7 +193,7 @@ func TestDetectInstallSource(t *testing.T) {
 			executable:     goInstalled,
 			env:            map[string]string{"GOBIN": goBin},
 			want:           InstallSourceGoInstall,
-			wantCommand:    "go install github.com/digitaldrywood/detent/cmd/detent@latest",
+			wantCommand:    "detent update --from-release",
 		},
 		{
 			name:           "development build",
@@ -951,163 +950,47 @@ func TestServiceCheckReportsCriticalReleaseMarker(t *testing.T) {
 	}
 }
 
-func TestServiceGoInstallYesRunsCommandAndReportsVersion(t *testing.T) {
+func TestServiceGoInstallUsesPreparedSourceGuidance(t *testing.T) {
 	t.Parallel()
 
-	tmp := t.TempDir()
-	goBin := filepath.Join(tmp, "gobin")
-	binary := filepath.Join(goBin, "detent")
-	if err := os.MkdirAll(goBin, 0o755); err != nil {
-		t.Fatalf("MkdirAll(goBin) error = %v", err)
-	}
-	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
-		t.Fatalf("WriteFile(binary) error = %v", err)
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	var gotCommand string
-	var gotArgs []string
-	service := NewService(Config{
-		CurrentVersion: "1.2.3",
-		ExecutablePath: binary,
-		GOOS:           "linux",
-		GOARCH:         "amd64",
-		Client: staticReleaseClient{
-			releases: []Release{{TagName: "v1.2.4"}},
-		},
-		Env: map[string]string{"GOBIN": goBin},
-		CommandRunner: func(_ context.Context, command string, args []string, out io.Writer, errOut io.Writer) error {
-			gotCommand = command
-			gotArgs = append(gotArgs, args...)
-			_, _ = fmt.Fprintln(out, "go install output")
-			return nil
-		},
-		BinaryVerifier: func(context.Context, string) (string, error) {
-			return "version: v1.2.4\ncommit: abc1234\n", nil
-		},
-	})
-
-	status, err := service.Apply(context.Background(), ApplyOptions{
-		AssumeYes: true,
-		Stdout:    &stdout,
-		Stderr:    &stderr,
-	})
-	if err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if status.Action != ActionUpdated {
-		t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
-	}
-	if gotCommand != "go" {
-		t.Fatalf("command = %q, want go", gotCommand)
-	}
-	if strings.Join(gotArgs, " ") != "install github.com/digitaldrywood/detent/cmd/detent@latest" {
-		t.Fatalf("args = %q, want go install module", gotArgs)
-	}
-	if !strings.Contains(stdout.String(), "go install output") {
-		t.Fatalf("stdout = %q, want streamed go install output", stdout.String())
-	}
-	if !strings.Contains(status.Message, "Installed Detent version: v1.2.4") {
-		t.Fatalf("Message = %q, want installed version", status.Message)
-	}
-	if !strings.Contains(status.Message, "Restart Detent") {
-		t.Fatalf("Message = %q, want restart note", status.Message)
-	}
-	if status.Command != moduleInstallCommand {
-		t.Fatalf("Command = %q, want %q", status.Command, moduleInstallCommand)
-	}
-}
-
-func TestServiceGoInstallPrereleasePinsSelectedTag(t *testing.T) {
-	t.Parallel()
-
-	tmp := t.TempDir()
-	goBin := filepath.Join(tmp, "gobin")
-	binary := filepath.Join(goBin, "detent")
-	if err := os.MkdirAll(goBin, 0o755); err != nil {
-		t.Fatalf("MkdirAll(goBin) error = %v", err)
-	}
-	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
-		t.Fatalf("WriteFile(binary) error = %v", err)
-	}
-
-	var gotArgs []string
-	service := NewService(Config{
-		CurrentVersion: "1.3.0-rc.1",
-		ExecutablePath: binary,
-		GOOS:           "linux",
-		GOARCH:         "amd64",
-		Client: staticReleaseClient{
-			releases: []Release{
-				{TagName: "v1.2.4"},
-				{TagName: "v1.3.0-rc.2", Prerelease: true},
-			},
-		},
-		Env: map[string]string{"GOBIN": goBin},
-		CommandRunner: func(_ context.Context, _ string, args []string, _ io.Writer, _ io.Writer) error {
-			gotArgs = append(gotArgs, args...)
-			return nil
-		},
-		BinaryVerifier: func(context.Context, string) (string, error) {
-			return "version: v1.3.0-rc.2\n", nil
-		},
-	})
-
-	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
-	if err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if strings.Join(gotArgs, " ") != "install github.com/digitaldrywood/detent/cmd/detent@v1.3.0-rc.2" {
-		t.Fatalf("args = %q, want go install pinned prerelease", gotArgs)
-	}
-	if status.Command != "go install github.com/digitaldrywood/detent/cmd/detent@v1.3.0-rc.2" {
-		t.Fatalf("Command = %q, want pinned prerelease command", status.Command)
-	}
-}
-
-func TestServiceGoInstallRefusesVersionMismatch(t *testing.T) {
-	t.Parallel()
-
-	tmp := t.TempDir()
-	goBin := filepath.Join(tmp, "gobin")
-	binary := filepath.Join(goBin, "detent")
-	if err := os.MkdirAll(goBin, 0o755); err != nil {
-		t.Fatalf("MkdirAll(goBin) error = %v", err)
-	}
-	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
-		t.Fatalf("WriteFile(binary) error = %v", err)
-	}
-
-	service := NewService(Config{
-		CurrentVersion: "1.3.0-rc.1",
-		ExecutablePath: binary,
-		GOOS:           "linux",
-		GOARCH:         "amd64",
-		Client: staticReleaseClient{
-			releases: []Release{
-				{TagName: "v1.2.4"},
-				{TagName: "v1.3.0-rc.2", Prerelease: true},
-			},
-		},
-		Env: map[string]string{"GOBIN": goBin},
-		CommandRunner: func(context.Context, string, []string, io.Writer, io.Writer) error {
-			return nil
-		},
-		BinaryVerifier: func(context.Context, string) (string, error) {
-			return "version: v1.2.4\n", nil
-		},
-	})
-
-	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
-	if err == nil {
-		t.Fatal("Apply() error = nil, want version mismatch")
-	}
-	if status.Action != ActionRefused {
-		t.Fatalf("Action = %q, want %q", status.Action, ActionRefused)
-	}
-	if !strings.Contains(status.Message, "does not match expected") {
-		t.Fatalf("Message = %q, want version mismatch", status.Message)
+	for _, tt := range []struct {
+		current string
+		tag     string
+	}{
+		{current: "1.2.3", tag: "v1.2.4"},
+		{current: "1.3.0-rc.1", tag: "v1.3.0-rc.2"},
+	} {
+		t.Run(tt.tag, func(t *testing.T) {
+			t.Parallel()
+			goBin := t.TempDir()
+			binary := filepath.Join(goBin, "detent")
+			if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			service := NewService(Config{
+				CurrentVersion: tt.current,
+				ExecutablePath: binary,
+				GOOS:           "linux",
+				GOARCH:         "amd64",
+				Client:         staticReleaseClient{releases: []Release{{TagName: tt.tag, Prerelease: strings.Contains(tt.tag, "-")}}},
+				Env:            map[string]string{"GOBIN": goBin},
+				BinaryVerifier: func(context.Context, string) (string, error) {
+					t.Fatal("attempted to replace the Go-managed binary")
+					return "", nil
+				},
+			})
+			status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
+			if !errors.Is(err, ErrRefused) || status.Action != ActionRefused {
+				t.Fatalf("Apply() = %+v, %v", status, err)
+			}
+			if status.Command != sourceUpdateCommand || !strings.Contains(status.Message, "prepared release source archive") {
+				t.Fatalf("missing supported build guidance: %+v", status)
+			}
+			data, err := os.ReadFile(binary)
+			if err != nil || string(data) != "old" {
+				t.Fatalf("original binary changed: %q, %v", data, err)
+			}
+		})
 	}
 }
 
@@ -1146,8 +1029,8 @@ func TestServiceGoInstallInteractiveAbortReturnsCommand(t *testing.T) {
 	if status.Action != ActionRefused {
 		t.Fatalf("Action = %q, want %q", status.Action, ActionRefused)
 	}
-	if status.Command != moduleInstallCommand {
-		t.Fatalf("Command = %q, want %q", status.Command, moduleInstallCommand)
+	if status.Command != sourceUpdateCommand {
+		t.Fatalf("Command = %q, want %q", status.Command, sourceUpdateCommand)
 	}
 	if !strings.Contains(status.Message, "Update aborted") {
 		t.Fatalf("Message = %q, want abort message", status.Message)

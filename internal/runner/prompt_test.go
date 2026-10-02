@@ -12,7 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
-	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -76,7 +75,7 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 				return
 			}
 			contract := prompt[index:]
-			for _, want := range []string{"override any tracker, Workpad, or pull request instructions", "Commit your work on the current attempt branch", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from your commits", "final message"} {
+			for _, want := range []string{"override any tracker, Workpad, or pull request instructions", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("contract missing %q", want)
 				}
@@ -114,6 +113,47 @@ func TestMergePromptHandsOffPushedHeadBeforeCI(t *testing.T) {
 			}
 			if tt.want && strings.Index(prompt, "Watch CI after pushing the head.") >= strings.Index(prompt, "## Merge CI handoff") {
 				t.Fatal("CI handoff must follow the project workflow instruction")
+			}
+		})
+	}
+}
+
+func TestSourcePromptHandsOffReadyHeadBeforeCI(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		state string
+		want  bool
+	}{
+		{state: "Todo", want: true},
+		{state: "Rework", want: true},
+		{state: "In Progress", want: true},
+		{state: "Merging"},
+		{state: "Human Review"},
+	} {
+		t.Run(tt.state, func(t *testing.T) {
+			workflow := config.Workflow{
+				Prompt: "Watch CI after pushing the head.",
+				Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}},
+			}
+			issue := connector.Issue{Identifier: "digitaldrywood/detent#3076", State: tt.state}
+			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := strings.Index(prompt, "## Source CI handoff")
+			if (index >= 0) != tt.want {
+				t.Fatalf("source CI handoff present = %t, want %t", index >= 0, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			if strings.Index(prompt, "Watch CI after pushing the head.") >= index {
+				t.Fatal("source CI handoff must follow the project workflow instruction")
+			}
+			for _, required := range []string{"required local gate", "full-diff review", "Workpad handoff", "current-head CI is the only remaining work", "without watching or waiting for CI", "failing check requires normal Rework", "required runtime evidence is unfinished"} {
+				if !strings.Contains(prompt[index:], required) {
+					t.Errorf("source CI handoff missing %q", required)
+				}
 			}
 		})
 	}
@@ -176,7 +216,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		WorkspacePath: workspace,
 		AutoBranch:    &autoBranch,
 		AvailableSkills: []skills.Skill{
-			{Name: "migrate", Description: "Add migrations.", WhenToUse: "Issue mentions schema changes.", BodyPath: "migrate.md"},
+			{Name: "migrate", Description: "Add migrations.", WhenToUse: "Issue mentions schema changes.", Aliases: []string{"schema-migration"}, BodyPath: "migrate.md"},
 		},
 	})
 	if err != nil {
@@ -202,7 +242,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"## Validation gate",
 		"Run `make check` from the workspace root",
 		"## Available skills",
-		"- migrate",
+		"- migrate (includes: schema-migration)",
 		"## Skill creation loop",
 		"Draft only reusable methods",
 		"Rerun validation after drafting; PR review approves it.",
@@ -215,7 +255,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		}
 	}
 	if strings.Contains(prompt, "Add migrations.") || strings.Contains(prompt, "Issue mentions schema changes.") {
-		t.Fatalf("prompt included skill description, want names only:\n%s", prompt)
+		t.Fatalf("prompt included skill description or trigger prose:\n%s", prompt)
 	}
 }
 
@@ -353,6 +393,11 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 	for _, opts := range []PromptOptions{{}, {WorkAttemptID: 5715, Generation: 68}} {
 		t.Run(strconv.FormatInt(opts.WorkAttemptID, 10), func(t *testing.T) {
 			prompt := appendBlockedHandoffBlock("", opts)
+			for _, required := range []string{"authoritative `## Codex Workpad` comment", "current context. Edit when permitted", "post a new comment with that heading/current status block", "Body/final-only status cannot supersede it", "Keep native/local writers", "Verified same-head/test-input evidence can publish a receipt", "Required verification, pending acceptance and human approvals remain", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve explicit pre-merge runtime evidence, human approvals, and project gates", "If no permitted post-integration owner exists, retain the original acceptance requirement"} {
+				if !strings.Contains(prompt, required) {
+					t.Fatalf("handoff lost acceptance ownership: %s", required)
+				}
+			}
 			blocks := strings.Split(prompt, "```detent-status\n")[1:]
 			if len(blocks) != 2 {
 				t.Fatalf("got %d examples, want 2", len(blocks))
@@ -381,15 +426,13 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 
 func TestPromptWrapperBytes(t *testing.T) {
 	t.Parallel()
-	loaded, err := skills.Load("../..", skills.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(loaded.Skills) != skills.DefaultMaxSkillsInPrompt {
-		t.Fatalf("fixture needs capped skills: %d", len(loaded.Skills))
+	// Keep the size fixture independent of the repository's changing catalog.
+	available := make([]skills.Skill, skills.DefaultMaxSkillsInPrompt)
+	for i := range available {
+		available[i] = skills.Skill{Name: "repository-skill-" + strconv.Itoa(i)}
 	}
 	workspacePath := t.TempDir()
-	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: loaded.Skills, WorkAttemptID: 5715, Generation: 68})
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: available, WorkAttemptID: 5715, Generation: 68})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,9 +441,9 @@ func TestPromptWrapperBytes(t *testing.T) {
 	}
 	// The wrapper budget measures authored text, not the worker's temp-root length.
 	size := len(strings.ReplaceAll(prompt, workspacePath, "/workspace")) - len("WORKFLOW")
-	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(loaded.Skills)))
-	if size >= 6000 {
-		t.Errorf("wrapper is %d bytes, want under 6000", size)
+	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(available)))
+	if size >= 7000 {
+		t.Errorf("wrapper is %d bytes, want under 7000", size)
 	}
 }
 
@@ -623,7 +666,6 @@ func TestBuildPromptAppendsTeamKnowledge(t *testing.T) {
 		"Use allowlist terminology.",
 		"### Project",
 		"Run project smoke tests.",
-		"## Handoff notes",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -635,8 +677,8 @@ func TestBuildPromptAppendsTeamKnowledge(t *testing.T) {
 	if strings.Index(prompt, "Use allowlist terminology.") > strings.Index(prompt, "Run project smoke tests.") {
 		t.Fatalf("prompt knowledge order = %q, want global before project", prompt)
 	}
-	if strings.Index(prompt, "## Team knowledge") > strings.Index(prompt, "## Handoff notes") {
-		t.Fatalf("prompt places handoff notes before team knowledge:\n%s", prompt)
+	if strings.Index(prompt, "## Team knowledge") > strings.Index(prompt, "## Blocked handoff") {
+		t.Fatalf("prompt places the completion contract before team knowledge:\n%s", prompt)
 	}
 }
 
@@ -665,16 +707,17 @@ func TestBuildPromptReturnsKnowledgeReadError(t *testing.T) {
 	}
 }
 
-func TestBuildPromptAppendsNotesAndPriorAttempt(t *testing.T) {
+func TestBuildPromptUsesPriorAttemptWithoutRepoNotes(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
 	notesPath := filepath.Join(workspace, ".detent", "notes.md")
-	if err := notes.Append(notesPath, notes.Entry{
-		Title: "Implementation handoff",
-		Body:  "Key file: internal/runner/prompt.go\nValidation: go test ./internal/runner",
-	}, notes.AppendOptions{Now: time.Date(2026, 7, 2, 21, 45, 0, 0, time.UTC)}); err != nil {
-		t.Fatalf("append note: %v", err)
+	const note = "Existing user handoff notes"
+	if err := os.MkdirAll(filepath.Dir(notesPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(notesPath, []byte(note), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	prompt, err := BuildPrompt(config.Workflow{
@@ -706,11 +749,6 @@ func TestBuildPromptAppendsNotesAndPriorAttempt(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"## Handoff notes",
-		"Verify prior notes",
-		"Maintain `.detent/notes.md`",
-		"## 2026-07-02T21:45:00Z - Implementation handoff",
-		"Key file: internal/runner/prompt.go",
 		"## Prior attempt handoff",
 		"- source: auto_promote",
 		"- failing gate reason: validator_rework",
@@ -722,6 +760,13 @@ func TestBuildPromptAppendsNotesAndPriorAttempt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, note) || !strings.Contains(prompt, repositoryHandoffContract) || !strings.Contains(prompt, "```detent-status") {
+		t.Fatal("repository notes replaced the current handoff contract")
+	}
+	after, err := os.ReadFile(notesPath)
+	if err != nil || string(after) != note {
+		t.Fatalf("existing notes changed: %v", err)
 	}
 }
 
@@ -965,7 +1010,8 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 	t.Parallel()
 
 	patch := "diff --git a/README.md b/README.md\n+seeded validator diff\n"
-	stat := workspace.DiffStat{Files: 1, Added: 1}
+	stat := workspace.DiffStat{Files: 1, Added: 1, HeadSHA: "physical-head", HeadObservedAt: time.Now()}
+	clean := workspace.DiffStat{HeadSHA: "physical-head", HeadObservedAt: time.Now()}
 
 	tests := []struct {
 		name      string
@@ -973,6 +1019,12 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 		want      []string
 		forbidden []string
 	}{
+		{
+			name:      "clean physical observation",
+			opts:      ValidatorPromptOptions{DiffStat: &clean},
+			want:      []string{"Stat: 0 files changed", "Full diff: no workspace changes detected."},
+			forbidden: []string{"Full diff omitted because", "physical-head"},
+		},
 		{
 			name: "inline diff under threshold",
 			opts: ValidatorPromptOptions{
@@ -1148,6 +1200,13 @@ func TestBuildPromptIncludesStrandedWorkspaceRecovery(t *testing.T) {
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, commits := range []int{0, 1} {
+		state := &workspace.RecoveryState{UnpushedCommits: commits, DiffStat: workspace.DiffStat{HeadSHA: "physical-head", HeadObservedAt: time.Now()}}
+		cleanPrompt := appendWorkspaceRecoveryBlock("base", state)
+		if strings.Contains(cleanPrompt, "diffstat:") || (commits == 0 && cleanPrompt != "base") || (commits == 1 && !strings.Contains(cleanPrompt, "unpushed commits: 1")) {
+			t.Fatalf("clean recovery observation changed prompt: %q", cleanPrompt)
 		}
 	}
 }
@@ -1386,116 +1445,53 @@ func TestBuildAdmissionPromptUsesCurrentDependencyEvidence(t *testing.T) {
 	}
 }
 
-func TestBuildPromptCapsFailedRunNotes(t *testing.T) {
+func TestPromptDoesNotUseRepositoryNotes(t *testing.T) {
 	t.Parallel()
-	for _, count := range []int{0, 1, 40, 41, 100} {
-		t.Run(strconv.Itoa(count), func(t *testing.T) {
-			t.Parallel()
-			workspace := t.TempDir()
-			path := filepath.Join(workspace, ".detent", "notes.md")
-			var lines []string
-			for i := range count {
-				lines = append(lines, "output-line-"+strconv.Itoa(i))
-			}
-			entries := []notes.Entry{
-				{Title: "Implementation handoff", Body: "preserve earlier context"},
-				{Title: "Failed run output tail", Body: "obsolete failure"},
-				{Title: "Implementation handoff", Body: "preserve intervening context"},
-				{Title: "Failed run output tail", Body: failedRunNoteBody(RunResult{Output: strings.Join(lines, "\n")}, nil)},
-				{Title: "Implementation handoff", Body: "preserve later context"},
-			}
-			for i, entry := range entries {
-				if err := notes.Append(path, entry, notes.AppendOptions{Now: time.Date(2026, 9, 14, 0, i, 0, 0, time.UTC)}); err != nil {
-					t.Fatal(err)
+	for _, profile := range []string{"code", "plan", "merge fallback", "native"} {
+		for _, exists := range []bool{false, true} {
+			t.Run(profile+"/exists="+strconv.FormatBool(exists), func(t *testing.T) {
+				t.Parallel()
+				path := t.TempDir()
+				notePath := filepath.Join(path, ".detent", "notes.md")
+				const notes = "Private notes from a different issue"
+				if exists {
+					if err := os.MkdirAll(filepath.Dir(notePath), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(notePath, []byte(notes), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				}
-			}
-			before, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{}, PromptOptions{WorkspacePath: workspace})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if strings.Count(prompt, " - Failed run output tail") != 1 || strings.Contains(prompt, "obsolete failure") {
-				t.Fatal("prompt retained obsolete failure")
-			}
-			for _, text := range []string{"preserve earlier context", "preserve intervening context", "preserve later context", "- final_state: failed"} {
-				if !strings.Contains(prompt, text) {
-					t.Errorf("prompt missing %q", text)
+				workflow := config.Workflow{Prompt: "Current issue"}
+				opts := PromptOptions{WorkspacePath: path, PlanOnly: profile == "plan", MergeFallback: profile == "merge fallback"}
+				if profile == "native" {
+					workflow.Config.Tracker.Kind = config.TrackerHubNative
 				}
-			}
-			want := lines[max(0, len(lines)-40):]
-			if strings.Count(prompt, "output-line-") != len(want) {
-				t.Errorf("output line count = %d, want %d", strings.Count(prompt, "output-line-"), len(want))
-			}
-			if len(want) > 0 && !strings.Contains(prompt, "```text\n"+strings.Join(want, "\n")+"\n```") {
-				t.Error("prompt missing fenced latest output tail")
-			}
-			after, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(before) != string(after) {
-				t.Fatal("prompt rendering modified persisted notes")
-			}
-		})
-	}
-}
-
-func TestBuildPromptIgnoresFencedNoteHeadings(t *testing.T) {
-	t.Parallel()
-	for _, title := range []string{"Implementation handoff", "Failed run output tail"} {
-		t.Run(title, func(t *testing.T) {
-			t.Parallel()
-			workspace := t.TempDir()
-			path := filepath.Join(workspace, ".detent", "notes.md")
-			embedded := "## 2099-01-01T00:00:00Z - " + title
-			oldOutput := "old-start\n" + embedded + "\n" + strings.Repeat("obsolete-output\n", 100)
-			latestOutput := "latest-start\n" + embedded + "\n" + strings.Repeat("latest-output\n", 60)
-			for i, output := range []string{oldOutput, latestOutput} {
-				err := notes.Append(path, notes.Entry{Title: "Failed run output tail", Body: failedRunNoteBody(RunResult{Output: output}, nil)}, notes.AppendOptions{Now: time.Date(2026, 9, 14, 0, i, 0, 0, time.UTC)})
+				prompt, err := BuildPrompt(workflow, connector.Issue{Identifier: "owner/repo#1"}, opts)
 				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			if err := notes.Append(path, notes.Entry{Title: "Implementation handoff", Body: "keep neighboring note"}, notes.AppendOptions{}); err != nil {
-				t.Fatal(err)
-			}
-			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{}, PromptOptions{WorkspacePath: workspace})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if strings.Contains(prompt, "obsolete-output") || strings.Contains(prompt, "latest-start") || strings.Contains(prompt, embedded) {
-				t.Fatal("prompt retained output preceding the latest 40 lines")
-			}
-			if got := strings.Count(prompt, "latest-output"); got != 40 {
-				t.Fatalf("latest output lines = %d, want 40", got)
-			}
-			if !strings.Contains(prompt, "keep neighboring note") {
-				t.Fatal("lost neighboring note")
-			}
-		})
-	}
-}
-
-func TestCompactFailedRunNotesPreservesPrefix(t *testing.T) {
-	t.Parallel()
-	const first = "## 2026-09-14T00:00:00Z - Failed run output tail\nold failure\n"
-	const last = "## 2026-09-14T00:01:00Z - Failed run output tail\nlatest failure\n"
-	for _, tt := range []struct{ name, input, want string }{
-		{"empty", "", ""},
-		{"no headings", "handoff\n", "handoff\n"},
-		{"no failures", "preamble\n## 2026-09-14T00:00:00Z - Handoff\nkeep\n", "preamble\n## 2026-09-14T00:00:00Z - Handoff\nkeep\n"},
-		{"first heading is failure", first + last, strings.TrimRight(last, "\n")},
-		{"preamble before removed failure", "preamble\n\n" + first + last, "preamble\n\n" + strings.TrimRight(last, "\n")},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := compactFailedRunNotes(tt.input); got != tt.want {
-				t.Fatalf("compactFailedRunNotes() = %q, want %q", got, tt.want)
-			}
-		})
+				for _, absent := range []string{notes, "Maintain `.detent/notes.md`", "## Handoff notes", "Verify prior notes"} {
+					if strings.Contains(prompt, absent) {
+						t.Fatalf("prompt injected repository notes: %q", absent)
+					}
+				}
+				contract := "```detent-status"
+				if profile == "native" {
+					contract = "Native completion contract"
+				}
+				if !strings.Contains(prompt, contract) || !strings.Contains(prompt, repositoryHandoffContract) {
+					t.Fatalf("current handoff contract missing: %q", contract)
+				}
+				after, err := os.ReadFile(notePath)
+				if exists && (err != nil || string(after) != notes) {
+					t.Fatalf("existing notes changed: %v", err)
+				}
+				if !exists && !os.IsNotExist(err) {
+					t.Fatalf("prompt created repository notes: %v", err)
+				}
+			})
+		}
 	}
 }
 
@@ -1570,5 +1566,31 @@ func TestBuildPromptGoTestScopeFollowsGoModule(t *testing.T) {
 				t.Fatalf("Go test scope block missing targeted-package guidance:\n%s", prompt)
 			}
 		})
+	}
+}
+
+func TestPlanOnlyPromptOmitsCIImplementationHandoff(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"Todo", "Rework", "In Progress", "Merging"} {
+		t.Run(state, func(t *testing.T) {
+			workflow := config.Workflow{Prompt: "Prepare a plan.", Config: config.Config{Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest}}}
+			prompt, err := BuildPrompt(workflow, connector.Issue{Identifier: "digitaldrywood/detent#3076", State: state}, PromptOptions{PlanOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"## Source CI handoff", "## Merge CI handoff", "Complete the source changes"} {
+				if strings.Contains(prompt, forbidden) {
+					t.Fatalf("plan-only prompt contains %q", forbidden)
+				}
+			}
+		})
+	}
+	workflow := config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Plan: gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated}}}
+	prompt, err := BuildPrompt(workflow, connector.Issue{State: "Todo"}, PromptOptions{PlanOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "automated plan review should be posted") || !strings.Contains(prompt, "include a `## Detent Plan Review` section") {
+		t.Fatal("native plan prompt did not return review evidence to the orchestrator")
 	}
 }

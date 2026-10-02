@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -88,8 +89,56 @@ func (b *AgentBackend) runTurn(
 	ctx = withWorkerTempDir(ctx, req.TempDir)
 	ctx = withAgentProcess(ctx, runner.AgentProcessRequest{Workspace: req.Workspace, Environment: req.Environment})
 	restricted := req.ReadOnly || (len(tools) > 0 && !req.SupplementalTools)
+	options := b.options
+	runtimeRoots := isolationRuntimeRoots(options.PermissionProfile, req)
+	var settings map[string]any
 	var err error
-	req.ExtraWritableRoots, err = hostCacheWritableRoots(ctx, b.options, req.ExtraWritableRoots, restricted)
+	if options.IsolationPolicy != nil {
+		policy, pinned := isolation.FromContext(ctx)
+		var policyErr error
+		if !pinned {
+			policy, policyErr = options.IsolationPolicy()
+		}
+		if policyErr != nil {
+			return runner.AgentTurnResult{}, policyErr
+		}
+		policy.WritableRoots = append([]string{req.Workspace, req.TempDir}, req.ExtraWritableRoots...)
+		policy.WritableRoots = appendUniqueStrings(nil, policy.WritableRoots...)
+		cacheOptions := Options{ThreadSandbox: "workspace-write", TurnSandboxPolicy: map[string]any{"type": "workspaceWrite"}}
+		if policy.Tier == isolation.Sandbox {
+			policy.WritableRoots, err = hostCacheWritableRoots(ctx, cacheOptions, policy.WritableRoots, restricted)
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+		}
+		mapped, config, mapErr := IsolationSettings(policy)
+		if mapErr != nil {
+			return runner.AgentTurnResult{}, mapErr
+		}
+		options.ApprovalPolicy, options.ThreadSandbox, options.TurnSandboxPolicy = mapped.ApprovalPolicy, mapped.ThreadSandbox, mapped.TurnSandboxPolicy
+
+		options.PermissionProfile = mapped.PermissionProfile
+		settings = config
+		if options.PermissionProfile != "" {
+			runtimeRoots = policy.WritableRoots
+			if restricted {
+				permissions, ok := settings["permissions"].(map[string]any)
+				if !ok {
+					return runner.AgentTurnResult{}, errors.New("codex isolation permissions are unavailable")
+				}
+				profile, ok := permissions[options.PermissionProfile].(map[string]any)
+				if !ok {
+					return runner.AgentTurnResult{}, errors.New("codex isolation profile is unavailable")
+				}
+				profile["filesystem"] = map[string]any{"/": "read", ":workspace_roots": "read"}
+				profile["network"] = map[string]any{"enabled": false}
+				settings["features.network_proxy"] = false
+			}
+			options.ThreadSandbox, options.TurnSandboxPolicy = "", nil
+		}
+	} else {
+		req.ExtraWritableRoots, err = hostCacheWritableRoots(ctx, options, req.ExtraWritableRoots, restricted)
+	}
 	if err != nil {
 		return runner.AgentTurnResult{}, err
 	}
@@ -111,10 +160,13 @@ func (b *AgentBackend) runTurn(
 		TempDir:                 req.TempDir,
 		ResumeThreadID:          req.Resume.ThreadID,
 		DeveloperInstructions:   toolTurnInstructions(instructionTools, req.ToolInstructions),
-		ApprovalPolicy:          approvalPolicy(b.options.ApprovalPolicy, restricted),
+		Config:                  settings,
+		Permissions:             options.PermissionProfile,
+		RuntimeWorkspaceRoots:   runtimeRoots,
+		ApprovalPolicy:          approvalPolicy(options.ApprovalPolicy, restricted),
 		MCPElicitationPolicy:    mcpElicitationPolicy(b.options.DeliverableElicitationAllowlist, req, restricted),
-		ThreadSandbox:           threadSandbox(b.options.ThreadSandbox, restricted),
-		TurnSandboxPolicy:       turnSandboxPolicy(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots, restricted),
+		ThreadSandbox:           threadSandbox(options.ThreadSandbox, restricted),
+		TurnSandboxPolicy:       turnSandboxPolicy(options.ThreadSandbox, options.TurnSandboxPolicy, req.ExtraWritableRoots, restricted),
 		Model:                   req.Model,
 		ModelProvider:           req.ModelProvider,
 		ServiceTier:             req.ServiceTier,
@@ -264,6 +316,8 @@ func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 		ItemID:              update.ItemID,
 		Tool:                update.Tool,
 		Command:             update.Command,
+		NativeActions:       update.NativeActions,
+		CWD:                 update.CWD,
 		Delta:               update.Delta,
 		Status:              update.Status,
 		ExitCode:            update.ExitCode,

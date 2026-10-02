@@ -15,11 +15,13 @@
 
 ## Workflow
 
+- Follow [AGENTS.md issue authoring](AGENTS.md#issue-authoring) for new work: use the selected project's supplied tracker authority and supported context. Repository identity and PR landing do not select the issue tracker.
 - Work from a Detent-created worktree branch, never directly on `develop` or `main`. Branch from and target `develop`; `main` is production (see [docs/branching.md](docs/branching.md)).
 - Keep generated files and runtime output inside the current worktree.
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.
 - Before implementation, confirm dependencies listed in the issue are merged into `origin/develop`.
 - Keep changes scoped to the active issue.
+- Publish Workpad status through the project's existing tracker owner. For comment-based Workpads, update the authoritative `## Codex Workpad` comment, or post a new canonical comment when editing is unavailable. An issue-body or final-answer status does not supersede an existing canonical comment. Preserve native/local event ownership.
 - Run `make generate` before committing when templates, sqlc queries, or CSS inputs change.
 - Commit only when explicitly requested by the workflow or human, and use conventional commit messages.
 
@@ -53,7 +55,7 @@ of interacting self-protection mechanisms (brakes, breakers, leases, parks,
 recovery sweeps, revocations, reconcilers). Their interactions are now the main
 source of incidents.
 
-- INV-11: features and new or expanded mechanisms require explicit human scope approval before Todo; assistants file them to Backlog only.
+- INV-11: only new or expanded mechanisms require explicit human scope approval before Todo; assistants file them to Backlog. Features that do not add or expand mechanisms may be filed straight to Todo.
 - Do not add a new brake, breaker, lease, park, recovery path, revocation,
   reason code, or reconciliation loop.
 - A fix for a misbehaving mechanism must remove or consolidate a mechanism, or
@@ -70,15 +72,17 @@ source of incidents.
 ## Validation
 
 - Follow the validation rule in [AGENTS.md](AGENTS.md#validation).
+- Follow [deployment and release failure reporting](AGENTS.md#deployment-and-release-failure-reporting): genuine Detent source blockers require at least High priority through the existing native owners, preserving Urgent, Backlog, imported history and operator holds. Instance failures remain instance-owned. Scheduled release validation is separate from ordinary issue merging; do not demand local-gate publication or blocking CI.
 - New or modified Go behavior requires focused table-driven tests using only the standard library.
+- Add a test only when it asserts a behavior no existing test asserts; extend an existing table or fixture before adding a sibling function. No tests for generated code, documentation text, or coverage numbers. Rationale: [docs/test-suite-audit.md](docs/test-suite-audit.md).
 - Generated Go files such as `*_templ.go` and sqlc output do not need hand-written tests.
 
 ### Safety-critical orchestrator validation
 
 - `internal/orchestrator/implement_progress.go`, `internal/orchestrator/backend_capacity.go`, `internal/orchestrator/spend_progress.go`, `internal/orchestrator/ranking.go`, `internal/scheduler/global_gate.go`, and the capacity path in `internal/admission/manager.go` are safety-critical brakes and dispatch controls.
-- Changes to these files must preserve their exact-file coverage floor of at least 90% in `scripts/coverage-exceptions.txt`.
-- Changes to their comparison, signature, time-window, ordering, reservation, or capacity-cleanup logic must preserve the seed cases and pass `FuzzSafetyCriticalOrchestratorBoundaries`, which covers diffstat cleanliness, signature equality, capacity resume arithmetic, spend-progress baselines, dispatch ordering, and priority-only real-capacity acquisition.
-- Run `go test ./internal/orchestrator -run '^$' -fuzz=. -fuzztime=30s` before submitting such changes.
+- Changes to these files must preserve meaningful safety regression coverage. Changes to their comparison, signature, time-window, ordering, reservation, or capacity-cleanup logic must preserve the seed cases in `FuzzSafetyCriticalOrchestratorBoundaries`, which covers diffstat cleanliness, signature equality, capacity resume arithmetic, spend-progress baselines, dispatch ordering, and priority-only real-capacity acquisition.
+- The [scheduled suite](docs/invariants.md#inv-5--local-pull-request-validation-and-scheduled-release-evidence) retains the exact-file coverage floors of at least 90% in [scripts/coverage-exceptions.txt](scripts/coverage-exceptions.txt) and execution of the boundary fuzz seeds on pinned integrated `develop` commits.
+- Focused coverage and fuzzing are available as diagnostics during an edit; for example, `go test ./internal/orchestrator -run '^$' -fuzz=. -fuzztime=30s`. Under [AGENTS.md validation](AGENTS.md#validation), ordinary submission, completion, admission, and merge do not wait for a coverage percentage, fuzz duration, local status, or scheduled run.
 
 ## Diagnosis
 

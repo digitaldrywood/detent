@@ -2,16 +2,25 @@ package tracker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/mutation"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 )
 
 const NativeProtocolMajor = 2
 
+const NativeDispatchPriorityCapability = "dispatch_priority"
+
 const NativeProviderCapacityCapability = "provider_capacity_reservations"
+const NativeCheckoutRepositoryCapability = "runner_checkout_repository"
+const NativeRunnerCapacityCapability = "runner_capacity_configuration"
+const NativeLocalChecksCapability = "runner_local_checks"
 
 // NativeWorkspaceCapability is declared by a runner's workspace lane on its
 // claim. It is what separates the lane that holds a workspace session open
@@ -51,11 +60,13 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
-	IgnoreDependencies bool `json:"ignore_dependencies,omitempty"`
+	LinkedSource       *LinkedIssueSource `json:"linked_source,omitempty"`
+	IgnoreDependencies bool               `json:"ignore_dependencies,omitempty"`
 	NativeReference
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	State              string              `json:"state"`
+	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`
 	Priority           *int                `json:"priority,omitempty"`
 	Labels             []string            `json:"labels"`
@@ -156,13 +167,14 @@ type Mutation struct {
 
 type CreateIssue struct {
 	Mutation
-	Title      string      `json:"title"`
-	Body       string      `json:"body"`
-	State      string      `json:"state"`
-	Priority   *int        `json:"priority,omitempty"`
-	Labels     []string    `json:"labels"`
-	Assignees  []string    `json:"assignees"`
-	Provenance *Provenance `json:"provenance,omitempty"`
+	GitHubIssueURL string      `json:"github_issue_url,omitempty"`
+	Title          string      `json:"title"`
+	Body           string      `json:"body"`
+	State          string      `json:"state"`
+	Priority       *int        `json:"priority,omitempty"`
+	Labels         []string    `json:"labels"`
+	Assignees      []string    `json:"assignees"`
+	Provenance     *Provenance `json:"provenance,omitempty"`
 }
 
 // PriorityPatch is the priority member of UpdateIssue.
@@ -301,16 +313,17 @@ type CollaborationEvent struct {
 }
 
 type CollaborationData struct {
-	Change            *NativeChangeReference `json:"change,omitempty"`
-	Run               *NativeRunData         `json:"run,omitempty"`
-	Revision          Revision               `json:"revision,string,omitempty"`
-	Fields            []string               `json:"fields,omitempty"`
-	CommentID         string                 `json:"comment_id,omitempty"`
-	RelatedWorkItemID NativeWorkItemID       `json:"related_work_item_id,omitempty"`
-	Operation         string                 `json:"operation,omitempty"`
-	FromState         string                 `json:"from_state,omitempty"`
-	ToState           string                 `json:"to_state,omitempty"`
-	Reason            string                 `json:"reason,omitempty"`
+	Decision          *NativeSchedulerDecision `json:"decision,omitempty"`
+	Change            *NativeChangeReference   `json:"change,omitempty"`
+	Run               *NativeRunData           `json:"run,omitempty"`
+	Revision          Revision                 `json:"revision,string,omitempty"`
+	Fields            []string                 `json:"fields,omitempty"`
+	CommentID         string                   `json:"comment_id,omitempty"`
+	RelatedWorkItemID NativeWorkItemID         `json:"related_work_item_id,omitempty"`
+	Operation         string                   `json:"operation,omitempty"`
+	FromState         string                   `json:"from_state,omitempty"`
+	ToState           string                   `json:"to_state,omitempty"`
+	Reason            string                   `json:"reason,omitempty"`
 }
 
 type Page[T any] struct {
@@ -336,22 +349,26 @@ type NativeProject struct {
 }
 
 type NativeClaim struct {
-	ProviderCandidates []NativeCapacityCandidate `json:"provider_candidates,omitempty"`
-	PolicyID           string                    `json:"policy_id"`
-	WorkItemID         NativeWorkItemID          `json:"work_item_id,omitempty"`
-	MachineID          MachineID                 `json:"machine_id"`
-	SessionID          string                    `json:"session_id"`
-	TTLSeconds         int64                     `json:"ttl_seconds"`
-	ProtocolMajor      int                       `json:"protocol_major"`
-	Capabilities       []string                  `json:"capabilities"`
-	WorkflowStates     []string                  `json:"workflow_states,omitempty"`
-	Authors            []string                  `json:"authors,omitempty"`
-	Assignees          []string                  `json:"assignees,omitempty"`
-	LabelInclude       []string                  `json:"label_include,omitempty"`
-	LabelExclude       []string                  `json:"label_exclude,omitempty"`
+	DispatchPriorityByState []string                  `json:"dispatch_priority_by_state,omitempty"`
+	DispatchPriorityByLabel []string                  `json:"dispatch_priority_by_label,omitempty"`
+	PrioritizeUnblockers    bool                      `json:"prioritize_unblockers,omitempty"`
+	ProviderCandidates      []NativeCapacityCandidate `json:"provider_candidates,omitempty"`
+	PolicyID                string                    `json:"policy_id"`
+	WorkItemID              NativeWorkItemID          `json:"work_item_id,omitempty"`
+	MachineID               MachineID                 `json:"machine_id"`
+	SessionID               string                    `json:"session_id"`
+	TTLSeconds              int64                     `json:"ttl_seconds"`
+	ProtocolMajor           int                       `json:"protocol_major"`
+	Capabilities            []string                  `json:"capabilities"`
+	WorkflowStates          []string                  `json:"workflow_states,omitempty"`
+	Authors                 []string                  `json:"authors,omitempty"`
+	Assignees               []string                  `json:"assignees,omitempty"`
+	LabelInclude            []string                  `json:"label_include,omitempty"`
+	LabelExclude            []string                  `json:"label_exclude,omitempty"`
 }
 
 type NativeLease struct {
+	IsolationPolicy     *isolation.Policy             `json:"isolation_policy,omitempty"`
 	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`
 	ServerTime          time.Time                     `json:"server_time"`
 	PolicyID            string                        `json:"policy_id"`
@@ -388,19 +405,20 @@ type NativeLeaseMutation struct {
 }
 
 type NativeRunData struct {
-	Sequence     int64                    `json:"sequence,string,omitempty"`
-	Identity     *NativeExecutionIdentity `json:"identity,omitempty"`
-	MachineID    MachineID                `json:"machine_id,omitempty"`
-	RunnerID     string                   `json:"runner_id,omitempty"`
-	SessionID    string                   `json:"session_id,omitempty"`
-	Handoff      *NativeCheckpoint        `json:"handoff,omitempty"`
-	LeaseID      LeaseID                  `json:"lease_id"`
-	FencingToken FencingToken             `json:"fencing_token,string"`
-	RunID        string                   `json:"run_id"`
-	AttemptID    string                   `json:"attempt_id"`
-	PolicyID     string                   `json:"policy_id"`
-	Outcome      string                   `json:"outcome,omitempty"`
-	ArtifactIDs  []string                 `json:"artifact_ids,omitempty"`
+	Runtime      *NativeRuntimeObservation `json:"runtime,omitempty"`
+	Sequence     int64                     `json:"sequence,string,omitempty"`
+	Identity     *NativeExecutionIdentity  `json:"identity,omitempty"`
+	MachineID    MachineID                 `json:"machine_id,omitempty"`
+	RunnerID     string                    `json:"runner_id,omitempty"`
+	SessionID    string                    `json:"session_id,omitempty"`
+	Handoff      *NativeCheckpoint         `json:"handoff,omitempty"`
+	LeaseID      LeaseID                   `json:"lease_id"`
+	FencingToken FencingToken              `json:"fencing_token,string"`
+	RunID        string                    `json:"run_id"`
+	AttemptID    string                    `json:"attempt_id"`
+	PolicyID     string                    `json:"policy_id"`
+	Outcome      string                    `json:"outcome,omitempty"`
+	ArtifactIDs  []string                  `json:"artifact_ids,omitempty"`
 	// Usage is what the attempt has spent so far, one entry per provider and
 	// model (decisions section 17.5). A runner that reports none leaves the
 	// field out, so the event is byte-identical to what it was before.
@@ -413,4 +431,36 @@ type NativeRunEvent struct {
 	SchemaVersion int           `json:"schema_version"`
 	OccurredAt    time.Time     `json:"occurred_at,omitempty"`
 	Data          NativeRunData `json:"data"`
+}
+
+// MutationForContext forwards the application retry identity without deriving
+// business identity from an HTTP/JSON-RPC request or including sensitive input.
+func MutationForContext(ctx context.Context, fallback string) Mutation {
+	if m, ok := mutation.FromContext(ctx); ok && m.RetryIdentity != "" {
+		return Mutation{IdempotencyKey: m.RetryIdentity}
+	}
+	return Mutation{IdempotencyKey: fallback}
+}
+
+// NativeLabel is the existing project's label-picker read model.
+type NativeLabel struct {
+	Name  string `json:"name"`
+	Color string `json:"color"`
+	// Count orders the existing project label-picker suggestions by usage.
+	Count int `json:"count"`
+}
+
+// WithExpectedRevision carries an operator command's optimistic precondition
+// to the native connector while the orchestrator owns the lane write.
+type expectedRevisionKey struct{}
+
+func WithExpectedRevision(ctx context.Context, revision Revision) context.Context {
+	return context.WithValue(ctx, expectedRevisionKey{}, revision)
+}
+func ExpectedRevision(ctx context.Context) Revision {
+	revision, ok := ctx.Value(expectedRevisionKey{}).(Revision)
+	if !ok {
+		return 0
+	}
+	return revision
 }

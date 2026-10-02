@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry"
@@ -131,7 +134,7 @@ func TestCloudRegistryAndKeyCommands(t *testing.T) {
 		err := cmd.Execute()
 		return output.String(), err
 	}
-	register := []string{"registry", "register", "--registry", registry, "--organization", "org_example", "--provider-organization", "org_workos", "--name", "Example", "--endpoint", "unix:/run/detent/tenants/org_example.sock", "--generation", "1"}
+	register := []string{"registry", "register", "--registry", registry, "--organization", "org_example", "--provider-organization", "org_workos", "--name", "Example", "--endpoint", "unix:" + filepath.Join(t.TempDir(), "org_example.sock"), "--generation", "1"}
 	for _, want := range []string{`"changed":true`, `"changed":false`} {
 		output, err := run(nil, register...)
 		if err != nil || !strings.Contains(output, want) {
@@ -198,12 +201,86 @@ func TestCloudAllocationGeneratesTenantConfiguration(t *testing.T) {
 	if err := os.WriteFile(tenantPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tenant, _, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
+	tenant, enabled, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
 	if err != nil {
 		t.Fatalf("generated tenant configuration is invalid: %v\n%s", err, raw)
 	}
+	if !enabled || tenant == nil {
+		t.Fatal("generated tenant configuration did not enable hosting")
+	}
 	if tenant.OrganizationID != "org_tenant" || tenant.WorkOSOrganizationID != "org_workos" || tenant.SharedEntry == nil || tenant.SharedEntry.Generation != 1 || tenant.BootstrapSubject != "" {
 		t.Fatalf("tenant = %+v", tenant)
+	}
+	for _, test := range []struct {
+		name, policy      string
+		wrongOrganization bool
+	}{
+		{name: "absent"},
+		{name: "disabled", policy: "enabled: false\nterminal: {enabled: false, isolation: sandbox, record: false}"},
+		{name: "files only", policy: "enabled: true\nterminal: {enabled: false, isolation: sandbox}"},
+		{name: "terminal policy", policy: "enabled: true\nrequest_timeout: 3m\nretain_after_run: 10m\nidle_timeout: 15m\nmax_lifetime: 2h\nperson_max_open: 2\nplan: {max_open: 7}\nrelay: {memory: 64MB}\nfiles: {deny: [private/**]}\nterminal: {enabled: true, isolation: container, record: false}"},
+		{name: "wrong organization", policy: "enabled: true", wrongOrganization: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var prior hostedFileConfig
+			if err := yaml.Unmarshal(raw, &prior); err != nil {
+				t.Fatal(err)
+			}
+			if test.policy != "" {
+				prior.Workspaces = &hostedWorkspaceFileConfig{}
+				if err := yaml.Unmarshal([]byte(test.policy), prior.Workspaces); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.wrongOrganization {
+				prior.OrganizationID = "org_other"
+			}
+			directory := t.TempDir()
+			spec := cloudentry.TenantSpec{Directory: directory, Organization: cloudentry.Organization{ID: "org_tenant", ProviderID: "org_workos", Generation: 2}, PublicURL: "https://hub.example.test", Issuer: "detent-cloud", PublicKey: cloudassert.PublicKeyOf(key)}
+			for generation := int64(2); generation <= 3; generation++ {
+				encoded, err := yaml.Marshal(prior)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(directory, "tenant.yaml"), encoded, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				spec.Organization.Generation = generation
+				generated, err := launcher.Configure(spec)
+				if test.wrongOrganization {
+					if err == nil {
+						t.Fatal("another organization's workspace policy was accepted")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				var next hostedFileConfig
+				if err := yaml.Unmarshal(generated, &next); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(next.Workspaces, prior.Workspaces) {
+					t.Fatal("tenant workspace policy changed during generation")
+				}
+				next.Workspaces, prior.Workspaces = nil, nil
+				prior.SharedEntry.AllocationGeneration = generation
+				if !reflect.DeepEqual(next, prior) {
+					t.Fatal("unrelated tenant settings changed")
+				}
+				if err := yaml.Unmarshal(generated, &prior); err != nil {
+					t.Fatal(err)
+				}
+			}
+			other, err := launcher.Configure(cloudentry.TenantSpec{Directory: t.TempDir(), Organization: cloudentry.Organization{ID: "org_other", ProviderID: "org_other", Generation: 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var unrelated hostedFileConfig
+			if err := yaml.Unmarshal(other, &unrelated); err != nil || unrelated.Workspaces != nil {
+				t.Fatal("workspace policy propagated to another tenant")
+			}
+		})
 	}
 }
 
@@ -211,7 +288,7 @@ func TestCloudBillingConfiguration(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
 	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
-	allocation := "allocation:\n  tenant_root: /t\n  socket_root: /s\n  binary: /bin/detent\n  max_tenants: 2\n  entitlements:\n    base: {id: free, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: free, version: 1, features: [collaboration], allowances: {projects: 3}}\n      - {id: team, version: 1, features: [collaboration], allowances: {projects: 30}}\n  billing:\n    mode: MODE\n    account_id: acct_fixture\n    portal_configuration_id: bpc_fixture\n    api_key_env: DETENT_STRIPE_TEST_KEY\n    webhook_secret_env: DETENT_STRIPE_TEST_WEBHOOK_SECRET\n    grace_seconds: 3600\n    reconcile_seconds: 120\n    prices:\n      - {price_id: price_team, label: Team, plan: {id: team, version: 1}}\n"
+	allocation := "allocation:\n  tenant_root: /t\n  socket_root: /s\n  binary: /bin/detent\n  max_tenants: 2\n  entitlements:\n    base: {id: free, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: free, version: 1, features: [collaboration], allowances: {projects: 3}}\n      - {id: team, version: 1, features: [collaboration], allowances: {projects: 30}}\n  billing:\n    mode: MODE\n    account_id: acct_fixture\n    portal_configuration_id: bpc_fixture\n    api_key_env: DETENT_STRIPE_TEST_KEY\n    webhook_secret_env: DETENT_STRIPE_TEST_WEBHOOK_SECRET\n    grace_seconds: 3600\n    reconcile_seconds: 120\n    credit_cost_multiplier: 2\n    prices:\n      - {price_id: price_team, label: Team, plan: {id: team, version: 1}}\n"
 	env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_STRIPE_TEST_KEY": "sk_test_fixture_value", "DETENT_STRIPE_TEST_WEBHOOK_SECRET": "whsec_fixture_secret_value", "DETENT_STRIPE_LIVE_KEY": "sk_live_fixture_value"}
 	for _, test := range []struct {
 		name, body string
@@ -257,7 +334,7 @@ func TestCloudBillingConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 			tenant, _, err := readHostedConfig(tenantPath, func(name string) string { return env[name] })
-			if err != nil || tenant.Billing == nil || tenant.Billing.Mode != "test" || tenant.Billing.CustomerID != "" {
+			if err != nil || tenant.Billing == nil || tenant.Billing.Mode != "test" || tenant.Billing.CustomerID != "" || tenant.Billing.CreditCostMultiplier != 2 {
 				t.Fatalf("tenant billing = %+v, %v\n%s", tenant, err, raw)
 			}
 		})

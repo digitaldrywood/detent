@@ -67,6 +67,8 @@ type RESTRateLimit struct {
 }
 
 type RESTEndpointUsage struct {
+	LastObservedAt     time.Time
+	UsedObserved       bool
 	CredentialIdentity string
 	EndpointFamily     string
 	BudgetScope        string

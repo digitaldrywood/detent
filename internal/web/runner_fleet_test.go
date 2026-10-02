@@ -187,7 +187,7 @@ func TestRunnerFleetFormAuthorizationAndConflict(t *testing.T) {
 			if len(match) != 2 {
 				t.Fatal("missing management token")
 			}
-			form := url.Values{"revision": {"1"}, "display_name": {"Renamed runner"}, "tags": {"macos, build"}, "state": {"draining"}, "capacity_limit": {"1"}, "project_ids": {"prj_a"},
+			form := url.Values{"revision": {"1"}, "display_name": {"Renamed runner"}, "tags": {"macos, build"}, "state": {"draining"}, "capacity_limit": {"1"}, "project_ids": {"prj_a"}, "home_project_ids": {"prj_a"},
 				"isolation_tier": {"native-trusted"}, "host_services": {"tcp:127.0.0.1:8080"}, "timezone": {"UTC"}, "windows": {"Mon-Fri 09:00-17:00"}, "hard_deadline": {"30m"}, "spillover_mode": {"after"}, "after_minutes": {"0"}}
 			request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777/fleet/runners/runner_a", strings.NewReader(form.Encode()))
 			request.RemoteAddr = "127.0.0.1:4444"
@@ -208,7 +208,7 @@ func TestRunnerFleetFormAuthorizationAndConflict(t *testing.T) {
 			}
 			if test.updates == 1 {
 				routing := probe.fleet.Runners[0].Routing
-				if routing.IsolationTier != "native-trusted" || routing.Availability.HardDeadline != "30m" || routing.Spillover.Mode != "after" || len(routing.HostServices) != 1 {
+				if len(routing.HomeProjectIDs) != 1 || routing.HomeProjectIDs[0] != "prj_a" || routing.IsolationTier != "native-trusted" || routing.Availability.HardDeadline != "30m" || routing.Spillover.Mode != "after" || len(routing.HostServices) != 1 {
 					t.Fatalf("saved settings = %#v", routing)
 				}
 				form.Set("revision", "2")
@@ -234,5 +234,29 @@ func TestRunnerFleetFormAuthorizationAndConflict(t *testing.T) {
 				t.Fatal("conflict did not explain how to retry")
 			}
 		})
+	}
+}
+
+func TestRunnerFleetAttentionFilter(t *testing.T) {
+	probe := runnerFleetTestProbe()
+	healthy := probe.fleet.Runners[0]
+	healthy.RunnerID = "runner_healthy"
+	healthy.DisplayName = "Healthy runner"
+	probe.fleet.Runners = append(probe.fleet.Runners, healthy)
+	probe.fleet.Runners[0].Health = "needs_attention"
+	probe.fleet.Runners[0].Problems = []runnerauth.Problem{runnerauth.NewProblem("backend_missing")}
+	server := newRunnerFleetTestServer(t, probe)
+	request := httptest.NewRequest(http.MethodGet, "/fleet/runners?health=needs_attention", nil)
+	request.RemoteAddr = "127.0.0.1:4444"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	body := response.Body.String()
+	for _, want := range []string{"1 runner needs attention", "Needs attention", "A configured agent backend is unavailable.", "Install the configured backend"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+	if response.Code != http.StatusOK || strings.Contains(body, "Healthy runner") {
+		t.Fatalf("attention filter: status=%d", response.Code)
 	}
 }

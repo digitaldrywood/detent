@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -188,7 +189,8 @@ func (c *Client) recordBranchRulesAvailability(ctx context.Context, repository s
 // current-head observations rather than creating missing evidence on read errors.
 func (c *Connector) attachRequiredBranchChecks(ctx context.Context, issue *connector.Issue) error {
 	pr := issue.PullRequest
-	if normalizeStateName(issue.State) != normalizeStateName("Merging") || pr == nil || pr.BaseRef == "" || pr.HeadSHA == "" || pr.HydrationUnavailableReason != "" || !strings.EqualFold(pr.State, "open") {
+	branchPolicyOnly := c.requiredChecks != nil && len(c.requiredChecks) == 0
+	if (!branchPolicyOnly && normalizeStateName(issue.State) != normalizeStateName("Merging")) || pr == nil || pr.BaseRef == "" || pr.HeadSHA == "" || pr.HydrationUnavailableReason != "" || !strings.EqualFold(pr.State, "open") {
 		return nil
 	}
 	repo, _, ok := hydratedPullRequestRef(*issue)
@@ -199,24 +201,49 @@ func (c *Connector) attachRequiredBranchChecks(ctx context.Context, issue *conne
 	if err != nil {
 		return fmt.Errorf("read required status policy: %w", err)
 	}
-	seen := make(map[string]bool)
+	checks := make(map[string]connector.PullRequestCheck)
 	for _, check := range pr.Checks {
-		seen[check.Name] = true
+		checks[check.Name] = check
 	}
-	for _, check := range pr.RequiredCheckFailures {
-		seen[check.Name] = true
-	}
-	// Copy the PR because snapshots may share a cached pointer.
 	enriched := *pr
 	enriched.BaseBranchStrict = policy.Strict
 	enriched.RequiredCheckFailures = append([]connector.PullRequestCheck(nil), pr.RequiredCheckFailures...)
-	for _, name := range policy.RequiredStatusChecks {
-		if !seen[name] {
-			enriched.RequiredCheckFailures = append(enriched.RequiredCheckFailures, connector.PullRequestCheck{Name: name, Status: "missing", Conclusion: "missing"})
-			seen[name] = true
+	ciStatus := pr.CIStatus
+	if branchPolicyOnly {
+		enriched.RequiredCheckFailures = nil
+		enriched.RunningChecks = slices.DeleteFunc(slices.Clone(pr.RunningChecks), func(name string) bool {
+			return !slices.Contains(policy.RequiredStatusChecks, name)
+		})
+		enriched.UnstartedChecks = slices.DeleteFunc(slices.Clone(pr.UnstartedChecks), func(check connector.PullRequestCheck) bool {
+			return !slices.Contains(policy.RequiredStatusChecks, check.Name)
+		})
+		if ciStatus != "fail" && ciStatus != "failure" && ciStatus != "red" && ciStatus != "error" {
+			ciStatus = "success"
 		}
 	}
-	enriched.CIStatus = combinedCIState(requiredStatusCheckState(enriched.RequiredCheckFailures), pr.CIStatus)
+	seen := make(map[string]bool)
+	for _, check := range enriched.RequiredCheckFailures {
+		seen[check.Name] = true
+	}
+	for _, name := range policy.RequiredStatusChecks {
+		if seen[name] {
+			continue
+		}
+		if check, present := checks[name]; present {
+			if !branchPolicyOnly {
+				continue
+			}
+			if (check.Status == "completed" || check.Status == "success") &&
+				(check.Conclusion == "success" || ignoredCheckRunConclusion(check.Conclusion)) {
+				continue
+			}
+			enriched.RequiredCheckFailures = append(enriched.RequiredCheckFailures, check)
+		} else {
+			enriched.RequiredCheckFailures = append(enriched.RequiredCheckFailures, connector.PullRequestCheck{Name: name, Status: "missing", Conclusion: "missing"})
+		}
+		seen[name] = true
+	}
+	enriched.CIStatus = combinedCIState(requiredStatusCheckState(enriched.RequiredCheckFailures, c.localStatus), ciStatus)
 	issue.PullRequest = &enriched
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -19,27 +21,31 @@ import (
 func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
 	e.GET("/", s.hostedLanding)
-	e.GET("/login", func(c echo.Context) error {
-		return s.renderHosted(c, http.StatusOK, templates.HostedPageData{Mode: "login", Title: "Sign in"})
-	})
+	e.GET("/login", s.appShell)
 	e.GET("/auth/oidc/start", s.startHostedLogin)
 	e.GET("/auth/oidc/callback", s.completeHostedLogin)
 	e.GET("/invite", s.startHostedInvitation)
 	e.POST("/logout", s.logoutHosted)
 	e.POST("/support/start", s.startHostedSupport)
 	e.GET("/support", s.hostedSupportPage)
+	e.GET(hostedOrganizationBase+"/api-keys", s.hostedAPIKeys)
+	e.POST(hostedOrganizationBase+"/api-keys", s.createHostedAPIKey)
+	e.DELETE(hostedOrganizationBase+"/api-keys/:key", s.revokeHostedAPIKey)
 	e.GET("/organization", s.hostedHome)
 	e.GET("/organization/plan", s.hostedPlanPage)
 	e.GET("/organization/billing", s.hostedBillingPage)
 	e.POST("/organization/billing/checkout", s.hostedBillingCheckout)
 	e.POST("/organization/billing/portal", s.hostedBillingPortal)
+	e.POST("/organization/billing/credits/checkout", s.hostedCreditCheckout)
+	e.POST("/organization/billing/credits/auto-fund", s.hostedCreditAutoFund)
 	e.GET("/api/v2/organizations/:organization/billing", s.hostedBillingJSON)
 	e.POST("/api/v2/organizations/:organization/billing/checkout", s.hostedBillingCheckout)
 	e.POST("/api/v2/organizations/:organization/billing/portal", s.hostedBillingPortal)
+	e.POST("/api/v2/organizations/:organization/billing/credits/checkout", s.hostedCreditCheckout)
+	e.PUT("/api/v2/organizations/:organization/billing/credits/auto-fund", s.hostedCreditAutoFund)
 	e.POST("/webhooks/stripe", s.hostedStripeWebhook)
 	e.GET("/api/cloud/billing/subscription", s.hostedBillingExport)
 	e.POST("/organization/create", s.createHostedOrganization)
-	e.POST("/organization/join", s.acceptHostedInvitation)
 	e.POST("/organization/switch", s.switchHostedOrganization)
 	e.POST("/organization/invite", s.inviteHostedMember)
 	e.POST("/organization/members/:member/revoke", s.revokeHostedMember)
@@ -103,7 +109,7 @@ func (s *Service) hostedDenied(c echo.Context, status int, message string, denia
 // hostedLanding serves the root. A member, or a support session acting as
 // one, gets the client application; a session with no organization access
 // still gets the organization page, which carries the chooser, create and
-// join forms and the staff notice.
+// invitation guidance and the staff notice.
 func (s *Service) hostedLanding(c echo.Context) error {
 	if _, _, err := s.hostedCredential(c); err == nil {
 		return s.appShell(c)
@@ -117,12 +123,11 @@ func (s *Service) hostedHome(c echo.Context) error {
 		return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 	}
 	data := templates.HostedPageData{Mode: "onboarding", Title: "Your organization", Email: session.Email}
-	var members int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM hosted_members").Scan(&members); err != nil {
+	setup, err := s.hostedAccountSetupFor(c.Request().Context(), session)
+	if err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Organization information is temporarily unavailable")
 	}
-	data.CanCreate = members == 0 && session.Identity.Subject == s.config.Hosted.BootstrapSubject && session.Identity.SupportActor == "" && !hostedEmailListed(s.config.Hosted.StaffEmails, session.Email)
-	data.CanSupport = session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email)
+	data.CanCreate, data.CanSupport = setup.CanCreate, setup.CanSupport
 	if hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
 		data.Mode = "organization"
 		data.Notice = "Staff access is limited to account and usage metadata. Customer content requires authorized temporary support access."
@@ -264,6 +269,7 @@ func (s *Service) hostedMetadata(c echo.Context) error {
 }
 
 type hostedUsageReport struct {
+	CostDrivers hostedCostDrivers `json:"cost_drivers"`
 	Entitlement HostedEntitlement `json:"entitlement"`
 	HostedMetadata
 	PlanID            string `json:"plan_id"`
@@ -273,7 +279,11 @@ type hostedUsageReport struct {
 
 func (s *Service) hostedUsage(ctx context.Context, report HostedMetadata) (hostedUsageReport, error) {
 	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now())
-	return hostedUsageReport{HostedMetadata: report, Entitlement: entitlement, PlanID: entitlement.EffectiveBase.ID, StorageQuotaBytes: entitlement.Allowances["collaboration_bytes"], EventQuota: entitlement.Allowances["ingested_events"]}, err
+	if err != nil {
+		return hostedUsageReport{}, err
+	}
+	drivers, err := s.hostedCostDrivers(ctx, entitlement)
+	return hostedUsageReport{CostDrivers: drivers, HostedMetadata: report, Entitlement: entitlement, PlanID: entitlement.EffectiveBase.ID, StorageQuotaBytes: entitlement.Allowances["collaboration_bytes"], EventQuota: entitlement.Allowances["ingested_events"]}, err
 }
 
 func (s *Service) hostedBilling(c echo.Context) error {
@@ -297,4 +307,89 @@ func (s *Service) hostedBilling(c echo.Context) error {
 
 func hostedFormTrue(c echo.Context, key string) bool {
 	return strings.EqualFold(c.FormValue(key), "true")
+}
+
+type hostedCostDrivers struct {
+	ActiveIssues          int64            `json:"active_issues"`
+	ArchivedIssues        int64            `json:"archived_issues"`
+	DatabaseBytes         *int64           `json:"database_bytes"`
+	WALBytes              *int64           `json:"wal_bytes"`
+	Requests              *int64           `json:"requests"`
+	RequestBytes          *int64           `json:"request_bytes"`
+	ResponseBytes         *int64           `json:"response_bytes"`
+	ArtifactRetainedBytes *int64           `json:"artifact_retained_bytes"`
+	ArtifactReservedBytes *int64           `json:"artifact_reserved_bytes"`
+	RelayBytes            *int64           `json:"relay_bytes"`
+	WindowEndsAt          time.Time        `json:"window_ends_at"`
+	OperatorAI            chatUsageSummary `json:"operator_ai"`
+	OperatorAICostUSD     *float64         `json:"operator_ai_cost_usd"`
+}
+
+func (s *Service) hostedCostDrivers(ctx context.Context, entitlement HostedEntitlement) (hostedCostDrivers, error) {
+	d := s.database
+	result := hostedCostDrivers{WindowEndsAt: entitlement.WindowEndsAt}
+	if err := d.db.QueryRowContext(ctx, `SELECT coalesce(sum(CASE WHEN i.archived=0 THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN i.archived=1 THEN 1 ELSE 0 END),0) FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.organization_id=? AND p.profile='native'`, d.hostedOrganization).Scan(&result.ActiveIssues, &result.ArchivedIssues); err != nil {
+		return result, err
+	}
+	for _, file := range []struct {
+		suffix string
+		value  **int64
+	}{{"", &result.DatabaseBytes}, {"-wal", &result.WALBytes}} {
+		info, err := os.Stat(d.path + file.suffix)
+		if err == nil {
+			bytes := info.Size()
+			*file.value = &bytes
+		} else if file.suffix == "-wal" && errors.Is(err, os.ErrNotExist) {
+			zero := int64(0)
+			*file.value = &zero
+		}
+	}
+	if requests, known := entitlement.Usage["http_requests"]; known {
+		result.Requests = &requests
+		response := entitlement.Usage["http_response_bytes"]
+		result.ResponseBytes = &response
+		if entitlement.Usage["http_request_bytes_known"] == requests {
+			bytes := entitlement.Usage["http_request_bytes"]
+			result.RequestBytes = &bytes
+		}
+	}
+	var artifacts int64
+	if err := d.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_artifact_usage WHERE observed_at > 0").Scan(&artifacts); err != nil {
+		return result, err
+	}
+	if artifacts > 0 {
+		retained, reserved := entitlement.Usage["artifact_retained_bytes"], entitlement.Usage["artifact_reserved_bytes"]
+		result.ArtifactRetainedBytes, result.ArtifactReservedBytes = &retained, &reserved
+	}
+	if relay, known := entitlement.Usage["relay_bytes"]; known {
+		result.RelayBytes = &relay
+	}
+	var err error
+	result.OperatorAI, err = d.chatUsageSummary(ctx, d.hostedOrganization, chatBillingWindow(s.config.now(), billing.Snapshot{}), nil)
+	if err != nil {
+		return result, err
+	}
+	if result.OperatorAI.UnpricedTurns == 0 {
+		cost := result.OperatorAI.CostUSD
+		result.OperatorAICostUSD = &cost
+	}
+	return result, nil
+}
+
+// hostedAccountSetupFor shares account/onboarding facts with the typed session
+// projection. It never carries the browser's form or provider exchange secrets.
+type hostedAccountSetup struct {
+	Email      string `json:"email"`
+	CanCreate  bool   `json:"can_create"`
+	CanSupport bool   `json:"can_support"`
+	Staff      bool   `json:"staff"`
+}
+
+func (s *Service) hostedAccountSetupFor(ctx context.Context, session auth.Session) (hostedAccountSetup, error) {
+	var members int
+	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&members); err != nil {
+		return hostedAccountSetup{}, err
+	}
+	staff := hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == ""
+	return hostedAccountSetup{Email: session.Email, CanCreate: members == 0 && session.Identity.Subject == s.config.Hosted.BootstrapSubject && session.Identity.SupportActor == "" && !staff, CanSupport: session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email), Staff: staff}, nil
 }

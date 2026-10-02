@@ -33,6 +33,7 @@ export const ISSUE_CREATION_NEEDS_WRITE = "You need write access to a project to
 
 /** The lane a new issue starts in when nobody chose one. */
 export function firstIssueState(project: AccountProject | undefined): string {
+  if (project?.profile === "native") return project.states[0]?.name ?? "";
   return (
     project?.states.find((state) => state.dispatchable === true && state.terminal !== true)
       ?.name ??
@@ -98,21 +99,24 @@ export function NewIssueDialog({
   const [target, setTarget] = React.useState(() => newIssueProject(projects, projectId)?.id ?? "");
   const project = projects.find((candidate) => candidate.id === target);
   const [title, setTitle] = React.useState("");
+	const [githubIssueUrl, setGithubIssueUrl] = React.useState("");
   const [body, setBody] = React.useState("");
   const [state, setState] = React.useState(() => newIssueState(project, requestedState));
   const key = React.useRef(newKey());
   const create = useMutation(async () => {
     const created = await api.createFirstIssue({
       projectId: target,
+	  githubIssueUrl: githubIssueUrl.trim() || undefined,
       title: title.trim(),
       body: body.trim(),
       state,
       key: key.current,
     });
     key.current = newKey();
-    const createdTitle = title.trim();
+    const createdTitle = title.trim() || githubIssueUrl.trim();
     setTitle("");
     setBody("");
+	setGithubIssueUrl("");
     onOpenChange(false);
     onCreated({ projectId: target, title: createdTitle });
     return created;
@@ -133,7 +137,7 @@ export function NewIssueDialog({
             className="flex flex-col gap-4"
             onSubmit={(event) => {
               event.preventDefault();
-              if (title.trim().length > 0 && project !== undefined) void create.call();
+              if ((title.trim().length > 0 || githubIssueUrl.trim().length > 0) && project !== undefined) void create.call();
             }}
           >
             {/* The picker also shows when the issue cannot go where it was
@@ -157,6 +161,16 @@ export function NewIssueDialog({
                 />
               </div>
             ) : null}
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="new-issue-github-url">GitHub issue URL (optional)</Label>
+              <Input
+                id="new-issue-github-url"
+                value={githubIssueUrl}
+                placeholder="https://github.com/owner/repo/issues/123"
+                onChange={(event) => setGithubIssueUrl(event.currentTarget.value)}
+              />
+              <p className="text-xs text-muted-foreground">Link an issue from this project's repository. The runner imports its context before the first run.</p>
+            </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="new-issue-title">Title</Label>
               <Input
@@ -196,7 +210,7 @@ export function NewIssueDialog({
           <Button
             type="submit"
             form="new-issue-form"
-            disabled={create.pending || title.trim().length === 0 || project === undefined}
+            disabled={create.pending || (title.trim().length === 0 && githubIssueUrl.trim().length === 0) || project === undefined}
           >
             {create.pending ? "Creating…" : "Create issue"}
           </Button>

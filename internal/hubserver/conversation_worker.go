@@ -111,6 +111,7 @@ type conversationBindRequest struct {
 
 type conversationBindResponse struct {
 	ConversationID string `json:"conversation_id"`
+	Continuation   bool   `json:"continuation"`
 	// Preferences are the conversation's turn preferences. The runner
 	// applies the explicit ones to its turn request and leaves "auto" to the
 	// project's configured defaults (decisions section 14).
@@ -353,6 +354,36 @@ func (c *conversationService) readLinkedConversation(ctx context.Context, tx *sq
 	}
 	if err := c.authorizeRead(scope, record); err != nil {
 		return record, err
+	}
+	return record, nil
+}
+
+func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, now time.Time) (conversationRecord, error) {
+	record, err := c.readLinkedConversation(ctx, tx, scope, item)
+	if err == nil {
+		return record, nil
+	}
+	var failure *nativeError
+	if !errors.As(err, &failure) || failure.Code != "not_found" || record.ID != "" {
+		return conversationRecord{}, err
+	}
+	issue, _, err := readNativeIssue(ctx, tx, scope, item)
+	if err != nil {
+		return conversationRecord{}, err
+	}
+	record = conversationRecord{
+		ID: conversation.NewConversationID(), OrganizationID: scope.organization, ProjectID: scope.project,
+		OwnerPrincipalID: scope.credential.ID, Title: deriveConversationTitle(issue.Title),
+		Visibility: conversation.VisibilityShared, Status: conversation.StatusActive,
+		WorkItemID: item, LinkedAt: &now,
+		Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if issue.Actor.PrincipalID != "" {
+		record.OwnerPrincipalID = issue.Actor.PrincipalID
+	}
+	if err := c.store.createConversation(ctx, tx, &record); err != nil {
+		return conversationRecord{}, err
 	}
 	return record, nil
 }
@@ -642,7 +673,7 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 		if err != nil {
 			return err
 		}
-		record, err = c.readLinkedConversation(ctx, tx, scope, item)
+		record, err = c.ensureWorkerConversation(ctx, tx, scope, item, now)
 		if err != nil {
 			return err
 		}
@@ -654,6 +685,23 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 			return err
 		}
 		previous := record.Execution
+		operation := nativeOperation(scope, "POST", "/conversations/"+record.ID+"/link")
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+SELECT 1 FROM native_commands WHERE organization_id = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ')
+) OR EXISTS (
+SELECT 1 FROM conversation_messages WHERE conversation_id = ? AND role = 'user' AND kind = 'continue'
+AND delivery IN ('saved', 'queued', 'sending')
+) OR EXISTS (
+SELECT 1 FROM conversation_events WHERE conversation_id = ? AND type = 'message.updated'
+AND json_extract(body_json, '$.role') = 'user' AND json_extract(body_json, '$.kind') = 'continue'
+AND COALESCE(json_extract(body_json, '$.attempt_id'), '') <> ''
+AND seq > COALESCE((
+SELECT MAX(seq) FROM conversation_events WHERE conversation_id = ? AND type = 'execution.updated'
+AND json_extract(body_json, '$.status') = 'completed'
+), 0)
+)`, scope.organization, operation, operation, operation, record.ID, record.ID, record.ID).Scan(&response.Continuation); err != nil {
+			return err
+		}
 		if !previous.Status.Terminal() && previous.Owner.AttemptID != "" && previous.Owner.AttemptID != request.AttemptID {
 			// The earlier owner lost its lease without unbinding; the new
 			// claim proves that. Settle it before the new attempt takes over.

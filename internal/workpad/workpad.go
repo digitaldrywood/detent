@@ -153,6 +153,38 @@ func SignalFromComment(body string, commentURL string, repo string) (*Signal, bo
 	return block, true
 }
 
+// SignalFromWorkpad reads a structured receipt only inside the canonical
+// Workpad section. Issue bodies can contain protocol examples in other sections.
+func SignalFromWorkpad(body, url, repo string) (*Signal, bool) {
+	lines := strings.Split(body, "\n")
+	start, level := -1, 0
+	inFence := false
+	for index, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		n := len(line) - len(strings.TrimLeft(line, "#"))
+		if n == 0 || n > 6 || len(line) == n || line[n] != ' ' {
+			continue
+		}
+		if start >= 0 && n <= level {
+			return SignalFromComment(strings.Join(lines[start:index], "\n"), url, repo)
+		}
+		if strings.EqualFold(strings.TrimSpace(strings.TrimRight(line[n:], "#")), "Codex Workpad") {
+			start, level = index+1, n
+		}
+	}
+	if start < 0 {
+		return nil, false
+	}
+	return SignalFromComment(strings.Join(lines[start:], "\n"), url, repo)
+}
+
 func LastStatusBlock(body string) (string, bool) {
 	var last string
 	found := false
@@ -658,6 +690,9 @@ func OperationalCompletion(signal *Signal) (string, bool) {
 // place of pre-dispatch operational authorization. Acceptance results remain in
 // completion_evidence; attempt identity is checked by the completion handler.
 func MergedCompletionEvidence(signal *Signal) bool {
+	if signal == nil {
+		return false
+	}
 	if _, ok := OperationalCompletion(signal); !ok {
 		return false
 	}

@@ -882,9 +882,8 @@ WHERE id = ? AND status = 'open'`,
 func (s *sqliteStore) RecordAdmissionMalformedResult(
 	ctx context.Context,
 	record admissionmodel.MalformedResult,
-	attemptLimit int,
 ) (admissionmodel.MalformedResult, error) {
-	if err := validateAdmissionMalformedResult(record, attemptLimit); err != nil {
+	if err := validateAdmissionMalformedResult(record); err != nil {
 		return admissionmodel.MalformedResult{}, err
 	}
 	seenAt, err := requiredTimestamp("last_seen_at", record.LastSeenAt)
@@ -897,7 +896,7 @@ INSERT INTO backlog_admission_malformed_results (
   prompt_fingerprint, proposal_fingerprint, error_fingerprint, error_class,
   error_code, output_excerpt, attempt_count, status, first_seen_at, last_seen_at
 ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, next_attempt,
-         CASE WHEN next_attempt >= ? THEN 'blocked' ELSE 'retryable' END, ?, ?
+         'retryable', ?, ?
 FROM (
   SELECT COALESCE(MAX(attempt_count), 0) + 1 AS next_attempt
   FROM backlog_admission_malformed_results
@@ -936,7 +935,6 @@ RETURNING project_id, issue_id, issue_identifier, issue_url, candidate_fingerpri
 		strings.TrimSpace(record.ErrorClass),
 		strings.TrimSpace(record.ErrorCode),
 		record.OutputExcerpt,
-		attemptLimit,
 		seenAt,
 		seenAt,
 		strings.TrimSpace(record.ProjectID),
@@ -947,30 +945,6 @@ RETURNING project_id, issue_id, issue_identifier, issue_url, candidate_fingerpri
 		return admissionmodel.MalformedResult{}, fmt.Errorf("record backlog admission malformed result: %w", err)
 	}
 	return stored, nil
-}
-
-func (s *sqliteStore) BlockedAdmissionMalformedResult(
-	ctx context.Context,
-	projectID string,
-	proposalFingerprint string,
-) (admissionmodel.MalformedResult, bool, error) {
-	row := s.db.QueryRowContext(ctx, `
-SELECT project_id, issue_id, issue_identifier, issue_url, candidate_fingerprint,
-       prompt_fingerprint, proposal_fingerprint, error_fingerprint, error_class,
-       error_code, output_excerpt, attempt_count, status, first_seen_at, last_seen_at,
-       COALESCE(resolved_at, '')
-FROM backlog_admission_malformed_results
-WHERE project_id = ? AND proposal_fingerprint = ? AND status = 'blocked'
-ORDER BY last_seen_at DESC, id DESC
-LIMIT 1`, strings.TrimSpace(projectID), strings.TrimSpace(proposalFingerprint))
-	record, err := scanAdmissionMalformedResult(row.Scan)
-	if errors.Is(err, ErrNotFound) {
-		return admissionmodel.MalformedResult{}, false, nil
-	}
-	if err != nil {
-		return admissionmodel.MalformedResult{}, false, fmt.Errorf("read blocked backlog admission malformed result: %w", err)
-	}
-	return record, true, nil
 }
 
 func (s *sqliteStore) ResolveAdmissionMalformedResults(
@@ -1202,7 +1176,7 @@ func validateAdmissionDecline(decline admissionmodel.Decline) error {
 	return nil
 }
 
-func validateAdmissionMalformedResult(record admissionmodel.MalformedResult, attemptLimit int) error {
+func validateAdmissionMalformedResult(record admissionmodel.MalformedResult) error {
 	switch {
 	case strings.TrimSpace(record.ProjectID) == "":
 		return errors.New("backlog admission malformed result project id is required")
@@ -1222,8 +1196,6 @@ func validateAdmissionMalformedResult(record admissionmodel.MalformedResult, att
 		return errors.New("backlog admission malformed result error code is required")
 	case record.LastSeenAt.IsZero():
 		return errors.New("backlog admission malformed result observation time is required")
-	case attemptLimit <= 0:
-		return errors.New("backlog admission malformed result attempt limit must be greater than zero")
 	}
 	return nil
 }

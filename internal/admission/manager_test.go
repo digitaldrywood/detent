@@ -3,6 +3,7 @@ package admission
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -331,7 +332,6 @@ func TestManagerPropagatesCandidateDeclineStoreErrors(t *testing.T) {
 				1,
 				now,
 				1,
-				nil,
 			)
 			if !errors.Is(err, wantErr) {
 				t.Fatalf("unproposedCandidates() error = %v, want %v", err, wantErr)
@@ -689,45 +689,90 @@ func TestManagerAuditCommentDoesNotDuplicateProposal(t *testing.T) {
 
 func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
 	t.Parallel()
+	accept, reject := admissionAcceptCommand("proposal-1"), admissionRejectCommand("proposal-1")
+	for _, tt := range []struct {
+		name             string
+		state            string
+		complete         bool
+		currentDecision  string
+		fallbackDecision string
+		readFailure      bool
+		wantReads        int
+		wantStatus       admissionmodel.ProposalStatus
+	}{
+		{name: "incomplete acceptance", state: "Todo", currentDecision: accept, fallbackDecision: accept, wantReads: 1, wantStatus: admissionmodel.ProposalAccepted},
+		{name: "complete acceptance", state: "Todo", complete: true, currentDecision: accept, fallbackDecision: reject, wantStatus: admissionmodel.ProposalAccepted},
+		{name: "complete empty", state: "Backlog", complete: true, fallbackDecision: accept, wantStatus: admissionmodel.ProposalOpen},
+		{name: "complete edited rejection", state: "Backlog", complete: true, currentDecision: reject, fallbackDecision: accept, wantStatus: admissionmodel.ProposalRejected},
+		{name: "incomplete edited rejection", state: "Backlog", currentDecision: accept, fallbackDecision: reject, wantReads: 1, wantStatus: admissionmodel.ProposalRejected},
+		{name: "incomplete read failure", state: "Backlog", currentDecision: accept, readFailure: true, wantReads: 1, wantStatus: admissionmodel.ProposalOpen},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			issue.State = tt.state
+			issue.CommentsComplete = tt.complete
+			transitionAt := now.Add(2 * time.Minute)
+			decisionAt := now.Add(time.Minute)
+			issue.StageUpdatedAt = &transitionAt
+			issue.Comments = []connector.IssueComment{{
+				ID:               "decision-1",
+				Body:             tt.currentDecision,
+				AuthorLogin:      "ada",
+				AuthorKind:       "User",
+				AuthorAuthorized: true,
+				CreatedAt:        &decisionAt,
+			}}
+			fallback := issue
+			fallback.Comments = append([]connector.IssueComment(nil), issue.Comments...)
+			fallback.Comments[0].Body = tt.fallbackDecision
+			if tt.currentDecision == "" {
+				issue.Comments = nil
+			}
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			commentSource := memory.New(memory.Config{Issues: []connector.Issue{fallback}, Stateful: true})
+			reader := &deferringAdmissionIssueStore{IssueStore: tracker, comments: commentSource}
+			if tt.readFailure {
+				reader.deferCommentCall = 1
+			}
+			backend := openManagerTestStore(t)
+			proposal := admissionTestProposalForIssue("proposal-1", issue, now)
+			if created, err := backend.CreateAdmissionProposal(context.Background(), proposal); err != nil || !created {
+				t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
+			}
+			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+			settings := admissionTestSettings(reader, agent)
+			settings.Config.TargetState = "Ready"
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return transitionAt })
 
-	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	issue.State = "Todo"
-	transitionAt := now.Add(2 * time.Minute)
-	decisionAt := now.Add(time.Minute)
-	issue.StageUpdatedAt = &transitionAt
-	issue.Comments = []connector.IssueComment{{
-		ID:               "decision-1",
-		Body:             admissionAcceptCommand("proposal-1"),
-		AuthorLogin:      "ada",
-		AuthorKind:       "User",
-		AuthorAuthorized: true,
-		CreatedAt:        &decisionAt,
-	}}
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
-	backend := openManagerTestStore(t)
-	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
-	if created, err := backend.CreateAdmissionProposal(context.Background(), proposal); err != nil || !created {
-		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
-	}
-	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
-	settings := admissionTestSettings(tracker, agent)
-	settings.Config.TargetState = "Ready"
-	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return transitionAt })
-
-	if _, err := manager.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce() error = %v", err)
-	}
-	history, err := backend.AdmissionProposalHistory(context.Background(), "detent", issue.ID)
-	if err != nil || len(history) != 1 || history[0].Status != admissionmodel.ProposalAccepted {
-		t.Fatalf("history = %#v, %v", history, err)
-	}
-	if history[0].DecisionSeconds != 60 || !history[0].TransitionAt.Equal(transitionAt) ||
-		history[0].DecisionCommentID != "decision-1" {
-		t.Fatalf("decision evidence = %#v", history[0])
-	}
-	if agent.calls != 0 {
-		t.Fatalf("runner calls = %d, want 0", agent.calls)
+			_, _, readErr := manager.reconcileOpenProposals(t.Context(), settings, 1, 1, transitionAt)
+			if tt.readFailure {
+				if _, ok := connector.ErrorLocalDeferral(readErr); !ok {
+					t.Fatalf("read error = %v, want existing deferral", readErr)
+				}
+			} else if readErr != nil {
+				t.Fatalf("reconcileOpenProposals() error = %v", readErr)
+			}
+			if reader.commentCalls != tt.wantReads {
+				t.Fatalf("comment reads = %d, want %d", reader.commentCalls, tt.wantReads)
+			}
+			history, err := backend.AdmissionProposalHistory(context.Background(), "detent", issue.ID)
+			if err != nil || len(history) != 1 || history[0].Status != tt.wantStatus {
+				t.Fatalf("history = %#v, %v", history, err)
+			}
+			if tt.wantStatus == admissionmodel.ProposalAccepted &&
+				(history[0].DecisionSeconds != 60 || !history[0].TransitionAt.Equal(transitionAt) ||
+					history[0].DecisionCommentID != "decision-1") {
+				t.Fatalf("decision evidence = %#v", history[0])
+			}
+			if tt.wantStatus == admissionmodel.ProposalRejected && history[0].DecisionCommentID != "decision-1" {
+				t.Fatalf("rejection evidence = %#v", history[0])
+			}
+			if agent.calls != 0 {
+				t.Fatalf("runner calls = %d, want 0", agent.calls)
+			}
+		})
 	}
 }
 
@@ -1653,43 +1698,6 @@ func TestManagerAutoAdmissionRespectsEligibilityAndCaps(t *testing.T) {
 		states[excluded.ID] != "Backlog" ||
 		states[otherAuthor.ID] != "Backlog" {
 		t.Fatalf("states = %#v", states)
-	}
-}
-
-func TestManagerAutoAdmissionRespectsOpenProposalCap(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	first := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	second := admissionIssueFixture("issue-2", "DD-2", 2, now)
-	tracker := memory.New(memory.Config{
-		Issues:   []connector.Issue{first, second},
-		Stateful: true,
-		Now:      func() time.Time { return now },
-	})
-	backend := openManagerTestStore(t)
-	proposal := admissionTestProposalForIssue("proposal-open", first, now)
-	proposal.Confidence = 0.5
-	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
-		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
-	}
-	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
-	settings := admissionTestSettings(tracker, agent)
-	settings.Config.AutoAdmit = true
-	settings.Config.AutoAdmitMinConfidence = 0.9
-	settings.Config.MaxOpenProposals = 1
-	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
-
-	result, err := manager.RunOnce(t.Context())
-	if err != nil {
-		t.Fatalf("RunOnce() error = %v", err)
-	}
-	if agent.calls != 0 || result.Skipped["open_proposal_cap"] != 1 {
-		t.Fatalf("result = %#v, runner calls = %d", result, agent.calls)
-	}
-	issues, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{first.ID, second.ID})
-	if err != nil || len(issues) != 2 || issues[0].State != "Backlog" || issues[1].State != "Backlog" {
-		t.Fatalf("issues = %#v, %v", issues, err)
 	}
 }
 
@@ -2670,7 +2678,7 @@ func TestManagerOrderingAndParsingBoundaries(t *testing.T) {
 			t.Fatalf("parseEvaluations(%q) error = nil", raw)
 		}
 	}
-	collector := &proposalCollector{}
+	collector := &proposalCollector{settings: admissionTestSettings(nil, nil), candidate: connector.Issue{ID: "issue-1"}}
 	if result, err := collector.handle(t.Context(), runner.AgentToolCall{Name: "other"}); err != nil || result.Success {
 		t.Fatalf("collector unsupported = %#v, %v", result, err)
 	}
@@ -2679,6 +2687,17 @@ func TestManagerOrderingAndParsingBoundaries(t *testing.T) {
 	}
 	if _, _, err := collector.result(); err == nil {
 		t.Fatal("collector result error = nil")
+	}
+
+	correction, err := json.Marshal(admissionProposalEvaluation("issue-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := collector.handle(t.Context(), runner.AgentToolCall{Name: ProposalToolName, Arguments: correction}); err != nil || !result.Success {
+		t.Fatalf("collector correction=%#v, %v", result, err)
+	}
+	if evaluations, raw, err := collector.result(); err != nil || len(evaluations) != 1 || len(raw) == 0 {
+		t.Fatalf("collector corrected result=%#v, %q, %v", evaluations, raw, err)
 	}
 
 	for _, issue := range []connector.Issue{
@@ -3264,67 +3283,96 @@ func TestManagerPersistsDeclinedCandidateEvaluation(t *testing.T) {
 
 func TestManagerBoundsMalformedAdmissionAcrossRestart(t *testing.T) {
 	t.Parallel()
+	for _, legacyBlocked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy blocked %t", legacyBlocked), func(t *testing.T) {
+			t.Parallel()
 
-	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
-	backend := openManagerTestStore(t)
-	agent := &malformedAdmissionRunner{malformedCalls: 4}
-	clock := now
-	settings := admissionTestSettings(tracker, agent)
-	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return clock })
+			now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			path := filepath.Join(t.TempDir(), "runtime.db")
+			backend, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := backend.Close(); err != nil {
+					t.Fatal(err)
+				}
+			})
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Fatal(err)
+				}
+			})
+			agent := &malformedAdmissionRunner{malformedCalls: 4}
+			clock := now
+			settings := admissionTestSettings(tracker, agent)
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return clock })
 
-	for attempt := 1; attempt <= 4; attempt++ {
-		result, err := manager.RunOnce(t.Context())
-		if err != nil || len(result.Proposals) != 0 {
-			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
-		}
-		clock = clock.Add(time.Minute)
-	}
-	runs, err := backend.RecentAdmissionRuns(t.Context(), "detent", 4)
-	if err != nil || len(runs) != 4 {
-		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
-	}
-	for index, run := range runs {
-		wantAttempt := 4 - index
-		if len(run.Malformed) != 1 || run.Malformed[0].AttemptCount != wantAttempt ||
-			run.Malformed[0].ErrorClass != "parse" || run.Malformed[0].ErrorCode != "invalid_json" ||
-			run.Malformed[0].OutputExcerpt != "{" || run.Malformed[0].CandidateFingerprint == "" ||
-			run.Malformed[0].PromptFingerprint == "" || run.Malformed[0].ProposalFingerprint == "" ||
-			run.Malformed[0].ErrorFingerprint == "" {
-			t.Fatalf("run %d malformed evidence = %#v", index, run.Malformed)
-		}
-		if run.Malformed[0].ErrorFingerprint != runs[0].Malformed[0].ErrorFingerprint {
-			t.Fatalf("run %d error fingerprint = %q, want %q", index, run.Malformed[0].ErrorFingerprint, runs[0].Malformed[0].ErrorFingerprint)
-		}
-	}
-	if runs[0].Malformed[0].Status != admissionmodel.MalformedBlocked {
-		t.Fatalf("fourth malformed status = %q, want blocked", runs[0].Malformed[0].Status)
-	}
+			for attempt := 1; attempt <= 4; attempt++ {
+				result, err := manager.RunOnce(t.Context())
+				if err != nil || len(result.Proposals) != 0 || result.Skipped["malformed_output_retryable"] != 1 || countAdmissionStateUpdates(tracker.Events(), "Todo") != 0 {
+					t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
+				}
+				clock = clock.Add(time.Minute)
+			}
+			runs, err := backend.RecentAdmissionRuns(t.Context(), "detent", 4)
+			if err != nil || len(runs) != 4 {
+				t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, err)
+			}
+			for index, run := range runs {
+				wantAttempt := 4 - index
+				if len(run.Malformed) != 1 || run.Malformed[0].AttemptCount != wantAttempt ||
+					run.Malformed[0].ErrorClass != "parse" || run.Malformed[0].ErrorCode != "invalid_json" ||
+					run.Malformed[0].OutputExcerpt != "{" || run.Malformed[0].CandidateFingerprint == "" ||
+					run.Malformed[0].PromptFingerprint == "" || run.Malformed[0].ProposalFingerprint == "" ||
+					run.Malformed[0].ErrorFingerprint == "" || run.Malformed[0].Status != admissionmodel.MalformedRetryable {
+					t.Fatalf("run %d malformed evidence = %#v", index, run.Malformed)
+				}
+				if run.Malformed[0].ErrorFingerprint != runs[0].Malformed[0].ErrorFingerprint {
+					t.Fatalf("run %d error fingerprint = %q, want %q", index, run.Malformed[0].ErrorFingerprint, runs[0].Malformed[0].ErrorFingerprint)
+				}
+			}
+			if legacyBlocked {
+				if _, err := db.ExecContext(t.Context(), "UPDATE backlog_admission_malformed_results SET status = 'blocked'"); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	manager = newAdmissionTestManager(t, settings, backend, func() time.Time { return clock })
-	result, err := manager.RunOnce(t.Context())
-	if err != nil || len(result.Proposals) != 0 || result.Skipped["malformed_output_blocked"] != 1 {
-		t.Fatalf("RunOnce() after restart = %#v, %v", result, err)
-	}
-	if agent.calls != 4 {
-		t.Fatalf("runner calls = %d, want 4", agent.calls)
-	}
-
-	if err := tracker.UpdateIssueBody(t.Context(), issue.ID, issue.Description+"\n\nCorrected scope."); err != nil {
-		t.Fatalf("UpdateIssueBody() error = %v", err)
-	}
-	clock = clock.Add(time.Minute)
-	result, err = manager.RunOnce(t.Context())
-	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issue.ID {
-		t.Fatalf("RunOnce() after candidate change = %#v, %v", result, err)
-	}
-	if agent.calls != 5 {
-		t.Fatalf("runner calls = %d, want 5", agent.calls)
+			recovered := &malformedAdmissionRunner{}
+			settings.Runner = recovered
+			manager = newAdmissionTestManager(t, settings, backend, func() time.Time { return clock })
+			result, err := manager.RunOnce(t.Context())
+			if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issue.ID {
+				t.Fatalf("RunOnce() after restart with recovered runner = %#v, %v", result, err)
+			}
+			if agent.calls != 4 || recovered.calls != 1 {
+				t.Fatalf("runner calls = %d malformed, %d recovered, want 4 and 1", agent.calls, recovered.calls)
+			}
+			fingerprints := admissionEvaluationFingerprints(settings, issue)
+			if fingerprints.proposal != runs[0].Malformed[0].ProposalFingerprint ||
+				fingerprints.candidate != runs[0].Malformed[0].CandidateFingerprint ||
+				fingerprints.prompt != runs[0].Malformed[0].PromptFingerprint {
+				t.Fatal("candidate or prompt changed before recovery")
+			}
+			var status, resolvedAt string
+			var attempts int
+			if err := db.QueryRowContext(t.Context(), "SELECT status, attempt_count, resolved_at FROM backlog_admission_malformed_results WHERE proposal_fingerprint = ?", fingerprints.proposal).Scan(&status, &attempts, &resolvedAt); err != nil {
+				t.Fatal(err)
+			}
+			if status != string(admissionmodel.MalformedResolved) || attempts != 4 || resolvedAt != clock.Format(time.RFC3339Nano) {
+				t.Fatalf("prior observations = %s, %d, %s", status, attempts, resolvedAt)
+			}
+		})
 	}
 }
 
-func TestManagerAcceptsCorrectedAdmissionBeforeMalformedLimit(t *testing.T) {
+func TestManagerAcceptsCorrectedAdmissionAfterMalformedOutput(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 4, 12, 30, 0, 0, time.UTC)
@@ -3362,6 +3410,8 @@ func TestManagerBoundsVaryingMalformedAdmissionOutputs(t *testing.T) {
 		`[`,
 		`{"evaluations":`,
 		`{"evaluations":[`,
+		`{"evaluations":[{`,
+		`{"evaluations":[{"issue_id":`,
 	}}
 	manager := newAdmissionTestManager(
 		t,
@@ -3370,15 +3420,16 @@ func TestManagerBoundsVaryingMalformedAdmissionOutputs(t *testing.T) {
 		func() time.Time { return now },
 	)
 
-	for attempt := 1; attempt <= 4; attempt++ {
+	for attempt := 1; attempt <= len(agent.malformedOutputs); attempt++ {
 		result, err := manager.RunOnce(t.Context())
-		if err != nil || len(result.Malformed) != 1 || result.Malformed[0].AttemptCount != attempt {
+		if err != nil || len(result.Malformed) != 1 || result.Malformed[0].AttemptCount != attempt ||
+			result.Malformed[0].Status != admissionmodel.MalformedRetryable || result.Skipped["malformed_output_retryable"] != 1 ||
+			len(result.Proposals) != 0 || countAdmissionStateUpdates(tracker.Events(), "Todo") != 0 {
 			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
 		}
 	}
-	result, err := manager.RunOnce(t.Context())
-	if err != nil || result.Skipped["malformed_output_blocked"] != 1 || agent.calls != 4 {
-		t.Fatalf("RunOnce() after bound = %#v, %v; runner calls = %d", result, err, agent.calls)
+	if agent.calls != len(agent.malformedOutputs) {
+		t.Fatalf("runner calls = %d, want %d", agent.calls, len(agent.malformedOutputs))
 	}
 }
 
@@ -3469,12 +3520,27 @@ func TestManagerContinuesMixedMalformedAdmissionCandidates(t *testing.T) {
 		func() time.Time { return now },
 	)
 
-	result, err := manager.RunOnce(t.Context())
-	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issues[1].ID {
-		t.Fatalf("RunOnce() = %#v, %v", result, err)
-	}
-	if result.Skipped["malformed_output_retryable"] != 1 || agent.calls != 2 {
-		t.Fatalf("result = %#v, runner calls = %d", result, agent.calls)
+	validIssue := issues[1]
+	for attempt := 1; attempt <= 6; attempt++ {
+		if attempt > 1 {
+			var err error
+			validIssue, err = tracker.CreateIssue(t.Context(), connector.IssueDraft{Title: "Independent candidate", Body: "Actionable problem statement"})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		result, err := manager.RunOnce(t.Context())
+		if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != validIssue.ID {
+			t.Fatalf("RunOnce() attempt %d = %#v, %v", attempt, result, err)
+		}
+		if result.Skipped["malformed_output_retryable"] != 1 || len(result.Malformed) != 1 ||
+			result.Malformed[0].AttemptCount != attempt || result.Malformed[0].Status != admissionmodel.MalformedRetryable || agent.calls != 2*attempt {
+			t.Fatalf("result = %#v, runner calls = %d", result, agent.calls)
+		}
+		if countAdmissionStateUpdates(tracker.Events(), "Todo") != 0 {
+			t.Fatal("malformed output caused a lane write")
+		}
+		now = now.Add(time.Minute)
 	}
 }
 
@@ -3549,20 +3615,212 @@ func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
 			}
 		})
 	}
+
+	for _, tt := range []struct {
+		name          string
+		change        func(*AgentEvaluation)
+		sequence      []string
+		wantSuccess   []bool
+		wantProposal  bool
+		wantMalformed bool
+		wantLane      bool
+		finalText     bool
+	}{
+		{name: "wrong identity", change: func(e *AgentEvaluation) { e.IssueID = "private candidate" }},
+		{name: "wrong disposition", change: func(e *AgentEvaluation) { e.Disposition = "private disposition" }},
+		{name: "missing confidence", change: func(e *AgentEvaluation) { e.Confidence = nil }},
+		{name: "negative confidence", change: func(e *AgentEvaluation) { e.Confidence = float64Pointer(-1) }},
+		{name: "excess confidence", change: func(e *AgentEvaluation) { e.Confidence = float64Pointer(2) }},
+		{name: "missing findings", change: func(e *AgentEvaluation) { e.Findings = nil }},
+		{name: "missing dimension", change: func(e *AgentEvaluation) { e.Findings = e.Findings[:1] }},
+		{name: "duplicate dimension", change: func(e *AgentEvaluation) { e.Findings[1] = e.Findings[0] }},
+		{name: "wrong dimension", change: func(e *AgentEvaluation) { e.Findings[0].Dimension = "private dimension" }},
+		{name: "missing quote", change: func(e *AgentEvaluation) { e.Findings[0].CriterionQuote = "" }},
+		{name: "wrong quote", change: func(e *AgentEvaluation) { e.Findings[0].CriterionQuote = "private quote" }},
+		{name: "missing rationale", change: func(e *AgentEvaluation) { e.Findings[0].Rationale = "" }},
+		{name: "invalid effort", change: func(e *AgentEvaluation) { e.RecommendedEffort = "private effort" }},
+		{name: "unsupported effort", change: func(e *AgentEvaluation) { e.RecommendedEffort = "low" }},
+		{name: "missing effort", change: func(e *AgentEvaluation) { e.RecommendedEffort = "" }},
+		{name: "missing effort rationale", change: func(e *AgentEvaluation) { e.EffortRationale = "" }},
+		{name: "matched decline", change: func(e *AgentEvaluation) { e.Disposition = admissionDispositionDeclined }},
+		{name: "unmatched proposal", change: func(e *AgentEvaluation) {
+			for i := range e.Findings {
+				e.Findings[i].Matched = false
+			}
+		}},
+		{name: "unknown JSON field", sequence: []string{"unknown"}, wantSuccess: []bool{false}, wantMalformed: true},
+		{name: "wrong JSON type", sequence: []string{"type"}, wantSuccess: []bool{false}, wantMalformed: true},
+		{name: "multiple JSON values", sequence: []string{"multiple"}, wantSuccess: []bool{false}, wantMalformed: true},
+		{name: "decline correction", sequence: []string{"invalid", "decline"}, wantSuccess: []bool{false, true}},
+		{name: "valid fallback", sequence: []string{"valid"}, finalText: true, wantProposal: true, wantLane: true},
+		{name: "partial fallback", sequence: []string{"partial"}, finalText: true, wantProposal: true},
+		{name: "JSON correction", sequence: []string{"json", "valid"}, wantSuccess: []bool{false, true}, wantProposal: true, wantLane: true},
+		{name: "semantic correction", sequence: []string{"invalid", "valid"}, wantSuccess: []bool{false, true}, wantProposal: true, wantLane: true},
+		{name: "all invalid", sequence: []string{"json", "invalid"}, wantSuccess: []bool{false, false}, wantMalformed: true},
+		{name: "later rejection", sequence: []string{"valid", "invalid"}, wantSuccess: []bool{true, false}, wantMalformed: true},
+		{name: "later JSON rejection", sequence: []string{"valid", "json"}, wantSuccess: []bool{true, false}, wantMalformed: true},
+		{name: "two valid", sequence: []string{"valid", "valid"}, wantSuccess: []bool{true, false}, wantMalformed: true},
+		{name: "later correction is second valid", sequence: []string{"valid", "invalid", "valid"}, wantSuccess: []bool{true, false, false}, wantMalformed: true},
+		{name: "partial match", sequence: []string{"partial"}, wantSuccess: []bool{true}, wantProposal: true},
+	} {
+		modes := []string{"tool"}
+		if tt.change != nil {
+			modes = append(modes, "final text")
+		}
+		if tt.finalText {
+			modes = []string{"final text"}
+		}
+		for _, mode := range modes {
+			t.Run(mode+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
+				tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+				valid := admissionProposalEvaluation(issue.ID)
+				valid.Confidence = float64Pointer(.95)
+				valid.RecommendedEffort = "high"
+				valid.EffortRationale = "private effort rationale"
+				valid.Findings[0].Rationale = "private finding rationale"
+				raw, err := json.Marshal(valid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				agent := &scriptedAdmissionRunner{output: `{"evaluations":[` + string(raw) + `]}`}
+				agent.submit = func(runner.RunRequest) [][]byte {
+					sequence := tt.sequence
+					if tt.change != nil {
+						sequence = []string{"invalid"}
+					}
+					var submissions [][]byte
+					for _, kind := range sequence {
+						switch kind {
+						case "unknown":
+							submissions = append(submissions, []byte(`{"private unknown field":true}`))
+							continue
+						case "type":
+							submissions = append(submissions, []byte(`{"issue_id":{"private value":true}}`))
+							continue
+						case "multiple":
+							submissions = append(submissions, append(append([]byte(nil), raw...), []byte(` {}`)...))
+							continue
+						}
+						if kind == "json" {
+							submissions = append(submissions, []byte(`{"private raw":`))
+							continue
+						}
+						evaluation := valid
+						evaluation.Findings = append([]admissionmodel.Finding(nil), valid.Findings...)
+						if kind == "invalid" {
+							if tt.change != nil {
+								tt.change(&evaluation)
+							} else {
+								evaluation.Confidence = nil
+							}
+						}
+						if kind == "decline" {
+							evaluation.Disposition = admissionDispositionDeclined
+							evaluation.RecommendedEffort, evaluation.EffortRationale = "", ""
+							for i := range evaluation.Findings {
+								evaluation.Findings[i].Matched = false
+							}
+						}
+						if kind == "partial" {
+							evaluation.Findings[1].Matched = false
+						}
+						payload, err := json.Marshal(evaluation)
+						if err != nil {
+							t.Fatal(err)
+						}
+						submissions = append(submissions, payload)
+					}
+					if mode == "final text" {
+						agent.output = `{"evaluations":[` + string(submissions[0]) + `]}`
+						return nil
+					}
+					return submissions
+				}
+				settings := admissionTestSettings(tracker, agent)
+				settings.Config.RequireEffort = true
+				settings.Config.AutoAdmit = true
+				settings.Config.AutoAdmitMinConfidence = .9
+				settings.EffortRubric = admissionTestEffortRubric()
+				manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
+				result, err := manager.RunOnce(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantSuccess := tt.wantSuccess
+				if tt.change != nil {
+					wantSuccess = []bool{false}
+				}
+				if mode == "final text" {
+					wantSuccess = nil
+				}
+				if agent.calls != 1 || len(agent.results) != len(wantSuccess) {
+					t.Fatalf("calls=%d feedback=%#v", agent.calls, agent.results)
+				}
+				for i, feedback := range agent.results {
+					if feedback.Success != wantSuccess[i] || feedback.Content == "" || len(feedback.Content) > 256 {
+						t.Errorf("feedback[%d]=%#v, want success=%t with bounded diagnostic", i, feedback, wantSuccess[i])
+					}
+					for _, private := range []string{"private", valid.Findings[0].CriterionQuote, valid.Findings[1].CriterionQuote} {
+						if strings.Contains(feedback.Content, private) {
+							t.Errorf("feedback contains private input: %q", feedback.Content)
+						}
+					}
+				}
+				wantMalformed := tt.wantMalformed || tt.change != nil
+				wantProposals, wantMalformedCount, wantLaneWrites := 0, 0, 0
+				if tt.wantProposal {
+					wantProposals = 1
+				}
+				if wantMalformed {
+					wantMalformedCount = 1
+				}
+				if tt.wantLane {
+					wantLaneWrites = 1
+				}
+				if len(result.Proposals) != wantProposals || len(result.Malformed) != wantMalformedCount {
+					t.Fatalf("RunOnce()=%#v", result)
+				}
+				if countAdmissionStateUpdates(tracker.Events(), "Todo") != wantLaneWrites {
+					t.Fatalf("lane writes=%#v", tracker.Events())
+				}
+				if tt.change != nil && result.Malformed[0].ErrorCode != "invalid_evaluation" {
+					t.Fatalf("malformed=%#v", result.Malformed)
+				}
+			})
+		}
+	}
 }
 
 func TestManagerKeepsValidSemanticEvaluationWhenPeerIsMalformed(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	current := now
 	issues := []connector.Issue{
 		admissionIssueFixture("issue-1", "DD-1", 1, now),
 		admissionIssueFixture("issue-2", "DD-2", 2, now),
 	}
-	tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+	for index := range issues {
+		issues[index].Description += "\nBlocked by: #10"
+	}
+	blocker := admissionIssueFixture("blocker", "owner/repo#10", 1, now)
+	blocker.Closed = true
+	blocker.State = "Done"
+	tracker := memory.New(memory.Config{Issues: append(issues, blocker), Stateful: true})
 	backend := openManagerTestStore(t)
+	faults := faultAdmissionStore{Store: backend}
 	agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
-		evaluation := admissionProposalEvaluation(request.Admission.Candidates[0].ID)
+		if !request.StartedAt.IsZero() {
+			t.Errorf("candidate session StartedAt = %v at clock %v, want runner default", request.StartedAt, current)
+		}
+		candidate := request.Admission.Candidates[0]
+		if candidate.Dependencies == nil || !candidate.Dependencies.ObservedAt.Equal(now) {
+			t.Errorf("candidate dependency observation = %#v, want batch time %v", candidate.Dependencies, now)
+		}
+		current = current.Add(time.Minute)
+		evaluation := admissionProposalEvaluation(candidate.ID)
 		if evaluation.IssueID == issues[1].ID {
 			evaluation.Confidence = float64Pointer(2)
 		}
@@ -3571,14 +3829,33 @@ func TestManagerKeepsValidSemanticEvaluationWhenPeerIsMalformed(t *testing.T) {
 	manager := newAdmissionTestManager(
 		t,
 		admissionTestSettings(tracker, agent),
-		backend,
-		func() time.Time { return now },
+		&faults,
+		func() time.Time { return current },
 	)
 
 	result, err := manager.RunOnce(t.Context())
 	if err != nil || len(result.Proposals) != 1 || result.Proposals[0].IssueID != issues[0].ID ||
 		len(result.Malformed) != 1 || result.Malformed[0].IssueID != issues[1].ID {
 		t.Fatalf("RunOnce() = %#v, %v", result, err)
+	}
+	if len(agent.results) != 2 || !agent.results[0].Success || agent.results[1].Success {
+		t.Fatalf("independent candidate feedback=%#v", agent.results)
+	}
+
+	runs, runsErr := backend.RecentAdmissionRuns(t.Context(), "detent", 2)
+	if runsErr != nil || len(runs) != 1 || !runs[0].StartedAt.Equal(now) || !runs[0].CompletedAt.Equal(current) {
+		t.Fatalf("RecentAdmissionRuns() = %#v, %v", runs, runsErr)
+	}
+	if agent.calls != len(issues) || !current.Equal(now.Add(2*time.Minute)) || len(runs[0].Issues) != len(issues) {
+		t.Fatalf("runner calls = %d, clock = %v, run issues = %#v", agent.calls, current, runs[0].Issues)
+	}
+	for _, issue := range runs[0].Issues {
+		if !issue.EvaluatedAt.Equal(now) {
+			t.Errorf("evaluation history time = %v, want batch time %v", issue.EvaluatedAt, now)
+		}
+	}
+	if len(faults.malformed) != 1 || !faults.malformed[0].FirstSeenAt.Equal(now) || !faults.malformed[0].LastSeenAt.Equal(now) {
+		t.Fatalf("malformed history = %#v, want batch time %v", faults.malformed, now)
 	}
 	history, historyErr := backend.AdmissionProposalHistory(t.Context(), "detent", issues[1].ID)
 	if historyErr != nil || len(history) != 0 {
@@ -3789,6 +4066,9 @@ func TestProposalToolRequiresEffortFieldsOnlyWhenConfigured(t *testing.T) {
 
 type scriptedAdmissionRunner struct {
 	propose      func(runner.RunRequest) []AgentProposal
+	submit       func(runner.RunRequest) [][]byte
+	results      []runner.AgentToolResult
+	output       string
 	calls        int
 	candidateIDs [][]string
 }
@@ -3973,6 +4253,7 @@ func (g *capacityGate) Release(scheduler.Slot) error {
 
 type faultAdmissionStore struct {
 	Store
+	malformed             []admissionmodel.MalformedResult
 	expireErr             error
 	refreshErr            error
 	recordErr             error
@@ -3988,6 +4269,14 @@ type faultAdmissionStore struct {
 
 type admissionIssueStoreWithoutCommentReader struct {
 	IssueStore
+}
+
+func (s *faultAdmissionStore) RecordAdmissionMalformedResult(ctx context.Context, record admissionmodel.MalformedResult) (admissionmodel.MalformedResult, error) {
+	stored, err := s.Store.RecordAdmissionMalformedResult(ctx, record)
+	if err == nil {
+		s.malformed = append(s.malformed, stored)
+	}
+	return stored, err
 }
 
 func (s *faultAdmissionStore) CreateAdmissionDecline(ctx context.Context, decline admissionmodel.Decline) (bool, error) {
@@ -4120,23 +4409,29 @@ func (r *scriptedAdmissionRunner) Run(ctx context.Context, request runner.RunReq
 		ids = append(ids, candidate.ID)
 	}
 	r.candidateIDs = append(r.candidateIDs, ids)
-	for _, proposal := range r.propose(request) {
-		if proposal.Disposition == "" {
-			proposal.Disposition = admissionDispositionProposed
+	var submissions [][]byte
+	if r.submit != nil {
+		submissions = r.submit(request)
+	} else {
+		for _, proposal := range r.propose(request) {
+			if proposal.Disposition == "" {
+				proposal.Disposition = admissionDispositionProposed
+			}
+			raw, err := json.Marshal(proposal)
+			if err != nil {
+				return runner.RunResult{}, err
+			}
+			submissions = append(submissions, raw)
 		}
-		raw, err := json.Marshal(proposal)
-		if err != nil {
-			return runner.RunResult{}, err
-		}
+	}
+	for _, raw := range submissions {
 		result, err := request.AgentToolHandler(ctx, runner.AgentToolCall{Name: ProposalToolName, Arguments: raw})
 		if err != nil {
 			return runner.RunResult{}, err
 		}
-		if !result.Success {
-			return runner.RunResult{}, ErrInvalidOutput
-		}
+		r.results = append(r.results, result)
 	}
-	return runner.RunResult{FinalState: runner.FinalStateCompleted}, nil
+	return runner.RunResult{Output: r.output, FinalState: runner.FinalStateCompleted}, nil
 }
 
 type budgetAdmissionRunner struct {
@@ -4674,6 +4969,185 @@ func TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity(t *testing.T) {
 			}
 			if result.Candidates != 0 || agent.calls != 0 || local.requests != 0 || global.requests != 0 {
 				t.Fatalf("result=%+v evaluations=%d capacity calls=%d/%d", result, agent.calls, local.requests, global.requests)
+			}
+		})
+	}
+}
+
+func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name          string
+		automatic     bool
+		confidence    float64
+		failCriteria  bool
+		declined      bool
+		malformed     bool
+		missing       bool
+		truncated     bool
+		dependency    bool
+		author        string
+		human         bool
+		wantCalls     int
+		wantState     string
+		wantQualified bool
+	}{
+		{name: "automatic qualifies", automatic: true, confidence: .95, author: "octocat", wantCalls: 1, wantState: "Todo", wantQualified: true},
+		{name: "automatic disabled", confidence: .95, author: "octocat", wantState: "Backlog"},
+		{name: "low confidence", automatic: true, confidence: .83, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "failed criteria", automatic: true, confidence: .95, failCriteria: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "valid decline with zero confidence", automatic: true, declined: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "malformed evaluation", automatic: true, malformed: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "missing evaluation", automatic: true, missing: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "failure beyond receipt cap", automatic: true, confidence: .95, truncated: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "dependency blocks readiness", automatic: true, confidence: .95, dependency: true, author: "octocat", wantCalls: 1, wantState: "Backlog"},
+		{name: "unknown author", automatic: true, confidence: .95, author: "unknown", wantState: "Backlog"},
+		{name: "human owned", automatic: true, confidence: .95, author: "octocat", human: true, wantState: "Backlog"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 9, 30, 22, 30, 0, 0, time.UTC)
+			issues := make([]connector.Issue, 0, 11)
+			for i := range 10 {
+				issue := admissionIssueFixture(fmt.Sprintf("human-%d", i), fmt.Sprintf("owner/repo#%d", i+1), 0, now)
+				issue.AuthorID = "octocat"
+				issues = append(issues, issue)
+			}
+			candidate := admissionIssueFixture("candidate", "owner/repo#3242", 0, now)
+			candidate.AuthorID = tt.author
+			if tt.dependency {
+				candidate.Description += "\nDepends on: owner/repo#1"
+			}
+			if tt.human {
+				candidate.Labels = []string{"human-owned"}
+			}
+			issues = append(issues, candidate)
+			tracker := memory.New(memory.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
+			backend := openManagerTestStore(t)
+			for i := range 10 {
+				proposal := admissionTestProposalForIssue(fmt.Sprintf("human-proposal-%d", i), issues[i], now)
+				proposal.Confidence = .5
+				if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
+					t.Fatalf("create pending: %t %v", created, err)
+				}
+				if err := backend.MarkAdmissionProposalCommented(t.Context(), proposal.ID, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
+				proposals := proposeEveryCandidateAtConfidence(tt.confidence)(request)
+				for i := range proposals {
+					if tt.failCriteria {
+						proposals[i].Findings[0].Matched = false
+					}
+					if tt.declined {
+						proposals[i].Disposition = admissionDispositionDeclined
+						for j := range proposals[i].Findings {
+							proposals[i].Findings[j].Matched = false
+						}
+					}
+					if tt.truncated {
+						for j := range maxReceiptCriteria {
+							proposals[i].Findings = append(proposals[i].Findings, admissionmodel.Finding{
+								Dimension:      fmt.Sprintf("Private dimension %d", j),
+								CriterionQuote: "private criterion text",
+								Matched:        j != maxReceiptCriteria-1,
+								Rationale:      "private rationale text",
+							})
+						}
+					}
+				}
+				return proposals
+			}}
+			settings := admissionTestSettings(tracker, agent)
+			settings.Config.AutoAdmit = tt.automatic
+			settings.Config.AutoAdmitMinConfidence = .85
+			settings.Config.Authors.Allow = []string{"octocat"}
+			if tt.truncated {
+				for j := range maxReceiptCriteria {
+					settings.Criteria.Dimensions = append(settings.Criteria.Dimensions, config.AdmissionDimension{
+						Name: fmt.Sprintf("Private dimension %d", j), Text: "private criterion text",
+					})
+				}
+			}
+			invalidAgent := &malformedAdmissionRunner{malformedCalls: 1}
+			if tt.missing {
+				invalidAgent.malformedOutputs = []string{`{"evaluations":[]}`}
+			}
+			if tt.malformed || tt.missing {
+				settings.Runner = invalidAgent
+			}
+			manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+			result, err := manager.RunOnce(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			fresh, err := tracker.FetchIssueStatesByIDs(t.Context(), []string{candidate.ID})
+			calls := agent.calls + invalidAgent.calls
+			if err != nil || len(fresh) != 1 || fresh[0].State != tt.wantState || calls != tt.wantCalls {
+				t.Fatalf("state=%+v calls=%d wantState=%s wantCalls=%d err=%v result=%+v", fresh, calls, tt.wantState, tt.wantCalls, err, result)
+			}
+			open, err := backend.CountOpenAdmissionProposals(t.Context(), settings.ProjectID)
+			if err != nil || open != 10 {
+				t.Fatalf("pending human count=%d err=%v", open, err)
+			}
+			record, found, err := backend.LatestAdmissionRun(t.Context(), settings.ProjectID)
+			if err != nil || !found || len(record.Issues) != tt.wantCalls || len(result.Issues) != tt.wantCalls {
+				t.Fatalf("run receipts=%+v found=%t err=%v result=%+v", record.Issues, found, err, result)
+			}
+			history, err := backend.AdmissionCandidateHistory(t.Context(), settings.ProjectID)
+			if err != nil || len(history) != tt.wantCalls {
+				t.Fatalf("history=%+v err=%v", history, err)
+			}
+			if tt.wantCalls == 0 {
+				return
+			}
+			receipt := history[candidate.ID]
+			if !reflect.DeepEqual(receipt, record.Issues[0]) || !reflect.DeepEqual(receipt.Evaluation, result.Issues[0].Evaluation) {
+				t.Fatalf("history receipt=%+v run=%+v result=%+v", receipt, record.Issues[0], result.Issues[0])
+			}
+			if tt.malformed || tt.missing {
+				if receipt.Evaluation != nil || len(record.Malformed) != 1 {
+					t.Fatalf("invalid output acquired an outcome: %+v malformed=%+v", receipt, record.Malformed)
+				}
+				return
+			}
+			outcome := receipt.Evaluation
+			disposition := admissionDispositionProposed
+			if tt.declined {
+				disposition = admissionDispositionDeclined
+			}
+			total := 2
+			if tt.truncated {
+				total += maxReceiptCriteria
+			}
+			if outcome == nil || outcome.Disposition != disposition || outcome.Confidence != tt.confidence ||
+				outcome.AutoAdmitMinConfidence != .85 || outcome.AutoQualified != tt.wantQualified ||
+				outcome.CriteriaTotal != total || outcome.CriteriaTruncated != tt.truncated || len(outcome.Criteria) != min(total, maxReceiptCriteria) {
+				t.Fatalf("evaluation outcome=%+v", outcome)
+			}
+			fingerprints := make(map[string]bool)
+			for i, criterion := range outcome.Criteria {
+				matched := !tt.declined && (!tt.failCriteria || i != 0) && (!tt.dependency || i != 1)
+				if criterion.Index != i || criterion.Matched != matched || len(criterion.Fingerprint) != 64 || fingerprints[criterion.Fingerprint] {
+					t.Fatalf("criterion[%d]=%+v", i, criterion)
+				}
+				fingerprints[criterion.Fingerprint] = true
+			}
+			raw, err := json.Marshal(outcome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, private := range []string{"criterion_quote", "rationale", "Private dimension", "private criterion text", "serves a stated current priority", "has an actionable problem statement"} {
+				if strings.Contains(string(raw), private) {
+					t.Fatalf("outcome retains private evaluation text %q: %s", private, raw)
+				}
+			}
+			if tt.wantQualified && receipt.ProposalID == "" {
+				t.Fatal("automatic admission lost proposal provenance")
+			}
+			if !tt.wantQualified && receipt.ProposalID != "" {
+				t.Fatalf("unqualified evaluation created proposal %q", receipt.ProposalID)
 			}
 		})
 	}

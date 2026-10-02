@@ -152,16 +152,9 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), "DELETE FROM project_policies WHERE scope = ? AND policy_id = ?", scope, request.ExpectedID)
+	_, err = revokeProjectPolicyInTx(c.Request().Context(), s.database.db, scope, request.ExpectedID)
 	if err != nil {
 		return s.nativeAPIError(c, err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if count != 1 {
-		return s.nativeAPIError(c, policyMismatch("Policy changed or is already revoked; inspect the current approval before revoking it"))
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -195,8 +188,15 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 			resultErr = errors.Join(resultErr, tx.Rollback())
 		}
 	}()
+	result, err = d.approvePolicyInTx(ctx, tx, scope, actor, change)
+	if err != nil {
+		return result, err
+	}
+	return result, tx.Commit()
+}
+func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
 	var current string
-	err = tx.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", scope).Scan(&current)
+	err := tx.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", scope).Scan(&current)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return result, err
 	}
@@ -233,17 +233,17 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 	if err != nil {
 		return result, err
 	}
-	return result, tx.Commit()
+	return result, nil
 }
 
 // defaultChangeReviewPolicy is the review expectation a native project starts
 // with: no CI check is pinned, and a person reviews each version only when
-// the repository gate asks for one. Under any other gate a published version
+// review.human asks for one. Under any other setting a published version
 // is already reviewed, so the runner lands it without waiting for anybody.
 // It is what approving the repository policy means for a project nobody
 // configured further.
 func defaultChangeReviewPolicy(descriptor policy.Descriptor) tracker.ChangeReviewPolicy {
-	rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: descriptor.Gates.Kind == "human_review", RequiredChecks: []tracker.ChangeCheckSpec{}}
+	rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: descriptor.Gates.HumanReview, RequiredChecks: []tracker.ChangeCheckSpec{}}
 	rules.ID = changerequest.PolicyID(rules)
 	return rules
 }
@@ -452,4 +452,21 @@ JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id WHE
 		return &nativeError{Code: "selector_no_match", Message: err.Error(), status: http.StatusConflict}
 	}
 	return nil
+}
+
+func revokeProjectPolicyInTx(ctx context.Context, exec hostedExecer, scope, expectedID string) (any, error) {
+	result, err := exec.ExecContext(ctx, "DELETE FROM project_policies WHERE scope = ? AND policy_id = ?", scope, expectedID)
+	if err != nil {
+		return nil, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if count != 1 {
+		return nil, policyMismatch("Policy changed or is already revoked; inspect the current approval before revoking it")
+	}
+	return struct {
+		Status string `json:"status"`
+	}{"revoked"}, nil
 }

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/staleness"
 )
 
@@ -46,12 +48,44 @@ func (s *Server) apiStalenessWarningsAcknowledgement(c echo.Context) error {
 }
 
 func (s *Server) acknowledgeStalenessWarnings(c echo.Context, projectID string, warningIDs []string, bulk bool) error {
+	response, err := s.acknowledgeOperatorWarnings(c.Request().Context(), projectID, warningIDs)
+	if err != nil {
+		return writeControlProblem(c, err)
+	}
+	resultIDs, acknowledgedAt := response.WarningIDs, response.AcknowledgedAt
+
+	if c.Request().Header.Get("HX-Request") == "true" {
+		return c.HTML(http.StatusOK, "")
+	}
+	if bulk {
+		return c.JSON(http.StatusOK, map[string]any{
+			"project_id":         projectID,
+			"warning_ids":        resultIDs,
+			"acknowledged_at":    acknowledgedAt,
+			"snapshot_published": response.SnapshotPublished,
+		})
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"project_id":      projectID,
+		"warning_id":      resultIDs[0],
+		"acknowledged_at": acknowledgedAt,
+	})
+}
+
+type warningAcknowledgement struct {
+	ProjectID         string    `json:"project_id"`
+	WarningIDs        []string  `json:"warning_ids"`
+	AcknowledgedAt    time.Time `json:"acknowledged_at"`
+	SnapshotPublished bool      `json:"snapshot_published"`
+}
+
+func (s *Server) acknowledgeOperatorWarnings(ctx context.Context, projectID string, warningIDs []string) (warningAcknowledgement, error) {
 	if len(warningIDs) == 0 {
-		return c.JSON(http.StatusBadRequest, errorResponse("bad_request", "warning_ids are required"))
+		return warningAcknowledgement{}, &controlProblem{http.StatusBadRequest, "bad_request", "warning_ids are required"}
 	}
 	for _, warningID := range warningIDs {
 		if strings.TrimSpace(warningID) == "" {
-			return c.JSON(http.StatusBadRequest, errorResponse("bad_request", "warning_ids must not contain empty values"))
+			return warningAcknowledgement{}, &controlProblem{http.StatusBadRequest, "bad_request", "warning_ids must not contain empty values"}
 		}
 	}
 	acknowledgedAt := time.Now().UTC()
@@ -59,15 +93,15 @@ func (s *Server) acknowledgeStalenessWarnings(c echo.Context, projectID string, 
 		acknowledgedAt = s.now().UTC()
 	}
 	if s.stalenessWarnings == nil {
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Staleness warning acknowledgements are unavailable"))
+		return warningAcknowledgement{}, &controlProblem{http.StatusServiceUnavailable, "runtime_unavailable", "Staleness warning acknowledgements are unavailable"}
 	}
-	result, err := s.stalenessWarnings.AcknowledgeActive(c.Request().Context(), projectID, warningIDs, acknowledgedAt)
+	result, err := s.stalenessWarnings.AcknowledgeActive(ctx, projectID, warningIDs, acknowledgedAt)
 	if errors.Is(err, staleness.ErrWarningNotActive) {
-		return c.JSON(http.StatusNotFound, errorResponse("not_found", "Staleness warning is not active for this project"))
+		return warningAcknowledgement{}, &controlProblem{http.StatusNotFound, "not_found", "Staleness warning is not active for this project"}
 	}
 	if err != nil {
-		s.logger.Error("staleness warning acknowledgement failed", slog.Any("error", err))
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Staleness warning acknowledgement store is unavailable"))
+		s.logger.Error("staleness warning acknowledgement failed", slog.Any("error", mutation.ErrorText(ctx, err)))
+		return warningAcknowledgement{}, &controlProblem{http.StatusServiceUnavailable, "runtime_unavailable", "Staleness warning acknowledgement store is unavailable"}
 	}
 	s.logger.Info(
 		"staleness warnings acknowledged",
@@ -76,20 +110,5 @@ func (s *Server) acknowledgeStalenessWarnings(c echo.Context, projectID string, 
 		slog.String("reason", "operator_dismiss"),
 		slog.Bool("effective_snapshot_updated", result.SnapshotPublished),
 	)
-	if c.Request().Header.Get("HX-Request") == "true" {
-		return c.HTML(http.StatusOK, "")
-	}
-	if bulk {
-		return c.JSON(http.StatusOK, map[string]any{
-			"project_id":         projectID,
-			"warning_ids":        result.WarningIDs,
-			"acknowledged_at":    acknowledgedAt,
-			"snapshot_published": result.SnapshotPublished,
-		})
-	}
-	return c.JSON(http.StatusOK, map[string]any{
-		"project_id":      projectID,
-		"warning_id":      result.WarningIDs[0],
-		"acknowledged_at": acknowledgedAt,
-	})
+	return warningAcknowledgement{projectID, result.WarningIDs, acknowledgedAt, result.SnapshotPublished}, nil
 }
