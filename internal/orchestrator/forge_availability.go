@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -660,6 +662,10 @@ func (o *Orchestrator) restoreForgeAvailabilityCondition(state *State, attempt s
 }
 
 func (o *Orchestrator) restoreForgeAvailabilityWait(state *State, issue connector.Issue, attempt store.WorkAttempt, metadata forgeWaitMetadata, now time.Time) {
+	if o.nativeWorkflow() && mergeWorkerIssue(issue) && nativeLandingProjectionWait(metadata.Host, metadata.Operation, metadata.ErrorClass, attempt.ErrorMessage) {
+		o.scheduleRetry(state, issue, attempt.AttemptNumber, now, attempt.ErrorMessage, true, attempt.WorkerHost)
+		return
+	}
 	condition := o.restoreForgeAvailabilityCondition(state, attempt, metadata, now)
 	host := condition.Host
 	nextProbeAt := condition.NextProbeAt
@@ -711,11 +717,44 @@ func (o *Orchestrator) finishForgeAvailabilityProbe(state *State, event runpkg.C
 	}
 	condition, active := forgeCondition(state, running.ForgeProbeHost)
 	credentialProbe := active && condition.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable
+	landing := event.Result.NativeLanding
+	if active && condition.ProbeIssueID == running.Issue.ID && event.Err == nil && landing != nil &&
+		(landing.RefusalKind == workspace.LandRefusalBaseMoved || landing.RefusalKind == workspace.LandRefusalConflict) &&
+		nativeLandingProjectionWait(condition.Host, condition.Operation, condition.ErrorClass, condition.LastError) {
+		for _, retry := range state.Retry {
+			if retry.ForgeUnavailable && forgeavailability.NormalizeHost(retry.ForgeHost) == forgeavailability.NormalizeHost(condition.Host) &&
+				(retry.ForgeRetry == nil || !nativeLandingProjectionWait(retry.ForgeHost, retry.ForgeRetry.Operation, forgeavailability.ClassServer, retry.Error)) {
+				releaseForgeAvailabilityProbe(state, running.Issue.ID, "inconclusive", landing.Refusal, event.CompletedAt)
+				return
+			}
+		}
+		o.completeForgeAvailabilityRecovery(state, running.ForgeProbeHost, event.CompletedAt, "canary")
+		return
+	}
 	if event.Result.ForgeWriteCompleted || !credentialProbe && forgeWriteReachedRemote(event.Err) {
 		o.completeForgeAvailabilityRecovery(state, running.ForgeProbeHost, event.CompletedAt, "canary")
 		return
 	}
 	releaseForgeAvailabilityProbe(state, running.Issue.ID, "inconclusive", errorString(event.Err), event.CompletedAt)
+}
+
+func nativeLandingProjectionWait(host, operation, class, message string) bool {
+	if forgeavailability.NormalizeHost(host) != "github.com" || class != forgeavailability.ClassServer {
+		return false
+	}
+	path, ok := strings.CutPrefix(operation, "github.update_pull_request ")
+	if !ok {
+		return false
+	}
+	prefix := fmt.Sprintf("forge github.com unavailable (%s/%s): GitHub refused PUT %s: %s: status 405: ",
+		forgeavailability.Condition, forgeavailability.ClassServer, path, github.ErrUnexpectedStatus)
+	body, ok := strings.CutPrefix(message, prefix)
+	if !ok {
+		return false
+	}
+	return workspace.GitHubLandingMergeabilityRefusal(http.MethodPut, path, &github.StatusError{
+		Err: github.ErrUnexpectedStatus, StatusCode: http.StatusMethodNotAllowed, Body: body,
+	})
 }
 
 func forgeWriteReachedRemote(err error) bool {

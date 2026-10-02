@@ -2012,7 +2012,7 @@ func (o *Orchestrator) waitForMergeWorkerRetry(
 	running.Issue = issue
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", retryError,
-		map[string]any{mergeReservationMetadataKey: state.mergeReservations[issue.ID]})
+		mergeWorkAttemptMetadata(map[string]any{mergeReservationMetadataKey: state.mergeReservations[issue.ID]}, nativeLandingMetadata(event.Result.NativeLanding)))
 	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
 	if attempt < 1 {
 		attempt = 1

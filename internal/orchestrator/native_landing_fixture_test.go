@@ -45,8 +45,11 @@ func nativeLandingGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, sourceConflict bool) *nativeLandingJourney {
+func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, mergeStatus int, sourceConflict bool) *nativeLandingJourney {
 	t.Helper()
+	if mergeStatus == 0 {
+		mergeStatus = http.StatusMethodNotAllowed
+	}
 	source := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	nativeLandingGit(t, source, "init", "-b", "main")
@@ -145,9 +148,9 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			if puts.Add(1) == 1 || sourceConflict || !strings.HasPrefix(mergeMessage, "Base branch was modified") && mergeMessage != "Pull Request has merge conflicts" {
+			if puts.Add(1) == 1 || sourceConflict || mergeStatus == http.StatusMethodNotAllowed && !strings.HasPrefix(mergeMessage, "Base branch was modified") && mergeMessage != "Pull Request has merge conflicts" {
 				nativeLandingGit(t, source, "push", "origin", freshBase+":refs/heads/main")
-				w.WriteHeader(http.StatusMethodNotAllowed)
+				w.WriteHeader(mergeStatus)
 				fmt.Fprintf(w, `{"message":%q}`, mergeMessage)
 				return
 			}

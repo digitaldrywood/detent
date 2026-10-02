@@ -8,6 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -48,6 +51,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		projection     string
 		wantDeferred   bool
 		refreshQuota   bool
+		refreshStatus  int
+		wantOutage     bool
+		gitReadFailure string
+		gitReadClass   string
 	}{
 		{name: "merges the reviewed head", method: "merge"},
 		{name: "uses the policy squash method", method: "squash"},
@@ -77,7 +84,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "conflict wording in metadata is not a conflict refusal", method: "merge", failureMethod: "PUT", status: 405, failureBody: `{"message":"Required status checks have not passed","errors":["Pull Request is not mergeable"]}`},
 		{name: "malformed conflict text retains protection refusal", method: "merge", failureMethod: "PUT", status: 405, failureBody: `{"message":"Pull Request has merge conflicts"`},
 		{name: "unknown clean source defers explicit merge conflict", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", wantDeferred: true},
+		{name: "clean new rework head retains merge continuation", method: "squash", reworked: true, pullState: "stale", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", wantDeferred: true},
 		{name: "conflict refresh quota retains capacity ownership", method: "merge", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", refreshQuota: true, rate: true, retryAfter: "120"},
+		{name: "real merge server failure retains outage ownership", method: "merge", failureMethod: "PUT", status: 503, message: "Service Unavailable", wantOutage: true},
+		{name: "conflict refresh server failure retains outage ownership", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", refreshStatus: 503, wantOutage: true},
+		{name: "conflict refresh protection retains refusal ownership", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", refreshStatus: 403, wantRefusal: LandRefusalProtected},
+		{name: "Git refresh transport failure retains outage ownership", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", gitReadFailure: "Connection reset by peer", gitReadClass: forgeavailability.ClassTransport},
+		{name: "Git refresh timeout retains outage ownership", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", gitReadFailure: "operation timed out", gitReadClass: forgeavailability.ClassTimeout},
+		{name: "Git refresh authentication remains instance owned", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", gitReadFailure: "Authentication failed", gitReadClass: forgeavailability.ClassTransport},
 		{name: "real source conflict reaches rework", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, wantRefusal: LandRefusalConflict},
 		{name: "base advancing at refusal is inspected afresh", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, advanceOnMerge: true, wantRefusal: LandRefusalConflict},
 		{name: "earlier head projection cannot prove a conflict", method: "squash", reworked: true, pullState: "stale", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "head", wantDeferred: true},
@@ -112,6 +126,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "external secondary quota 429", method: "merge", external: true, failureMethod: "GET", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.gitReadFailure != "" && runtime.GOOS == "windows" {
+				t.Skip("Git command fault injection requires a POSIX shell")
+			}
 			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 			fixture := newLandingFixture(t)
 			originalBase := fixture.remoteMain(t)
@@ -220,6 +237,25 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 										headers.Set("Retry-After", "120")
 										response = `{"message":"secondary rate limit"}`
 									}
+									if test.refreshStatus != 0 && !healthy {
+										status = test.refreshStatus
+										response = `{"message":"refresh refused"}`
+									}
+									if test.gitReadFailure != "" && !healthy {
+										realGit, err := exec.LookPath("git")
+										if err != nil {
+											t.Fatal(err)
+										}
+										wrapper := t.TempDir()
+										script := "#!/bin/sh\n" +
+											"if [ \"$1\" = \"-C\" ] && [ \"$3\" = \"fetch\" ]; then\n" +
+											"printf '%s\\n' " + shellQuote("fatal: unable to access github.com: "+test.gitReadFailure) + " >&2\nexit 128\nfi\n" +
+											"exec " + shellQuote(realGit) + " \"$@\"\n"
+										if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); err != nil {
+											t.Fatal(err)
+										}
+										t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
+									}
 								case test.external:
 									if req.URL.Path != "/repos/example/repo/pulls/7" || req.URL.RawQuery != "" {
 										t.Fatalf("external PR lookup = %s", req.URL)
@@ -283,10 +319,25 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				}
 			}
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), landingInfo, landingIssue, opts)
+			if test.gitReadFailure != "" {
+				availability, ok := forgeavailability.As(err)
+				if !ok || availability.Class != test.gitReadClass || availability.Scope.Operation != "git fetch" || !strings.Contains(err.Error(), test.message) || result.MergeSHA != "" || fixture.remoteMain(t) != base {
+					t.Fatalf("Git transport failure lost its authentic owner: %#v, %v", result, err)
+				}
+				return
+			}
+			if test.wantOutage {
+				availability, ok := forgeavailability.As(err)
+				var status *github.StatusError
+				if !ok || availability.Class != forgeavailability.ClassServer || !errors.As(err, &status) || status.StatusCode != 503 || result.MergeSHA != "" || fixture.remoteMain(t) != base {
+					t.Fatalf("genuine outage lost its owner: %#v, %v", result, err)
+				}
+				return
+			}
 			if test.wantDeferred {
 				var status *github.StatusError
 				var refusal *LandRefusal
-				if !errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.message) || errors.As(err, &refusal) || result.MergeSHA != "" || fixture.remoteMain(t) != base {
+				if errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.message) || !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || result.MergeSHA != "" || fixture.remoteMain(t) != base {
 					t.Fatalf("unproven conflict = %#v, %v; base = %s", result, err, fixture.remoteMain(t))
 				}
 				if strings.Join(methods, ",") != "GET,PUT,GET" && strings.Join(methods, ",") != "GET,POST,PUT,GET" {
@@ -386,6 +437,7 @@ func TestGitHubLandingAPIEndpointOwnership(t *testing.T) {
 				{http.StatusConflict, `{"message":"Head branch was modified"}`},
 				{http.StatusMethodNotAllowed, `{"message":"Base branch was modified. Review and try the merge again."}`},
 				{http.StatusMethodNotAllowed, `{"message":"Head branch is out of date. Review and try the merge again."}`},
+				{http.StatusMethodNotAllowed, `{"message":"Pull Request has merge conflicts"}`},
 			} {
 				client, err := github.NewClient(github.ClientConfig{
 					TokenSource: github.StaticTokenSource(test.name),

@@ -1019,10 +1019,14 @@ configuration, author identity and signing policy remain unchanged, covered by
 and SSH-signed Rework.
 
 Native landing merge conflicts are repository refusals, not infrastructure
-failures or shipped work. Explicit merge-conflict evidence in the decoded GitHub
-HTTP 405 `message` uses the existing `LandRefusalConflict`; unspecified 405
-responses, actual branch protection, required checks and reviews retain their
-refusal classification.
+failures or shipped work. Explicit mergeability evidence in the decoded GitHub
+HTTP 405 `message` requires current source verification before the existing
+`LandRefusalConflict` can select Rework. A clean or unproven source response uses
+the existing `LandRefusalBaseMoved` and item-local landing continuation (#193),
+without registering or extending a host server outage. Authentic HTTP 5xx,
+transport and timeout errors reuse the forge classifier and outage backoff.
+Unspecified 405 responses, actual branch protection, required checks and reviews
+retain their refusal classification.
 Metadata and malformed response text cannot establish conflict or closed-PR state.
 Quota responses retain their separate owner (#89) and never become conflict
 evidence. Unreadable workflow state or an unavailable refusal transition uses
@@ -1447,13 +1451,21 @@ when a bounded refresh identifies the exact reviewed published head, PR
 repository/branch/base and current fetched and published base, and Git
 `merge-tree --write-tree` confirms a conflict for those immutable commits.
 Unknown, missing or contradictory source identity or Git refs remain with the
-existing forge infrastructure retry owner in Merging without source failure
-allowance changes. Clean Git evidence never authorizes landing after a refused
+existing bounded merge continuation owner in Merging without source failure
+allowance changes (#193). Clean Git evidence never authorizes landing after a refused
 atomic merge. The original HTTP refusal and native Change/version/head remain
 in attempt history; refresh quota evidence keeps capacity precedence. Existing
 protected/review/check refusals and exact-endpoint 409 ownership remain enforced.
-The existing forge wait survives restart and a successful same-version landing
-receipt clears its probe; source cleanliness alone cannot clear the refusal.
+The existing landing continuation retains the exact reviewed version/head and
+releases worker capacity without a provider coding turn. The existing durable
+forge wait recovery reclassifies old synthetic native projection waits only when
+the recorded host, class, exact PUT endpoint, HTTP 405 and decoded response
+identify the former coercion. Other persisted waits keep their outage authority.
+The existing completion/probe owner clears a synthetic projection condition on
+a responsive typed continuation or proven conflict; independent genuine waits,
+credential authority and runtime capacity limits remain binding. A successful
+same-version landing receipt retains the existing recovery owner. Source
+cleanliness alone never clears the merge refusal or establishes a landing.
 `TestLocalGitLandChangeViaGitHub`, `TestLandNativeChange` and
 `TestNativeLandingRunCompletion` cover these consolidated authorities under
 INV-1 and INV-3 without a new reason, poller, configuration or recovery loop.
@@ -1465,7 +1477,7 @@ the freshly fetched base must match the current published base in the same
 `merge-tree` uses that fetched commit. PR repository, base ref, head branch and
 head identity, worktree/source authority, policy and quota precedence remain
 required. Changing or unproven Git refs and clean source trees retain the
-existing forge wait; proven current source conflicts select configured Rework
+existing item-local landing continuation; proven current source conflicts select configured Rework
 without reapproval. `TestLocalGitLandChangeViaGitHub` and
 `TestNativeLandingRunCompletion` cover advanced live bases with stale PR
 projections for conflicting matrix files and clean source trees.
