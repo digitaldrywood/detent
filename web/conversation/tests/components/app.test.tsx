@@ -69,10 +69,15 @@ async function mountApp(options: MountOptions | CoordinatorMode = {}) {
     });
   }
   const bootstrap = await loadBootstrap(hub.url);
+  const streamRequests: URL[] = [];
+  const streamFetch: typeof globalThis.fetch = (input, init) => {
+    streamRequests.push(new URL(input instanceof Request ? input.url : String(input)));
+    return sameRealmFetch(input, init);
+  };
   client = makeClient({
     origin: hub.url,
     bootstrap,
-    transport: fetchEventStreamTransport(sameRealmFetch),
+    transport: fetchEventStreamTransport(streamFetch),
     heartbeatTimeoutMs: 20_000,
   });
   const path =
@@ -85,7 +90,7 @@ async function mountApp(options: MountOptions | CoordinatorMode = {}) {
       </ClientContext.Provider>
     </RegistryProvider>,
   );
-  return { router, hub, client };
+  return { router, hub, client, streamRequests };
 }
 
 async function control(path: string, body?: unknown): Promise<void> {
@@ -97,6 +102,39 @@ async function control(path: string, body?: unknown): Promise<void> {
 }
 
 describe("the conversation shell", () => {
+  it("keeps an open chat visible and reconnects after a server_error close", async () => {
+    const { router, streamRequests } = await mountApp();
+    const composer = await screen.findByLabelText<HTMLElement>("Message", undefined, { timeout: 5_000 });
+    await setComposerText(composer, "Keep this chat visible");
+    fireEvent.keyDown(composer, { key: "Enter" });
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/c\/conv_/), { timeout: 5_000 });
+    await screen.findByTestId("assistant-turn", undefined, { timeout: 5_000 });
+    const chatPath = router.state.location.pathname;
+    const userTurn = screen.getByTestId("user-turn");
+    const conversationId = chatPath.replace("/chat/c/", "");
+    const subscriptions = () => streamRequests.filter((url) => url.pathname.endsWith(`/${conversationId}/events`));
+    await waitFor(() => expect(subscriptions()).toHaveLength(1));
+    const cursor = subscriptions()[0]!.searchParams.get("after");
+    expect(Number(cursor)).toBeGreaterThan(0);
+
+    await control("drop-open-streams", { reason: "server_error" });
+    await screen.findByText(/The live connection dropped\. Reconnecting/, undefined, { timeout: 5_000 });
+    expect(screen.getByTestId("user-turn")).toBe(userTurn);
+    expect(screen.queryByText("Conversation unavailable")).toBeNull();
+    expect(router.state.location.pathname).toBe(chatPath);
+    await waitFor(() => expect(screen.queryByText(/The live connection dropped\. Reconnecting/)).toBeNull(), { timeout: 5_000 });
+    await waitFor(() => expect(subscriptions()).toHaveLength(2), { timeout: 5_000 });
+    expect(subscriptions()[1]!.searchParams.get("after")).toBe(cursor);
+
+    await setComposerText(screen.getByLabelText<HTMLElement>("Message"), "Still connected");
+    fireEvent.keyDown(screen.getByLabelText("Message"), { key: "Enter" });
+    await waitFor(() => expect(screen.getAllByTestId("user-turn").some((turn) => turn.textContent?.includes("Still connected"))).toBe(true), { timeout: 5_000 });
+    expect(screen.getAllByTestId("user-turn")[0]).toBe(userTurn);
+    expect(userTurn.textContent).toContain("Keep this chat visible");
+    expect(router.state.location.pathname).toBe(chatPath);
+    expect(screen.queryByText("Conversation unavailable")).toBeNull();
+  });
+
   it("carries a chat through handoff, a runner and a question", async () => {
     const { router } = await mountApp();
     const composer = await screen.findByLabelText<HTMLElement>("Message", undefined, {
