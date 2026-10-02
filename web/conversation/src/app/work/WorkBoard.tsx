@@ -22,7 +22,7 @@ import { usePageTitle } from "../pageTitle.ts";
 import { boardScopeMeta } from "./lib/format.ts";
 import { transitionsFrom } from "./lib/fromWire.ts";
 import { boardStats, sortItems, type Lane, type WorkItemView } from "./lib/model.ts";
-import { moveItem, useBoard, useNow, useWorkHttp } from "./lib/useWork.ts";
+import { moveItem, useBoard, useWorkHttp } from "./lib/useWork.ts";
 import { useViewState } from "./lib/useViewState.ts";
 import { laneVisible, type WorkViewState } from "./lib/viewState.ts";
 import { BoardLane } from "./components/BoardLane.tsx";
@@ -79,7 +79,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const project = client.bootstrap.projects.find((candidate) => candidate.id === projectId);
   usePageTitle("Work", project?.name);
   const http = useWorkHttp();
-  const now = useNow();
   const [view, setView] = useViewState(projectId);
   const board = useBoard(projectId, view);
   const searchRef = React.useRef<HTMLInputElement>(null);
@@ -394,7 +393,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
           <WorkList
             items={items}
             showProject={projectId === null}
-            now={now}
             onOpen={open}
             movesFor={movesFor}
             onMove={move}
@@ -413,7 +411,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   items={items.filter((item) => item.state === lane.name)}
                   total={board.totals?.lanes[lane.name] ?? (board.totals === null ? undefined : 0)}
                   showProject={projectId === null}
-                  now={now}
                   onOpen={open}
                   movesFor={movesFor}
                   onMove={move}

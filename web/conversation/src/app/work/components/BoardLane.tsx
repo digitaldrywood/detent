@@ -11,7 +11,7 @@ export interface BoardLaneProps {
   readonly items: readonly WorkItemView[];
   readonly total?: number;
   readonly showProject: boolean;
-  readonly now: number;
+  readonly now?: number;
   readonly onOpen: (item: WorkItemView) => void;
   readonly movesFor: (item: WorkItemView) => readonly string[];
   readonly onMove: (item: WorkItemView, toState: string) => void;

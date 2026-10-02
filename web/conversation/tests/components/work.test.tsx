@@ -30,9 +30,35 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet
 import { ClientContext } from "../../src/app/client.ts";
 import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
 import { DEFAULT_VIEW_STATE, parseViewState, serializeViewState } from "../../src/app/work/lib/viewState.ts";
-import { useBoard } from "../../src/app/work/lib/useWork.ts";
+import { useBoard, useNow } from "../../src/app/work/lib/useWork.ts";
 import { resetRunnerNamesForTests } from "../../src/app/work/lib/runnerNames.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
+
+const clockRenders = vi.hoisted(() => ({ card: 0, toolbar: 0, list: 0 }));
+
+vi.mock("../../src/app/work/components/IssueCard.tsx", async (original) => {
+  const module = await original<typeof import("../../src/app/work/components/IssueCard.tsx")>();
+  return { ...module, IssueCard: (props: Parameters<typeof module.IssueCard>[0]) => {
+    clockRenders.card++;
+    return module.IssueCard(props);
+  } };
+});
+
+vi.mock("../../src/app/work/components/WorkToolbar.tsx", async (original) => {
+  const module = await original<typeof import("../../src/app/work/components/WorkToolbar.tsx")>();
+  return { ...module, WorkToolbar: (props: Parameters<typeof module.WorkToolbar>[0]) => {
+    clockRenders.toolbar++;
+    return module.WorkToolbar(props);
+  } };
+});
+
+vi.mock("../../src/app/work/components/WorkList.tsx", async (original) => {
+  const module = await original<typeof import("../../src/app/work/components/WorkList.tsx")>();
+  return { ...module, WorkList: (props: Parameters<typeof module.WorkList>[0]) => {
+    clockRenders.list++;
+    return module.WorkList(props);
+  } };
+});
 
 afterEach(cleanup);
 
@@ -718,6 +744,72 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
 async function settledWork() {
   await waitFor(() => expect(screen.getByTestId("work-stats").getAttribute("aria-busy")).toBe("false"));
 }
+
+describe("the Work clock render boundary", () => {
+  it("shares one timer and releases it after the final label unmounts", () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.setSystemTime(NOW);
+    const start = vi.spyOn(globalThis, "setInterval");
+    const stop = vi.spyOn(globalThis, "clearInterval");
+    function Label() {
+      return <span>{useNow()}</span>;
+    }
+    try {
+      const first = render(<Label />);
+      const second = render(<Label />);
+      expect(start).toHaveBeenCalledTimes(1);
+      const timer = start.mock.results[0].value;
+      act(() => vi.advanceTimersByTime(2_000));
+      expect(first.container.textContent).toBe(String(NOW + 2_000));
+      expect(second.container.textContent).toBe(String(NOW + 2_000));
+      first.unmount();
+      expect(stop).not.toHaveBeenCalled();
+      second.unmount();
+      expect(stop).toHaveBeenCalledOnce();
+      expect(stop).toHaveBeenCalledWith(timer);
+      const next = render(<Label />);
+      expect(start).toHaveBeenCalledTimes(2);
+      next.unmount();
+      expect(stop).toHaveBeenCalledTimes(2);
+    } finally {
+      cleanup();
+      start.mockRestore();
+      stop.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["board", "list"])("ticks only time labels in %s view", async (view) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.setSystemTime(NOW);
+    try {
+      await pagedWork(`/work?view=${view}`);
+      await settledWork();
+      const trigger = screen.getByRole("button", { name: "Filters" });
+      trigger.focus();
+      fireEvent.click(trigger);
+      const popup = await screen.findByRole("menu");
+      await act(async () => { vi.advanceTimersByTime(100); });
+      expect(popup.contains(document.activeElement)).toBe(true);
+      const focus = document.activeElement;
+      const before = { ...clockRenders };
+      const cards = view === "board" ? screen.getAllByTestId("issue-card") : screen.getAllByTestId("work-list-row");
+      const first = cards[0];
+      const text = first.textContent;
+      const reads = document.querySelectorAll("[data-work-item]").length;
+      await act(async () => { vi.advanceTimersByTime(2_000); });
+      expect(clockRenders).toEqual(before);
+      expect(document.activeElement).toBe(focus);
+      expect(screen.getByRole("menu")).toBe(popup);
+      expect(document.querySelectorAll("[data-work-item]")).toHaveLength(reads);
+      expect((view === "board" ? screen.getAllByTestId("issue-card") : screen.getAllByTestId("work-list-row"))[0]).toBe(first);
+      expect(first.textContent).not.toBe(text);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("the live Work continuation intent", () => {
   it("cancels a continuation when the actual filter selection changes", async () => {

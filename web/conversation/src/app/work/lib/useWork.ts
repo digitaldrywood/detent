@@ -579,11 +579,32 @@ export async function moveItem(
 }
 
 /** A ticking clock for the age and elapsed labels, at one update a second. */
-export function useNow(intervalMs = 1_000): number {
-  const [now, setNow] = React.useState(() => Date.now());
-  React.useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(timer);
-  }, [intervalMs]);
-  return now;
+let clockNow = Date.now();
+let clockTimer: ReturnType<typeof setInterval> | null = null;
+const clockListeners = new Set<() => void>();
+
+function subscribeClock(listener: () => void): () => void {
+  if (clockTimer === null) {
+    clockNow = Date.now();
+    clockTimer = setInterval(() => {
+      clockNow = Date.now();
+      for (const notify of clockListeners) notify();
+    }, 1_000);
+  }
+  clockListeners.add(listener);
+  return () => {
+    clockListeners.delete(listener);
+    if (clockListeners.size === 0 && clockTimer !== null) {
+      clearInterval(clockTimer);
+      clockTimer = null;
+    }
+  };
+}
+
+function clockSnapshot(): number {
+  return clockNow;
+}
+
+export function useNow(): number {
+  return React.useSyncExternalStore(subscribeClock, clockSnapshot, clockSnapshot);
 }

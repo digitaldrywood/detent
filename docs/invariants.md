@@ -300,6 +300,9 @@ Background refresh keeps existing controls available; initial and explicit
 continuation reads retain their loading state. Both intents compose through the
 same bounded request owner, while scope changes and authorization refusals
 cancel or clear obsolete data.
+The existing shared UI clock updates age and elapsed labels without rerendering
+the board controls, unchanged card bodies, or list rows. Its timer stops when
+no subscribers remain; source updates retain their existing render ownership.
 Sorting and filter-choice discovery remain local to loaded items; terminal counts
 describe inventory, not shipment.
 `TestNativeWorkPageOperationalScope` and the conversation Work pagination fixture
