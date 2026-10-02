@@ -3,8 +3,11 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -17,28 +20,80 @@ import (
 type resolvingReworkAgent struct {
 	fakeCodexClient
 	unresolved bool
+	staged     bool
+	signer     string
+	beforeHead string
+	afterStage func()
+	t          *testing.T
 }
 
 func (a *resolvingReworkAgent) RunTurn(ctx context.Context, req AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
 	a.request = req
+	head, err := exec.CommandContext(ctx, "git", "-C", req.Workspace, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return AgentTurnResult{}, err
+	}
+	a.beforeHead = strings.TrimSpace(string(head))
 	if !a.unresolved {
-		if err := os.WriteFile(filepath.Join(req.Workspace, "README.md"), []byte("resolved\n"), 0o600); err != nil {
+		path := "README.md"
+		if a.staged {
+			path = "repair.md"
+		}
+		if err := os.WriteFile(filepath.Join(req.Workspace, path), []byte("resolved\n"), 0o600); err != nil {
 			return AgentTurnResult{}, err
 		}
-		if err := runAgentGit(ctx, req.Workspace, "add", "README.md"); err != nil {
+		if err := runAgentGit(ctx, req.Workspace, "add", path); err != nil {
 			return AgentTurnResult{}, err
 		}
+		if a.signer != "" && runtime.GOOS == "darwin" {
+			roots, err := workspace.GitMetadataWritableRoots(ctx, req.Workspace)
+			if err != nil {
+				return AgentTurnResult{}, err
+			}
+			profile := fmt.Sprintf("(version 1)(allow default)(deny file-write*)(deny file-read* (literal %q))(allow file-write* (subpath %q) (subpath %q)", a.signer, req.Workspace, req.TempDir)
+			for _, root := range roots {
+				profile += fmt.Sprintf(" (subpath %q)", root)
+			}
+			profile += ")"
+			cmd := exec.CommandContext(ctx, "sandbox-exec", "-p", profile, "/bin/sh", "-c", `
+git -C "$1" add repair.md || exit 1
+if cat "$2" >/dev/null 2>&1; then exit 2; fi
+if git -C "$1" update-ref refs/heads/unrelated HEAD 2>/dev/null; then exit 3; fi
+if git -C "$1" commit -m worker-signing-attempt; then exit 4; fi
+`, "worker", req.Workspace, a.signer)
+			output, err := cmd.CombinedOutput()
+			if err != nil && strings.Contains(string(output), "sandbox_apply: Operation not permitted") {
+				a.t.Log("nested sandbox denied; source/index and host signing still exercised, OS denial acceptance pending")
+			} else if err != nil {
+				return AgentTurnResult{}, fmt.Errorf("sandbox worker: %w: %s", err, output)
+			}
+		}
+	}
+	if a.afterStage != nil {
+		a.afterStage()
 	}
 	return AgentTurnResult{ThreadID: "native-rework", TurnID: "1"}, nil
 }
 
 type reworkArtifactsExecution struct {
 	testExecution
-	base       string
-	head       string
-	diffHead   string
-	files      []tracker.AttemptDiffFile
-	diffSource AttemptDiffSource
+	base            string
+	head            string
+	diffHead        string
+	files           []tracker.AttemptDiffFile
+	diffSource      AttemptDiffSource
+	denyAuthority   bool
+	authorityChecks int
+}
+
+func (e *reworkArtifactsExecution) Validate(ctx context.Context) error {
+	if e.denyAuthority {
+		e.authorityChecks++
+		if e.authorityChecks > 1 {
+			return ErrExecutionAuthorityUnavailable
+		}
+	}
+	return e.testExecution.Validate(ctx)
 }
 
 func (e *reworkArtifactsExecution) SetDiffSource(source AttemptDiffSource)       { e.diffSource = source }
@@ -58,12 +113,24 @@ func (e *reworkArtifactsExecution) FinalizeArtifacts(ctx context.Context, path s
 
 func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 	t.Parallel()
-	for _, unresolved := range []bool{false, true} {
-		name := "resolved source"
-		if unresolved {
-			name = "unresolved source"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		unresolved    bool
+		staged        bool
+		normal        bool
+		signed        bool
+		signingFail   bool
+		authorityLost bool
+	}{
+		{name: "resolved source"},
+		{name: "unresolved source", unresolved: true},
+		{name: "unpaused staged repair", staged: true},
+		{name: "host signs staged native code", staged: true, normal: true, signed: true},
+		{name: "host signs staged Rework", staged: true, signed: true},
+		{name: "host signing unavailable", staged: true, signingFail: true},
+		{name: "authority lost after staging", staged: true, authorityLost: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			source := initRunnerSourceRepo(t)
 			remote := filepath.Join(t.TempDir(), "origin.git")
@@ -75,6 +142,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			issue := connector.Issue{ID: "native", Identifier: "native#141", State: "Rework"}
+			if test.normal {
+				issue.State = "In Progress"
+			}
 			info, err := backend.Create(t.Context(), workspaceIssue("default", issue))
 			if err != nil {
 				t.Fatal(err)
@@ -86,22 +156,86 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			runRunnerGit(t, info.Path, "add", "README.md")
 			runRunnerGit(t, info.Path, "commit", "-m", "feature")
 			original := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
-			if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("base\n"), 0o600); err != nil {
+			runRunnerGit(t, source, "branch", "unrelated", original)
+			basePath := "README.md"
+			if test.staged {
+				basePath = "base.md"
+			}
+			if err := os.WriteFile(filepath.Join(source, basePath), []byte("base\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			runRunnerGit(t, source, "add", "README.md")
+			runRunnerGit(t, source, "add", basePath)
 			runRunnerGit(t, source, "commit", "-m", "base")
 			runRunnerGit(t, source, "push", "origin", "main")
-			runRunnerGit(t, source, "config", "commit.gpgsign", "true")
-			runRunnerGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-personal-signer"))
-			agent := &resolvingReworkAgent{unresolved: unresolved}
+			if !test.staged || test.signingFail {
+				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
+				runRunnerGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-personal-signer"))
+			}
+			signer, allowed := "", ""
+			var signerBefore []byte
+			if test.signed {
+				signer = filepath.Join(t.TempDir(), "signing-key")
+				if output, err := exec.CommandContext(t.Context(), "ssh-keygen", "-t", "ed25519", "-N", "", "-f", signer).CombinedOutput(); err != nil {
+					t.Fatalf("create signing fixture: %v: %s", err, output)
+				}
+				signerBefore, err = os.ReadFile(signer)
+				if err != nil {
+					t.Fatal(err)
+				}
+				public, err := os.ReadFile(signer + ".pub")
+				if err != nil {
+					t.Fatal(err)
+				}
+				allowed = filepath.Join(t.TempDir(), "allowed-signers")
+				if err := os.WriteFile(allowed, append([]byte("test@example.com "), public...), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
+				runRunnerGit(t, source, "config", "gpg.format", "ssh")
+				runRunnerGit(t, source, "config", "user.signingkey", signer)
+				runRunnerGit(t, source, "config", "gpg.ssh.allowedSignersFile", allowed)
+			}
+			configBefore, err := os.ReadFile(filepath.Join(source, ".git", "config"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			agent := &resolvingReworkAgent{unresolved: test.unresolved, staged: test.staged, signer: signer, t: t}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
+			var priorCheckpoint *tracker.NativeCheckpoint
+			if test.authorityLost {
+				agent.afterStage = func() {
+					priorCheckpoint = execution.checkpoint
+					execution.denyAuthority = true
+				}
+			}
 			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Resolve the source"}, Workspace: backend, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, err = r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution})
-			if unresolved {
+			if test.signingFail || test.authorityLost {
+				want := ErrWorkspacePreparation
+				if test.authorityLost {
+					want = ErrExecutionAuthorityUnavailable
+				}
+				if !errors.Is(err, want) || errors.Is(err, workspace.ErrMergeResolutionInvalid) || execution.finish != "failed" || execution.head != "" {
+					t.Fatalf("failed finalization lost identity or captured work: %v, %#v", err, execution)
+				}
+				if head := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD")); head != agent.beforeHead {
+					t.Fatal("failed finalization advanced HEAD")
+				}
+				if staged := strings.TrimSpace(runRunnerGit(t, info.Path, "diff", "--cached", "--name-only")); staged != "repair.md" {
+					t.Fatalf("failed finalization lost staged repair: %s", staged)
+				}
+				if test.signingFail && (execution.checkpoint == nil || execution.checkpoint.WorktreeState != "dirty") {
+					t.Fatal("signing failure omitted dirty checkpoint")
+				}
+				if test.authorityLost && (execution.checkpoint != priorCheckpoint || execution.authorityChecks < 2) {
+					t.Fatal("lost authority wrote checkpoint")
+				}
+				return
+			}
+			if test.unresolved {
 				if !errors.Is(err, workspace.ErrMergeResolutionInvalid) || errors.Is(err, ErrWorkspacePreparation) || execution.finish != "failed" || execution.head != "" {
 					t.Fatalf("source conflict published evidence or became infrastructure: %v, %#v", err, execution)
 				}
@@ -114,13 +248,36 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			if head == original || execution.head != head || execution.diffHead != head || execution.checkpoint == nil || execution.checkpoint.HeadSHA != head || execution.finish != "succeeded" {
 				t.Fatalf("immutable evidence missed final head %s: %#v", head, execution)
 			}
-			if len(execution.files) != 1 || execution.files[0].Path != "README.md" || !strings.Contains(execution.files[0].Patch, "+resolved") {
+			path := "README.md"
+			count := 1
+			if test.staged {
+				path, count = "repair.md", 2
+			}
+			found := false
+			for _, file := range execution.files {
+				found = found || file.Path == path && strings.Contains(file.Patch, "+resolved")
+			}
+			if len(execution.files) != count || !found {
 				t.Fatalf("final diff authority = %#v", execution.files)
 			}
 			if execution.recovery.Lease.PolicyID != "unchanged-policy" {
 				t.Fatal("rework changed policy identity")
 			}
-			if !strings.Contains(agent.request.Prompt, "runner owns native rebase") {
+			if test.signed {
+				runRunnerGit(t, info.Path, "verify-commit", head)
+				signerAfter, err := os.ReadFile(signer)
+				if err != nil || string(signerBefore) != string(signerAfter) {
+					t.Fatal("host finalization changed signer material")
+				}
+			}
+			if got := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "unrelated")); got != original {
+				t.Fatal("finalization moved unrelated ref")
+			}
+			configAfter, err := os.ReadFile(filepath.Join(source, ".git", "config"))
+			if err != nil || string(configBefore) != string(configAfter) {
+				t.Fatal("finalization changed host signing configuration")
+			}
+			if !test.normal && !strings.Contains(agent.request.Prompt, "runner owns native rebase") {
 				t.Fatal("worker was left owning Git transactions")
 			}
 		})

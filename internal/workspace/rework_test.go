@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -167,7 +168,7 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			err = owner.FinalizeRework(t.Context(), info, issue)
+			err = owner.FinalizeNativeWork(t.Context(), info, issue, func(ctx context.Context) error { return ctx.Err() })
 			invalid := test.unresolved || test.alter != ""
 			if invalid {
 				if !errors.Is(err, ErrMergeResolutionInvalid) {
@@ -211,6 +212,106 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 			}
 			if readFile(t, filepath.Join(sibling.Path, "README.md")) != siblingFiles || readFile(t, configPath) != configBefore || readFile(t, signer) != "personal signer sentinel\n" {
 				t.Fatal("sibling files or host signing material changed")
+			}
+		})
+	}
+}
+
+func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		signed bool
+		rework bool
+	}{
+		{name: "unsigned Code"},
+		{name: "signed Code", signed: true},
+		{name: "signed Rework", signed: true, rework: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewBackend(KindLocalGit, LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "native#156", NativeRework: test.rework, ProgressBaseRef: "main"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hooks := []string{"pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"}
+			markers := t.TempDir()
+			if err := os.Mkdir(filepath.Join(info.Path, ".githooks"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for _, hook := range hooks {
+				script := fmt.Sprintf("#!/bin/sh\nprintf 'executed\\n' >> %q\n", filepath.Join(markers, hook))
+				if err := os.WriteFile(filepath.Join(info.Path, ".githooks", hook), []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runGit(t, source, "config", "core.hooksPath", ".githooks")
+			runGit(t, info.Path, "add", ".githooks")
+			runGit(t, info.Path, "commit", "-m", "test: install tracked hooks")
+			for _, hook := range hooks {
+				if readFile(t, filepath.Join(markers, hook)) != "executed\n" {
+					t.Fatalf("hook fixture did not execute %s", hook)
+				}
+				if err := os.Remove(filepath.Join(markers, hook)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runGit(t, source, "config", "user.name", "Native Author")
+			runGit(t, source, "config", "user.email", "native@example.com")
+			if test.signed {
+				signer := filepath.Join(t.TempDir(), "signing-key")
+				if output, err := exec.CommandContext(t.Context(), "ssh-keygen", "-t", "ed25519", "-N", "", "-f", signer).CombinedOutput(); err != nil {
+					t.Fatalf("create signing fixture: %v: %s", err, output)
+				}
+				public, err := os.ReadFile(signer + ".pub")
+				if err != nil {
+					t.Fatal(err)
+				}
+				allowed := filepath.Join(t.TempDir(), "allowed-signers")
+				if err := os.WriteFile(allowed, append([]byte("native@example.com "), public...), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "config", "commit.gpgsign", "true")
+				runGit(t, source, "config", "gpg.format", "ssh")
+				runGit(t, source, "config", "user.signingkey", signer)
+				runGit(t, source, "config", "gpg.ssh.allowedSignersFile", allowed)
+			}
+			configPath := filepath.Join(source, ".git", "config")
+			configBefore := readFile(t, configPath)
+			before := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if err := os.WriteFile(filepath.Join(info.Path, "repair.md"), []byte("repair\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "add", "repair.md")
+			if err := backend.(*LocalGit).FinalizeNativeWork(t.Context(), info, issue, func(ctx context.Context) error { return ctx.Err() }); err != nil {
+				t.Fatal(err)
+			}
+			for _, hook := range hooks {
+				if _, err := os.Stat(filepath.Join(markers, hook)); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("host finalization executed %s: %v", hook, err)
+				}
+			}
+			head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if head == before || strings.TrimSpace(runGit(t, info.Path, "status", "--porcelain")) != "" {
+				t.Fatal("finalization did not commit the staged repair")
+			}
+			if test.signed {
+				runGit(t, info.Path, "verify-commit", head)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "show", "-s", "--format=%an <%ae>", head)); got != "Native Author <native@example.com>" {
+				t.Fatalf("finalization changed author: %s", got)
+			}
+			if got := strings.TrimSpace(runGit(t, source, "config", "core.hooksPath")); got != ".githooks" || readFile(t, configPath) != configBefore {
+				t.Fatal("finalization changed repository hooks or signing configuration")
 			}
 		})
 	}

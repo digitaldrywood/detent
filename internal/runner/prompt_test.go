@@ -75,7 +75,7 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 				return
 			}
 			contract := prompt[index:]
-			for _, want := range []string{"override any tracker, Workpad, or pull request instructions", "Commit your work on the current attempt branch", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from your commits", "final message"} {
+			for _, want := range []string{"override any tracker, Workpad, or pull request instructions", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("contract missing %q", want)
 				}

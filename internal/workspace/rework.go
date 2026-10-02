@@ -14,15 +14,15 @@ func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, op
 	if err != nil {
 		return MergePrepareResult{}, err
 	}
-	diff, err := l.DiffStat(ctx, info, issue)
-	if err != nil {
-		return MergePrepareResult{}, err
-	}
 	release, err := l.acquireSourceOperation(ctx)
 	if err != nil {
 		return MergePrepareResult{}, err
 	}
 	defer release()
+	return l.prepareRework(ctx, info, issue, opts)
+}
+
+func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions) (MergePrepareResult, error) {
 	paused, err := l.verifyReworkBranch(ctx, info, issue)
 	if err != nil {
 		return MergePrepareResult{}, err
@@ -39,6 +39,10 @@ func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, op
 		if err := os.MkdirAll(parent, 0o755); err != nil {
 			return MergePrepareResult{}, err
 		}
+	}
+	diff, err := l.DiffStat(ctx, info, issue)
+	if err != nil {
+		return MergePrepareResult{}, err
 	}
 	if !diff.IsEmpty() {
 		return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diff}, nil
@@ -64,15 +68,8 @@ func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, op
 	return reworkRebaseResult(ctx, info.Path, nil)
 }
 
-func (l *LocalGit) FinalizeRework(ctx context.Context, info Info, issue Issue) error {
-	prepared, err := l.PrepareRework(ctx, info, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef})
-	if err != nil {
-		return err
-	}
-	if prepared.Status == MergePrepareStatusDirty {
-		return fmt.Errorf("%w: rework changes must be committed before finalization", ErrMergeResolutionInvalid)
-	}
-	info, err = l.normalizeInfo(info, issue)
+func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issue, validate func(context.Context) error) error {
+	info, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return err
 	}
@@ -82,7 +79,47 @@ func (l *LocalGit) FinalizeRework(ctx context.Context, info Info, issue Issue) e
 	}
 	defer release()
 	paused, err := l.verifyReworkBranch(ctx, info, issue)
+	if err != nil {
+		return err
+	}
+	if validate == nil {
+		return errors.New("native completion authority is unavailable")
+	}
+	if err := validate(ctx); err != nil {
+		return err
+	}
+	if !paused {
+		staged, err := runGitAt(ctx, info.Path, "diff", "--cached", "--name-only", "-z")
+		if err != nil {
+			return err
+		}
+		if staged != "" {
+			if _, err := runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "commit", "-m", "fix: complete "+issue.Identifier); err != nil {
+				return err
+			}
+		}
+	}
+	if !issue.NativeRework {
+		if paused {
+			return fmt.Errorf("%w: native code completion has a paused rebase", ErrMergeResolutionInvalid)
+		}
+		return nil
+	}
+	if err := validate(ctx); err != nil {
+		return err
+	}
+	prepared, err := l.prepareRework(ctx, info, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef})
+	if err != nil {
+		return err
+	}
+	if prepared.Status == MergePrepareStatusDirty {
+		return fmt.Errorf("%w: rework changes must be staged before finalization", ErrMergeResolutionInvalid)
+	}
+	paused, err = l.verifyReworkBranch(ctx, info, issue)
 	if err != nil || !paused {
+		return err
+	}
+	if err := validate(ctx); err != nil {
 		return err
 	}
 	conflicts, err := reworkConflictPaths(ctx, info.Path)

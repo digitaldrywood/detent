@@ -553,6 +553,8 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		formal      bool
 		failDetail  bool
 		commit      bool
+		staged      bool
+		signingFail bool
 		dirty       bool
 		wantNone    bool
 		wantChanged bool
@@ -560,12 +562,15 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		wantChanges int
 	}{
 		{name: "commits", commit: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
+		{name: "host commits staged code", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "hosted template commits reach Human Review", hosted: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "hosted template without commits ends", hosted: true, wantState: "Done"},
 		{name: "no commits", wantState: "Done"},
 		{name: "uncommitted edits", dirty: true, wantNone: true, wantState: "In Progress"},
 		{name: "Rework receives current Change discussion", rework: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "Rework receives formal requested changes", rework: true, formal: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
+		{name: "host commits staged Rework", rework: true, formal: true, staged: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
+		{name: "host signing unavailable preserves requested changes", rework: true, formal: true, staged: true, signingFail: true},
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -684,7 +689,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			provider := &committingAgent{commit: test.commit, dirty: test.dirty}
+			if test.signingFail {
+				nativeChangeGit(t, source, "config", "commit.gpgsign", "true")
+				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
+			}
+			provider := &committingAgent{commit: test.commit, dirty: test.dirty, staged: test.staged}
 			agent, err := runner.NewRunner(runner.Dependencies{
 				Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Complete the issue"},
 				Workspace:    backend,
@@ -694,6 +703,20 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			if test.signingFail {
+				if !errors.Is(err, runner.ErrWorkspacePreparation) || errors.Is(err, workspace.ErrMergeResolutionInvalid) || result.NativeChange != nil {
+					t.Fatalf("host signing failure lost identity or published: result=%+v, error=%v", result.NativeChange, err)
+				}
+				detail, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+				if readErr != nil || !reflect.DeepEqual(detail, *expected) || h.state(t, issue.ID) != "Rework" {
+					t.Fatalf("signing failure changed current version, feedback or lane: detail=%+v, error=%v", detail, readErr)
+				}
+				staged, readErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "diff", "--cached", "--name-only").Output()
+				if readErr != nil || strings.TrimSpace(string(staged)) != "CHANGE.md" {
+					t.Fatalf("host failure lost staged work: %s, %v", staged, readErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("run: %v", err)
 			}
@@ -759,6 +782,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if stored.HeadSHA != change.HeadSHA || stored.BaseSHA != change.BaseSHA || !nativeDiffHas(stored.Files, "CHANGE.md") {
 					t.Fatalf("stored diff = %#v, reported %#v", stored, change)
 				}
+				head, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "rev-parse", "HEAD").Output()
+				if err != nil || strings.TrimSpace(string(head)) != stored.HeadSHA {
+					t.Fatalf("published head is not finalized Git HEAD: %s, %v", head, err)
+				}
 				if test.rework {
 					detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
 					if err != nil {
@@ -766,6 +793,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					}
 					if len(detail.Versions) != len(expected.Versions)+1 {
 						t.Fatalf("rework did not publish one new version: %+v", detail)
+					}
+					if !reflect.DeepEqual(detail.Reviews, expected.Reviews) || !reflect.DeepEqual(detail.Discussion, expected.Discussion) {
+						t.Fatal("new version changed historical feedback or fabricated review")
 					}
 					current := detail.Versions[len(detail.Versions)-1]
 					if change.VersionID == "" || change.VersionID == expected.Change.CurrentVersion || detail.Change.CurrentVersion != change.VersionID || current.ID != change.VersionID || current.HeadSHA != stored.HeadSHA || current.PolicyID != h.descriptor.ID || current.Repository != nativeChangeRepository || current.Code.URI != nativeChangeRepository+"/commit/"+stored.HeadSHA {
@@ -792,13 +822,16 @@ func nativeDiffHas(files []tracker.AttemptDiffFile, path string) bool {
 // committingAgent is a fake provider: it completes one turn, committing a
 // file in the worktree first when commit is set.
 type committingAgent struct {
-	commit bool
-	dirty  bool
-	prompt string
+	commit    bool
+	dirty     bool
+	staged    bool
+	prompt    string
+	workspace string
 }
 
 func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	a.prompt = request.Prompt
+	a.workspace = request.Workspace
 	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-native", TurnID: "turn-1"}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}
@@ -807,11 +840,15 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 			return runner.AgentTurnResult{}, err
 		}
 	}
-	if a.commit {
+	if a.commit || a.staged {
 		if err := os.WriteFile(filepath.Join(request.Workspace, "CHANGE.md"), []byte("changed\n"), 0o600); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
-		for _, args := range [][]string{{"add", "CHANGE.md"}, {"commit", "-m", "change"}} {
+		commands := [][]string{{"add", "CHANGE.md"}}
+		if a.commit {
+			commands = append(commands, []string{"commit", "-m", "change"})
+		}
+		for _, args := range commands {
 			if output, err := exec.CommandContext(ctx, "git", append([]string{"-C", request.Workspace}, args...)...).CombinedOutput(); err != nil {
 				return runner.AgentTurnResult{}, errors.Join(err, errors.New(string(output)))
 			}
