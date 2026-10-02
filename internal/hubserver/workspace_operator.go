@@ -51,7 +51,7 @@ func (e workspaceOperatorExecutor) OpenConnection(ctx context.Context) error {
 	return e.server.operatorChat.AttachConnection(ctx)
 }
 func (e workspaceOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
-	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+	if _, err := e.server.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return nil, err
 	}
 	definitions := []operatortool.Definition{}
@@ -63,7 +63,7 @@ func (e workspaceOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 			continue
 		}
 		if !d.Annotations.ReadOnly {
-			if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err != nil {
+			if _, err := e.server.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite}); err != nil {
 				continue
 			}
 		}

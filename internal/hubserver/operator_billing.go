@@ -86,7 +86,7 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		return nil, err
 	}
 	definitions = append(definitions, changes...)
-	admin, err := e.service.administration.ListTools(ctx)
+	admin, err := e.service.administrationCatalog(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		case operatortool.HostedUsage:
 			kind = ""
 		}
-		if _, err := e.service.operatorBillingCredential(ctx, kind, !definition.Annotations.ReadOnly); err != nil {
+		if _, err := e.service.catalogBillingCredential(ctx, kind, !definition.Annotations.ReadOnly); err != nil {
 			continue
 		}
 		if !definition.Annotations.ReadOnly && e.service.config.Hosted.Billing == nil {

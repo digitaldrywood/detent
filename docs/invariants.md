@@ -465,7 +465,16 @@ These records are application effects/audit only and confer no tracker lane
 writing authority. The orchestrator remains the sole lane writer.
 
 MCP and the stdio daemon bridge resolve current application authority for each
-discovery/direct call (#3336). Principal, organization, credential and session
+discovery/direct call (#3336). Hub discovery (#208) uses the credential resolved
+by the current request's authentication and its local grant projection, without
+per-tool provider calls, mutation rechecks, or token last-used writes. That
+projection stays in the request context; the MCP session retains no discovered
+permissions. Scope, lesser provider/local role, all-runner grants, and configured
+service visibility still filter discovery. Direct calls and approved mutations
+independently resolve current authority, including key/user project grant
+intersection, expiry and revocation. `TestHubCatalogProviderCalls` counts provider,
+resolver and administration calls for browser and project-scoped read/write/admin
+keys in shared and dedicated deployments. Principal, organization, credential and session
 are bound together; scope and project grants come from the existing credential
 and hosted membership services. HTTP dispatch preserves the request authority
 without retaining discovered permissions. Both hosted entry paths use the

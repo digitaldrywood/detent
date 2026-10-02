@@ -24,7 +24,7 @@ func (e hubOperatorExecutor) OpenConnection(ctx context.Context) error {
 	return e.service.operatorChat.AttachConnection(ctx)
 }
 func (e hubOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
-	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return nil, err
 	}
 	out := []operatortool.Definition{}
@@ -39,7 +39,7 @@ func (e hubOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.Defi
 		if d.Name == operatortool.ApproveChangeReviewPolicy || d.Name == operatortool.BindArtifactService || d.Name == operatortool.ReviewChange && e.service.config.Hosted != nil {
 			scope = apikey.ScopeAdmin
 		}
-		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope}); err == nil {
+		if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: scope}); err == nil {
 			out = append(out, d)
 		}
 	}

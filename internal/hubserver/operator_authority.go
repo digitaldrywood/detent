@@ -112,9 +112,11 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 			return nativeScope{organization: tracker.OrganizationID(organization), credential: current}, nil
 		})
-		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+		authority, err := s.operatorCurrentAuthority(ctx, credential, organization)
+		if err != nil || !identity.Valid() || authority.Identity != identity || authority.Check(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, OrganizationID: organization}) != nil {
 			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
+		ctx = s.withOperatorCatalog(ctx, credential, organization)
 		request := c.Request().WithContext(ctx)
 		if s.hostedShared() {
 			// The verified entry rewrites Host to its private tenant destination.

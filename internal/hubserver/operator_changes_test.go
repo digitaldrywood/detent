@@ -398,7 +398,8 @@ func TestHostedOperatorPolicyApproval(t *testing.T) {
 					}
 
 					if scenario == "role lost" {
-						definitions, err := ex.ListTools(ctx)
+						requireNativeStatus(t, f.request(t, u, http.MethodGet, "/capture-authority", nil), http.StatusOK)
+						definitions, err := ex.ListTools(<-ctxs)
 						if err != nil {
 							t.Fatal(err)
 						}

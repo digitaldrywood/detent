@@ -63,14 +63,15 @@ func (e hubFleetExecutor) OpenConnection(ctx context.Context) error {
 	return e.service.operatorChat.AttachConnection(ctx)
 }
 func (e hubFleetExecutor) ListTools(ctx context.Context) ([]operatortool.Definition, error) {
-	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
+	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return nil, err
 	}
 	result := []operatortool.Definition{}
-	credential, err := currentHubOperator(ctx)
+	catalog, err := operatorCatalog(ctx)
 	if err != nil {
 		return nil, operatortool.ErrAccessDenied
 	}
+	credential := catalog.credential
 	for _, d := range operatortool.CommandCatalog() {
 		if !e.service.hubFleetReadPermitted(d.Name, credential) {
 			continue
@@ -85,7 +86,7 @@ func (e hubFleetExecutor) ListTools(ctx context.Context) ([]operatortool.Definit
 		if !hubFleetTool(d.Name) || d.Name == operatortool.GetRunnerRouting && e.service.config.Hosted != nil || d.Name == operatortool.HostedFleet && (credential.SessionHash == "" || e.service.config.Hosted == nil) || d.Name == operatortool.GitHubRequestCounts && e.service.config.Hosted != nil || !d.Annotations.ReadOnly && e.service.config.CredentialMaintenance {
 			continue
 		}
-		if _, err := operatortool.AuthorizeCurrent(ctx, hubFleetRequirement(d.Name)); err == nil {
+		if _, err := e.service.authorizeCatalog(ctx, hubFleetRequirement(d.Name)); err == nil {
 			result = append(result, d)
 		}
 	}
