@@ -379,7 +379,7 @@ export function SetupRoute({
   const [issueBody, setIssueBody] = React.useState("");
   const [issueState, setIssueState] = React.useState("");
   React.useEffect(() => {
-    const first = project?.states.find((state) => state.dispatchable) ?? project?.states[0];
+    const first = project?.profile === "native" ? project.states[0] : project?.states.find((state) => state.dispatchable) ?? project?.states[0];
     if (first !== undefined && issueState === "") setIssueState(first.name);
   }, [project, issueState]);
 

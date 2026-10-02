@@ -19,16 +19,17 @@ import (
 const HeartbeatTimeout = 2 * time.Minute
 
 type Routing struct {
-	DisplayName    string              `json:"display_name"`
-	Tags           []string            `json:"tags"`
-	State          string              `json:"state"`
-	CapacityLimit  int                 `json:"capacity_limit"`
-	ProjectIDs     []tracker.ProjectID `json:"project_ids"`
-	HomeProjectIDs []tracker.ProjectID `json:"home_project_ids"`
-	IsolationTier  string              `json:"isolation_tier"`
-	HostServices   []string            `json:"host_services"`
-	Availability   Availability        `json:"availability"`
-	Spillover      Spillover           `json:"spillover"`
+	CapacityRequest *CapacityRequest    `json:"capacity_request,omitempty"`
+	DisplayName     string              `json:"display_name"`
+	Tags            []string            `json:"tags"`
+	State           string              `json:"state"`
+	CapacityLimit   int                 `json:"capacity_limit"`
+	ProjectIDs      []tracker.ProjectID `json:"project_ids"`
+	HomeProjectIDs  []tracker.ProjectID `json:"home_project_ids"`
+	IsolationTier   string              `json:"isolation_tier"`
+	HostServices    []string            `json:"host_services"`
+	Availability    Availability        `json:"availability"`
+	Spillover       Spillover           `json:"spillover"`
 }
 
 type Availability struct {
@@ -61,6 +62,7 @@ type HostChange struct {
 }
 
 type Runner struct {
+	CapacityConfig   *CapacityConfig         `json:"capacity_configuration,omitempty"`
 	Problems         []Problem               `json:"problems"`
 	HomeDrySince     *time.Time              `json:"home_dry_since"`
 	HomeStatus       string                  `json:"home_status"`
@@ -154,6 +156,11 @@ func (r Routing) Normalized() Routing {
 }
 
 func (r Routing) Validate() error {
+	if r.CapacityRequest != nil {
+		if err := r.CapacityRequest.Validate(); err != nil {
+			return err
+		}
+	}
 	if r.DisplayName == "" || len(r.DisplayName) > 200 || strings.ContainsAny(r.DisplayName, "\r\n\x00") {
 		return errors.New("runner display name must contain 1 to 200 characters on one line")
 	}

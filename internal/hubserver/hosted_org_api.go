@@ -194,26 +194,26 @@ func (s *Service) hostedMemberGrants(ctx context.Context) (map[string][]hostedMe
 	return grants, errors.Join(rows.Err(), rows.Close())
 }
 
-// hostedPendingInvitations lists invitations that nobody has accepted. The
-// expiry comes from the reserved member seat, which is what the allowance
-// check holds open for the invited address.
 func (s *Service) hostedPendingInvitations(ctx context.Context) ([]hostedInvitationView, error) {
 	invitations := []hostedInvitationView{}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT i.id, i.email, i.role, i.created_at, COALESCE(r.expires_at, 0)
-FROM hosted_invitations i LEFT JOIN hosted_member_reservations r ON r.email = i.email
-WHERE i.organization_id = ? AND i.accepted_user_id = '' ORDER BY i.rowid`, s.config.Hosted.OrganizationID)
+	rows, err := s.database.db.QueryContext(ctx, `SELECT id, email, role, created_at, expires_at
+FROM hosted_invitations
+WHERE organization_id = ? AND accepted_user_id = '' ORDER BY rowid DESC`, s.config.Hosted.OrganizationID)
 	if err != nil {
 		return nil, fmt.Errorf("read hosted invitations: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var view hostedInvitationView
-		var expires int64
-		if err := rows.Scan(&view.ID, &view.Email, &view.Role, &view.CreatedAt, &expires); err != nil {
+		if err := rows.Scan(&view.ID, &view.Email, &view.Role, &view.CreatedAt, &view.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("scan hosted invitation: %w", err)
 		}
-		if expires > 0 {
-			view.ExpiresAt = time.Unix(expires, 0).UTC().Format(time.RFC3339)
+		if view.ExpiresAt == "" {
+			invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, view.ID)
+			if err != nil {
+				return nil, fmt.Errorf("read hosted invitation expiry: %w", err)
+			}
+			view.ExpiresAt = formatHubTime(invitation.ExpiresAt)
 		}
 		invitations = append(invitations, view)
 	}
@@ -526,8 +526,9 @@ type hostedProjectView struct {
 func (s *Service) createHostedProjectJSON(c echo.Context) error {
 	var request struct {
 		hostedIdempotent
-		Name        string `json:"name"`
-		GrantAccess bool   `json:"grant_access"`
+		Name        string                `json:"name"`
+		GrantAccess bool                  `json:"grant_access"`
+		States      []tracker.NativeState `json:"states,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -543,7 +544,12 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 	if name == "" || len(name) > 120 || !request.GrantAccess {
 		return s.hostedJSONError(c, http.StatusUnprocessableEntity, "Enter a project name and explicitly grant yourself project access")
 	}
-	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name)
+	if request.States != nil {
+		if err := validateNativeStates(request.States); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
+	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name, request.States)
 	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {

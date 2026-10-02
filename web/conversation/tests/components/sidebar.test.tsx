@@ -213,10 +213,10 @@ describe("the thread sidebar", () => {
       screen.getByLabelText("Filter threads by project").textContent,
     ).toContain("All projects");
     fireEvent.click(screen.getByLabelText("Filter threads by project"));
-    fireEvent.click(await screen.findByRole("option", { name: "beta", exact: true }));
+    fireEvent.click(await screen.findByRole("option", { name: "beta" }));
     expect(onProjectChange).toHaveBeenLastCalledWith("proj_beta");
     fireEvent.click(screen.getByLabelText("Filter threads by project"));
-    fireEvent.click(await screen.findByRole("option", { name: "All projects", exact: true }));
+    fireEvent.click(await screen.findByRole("option", { name: "All projects" }));
     expect(onProjectChange).toHaveBeenLastCalledWith("");
   });
 

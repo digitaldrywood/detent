@@ -299,7 +299,11 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		input = r.Input
 		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-			id, err := s.createHostedProjectInTx(ctx, tx, scope.credential, strings.TrimSpace(r.Input.Name))
+			var states []tracker.NativeState
+			if r.Input.States != nil {
+				states = *r.Input.States
+			}
+			id, err := s.createHostedProjectInTx(ctx, tx, scope.credential, strings.TrimSpace(r.Input.Name), states)
 			if err != nil {
 				return nil, err
 			}
@@ -325,7 +329,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
 		feature = "github_integration"
-		request := updateProjectIntegrationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Intake: r.Input.Intake, Projection: r.Input.Projection, RepositoryEnabled: r.Input.RepositoryEnabled}
+		request := updateProjectIntegrationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Intake: r.Input.Intake, Projection: r.Input.Projection, RepositoryEnabled: r.Input.RepositoryEnabled, States: r.Input.States}
 		input = request
 		operation = s.updateProjectIntegrationOperation(request)
 	case "start_git_hub_import":

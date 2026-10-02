@@ -17,6 +17,18 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Hosted project workflow configuration uses the existing administrator-owned
+integration settings command and revision/idempotency boundary. Reviewed
+NativeState definitions remain project-specific, retain existing workflow row
+identities and item/dependency records, and cannot remove states occupied by
+active or archived items. Compatibility workflows retain source ownership;
+worker operator-only transition rules and approved repository policy remain
+authoritative. Native creation forms use the first configured state as their
+initial lane. Workflow edits through MCP retain exact material-action approval.
+`TestHostedProjectWorkflowConfiguration`, `TestActionConfirmationClassification`
+and the client workflow settings/default-state regressions cover these boundaries.
+No tracker lane writer or recovery mechanism is introduced (INV-3).
+
 Permission outcome authority (#3758) belongs to the existing completion owners.
 Ordinary tracker runs use fresh canonical Workpad comments, dependencies,
 completion evidence and project gates; final prose or a final-only status block
@@ -266,6 +278,36 @@ only authorized read tools, while operator actions use the named command tools.
 `TestWorkspaceOperatorHistoryBudget`, `TestWorkspaceOperatorBrowserApproval`,
 `TestWorkspaceOperatorUnavailable` and `TestMCPOperatorChatRetry` cover these boundaries.
 No MCP adapter writes tracker lanes or introduces a new protection/recovery mechanism.
+
+Effective runner capacity (native #90) uses the existing runner administration,
+native command receipt, routing heartbeat, selected global configuration writer
+and runtime reload owners. UI routing capacity edits and MCP/API capacity requests
+deliver the same typed runner-bound application request. Capacity-only requests
+preserve grants, isolation, accounts, models and project execution policies.
+Expected runner/configuration revisions and current principal authority apply
+before effects, and current resource authority is rechecked before receipt replay.
+Reads do not record mutation usage. No raw file path, credential, shell command,
+new YAML configuration key, polling loop or recovery owner is exposed.
+
+Desired Cloud limits are distinct from observed saved/runtime limits and the
+effective runner configuration ceiling. Fresh runner/provider evidence is required;
+missing, future or stale evidence remains unknown. Shared host limits and plan
+execution permission retain their existing owners. Project, pool and lane admission
+remains authoritative at claim time. External provider-capacity producers are
+unmanaged: responses name the account/backend ceiling and instruct the operator to
+change the producer configuration, never the generated report.
+The selected configuration owner reads back saved limits and their revision
+after writing, while runtime limits retain reload authority. Application failures
+remain visible in subsequent heartbeat observations only for the same selected
+configuration revision; a changed configuration or corrected request replaces
+that outcome. This retains application evidence without another retry or recovery
+owner.
+
+`TestRunnerCapacityOwner`, `TestRunnerCapacityHeartbeat`,
+`TestRunnerCapacityApplication`, the capacity cases in `TestHostedMCPFleetControls`
+and `TestFleetArgumentBoundary` cover persistence, reload, old-Hub compatibility,
+current authority, bounded input, revisions, replay, redaction and real additional
+claims. This extends INV-1 adapters without another capacity policy or lane writer.
 
 Fleet/operator MCP adapters (#3343) share the dashboard refresh, availability
 clear, canary, update, progress-credit, warning-acknowledgment, recovery and
@@ -572,6 +614,29 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
 
+Native landing merge conflicts are repository refusals, not infrastructure
+failures or shipped work. Explicit GitHub HTTP 405 merge-conflict evidence uses
+the existing `LandRefusalConflict`; unspecified 405 responses, actual branch
+protection, required checks and reviews retain their refusal classification.
+Quota responses retain their separate owner (#89) and never become conflict
+evidence. Unreadable workflow state or an unavailable refusal transition uses
+the existing deferred completion owner without inventing a successful landing.
+`TestGitHubLandingAPIRefusal` and `TestNativeLandingRunCompletion` exercise these
+classification and settlement boundaries (#96).
+
+Cloud shared provider capacity aggregates reports only from runners with current,
+unrevoked authority, using the existing runner validity interval contract.
+Expired and revoked identities retain their historical reports but cannot clamp
+live concurrency or availability. Draining and offline runners with valid
+authority still contribute. Live, unexpired lease reservations remain counted
+once per lease and retain their pinned concurrency bounds until release or
+expiry, independently of reporting authority. Current same-account exhaustion,
+unknown availability, organization scope and account isolation remain
+conservative. `TestProviderPoolIsolation` covers these boundaries alongside the
+existing provider observation and concurrent-claim fixtures. This consolidates
+report authority under the existing runner owner (INV-3), without a cleanup,
+recovery path or new capacity mechanism; provider capacity remains instance-owned.
+
 SSH host loss uses the existing host-scoped instance-capacity retry without incrementing issue failure counts or draining healthy hosts. `TestSSHHostLossUsesInstanceRetry`, `TestSSHHostLossClearsResumeOnSpillover`, and `TestSSHLocalTargetIntegration` cover attribution and retry behavior (#3239).
 
 **Statement:** Infrastructure failures attach to the instance, never to the issue, whether they happen before the first agent turn or during a turn.
@@ -849,6 +914,47 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Native GitHub landing (#137) consolidates reviewed-head authority on the
+existing atomic merge PUT with `sha` equal to the immutable reviewed head.
+After the runner's lease-protected push, the selected open PR's list head may
+lag publication and cannot refuse landing. Repository, branch and base identity,
+worktree HEAD verification, source locks, current policy/version and ownership
+checks remain required. Explicit authoritative moved-head and closed-PR merge
+rejections retain `LandRefusalHeadMoved`; reviews, checks, protection and
+authentication remain enforced by GitHub. Typed quota evidence reaches the
+existing capacity owner before repository refusal classification. Only actual
+successful receipts reach the Hub, which receives no GitHub credentials.
+`TestLocalGitLandChangeViaGitHub`, `TestGitHubLandingAPIRefusal` and
+`TestLandNativeChange` cover stale list heads after rework publication, guarded
+remote head rejection, refusal identity and quota precedence. No retry loop,
+recovery path, reason code, policy bypass or lane writer is added.
+
+Native conflict completion selects the project's existing configured
+`ReworkState` through `CompletionLane` and the sole orchestrator lane writer
+(#96). Missing, disallowed, operator-only or terminal rework destinations retain
+the existing deferred completion handoff. Other refusals retain the configured
+review or Blocked destination. This consolidates landing refusal routing under
+the existing completion and rework owners; no configuration, reason code,
+recovery loop or worker lane writer is added.
+
+The existing rework worker rebases source onto the current base and regenerates
+derived artifacts through their build owner when needed. It publishes a new
+immutable Change Request version with its actual head and artifact identity;
+the prior version's review cannot authorize that new version. Current-version
+review, project checks and exact-head landing authority remain required. Only
+an actual landing receipt establishes shipment; worker terminal success and
+landing refusal metadata do not. `TestNativeLandingRunCompletion` and the
+existing `TestNativeExecutionLandsReviewedVersion` cover those boundaries.
+The integration/release owner must still verify a controlled conflict through
+rework, regenerated output, new-version publication and exact-version landing
+after this source change is integrated; local fixture results are not that
+runtime receipt.
+
+Cloud provider report aggregation consolidates validity under the existing runner
+credential authority contract described in INV-2. Historical observations remain
+stored; the existing lease accounting owner retains live pinned reservations.
+No report cleanup, recovery loop, configuration or reason code is added.
 
 Workflow duration reports exclude `agent_activity` in their existing SQL owner
 before loading or converting the activity payloads that report aggregation does
@@ -1183,6 +1289,19 @@ encoder. `TestNativeOptionalReportsNegotiateHubSupport`,
 `TestRunnerSetupHeartbeatOwnership`, and `TestOnboardingRunnerLocalChecks` cover
 strict older/current schemas, failed/missing evidence, routing identity, and the
 single startup heartbeat owner. No compatibility retry loop or gate is added.
+
+Runner checkout readiness checks the source checkout's `.git` and shares the
+project owner's configured workflow loader with repository reporting. Readiness
+is independent of Git origin and forge; optional GitHub repository association
+requires readiness and a canonical GitHub origin from that source checkout.
+An explicitly configured workflow may live outside that checkout; registration
+defaults to checkout-local `WORKFLOW.md` only without a configured workflow.
+`TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin` and
+`TestCollectRunnerLocalChecks` cover external and ref-backed workflows, the
+registration default, invalid/missing workflows, missing Git checkouts, ready
+non-GitHub and origin-less checkouts with no association, and private-output
+redaction. This consolidates the existing reporting checks without another
+heartbeat owner or mechanism (native Cloud work item #2).
 
 Label-based refresh reads current body, comments, Workpad, and native dependency
 evidence through its existing combined hydration owner. The competing persistent
@@ -2803,6 +2922,45 @@ is not an authorized resurrection.
 
 ## INV-10 — Priority only picks the next job
 
+Native claim and provider preview carry the project's existing dispatch state,
+label and unblocker policy to the shared `dispatchpriority` comparator before
+acquiring a lease. Merging overrides numeric priority only when that project
+configures Merging first; native queue rank remains a tie-breaker after the
+configured priorities. Both paths retain native scope, dependencies, live
+leases, current reviewed Change Request readiness and policy/runner authority.
+Runner home selection derives eligibility from each home project's dispatchable
+workflow and approved runner policy, independently of dispatch ranking. The
+requested project's state filter and comparator apply within that project;
+partial orders do not hide unlisted eligible states or impose the requesting
+project's ordering on another home project. Home grants and spillover rules
+remain authoritative. The existing native capability negotiation requires a
+Hub advertising `dispatch_priority` before a runner sends ranking fields to
+claim or preview. Older Hubs produce an instance scheduling wait before either
+request, preserving their strict request schema and issue failure budgets.
+The existing preview evaluates local readiness before claim within the free-slot
+plus eight-candidate allowance. The planner's existing known-wait classification
+excludes known local waits from expensive evaluation. Unavailable local or
+provider candidates fall through without a lease or capacity hold. Claim rechecks current revisions and
+provider capacity, and dispatch retains its fresh checks. This consolidates
+selection under INV-3 without a new queue, configuration key, reservation,
+preemption or recovery mechanism. Landing protections and refusal evidence
+remain owned by the existing landing path.
+During a recorded active GitHub REST wait, the existing candidate-state owner
+excludes native GitHub PR landing before the single-candidate claim boundary.
+Native coding and Git-only landing remain eligible, with the same dependency
+decision used by planner, retry and final dispatch admission. Local merge slot
+exclusion remains in force. If filtering holds all states, intake returns no
+candidates without a claim; an empty Hub state filter means unrestricted work.
+Expired waits restore eligibility without a fresh GitHub probe. Other projects
+retain their tracker, CI and REST decisions and approved landing requirements.
+`TestProviderQueueOrderAndSelectors` covers native claim/preview ordering and
+unavailable-head fallthrough; `TestProviderSchedulerEndToEnd` covers pre-lease
+local readiness and provider fallback.
+`TestRunnerHomeClaims`, `TestHubSchedulingCycle`,
+`TestHubSchedulingReadinessBeforeClaim` and
+`TestNativeOptionalReportsNegotiateHubSupport` cover home policy isolation,
+recorded REST-wait fallthrough, empty-state intake and mixed-version negotiation.
+
 Project dispatch evaluates candidates in the existing priority order, with at
 most the initial free project slots plus eight candidates of lookahead per pass
 (#3190). Failed hydration, dependency waits, due retries, and rejected dispatches
@@ -2834,6 +2992,17 @@ and discovered ready work still uses the existing global acquisition lifecycle.
 - When a slot frees, dispatch the highest-ranked READY request; if none of the
   higher-ranked projects has anything ready, dispatch whatever is ready.
 - The system never cancels, stops, or preempts running work. Only a user cancels work.
+
+Provider capacity application (native #90) removes active reservation snapshots as
+a second ceiling when a fresh report covers the same provider, backend, account,
+sharing identity and reserved model. Reservations still count as occupied slots
+and keep their original execution identity and history. Without matching fresh
+evidence their existing conservative bound remains; shared reporter ceilings and
+exhaustion still apply. `TestRunnerCapacityApplication` raises concurrency with two
+active reservations intact, refuses a claim while the external producer remains at
+two, and admits six only after fresh authoritative evidence. This consolidates
+configuration ceiling authority under the current report owner (INV-3); it does
+not change expired report handling, introduce recovery, or alter priority.
 
 Hosted organization subscriptions price project and unarchived-issue capacity,
 never seats or concurrent agent work (#3268). The Hub removes plan membership

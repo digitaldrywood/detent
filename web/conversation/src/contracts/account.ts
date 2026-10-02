@@ -258,6 +258,7 @@ export type SupportResponse = typeof SupportResponse.Type;
  * so recovering means re-reading, never guessing.
  */
 export const ProjectIntegration = Schema.Struct({
+  states: Schema.optional(Schema.Array(WorkflowState)),
   profile: Schema.String,
   revision: Schema.String,
   intake: Schema.String,

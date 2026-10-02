@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -86,21 +87,30 @@ func sharedProviderAccount(a, b providercapacity.Report) bool {
 
 func providerView(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, report providercapacity.Report, now time.Time) (providercapacity.View, error) {
 	view := providercapacity.View{Report: report, State: report.State(now), Reason: "Bounded concurrency available; quota is an observation, not transferable credit"}
-	rows, err := query.QueryContext(ctx, "SELECT provider_reports_json FROM runner_identities WHERE organization_id = ?", organization)
+	rows, err := query.QueryContext(ctx, `SELECT r.provider_reports_json, t.created_at, t.expires_at, t.revoked_at
+FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organization_id = ?`, organization)
 	if err != nil {
 		return view, err
 	}
 	defer rows.Close()
+	var freshReports []providercapacity.Report
 	for rows.Next() {
-		var raw string
+		var raw, created string
+		var expires, revoked sql.NullString
 		var reports []providercapacity.Report
-		if err := rows.Scan(&raw); err != nil {
+		if err := rows.Scan(&raw, &created, &expires, &revoked); err != nil {
 			return view, err
+		}
+		if revoked.Valid || !runnerTimeValid(now, created, expires.String) {
+			continue
 		}
 		if err := json.Unmarshal([]byte(raw), &reports); err != nil {
 			return view, err
 		}
 		for _, other := range reports {
+			if !now.Before(other.ObservedAt) && now.Before(other.ObservedAt.Add(providercapacity.MaxAge)) {
+				freshReports = append(freshReports, other)
+			}
 			if !sharedProviderAccount(report, other) {
 				continue
 			}
@@ -144,7 +154,11 @@ func providerView(ctx context.Context, query nativeQueryer, organization tracker
 		}
 		if sharedProviderAccount(report, reservation.Report) {
 			view.Used++
-			view.MaxConcurrent = min(view.MaxConcurrent, reservation.Report.MaxConcurrent)
+			if !slices.ContainsFunc(freshReports, func(current providercapacity.Report) bool {
+				return current.Provider == reservation.Report.Provider && current.Backend == reservation.Report.Backend && current.AccountAlias == reservation.Report.AccountAlias && current.SharedAccountAlias == reservation.Report.SharedAccountAlias && current.Supports(reservation.Requirement)
+			}) {
+				view.MaxConcurrent = min(view.MaxConcurrent, reservation.Report.MaxConcurrent)
+			}
 		}
 	}
 	switch {

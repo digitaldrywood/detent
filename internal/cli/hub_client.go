@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -21,8 +22,9 @@ import (
 )
 
 type hubSchedulingOptions struct {
-	intakeToken githubconnector.TokenSource
-	problems    func() []runnerauth.Problem
+	runtimeConfig func() globalconfig.Config
+	intakeToken   githubconnector.TokenSource
+	problems      func() []runnerauth.Problem
 }
 
 func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version string, options ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
@@ -76,10 +78,10 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	for name, id := range clientConfig.NativeProjects {
 		nativeProjects[name] = tracker.ProjectID(id)
 	}
-	checkoutRoots := make(map[string]string, len(nativeProjects))
-	for _, project := range cfg.Projects {
-		if _, ok := nativeProjects[project.ID]; ok {
-			checkoutRoots[project.ID] = project.Workdir
+	checkouts := make(map[string]globalconfig.Project, len(nativeProjects))
+	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
+		if _, ok := nativeProjects[selected.ID]; ok {
+			checkouts[selected.ID] = selected
 		}
 	}
 	var providerReports func() ([]providercapacity.Report, error)
@@ -100,20 +102,25 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	if err != nil {
 		return nil, err
 	}
+	var capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
+	if len(options) > 0 {
+		capacityConfiguration = runnerCapacityOwner(cfg, options[0].runtimeConfig)
+	}
 	var reportProblems func() []runnerauth.Problem
 	if len(options) > 0 {
 		reportProblems = options[0].problems
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
-		LocalChecks:     localChecks,
-		GitHubIntake:    github.FetchIssueSnapshot,
-		GitHubDiscovery: github.DiscoverIssues,
-		Problems:        reportProblems,
-		IsolationReport: func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
-		ProviderReports: providerReports,
-		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
+		CapacityConfiguration: capacityConfiguration,
+		LocalChecks:           localChecks,
+		GitHubIntake:          github.FetchIssueSnapshot,
+		GitHubDiscovery:       github.DiscoverIssues,
+		Problems:              reportProblems,
+		IsolationReport:       func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
+		ProviderReports:       providerReports,
+		OrganizationID:        tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		CheckoutRepository: func(project string) string {
-			return runnerCheckoutRepository(ctx, checkoutRoots[project])
+			return runnerCheckoutRepository(ctx, checkouts[project])
 		},
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
@@ -132,11 +139,11 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	})
 }
 
-func runnerCheckoutRepository(ctx context.Context, root string) string {
-	if root == "" || !runnerCheckoutReady(root) {
+func runnerCheckoutRepository(ctx context.Context, selected globalconfig.Project) string {
+	if !runnerCheckoutReady(ctx, selected) {
 		return ""
 	}
-	remote, err := defaultGitRemoteURL(ctx, root)
+	remote, err := defaultGitRemoteURL(ctx, selected.Workdir)
 	if err != nil {
 		return ""
 	}

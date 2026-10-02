@@ -345,6 +345,7 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue.Identifier = nativeIssueIdentifier(native)
 	issue.Number = native.Number
 	issue.Title, issue.Description, issue.State = native.Title, native.Body, native.State
+	issue.DependencySource = connector.BlockedRefSourceNative
 	issue.AuthorID = native.Actor.PrincipalID
 	issue.Closed = native.Terminal
 	issue.Labels, issue.Assignees = native.Labels, native.Assignees

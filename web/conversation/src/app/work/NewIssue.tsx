@@ -33,6 +33,7 @@ export const ISSUE_CREATION_NEEDS_WRITE = "You need write access to a project to
 
 /** The lane a new issue starts in when nobody chose one. */
 export function firstIssueState(project: AccountProject | undefined): string {
+  if (project?.profile === "native") return project.states[0]?.name ?? "";
   return (
     project?.states.find((state) => state.dispatchable === true && state.terminal !== true)
       ?.name ??
