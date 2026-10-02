@@ -51,13 +51,13 @@ describe("the Enroll dialog", () => {
   it("asks for no host IDs and shows one register command", async () => {
     const { onEnrolled, projects } = await mountDialog();
     expect(projects.length).toBeGreaterThan(1);
-    expect((screen.getByLabelText("Concurrent work items") as HTMLInputElement).value).toBe("1");
+    expect((screen.getByLabelText("Concurrency") as HTMLInputElement).value).toBe("1");
     expect(screen.getByText(/each with its own workspace and agent/)).toBeDefined();
     expect(screen.queryByLabelText("Runner id")).toBeNull();
     expect(screen.queryByLabelText("Machine id")).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build host" } });
-    fireEvent.change(screen.getByLabelText("Concurrent work items"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Concurrency"), { target: { value: "2" } });
     fireEvent.click(projectBox(projects[1]!.id));
     fireEvent.click(screen.getByRole("button", { name: "Create command" }));
 
@@ -93,12 +93,12 @@ describe("the Enroll dialog", () => {
   it("refuses to create a command with no project or an impossible capacity", async () => {
     const { projects } = await mountDialog();
     const create = screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement;
-    fireEvent.change(screen.getByLabelText("Concurrent work items"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("Concurrency"), { target: { value: "0" } });
     expect(create.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("Concurrent work items"), { target: { value: "2.9" } });
+    fireEvent.change(screen.getByLabelText("Concurrency"), { target: { value: "2.9" } });
     expect(create.disabled).toBe(true);
     expect(screen.getByText("A whole number from 1 to 16")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Concurrent work items"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("Concurrency"), { target: { value: "1" } });
     expect(create.disabled).toBe(false);
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "é".repeat(101) } });
     expect(create.disabled).toBe(true);

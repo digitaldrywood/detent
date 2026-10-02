@@ -83,20 +83,39 @@ for (const width of [1280, 390]) {
     await expect(intake).toBeVisible();
     expect(await enroll.evaluate(element => Boolean(element.compareDocumentPosition(document.querySelector('[aria-label="Import GitHub issues"]')) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
     await enroll.click();
-    const capacity = page.getByLabel("Concurrent work items", { exact: true });
+    const capacity = page.getByLabel("Concurrency", { exact: true });
     await expect(capacity).toHaveValue("1");
     await capacity.fill("6");
-    await help(page, "Concurrent work items", "it does not enroll six runners", width === 1280 ? "hover" : tap);
-    await help(page, "Concurrent work items", "Start with 1", width === 1280 ? "focus" : tap);
-    await help(page, "Concurrent work items", "limits can lower effective concurrency", tap, testInfo.outputPath(`capacity-help-${width}.png`));
+    await help(page, "Concurrency", "it does not enroll six runners", width === 1280 ? "hover" : tap);
+    await help(page, "Concurrency", "Start with 1", width === 1280 ? "focus" : tap);
+    await help(page, "Concurrency", "limits can lower effective concurrency", tap, testInfo.outputPath(`capacity-help-${width}.png`));
     await expect(capacity).toHaveValue("6");
     const projects = page.locator('[data-slot="checkbox"][id^="enroll-project-"]');
     const projectState = await projects.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-checked")));
     await help(page, "Projects", "access and routing scope", tap);
     expect(await projects.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-checked")))).toEqual(projectState);
-    await page.screenshot({ path: testInfo.outputPath(`enrollment-${width}.png`) });
+    const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
+    const nameBounds = await dialog.getByLabel("Name", { exact: true }).boundingBox();
+    const capacityBounds = await capacity.boundingBox();
+    expect(nameBounds).not.toBeNull();
+    expect(capacityBounds).not.toBeNull();
+    if (width === 1280) {
+      expect(Math.abs(nameBounds.y - capacityBounds.y), "desktop inputs share a top edge").toBeLessThanOrEqual(1);
+      expect(capacityBounds.x).toBeGreaterThan(nameBounds.x + nameBounds.width);
+      const labelLines = await dialog.locator('label[for="enroll-runner-capacity"]').evaluate((label) => {
+        const range = document.createRange();
+        range.selectNodeContents(label);
+        return range.getClientRects().length;
+      });
+      expect(labelLines, "the concurrency label stays on one line").toBe(1);
+    } else {
+      expect(capacityBounds.y).toBeGreaterThan(nameBounds.y + nameBounds.height);
+      expect(capacityBounds.x).toBe(nameBounds.x);
+      expect(capacityBounds.width).toBe(nameBounds.width);
+    }
+    await dialog.screenshot({ path: testInfo.outputPath(`enrollment-${width}.png`) });
     await capacity.fill("0");
-    await help(page, "Concurrent work items", "independent work items concurrently", tap);
+    await help(page, "Concurrency", "independent work items concurrently", tap);
     await expect(page.getByText("A whole number from 1 to 16")).toBeVisible();
     await expect(page.getByRole("button", { name: "Create command" })).toBeDisabled();
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
