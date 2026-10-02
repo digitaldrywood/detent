@@ -107,7 +107,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		if err != nil {
 			return LandResult{}, err
 		}
-		if pull.Head.Ref != branch {
+		if pull.Head.Ref != githubLandingBranch(normalized, opts) {
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the external pull request branch differs from the landing workspace")
 		}
 	}
@@ -187,7 +187,15 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	return LandResult{MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil}, nil
 }
 
+func githubLandingBranch(info Info, opts LandOptions) string {
+	if opts.External != nil && info.ReviewBranch != "" {
+		return info.ReviewBranch
+	}
+	return info.Branch
+}
+
 func (l *LocalGit) verifyGitHubLandingConflict(ctx context.Context, info Info, issue Issue, opts LandOptions, remote, repository, base string, number int, refusal error) error {
+	branch := githubLandingBranch(info, opts)
 	var pull githubLandingPull
 	if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "GET", fmt.Sprintf("repos/%s/pulls/%d", repository, number)); err != nil {
 		if errors.Is(err, github.ErrRateLimited) {
@@ -196,7 +204,7 @@ func (l *LocalGit) verifyGitHubLandingConflict(ctx context.Context, info Info, i
 		return errors.Join(refusal, err)
 	}
 	if pull.Number != number || pull.State != "open" || pull.Merged || pull.MergedAt != "" ||
-		pull.Head.SHA != opts.HeadSHA || pull.Head.Ref != info.Branch || pull.Head.Repo.FullName != repository ||
+		pull.Head.SHA != opts.HeadSHA || pull.Head.Ref != branch || pull.Head.Repo.FullName != repository ||
 		pull.Base.Ref != base || pull.Base.Repo.FullName != repository || !validLandingHead(pull.Base.SHA) {
 		return fmt.Errorf("conflict projection does not identify the current reviewed source: %w", refusal)
 	}
@@ -219,7 +227,7 @@ func (l *LocalGit) verifyGitHubLandingConflict(ctx context.Context, info Info, i
 		return errors.Join(refusal, err)
 	}
 	fetched = strings.TrimSpace(fetched)
-	refs, err := runGitAt(ctx, info.Path, "ls-remote", remote, "refs/heads/"+info.Branch, "refs/heads/"+base)
+	refs, err := runGitAt(ctx, info.Path, "ls-remote", remote, "refs/heads/"+branch, "refs/heads/"+base)
 	if err != nil {
 		return errors.Join(refusal, fmt.Errorf("verify refused landing refs: %w", err))
 	}
@@ -230,7 +238,7 @@ func (l *LocalGit) verifyGitHubLandingConflict(ctx context.Context, info Info, i
 			current[fields[1]] = fields[0]
 		}
 	}
-	if current["refs/heads/"+info.Branch] != opts.HeadSHA || current["refs/heads/"+base] != fetched {
+	if current["refs/heads/"+branch] != opts.HeadSHA || current["refs/heads/"+base] != fetched {
 		return fmt.Errorf("conflict projection differs from the current published head or base: %w", refusal)
 	}
 	output, err := runGitAt(ctx, info.Path, "merge-tree", "--write-tree", "--name-only", fetched, opts.HeadSHA)

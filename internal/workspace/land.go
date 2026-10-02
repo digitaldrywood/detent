@@ -98,6 +98,9 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 	if !validLandingHead(opts.HeadSHA) {
 		return info, false, refuse(LandRefusalMissingHead, "landing requires an immutable commit identity")
 	}
+	if err := ensurePrivateDirectories(l.root, filepath.Join(l.root, ".detent", "landing", opts.HeadSHA)); err != nil {
+		return info, false, err
+	}
 	if opts.External != nil {
 		base := opts.TargetBranch
 		if base == "" {
@@ -110,13 +113,13 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 		if err != nil {
 			return info, false, err
 		}
-		info.Branch = pull.Head.Ref
-		if _, err := l.runGit(ctx, "check-ref-format", "--branch", info.Branch); err != nil || strings.HasPrefix(info.Branch, "-") {
+		info.ReviewBranch = pull.Head.Ref
+		if _, err := l.runGit(ctx, "check-ref-format", "--branch", info.ReviewBranch); err != nil || strings.HasPrefix(info.ReviewBranch, "-") {
 			return info, false, refuse(LandRefusalProtected, "the external pull request branch is invalid")
 		}
 		issue.PullRequestNumber = pull.Number
 		issue.PullRequestHeadSHA = opts.HeadSHA
-		issue.PullRequestBranch = info.Branch
+		issue.PullRequestBranch = info.ReviewBranch
 	}
 	exists, isDir, err := pathExists(info.Path)
 	if err != nil {
@@ -150,7 +153,7 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 		}
 	}
 	if opts.External != nil {
-		if _, err := fetchReviewHead(ctx, l.sourceRoot, info.Branch, issue); err != nil {
+		if _, err := fetchReviewHead(ctx, l.sourceRoot, info.ReviewBranch, issue); err != nil {
 			return info, false, err
 		}
 	} else if _, err := l.runGit(ctx, "cat-file", "-e", opts.HeadSHA+"^{commit}"); err != nil {

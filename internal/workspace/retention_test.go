@@ -283,11 +283,14 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 		name                      string
 		age                       time.Duration
 		active, live, lookupError bool
+		landing                   bool
 		remove                    bool
 	}{
 		{name: "expired unpushed", age: 8 * 24 * time.Hour, remove: true}, {name: "boundary", age: 7 * 24 * time.Hour, remove: true},
 		{name: "recent", age: 6 * 24 * time.Hour}, {name: "active", age: 8 * 24 * time.Hour, active: true},
 		{name: "live", age: 8 * 24 * time.Hour, live: true}, {name: "lookup failure", age: 8 * 24 * time.Hour, lookupError: true},
+		{name: "expired landing preserves Code", age: 8 * 24 * time.Hour, landing: true, remove: true},
+		{name: "active issue protects landing", age: 8 * 24 * time.Hour, landing: true, active: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := retentionBackend(t)
@@ -295,6 +298,20 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 			info, err := backend.Create(t.Context(), issue)
 			if err != nil {
 				t.Fatal(err)
+			}
+			var codeUnchanged func()
+			if test.landing {
+				remote := initBareRemote(t)
+				runGit(t, backend.sourceRoot, "config", "url.file://"+remote+".insteadOf", "https://github.com/example/repo.git")
+				runGit(t, backend.sourceRoot, "remote", "add", "origin", "https://github.com/example/repo.git")
+				runGit(t, backend.sourceRoot, "push", "-u", "origin", "main")
+				codeUnchanged = preserveLandingOwner(t, info.Path)
+				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+				issue.Landing = &LandOptions{Repository: RepositoryURL(t.Context(), backend.sourceRoot), HeadSHA: head}
+				info, err = backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
 				t.Fatal(err)
@@ -325,12 +342,17 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 				return map[string]time.Time{issue.ID: now.Add(-test.age)}, nil
 			}}
 			if test.active {
-				request.Active = []Issue{issue}
+				activeIssue := issue
+				activeIssue.Landing = nil
+				request.Active = []Issue{activeIssue}
 			}
 			if test.live {
 				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return []int{999999}, nil }
 			}
 			total, err := backend.SweepRetention(t.Context(), request)
+			if codeUnchanged != nil {
+				codeUnchanged()
+			}
 			if (err != nil) != test.lookupError {
 				t.Fatalf("sweep error=%v", err)
 			}
