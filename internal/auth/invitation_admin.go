@@ -9,6 +9,27 @@ type InvitationAdministration interface {
 	AcceptInvitationByID(context.Context, string, string) error
 }
 
+type InvitationDelivery interface {
+	RevokeInvitation(context.Context, string) error
+	ResendInvitation(context.Context, string) error
+}
+
+func RevokeInvitationID(ctx context.Context, provider HostedProvider, id string) error {
+	commands, ok := provider.(InvitationDelivery)
+	if !ok {
+		return ErrHostedIdentity
+	}
+	return commands.RevokeInvitation(ctx, id)
+}
+
+func ResendInvitationID(ctx context.Context, provider HostedProvider, id string) error {
+	commands, ok := provider.(InvitationDelivery)
+	if !ok {
+		return ErrHostedIdentity
+	}
+	return commands.ResendInvitation(ctx, id)
+}
+
 func LookupInvitationID(ctx context.Context, provider HostedProvider, id string) (Invitation, error) {
 	commands, ok := provider.(InvitationAdministration)
 	if !ok {

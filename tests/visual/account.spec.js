@@ -279,6 +279,50 @@ test("project settings show the integration and refuse to edit it for a viewer",
   await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);
 });
 
+test("pending invitations can be resent and revoked from their row", async ({ page }) => {
+  const email = "withdraw@example.test";
+  await openAs(page, "owner", "/settings/organization");
+  await page.getByLabel("Email", { exact: true }).fill(email);
+  await page.getByRole("button", { name: "Send invitation", exact: true }).click();
+  const row = page.locator('[data-slot="settings-row"]').filter({
+    has: page.getByRole("heading", { name: email, exact: true }),
+  });
+  await expect(row).toBeVisible();
+  const providerInvitations = async () => {
+    const response = await page.request.get(`${hub.fixture.url}/__preview/invitations`);
+    expect(response.ok()).toBe(true);
+    return Object.values(await response.json()).filter((invitation) => invitation.email === email);
+  };
+  const [invitation] = await providerInvitations();
+  expect(invitation.state).toBe("pending");
+  await row.getByRole("button", { name: "Resend", exact: true }).click();
+  await expect(row.getByRole("status")).toHaveText("Invitation resent.");
+  expect(await providerInvitations()).toHaveLength(1);
+  await row.getByRole("button", { name: "Revoke", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText(`Revoke invitation to ${email}?`);
+  await dialog.getByRole("button", { name: "Keep invitation", exact: true }).click();
+  await expect(row).toBeVisible();
+  const revokeURL = `**/members/invitations/${invitation.id}`;
+  await page.route(revokeURL, (route) => route.fulfill({
+    status: 503, contentType: "application/json",
+    body: JSON.stringify({ code: "unavailable", message: "The invitation could not be revoked. Try again." }),
+  }));
+  await row.getByRole("button", { name: "Revoke", exact: true }).click();
+  await dialog.getByRole("button", { name: "Revoke invitation", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("could not be revoked");
+  await expect(row).toBeVisible();
+  expect((await providerInvitations())[0].state).toBe("pending");
+  await page.unroute(revokeURL);
+  await dialog.getByRole("button", { name: "Revoke invitation", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(row).toHaveCount(0);
+  expect((await providerInvitations())[0].state).toBe("revoked");
+  await openAs(page, "viewer", "/settings/organization");
+  await expect(page.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Resend", exact: true })).toHaveCount(0);
+});
+
 test("the first-run wizard reports the hub's four onboarding steps", async ({ page }) => {
   const errors = watchConsole(page);
   await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);

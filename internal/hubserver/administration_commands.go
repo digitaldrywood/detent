@@ -138,17 +138,38 @@ func (s *Service) changeHostedGrantFor(ctx context.Context, credential apiCreden
 
 func (s *Service) revokeHostedInvitationFor(ctx context.Context, id string) error {
 	var email string
-	if err := s.database.db.QueryRowContext(ctx, "DELETE FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id='' RETURNING email", id, s.config.Hosted.OrganizationID).Scan(&email); err != nil {
+	if err := s.database.db.QueryRowContext(ctx, "SELECT email FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", id, s.config.Hosted.OrganizationID).Scan(&email); err != nil {
+		return err
+	}
+	if err := auth.RevokeInvitationID(ctx, s.config.Hosted.Provider, id); err != nil {
+		return err
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := tx.QueryRowContext(ctx, "DELETE FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id='' RETURNING email", id, s.config.Hosted.OrganizationID).Scan(&email); err != nil {
 		return err
 	}
 	var remaining int
-	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE email=? AND accepted_user_id=''", email).Scan(&remaining); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE email=? AND accepted_user_id=''", email).Scan(&remaining); err != nil {
 		return err
 	}
 	if remaining == 0 {
-		return s.releaseHostedInvitation(ctx, email)
+		if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_member_reservations WHERE email=?", email); err != nil {
+			return err
+		}
 	}
-	return nil
+	return tx.Commit()
+}
+
+func (s *Service) resendHostedInvitationFor(ctx context.Context, id string) error {
+	var email string
+	if err := s.database.db.QueryRowContext(ctx, "SELECT email FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", id, s.config.Hosted.OrganizationID).Scan(&email); err != nil {
+		return err
+	}
+	return auth.ResendInvitationID(ctx, s.config.Hosted.Provider, id)
 }
 
 func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credential apiCredential, email, role string, reserved bool) (hostedInvitationView, error) {

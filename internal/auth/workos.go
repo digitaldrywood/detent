@@ -656,6 +656,28 @@ func (p *workosProvider) InvitationByID(ctx context.Context, id string) (Invitat
 	}
 	return invitation, nil
 }
+
+func (p *workosProvider) RevokeInvitation(ctx context.Context, id string) error {
+	return p.deliverInvitation(ctx, id, "revoke", "revoked")
+}
+
+func (p *workosProvider) ResendInvitation(ctx context.Context, id string) error {
+	return p.deliverInvitation(ctx, id, "resend", "pending")
+}
+
+func (p *workosProvider) deliverInvitation(ctx context.Context, id, action, state string) error {
+	if !validWorkOSID(id) {
+		return ErrHostedIdentity
+	}
+	var invitation Invitation
+	if err := p.request(ctx, http.MethodPost, "/user_management/invitations/"+id+"/"+action, nil, &invitation); err != nil {
+		return err
+	}
+	if !validWorkOSInvitation(invitation) || invitation.ID != id || invitation.State != state {
+		return ErrHostedIdentity
+	}
+	return nil
+}
 func (p *workosProvider) AcceptInvitationByID(ctx context.Context, id, userID string) error {
 	if !validWorkOSID(userID) {
 		return ErrHostedIdentity
