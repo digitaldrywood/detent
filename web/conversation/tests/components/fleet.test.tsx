@@ -26,6 +26,21 @@ function renderSection(fleet: FleetResponse = FLEET) {
 }
 
 describe("host cards", () => {
+  it.each([
+    ["v1.2.3", "Too old to take work, needs v1.2.4"],
+    ["v1.2.4", ""],
+    ["v1.3.0", ""],
+    ["dev", ""],
+  ])("renders the Hub admission badge for %s", (version, reason) => {
+    renderSection({ ...FLEET, current: "v1.2.4", minimum_runner_version: "v1.2.4", runners: [{ ...FLEET.runners[0]!, version, claim_refusal_reason: reason }] });
+    const badge = screen.queryByTestId("host-update");
+    if (reason !== "") {
+      expect(badge?.textContent).toContain(reason);
+      expect(screen.getAllByText(reason)).toHaveLength(1);
+    } else {
+      expect(badge).toBeNull();
+    }
+  });
   it("shows contextual diagnostics and filters from the attention count", () => {
     const problem = { code: "tier_unavailable", message: "Sandbox tooling is unavailable", fix_hint: "Repair the sandbox tooling", first_seen: "2026-09-10T12:00:00Z" };
     const fleet = { ...FLEET, runners: FLEET.runners.map((runner, index) => index === 0 ? { ...runner, health: "needs_attention", problems: [problem] } : runner) };

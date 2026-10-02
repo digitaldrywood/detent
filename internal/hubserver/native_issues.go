@@ -334,6 +334,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?, '', 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, 
 }
 
 func recordNativeChange(ctx context.Context, tx *sql.Tx, scope nativeScope, record any, workItemID string, revision tracker.Revision, eventType string, data tracker.CollaborationData, now time.Time) error {
+	switch value := record.(type) {
+	case tracker.NativeIssue:
+		if err := syncCloudAttachmentReferences(ctx, tx, scope, workItemID, "", value.Body); err != nil {
+			return err
+		}
+	case tracker.NativeComment:
+		if err := syncCloudAttachmentReferences(ctx, tx, scope, workItemID, value.ID, value.Body); err != nil {
+			return err
+		}
+	}
 	recordID := workItemID
 	if data.CommentID != "" {
 		recordID = data.CommentID

@@ -10,7 +10,7 @@ import React from "react";
 import { cn } from "../../lib/utils.ts";
 import type { FleetRunner } from "../../contracts/account.ts";
 import { PathValue } from "../account/controls.tsx";
-import { RUNNER_UPGRADE_COMMAND, runnerUpdateLabel } from "../lib/detentUpdates.ts";
+import { RUNNER_UPGRADE_COMMAND } from "../lib/detentUpdates.ts";
 import { SettingsHelp } from "../settings/SettingsHelp.tsx";
 import { RUNNER_HELP } from "./runnerHelp.ts";
 import { formatLocalTime, formatRelativeTime } from "./format.ts";
@@ -41,33 +41,16 @@ function Field({
   );
 }
 
-/**
- * Whether this host is not on the hub's build. The footer's pill counts the
- * same runners through `GET /app/updates`, where the hub does the comparison
- * itself; here there are two version strings and nothing that knows how to
- * order them, so the rule is the conservative half of the hub's: a difference
- * between two versions that both exist.
- */
-export function hostIsBehind(reported: string, current: string): boolean {
-  const from = reported.trim();
-  const to = current.trim();
-  if (from === "" || to === "" || from === "dev" || to === "dev") return false;
-  return from !== to;
-}
-
 export function HostCard({
   runner,
   now,
-  current = "",
   settings,
 }: {
   readonly runner: FleetRunner;
   readonly now?: number;
-  /** The hub's own build, which is the version a runner should be on. */
-  readonly current?: string;
   readonly settings?: React.ReactNode;
 }): React.ReactElement {
-  const behind = hostIsBehind(runner.version ?? "", current);
+  const refusal = runner.claim_refusal_reason ?? "";
   const percent =
     runner.host_capacity > 0
       ? Math.min(100, Math.round((runner.host_used / runner.host_capacity) * 100))
@@ -134,18 +117,14 @@ export function HostCard({
         </div>
       ) : null}
 
-      {behind ? (
-        // Where the footer's update pill sends a reader. Nothing here can
-        // upgrade the host — it is somebody else's machine — so the row says
-        // which build it is on, which build it should be on, and hands over
-        // the one command that closes the gap.
+      {refusal !== "" ? (
         <div
           data-testid="host-update"
           className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warning/40 bg-warning/8 px-2.5 py-2 text-xs"
         >
           <DownloadIcon aria-hidden="true" className="size-3.5 shrink-0 text-warning" />
           <span className="font-medium text-foreground">
-            {runnerUpdateLabel(runner.version ?? "", current)}
+            {refusal}
           </span>
           <span className="ml-auto">
             <PathValue value={RUNNER_UPGRADE_COMMAND} />

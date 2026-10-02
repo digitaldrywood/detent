@@ -92,7 +92,8 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		}
 	}
 	lease, err := s.database.claimNext(c.Request().Context(), tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
-		PolicyID: request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
+		MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
+		PolicyID:             request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
 		DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers,
 		NativeScope: &scope, Scope: string(scope.project), WorkflowStates: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees, LabelInclude: request.LabelInclude, LabelExclude: request.LabelExclude,
 		// Only a lane that declares the workspace capability is offered

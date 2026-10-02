@@ -253,12 +253,16 @@ describe("useWorkspace", () => {
     await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("requested"));
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     const source = FakeEventSource.instances[0]!;
-    expect(source.url).toContain("/projects/proj_1/events");
+    expect(source.url).toContain("/projects/proj_1/events?workspace=ws_1");
 
     source.emit("workspace.starting", workspace({ state: "starting" }));
     await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("starting"));
     source.emit("workspace.ready", workspace({ state: "ready" }));
     await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("ready"));
+    source.emit("workspace.idle", workspace({ state: "idle" }));
+    await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("idle"));
+    source.emit("workspace.closed", workspace({ state: "closed", reason: "closed_by_actor" }));
+    await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("closed"));
     source.emit("workspace.failed", workspace({ state: "failed", reason: "no_runner" }));
     await waitFor(() => expect(screen.getByTestId("reason").textContent).toBe("no_runner"));
 

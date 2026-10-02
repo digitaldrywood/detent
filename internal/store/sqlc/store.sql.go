@@ -1823,7 +1823,7 @@ func (q *Queries) GetDetentRun(ctx context.Context, id int64) (DetentRun, error)
 	return i, err
 }
 
-const getLatestCompletedAgentResumeState = `-- name: GetLatestCompletedAgentResumeState :one
+const getLatestAgentResumeState = `-- name: GetLatestAgentResumeState :one
 SELECT
   s.id,
   CAST(COALESCE(s.provider_thread_id, '') AS TEXT) AS provider_thread_id,
@@ -1839,47 +1839,53 @@ FROM codex_sessions AS s NOT INDEXED
 JOIN work_attempts AS w ON w.id = s.work_attempt_id
 WHERE s.completed_at IS NOT NULL
   AND w.completed_at IS NOT NULL
-  AND lower(trim(COALESCE(s.final_state, ''))) = 'completed'
+  AND (
+    (CAST(?1 AS INTEGER) = 0 AND lower(trim(COALESCE(s.final_state, ''))) = 'completed')
+    OR (CAST(?1 AS INTEGER) > 0 AND s.work_attempt_id = CAST(?1 AS INTEGER)
+      AND lower(trim(COALESCE(s.final_state, ''))) IN ('completed', 'failed'))
+  )
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != '')
-  AND s.project_id = ?1
-  AND COALESCE(
+  AND s.project_id = ?2
+  AND w.project_id = ?2
+  AND (CAST(?1 AS INTEGER) > 0 OR (COALESCE(
     CASE WHEN json_valid(w.worker_metadata_json)
       THEN CAST(json_extract(w.worker_metadata_json, '$.pr_number') AS INTEGER)
       ELSE NULL
     END,
     w.pr_number,
     0
-  ) = CAST(?2 AS INTEGER)
+  ) = CAST(?3 AS INTEGER)
   AND CASE WHEN json_valid(w.worker_metadata_json)
     THEN CAST(COALESCE(json_extract(w.worker_metadata_json, '$.pr_head_sha'), '') AS TEXT)
     ELSE ''
-  END = ?3
+  END = ?4
   AND CASE WHEN json_valid(w.worker_metadata_json)
     THEN CAST(COALESCE(json_extract(w.worker_metadata_json, '$.pr_base_sha'), '') AS TEXT)
     ELSE ''
-  END = ?4
-  AND COALESCE(s.agent_backend_id, '') = ?5
-  AND COALESCE(s.agent_backend_kind, '') = ?6
-  AND COALESCE(s.agent_role, '') = ?7
-  AND COALESCE(NULLIF(s.requested_model, ''), COALESCE(s.model, '')) = ?8
+  END = ?5))
+  AND COALESCE(s.agent_backend_id, '') = ?6
+  AND COALESCE(s.agent_backend_kind, '') = ?7
+  AND COALESCE(s.agent_role, '') = ?8
+  AND COALESCE(NULLIF(s.requested_model, ''), COALESCE(s.model, '')) = ?9
   AND s.id IN (
     SELECT session_by_id.id FROM codex_sessions AS session_by_id
-    WHERE ?9 != ''
-      AND session_by_id.issue_id = ?9
+    WHERE ?10 != ''
+      AND session_by_id.issue_id = ?10
     UNION
     SELECT session_by_identifier.id FROM codex_sessions AS session_by_identifier
-    WHERE ?10 != ''
-      AND session_by_identifier.identifier = ?10
+    WHERE ?11 != ''
+      AND session_by_identifier.identifier = ?11
     UNION
     SELECT session_by_url.id FROM codex_sessions AS session_by_url
-    WHERE ?11 != ''
-      AND session_by_url.issue_url = ?11
+    WHERE ?12 != ''
+      AND session_by_url.issue_url = ?12
   )
 ORDER BY s.completed_at DESC, s.id DESC
 LIMIT 1
 `
 
-type GetLatestCompletedAgentResumeStateParams struct {
+type GetLatestAgentResumeStateParams struct {
+	WorkAttemptID    int64          `json:"work_attempt_id"`
 	ProjectID        sql.NullString `json:"project_id"`
 	PrNumber         int64          `json:"pr_number"`
 	PrHeadSha        string         `json:"pr_head_sha"`
@@ -1893,7 +1899,7 @@ type GetLatestCompletedAgentResumeStateParams struct {
 	IssueURL         interface{}    `json:"issue_url"`
 }
 
-type GetLatestCompletedAgentResumeStateRow struct {
+type GetLatestAgentResumeStateRow struct {
 	ID                  int64  `json:"id"`
 	ProviderThreadID    string `json:"provider_thread_id"`
 	ProviderSessionID   string `json:"provider_session_id"`
@@ -1908,8 +1914,9 @@ type GetLatestCompletedAgentResumeStateRow struct {
 
 // Identity subqueries use their own indexes; NOT INDEXED on the outer table
 // retains INTEGER PRIMARY KEY lookup instead of scanning a project/time index.
-func (q *Queries) GetLatestCompletedAgentResumeState(ctx context.Context, arg GetLatestCompletedAgentResumeStateParams) (GetLatestCompletedAgentResumeStateRow, error) {
-	row := q.db.QueryRowContext(ctx, getLatestCompletedAgentResumeState,
+func (q *Queries) GetLatestAgentResumeState(ctx context.Context, arg GetLatestAgentResumeStateParams) (GetLatestAgentResumeStateRow, error) {
+	row := q.db.QueryRowContext(ctx, getLatestAgentResumeState,
+		arg.WorkAttemptID,
 		arg.ProjectID,
 		arg.PrNumber,
 		arg.PrHeadSha,
@@ -1922,7 +1929,7 @@ func (q *Queries) GetLatestCompletedAgentResumeState(ctx context.Context, arg Ge
 		arg.Identifier,
 		arg.IssueURL,
 	)
-	var i GetLatestCompletedAgentResumeStateRow
+	var i GetLatestAgentResumeStateRow
 	err := row.Scan(
 		&i.ID,
 		&i.ProviderThreadID,

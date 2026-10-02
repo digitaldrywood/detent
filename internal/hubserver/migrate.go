@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"strings"
 
 	"github.com/pressly/goose/v3"
 	goosedb "github.com/pressly/goose/v3/database"
@@ -15,10 +16,10 @@ import (
 
 const (
 	hubSchemaTable         = "hub_schema_version"
-	supportedSchemaVersion = int64(63)
+	supportedSchemaVersion = int64(65)
 )
 
-//go:embed migrations/*.sql
+//go:embed migrations/*.sql migration_steps/*.sql
 var migrationFiles embed.FS
 
 func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64, error) {
@@ -110,13 +111,80 @@ func currentSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {
 	return version, nil
 }
 
-// hubGoMigrations are the schema steps SQL cannot express: 40 computes the
-// content-addressed identity of each backfilled review policy.
 func hubGoMigrations() []*goose.Migration {
 	return []*goose.Migration{
 		goose.NewGoMigration(40,
 			&goose.GoFunc{RunTx: backfillChangeReviewPolicies},
 			&goose.GoFunc{RunTx: func(context.Context, *sql.Tx) error { return nil }},
 		),
+		goose.NewGoMigration(64, &goose.GoFunc{RunTx: migrateAttachmentReferences}, nil),
+		goose.NewGoMigration(65, &goose.GoFunc{RunTx: migrateConversationOrigin}, nil),
 	}
+}
+
+func migrateAttachmentReferences(ctx context.Context, tx *sql.Tx) error {
+	if err := migrateAttachmentAndUpdaterSchemas(ctx, tx); err != nil {
+		return err
+	}
+	data, err := migrationFiles.ReadFile("migration_steps/00064_cloud_attachment_references.sql")
+	if err != nil {
+		return err
+	}
+	up, _, _ := strings.Cut(string(data), "-- +goose Down")
+	_, err = tx.ExecContext(ctx, up)
+	return err
+}
+
+func migrateAttachmentAndUpdaterSchemas(ctx context.Context, tx *sql.Tx) error {
+	var attachments int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'attachments'").Scan(&attachments); err != nil {
+		return err
+	}
+	if attachments == 0 {
+		data, err := migrationFiles.ReadFile("migrations/00062_cloud_attachments.sql")
+		if err != nil {
+			return err
+		}
+		up, _, _ := strings.Cut(string(data), "-- +goose Down")
+		if _, err := tx.ExecContext(ctx, up); err != nil {
+			return fmt.Errorf("restore attachment schema: %w", err)
+		}
+	}
+	var observation int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('runner_identities') WHERE name = 'update_observation_json'").Scan(&observation); err != nil {
+		return err
+	}
+	if observation == 0 {
+		data, err := migrationFiles.ReadFile("migrations/00063_runner_update_observation.sql")
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, string(data)); err != nil {
+			return fmt.Errorf("restore runner update observation schema: %w", err)
+		}
+	}
+	return nil
+}
+
+func migrateConversationOrigin(ctx context.Context, tx *sql.Tx) error {
+	if err := migrateAttachmentAndUpdaterSchemas(ctx, tx); err != nil {
+		return err
+	}
+	var origin int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('conversations') WHERE name = 'origin'").Scan(&origin); err != nil {
+		return err
+	}
+	if origin != 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE conversations ADD COLUMN origin TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user', 'worker'))"); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE conversations SET origin = 'worker'
+WHERE work_item_id IS NOT NULL AND visibility = 'shared'
+  AND NOT EXISTS (
+    SELECT 1 FROM conversation_audience_events
+    WHERE conversation_id = conversations.id AND from_visibility = 'private'
+  )`)
+	return err
 }

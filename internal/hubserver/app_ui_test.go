@@ -434,6 +434,14 @@ func TestRunnerBehind(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			minimum := minimumRunnerVersion(test.current)
+			wantReason := ""
+			if test.want {
+				wantReason = "Too old to take work, needs " + minimum
+			}
+			if got := runnerClaimRefusal(minimum, test.reported); got != wantReason {
+				t.Fatalf("claim refusal = %q, want %q", got, wantReason)
+			}
 			if got := runnerBehind(test.current, test.reported); got != test.want {
 				t.Fatalf("runnerBehind(%q, %q) = %v, want %v", test.current, test.reported, got, test.want)
 			}
@@ -495,17 +503,29 @@ func TestAppUpdates(t *testing.T) {
 	}
 
 	payload = read(t, "owner")
-	if payload.Current != "v1.2.4" || payload.BehindCount != 2 || len(payload.Runners) != 4 {
+	if payload.Current != "v1.2.4" || payload.MinimumRunnerVersion != "v1.2.4" || payload.BehindCount != 2 || len(payload.Runners) != 4 {
 		t.Fatalf("report = %#v", payload)
 	}
 	for index, want := range []appUpdateRunner{
-		{RunnerID: behind.RunnerID, DisplayName: "Athens", Version: "v1.2.3", Online: true, Behind: true},
-		{RunnerID: offline.RunnerID, DisplayName: "Cairo", Version: "v1.2.3", Behind: true},
+		{RunnerID: behind.RunnerID, DisplayName: "Athens", Version: "v1.2.3", Online: true, Behind: true, ClaimRefusalReason: "Too old to take work, needs v1.2.4"},
+		{RunnerID: offline.RunnerID, DisplayName: "Cairo", Version: "v1.2.3", Behind: true, ClaimRefusalReason: "Too old to take work, needs v1.2.4"},
 		{RunnerID: up.RunnerID, DisplayName: "Dublin", Version: "v1.2.4", Online: true},
 		{RunnerID: ahead.RunnerID, DisplayName: "Essen", Version: "v1.3.0", Online: true},
 	} {
 		if payload.Runners[index] != want {
 			t.Fatalf("runner %d = %#v, want %#v", index, payload.Runners[index], want)
+		}
+	}
+
+	var fleet hostedFleetResponse
+	browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusOK), &fleet)
+	if fleet.MinimumRunnerVersion != payload.MinimumRunnerVersion {
+		t.Fatalf("fleet and update minimum differ: %#v, %#v", fleet, payload)
+	}
+	for _, update := range payload.Runners {
+		index := slices.IndexFunc(fleet.Runners, func(runner hostedFleetRunner) bool { return runner.ID == update.RunnerID })
+		if index < 0 || fleet.Runners[index].ClaimRefusalReason != update.ClaimRefusalReason {
+			t.Fatalf("fleet and update refusal differ: %#v, %#v", fleet.Runners, update)
 		}
 	}
 

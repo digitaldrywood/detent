@@ -288,7 +288,6 @@ export function RunnersSectionView({
                 key={runner.id}
                 runner={runner}
                 now={now}
-                current={fleet.current ?? ""}
                 settings={onSaveRouting === undefined || runner.routing === undefined ? undefined : <RunnerSettingsForm key={runner.revision} runner={runner} onSave={onSaveRouting} />}
               />
             ))}

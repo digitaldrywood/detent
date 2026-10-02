@@ -440,9 +440,9 @@ func (s *sqliteStore) FinishSession(ctx context.Context, sessionID int64, attrs 
 	return requireAffected(rows, "codex session", sessionID)
 }
 
-func (s *sqliteStore) LatestCompletedAgentResumeState(ctx context.Context, attrs AgentResumeLookup) (AgentResumeState, error) {
+func (s *sqliteStore) LatestAgentResumeState(ctx context.Context, attrs AgentResumeLookup) (AgentResumeState, error) {
 	attrs = normalizeAgentResumeLookup(attrs)
-	if attrs.ProjectID == "" || attrs.PRNumber <= 0 || attrs.PRHeadSHA == "" || attrs.PRBaseSHA == "" {
+	if attrs.ProjectID == "" || attrs.WorkAttemptID < 0 || attrs.WorkAttemptID == 0 && (attrs.PRNumber <= 0 || attrs.PRHeadSHA == "" || attrs.PRBaseSHA == "") {
 		return AgentResumeState{}, ErrNotFound
 	}
 	if attrs.RequestedModel == "" || attrs.AgentBackendID == "" || attrs.AgentBackendKind == "" || attrs.AgentRole == "" {
@@ -452,7 +452,8 @@ func (s *sqliteStore) LatestCompletedAgentResumeState(ctx context.Context, attrs
 		return AgentResumeState{}, ErrNotFound
 	}
 
-	row, err := s.queries.GetLatestCompletedAgentResumeState(ctx, sqlc.GetLatestCompletedAgentResumeStateParams{
+	row, err := s.queries.GetLatestAgentResumeState(ctx, sqlc.GetLatestAgentResumeStateParams{
+		WorkAttemptID:    attrs.WorkAttemptID,
 		ProjectID:        nullString(attrs.ProjectID),
 		PrNumber:         attrs.PRNumber,
 		PrHeadSha:        attrs.PRHeadSHA,
@@ -603,6 +604,7 @@ func (s *sqliteStore) MarkAgentSessionOrphaned(ctx context.Context, sessionID in
 
 func normalizeAgentResumeLookup(attrs AgentResumeLookup) AgentResumeLookup {
 	return AgentResumeLookup{
+		WorkAttemptID:    attrs.WorkAttemptID,
 		ProjectID:        strings.TrimSpace(attrs.ProjectID),
 		IssueID:          strings.TrimSpace(attrs.IssueID),
 		Identifier:       strings.TrimSpace(attrs.Identifier),

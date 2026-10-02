@@ -49,6 +49,14 @@ landing never reset, repoint or steal a retained Code or source checkout/ref.
 External versions through the real Runner and LocalGit without a provider turn,
 including unchanged owner files, raw indexes, HEADs and source refs.
 
+Issue and comment saves (native #176) record attachment references in the same
+collaboration transaction and only within the current organization and project.
+Multiple sources may retain one attachment; deleting one source keeps bytes
+referenced by another. Markdown stores only opaque attachment IDs. Cloud renders
+metadata authorized for the current project before assigning a same-origin byte
+URL and retains `img-src 'self' data:`. `TestCloudAttachmentSavedReferences` covers
+save, edit, deletion, orphan retention and project isolation.
+
 Native failed coding and rework completion (#169) selects an allowed configured
 review destination under the existing leased completion owner before publishing
 `run.finished` or releasing the claim. It records the authentic failed or cancelled
@@ -595,6 +603,18 @@ and credentials. `TestSchedulerEnrolledUpdate`,
 `TestRunnerCapacityHeartbeat` and update cases in `TestHostedMCPFleetControls`
 exercise these INV-1 boundaries and the INV-3 consolidation.
 
+Hosted workspace readiness (native #192) uses the existing project SSE owner,
+with the selected workspace ID and the same current hosted session, project and
+subject read authority as the workspace API. Initial subscription and reconnect
+send its current flat resource; subsequent revision changes send its current
+`workspace.<state>` resource. Each subscriber reads only that workspace, without
+catalog or history replay. Relay session details retain the existing owner/admin
+audience; Files, Terminal, close and dispatch-release policies retain their owners.
+Project activity uses the indexed maximum collaboration-event row ID instead of
+the maximum issue-local sequence, so a terminal event on a less active issue
+still invalidates the board. `TestHostedWorkspaceEvents` and
+`TestHostedActivityIncludesChangesBelowIssueMaximum` cover these INV-1 boundaries.
+
 Effective runner capacity (native #90) uses the existing runner administration,
 native command receipt, routing heartbeat, selected global configuration writer
 and runtime reload owners. UI routing capacity edits and MCP/API capacity requests
@@ -1070,10 +1090,14 @@ configuration, author identity and signing policy remain unchanged, covered by
 and SSH-signed Rework.
 
 Native landing merge conflicts are repository refusals, not infrastructure
-failures or shipped work. Explicit merge-conflict evidence in the decoded GitHub
-HTTP 405 `message` uses the existing `LandRefusalConflict`; unspecified 405
-responses, actual branch protection, required checks and reviews retain their
-refusal classification.
+failures or shipped work. Explicit mergeability evidence in the decoded GitHub
+HTTP 405 `message` requires current source verification before the existing
+`LandRefusalConflict` can select Rework. A clean or unproven source response uses
+the existing `LandRefusalBaseMoved` and item-local landing continuation (#193),
+without registering or extending a host server outage. Authentic HTTP 5xx,
+transport and timeout errors reuse the forge classifier and outage backoff.
+Unspecified 405 responses, actual branch protection, required checks and reviews
+retain their refusal classification.
 Metadata and malformed response text cannot establish conflict or closed-PR state.
 Quota responses retain their separate owner (#89) and never become conflict
 evidence. Unreadable workflow state or an unavailable refusal transition uses
@@ -1372,6 +1396,18 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Hub migration collision repair (native #194) consolidates conversation origin
+under forward migration 65. Applied attachment migration 62 and runner observation
+migration 63 remain immutable. The existing Goose transaction restores missing
+effects from either previously deployed origin lineage without overwriting existing
+origin values or attachment data. Attachment-reference migration 64 executes its
+unchanged SQL through the same Goose owner after repairing missing prerequisites;
+databases that already applied 64 retain those effects. Fresh, schema-60,
+attachment-62, origin-62, origin-63 and reference-64 fixtures exercise forward
+upgrades. This adds no startup reconciliation loop, migration allocator, validation
+gate or configuration key. Once migration 65 is applied, deployment rollback
+requires a binary that supports schema 65.
+
 Reviewed checkout isolation (#170) consolidates preparation under LocalGit's
 existing source-operation lock, path confinement, workspace usage and cleanup
 registry. Head-scoped landing paths retain the original issue identity for
@@ -1393,6 +1429,23 @@ poll shutdown and same-attempt renewal/completion across reopen.
 Production downtime and active-run acceptance remain with the deployment/release owner under
 the [Hub upgrade procedure](hub-self-hosting.md#upgrade-interruption-and-compatibility).
 No restart grace period, lease state, outbox or recovery owner is added.
+
+Bounded native admission (#190) consolidates due-retry disposal under the existing
+dispatch planner. Planning, refill and tick cleanup no longer treat a newly
+leased batch as complete tracker membership. Current closed, terminal, inactive
+and authorization observations retain disposal authority; empty capacity batches
+and missing or failed status observations do not. The existing native claim's
+interrupted `resume_session` checkpoint also selects its exact persisted local
+attempt through the existing session lookup, including overload-ended failed
+Code sessions without a PR or experimental automatic resume. Native recovery
+verifies policy, configured runtime identity, provider availability, host, head
+and workspace digest before continuing. Native continuation no longer shares
+the generic fresh-session fallback; unavailable or changed continuation remains
+with the existing recovery-required outcome. Failed native turns retain their
+checkpoint workspace. No retry loop, recovery path or reservation is added.
+`TestHubSchedulingPreservesOverloadRetryAcrossAdmissions` covers bounded omission
+and authentic invalidation; `TestNativeInterruptedCodeRecoversPersistedSession`
+covers already-lost local retry ownership with clean and dirty workspaces.
 
 Worker cleanup (#169) removes Darwin polling of unreadable unknown same-user
 process environments. A single inspection cannot establish ownership from an
@@ -1512,13 +1565,21 @@ when a bounded refresh identifies the exact reviewed published head, PR
 repository/branch/base and current fetched and published base, and Git
 `merge-tree --write-tree` confirms a conflict for those immutable commits.
 Unknown, missing or contradictory source identity or Git refs remain with the
-existing forge infrastructure retry owner in Merging without source failure
-allowance changes. Clean Git evidence never authorizes landing after a refused
+existing bounded merge continuation owner in Merging without source failure
+allowance changes (#193). Clean Git evidence never authorizes landing after a refused
 atomic merge. The original HTTP refusal and native Change/version/head remain
 in attempt history; refresh quota evidence keeps capacity precedence. Existing
 protected/review/check refusals and exact-endpoint 409 ownership remain enforced.
-The existing forge wait survives restart and a successful same-version landing
-receipt clears its probe; source cleanliness alone cannot clear the refusal.
+The existing landing continuation retains the exact reviewed version/head and
+releases worker capacity without a provider coding turn. The existing durable
+forge wait recovery reclassifies old synthetic native projection waits only when
+the recorded host, class, exact PUT endpoint, HTTP 405 and decoded response
+identify the former coercion. Other persisted waits keep their outage authority.
+The existing completion/probe owner clears a synthetic projection condition on
+a responsive typed continuation or proven conflict; independent genuine waits,
+credential authority and runtime capacity limits remain binding. A successful
+same-version landing receipt retains the existing recovery owner. Source
+cleanliness alone never clears the merge refusal or establishes a landing.
 `TestLocalGitLandChangeViaGitHub`, `TestLandNativeChange` and
 `TestNativeLandingRunCompletion` cover these consolidated authorities under
 INV-1 and INV-3 without a new reason, poller, configuration or recovery loop.
@@ -1530,7 +1591,7 @@ the freshly fetched base must match the current published base in the same
 `merge-tree` uses that fetched commit. PR repository, base ref, head branch and
 head identity, worktree/source authority, policy and quota precedence remain
 required. Changing or unproven Git refs and clean source trees retain the
-existing forge wait; proven current source conflicts select configured Rework
+existing item-local landing continuation; proven current source conflicts select configured Rework
 without reapproval. `TestLocalGitLandChangeViaGitHub` and
 `TestNativeLandingRunCompletion` cover advanced live bases with stale PR
 projections for conflicting matrix files and clean source trees.
@@ -2582,6 +2643,16 @@ provenance and startup crash-loop rollback remain required.
 `TestServiceChoosesHubUpdateTarget`, `TestHubRunnerUpdateDefaultsAndOptOut` and
 `TestRunnerClientEnrollmentSchedulingAndRotationRecovery` cover target selection,
 persisted opt-outs and enrolled version reads.
+Hub claim admission (#185) publishes its semantic release version as the minimum
+runner version in native capabilities, fleet and update reports. The existing
+claim transaction refuses new leases for older reported releases with the same
+version-specific reason rendered by the fleet badge and returned to runner logs.
+Equal, newer and unversioned development builds remain eligible; a development
+Hub publishes no floor. Existing session retries, renewals, events and completion
+retain their current authority and are never revoked by the floor.
+`TestNativeRunnerMinimumVersion`, `TestNativeClaimsEventsAndRestartWithoutGitHub`
+and `TestAppUpdates` cover admission boundaries, continued sessions and the
+shared refusal reason.
 The shutdown drain uses the existing drain-budget timer rather than the five-second
 cleanup context (#2795); shorter parent deadlines emit an error with both budgets.
 `TestShutdownDrainBudget` covers delayed drain acknowledgment, and the live-session
@@ -3676,6 +3747,20 @@ Normal typed provider, runner and host capacity refusals terminate both empty
 and partial batches successfully (#183). They acquire no rejected work and
 leave candidate refresh health and configured cadence with their existing
 owners, without scheduling-unavailable failure streaks or exponential delay.
+Due provider retries omitted from these batches retain their exact attempt and
+continuation through planning and final tick cleanup (#190; INV-2/INV-3).
+Authorized current status and lane-transition observations dispose genuinely
+invalid retries; admission absence supplies no such authority. Complete tracker
+fetches retain their existing missing-item semantics. Capacity reopening resumes
+through normal claim adoption and configured priority, so eligible urgent retries
+remain ahead of ordinary new work. `TestHubSchedulingPreservesOverloadRetryAcrossAdmissions`
+asserts those boundaries alongside the existing admission and Merging-slot tests.
+Already-lost local retries require no queue reconstruction: normal native claim
+hydration supplies recovery authority to the runner. Its exact prior local
+attempt selects the established provider session and runtime before current
+default selection, preserving policy and checkpoint verification. Completed
+PR-scoped automatic resume retains its existing eligibility rules. Failed
+session lookup cannot cross project, issue, attempt, backend, model or role.
 Policy, authorization, operator draining and protocol failures retain their
 error and lease-release owners. Provider quota/reset waits remain authoritative.
 The existing preview evaluates local readiness before claim within that shared

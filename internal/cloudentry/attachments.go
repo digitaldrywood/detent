@@ -21,6 +21,7 @@ func (s *Service) registerAttachmentRoutes(e *echo.Echo) {
 	for _, base := range []string{"/organizations/:organization/api/v2/projects/:project/attachments", "/api/v2/organizations/:organization/projects/:project/attachments"} {
 		e.POST(base, s.uploadAttachment)
 		e.GET(base+"/:attachment", s.readAttachment)
+		e.GET(base+"/:attachment/metadata", s.readAttachmentMetadata)
 		e.DELETE(base+"/:attachment", s.deleteAttachment)
 		e.POST(base+"/:attachment/reference", s.referenceAttachment)
 	}
@@ -220,6 +221,22 @@ func (s *Service) attachmentMetadata(c echo.Context) (Organization, attachment.M
 		return organization, record, http.StatusNotFound, nil, nil
 	}
 	return organization, record, status, raw, nil
+}
+
+func (s *Service) readAttachmentMetadata(c echo.Context) error {
+	if s.attachments == nil {
+		return attachmentNotFound(c)
+	}
+	_, record, status, raw, err := s.attachmentMetadata(c)
+	if err != nil || status != http.StatusOK {
+		return attachmentCallError(c, status, raw, err, true)
+	}
+	if err := s.auth.audit(c.Request().Context(), record.AuthorizedPrincipal, c.Param("organization"), "attachment_read"); err != nil {
+		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
+	}
+	record.AuthorizedPrincipal = ""
+	c.Response().Header().Set("Cache-Control", "private, no-store")
+	return c.JSON(http.StatusOK, record)
 }
 
 func (s *Service) readAttachment(c echo.Context) error {

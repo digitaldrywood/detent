@@ -34,9 +34,8 @@ clients. A successful upload returns attachment metadata with a random 128-bit `
 identifier and a `reference` field. Embed that markdown in an issue body or
 comment body. Raster references use `![name](path)`; other files use
 `[name](path)`. Native issue/comment creation and editing bind uploads in the
-same transaction. One upload belongs to one issue body or comment; upload
-another copy to embed the same file in another comment. Reads still require
-a session or a scoped token.
+same transaction. Path references retain their existing binding to one issue
+body or comment. Reads still require a session or a scoped token.
 
 The hosted MCP `upload_attachment` tool accepts `project_id`, `name`,
 `content_base64` and optional `content_type`. It returns the same metadata and
@@ -61,13 +60,19 @@ evidence comment through the existing execution owner. SSH workers send file
 bytes through their execution callback; credentials stay on the owner. Symlinks
 are skipped and filesystem reads stay within the assigned worktree.
 
+Cloud issue bodies, comments and the new-issue form accept paste, drop and an
+attach button. Upload placeholders are replaced with
+`![name](attachment:att_<id>)` for images or `[name](attachment:att_<id>)` for
+files; failures remove the placeholder and show an inline error. Saving waits
+for uploads to finish.
+
 Entry verifies the browser's organization authorization, then makes a small
 signed request to the tenant Hub to verify current membership, token authority
 and project grants. It repeats the authorization and quota check before the
 object write. Object keys are built solely from that organization and the
 server-generated identifier: `orgs/<organization_id>/attachments/<id>`.
-Filenames never enter object keys. Metadata endpoints cannot be reached through
-the public proxy. The Hub verifies entry's signature, audience, generation,
+Filenames never enter object keys. Private Hub metadata endpoints cannot be
+reached through the public proxy. The Hub verifies entry's signature, audience, generation,
 method, path and body digest on every metadata request.
 
 Files are limited to 20 MiB, independently of the signed proxy's 2 MiB body cap.
@@ -98,6 +103,14 @@ another project return 404. A copied link grants no access. Responses carry:
 | `Cross-Origin-Resource-Policy` | `same-origin` |
 | `Content-Disposition` | `inline` for normalized rasters; `attachment` otherwise |
 
+Cloud first reads `GET .../attachments/:id/metadata` through entry, under the
+same current organization and project authorization. This read returns no
+storage URL or internal authorization principal and does not fetch object bytes.
+It uses `Cache-Control: private, no-store`. Missing or foreign references render
+as “Attachment unavailable”. Authorized images render at natural size up to the
+column width and open the existing expanded image dialog; files show their name,
+size and a download link. The Cloud image CSP remains `img-src 'self' data:`.
+
 Stored bytes count toward the organization's existing `collaboration_bytes`
 allowance. Metadata insertion checks the allowance transactionally; concurrent
 uploads cannot exceed it. A quota refusal uses `allowance_exhausted`. Deleted
@@ -105,9 +118,12 @@ bytes remain counted until object deletion is confirmed.
 
 Use `POST .../attachments/:id/reference` with `work_item_id` and optional
 `comment_id` to bind an upload to an existing item/comment in the same project.
-An attachment can belong to one item or comment; repeating its existing binding
-is safe. Archiving retains it. Physical deletion of its referenced item or
-comment immediately hides it and leaves its metadata pending object cleanup.
+Issue and comment saves also record their markdown references in the same
+transaction. Metadata exposes all sources in `referenced_by`; an attachment may
+belong to multiple items or comments in its project. Repeating a binding is safe.
+Editing out the last reference makes it an orphan. Archiving retains it.
+Physical deletion hides an attachment only when no other source references it
+and leaves its metadata pending object cleanup.
 Explicit `DELETE .../attachments/:id` also hides it before deleting the object.
 
 The existing entry maintenance cycle expires unreferenced metadata after seven

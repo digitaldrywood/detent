@@ -57,20 +57,9 @@ export function getUpdateButtonTooltip(state: UpdateCheckState): string {
   if (state.status === "checking") return "Checking for updates…";
   if (state.status === "behind") {
     const count = behindCount(state);
-    return `${count} ${count === 1 ? "runner" : "runners"} behind · Update`;
+    const minimum = state.report?.minimum_runner_version ?? state.report?.current ?? "";
+    return `${count} ${count === 1 ? "runner" : "runners"} too old to take work, needs ${minimum}`;
   }
   if (state.status === "error") return "Couldn't check for updates · Retry";
   return state.upToDate ? "All runners up to date" : "Check for updates";
-}
-
-/**
- * What a behind row on Settings → Providers & runners says above its command.
- * A runner that has never reported a version has nothing to show an arrow
- * from, so it is named without one.
- */
-export function runnerUpdateLabel(reported: string, current: string): string {
-  const from = reported.trim();
-  const to = current.trim();
-  if (from === "") return `Update available: ${to}`;
-  return `Update available: ${from} → ${to}`;
 }
