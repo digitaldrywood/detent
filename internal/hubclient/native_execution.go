@@ -38,18 +38,15 @@ type nativeExecution struct {
 	storedSeq int64
 	// worktreeState is the last checkpoint's worktree state. Only a clean or
 	// unpushed worktree is settled; dirty work takes the ordinary path.
-	worktreeState string
-	worktreeHead  string
-	// role and conversation decide whether a finished run is work the runner
-	// opens a Change Request for: a code or rework run that no conversation
-	// owns the continuation of.
-	role             string
-	conversation     bool
-	settled          bool
-	change           *runner.NativeChange
-	preparedOutcome  string
-	runtimeDirty     bool
-	runtimeSupported *bool
+	worktreeState            string
+	worktreeHead             string
+	role                     string
+	conversationContinuation bool
+	settled                  bool
+	change                   *runner.NativeChange
+	preparedOutcome          string
+	runtimeDirty             bool
+	runtimeSupported         *bool
 	// repository is the https URL of the checkout's origin, which a published
 	// version names; empty when the remote cannot be named that way.
 	repository string

@@ -116,6 +116,9 @@ func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 			if outcome := awaitRunnerAttempt(t, first); outcome.err != nil || outcome.result.FinalState != runner.FinalStateCompleted {
 				t.Fatalf("first attempt = %#v, error = %v", outcome.result.FinalState, outcome.err)
 			}
+			if got := scheduler.RunExecution(issueID).(*nativeExecution).conversationContinuation; got == ordinary {
+				t.Fatalf("initial continuation owner = %t, ordinary = %t", got, ordinary)
+			}
 			if err := scheduler.ReleaseClaim(t.Context(), issueID, "completed"); err != nil {
 				t.Fatal(err)
 			}
@@ -146,6 +149,9 @@ func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 			hub.command(t, id, conversation.Command{Key: "interrupt-1", Kind: conversation.CommandInterrupt, Expected: conversation.Expected{AttemptID: secondAttempt}})
 			if outcome := awaitRunnerAttempt(t, second); outcome.err != nil {
 				t.Fatalf("second attempt error = %v", outcome.err)
+			}
+			if !scheduler.RunExecution(issueID).(*nativeExecution).conversationContinuation {
+				t.Fatal("explicit continuation lost its completion owner")
 			}
 			if err := scheduler.ReleaseClaim(t.Context(), issueID, "interrupted"); err != nil {
 				t.Fatal(err)

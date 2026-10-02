@@ -51,7 +51,7 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		// dispatched item, and the item happens to be a worktree rather than
 		// a turn (decisions section 18.1).
 		operation = runnerauth.Claim
-	case path == nativeBase+"/work-items/:item/events":
+	case path == nativeBase+"/work-items/:item/events", path == nativeBase+"/conversations/:conversation/turn-events" && c.Request().Method == http.MethodPost:
 		operation = runnerauth.Events
 	case strings.HasPrefix(path, nativeBase+"/work-items"):
 		operation = runnerauth.Collaborate
