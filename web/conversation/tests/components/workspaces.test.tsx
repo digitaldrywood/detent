@@ -84,10 +84,10 @@ class FakeEventSource {
   }
 }
 
-function Probe(props: { requires?: readonly string[]; attemptId?: string }): React.ReactElement {
+function Probe(props: { requires?: readonly string[]; attemptId?: string; projectId?: string; workItemId?: string }): React.ReactElement {
   const handle = useWorkspace({
-    projectId: "proj_1",
-    workItemId: "item_1",
+    projectId: props.projectId ?? "proj_1",
+    workItemId: props.workItemId ?? "item_1",
     attemptId: props.attemptId ?? null,
     requires: props.requires ?? ["files"],
   });
@@ -97,6 +97,8 @@ function Probe(props: { requires?: readonly string[]; attemptId?: string }): Rea
       <span data-testid="reason">{handle.reason ?? "none"}</span>
       <span data-testid="error">{handle.error ?? "none"}</span>
       <span data-testid="id">{handle.workspace?.id ?? "none"}</span>
+      <span data-testid="ticket">{handle.mintTicket === null ? "none" : "available"}</span>
+      <span data-testid="relay">{handle.relayUrl === null ? "none" : "available"}</span>
     </div>
   );
 }
@@ -180,6 +182,25 @@ describe("useWorkspace", () => {
       work_item_id: "item_1",
       requires: ["files"],
     });
+  });
+
+  it.each([
+    { name: "attempt", props: { attemptId: "attempt_current" }, client: CLIENT },
+    { name: "project", props: { attemptId: "attempt_old", projectId: "proj_other" }, client: CLIENT },
+    { name: "item", props: { attemptId: "attempt_old", workItemId: "item_other" }, client: CLIENT },
+    { name: "client", props: { attemptId: "attempt_old" }, client: { ...CLIENT, http: { ...CLIENT.http, csrfToken: "other-session" } } as ConversationClient },
+  ])("drops the previous workspace and ticket binding while a different $name is being acquired", async ({ props, client }) => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(json(200, { workspaces: [workspace({ state: "ready", attempt_id: "attempt_old" })] })),
+    );
+    const mounted = mount(<Probe attemptId="attempt_old" />);
+    await waitFor(() => expect(screen.getByTestId("id").textContent).toBe("ws_1"));
+    fetchMock.mockImplementation(() => new Promise<Response>(() => {}));
+    mounted.rerender(<ClientContext.Provider value={client}><Probe {...props} /></ClientContext.Provider>);
+    expect(screen.getByTestId("id").textContent).toBe("none");
+    expect(screen.getByTestId("state").textContent).toBe("none");
+    expect(screen.getByTestId("ticket").textContent).toBe("none");
+    expect(screen.getByTestId("relay").textContent).toBe("none");
   });
 
   it("adopts the workspace a 409 names rather than reporting the conflict", async () => {
