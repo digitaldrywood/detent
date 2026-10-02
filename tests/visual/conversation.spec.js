@@ -265,6 +265,56 @@ test("streams the coordinator's reply back", async () => {
   test.skip(true, "Hub-side coordinator turns (the scripted backend) from #2635 are not on main.");
 });
 
+test("keeps an open chat visible when its session cookie expires and reconnects", async ({ page, context }) => {
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.conversationStreams = { opened: 0, closed: [] };
+    window.EventSource = class extends NativeEventSource {
+      constructor(url, options) {
+        super(url, options);
+        if (!String(url).includes("/conversations/")) return;
+        this.addEventListener("open", () => window.conversationStreams.opened++);
+        this.addEventListener("closed", (event) => {
+          window.conversationStreams.closed.push(JSON.parse(event.data).reason);
+        });
+      }
+    };
+  });
+  await openChat(page);
+  const message = "Keep this chat through session refresh";
+  await sendWithKeyboard(page, message);
+  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  const chatURL = page.url();
+  await expect(page.getByTestId("user-turn").first()).toContainText(message);
+  await expect.poll(() => page.evaluate(() => window.conversationStreams.opened)).toBeGreaterThan(0);
+  await composer(page).fill("Unsent draft survives refresh");
+  const original = (await context.cookies()).find((cookie) => cookie.name === "detent_hosted_session");
+  expect(original).toBeDefined();
+  const opened = await page.evaluate(() => window.conversationStreams.opened);
+  const expired = await page.evaluate(async () => {
+    return (await fetch("/__preview/session/expire", { method: "POST" })).status;
+  });
+  expect(expired).toBe(204);
+  await expect.poll(() => page.evaluate(() => window.conversationStreams.closed), { timeout: 40_000 }).toContain("server_error");
+  await expect(page.getByTestId("user-turn").first()).toContainText(message);
+  await expectComposerText(page, "Unsent draft survives refresh");
+  await expect(page.getByText("Conversation unavailable")).toHaveCount(0);
+  await expect(page.getByText("Your access to this conversation was removed.")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.conversationStreams.opened)).toBeGreaterThan(opened);
+  const refreshed = (await context.cookies()).find((cookie) => cookie.name === "detent_hosted_session");
+  expect(refreshed.value).not.toBe(original.value);
+  await expect(page).toHaveURL(chatURL);
+  expect(await page.evaluate(() => window.conversationStreams.closed)).not.toContain("access_revoked");
+  const accepted = await hubAPI(page, "POST", `${conversationPath(currentConversation(page))}/commands`, {
+    key: "session-refresh-follow-up",
+    kind: "message",
+    text: "Message after reconnect",
+  });
+  expect(accepted.status).toBe(200);
+  await expect(page.getByTestId("user-turn").last()).toContainText("Message after reconnect");
+  await expectComposerText(page, "Unsent draft survives refresh");
+});
+
 test("Shift+Enter inserts a newline instead of sending", async ({ page }) => {
   const errors = watchConsole(page);
   await openLinkedConversation(page);
