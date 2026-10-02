@@ -731,6 +731,21 @@ omitting native callbacks. `TestSSHNativePublication`, `TestSSHWorkerLifecycle`,
 `TestNativeExecutionLandsReviewedVersion` and `TestLocalProviderRevalidation`
 cover exact remote publication, retained journals and native capabilities.
 
+Managed local configuration commands (native #94) reauthorize the exact selected
+project and reuse existing operator approval and durable command receipts. Reads
+report actual selected configuration/workflow revisions and policy identities
+without credentials, raw instructions or paths. Committed policy application
+requires its exact approved identity, source revision, current configuration
+revision and a paused project with settled work. Detach requires the mapped
+native project's authenticated durable cutover checkpoint and no active or
+deferred completions. It removes only that local registration through the
+existing validating writer. Saved removal remains distinct from runtime detach
+until the existing reload confirms it; missing or stopped owners never start
+a board or claim application. Cloud routing, runner association, user pauses,
+leases and immutable native Change/version/head authority retain their owners.
+`TestManagedProjectConfiguration`, `TestMCPLocalProjectConfiguration`,
+`TestLocalProjectCutoverReceipt` and `TestHostedProjectTools` cover these bounds.
+
 **Statement:** The orchestrator is the only writer of tracker lane state.
 
 Native worker finish prepares the result and Change Request while retaining the
@@ -1512,6 +1527,17 @@ checkpoint workspace. No retry loop, recovery path or reservation is added.
 `TestHubSchedulingPreservesOverloadRetryAcrossAdmissions` covers bounded omission
 and authentic invalidation; `TestNativeInterruptedCodeRecoversPersistedSession`
 covers already-lost local retry ownership with clean and dirty workspaces.
+
+Managed local project cutover (native #94) consolidates existing configuration,
+policy, import/cutover, drain and operator command owners. Project drain closes
+only that project's dispatch; it does not pause the shared dispatch gate or
+prevent unrelated projects acquiring capacity. Deferred completion retains its
+existing publication owner and prevents detach until settled. Local intake and
+schedules must already be migrated or disabled through their workflow owner.
+No configuration key, scheduling/recovery loop, generic file editor, daemon
+auto-start or tracker lane writer is introduced.
+`TestBeginDrainStopsPendingDispatchTick` also verifies unrelated capacity remains
+available; managed configuration tests verify deferred work prevents detach.
 
 Worker cleanup (#169) removes Darwin polling of unreadable unknown same-user
 process environments. A single inspection cannot establish ownership from an

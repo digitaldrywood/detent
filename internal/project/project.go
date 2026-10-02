@@ -1483,6 +1483,10 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher.Update) error {
 	p.configMu.Lock()
 	defer p.configMu.Unlock()
+	return p.applyWorkflowUpdate(ctx, update, false)
+}
+
+func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.Update, managed bool) error {
 
 	if update.Err != nil {
 		return p.workflowReloadError("workflow reload failed", update.Path, update.Err)
@@ -1514,7 +1518,12 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
 	}
 	if previousPolicy.ID != "" && previousPolicy.ID != workflow.Config.Policy.ID {
-		return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("policy_mismatch: effective policy changed; finish or cancel active work and restart Detent to load the approved revision"))
+		if !managed {
+			return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("policy_mismatch: effective policy changed; apply the approved revision through the selected configuration owner after current work finishes"))
+		}
+		if err := p.requireSettledWork(ctx); err != nil {
+			return err
+		}
 	}
 	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
