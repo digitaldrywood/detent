@@ -208,19 +208,19 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 		if decodeObject(message.Params, &params, true) != nil {
 			return s.writeError(message.ID, codeInvalidParams, "Invalid discovery parameters", nil)
 		}
-		return s.writeVersionResult(message.ID, version, map[string]any{"supportedVersions": supportedVersions(), "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": operatorInstructions})
+		return s.writeVersionResult(message.ID, version, message.Method, map[string]any{"supportedVersions": supportedVersions(), "capabilities": map[string]any{"tools": map[string]any{}}, "instructions": operatorInstructions})
 	case "initialize":
 		if meta.Modern {
 			return s.writeError(message.ID, codeMethodNotFound, "Method not found", nil)
 		}
 		return s.initialize(ctx, message)
 	case "ping":
-		return s.writeVersionResult(message.ID, version, map[string]any{})
+		return s.writeVersionResult(message.ID, version, message.Method, map[string]any{})
 	case "tools/list", "tools/call":
 		if meta.Modern {
 			if err := s.ensureBridge(ctx, meta.Client); err != nil {
 				if message.Method == "tools/call" {
-					return s.writeVersionResult(message.ID, version, toolCallResult{Content: []textContent{{Type: "text", Text: safeToolError(err)}}, IsError: true})
+					return s.writeVersionResult(message.ID, version, message.Method, toolCallResult{Content: []textContent{{Type: "text", Text: safeToolError(err)}}, IsError: true})
 				}
 				return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
 			}
@@ -360,7 +360,7 @@ func (s *session) listTools(ctx context.Context, message request, version string
 		}
 		return s.writeError(message.ID, codeInvalidParams, "Invalid or unavailable catalog page", nil)
 	}
-	return s.writeVersionResult(message.ID, version, page)
+	return s.writeVersionResult(message.ID, version, message.Method, page)
 }
 
 func (s *session) startToolCall(parent context.Context, key string, message request, protocolVersion string) error {
@@ -406,7 +406,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 			return
 		}
 		if err != nil {
-			if writeErr := s.writeVersionResult(message.ID, protocolVersion, toolCallResult{
+			if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, toolCallResult{
 				Content: []textContent{{Type: "text", Text: safeToolError(err)}},
 				IsError: true,
 			}); writeErr != nil {
@@ -414,7 +414,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 			}
 			return
 		}
-		if writeErr := s.writeVersionResult(message.ID, protocolVersion, successfulToolCallResult(protocolVersion, result.Content)); writeErr != nil {
+		if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, successfulToolCallResult(protocolVersion, result.Content)); writeErr != nil {
 			return
 		}
 	}()

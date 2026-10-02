@@ -76,7 +76,7 @@ func (s *session) serverInfo() map[string]any {
 	return map[string]any{"name": serverName, "title": serverTitle, "version": s.version}
 }
 
-func (s *session) writeVersionResult(id json.RawMessage, version string, result any) error {
+func (s *session) writeVersionResult(id json.RawMessage, version, method string, result any) error {
 	if version != ProtocolVersion {
 		return s.writeResult(id, result)
 	}
@@ -89,6 +89,11 @@ func (s *session) writeVersionResult(id json.RawMessage, version string, result 
 		return s.writeError(id, codeInternalError, "Internal error", nil)
 	}
 	object["resultType"] = json.RawMessage(`"complete"`)
+	switch method {
+	case "server/discover", "tools/list":
+		object["ttlMs"] = json.RawMessage(`0`)
+		object["cacheScope"] = json.RawMessage(`"private"`)
+	}
 	info, err := json.Marshal(map[string]any{"io.modelcontextprotocol/serverInfo": s.serverInfo()})
 	if err != nil {
 		return s.writeError(id, codeInternalError, "Internal error", nil)
