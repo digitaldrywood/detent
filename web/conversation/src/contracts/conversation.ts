@@ -298,6 +298,7 @@ export const Conversation = Schema.Struct({
   title: Schema.String,
   visibility: ConversationVisibility,
   status: ConversationStatus,
+  subject_work_item_id: Schema.optional(Schema.NullOr(WorkItemId)),
   work_item_id: Schema.NullOr(WorkItemId),
   linked_at: Schema.NullOr(Schema.String),
   work_item: Schema.NullOr(WorkItem),
@@ -636,6 +637,7 @@ export type FirstMessageInput = typeof FirstMessageInput.Type;
 export const CreateConversationRequest = Schema.Struct({
   key: Schema.String,
   title: Schema.optional(Schema.String),
+  subject_work_item_id: Schema.optional(WorkItemId),
   first_message: Schema.optional(FirstMessageInput),
 });
 export type CreateConversationRequest = typeof CreateConversationRequest.Type;

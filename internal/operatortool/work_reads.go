@@ -231,6 +231,7 @@ func (e *Executor) readWork(ctx context.Context, call Call) (Result, error) {
 
 type WorkReference struct {
 	Kind         string     `json:"kind"`
+	State        string     `json:"state,omitempty"`
 	ID           string     `json:"id"`
 	VersionID    string     `json:"version_id,omitempty"`
 	URL          string     `json:"url,omitempty"`

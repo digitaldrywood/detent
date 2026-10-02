@@ -43,6 +43,8 @@ import { ChatWorkspace, useWorkspacePanel } from "../components/ChatWorkspace.ts
 import { Markdown } from "../components/Markdown.tsx";
 import { canInterrupt, executionCopy, expectedOwner, isActive } from "../lib/execution.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
+import { useActivityCitation } from "./lib/useActivityCitation.ts";
+import { IssueAskEntry, IssueAskPanel, useIssueAsk, type IssueAsk } from "./IssueAsk.tsx";
 import { ActivityFeed, LiveRow } from "./components/ActivityFeed.tsx";
 import { IssueComposer } from "./components/IssueComposer.tsx";
 import {
@@ -111,6 +113,19 @@ export function selectChangeId(
   return changes.at(-1)?.change_id ?? null;
 }
 
+async function allIssueRecords<T>(read: (cursor?: string) => Promise<{ readonly items: readonly T[]; readonly next_cursor?: string | null }>): Promise<readonly T[]> {
+  const result: T[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await read(cursor);
+    result.push(...page.items);
+    const next = page.next_cursor ?? undefined;
+    if (next !== undefined && next === cursor) throw new Error("Issue history cursor did not advance");
+    cursor = next;
+  } while (cursor !== undefined);
+  return result;
+}
+
 function useIssue(
   http: WorkHttp,
   projectId: string | null,
@@ -138,11 +153,9 @@ function useIssue(
         const [issue, project, attempts, history, comments, changes] = await Promise.all([
           http.getWorkItem(projectId, workItemId),
           http.getProject(projectId),
-          http.listAttempts(projectId, workItemId, 20).then((page) => page.items),
-          http.listHistory({ projectId, itemId: workItemId, limit: 100 }).then((page) => page.items),
-          http
-            .listComments({ projectId, itemId: workItemId, limit: 100 })
-            .then((page) => page.items)
+          allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)),
+          allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })),
+          allIssueRecords((cursor) => http.listComments({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) }))
             .catch(() => []),
           http.listChanges(projectId, workItemId).catch(() => []),
         ]);
@@ -281,7 +294,7 @@ export function IssuePage(): React.ReactElement {
       ? resolved
       : undefined);
   if (linked === undefined) {
-    return <IssueSurface workItemId={workItemId} projectHint={null} conversation={null} />;
+    return <IssueSurface key={workItemId} workItemId={workItemId} projectHint={null} conversation={null} />;
   }
   return <LinkedIssue key={linked.id} workItemId={workItemId} conversation={linked} />;
 }
@@ -423,6 +436,7 @@ function IssueSurface({
       ? null
       : (client.bootstrap.projects.find((candidate) => candidate.id === projectId) ?? null);
   const canWrite = project?.can_write !== false;
+  const ask = useIssueAsk(projectId, workItemId);
 
   const item = React.useMemo<WorkItemView | null>(() => {
     if (data === null) return null;
@@ -540,6 +554,7 @@ function IssueSurface({
       onNewThreadInProject={() => void navigate({ to: "/chat" })}
       attempts={data?.attempts ?? []}
       history={data?.history ?? []}
+      askPanel={projectId === null ? null : <IssueAskPanel ask={ask} projectId={projectId} identifier={item === null ? workItemId : issueNumber(item.identifier, item.number)} canWrite={canWrite} />}
       conversationPanel={conversationPanel}
     >
       <PanelIntent wanted={search.panel === "conversation"} />
@@ -572,6 +587,7 @@ function IssueSurface({
 
   return frame(
     <IssueBody
+      ask={ask}
       item={item}
       data={data}
       moves={moves}
@@ -702,6 +718,7 @@ function IssueSurface({
 }
 
 interface IssueBodyProps {
+  readonly ask: IssueAsk;
   readonly item: WorkItemView;
   readonly data: IssueData;
   readonly moves: readonly string[];
@@ -746,6 +763,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const navigate = useNavigate();
   const { data, item, conversation } = props;
   const [expanded, setExpanded] = React.useState(false);
+  const highlightedId = useActivityCitation(item.id);
 
   const runnerNames = useRunnerNames();
   const running = data.attempts.at(-1)?.status === "running" ? data.attempts.at(-1) : undefined;
@@ -1073,9 +1091,12 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
             </TooltipPopup>
           </Tooltip>
 
+          <IssueAskEntry ask={props.ask} canWrite={props.canWrite} />
+
           <IssueResources rows={resources} />
 
           <ActivityFeed
+            highlightedId={highlightedId}
             rows={rows}
             live={live}
             liveAt={liveAt}

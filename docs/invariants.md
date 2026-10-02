@@ -406,6 +406,15 @@ only authorized read tools, while operator actions use the named command tools.
 `TestWorkspaceOperatorUnavailable` and `TestMCPOperatorChatRetry` cover these boundaries.
 No MCP adapter writes tracker lanes or introduces a new protection/recovery mechanism.
 
+Issue Q&A conversations (#171) carry a separate, non-unique subject rather than
+reusing the canonical worker link. Subject creation validates the current project,
+threads remain private to their creator, and linking/sharing a subject chat is
+refused. The coordinator refreshes subject records through the existing scoped
+work reads each turn; private questions and answers never become comments without
+the existing explicit comment approval. `TestConversationSubjectOwnership`,
+`TestCoordinatorSubjectRefresh`, `TestCoordinatorSubjectPrompt` and
+`TestReadIssueContext` preserve these INV-1 boundaries.
+
 Ordinary native workers (native #145) create their canonical, empty shared
 conversation inside the existing lease-fenced bind transaction when none exists.
 The selected attempt/run/lease/fencing token remains the sole execution owner;

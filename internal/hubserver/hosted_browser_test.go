@@ -791,6 +791,9 @@ func TestHostedBrowserPreviewSeed(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
+		f.seedIssueAsk(t)
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ACTIONS") != "" {
 		f.seedCoordinatorActions(t)
 	}
@@ -831,6 +834,9 @@ func TestHostedBrowserPreview(t *testing.T) {
 		})}
 	}
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
+		f.seedIssueAsk(t)
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ACTIONS") != "" {
 		f.seedCoordinatorActions(t)
 	}

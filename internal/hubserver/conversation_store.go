@@ -61,16 +61,17 @@ func conversationInvalidCursor() error {
 }
 
 type conversationRecord struct {
-	ID               string
-	OrganizationID   tracker.OrganizationID
-	ProjectID        tracker.ProjectID
-	OwnerPrincipalID string
-	OwnerSubject     string
-	Title            string
-	Visibility       conversation.Visibility
-	Status           conversation.Status
-	WorkItemID       string
-	LinkedAt         *time.Time
+	ID                string
+	OrganizationID    tracker.OrganizationID
+	ProjectID         tracker.ProjectID
+	OwnerPrincipalID  string
+	OwnerSubject      string
+	Title             string
+	Visibility        conversation.Visibility
+	Status            conversation.Status
+	SubjectWorkItemID string
+	WorkItemID        string
+	LinkedAt          *time.Time
 	// WorkItem caches the linked issue summary the projections report. It
 	// is filled by resolveConversationWorkItems on every read.
 	WorkItem         *conversationWorkItem
@@ -165,7 +166,7 @@ func conversationParseNullTime(value sql.NullString) (*time.Time, error) {
 }
 
 const conversationColumns = `id, organization_id, project_id, owner_principal_id, owner_subject, title, visibility, status,
- work_item_id, linked_at, revision, provider_thread_id, provider_thread_runner_id, provider_thread_origin, execution_json, event_seq, preferences_json, created_at, updated_at, last_message_at, settled_at`
+ subject_work_item_id, work_item_id, linked_at, revision, provider_thread_id, provider_thread_runner_id, provider_thread_origin, execution_json, event_seq, preferences_json, created_at, updated_at, last_message_at, settled_at`
 
 // conversationMessageCount counts the conversation's whole history for the
 // resource's message_count (decisions section 10.5). It is a correlated
@@ -184,15 +185,16 @@ type conversationScanner interface {
 
 func scanConversation(row conversationScanner) (conversationRecord, error) {
 	var record conversationRecord
-	var workItem, linkedAt, lastMessageAt, settledAt sql.NullString
+	var subject, workItem, linkedAt, lastMessageAt, settledAt sql.NullString
 	var execution, preferences, created, updated string
 	if err := row.Scan(
 		&record.ID, &record.OrganizationID, &record.ProjectID, &record.OwnerPrincipalID, &record.OwnerSubject, &record.Title, &record.Visibility, &record.Status,
-		&workItem, &linkedAt, &record.Revision, &record.ProviderThreadID, &record.ProviderThreadRunnerID, &record.ProviderThreadOrigin, &execution, &record.EventSeq, &preferences, &created, &updated, &lastMessageAt, &settledAt,
+		&subject, &workItem, &linkedAt, &record.Revision, &record.ProviderThreadID, &record.ProviderThreadRunnerID, &record.ProviderThreadOrigin, &execution, &record.EventSeq, &preferences, &created, &updated, &lastMessageAt, &settledAt,
 		&record.MessageCount,
 	); err != nil {
 		return record, err
 	}
+	record.SubjectWorkItemID = subject.String
 	record.WorkItemID = workItem.String
 	if err := json.Unmarshal([]byte(execution), &record.Execution); err != nil {
 		return record, fmt.Errorf("decode conversation %s execution: %w", record.ID, err)
@@ -235,6 +237,9 @@ func validateConversationRecord(record *conversationRecord) error {
 	}
 	if !record.Visibility.Valid() {
 		return nativeInvalid("Conversation visibility is not valid")
+	}
+	if record.SubjectWorkItemID != "" && (record.WorkItemID != "" || record.Visibility != conversation.VisibilityPrivate) {
+		return nativeInvalid("Issue questions must remain private and unlinked")
 	}
 	if !record.Status.Valid() {
 		return nativeInvalid("Conversation status is not valid")
@@ -292,6 +297,11 @@ func (s *conversationStore) createConversation(ctx context.Context, tx *sql.Tx, 
 	if record.Revision == 0 {
 		record.Revision = 1
 	}
+	if record.SubjectWorkItemID != "" {
+		if _, _, err := readNativeIssue(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, record.SubjectWorkItemID); err != nil {
+			return err
+		}
+	}
 	if err := s.requireLinkAvailable(ctx, tx, *record); err != nil {
 		return err
 	}
@@ -304,9 +314,9 @@ func (s *conversationStore) createConversation(ctx context.Context, tx *sql.Tx, 
 		return fmt.Errorf("encode conversation preferences: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO conversations (`+conversationColumns+`)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.OrganizationID, record.ProjectID, record.OwnerPrincipalID, record.OwnerSubject, record.Title, record.Visibility, record.Status,
-		nullString(record.WorkItemID), conversationNullTime(record.LinkedAt), record.Revision, record.ProviderThreadID, record.ProviderThreadRunnerID, record.ProviderThreadOrigin, execution, record.EventSeq,
+		nullString(record.SubjectWorkItemID), nullString(record.WorkItemID), conversationNullTime(record.LinkedAt), record.Revision, record.ProviderThreadID, record.ProviderThreadRunnerID, record.ProviderThreadOrigin, execution, record.EventSeq,
 		preferences, conversationTime(record.CreatedAt), conversationTime(record.UpdatedAt), conversationNullTime(record.LastMessageAt), conversationNullTime(record.SettledAt),
 	); err != nil {
 		return fmt.Errorf("insert conversation: %w", conversationLinkError(err))
@@ -408,7 +418,8 @@ type conversationListQuery struct {
 	// Nil lists both, active first (decisions section 14).
 	Settled *bool
 	// Title is a case-insensitive substring the title must contain.
-	Title string
+	Title             string
+	SubjectWorkItemID string
 }
 
 // conversationTitleFilter renders the LIKE pattern for a title substring,
@@ -448,6 +459,10 @@ func (s *conversationStore) listConversations(ctx context.Context, query nativeQ
 	if needle := strings.TrimSpace(filter.Title); needle != "" {
 		where.WriteString(` AND lower(title) LIKE ? ESCAPE '\'`)
 		args = append(args, conversationTitleFilter(needle))
+	}
+	if filter.SubjectWorkItemID != "" {
+		where.WriteString(" AND subject_work_item_id = ? AND owner_principal_id = ? AND visibility = 'private'")
+		args = append(args, filter.SubjectWorkItemID, filter.Principal)
 	}
 	if filter.Settled != nil {
 		status := conversation.StatusActive
