@@ -591,6 +591,18 @@ and credentials. `TestSchedulerEnrolledUpdate`,
 `TestRunnerCapacityHeartbeat` and update cases in `TestHostedMCPFleetControls`
 exercise these INV-1 boundaries and the INV-3 consolidation.
 
+Hosted workspace readiness (native #192) uses the existing project SSE owner,
+with the selected workspace ID and the same current hosted session, project and
+subject read authority as the workspace API. Initial subscription and reconnect
+send its current flat resource; subsequent revision changes send its current
+`workspace.<state>` resource. Each subscriber reads only that workspace, without
+catalog or history replay. Relay session details retain the existing owner/admin
+audience; Files, Terminal, close and dispatch-release policies retain their owners.
+Project activity uses the indexed maximum collaboration-event row ID instead of
+the maximum issue-local sequence, so a terminal event on a less active issue
+still invalidates the board. `TestHostedWorkspaceEvents` and
+`TestHostedActivityIncludesChangesBelowIssueMaximum` cover these INV-1 boundaries.
+
 Effective runner capacity (native #90) uses the existing runner administration,
 native command receipt, routing heartbeat, selected global configuration writer
 and runtime reload owners. UI routing capacity edits and MCP/API capacity requests
