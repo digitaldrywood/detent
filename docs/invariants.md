@@ -3165,7 +3165,12 @@ file. The canonical handoff contract and orphan restart nudge explicitly revoke
 earlier notes instructions retained in provider history; normal completion
 ownership remains unchanged. Existing issue Workpads, native completion contracts, attempt outcomes,
 usage updates and provider/session records own handoff and diagnostics; no new
-artifact or coordination mechanism is added. Existing notes files remain intact.
+artifact or coordination mechanism is added. Native work item #180 retires this
+repository's tracked historical `.detent/notes.md` and unused `internal/notes`
+package, including its append writer and tests. Historical prose is not migrated
+into current verdict authority. Workers continue to preserve existing user notes
+and attachments; `.detent/lessons.md` and intentional project documentation remain
+ordinary project files.
 `TestPromptDoesNotUseRepositoryNotes`,
 `TestBuildPromptUsesPriorAttemptWithoutRepoNotes` and
 `TestRunnerFailureKeepsSessionDiagnosticsWithoutNotes` cover all prompt profiles,
