@@ -177,6 +177,9 @@ func githubLandingAPI(ctx context.Context, result any, method, path string, fiel
 	if err != nil {
 		message := strings.TrimSpace(string(output))
 		lower := strings.ToLower(message)
+		if method == "PUT" && strings.HasSuffix(path, "/merge") && strings.Contains(lower, "http 405") && (strings.Contains(lower, "merge conflict") || strings.Contains(lower, "pull request is not mergeable")) {
+			return refuse(LandRefusalConflict, "GitHub refused the pull request merge: "+message)
+		}
 		if strings.Contains(lower, "authentication") || strings.Contains(lower, "not logged") || strings.Contains(lower, "gh auth login") || strings.Contains(lower, "http 401") || strings.Contains(lower, "http 403") || strings.Contains(lower, "http 405") || strings.Contains(lower, "http 422") || strings.Contains(lower, "required review") || strings.Contains(lower, "required status") || strings.Contains(lower, "mergeable") {
 			return refuse(LandRefusalProtected, "GitHub refused the pull request operation: "+message+". Resolve its authentication, reviews, checks or branch protection, then approve the Change Request again.")
 		}

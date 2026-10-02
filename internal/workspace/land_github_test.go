@@ -117,12 +117,40 @@ func TestGitHubLandingRepository(t *testing.T) {
 
 func TestGitHubLandingAPIRefusal(t *testing.T) {
 	installLandingGitHubCLI(t)
-	t.Setenv("TEST_MERGE_REFUSED", "HTTP 405: Required status checks have not passed")
-	var response githubLandingMerge
-	err := githubLandingAPI(t.Context(), &response, "PUT", "repos/example/repo/pulls/1/merge")
-	var refusal *LandRefusal
-	if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected || !strings.Contains(refusal.Reason, "status checks") {
-		t.Fatalf("refusal = %v", err)
+	for _, test := range []struct {
+		name, message, kind string
+		quota               bool
+	}{
+		{name: "required checks", message: "HTTP 405: Required status checks have not passed", kind: LandRefusalProtected},
+		{name: "required reviews", message: "HTTP 405: Branch protection requires reviews", kind: LandRefusalProtected},
+		{name: "protected base", message: "HTTP 405: Protected branch update failed", kind: LandRefusalProtected},
+		{name: "unspecified refusal", message: "HTTP 405: Method Not Allowed", kind: LandRefusalProtected},
+		{name: "explicit merge conflict", message: "gh: Merge conflict (HTTP 405)", kind: LandRefusalConflict},
+		{name: "unmergeable pull request", message: `{"message":"Pull Request is not mergeable","status":"405"}
+gh: Pull Request is not mergeable (HTTP 405)`, kind: LandRefusalConflict},
+		{name: "authentication", message: "HTTP 401: Bad credentials", kind: LandRefusalProtected},
+		{name: "primary quota never becomes a conflict", message: "HTTP 403: API rate limit exceeded", quota: true},
+		{name: "secondary quota never becomes a conflict", message: "HTTP 429: You have exceeded a secondary rate limit", quota: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("TEST_MERGE_REFUSED", test.message)
+			var response githubLandingMerge
+			err := githubLandingAPI(t.Context(), &response, "PUT", "repos/example/repo/pulls/1/merge")
+			var refusal *LandRefusal
+			typed := errors.As(err, &refusal)
+			if err == nil || !strings.Contains(err.Error(), test.message) || response.Merged {
+				t.Fatalf("refusal = %v, response = %#v", err, response)
+			}
+			if test.quota {
+				if typed && refusal.Kind == LandRefusalConflict {
+					t.Fatalf("quota became a conflict: %v", err)
+				}
+				return
+			}
+			if !typed || refusal.Kind != test.kind {
+				t.Fatalf("refusal = %v, response = %#v, want kind %q", err, response, test.kind)
+			}
+		})
 	}
 }
 

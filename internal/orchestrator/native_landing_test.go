@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -9,40 +10,51 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-// TestNativeLandingRunCompletion drives a landing run's completion: a landed
-// version is read back from the hub, which finished it, and a refused one
-// goes back to the review lane with the reason. Both complete the attempt.
 func TestNativeLandingRunCompletion(t *testing.T) {
 	t.Parallel()
 	workflow := []connector.WorkflowState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
 		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
-		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "Blocked", "Rework", "Refresh"}},
+		{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
+		{Name: "Refresh", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
+		{Name: "Blocked", Transitions: []string{"Todo"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}
 	head := strings.Repeat("c", 40)
 	landed := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Landed: true, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}
 	refused := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: "base_protected", Refusal: "the base branch main refused the push: GH006. Allow the runner to push to main, or enable GitHub pull request mode for this project."}
+	conflict := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalConflict, Refusal: "GitHub refused the merge: Pull Request is not mergeable (HTTP 405)"}
 	for _, test := range []struct {
-		name         string
-		finalMessage string
-		landing      *runpkg.NativeLanding
-		hubState     string
-		states       []connector.WorkflowState
-		statesErr    error
-		updateErr    error
-		plain        bool
-		wantState    string
-		wantMoves    int
-		wantComment  string
-		wantDeferred bool
-		wantContinue bool
+		name          string
+		finalMessage  string
+		landing       *runpkg.NativeLanding
+		hubState      string
+		states        []connector.WorkflowState
+		statesErr     error
+		updateErr     error
+		plain         bool
+		noHumanReview bool
+		reworkState   string
+		wantState     string
+		wantMoves     int
+		wantComment   string
+		wantDeferred  bool
+		wantContinue  bool
 	}{
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a refused landing returns to review with the reason", landing: refused, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
+		{name: "a conflict enters rework without human review", landing: conflict, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
+		{name: "a conflict enters configured rework with human review", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
+		{name: "a protected refusal remains blocked without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "was not landed", wantMoves: 1},
+		{name: "a conflict with absent configured rework is handed off", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Missing", wantDeferred: true},
+		{name: "a conflict with disallowed rework is handed off", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Human Review", "Done"}}, {Name: "Human Review"}, {Name: "Rework", Dispatchable: true}, {Name: "Done", Terminal: true}}, wantDeferred: true},
+		{name: "a conflict cannot enter operator-only rework", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework"}}, {Name: "Rework", Dispatchable: true, OperatorOnly: true}}, wantDeferred: true},
+		{name: "a conflict cannot complete through terminal rework", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework"}}, {Name: "Rework", Terminal: true}}, wantDeferred: true},
 		{name: "typed success retains landing authority over final question", landing: landed, hubState: "Done", states: workflow, finalMessage: "May I merge?", wantState: "Done", wantComment: "Landed Change Request change_1"},
 		{name: "typed refusal retains review destination over final question", landing: refused, hubState: "Merging", states: workflow, finalMessage: "May I merge?", wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
 		{name: "typed refusal is not replaced by prose success", landing: refused, hubState: "Merging", states: workflow, finalMessage: "Landed the change successfully.", wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
@@ -65,6 +77,11 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			}
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Merging"}, TerminalStates: []string{"Done"}})
 			cfg.AutoPromote.SourceState = "Human Review"
+			if test.noHumanReview {
+				humanReview := false
+				cfg.AutoPromote.HumanReview = &humanReview
+			}
+			cfg.AutoPromote.ReworkState = test.reworkState
 			attempts := &recordingWorkAttemptStore{}
 			scheduling := &hubSchedulingSource{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
@@ -98,6 +115,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				return
 			}
 			if test.wantDeferred {
+				if test.updateErr == nil && len(tick.updates) != 0 || len(attempts.completions) != 0 {
+					t.Fatalf("a handed-off landing moved or completed: updates %#v, attempts %#v", tick.updates, attempts.completions)
+				}
 				if len(tick.comments) != 0 {
 					t.Fatalf("a handed-off item was commented on: %#v", tick.comments)
 				}
@@ -118,6 +138,16 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			}
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
 				t.Fatalf("attempt completions = %#v", attempts.completions)
+			}
+			var metadata map[string]any
+			if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
+				t.Fatal(err)
+			}
+			if metadata["native_landed"] != test.landing.Landed || metadata["native_version_id"] != test.landing.VersionID || metadata["native_change_id"] != test.landing.ChangeID {
+				t.Fatalf("landing identity = %#v", metadata)
+			}
+			if !test.landing.Landed && (metadata["native_landing_refusal"] != test.landing.RefusalKind || metadata["native_merge_sha"] != nil) {
+				t.Fatalf("refusal became landing evidence: %#v", metadata)
 			}
 		})
 	}
