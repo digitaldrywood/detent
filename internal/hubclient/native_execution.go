@@ -189,6 +189,16 @@ func (e *nativeExecution) unavailable(err error) error {
 	return cause
 }
 
+func (e *nativeExecution) executionError(err error) error {
+	if nativeAuthorityLost(err) {
+		err = e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
+	}
+	if e.remaining() <= 0 || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+		return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+	}
+	return err
+}
+
 func (e *nativeExecution) Validate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		if deadline := e.AvailabilityDeadline(); errors.Is(context.Cause(ctx), context.Canceled) && !deadline.IsZero() && !e.scheduler.now().Before(deadline) {
@@ -200,11 +210,21 @@ func (e *nativeExecution) Validate(ctx context.Context) error {
 		return e.unavailable(nil)
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.PolicyID); err != nil {
-		return e.unavailable(err)
+		err = e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
+		err = e.executionError(err)
+		if !nativeTransportUnavailable(err) {
+			return e.unavailable(err)
+		}
+		slog.Default().Warn("native validation unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
+		return nil
 	}
 	if e.scheduler.client.runner == nil {
 		if _, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease); err != nil {
-			return e.unavailable(err)
+			err = e.executionError(err)
+			if !nativeTransportUnavailable(err) {
+				return e.unavailable(err)
+			}
+			slog.Default().Warn("native validation unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
 		}
 	}
 	return nil
@@ -245,7 +265,18 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	if e.data.Identity == nil {
 		return nil
 	}
+	e.worktreeState = checkpoint.WorktreeState
+	e.worktreeHead = checkpoint.HeadSHA
 	if err := e.flush(ctx); err != nil {
+		if nativeTransportUnavailable(err) {
+			if e.diffSource != nil {
+				if captureErr := e.captureDiff(ctx); captureErr != nil {
+					return captureErr
+				}
+			}
+			slog.Default().Warn("native checkpoint publication unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
+			return nil
+		}
 		return err
 	}
 	previous, err := json.Marshal(e.data.Handoff)
@@ -259,9 +290,14 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	if string(previous) == string(current) {
 		return nil
 	}
-	e.worktreeState = checkpoint.WorktreeState
-	e.worktreeHead = checkpoint.HeadSHA
-	return e.append(ctx, "run.checkpointed", "", &checkpoint)
+	if err := e.append(ctx, "run.checkpointed", "", &checkpoint); err != nil {
+		if nativeTransportUnavailable(err) {
+			slog.Default().Warn("native checkpoint publication unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome string) error {
@@ -269,6 +305,14 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome string) err
 	defer e.mu.Unlock()
 	e.preparedOutcome = outcome
 	if err := e.prepareFinish(ctx, outcome); err != nil {
+		err = e.executionError(err)
+		if outcome == "succeeded" && e.ownsChangeCompletion() && nativeTransportUnavailable(err) {
+			if e.change == nil {
+				e.change = &runner.NativeChange{}
+			}
+			e.change.Error = err.Error()
+			return nil
+		}
 		e.preparedOutcome = "failed"
 		return err
 	}
@@ -294,7 +338,8 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	if outcome == "succeeded" {
 		if e.storedSeq != finish {
 			if err := e.postDiff(ctx, finish); err != nil && e.ownsChangeCompletion() {
-				if e.remaining() <= 0 || nativeLeaseLost(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				err = e.executionError(err)
+				if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 					return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 				}
 				e.change = &runner.NativeChange{Error: err.Error()}
@@ -302,13 +347,17 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 			}
 		}
 		if err := e.settle(ctx, outcome, finish); err != nil {
-			if e.remaining() <= 0 || nativeLeaseLost(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			err = e.executionError(err)
+			if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 				return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 			}
 			if e.change == nil {
 				e.change = &runner.NativeChange{}
 			}
-			if e.change.VersionError == "" {
+			if nativeTransportUnavailable(err) {
+				e.change.VersionID, e.change.VersionError, e.change.VersionCode, e.change.Reviewed = "", "", "", false
+				e.change.Error = err.Error()
+			} else if e.change.VersionError == "" {
 				e.change.Error = err.Error()
 			}
 		}
@@ -361,13 +410,8 @@ func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
 	e.diffSource = source
 }
 
-// postDiff stores the worktree's diff for the event about to be appended. The
-// producer tuple is this execution's own lease, because the attempt is still
-// running and its lease is therefore the producer; the generation is the run
-// event sequence the diff belongs to, which is why the post happens before the
-// event and not after it.
-func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) error {
-	if e.diffSource == nil || e.claim.source == nil || e.claim.source.client == nil {
+func (e *nativeExecution) captureDiff(ctx context.Context) error {
+	if e.diffSource == nil {
 		return errors.New("the run's final attempt diff source is unavailable")
 	}
 	request, ok := e.diffSource(ctx)
@@ -380,6 +424,19 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) error {
 	default:
 		return errors.New("the run's final attempt diff is unavailable")
 	}
+	return nil
+}
+
+// postDiff stores the worktree's diff for the event about to be appended. The
+// producer tuple is this execution's own lease, because the attempt is still
+// running and its lease is therefore the producer; the generation is the run
+// event sequence the diff belongs to, which is why the post happens before the
+// event and not after it.
+func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) error {
+	if err := e.captureDiff(ctx); err != nil {
+		return err
+	}
+	request := *e.lastDiff
 	request.Producer = tracker.DiffProducer{
 		Kind: tracker.DiffSourceAttempt, ID: e.data.AttemptID,
 		LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken,
@@ -417,7 +474,7 @@ func (e *nativeExecution) flush(ctx context.Context) error {
 		return runner.ErrExecutionAuthorityUnavailable
 	}
 	if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
-		return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+		return e.executionError(err)
 	}
 	e.data = e.pending.Data
 	e.pending = nil

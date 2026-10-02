@@ -38,7 +38,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		return runner.ErrExecutionAuthorityUnavailable
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
-		return err
+		return e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
 	}
 	if _, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease); err != nil {
 		return err

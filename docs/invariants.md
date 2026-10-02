@@ -1167,6 +1167,22 @@ This removes the blanket policy-error claim-loss classification under INV-3;
 credential rotation, atomic private persistence and pending-credential recovery
 keep their existing owners, with no new mechanism or authority bypass.
 
+Native execution and reporting (#210) share the retained fenced lease and actual
+authority-loss classification with renewal. Temporary transport and server
+unavailability inside that lease do not cancel the current worker or turn a
+pending event into a failed issue attempt. Pending events retain their sequence
+and idempotency identity; reconnect reuses the same execution. Unauthorized,
+revoked, stale fencing and expired authority still stop execution, and mutations
+continue fresh server-side authorization. Permanent protocol and publication
+refusals are not temporary outages. A final publication outage remains with the
+existing completion deferral, which retries the retained publisher before
+replaying the completed result. Abandoned instance interruptions remain eligible
+for existing recovery but do not count as issue failures.
+`TestNativeExecutionTransportKeepsCurrentWorker`,
+`TestNativeExecutionSettlesFinishedRun`, `TestNativeChangeRunCompletion` and
+`TestConsecutiveRetryCycleCountAcrossServiceRestarts` cover these boundaries;
+existing guard and successor regressions retain expiry and fencing safety.
+
 Native code and rework completion (#152) requires a stored final diff and
 available fenced publication authority before a genuine deliverable advances.
 Missing diff and Change evidence retain their actual publication diagnostics

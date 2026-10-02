@@ -1844,6 +1844,9 @@ func TestConsecutiveRetryCycleCountAcrossServiceRestarts(t *testing.T) {
 		wantLatest int64
 	}{
 		{name: "restarts alone", sequence: "RRR"},
+		{name: "native interruptions alone", sequence: "AAA"},
+		{name: "failure survives native interruptions", sequence: "FAA", wantCount: 1, wantLatest: 1},
+		{name: "failures straddle native interruptions", sequence: "FAFAF", wantCount: 3, wantLatest: 5},
 		{name: "restart after failure", sequence: "FR", wantCount: 1, wantLatest: 1},
 		{name: "failure after restart", sequence: "RF", wantCount: 1, wantLatest: 2},
 		{name: "failures straddle restarts", sequence: "FRFRF", wantCount: 3, wantLatest: 5},
@@ -1877,6 +1880,9 @@ func TestConsecutiveRetryCycleCountAcrossServiceRestarts(t *testing.T) {
 						CompletedAt: at,
 					}
 					switch kind {
+					case 'A':
+						attempt.TerminalState = store.WorkAttemptTerminalAbandoned
+						attempt.ErrorClass = workAttemptErrorInterrupted
 					case 'R', 'P', 'L':
 						attempt.TerminalState = store.WorkAttemptTerminalAbandoned
 						attempt.ErrorClass = "service_restart"

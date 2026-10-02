@@ -51,6 +51,7 @@ type changeFailingTransport struct {
 	failIntake   atomic.Bool
 	failDetails  atomic.Bool
 	failVersions atomic.Bool
+	dropVersions atomic.Bool
 }
 
 func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -74,7 +75,12 @@ func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Respons
 			return nil, errors.New("run event unavailable")
 		}
 	}
-	return t.next.RoundTrip(request)
+	response, err := t.next.RoundTrip(request)
+	if err == nil && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/versions") && t.dropVersions.Swap(false) {
+		response.Body.Close()
+		return nil, errors.New("version acknowledgment lost")
+	}
+	return response, err
 }
 
 func newNativeChangeHub(t *testing.T, inMemory ...bool) *nativeChangeHub {
@@ -335,6 +341,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		failDiff       bool
 		failDetail     bool
 		failVersion    bool
+		dropVersion    bool
 		versionCode    string
 		diffCode       string
 		conversation   bool
@@ -391,6 +398,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "a failed run decides nothing", role: runner.RoleCode, outcome: "failed", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
 		{name: "a plan run decides nothing", role: runner.RolePlan, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
 		{name: "no readable worktree cannot succeed", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", wantDiagnostic: "diff source is unavailable"},
+		{name: "version acknowledgment loss retains the current immutable version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: strings.Repeat("b", 40), dropVersion: true, wantDiagnostic: "version acknowledgment lost", wantChanges: 1, wantVersions: 2},
 		{name: "version allowance refusal retains the previous immutable version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: strings.Repeat("b", 40), versionCode: "allowance_exhausted", wantDiagnostic: "allowance_exhausted", wantChanges: 1, wantVersions: 1},
 		{name: "diff allowance refusal is a publication diagnostic", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), diffCode: "allowance_exhausted", wantDiagnostic: "allowance_exhausted"},
 		{name: "fenced diff refusal retains lost authority", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), diffCode: "stale_fencing_token", wantDiagnostic: "stale_fencing_token"},
@@ -453,6 +461,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			h.failChanges.failDiffs.Store(test.failDiff)
 			h.failChanges.failDetails.Store(test.failDetail)
 			h.failChanges.failVersions.Store(test.failVersion)
+			h.failChanges.dropVersions.Store(test.dropVersion)
 			if test.versionCode != "" || test.diffCode != "" {
 				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					code := ""
@@ -524,6 +533,43 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				if h.state(t, issue.ID) != "In Progress" {
 					t.Fatal("failed preparation changed the issue lane")
+				}
+				if test.failCreate || test.failDiff || test.failDetail || test.failVersion || test.dropVersion {
+					h.failChanges.fail.Store(false)
+					h.failChanges.failDiffs.Store(false)
+					h.failChanges.failDetails.Store(false)
+					h.failChanges.failVersions.Store(false)
+					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome); err != nil {
+						t.Fatal(err)
+					}
+					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome); err != nil {
+						t.Fatal(err)
+					}
+					republished := execution.(runner.ChangeExecution).NativeChange()
+					if republished == nil || republished.Error != "" || republished.VersionError != "" || republished.VersionID == "" || republished.HeadSHA != head {
+						t.Fatalf("publisher did not recover same source: %+v", republished)
+					}
+					stored := h.changes(t, issue.ID)
+					if len(stored) != 1 {
+						t.Fatalf("publication retry duplicated change: %+v", stored)
+					}
+					detail, err := h.admin.Change(t.Context(), item, stored[0].ID)
+					wantVersions := 1
+					if test.failVersion || test.dropVersion {
+						wantVersions = 2
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(detail.Versions) != wantVersions {
+						t.Fatalf("publication retry duplicated versions: %+v", detail.Versions)
+					}
+					h.complete(t, issue.ID, republished)
+					recovery, err := h.admin.Recovery(t.Context(), item)
+					if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "succeeded" {
+						t.Fatalf("publication recovery restarted attempt: %+v error=%v", recovery.Attempts, err)
+					}
+					return
 				}
 				if change.VersionError != "" {
 					h.complete(t, issue.ID, change)

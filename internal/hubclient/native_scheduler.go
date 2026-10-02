@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -340,9 +341,8 @@ func nativeLeaseDeadline(started time.Time, lease tracker.NativeLease) time.Time
 func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken, err error) error {
 	var apiErr *APIError
 	lostAuthority := errors.As(err, &apiErr) && apiErr != nil &&
-		(apiErr.Code == "policy_mismatch" || apiErr.Code == "selector_no_match" ||
-			s.client.runner != nil && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusNotFound))
-	if claimLost(err) || lostAuthority {
+		(apiErr.Code == "policy_mismatch" || apiErr.Code == "selector_no_match")
+	if nativeAuthorityLost(err) || lostAuthority {
 		s.mu.Lock()
 		if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {
 			delete(s.claims, issueID)
@@ -386,4 +386,21 @@ func (s *Scheduler) MachineID() tracker.MachineID {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.machine.ID
+}
+
+func nativeTransportUnavailable(err error) bool {
+	if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Status >= http.StatusInternalServerError
+	}
+	return errors.Is(err, ErrUnavailable) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func nativeAuthorityLost(err error) bool {
+	var apiErr *APIError
+	return nativeLeaseLost(err) || errors.As(err, &apiErr) &&
+		(apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusNotFound)
 }

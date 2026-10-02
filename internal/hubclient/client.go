@@ -284,7 +284,7 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 		apiErr := &APIError{Status: response.StatusCode}
 		if len(payload) > 0 {
 			if err := json.Unmarshal(payload, apiErr); err != nil {
-				return fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err)
+				return errors.Join(apiErr, fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err))
 			}
 		}
 		if response.StatusCode >= 500 {

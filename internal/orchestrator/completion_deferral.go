@@ -486,7 +486,22 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 		if _, ok := state.Claimed[issueID]; !ok {
 			state.Claimed[issueID] = recoveredDeferredCompletionClaim(o, record.Running.Issue, now)
 		}
-		o.handleRunResult(ctx, state, record.completion())
+		completion := record.completion()
+		if completion.Err == nil && completion.Result.NativeChange != nil && completion.Result.NativeChange.Error != "" {
+			if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+				execution := source.RunExecution(issueID)
+				if publisher, ok := execution.(runpkg.CompletionExecution); ok {
+					if err := execution.Validate(ctx); err != nil {
+						completion.Err = err
+					} else if err := publisher.PrepareFinish(ctx, "succeeded"); err != nil {
+						completion.Err = err
+					} else if changes, ok := execution.(runpkg.ChangeExecution); ok {
+						completion.Result.NativeChange = changes.NativeChange()
+					}
+				}
+			}
+		}
+		o.handleRunResult(ctx, state, completion)
 		if _, deferred := state.deferredCompletions[issueID]; deferred {
 			return false
 		}

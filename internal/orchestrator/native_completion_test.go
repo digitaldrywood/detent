@@ -75,6 +75,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	deliveryErr := &runpkg.DeliverableRecoveryError{Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Message: "pull request publication failed"}}
 	for _, test := range []struct {
 		name          string
+		republish     bool
 		finalState    string
 		finalMessage  string
 		runErr        error
@@ -141,6 +142,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "human attention retains session failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("session persistence failed")), wantState: "In Review"},
 		{name: "human attention defers a refused lane write", states: workflow, finalMessage: "May I merge?", updateErr: errors.New("stale fencing token"), wantDeferred: true},
 		{name: "no commits end the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, wantState: "Done", wantComment: "nothing to review"},
+		{name: "publication outage retries current publisher", republish: true, change: &runpkg.NativeChange{Error: "hub unavailable"}, states: landing, wantDeferred: true},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
 		{name: "a workflow without the review lane is handed off, never ended", change: waiting, states: hosted, wantDeferred: true},
 		{name: "a workflow without a terminal move is handed off", change: &runpkg.NativeChange{}, states: []connector.WorkflowState{{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked"}}, {Name: "Blocked"}}, wantDeferred: true},
@@ -168,6 +170,10 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			cfg.AutoPromote.HumanReview = test.humanReview
 			attempts := &recordingWorkAttemptStore{}
 			scheduling := &nativeCompletionScheduling{hubSchedulingSource: &hubSchedulingSource{}}
+			publisher := &nativeCompletionPublisher{nativeLandingJourneyExecution: nativeLandingJourneyExecution{}, change: accepted}
+			if test.republish {
+				scheduling.execution = publisher
+			}
 			scheduling.release = func() {
 				if test.wantState != "" && (len(tick.updates) != 1 || tick.updates[0].state != test.wantState) {
 					t.Fatalf("claim released before lane settlement: updates=%v, want=%s", tick.updates, test.wantState)
@@ -227,6 +233,18 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			_, deferred := state.deferredCompletions[issue.ID]
 			if deferred != test.wantDeferred || test.wantDeferred && !retry.CompletionDeferred {
 				t.Fatalf("deferred = %t (retry %#v), want %t", deferred, retry, test.wantDeferred)
+			}
+			if test.republish {
+				if len(tick.updates) != 0 || len(attempts.completions) != 0 {
+					t.Fatal("publication outage completed or changed issue")
+				}
+				if !orch.retryDeferredCompletions(t.Context(), &state, state.Retry[issue.ID].DueAt.Add(time.Second)) {
+					t.Fatal("publisher retry remained deferred")
+				}
+				if publisher.prepared != 1 || len(state.deferredCompletions) != 0 || len(tick.updates) != 1 || tick.updates[0].state != "Merging" || len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
+					t.Fatalf("retry did not publish same completed result: publisher=%d updates=%+v attempts=%+v", publisher.prepared, tick.updates, attempts.completions)
+				}
+				return
 			}
 			if continued := retried && !retry.CompletionDeferred; continued != test.wantContinue {
 				t.Fatalf("continuation scheduled = %t, want %t", continued, test.wantContinue)
@@ -430,4 +448,19 @@ func (s *nativeCompletionScheduling) ReleaseClaim(ctx context.Context, issueID, 
 		s.release()
 	}
 	return s.hubSchedulingSource.ReleaseClaim(ctx, issueID, reason)
+}
+
+type nativeCompletionPublisher struct {
+	nativeLandingJourneyExecution
+	change   *runpkg.NativeChange
+	prepared int
+}
+
+func (p *nativeCompletionPublisher) PrepareFinish(context.Context, string) error {
+	p.prepared++
+	return nil
+}
+
+func (p *nativeCompletionPublisher) NativeChange() *runpkg.NativeChange {
+	return p.change
 }
