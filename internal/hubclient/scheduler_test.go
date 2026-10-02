@@ -190,6 +190,9 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := scheduler.nativeProjects["native"]
+	if source == nil {
+		t.Fatal("native project connector is missing")
+	}
 	for _, step := range []struct {
 		name                  string
 		checkout, diagnostics bool
@@ -239,7 +242,7 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			t.Fatal(err)
 		}
 		wrongIdentity.Store(true)
-		if err := source.client.HeartbeatMachine(t.Context(), machine); !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "routing identity") {
+		if err := source.client.HeartbeatMachine(t.Context(), machine); err == nil || !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "routing identity") {
 			t.Fatalf("foreign routing identity accepted (diagnostics=%v): %v", supported, err)
 		}
 		wrongIdentity.Store(false)
