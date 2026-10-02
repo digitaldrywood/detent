@@ -524,9 +524,10 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 
 type artifactExecutionProbe struct {
 	testExecution
-	failure   error
-	finalized bool
-	evidence  []ValidationEvidence
+	failure         error
+	evidenceFailure error
+	finalized       bool
+	evidence        []ValidationEvidence
 }
 
 func (*artifactExecutionProbe) PrepareArtifacts(context.Context, string) error { return nil }
@@ -538,7 +539,7 @@ func (e *artifactExecutionProbe) FinalizeArtifacts(context.Context, string) erro
 
 func (e *artifactExecutionProbe) PublishValidationEvidence(_ context.Context, files []ValidationEvidence) error {
 	e.evidence = files
-	return nil
+	return e.evidenceFailure
 }
 
 func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
@@ -576,7 +577,10 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 				execution.failure = errors.New("upload unavailable")
 			}
 			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
-			err := r.afterExecution(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, backend, workspace.Info{Path: directory}, workspace.Issue{})
+			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, validationEvidenceSource: func(context.Context) (tracker.AttemptDiffRequest, bool) {
+				return tracker.AttemptDiffRequest{Files: []tracker.AttemptDiffFile{{Path: ".detent/validation/1/test.png", Status: "added"}}}, test.screenshot
+			}}
+			err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{})
 			if test.screenshot && (len(execution.evidence) != 1 || string(execution.evidence[0].Content) != "screenshot bytes" || execution.evidence[0].Name != "test.png") {
 				t.Fatalf("evidence=%+v", execution.evidence)
 			}
@@ -768,5 +772,75 @@ func TestAvailabilityStopFinalizesLocalSessionAfterPushFailure(t *testing.T) {
 	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
 	if !errors.Is(err, backend.publishErr) || sessionStore.finishCalls != 1 || sessionStore.usageCalls != 1 || execution.finish != "interrupted" {
 		t.Fatalf("error=%v session finishes=%d usage=%d outcome=%s", err, sessionStore.finishCalls, sessionStore.usageCalls, execution.finish)
+	}
+}
+
+func TestValidationEvidenceUsesCurrentAttemptDiff(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	validation := filepath.Join(directory, ".detent", "validation")
+	if err := os.MkdirAll(validation, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 87 {
+		if err := os.WriteFile(filepath.Join(validation, strconv.Itoa(i)+".png"), []byte("inherited screenshot "+strconv.Itoa(i)), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"init", "--initial-branch=main"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"config", "commit.gpgSign", "false"}, {"add", "."}, {"commit", "-m", "Inherited validation"}} {
+		if output, err := gitCommand(directory, args...); err != nil {
+			t.Fatalf("fixture Git: %v %s", err, output)
+		}
+	}
+	r := &Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+	source := r.attemptDiffSource(t.Context(), workspace.Info{Path: directory}, workspace.Issue{})
+	diff, available := source(t.Context())
+	if !available {
+		t.Fatal("initial attempt diff unavailable")
+	}
+	initial, err := validationScreenshots(directory, diff.Files)
+	if err != nil || len(initial) != 0 {
+		t.Fatalf("unchanged historical evidence=%d error=%v", len(initial), err)
+	}
+	for name, content := range map[string]string{"new.png": "current new screenshot", "0.png": "current modified screenshot"} {
+		if err := os.WriteFile(filepath.Join(validation, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Rename(filepath.Join(validation, "1.png"), filepath.Join(validation, "renamed.png")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(validation, "2.png")); err != nil {
+		t.Fatal(err)
+	}
+	backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{HeadSHA: diff.HeadSHA}}}}
+	execution := &artifactExecutionProbe{}
+	req := RunRequest{Execution: execution, validationEvidenceSource: source}
+	if err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(execution.evidence) != 3 {
+		t.Fatalf("current evidence=%+v", execution.evidence)
+	}
+	for _, file := range execution.evidence {
+		if file.Name != "0.png" && file.Name != "new.png" && file.Name != "renamed.png" {
+			t.Fatalf("historical or deleted evidence published: %s", file.Name)
+		}
+	}
+	execution.evidenceFailure = errors.New("attachment upload unavailable")
+	if err := r.afterExecution(t.Context(), req, backend, workspace.Info{Path: directory}, workspace.Issue{}); !errors.Is(err, execution.evidenceFailure) {
+		t.Fatalf("genuine publication failure lost: %v", err)
+	}
+	for i := range 11 {
+		if err := os.WriteFile(filepath.Join(validation, "current-"+strconv.Itoa(i)+".png"), []byte("fresh screenshot"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	diff, available = source(t.Context())
+	if !available {
+		t.Fatal("current attempt diff unavailable")
+	}
+	if evidence, err := validationScreenshots(directory, diff.Files); err == nil || len(evidence) != 0 {
+		t.Fatalf("current screenshot bound lost: evidence=%d error=%v", len(evidence), err)
 	}
 }

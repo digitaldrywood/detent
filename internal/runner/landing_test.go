@@ -522,3 +522,50 @@ func TestNativeLandingQuotaFinishesRun(t *testing.T) {
 		t.Fatalf("quota run = %#v, execution %#v, error %v", result, execution, err)
 	}
 }
+
+type validationLandingBackend struct {
+	landingBackend
+}
+
+func (b *validationLandingBackend) RecoveryState(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.RecoveryState, error) {
+	return b.Backend.(workspace.RecoveryStateProvider).RecoveryState(ctx, info, issue)
+}
+
+type validationLandingExecution struct {
+	landingRunExecution
+	validationCalls int
+}
+
+func (e *validationLandingExecution) PublishValidationEvidence(context.Context, []ValidationEvidence) error {
+	e.validationCalls++
+	return errors.New("historical evidence must not be republished")
+}
+
+func TestNativeLandingDoesNotRepublishValidationEvidence(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	validation := filepath.Join(directory, ".detent", "validation")
+	if err := os.MkdirAll(validation, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 11 {
+		if err := os.WriteFile(filepath.Join(validation, strconv.Itoa(i)+".png"), []byte("historical screenshot"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head, merge := strings.Repeat("c", 40), strings.Repeat("d", 40)
+	execution := &validationLandingExecution{landingRunExecution: landingRunExecution{landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash"}}}}
+	workspaceBackend := &fakeWorkspaceBackend{info: workspace.Info{Path: directory}, recoveryStates: []workspace.RecoveryState{{HeadSHA: head}}}
+	backend := &validationLandingBackend{landingBackend{Backend: workspaceBackend, result: workspace.LandResult{MergeSHA: merge, Method: "squash"}}}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "native", State: "Merging"}, Mode: RunModeMerge, Execution: execution})
+	if err != nil || result.NativeLanding == nil || !result.NativeLanding.Landed || result.NativeLanding.MergeSHA != merge || result.NativeLanding.HeadSHA != head || execution.finish != "succeeded" {
+		t.Fatalf("genuine landing was not completed: result=%#v finish=%q error=%v", result, execution.finish, err)
+	}
+	if len(execution.recorded) != 1 || execution.validationCalls != 0 || execution.checkpoint == nil || !workspaceBackend.afterRun {
+		t.Fatalf("landing epilogue: receipts=%d screenshot calls=%d checkpoint=%#v cleanup=%t", len(execution.recorded), execution.validationCalls, execution.checkpoint, workspaceBackend.afterRun)
+	}
+}

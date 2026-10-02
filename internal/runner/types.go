@@ -651,6 +651,7 @@ type RunRequest struct {
 	sessionTokenOffset        int64
 	retainCheckpoint          bool
 	finalizeNativeWork        bool
+	validationEvidenceSource  AttemptDiffSource
 }
 
 type ForgeRetry struct {
