@@ -241,7 +241,7 @@ func (s *Server) executeFleetRead(ctx context.Context, call operatortool.Call) (
 func (s *Server) fleetActionProposal(ctx context.Context, name string, raw json.RawMessage) (chatpkg.Action, error) {
 	// request_id has been stripped by the shared mutation adapter.
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil {
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return chatpkg.Action{}, operatortool.ErrInvalidArguments
 	}
 	fields["request_id"] = json.RawMessage(`"preview"`)
