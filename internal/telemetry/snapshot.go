@@ -1125,6 +1125,7 @@ type Issue struct {
 	PriorityName          string                 `json:"priority_name,omitempty"`
 	UnblockerCount        int                    `json:"unblocker_count,omitempty"`
 	State                 string                 `json:"state,omitempty"`
+	DispatchMode          string                 `json:"dispatch_mode,omitempty"`
 	AuthorID              string                 `json:"author_id,omitempty"`
 	Origin                string                 `json:"origin,omitempty"`
 	OriginActor           string                 `json:"origin_actor,omitempty"`

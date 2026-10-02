@@ -8,6 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -259,6 +260,7 @@ func TestBoardConfiguredAgentsCache(t *testing.T) {
 			i.Description = "```detent-agent\nschema: 1\neffort: high\n```"
 		}, false},
 		{"state", func(i *telemetry.Issue, _ *globalconfig.Config) { i.State = "Rework" }, false},
+		{"dispatch mode", func(i *telemetry.Issue, _ *globalconfig.Config) { i.DispatchMode = runner.RunModePlan }, false},
 		{"labels", func(i *telemetry.Issue, _ *globalconfig.Config) { i.Labels[0] = "changed" }, false},
 		{"fields", func(i *telemetry.Issue, _ *globalconfig.Config) { i.Fields["team"] = "changed" }, false},
 		{"model override", func(i *telemetry.Issue, _ *globalconfig.Config) { i.ModelOverride = "override" }, false},
@@ -363,8 +365,8 @@ func TestBoardStageAgents(t *testing.T) {
 	global.Global.Agents = cfg.Agents
 	s := &Server{kanbanWorkflow: cfg, globalConfigSource: func() globalconfig.Config { return global }}
 	for _, tt := range []struct {
-		name, state, liveRole, role, effort string
-		readyPR, retry, draft, gatePending  bool
+		name, state, liveRole, role, effort, dispatchMode string
+		readyPR, retry, draft, gatePending                bool
 	}{
 		{name: "never attempted", state: "Todo", role: "plan", effort: "low"},
 		{name: "running plan in active lane", state: "In Progress", liveRole: "plan", role: "plan", effort: "low"},
@@ -376,11 +378,15 @@ func TestBoardStageAgents(t *testing.T) {
 		{name: "running validation", state: "In Progress", liveRole: "validator", role: "validator", effort: "medium"},
 		{name: "retry planning", state: "In Progress", liveRole: "plan", retry: true, role: "plan", effort: "low"},
 		{name: "rework", state: "Rework", role: "rework", effort: "high"},
+		{name: "plan review rework", state: "Rework", dispatchMode: runner.RunModePlan, role: "plan", effort: "low"},
+		{name: "ordinary rework dispatch", state: "Rework", dispatchMode: runner.RunModeImplement, role: "rework", effort: "high"},
+		{name: "disabled planning dispatch", state: "Todo", dispatchMode: runner.RunModeImplement, role: "code", effort: "high"},
 		{name: "merge", state: "Merging", role: "merge", effort: "high"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := telemetry.Issue{ProjectID: "project", ID: "issue", State: tt.state, Description: "```detent-agent\nschema: 1\neffort: high\n```"}
 			issue.GatePending = tt.gatePending
+			issue.DispatchMode = tt.dispatchMode
 			if tt.readyPR {
 				issue.PullRequest = &telemetry.PullRequest{Draft: tt.draft}
 			}
@@ -394,7 +400,13 @@ func TestBoardStageAgents(t *testing.T) {
 					snapshot.Running = []telemetry.Running{{Issue: live}}
 				}
 			}
-			_, stages := s.boardAgentIdentitiesForProject(snapshot, "")
+			identities, stages := s.boardAgentIdentitiesForProject(snapshot, "")
+			if tt.dispatchMode != "" {
+				identity := identities["project:project:id:issue"]
+				if identity.Role != tt.role || identity.ReasoningEffort.Value != tt.effort {
+					t.Fatalf("card preview = %+v, want %s/%s", identity, tt.role, tt.effort)
+				}
+			}
 			got := stages["project:project:id:issue"]
 			model := "gpt-6.1-sol"
 			if tt.role == "plan" || tt.role == "validator" {

@@ -1023,6 +1023,7 @@ func (o *Orchestrator) finishTick(state *State) {
 
 func (o *Orchestrator) startCompletion(state *State) {
 	cloned := o.observableDispatchState(state.clone())
+	o.snapshotDispatchModes(&cloned)
 	for id, running := range cloned.Running {
 		running.progress = nil
 		cloned.Running[id] = running
@@ -1270,6 +1271,7 @@ func (o *Orchestrator) publishState(state *State) {
 		return
 	}
 	cloned := state.clone()
+	o.snapshotDispatchModes(&cloned)
 	o.latestRuntimeState.Store(&runtimeState{
 		WorkAttempts: cloned.WorkAttempts,
 		Running:      cloned.Running,

@@ -131,12 +131,18 @@ func TestBoardCardConfiguredIdentity(t *testing.T) {
 }
 
 func TestBoardCardRetainsAttemptModel(t *testing.T) {
-	for _, source := range []string{"queue", "blocked"} {
+	for _, source := range []string{"queue", "blocked", "plan review rework"} {
 		for _, retained := range []string{"tracker", "attempt", "unknown attempt"} {
 			t.Run(source+"/"+retained, func(t *testing.T) {
 				issue := telemetry.Issue{ProjectID: "project", ID: "issue", Identifier: "#1", State: "Todo"}
+				role := "code"
+				if source == "plan review rework" {
+					issue.State = "Rework"
+					issue.DispatchMode = "plan"
+					role = "plan"
+				}
 				actual := agentidentity.RuntimeUpdate("actual-model", "", "high", "", time.Time{})
-				data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{"project:project:id:issue": agentidentity.Configured("codex", "codex", "", "code", "new-default", "", "low", "", time.Time{})}}
+				data := DashboardData{ConfiguredAgents: map[string]agentidentity.Identity{"project:project:id:issue": agentidentity.Configured("codex", "codex", "", role, "new-default", "", "low", "", time.Time{})}}
 				want := "actual-model"
 				switch retained {
 				case "tracker":
@@ -155,7 +161,7 @@ func TestBoardCardRetainsAttemptModel(t *testing.T) {
 						{AttemptID: 1, ProjectID: "project", IssueID: "issue", RuntimeIdentity: agentidentity.RuntimeUpdate("old-model", "", "", "", time.Time{})},
 					}
 				}
-				if source == "queue" {
+				if source != "blocked" {
 					data.Snapshot.Queue = []telemetry.Queued{{Issue: issue}}
 				} else {
 					data.Snapshot.Blocked = []telemetry.Blocked{{Issue: issue}}
