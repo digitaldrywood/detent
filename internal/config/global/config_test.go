@@ -520,6 +520,53 @@ func TestUpdateUsesSixHourDefaultInterval(t *testing.T) {
 	}
 }
 
+func TestHubRunnerUpdateDefaultsAndOptOut(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		hub       bool
+		update    string
+		wantCheck bool
+		wantApply bool
+	}{
+		{name: "standalone disabled"},
+		{name: "Hub defaults", hub: true, wantCheck: true, wantApply: true},
+		{name: "Hub interval only", hub: true, update: "update:\n  check_interval_hours: 2\n", wantCheck: true, wantApply: true},
+		{name: "Hub check opt out", hub: true, update: "update:\n  auto_check_enabled: false\n", wantApply: true},
+		{name: "Hub apply opt out", hub: true, update: "update:\n  auto_apply_enabled: false\n", wantCheck: true},
+		{name: "Hub both opt out", hub: true, update: "update:\n  auto_check_enabled: false\n  auto_apply_enabled: false\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			paths := createProjectFiles(t)
+			configPath := filepath.Join(paths.root, "global.yaml")
+			client := ""
+			if test.hub {
+				client = "client:\n  hub_url: https://hub.example.test\n"
+			}
+			writeFile(t, configPath, "apiVersion: detent/v1\nkind: GlobalConfig\n"+client+test.update+"global:\n  max_concurrent_agents: 4\n  scheduling: weighted\nprojects:\n  - id: detent\n    workflow: "+paths.workflow+"\n    workdir: "+paths.workdir+"\n    weight: 1\n    priority: 0\n")
+			cfg, err := Read(configPath, WithHome(paths.home))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Update.AutoCheckEnabled != test.wantCheck || cfg.Update.AutoApplyEnabled != test.wantApply {
+				t.Fatalf("Update = %#v, want check %t, apply %t", cfg.Update, test.wantCheck, test.wantApply)
+			}
+			if err := Write(configPath, cfg, WithHome(paths.home)); err != nil {
+				t.Fatal(err)
+			}
+			reloaded, err := Read(configPath, WithHome(paths.home))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reloaded.Update.AutoCheckEnabled != test.wantCheck || reloaded.Update.AutoApplyEnabled != test.wantApply {
+				t.Fatalf("reloaded Update = %#v, want check %t, apply %t", reloaded.Update, test.wantCheck, test.wantApply)
+			}
+		})
+	}
+}
+
 func TestReadAllowsRefBackedRelativeWorkflow(t *testing.T) {
 	t.Parallel()
 

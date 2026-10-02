@@ -499,8 +499,9 @@ native machine. Native tokens cannot read legacy global lists through v1.
 
 ## Native collaboration protocol
 
-`GET /api/v2/capabilities` reports server identity, supported protocol majors,
-event schemas, required native features, request size and page limits. Native
+`GET /api/v2/capabilities` reports server identity, the Hub's running `version`,
+supported protocol majors, event schemas, required native features, request size
+and page limits. Native
 clients negotiate major 2 and schema 1. A native claim supplies `protocol_major: 2`
 and `capabilities: ["native_issues", "scoped_collaboration"]`. Incompatible
 negotiation fails without switching tracker or scheduler.

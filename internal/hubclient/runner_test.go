@@ -30,7 +30,7 @@ import (
 func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	const adminToken = "runner-client-test-admin"
 	const hubURL = "https://runner-hub.example.test"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken)})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken), Version: "v1.2.4"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +122,9 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	client, err := New(Config{URL: hubURL, IdentityFile: path, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if version, err := client.Version(t.Context()); err != nil || version != "v1.2.4" {
+		t.Fatalf("enrolled runner Hub version = %q, %v, want v1.2.4", version, err)
 	}
 	native, err := client.Native(organization, project.ID)
 	if err != nil {

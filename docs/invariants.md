@@ -2476,6 +2476,15 @@ Update and restart draining (#2745) reuses the runtime dispatch pause and sessio
 limits. Manual runtime update requests use the same drain reservation as automatic
 updates; SIGTERM shutdown uses that duration ceiling, including model-selection
 levels. Managed restarts preserve child processes while the orchestrator drains.
+Hub runners (#184) default to automatic updates through that same idle/drain
+path, retaining explicit check/apply opt-outs. Checks and applies resolve the
+Hub's running version through authenticated native capabilities and fetch that
+exact published release; an older Hub never downgrades a runner, and unavailable
+or invalid Hub targets never fall back to GitHub latest. Candidate signatures,
+provenance and startup crash-loop rollback remain required.
+`TestServiceChoosesHubUpdateTarget`, `TestHubRunnerUpdateDefaultsAndOptOut` and
+`TestRunnerClientEnrollmentSchedulingAndRotationRecovery` cover target selection,
+persisted opt-outs and enrolled version reads.
 The shutdown drain uses the existing drain-budget timer rather than the five-second
 cleanup context (#2795); shorter parent deadlines emit an error with both budgets.
 `TestShutdownDrainBudget` covers delayed drain acknowledgment, and the live-session
