@@ -1840,6 +1840,14 @@ cleanliness alone never clears the merge refusal or establishes a landing.
 `TestNativeLandingRunCompletion` cover these consolidated authorities under
 INV-1 and INV-3 without a new reason, poller, configuration or recovery loop.
 
+An exact typed atomic GitHub base-advance refusal (#221) belongs to the existing
+item-local `LandRefusalBaseMoved` continuation, not the forge outage owner. The
+original HTTP status and base-out-of-date cause remain inspectable; the same
+immutable reviewed head retries without a coding turn or five-minute provider
+wait. Real outages, quota, protection, malformed or unrelated 405 refusals retain
+their existing owners. `TestLocalGitLandChangeViaGitHub` and the existing native
+landing completion fixture enforce INV-1 and INV-3 without new mechanisms.
+
 Current Git base verification (#164) removes the equality pin to GitHub's
 projected PR base SHA. A stale base SHA alone cannot veto conflict evidence:
 the freshly fetched base must match the current published base in the same

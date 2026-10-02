@@ -75,8 +75,8 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "proven conflict clears only old synthetic outage", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "was not landed", wantMoves: 1, priorOutage: "projection"},
 		{name: "responsive clean projection preserves genuine server outage", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: forgeavailability.ClassServer},
 		{name: "responsive clean projection preserves genuine transport outage", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: forgeavailability.ClassTransport},
-		{name: "base race retains reviewed landing without human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, wantInfrastructure: true},
-		{name: "base race retains reviewed landing with human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
+		{name: "base race retains reviewed landing without human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
+		{name: "base race retains reviewed landing with human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, wantLandingWait: true},
 		{name: "genuine server outage retains native version and host backoff", mergeMessage: "Service Unavailable", mergeStatus: http.StatusServiceUnavailable, landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
 		{name: "strict head protection returns to review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
 		{name: "strict head protection blocks without human review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "Head branch is out of date", wantMoves: 1},
@@ -131,8 +131,12 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 					if test.wantLandingWait {
 						wantRefusal = workspace.LandRefusalBaseMoved
 						base := nativeLandingGit(t, journey.remote, "rev-parse", "refs/heads/main")
-						if base == journey.base || !strings.Contains(result.NativeLanding.Refusal, base) || !strings.Contains(result.NativeLanding.Refusal, landingHead) {
-							t.Fatalf("landing wait lost current source verification: %#v", result.NativeLanding)
+						recordedBase := base
+						if strings.HasPrefix(test.mergeMessage, "Base branch was modified") {
+							recordedBase = journey.base
+						}
+						if base == journey.base || !strings.Contains(result.NativeLanding.Refusal, recordedBase) || !strings.Contains(result.NativeLanding.Refusal, landingHead) {
+							t.Fatalf("landing wait lost source and refusal evidence: %#v", result.NativeLanding)
 						}
 					}
 					if test.sourceConflict {
