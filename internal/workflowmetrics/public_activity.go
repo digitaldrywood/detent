@@ -5,9 +5,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"slices"
+	"time"
 )
 
 func PublicActivityProfile(p ActivityProfile) ActivityProfile {
+	detailFrom := p.StartedAt
+	if p.Summary != nil {
+		summary := *p.Summary
+		detailFrom = summary.DetailFrom
+		summary.Breakdown.ByKind = publicActivityKinds(summary.Breakdown.ByKind)
+		p.Summary = &summary
+	}
+	unfinishedSummary := slices.Contains(p.CoverageNotes, "summarized_intervals_exclude_unfinished_spans")
 	p.Instance = ""
 	p.AttemptRef = publicActivityHash(p.AttemptRef)
 	p.ProviderThreadRef = publicActivityHash(p.ProviderThreadRef)
@@ -16,6 +25,10 @@ func PublicActivityProfile(p ActivityProfile) ActivityProfile {
 	p.Status = publicActivityLabel(p.Status, "running", "completed", "failed", "cancelled", "ended_without_terminal_event")
 	p.Coverage = "partial"
 	p.CoverageNotes = []string{"native_actions_have_no_individual_timing_or_outcomes", "provider_instruction_origin_unavailable", "read_requests_are_not_causal_proof", "instruction_versions_are_recorder_snapshots_not_provider_read_bytes", "instruction_snapshots_limited_to_workspace_regular_files_64_reads_64_sources_256KiB_each", "native_actions_limited_to_32_and_8KiB_per_event_4_inferred_candidates_per_action", "native_projection_bounded_to_128KiB"}
+	p.CoverageNotes = append(p.CoverageNotes, "repeat_counts_limited_to_bounded_fingerprints", "historical_gap_intervals_not_retained_in_timing_summary")
+	if unfinishedSummary {
+		p.CoverageNotes = append(p.CoverageNotes, "summarized_intervals_exclude_unfinished_spans")
+	}
 	p.Sources = publicInstructionRefs(p.Sources)
 	p.Spans = slices.Clone(p.Spans)
 	for i := range p.Spans {
@@ -48,11 +61,20 @@ func PublicActivityProfile(p ActivityProfile) ActivityProfile {
 			a.Sources = publicInstructionRefs(a.Sources)
 		}
 	}
-	spans, dropped := p.Spans, p.Dropped
+	end := p.AsOf
+	if !p.FinishedAt.IsZero() {
+		end = p.FinishedAt
+	}
+	p.SummarizeThrough(end)
+	if p.Summary != nil {
+		p.Summary.DetailFrom = detailFrom
+	}
+	spans, omitted := p.Spans, p.ProjectionOmitted
 	low, high := 0, len(spans)+1
 	for low+1 < high {
 		keep := low + (high-low)/2
-		p.Spans, p.Dropped = spans[:keep], dropped+uint64(len(spans)-keep)
+		p.Spans, p.ProjectionOmitted = spans[len(spans)-keep:], omitted+uint64(len(spans)-keep)
+		publicActivityDetailFrom(&p, detailFrom)
 		raw, err := json.Marshal(p)
 		if err != nil || len(raw) > 128*1024 {
 			high = keep
@@ -60,8 +82,32 @@ func PublicActivityProfile(p ActivityProfile) ActivityProfile {
 			low = keep
 		}
 	}
-	p.Spans, p.Dropped = spans[:low], dropped+uint64(len(spans)-low)
+	p.Spans, p.ProjectionOmitted = spans[len(spans)-low:], omitted+uint64(len(spans)-low)
+	publicActivityDetailFrom(&p, detailFrom)
 	return p
+}
+
+func publicActivityDetailFrom(p *ActivityProfile, from time.Time) {
+	if p.Summary == nil {
+		return
+	}
+	if p.ProjectionOmitted > 0 && len(p.Spans) > 0 && p.Spans[0].StartedAt.After(from) {
+		from = p.Spans[0].StartedAt
+	}
+	if len(p.Spans) == 0 {
+		from = p.Summary.Through
+	}
+	p.Summary.DetailFrom = from
+}
+
+func publicActivityKinds(kinds map[string]float64) map[string]float64 {
+	result := make(map[string]float64)
+	for _, kind := range []string{"context_read", "implementation", "waiting", "local_validation", "rebase", "merge", "review", "tool_execution", "unclassified", "unknown", "concurrent", "unobserved"} {
+		if seconds, ok := kinds[kind]; ok {
+			result[kind] = seconds
+		}
+	}
+	return result
 }
 
 func publicInstructionRefs(refs []InstructionRef) []InstructionRef {

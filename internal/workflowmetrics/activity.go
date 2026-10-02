@@ -81,8 +81,17 @@ type ActivityProfile struct {
 	CoverageNotes      []string         `json:"coverage_notes,omitempty"`
 	Dropped            uint64           `json:"dropped_events"`
 	Unpaired           uint64           `json:"unpaired_events"`
+	DetailOmitted      uint64           `json:"detail_omitted,omitempty"`
+	ProjectionOmitted  uint64           `json:"projection_omitted,omitempty"`
+	Summary            *ActivitySummary `json:"timing_summary,omitempty"`
 	Sources            []InstructionRef `json:"instructions"`
 	Spans              []ActivitySpan   `json:"spans"`
+}
+
+type ActivitySummary struct {
+	Through    time.Time         `json:"through"`
+	DetailFrom time.Time         `json:"detail_from"`
+	Breakdown  ActivityBreakdown `json:"breakdown"`
 }
 
 type ActivityBreakdown struct {
@@ -139,7 +148,20 @@ func (p ActivityProfile) Breakdown() ActivityBreakdown {
 	if !p.FinishedAt.IsZero() {
 		end = p.FinishedAt
 	}
+	start := p.StartedAt
+	if p.Summary != nil && p.Summary.Through.After(start) {
+		start = p.Summary.Through
+	}
 	b := ActivityBreakdown{ElapsedSeconds: max(0, end.Sub(p.StartedAt).Seconds()), ByKind: make(map[string]float64)}
+	if p.Summary != nil {
+		b.ObservedSeconds = p.Summary.Breakdown.ObservedSeconds
+		b.ConcurrentSeconds = p.Summary.Breakdown.ConcurrentSeconds
+		for kind, seconds := range p.Summary.Breakdown.ByKind {
+			if kind != "unobserved" {
+				b.ByKind[kind] = seconds
+			}
+		}
+	}
 	type boundary struct {
 		at    time.Time
 		span  ActivitySpan
@@ -147,26 +169,26 @@ func (p ActivityProfile) Breakdown() ActivityBreakdown {
 	}
 	points := make([]boundary, 0, len(p.Spans)*2)
 	for _, span := range p.Spans {
-		start := span.StartedAt
+		spanStart := span.StartedAt
 		finish := span.FinishedAt
 		// An unmatched start does not prove the tool ran until the checkpoint.
 		if finish.IsZero() || span.Outcome == "unobserved" {
 			continue
 		}
-		if start.Before(p.StartedAt) {
-			start = p.StartedAt
+		if spanStart.Before(start) {
+			spanStart = start
 		}
 		if finish.After(end) {
 			finish = end
 		}
-		if !finish.After(start) {
+		if !finish.After(spanStart) {
 			continue
 		}
-		points = append(points, boundary{start, span, 1}, boundary{finish, span, -1})
+		points = append(points, boundary{spanStart, span, 1}, boundary{finish, span, -1})
 	}
 	sort.Slice(points, func(i, j int) bool { return points[i].at.Before(points[j].at) })
 	active := make(map[string]ActivitySpan)
-	previous := p.StartedAt
+	previous := start
 	for _, point := range points {
 		seconds := max(0, point.at.Sub(previous).Seconds())
 		parents := make(map[string]bool)
@@ -200,6 +222,15 @@ func (p ActivityProfile) Breakdown() ActivityBreakdown {
 	return b
 }
 
+func (p *ActivityProfile) SummarizeThrough(through time.Time) {
+	if through.Before(p.StartedAt) || p.Summary != nil && !through.After(p.Summary.Through) {
+		return
+	}
+	prefix := *p
+	prefix.AsOf, prefix.FinishedAt = through, time.Time{}
+	p.Summary = &ActivitySummary{Through: through, DetailFrom: through, Breakdown: prefix.Breakdown()}
+}
+
 // Gaps gives the complement of confirmed tool intervals. Pending tools do not
 // manufacture observed duration; their starts and pending age remain in spans.
 func (p ActivityProfile) Gaps() []ActivityGap {
@@ -207,14 +238,18 @@ func (p ActivityProfile) Gaps() []ActivityGap {
 	if !p.FinishedAt.IsZero() {
 		end = p.FinishedAt
 	}
+	startAt := p.StartedAt
+	if p.Summary != nil && p.Summary.DetailFrom.After(startAt) {
+		startAt = p.Summary.DetailFrom
+	}
 	intervals := make([]ActivityGap, 0, len(p.Spans))
 	for _, span := range p.Spans {
 		if span.FinishedAt.IsZero() || span.Outcome == "unobserved" {
 			continue
 		}
 		start, finish := span.StartedAt, span.FinishedAt
-		if start.Before(p.StartedAt) {
-			start = p.StartedAt
+		if start.Before(startAt) {
+			start = startAt
 		}
 		if finish.After(end) {
 			finish = end
@@ -225,7 +260,7 @@ func (p ActivityProfile) Gaps() []ActivityGap {
 	}
 	sort.Slice(intervals, func(i, j int) bool { return intervals[i].StartedAt.Before(intervals[j].StartedAt) })
 	gaps := make([]ActivityGap, 0)
-	cursor := p.StartedAt
+	cursor := startAt
 	for _, interval := range intervals {
 		if interval.StartedAt.After(cursor) {
 			gaps = append(gaps, ActivityGap{cursor, interval.StartedAt})

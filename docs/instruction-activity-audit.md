@@ -56,7 +56,10 @@ curl --get http://127.0.0.1:4000/api/v1/workflow/timeline \
   including `unobserved`, equals wall elapsed rather than summed command time.
 - Coverage is always explicitly `partial`: provider events cannot establish all
   agent activity or instruction causality. Drops, unmatched events, unfinished
-  tools, unknown intervals and stale tails remain visible. Historical sessions
+  tools, unknown intervals and stale tails remain visible. `dropped_events` counts
+  received-event loss, `detail_omitted` counts summarized recorder detail, and
+  `projection_omitted` counts detail omitted by the bounded public projection.
+  These are separate counts, not interchangeable capture failures. Historical sessions
   without profiles remain ordinary phase events, not fabricated empty audits.
 
 ## Persistence and policy
@@ -64,7 +67,16 @@ curl --get http://127.0.0.1:4000/api/v1/workflow/timeline \
 A nonblocking bounded queue receives only existing lifecycle observations and
 fixed validation markers. Its consumer drains batches (64-event wake threshold,
 256-event queue) and checkpoints one phase-ledger row every five seconds, plus
-an initial and final checkpoint. Profiles retain at most 1,024 spans. Tool input
+an initial and final checkpoint. Profiles retain at most 1,024 recent spans.
+Closed intervals are folded into a fixed-category timing summary before older
+detail is removed, so beginning, middle and ending activity remain in whole-attempt
+wall-time totals. The public projection retains recent detail within 128 KiB;
+summary-only runtime reads retain those totals without loading tool spans.
+Earlier gap locations are not retained after compaction. Unfinished intervals
+crossing a compaction boundary remain explicitly partial: later completion does
+not retroactively establish their earlier timing. Existing discarded historical
+profiles cannot acquire missing evidence. Repeat fingerprints remain bounded;
+a zero repeat count means the fingerprint could not be retained. Tool input
 classification is bounded to 8 KiB and instruction files to 256 KiB each.
 Native evidence retains at most 32 actions and 8 KiB including cwd per event,
 64 snapshot requests and 64 instruction source records per profile, and four
