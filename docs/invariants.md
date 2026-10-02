@@ -34,6 +34,18 @@ account consumer. The runtime projection omits private bodies, raw commands,
 instruction contents, paths and credentials. Focused owner, grant, stale,
 pagination, redaction and refusal regressions cover these boundaries.
 
+Runtime activity checkpoints update the existing mutable attempt observation;
+they do not append cumulative profiles to immutable history. Idle and unchanged
+observations perform no checkpoint writes. Genuine phase/identity/landing changes,
+lifecycle checkpoints and completion retain timestamped history, including the
+final activity profile. Agent completion joins the final profile checkpoint before
+finishing the native attempt. Lease renewal does not manufacture activity freshness.
+Candidate previews remain reads. Actual scheduling attempts retain changed decisions
+through the existing history owner, deduplicated by runner, source, revision,
+Change version/head and decision evidence; genuine fenced claims remain distinct.
+This consolidates the observation producers without a new telemetry owner or
+mechanism (INV-3).
+
 Scheduled diagnostics for the migrated Detent repository call the existing
 Cloud `file_issue`, revisioned `edit_item` priority and `add_comment` application
 owners using the selected project and current scoped API/MCP connection. New diagnostics enter only a

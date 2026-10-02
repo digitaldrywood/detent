@@ -113,6 +113,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 				return nil, nativeInvalid("Landing evidence requires the recorded Change landing authority")
 			}
 		}
+		publish := true
 		if request.Data.Sequence > 0 {
 			if request.Data.MachineID != "" && request.Data.MachineID != lease.session.Machine.ID || request.Data.SessionID != "" && request.Data.SessionID != lease.session.SessionID || request.Data.RunnerID != "" && request.Data.RunnerID != scope.credential.Runner.RunnerID {
 				return nil, nativeInvalid("Execution identity must match the authenticated lease owner")
@@ -120,10 +121,11 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 			request.Data.MachineID = lease.session.Machine.ID
 			request.Data.SessionID = lease.session.SessionID
 			request.Data.RunnerID = scope.credential.Runner.RunnerID
-			appended, err := recordNativeAttempt(ctx, tx, scope, issue.WorkItemID, request, now)
+			appended, history, err := recordNativeAttempt(ctx, tx, scope, issue.WorkItemID, request, now)
 			if err != nil {
 				return nil, err
 			}
+			publish = history
 			if !appended {
 				return struct {
 					Accepted bool `json:"accepted"`
@@ -148,8 +150,10 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		if err := recordAttemptUsage(ctx, tx, scope, request, s.usagePrices(), now); err != nil {
 			return nil, err
 		}
-		if err := appendNativeHistory(ctx, tx, scope, string(issue.WorkItemID), request.Type, tracker.CollaborationData{Run: &request.Data}, now); err != nil {
-			return nil, err
+		if publish {
+			if err := appendNativeHistory(ctx, tx, scope, string(issue.WorkItemID), request.Type, tracker.CollaborationData{Run: &request.Data}, now); err != nil {
+				return nil, err
+			}
 		}
 		return struct {
 			Accepted bool `json:"accepted"`

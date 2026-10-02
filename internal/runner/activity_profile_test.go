@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -355,6 +356,56 @@ func TestActivityRecorderDoesNotWaitForPersistence(t *testing.T) {
 	if p.Dropped != 45 || p.Unpaired != 255 || p.Status != "ended_without_terminal_event" || p.Spans[0].Outcome != "unobserved" || p.AttemptID != 3390 || p.SessionID != 42 {
 		t.Fatalf("profile=%+v", p)
 	}
+}
+
+func TestActivityRecorderSkipsUnchangedCheckpoints(t *testing.T) {
+	workspacePath := t.TempDir()
+	synctest.Test(t, func(t *testing.T) {
+		probe := &activityCheckpointProbe{started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 8)}
+		close(probe.release)
+		execution := &landingRunExecution{}
+		r := &Runner{store: probe, projectID: "test", now: time.Now, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		recorder := r.startActivityProfile(t.Context(), RunRequest{Issue: connector.Issue{ID: "1"}, WorkAttemptID: 42, Generation: 2, Execution: execution}, 43, workspacePath, config.Workflow{Prompt: "Run go test ./foo"}, "implementation")
+		synctest.Wait()
+		for range 720 {
+			time.Sleep(5 * time.Second)
+			synctest.Wait()
+		}
+		if len(probe.profiles) != 1 || len(execution.observations) != 1 {
+			t.Fatalf("idle writes: local=%d native=%d", len(probe.profiles), len(execution.observations))
+		}
+		for _, test := range []struct {
+			name   string
+			update AgentUpdate
+			writes int
+		}{
+			{"tool started", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: "tool", Tool: "Bash", Command: "go test ./foo"}, 2},
+			{"unchanged turn", AgentUpdate{Type: AgentUpdateTurnStarted}, 2},
+			{"tool completed", AgentUpdate{Type: AgentUpdateToolCompleted, ItemID: "tool", Status: "completed"}, 3},
+			{"dropped input", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: strings.Repeat("x", 513)}, 4},
+			{"terminal turn", AgentUpdate{Type: AgentUpdateTurnCompleted, Status: "completed"}, 5},
+		} {
+			recorder.observe(test.update, time.Now(), "", time.Time{})
+			time.Sleep(5 * time.Second)
+			synctest.Wait()
+			if len(probe.profiles) != test.writes || len(execution.observations) != test.writes {
+				t.Fatalf("%s writes: local=%d native=%d, want %d", test.name, len(probe.profiles), len(execution.observations), test.writes)
+			}
+		}
+		recorder.finish()
+		if len(probe.profiles) != 6 || len(execution.observations) != 6 {
+			t.Fatalf("final writes: local=%d native=%d", len(probe.profiles), len(execution.observations))
+		}
+		var final workflowmetrics.ActivityProfile
+		for len(probe.profiles) > 0 {
+			if err := json.Unmarshal([]byte((<-probe.profiles).MetadataJSON), &final); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if final.Status != "completed" || final.FinishedAt.IsZero() || final.Dropped != 1 || len(final.Spans) != 1 || final.Spans[0].Outcome != "completed" || final.Spans[0].FinishedAt.IsZero() || final.Spans[0].StartedAt.IsZero() {
+			t.Fatalf("final evidence=%+v", final)
+		}
+	})
 }
 
 // Catches checkpoints that lose the active timeline, completed categories or

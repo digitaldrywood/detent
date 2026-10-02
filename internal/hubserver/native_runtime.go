@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -342,7 +343,39 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 	}
 	decision.At = now
 	decision.RunnerID = scope.credential.Runner.RunnerID
-	return appendNativeHistory(ctx, tx, *scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &decision}, now)
+	data := tracker.CollaborationData{Decision: &decision}
+	change, found, err := readLatestNativeChangeRequest(ctx, tx, *scope, item)
+	if err != nil {
+		return err
+	}
+	if found {
+		version, _, err := readNativeChangeVersion(ctx, tx, change)
+		if err != nil {
+			return err
+		}
+		data.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: change.CurrentVersion, HeadSHA: version.HeadSHA}
+	}
+	if decision.Outcome != "claimed" {
+		var raw string
+		err := tx.QueryRowContext(ctx, "SELECT data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision' AND json_extract(data_json, '$.decision.source')=? AND coalesce(json_extract(data_json, '$.decision.runner_id'), '')=? ORDER BY sequence DESC LIMIT 1", scope.organization, scope.project, item, decision.Source, decision.RunnerID).Scan(&raw)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			var previous tracker.CollaborationData
+			if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+				return err
+			}
+			if previous.Decision != nil {
+				before, after := *previous.Decision, decision
+				before.At, after.At = time.Time{}, time.Time{}
+				if before == after && reflect.DeepEqual(previous.Change, data.Change) {
+					return nil
+				}
+			}
+		}
+	}
+	return appendNativeHistory(ctx, tx, *scope, item, "scheduler.decision", data, now)
 }
 
 func validNativeRESTCredential(identity string) bool {
