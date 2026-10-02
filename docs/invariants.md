@@ -1329,6 +1329,20 @@ preserving Code. `TestRetentionCompletedWorkspace` covers active and expired
 landing ownership. This adds no recovery loop, lease, reason code, configuration
 or policy bypass; project-specific validation and forge protections remain intact.
 
+Hub binary deploy continuity (native #187) retains the existing lease TTL, renewal,
+expiry and fencing authorities. Shutdown closes the existing conversation broker
+before HTTP drain; hosted activity streams use readiness on their existing tick.
+Migration foreign-key verification moves into the final version-write transaction,
+removing the repeated full-database scan from unchanged-schema startup without
+stamping a failed migration. Offline verification retains its full checks.
+`TestHubMigrationVerificationScope`, `TestConversationWorkerControlsLongPoll` and
+`TestNativeOrderedAttemptLifecycle` cover validation rollback, no-op startup,
+poll shutdown and same-attempt renewal/completion across reopen.
+`TestHostedSecuritySSERevocation` covers the activity stream's shutdown exit.
+Production downtime and active-run acceptance remain with the deployment/release owner under
+the [Hub upgrade procedure](hub-self-hosting.md#upgrade-interruption-and-compatibility).
+No restart grace period, lease state, outbox or recovery owner is added.
+
 Worker cleanup (#169) removes Darwin polling of unreadable unknown same-user
 process environments. A single inspection cannot establish ownership from an
 error; unknown candidates are never signaled. Existing authenticated process

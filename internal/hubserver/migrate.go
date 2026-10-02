@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 
 	"github.com/pressly/goose/v3"
+	goosedb "github.com/pressly/goose/v3/database"
 )
 
 const (
@@ -24,18 +26,26 @@ func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64,
 	if err != nil {
 		return 0, fmt.Errorf("open hub migrations: %w", err)
 	}
+	store, err := goosedb.NewStore(goosedb.DialectSQLite3, hubSchemaTable)
+	if err != nil {
+		return 0, fmt.Errorf("create hub migration store: %w", err)
+	}
 	provider, err := goose.NewProvider(
-		goose.DialectSQLite3,
+		goose.DialectCustom,
 		db,
 		migrations,
 		goose.WithDisableGlobalRegistry(true),
-		goose.WithTableName(hubSchemaTable),
+		goose.WithStore(hubMigrationStore{Store: store}),
 		goose.WithSlog(logger),
 		goose.WithGoMigrations(hubGoMigrations()...),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create hub migration provider: %w", err)
 	}
+	return applyHubMigrations(ctx, db, provider)
+}
+
+func applyHubMigrations(ctx context.Context, db *sql.DB, provider *goose.Provider) (version int64, resultErr error) {
 	current, target, err := provider.GetVersions(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("read hub schema versions: %w", err)
@@ -46,21 +56,23 @@ func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64,
 	if current > target {
 		return 0, fmt.Errorf("%w: database=%d supported=%d", ErrUnsupportedSchema, current, target)
 	}
+	pending, err := provider.HasPending(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read pending hub migrations: %w", err)
+	}
+	if !pending {
+		return current, nil
+	}
 	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
 		return 0, fmt.Errorf("prepare hub schema rebuild: %w", err)
 	}
+	defer func() {
+		if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("restore hub foreign key enforcement: %w", err))
+		}
+	}()
 	if _, err := provider.Up(ctx); err != nil {
 		return 0, fmt.Errorf("apply hub migrations: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		return 0, fmt.Errorf("restore hub foreign key enforcement: %w", err)
-	}
-	var violations int
-	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_foreign_key_check").Scan(&violations); err != nil {
-		return 0, fmt.Errorf("validate hub foreign keys: %w", err)
-	}
-	if violations != 0 {
-		return 0, fmt.Errorf("hub migration has %d foreign key violations", violations)
 	}
 	current, target, err = provider.GetVersions(ctx)
 	if err != nil {
@@ -70,6 +82,23 @@ func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64,
 		return 0, fmt.Errorf("hub schema migration stopped at %d, want %d", current, target)
 	}
 	return current, nil
+}
+
+type hubMigrationStore struct {
+	goosedb.Store
+}
+
+func (s hubMigrationStore) Insert(ctx context.Context, db goosedb.DBTxConn, request goosedb.InsertRequest) error {
+	if request.Version == supportedSchemaVersion {
+		var violations int
+		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_foreign_key_check").Scan(&violations); err != nil {
+			return fmt.Errorf("validate hub foreign keys: %w", err)
+		}
+		if violations != 0 {
+			return fmt.Errorf("hub migration has %d foreign key violations", violations)
+		}
+	}
+	return s.Store.Insert(ctx, db, request)
 }
 
 func currentSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {

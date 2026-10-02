@@ -794,13 +794,44 @@ func TestHostedSecuritySSEAudit(t *testing.T) {
 	}
 }
 
+type hostedEventRecorder struct {
+	*httptest.ResponseRecorder
+	flush func()
+}
+
+func (r hostedEventRecorder) Flush() {
+	r.ResponseRecorder.Flush()
+	r.flush()
+}
+
 func TestHostedSecuritySSERevocation(t *testing.T) {
 	t.Parallel()
-	for _, revocation := range []string{"provider session", "membership", "project grant"} {
+	for _, revocation := range []string{"provider session", "membership", "project grant", "shutdown"} {
 		t.Run(revocation, func(t *testing.T) {
 			t.Parallel()
 			f := newHostedSecurityFixture(t)
 			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
+			if revocation == "shutdown" {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/projects/"+string(f.project)+"/events", nil)
+				request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
+				var shutdownErr error
+				frames := 0
+				response := hostedEventRecorder{ResponseRecorder: httptest.NewRecorder(), flush: func() {
+					frames++
+					if frames == 1 {
+						shutdownErr = f.service.Shutdown(ctx)
+					} else {
+						cancel()
+					}
+				}}
+				f.service.Handler().ServeHTTP(response, request)
+				if response.Code != http.StatusOK || frames != 1 || shutdownErr != nil || ctx.Err() != nil {
+					t.Fatalf("shutdown stream: status=%d frames=%d shutdown=%v context=%v", response.Code, frames, shutdownErr, ctx.Err())
+				}
+				return
+			}
 			server := httptest.NewServer(f.service.Handler())
 			t.Cleanup(server.Close)
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
