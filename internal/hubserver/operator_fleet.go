@@ -548,10 +548,10 @@ func (e hubFleetExecutor) actionResult(ctx context.Context, a chatpkg.Action) (o
 		Action     chatpkg.Action       `json:"preview"`
 		ID         string               `json:"action_id"`
 		Status     chatpkg.ActionStatus `json:"status"`
-		URL        string               `json:"approval_url"`
+		URL        string               `json:"approval_url,omitempty"`
 		ResultTool string               `json:"result_tool"`
 		Receipt    json.RawMessage      `json:"receipt,omitempty"`
-	}{a, a.ID, a.Status, e.service.billingApprovalURL(a.ConnectionID), operatortool.ActionResult, receipt})
+	}{a, a.ID, a.Status, a.PendingApprovalURL(e.service.billingApprovalURL(a.ConnectionID)), operatortool.ActionResult, receipt})
 }
 func (e hubFleetExecutor) AuditAction(ctx context.Context, a chatpkg.Action, outcome string) {
 	m := a.Mutation
