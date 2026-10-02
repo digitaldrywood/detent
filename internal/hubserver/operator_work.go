@@ -52,13 +52,20 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 			definitions = append(definitions, definition)
 		}
 	}
-	if writable && e.service.hostedShared() {
-		definitions = append(definitions, operatortool.AttachmentCatalog()...)
+	if e.service.hostedShared() {
+		for _, definition := range operatortool.AttachmentCatalog() {
+			if writable || definition.Annotations.ReadOnly {
+				definitions = append(definitions, definition)
+			}
+		}
 	}
 	return definitions, nil
 }
 
 func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	if operatortool.IsAttachmentTool(call.Name) && call.Name != operatortool.UploadAttachment {
+		return e.attachmentOperation(ctx, call)
+	}
 	if call.Name == operatortool.MoveItem {
 		return e.workflowTransition(ctx, call)
 	}

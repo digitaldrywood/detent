@@ -190,7 +190,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	if hubFleetTool(call.Name) {
 		return hubFleetExecutor(e).Execute(ctx, call)
 	}
-	if call.Name == operatortool.MoveItem || call.Name == operatortool.UploadAttachment || call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
+	if call.Name == operatortool.MoveItem || operatortool.IsAttachmentTool(call.Name) || call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
 		return nativeOperatorExecutor(e).Execute(ctx, call)
 	}
 	defer func() {
@@ -230,6 +230,9 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				return result, err
 			}
 			return s.hubActionResult(action)
+		}
+		if action.Kind == chat.ActionKind(operatortool.DeleteAttachment) {
+			return (nativeOperatorExecutor{service: s}).attachmentActionResult(ctx, action)
 		}
 		if _, err := s.operatorBillingCredential(ctx, "billing", true); err != nil {
 			return result, err
@@ -437,6 +440,9 @@ func (s *Service) billingActionBinding(price string) string {
 }
 
 func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.Action) (execution chat.ActionExecution, err error) {
+	if action.Kind == chat.ActionKind(operatortool.DeleteAttachment) {
+		return (nativeOperatorExecutor{service: e.service}).executeAttachmentDeletion(ctx, action)
+	}
 	if action.Mutation.Source == "chat" {
 		return e.service.executeCoordinatorAction(ctx, action)
 	}
@@ -495,6 +501,10 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 }
 
 func (e hostedOperatorExecutor) AuditAction(ctx context.Context, action chat.Action, outcome string) {
+	if action.Kind == chat.ActionKind(operatortool.DeleteAttachment) {
+		e.service.hubChangeAudit(ctx, action.Mutation, outcome)
+		return
+	}
 	if action.Kind == chat.ActionMoveItem {
 		e.service.hubChangeAudit(ctx, action.Mutation, outcome)
 		return

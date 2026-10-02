@@ -34,6 +34,23 @@ safe opaque unavailable result when its application service is absent; this
 inventory does not install services or change current authority. The current
 read executors already handle missing telemetry/explanation dependencies.
 
+## Cloud issue attachments (native #177 and #238)
+
+Shared entry plus the tenant Hub supports `upload_attachment`,
+`read_attachment_metadata`, `read_attachment`, `reference_attachment` and
+`delete_attachment` in the `work` toolset. Reads return authenticated metadata
+and at most 32 KiB of base64 content per call, within the 256 KiB result bound.
+The existing 60,000-character base64 upload bound remains unchanged. Item/comment
+binding reuses the same-project reference owner. Destructive deletion uses the
+existing exact browser action approval or human-selected connection YOLO; its
+receipt distinguishes pending and confirmed object deletion. All calls resolve
+current project grants and credential scope. Read-only credentials discover only
+reads; local and dedicated deployments omit these shared-storage operations.
+Internal expiry, existence and deletion-confirmation callbacks require signed
+service authority and expose no model-callable tool. See
+[Cloud attachments](cloud-attachments.md) for the transport and deletion contract.
+These delivered adapters do not claim completion of the parent parity inventory.
+
 ## Work and board reads (#3340)
 
 The original five tools retain their names and schemas. Additional reads use

@@ -139,46 +139,69 @@ const cloudAttachmentColumns = "id,project_id,uploader,name,content_type,size,sh
 
 func (s *Service) getCloudAttachment(c echo.Context) error {
 	scope := nativeRequestScope(c)
-	record, err := scanCloudAttachment(s.database.db.QueryRowContext(c.Request().Context(), "SELECT "+cloudAttachmentColumns+" FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL", scope.organization, scope.project, c.Param("attachment")))
-	if errors.Is(err, sql.ErrNoRows) {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
+	record, err := s.readCloudAttachment(c.Request().Context(), scope, c.Param("attachment"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	record.AuthorizedPrincipal = scope.credential.ID
-	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT work_item_id,comment_id FROM attachment_references WHERE attachment_id=? ORDER BY work_item_id,comment_id", record.ID)
+	return c.JSON(http.StatusOK, record)
+}
+
+func (s *Service) readCloudAttachment(ctx context.Context, scope nativeScope, id string) (attachment.Metadata, error) {
+	return readCloudAttachment(ctx, s.database.db, scope, id)
+}
+
+func readCloudAttachment(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (attachment.Metadata, error) {
+	record, err := scanCloudAttachment(query.QueryRowContext(ctx, "SELECT "+cloudAttachmentColumns+" FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL", scope.organization, scope.project, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return record, nativeNotFound()
+	}
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return record, err
+	}
+	rows, err := query.QueryContext(ctx, "SELECT work_item_id,comment_id FROM attachment_references WHERE attachment_id=? ORDER BY work_item_id,comment_id", record.ID)
+	if err != nil {
+		return record, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var reference attachment.SourceReference
 		if err := rows.Scan(&reference.WorkItemID, &reference.CommentID); err != nil {
-			return s.nativeAPIError(c, err)
+			return record, err
 		}
 		record.ReferencedBy = append(record.ReferencedBy, reference)
 	}
 	if err := rows.Err(); err != nil {
-		return s.nativeAPIError(c, err)
+		return record, err
 	}
-	return c.JSON(http.StatusOK, record)
+	return record, nil
 }
 
 func (s *Service) deleteCloudAttachment(c echo.Context) error {
 	scope := nativeRequestScope(c)
-	result, err := s.database.db.ExecContext(c.Request().Context(), "UPDATE attachments SET deleted_at=coalesce(deleted_at,?) WHERE organization_id=? AND project_id=? AND id=?", formatHubTime(s.config.now()), scope.organization, scope.project, c.Param("attachment"))
-	if err != nil {
+	if err := s.deleteCloudAttachmentCommand(c.Request().Context(), scope, c.Param("attachment")); err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string) error {
+	return s.deleteCloudAttachmentMetadata(ctx, s.database.db, scope, id)
+}
+
+func (s *Service) deleteCloudAttachmentMetadata(ctx context.Context, query nativeExecer, scope nativeScope, id string) error {
+	result, err := query.ExecContext(ctx, "UPDATE attachments SET deleted_at=coalesce(deleted_at,?) WHERE organization_id=? AND project_id=? AND id=?", formatHubTime(s.config.now()), scope.organization, scope.project, id)
+	if err != nil {
+		return err
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return err
 	}
 	if count == 0 {
-		return s.nativeAPIError(c, nativeNotFound())
+		return nativeNotFound()
 	}
-	return c.NoContent(http.StatusNoContent)
+	return nil
 }
 
 func (s *Service) referenceCloudAttachment(c echo.Context) error {
@@ -189,38 +212,44 @@ func (s *Service) referenceCloudAttachment(c echo.Context) error {
 	if err := c.Bind(&input); err != nil || input.WorkItemID == "" {
 		return s.nativeAPIError(c, nativeInvalid("A work item is required"))
 	}
-	scope, ctx := nativeRequestScope(c), c.Request().Context()
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if _, _, err := readNativeIssue(ctx, tx, scope, input.WorkItemID); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if input.CommentID != "" {
-		if _, err := readNativeComment(ctx, tx, scope, input.WorkItemID, input.CommentID); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO attachment_references(attachment_id,work_item_id,comment_id) SELECT id,?,? FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL ON CONFLICT(attachment_id,work_item_id,comment_id) DO UPDATE SET attachment_id=excluded.attachment_id`, input.WorkItemID, input.CommentID, scope.organization, scope.project, c.Param("attachment"))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if count != 1 {
-		return s.nativeAPIError(c, nativeNotFound())
-	}
-	if err := tx.Commit(); err != nil {
+	if err := s.referenceCloudAttachmentCommand(c.Request().Context(), nativeRequestScope(c), c.Param("attachment"), attachment.SourceReference{WorkItemID: input.WorkItemID, CommentID: input.CommentID}); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string, input attachment.SourceReference) error {
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		return err
+	}
+	if _, _, err := readNativeIssue(ctx, tx, scope, input.WorkItemID); err != nil {
+		return err
+	}
+	if input.CommentID != "" {
+		if _, err := readNativeComment(ctx, tx, scope, input.WorkItemID, input.CommentID); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO attachment_references(attachment_id,work_item_id,comment_id) SELECT id,?,? FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL ON CONFLICT(attachment_id,work_item_id,comment_id) DO UPDATE SET attachment_id=excluded.attachment_id`, input.WorkItemID, input.CommentID, scope.organization, scope.project, id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return nativeNotFound()
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Service) expiredCloudAttachments(c echo.Context) error {

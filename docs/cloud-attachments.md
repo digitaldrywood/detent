@@ -44,6 +44,47 @@ create-issue operation) or `add_comment.body`. The existing 64 KiB MCP argument
 limit permits up to 60,000 base64 characters; use the upload API or CLI for
 larger files. The tool never reads a path on the remote server.
 
+Shared entry also exposes these typed attachment tools. Dedicated Hubs and local
+daemons omit them because they do not own this storage service.
+
+| Tool | Input and result |
+| --- | --- |
+| `read_attachment_metadata` | `project_id`, `attachment_id`; the authenticated metadata used by Cloud, including recorded type, size, SHA-256, dimensions and `referenced_by` |
+| `read_attachment` | The same selector, optional `offset` and `length`; `metadata`, `content_base64`, `offset`, `returned_bytes`, `eof` and `max_content_bytes` |
+| `reference_attachment` | The same selector, `request_id`, `work_item_id` and optional `comment_id`; the exact project/item/comment binding receipt |
+| `delete_attachment` | The same selector and `request_id`; the existing connection-bound action preview, approval destination and receipt |
+
+Reads require current project read authority. Content defaults to 32 KiB and
+accepts lengths from 1 to 32,768 bytes. Offsets range from zero through the
+recorded size, up to the existing 20 MiB file limit. The last chunk may be shorter;
+an offset equal to the recorded size returns an empty chunk with `eof: true`.
+Missing stored bytes return an unavailable error rather than a successful
+partial chunk. The SHA-256 describes the complete stored file, not an individual
+chunk. No content result grants access to another request. Metadata and content
+results are limited to 256 KiB; oversized metadata returns an unavailable result.
+Modern MCP returns the same JSON as text and structured content; legacy protocol
+versions return text only. Reads go through entry's authenticated metadata and
+storage owners, with no bucket URL, storage credential or internal authorization
+principal in the result.
+
+Binding and deletion require current project write authority. A binding resolves
+the item and optional comment within that project and reuses the existing
+reference upsert, so replay adds no duplicate relation. Deletion always requires
+the existing real human approval or human-selected connection YOLO. The preview
+binds the recorded metadata and references; a change before execution refuses
+the stale action. Reusing its `request_id` with different inputs is denied.
+Approval rechecks the originating credential as well as the approving browser.
+Read-only, revoked and foreign-project credentials confer no write authority.
+
+After approval, metadata is hidden before entry removes the object. Poll
+`action_result` with `action_id` (or replay `delete_attachment`) for the authorized
+receipt and `object_deletion`: `pending` or `confirmed`. Receipt delivery through
+entry finishes pending object deletion through the existing deletion owner. If
+delivery or storage is unavailable, the existing maintenance cycle retains that
+work. Quota stays charged until object deletion is confirmed. Resolved receipts
+omit `approval_url`; confirmed replays do not repeat storage deletion. Internal
+maintenance callbacks remain service-only and are never MCP tools.
+
 `detent attach screenshot.png --project prj_example` uses the configured
 Cloud client and prints just the markdown reference. Configured project names
 also work. An explicit entry URL, organization and scoped token can be selected:
