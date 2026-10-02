@@ -155,7 +155,7 @@ must supply shared application reads, not a compatibility HTTP proxy.
 Organization and credential administration (#3344) uses typed application tools:
 `organization_session`, `organization_list`, `organization_switch`, `session_logout`,
 `organization_create`, `organization_delete`, `invitation_accept`,
-`invitation_send`, `invitation_revoke`, `membership_list`, `member_remove`,
+`invitation_send`, `invitation_edit`, `invitation_resend`, `invitation_revoke`, `membership_list`, `member_remove`,
 `member_role`, `member_grant`, `credential_list`, `credential_create`,
 `credential_rotate`, `credential_revoke`, `credential_grant`, and `support_start`.
 Discovery filters these by installed services and current authority; direct calls
@@ -173,6 +173,18 @@ have no browser approver. Their existing API commands remain available. Provider
 without invitation-by-ID administration do not advertise invitation acceptance.
 Absent services return opaque unavailable errors. No new approval credentials or
 platform powers are installed.
+
+Native #235 adds explicit bounded project grants to invitation sending and exposes
+pending-invitation grant replacement and resend through their existing hosted
+commands. Edit requires a complete grants list; an empty list removes project
+access. Edit/resend discovery requires provider invitation-by-ID administration,
+and resend also requires delivery support. Current organization, role, pending
+status, expiry and grant authority are rechecked at approval and execution.
+Selected bearer keys cannot grant or remove access beyond their own project scope.
+Exact browser previews include the invitation and grants; durable command receipts
+prevent repeated provider delivery. Only pending actions advertise approval URLs.
+Dedicated/shared and stdio/HTTP fixture coverage uses no live mail. Parent #26
+retains strict final conformance and unconditional zero-pending acceptance.
 
 Access-changing and destructive commands require an exact preview and a real
 browser decision by default. YOLO is a human connection decision and still checks

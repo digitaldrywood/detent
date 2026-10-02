@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
+	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -81,11 +82,7 @@ func (r hostedIdempotent) validate(required bool) error {
 	return nil
 }
 
-type hostedMemberGrant struct {
-	ProjectID string `json:"project_id"`
-	Write     bool   `json:"write"`
-	Runner    bool   `json:"runner"`
-}
+type hostedMemberGrant = operatoradmin.ProjectGrant
 
 type hostedMemberView struct {
 	ID            string              `json:"id"`
@@ -647,10 +644,15 @@ func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if _, err := s.hostedAdministrator(c); err != nil {
+	credential, err := s.hostedAdministrator(c)
+	if err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "You cannot resend invitations")
 	}
-	if err := s.resendHostedInvitationFor(c.Request().Context(), c.Param("invitation")); err != nil {
+	if err := s.resendHostedInvitationFor(c.Request().Context(), credential, c.Param("invitation")); err != nil {
+		var targetError *nativeError
+		if errors.As(err, &targetError) {
+			return s.nativeAPIError(c, err)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			return s.hostedJSONError(c, http.StatusNotFound, "This invitation is no longer pending")
 		}

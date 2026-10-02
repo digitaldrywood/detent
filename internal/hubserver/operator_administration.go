@@ -24,6 +24,12 @@ func (s *Service) operatorAdministration() *operatoradmin.Executor {
 	if s.config.Hosted != nil {
 		names = append(names, operatortool.CredentialList, operatortool.CredentialCreate, operatortool.CredentialRevoke)
 		names = append(names, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationRevoke, operatortool.MemberRemove, operatortool.MemberRole, operatortool.MemberGrant)
+		if _, ok := s.config.Hosted.Provider.(auth.InvitationAdministration); ok {
+			names = append(names, operatortool.InvitationEdit)
+			if _, ok := s.config.Hosted.Provider.(auth.InvitationDelivery); ok {
+				names = append(names, operatortool.InvitationResend)
+			}
+		}
 		if !s.hostedShared() {
 			names = append(names, operatortool.SessionLogout, operatortool.OrganizationSwitch, operatortool.OrganizationCreate, operatortool.SupportStart)
 			if _, ok := s.config.Hosted.Provider.(auth.InvitationAdministration); ok {
@@ -240,6 +246,23 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 	if in.Role == "owner" && credential.HostedRole != "owner" {
 		return operatortool.ErrAccessDenied
 	}
+	if name == operatortool.InvitationSend && in.Email != "" {
+		if err := s.validateHostedInvitationGrants(ctx, s.database.db, credential, strings.ToLower(strings.TrimSpace(in.Email)), in.Grants); err != nil {
+			return err
+		}
+	}
+	if (name == operatortool.InvitationEdit || name == operatortool.InvitationResend) && in.InvitationID != "" {
+		view, err := s.pendingHostedInvitationFor(ctx, s.database.db, credential, in.InvitationID)
+		if err != nil {
+			return err
+		}
+		if name == operatortool.InvitationEdit {
+			return s.validateHostedInvitationEdit(ctx, s.database.db, credential, view, in.Grants)
+		}
+		if err := s.validateHostedInvitationGrants(ctx, s.database.db, credential, view.Email, view.Grants); err != nil {
+			return err
+		}
+	}
 	if in.MemberID != "" {
 		if name == operatortool.MemberRole || name == operatortool.MemberRemove {
 			if _, err := s.hostedManagedMemberFor(ctx, credential, in.MemberID, name == operatortool.MemberRemove || in.Role != "owner"); err != nil {
@@ -348,6 +371,16 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 	}
 	preview := operatoradmin.Preview{Summary: name, Current: in}
 	switch name {
+	case operatortool.InvitationEdit, operatortool.InvitationResend:
+		view, err := s.pendingHostedInvitationFor(ctx, s.database.db, credential, in.InvitationID)
+		if err != nil {
+			return preview, err
+		}
+		preview.ResourceID = view.ID
+		preview.Current = struct {
+			Invitation hostedInvitationView `json:"invitation"`
+			Input      operatoradmin.Input  `json:"input"`
+		}{view, in}
 	case operatortool.MemberRemove, operatortool.MemberRole, operatortool.MemberGrant:
 		member, err := s.hostedMemberByID(ctx, credential, in.MemberID)
 		if err != nil {
@@ -432,7 +465,7 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	}
 
 	if name == operatortool.InvitationSend {
-		view, err := s.inviteHostedMemberFor(ctx, credential, in.Email, in.Role, in.RequestID, nil)
+		view, err := s.inviteHostedMemberFor(ctx, credential, in.Email, in.Role, in.RequestID, in.Grants)
 		if err != nil {
 			return operatoradmin.Output{}, err
 		}
@@ -465,6 +498,10 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 		data, err = s.changeHostedGrantFor(ctx, credential, in.MemberID, in.ProjectID, in.Write, in.Runner, in.Revoke)
 	case operatortool.InvitationRevoke:
 		err = s.revokeHostedInvitationFor(ctx, in.InvitationID)
+	case operatortool.InvitationEdit:
+		err = s.editHostedInvitationFor(ctx, credential, in.InvitationID, in.Grants)
+	case operatortool.InvitationResend:
+		err = s.resendHostedInvitationFor(ctx, credential, in.InvitationID)
 	case operatortool.OrganizationSwitch:
 		if s.config.Hosted == nil {
 			output.URL = "/api/v2/organizations/" + in.OrganizationID + "/mcp"
@@ -708,6 +745,12 @@ func (s *Service) hostedOrganizationChoicesFor(ctx context.Context, credential a
 }
 
 func (a hubAdministration) AuthorizeOutput(ctx context.Context, name string, in operatoradmin.Input, output operatoradmin.Output) error {
+	if name == operatortool.InvitationSend {
+		if output.ResourceID == "" {
+			return operatortool.ErrAccessDenied
+		}
+		return a.Authorize(ctx, name, in, output.ResourceID)
+	}
 	if (name != operatortool.CredentialCreate && name != operatortool.CredentialRotate) || len(output.Data) == 0 {
 		return nil
 	}

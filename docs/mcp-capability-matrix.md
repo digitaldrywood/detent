@@ -1392,7 +1392,7 @@ Accept hosted invitation
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v2/organizations/:organization/invitations/accept](../internal/hubserver/hosted_org_api.go#L45), [web/conversation/src/app/account/api.ts:204](../web/conversation/src/app/account/api.ts#L204)
+Sources: [POST /api/v2/organizations/:organization/invitations/accept](../internal/hubserver/hosted_org_api.go#L49), [web/conversation/src/app/account/api.ts:204](../web/conversation/src/app/account/api.ts#L204)
 ## hubserver.accept_hosted_shared_invitation
 
 Accept hosted shared invitation
@@ -1805,7 +1805,7 @@ Change hosted grant
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [PUT /api/v2/organizations/:organization/members/:member/grants](../internal/hubserver/hosted_org_api.go#L40), [POST /organization/grants](../internal/hubserver/hosted_ui.go#L46), [internal/web/templates/hosted.templ:247](../internal/web/templates/hosted.templ#L247), [internal/web/templates/hosted.templ:247](../internal/web/templates/hosted.templ#L247), [web/conversation/src/app/account/api.ts:191](../web/conversation/src/app/account/api.ts#L191)
+Sources: [PUT /api/v2/organizations/:organization/members/:member/grants](../internal/hubserver/hosted_org_api.go#L44), [POST /organization/grants](../internal/hubserver/hosted_ui.go#L46), [internal/web/templates/hosted.templ:247](../internal/web/templates/hosted.templ#L247), [internal/web/templates/hosted.templ:247](../internal/web/templates/hosted.templ#L247), [web/conversation/src/app/account/api.ts:191](../web/conversation/src/app/account/api.ts#L191)
 ## hubserver.change_hosted_role
 
 Change hosted role
@@ -1825,7 +1825,7 @@ Change hosted role
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [PUT /api/v2/organizations/:organization/members/:member/role](../internal/hubserver/hosted_org_api.go#L39), [POST /organization/members/:member/role](../internal/hubserver/hosted_ui.go#L45), [internal/web/templates/hosted.templ:229](../internal/web/templates/hosted.templ#L229), [internal/web/templates/hosted.templ:229](../internal/web/templates/hosted.templ#L229), [web/conversation/src/app/account/api.ts:179](../web/conversation/src/app/account/api.ts#L179)
+Sources: [PUT /api/v2/organizations/:organization/members/:member/role](../internal/hubserver/hosted_org_api.go#L43), [POST /organization/members/:member/role](../internal/hubserver/hosted_ui.go#L45), [internal/web/templates/hosted.templ:229](../internal/web/templates/hosted.templ#L229), [internal/web/templates/hosted.templ:229](../internal/web/templates/hosted.templ#L229), [web/conversation/src/app/account/api.ts:179](../web/conversation/src/app/account/api.ts#L179)
 ## hubserver.change_native_dependency
 
 Change native dependency
@@ -3258,7 +3258,7 @@ Hosted fleet
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [GET /api/v2/organizations/:organization/fleet](../internal/hubserver/hosted_org_api.go#L42)
+Sources: [GET /api/v2/organizations/:organization/fleet](../internal/hubserver/hosted_org_api.go#L46)
 ## hubserver.hosted_landing
 
 Hosted landing
@@ -3317,7 +3317,7 @@ Hosted plan page
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: authorized application read/export → none
 
-Sources: [GET /api/v2/organizations/:organization/plan](../internal/hubserver/hosted_org_api.go#L43), [GET /organization/plan](../internal/hubserver/hosted_ui.go#L32), [internal/web/templates/hosted.templ:178](../internal/web/templates/hosted.templ#L178), [internal/web/templates/hosted_billing.templ:60](../internal/web/templates/hosted_billing.templ#L60), [web/conversation/src/app/account/api.ts:413](../web/conversation/src/app/account/api.ts#L413)
+Sources: [GET /api/v2/organizations/:organization/plan](../internal/hubserver/hosted_org_api.go#L47), [GET /organization/plan](../internal/hubserver/hosted_ui.go#L32), [internal/web/templates/hosted.templ:178](../internal/web/templates/hosted.templ#L178), [internal/web/templates/hosted_billing.templ:60](../internal/web/templates/hosted_billing.templ#L60), [web/conversation/src/app/account/api.ts:413](../web/conversation/src/app/account/api.ts#L413)
 ## hubserver.hosted_plan_report
 
 Hosted plan report
@@ -3476,22 +3476,22 @@ Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/
 
 Invite hosted member
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Email/role invitation_send is delivered by #3344, but the browser now supports explicit project grants absent from the MCP schema and executor. This row remains pending for that variant; current role, project access, ownership, exact approval and provider refusal boundaries remain.
-- Tool: `organization.invitation_send` — Proposed bounded email, role and explicit project grants (project_id, write, runner), plus request_id. The current AdministrationCatalog accepts email and role only; grants are unsupported, not silently dropped. → Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Native #235 completes send-with-grants, edit and resend through existing hosted application owners, bounded by current role, organization, project and provider authority. No bearer expansion or bypass of human confirmation. Native parent #26 (imported #3259) retains strict final conformance and unconditional zero-pending acceptance.
+- Tool: `organization.invitation_send` — Bounded email, role, optional explicit grants (project_id, write, runner; at most 200) and request_id. Omitted grants grant no project access. → Exact pending action with approval_url and action_result; completed succeeded/rejected/failed receipts have no approval destination. Safe invitation resource IDs and fresh_at, without provider diagnostics or credentials.
 - Authority: role hosted owner/admin; owner-only restrictions for owner membership/role changes; invitation acceptance bound to invited identity; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project Inviter's current project access bounds every invitation grant; replacement also authorizes omitted grants as revocations.; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.inviteHostedMemberFor; s.validateHostedInvitationGrants; hosted invitation command receipt and provider issuance
-- Extraction: Existing invitation_send delegates to inviteHostedMemberFor with no grants. Extend the typed application input and exact approval preview for explicit invitation grants before claiming full parity.
+- Extraction: AdministrationCatalog and hubAdministration delegate typed inputs to the existing invitation command owner. Current connection authority, grants and pending target are rechecked; exact target/input approval and existing durable command receipts preserve replay.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior. Browser/API invitation grants: TestHostedInvitationGrants. MCP grant-bearing invitation execution remains unimplemented.
+- Coverage: TestHostedInvitationMCP: dedicated/shared and stdio/HTTP pending approval, exact browser confirmation, grants/empty replacement, success/rejection/failure receipts, replay and delivery call counts, invalid/foreign grants, role/project revocation, foreign/expired/completed/revoked invitations, stale previews, input conflicts and selected-key bounds. TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestHostedInvitationGrants and TestHostedInvitationLifecycle retain application boundaries. Fixture providers only; no live mail.
 - Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_dedicated / github,native / hub application service
-- Availability: hosted_shared / github,native / hub application service
+- Availability: hosted_dedicated / github,native / Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools.
+- Availability: hosted_shared / github,native / Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v2/organizations/:organization/members/invitations](../internal/hubserver/hosted_org_api.go#L36), [POST /organization/invite](../internal/hubserver/hosted_ui.go#L43), [internal/web/templates/hosted.templ:213](../internal/web/templates/hosted.templ#L213), [internal/web/templates/hosted.templ:213](../internal/web/templates/hosted.templ#L213), [web/conversation/src/app/account/Organization.tsx:366](../web/conversation/src/app/account/Organization.tsx#L366), [web/conversation/src/app/account/Organization.tsx:364](../web/conversation/src/app/account/Organization.tsx#L364), [web/conversation/src/app/account/api.ts:170](../web/conversation/src/app/account/api.ts#L170)
+Sources: [POST /api/v2/organizations/:organization/members/invitations](../internal/hubserver/hosted_org_api.go#L38), [POST /organization/invite](../internal/hubserver/hosted_ui.go#L52), [internal/web/templates/hosted.templ:213](../internal/web/templates/hosted.templ#L213), [internal/web/templates/hosted.templ:213](../internal/web/templates/hosted.templ#L213), [web/conversation/src/app/account/Organization.tsx:372](../web/conversation/src/app/account/Organization.tsx#L372), [web/conversation/src/app/account/Organization.tsx:370](../web/conversation/src/app/account/Organization.tsx#L370), [web/conversation/src/app/account/api.ts:179](../web/conversation/src/app/account/api.ts#L179)
 ## hubserver.land_change
 
 Land change
@@ -3610,7 +3610,7 @@ List hosted members
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: all calls → none
 
-Sources: [GET /api/v2/organizations/:organization/members](../internal/hubserver/hosted_org_api.go#L35), [GET /organization](../internal/hubserver/hosted_ui.go#L31), [internal/web/templates/hosted.templ:54](../internal/web/templates/hosted.templ#L54), [internal/web/templates/hosted.templ:80](../internal/web/templates/hosted.templ#L80), [internal/web/templates/hosted.templ:113](../internal/web/templates/hosted.templ#L113), [internal/web/templates/hosted.templ:335](../internal/web/templates/hosted.templ#L335), [web/conversation/src/app/main.tsx:47](../web/conversation/src/app/main.tsx#L47), [web/conversation/src/app/account/api.ts:160](../web/conversation/src/app/account/api.ts#L160)
+Sources: [GET /api/v2/organizations/:organization/members](../internal/hubserver/hosted_org_api.go#L37), [GET /organization](../internal/hubserver/hosted_ui.go#L31), [internal/web/templates/hosted.templ:54](../internal/web/templates/hosted.templ#L54), [internal/web/templates/hosted.templ:80](../internal/web/templates/hosted.templ#L80), [internal/web/templates/hosted.templ:113](../internal/web/templates/hosted.templ#L113), [internal/web/templates/hosted.templ:335](../internal/web/templates/hosted.templ#L335), [web/conversation/src/app/main.tsx:47](../web/conversation/src/app/main.tsx#L47), [web/conversation/src/app/account/api.ts:160](../web/conversation/src/app/account/api.ts#L160)
 ## hubserver.list_hosted_projects
 
 List hosted projects
@@ -3630,7 +3630,7 @@ List hosted projects
 - Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: read or ordinary reversible application write → none
 
-Sources: [GET /api/v2/organizations/:organization/projects](../internal/hubserver/hosted_org_api.go#L40), [internal/web/templates/hosted.templ:182](../internal/web/templates/hosted.templ#L182), [internal/web/templates/hosted.templ:122](../internal/web/templates/hosted.templ#L122), [internal/web/templates/hosted.templ:199](../internal/web/templates/hosted.templ#L199)
+Sources: [GET /api/v2/organizations/:organization/projects](../internal/hubserver/hosted_org_api.go#L45), [internal/web/templates/hosted.templ:182](../internal/web/templates/hosted.templ#L182), [internal/web/templates/hosted.templ:122](../internal/web/templates/hosted.templ#L122), [internal/web/templates/hosted.templ:199](../internal/web/templates/hosted.templ#L199)
 ## hubserver.list_native_attempts
 
 List native attempts
@@ -4595,7 +4595,7 @@ Revoke hosted invitation j s o n
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/members/invitations/:invitation](../internal/hubserver/hosted_org_api.go#L37), [web/conversation/src/app/account/api.ts:168](../web/conversation/src/app/account/api.ts#L168)
+Sources: [DELETE /api/v2/organizations/:organization/members/invitations/:invitation](../internal/hubserver/hosted_org_api.go#L40), [web/conversation/src/app/account/api.ts:168](../web/conversation/src/app/account/api.ts#L168)
 ## hubserver.revoke_hosted_member
 
 Revoke hosted member
@@ -4615,7 +4615,7 @@ Revoke hosted member
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/members/:member](../internal/hubserver/hosted_org_api.go#L38), [POST /organization/members/:member/revoke](../internal/hubserver/hosted_ui.go#L44), [internal/web/templates/hosted.templ:239](../internal/web/templates/hosted.templ#L239), [internal/web/templates/hosted.templ:239](../internal/web/templates/hosted.templ#L239), [web/conversation/src/app/account/api.ts:175](../web/conversation/src/app/account/api.ts#L175)
+Sources: [DELETE /api/v2/organizations/:organization/members/:member](../internal/hubserver/hosted_org_api.go#L42), [POST /organization/members/:member/revoke](../internal/hubserver/hosted_ui.go#L44), [internal/web/templates/hosted.templ:239](../internal/web/templates/hosted.templ#L239), [internal/web/templates/hosted.templ:239](../internal/web/templates/hosted.templ#L239), [web/conversation/src/app/account/api.ts:175](../web/conversation/src/app/account/api.ts#L175)
 ## hubserver.revoke_hosted_shared_sessions
 
 Revoke hosted shared sessions
@@ -4947,7 +4947,7 @@ Start hosted support
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v2/organizations/:organization/support/start](../internal/hubserver/hosted_org_api.go#L46), [POST /support/start](../internal/hubserver/hosted_ui.go#L29), [internal/web/templates/hosted.templ:284](../internal/web/templates/hosted.templ#L284), [internal/web/templates/hosted.templ:284](../internal/web/templates/hosted.templ#L284), [web/conversation/src/app/account/api.ts:214](../web/conversation/src/app/account/api.ts#L214), [web/conversation/src/app/entry/PlatformConsole.tsx:97](../web/conversation/src/app/entry/PlatformConsole.tsx#L97), [web/conversation/src/app/entry/PlatformConsole.tsx:97](../web/conversation/src/app/entry/PlatformConsole.tsx#L97)
+Sources: [POST /api/v2/organizations/:organization/support/start](../internal/hubserver/hosted_org_api.go#L50), [POST /support/start](../internal/hubserver/hosted_ui.go#L29), [internal/web/templates/hosted.templ:284](../internal/web/templates/hosted.templ#L284), [internal/web/templates/hosted.templ:284](../internal/web/templates/hosted.templ#L284), [web/conversation/src/app/account/api.ts:214](../web/conversation/src/app/account/api.ts#L214), [web/conversation/src/app/entry/PlatformConsole.tsx:97](../web/conversation/src/app/entry/PlatformConsole.tsx#L97), [web/conversation/src/app/entry/PlatformConsole.tsx:97](../web/conversation/src/app/entry/PlatformConsole.tsx#L97)
 ## hubserver.static_assets
 
 Static assets
@@ -5025,7 +5025,7 @@ Switch hosted organization
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: read or ordinary non-destructive write → none
 
-Sources: [POST /api/v2/organizations/:organization/switch](../internal/hubserver/hosted_org_api.go#L44), [POST /organization/switch](../internal/hubserver/hosted_ui.go#L42), [internal/web/templates/hosted.templ:138](../internal/web/templates/hosted.templ#L138), [internal/web/templates/hosted.templ:138](../internal/web/templates/hosted.templ#L138), [web/conversation/src/app/account/api.ts:209](../web/conversation/src/app/account/api.ts#L209)
+Sources: [POST /api/v2/organizations/:organization/switch](../internal/hubserver/hosted_org_api.go#L48), [POST /organization/switch](../internal/hubserver/hosted_ui.go#L42), [internal/web/templates/hosted.templ:138](../internal/web/templates/hosted.templ#L138), [internal/web/templates/hosted.templ:138](../internal/web/templates/hosted.templ#L138), [web/conversation/src/app/account/api.ts:209](../web/conversation/src/app/account/api.ts#L209)
 ## hubserver.transition_native_issue
 
 Transition native issue
@@ -7383,22 +7383,22 @@ Sources: [DELETE /api/v2/organizations/:organization/api-keys/:key](../internal/
 
 Edit pending invitation project grants
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Browser/API edit is available through the existing hosted application owner; AdministrationCatalog and hubAdministration expose no invitation_edit tool. Operator parity remains pending; do not treat member_grant or invitation_send as this command.
-- Tool: `organization.invitation_edit` — Proposed invitation_id and request_id, plus explicit project grants (project_id, write, runner). → Proposed bounded application command receipt identifying the pending invitation; opaque unavailable/refused errors without provider diagnostics or credentials.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Native #235 completes send-with-grants, edit and resend through existing hosted application owners, bounded by current role, organization, project and provider authority. No bearer expansion or bypass of human confirmation. Native parent #26 (imported #3259) retains strict final conformance and unconditional zero-pending acceptance.
+- Tool: `organization.invitation_edit` — Exact invitation_id, required complete replacement grants (project_id, write, runner; at most 200; empty removes all access) and request_id. → Exact pending action with approval_url and action_result; completed succeeded/rejected/failed receipts have no approval destination. Safe invitation resource IDs and fresh_at, without provider diagnostics or credentials.
 - Authority: role Current hosted organization owner/admin; support impersonation is refused.; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project Inviter's current project access bounds every invitation grant; replacement also authorizes omitted grants as revocations.; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.editHostedInvitationFor; s.validateHostedInvitationGrants
-- Extraction: Expose the existing application command through a bounded typed administration adapter with current authority, exact preview, browser approval and the shared audit/retry contract; no HTTP proxy.
+- Extraction: AdministrationCatalog and hubAdministration delegate typed inputs to the existing invitation command owner. Current connection authority, grants and pending target are rechecked; exact target/input approval and existing durable command receipts preserve replay.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Existing HTTP behavior: TestHostedInvitationGrants. No typed MCP catalog/adapter or execution coverage exists for this operation.
-- Proposed hints: readOnly=false; destructive=true; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedInvitationMCP: dedicated/shared and stdio/HTTP pending approval, exact browser confirmation, grants/empty replacement, success/rejection/failure receipts, replay and delivery call counts, invalid/foreign grants, role/project revocation, foreign/expired/completed/revoked invitations, stale previews, input conflicts and selected-key bounds. TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestHostedInvitationGrants and TestHostedInvitationLifecycle retain application boundaries. Fixture providers only; no live mail.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_dedicated / github,native / hub application service — unavailable: HTTP application is available; typed MCP invitation_edit execution is not implemented.
-- Availability: hosted_shared / github,native / hub application service — unavailable: HTTP application is available; typed MCP invitation_edit execution is not implemented.
+- Availability: hosted_dedicated / github,native / Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools.
+- Availability: hosted_shared / github,native / Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [PUT /api/v2/organizations/:organization/members/invitations/:invitation](../internal/hubserver/hosted_org_api.go#L38), [web/conversation/src/app/account/api.ts:177](../web/conversation/src/app/account/api.ts#L177)
+Sources: [PUT /api/v2/organizations/:organization/members/invitations/:invitation](../internal/hubserver/hosted_org_api.go#L39), [web/conversation/src/app/account/api.ts:186](../web/conversation/src/app/account/api.ts#L186)
 ## hubserver.get_native_runtime
 
 Read recorded native work-item runtime evidence
@@ -7423,22 +7423,22 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:
 
 Resend a pending hosted invitation
 
-- Audience: operator; status: **pending**; owner: digitaldrywood/detent#3344.
-- Decision: Browser/API resend is available through the existing hosted application owner; AdministrationCatalog and hubAdministration expose no invitation_resend tool. Operator parity remains pending; do not treat member_grant or invitation_send as this command.
-- Tool: `organization.invitation_resend` — Proposed invitation_id and request_id. → Proposed bounded application command receipt identifying the pending invitation; opaque unavailable/refused errors without provider diagnostics or credentials.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Native #235 completes send-with-grants, edit and resend through existing hosted application owners, bounded by current role, organization, project and provider authority. No bearer expansion or bypass of human confirmation. Native parent #26 (imported #3259) retains strict final conformance and unconditional zero-pending acceptance.
+- Tool: `organization.invitation_resend` — Exact invitation_id and request_id; no arbitrary email or provider payload. → Exact pending action with approval_url and action_result; completed succeeded/rejected/failed receipts have no approval destination. Safe invitation resource IDs and fresh_at, without provider diagnostics or credentials.
 - Authority: role Current hosted organization owner/admin; support impersonation is refused.; credential hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation; project Organization owner/admin; pending invitation remains bound to the current organization.; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.resendHostedInvitationFor; existing provider invitation resend
-- Extraction: Expose the existing application command through a bounded typed administration adapter with current authority, exact preview, browser approval and the shared audit/retry contract; no HTTP proxy.
+- Extraction: AdministrationCatalog and hubAdministration delegate typed inputs to the existing invitation command owner. Current connection authority, grants and pending target are rechecked; exact target/input approval and existing durable command receipts preserve replay.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: Existing HTTP behavior: TestHostedInvitationLifecycle. No typed MCP catalog/adapter or execution coverage exists for this operation.
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestHostedInvitationMCP: dedicated/shared and stdio/HTTP pending approval, exact browser confirmation, grants/empty replacement, success/rejection/failure receipts, replay and delivery call counts, invalid/foreign grants, role/project revocation, foreign/expired/completed/revoked invitations, stale previews, input conflicts and selected-key bounds. TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestHostedInvitationGrants and TestHostedInvitationLifecycle retain application boundaries. Fixture providers only; no live mail.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Availability: hosted_dedicated / github,native / hub application service — unavailable: HTTP application is available; typed MCP invitation_resend execution is not implemented.
-- Availability: hosted_shared / github,native / hub application service — unavailable: HTTP application is available; typed MCP invitation_resend execution is not implemented.
+- Availability: hosted_dedicated / github,native / Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools.
+- Availability: hosted_shared / github,native / Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools.
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: access-changing or sensitive administration → operator
 
-Sources: [POST /api/v2/organizations/:organization/members/invitations/:invitation/resend](../internal/hubserver/hosted_org_api.go#L40), [web/conversation/src/app/account/api.ts:189](../web/conversation/src/app/account/api.ts#L189)
+Sources: [POST /api/v2/organizations/:organization/members/invitations/:invitation/resend](../internal/hubserver/hosted_org_api.go#L41), [web/conversation/src/app/account/api.ts:198](../web/conversation/src/app/account/api.ts#L198)
 ## hubserver.get_runner_update
 
 Read enrolled runner installed update support and build evidence

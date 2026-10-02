@@ -6255,7 +6255,7 @@
           "kind": "route",
           "definition": "e.POST(hostedOrganizationBase+\"/invitations/accept\", s.acceptHostedInvitationJSON, session) [route=\"/api/v2/organizations/:organization/invitations/accept\"]",
           "occurrence": 1,
-          "line": 45,
+          "line": 49,
           "method": "POST",
           "path": "hostedOrganizationBase + \"/invitations/accept\"",
           "handler": "s.acceptHostedInvitationJSON",
@@ -8138,7 +8138,7 @@
           "kind": "route",
           "definition": "e.PUT(hostedOrganizationBase+\"/members/:member/grants\", s.changeHostedGrantJSON, session) [route=\"/api/v2/organizations/:organization/members/:member/grants\"]",
           "occurrence": 1,
-          "line": 40,
+          "line": 44,
           "method": "PUT",
           "path": "hostedOrganizationBase + \"/members/:member/grants\"",
           "handler": "s.changeHostedGrantJSON",
@@ -8259,7 +8259,7 @@
           "kind": "route",
           "definition": "e.PUT(hostedOrganizationBase+\"/members/:member/role\", s.changeHostedRoleJSON, session) [route=\"/api/v2/organizations/:organization/members/:member/role\"]",
           "occurrence": 1,
-          "line": 39,
+          "line": 43,
           "method": "PUT",
           "path": "hostedOrganizationBase + \"/members/:member/role\"",
           "handler": "s.changeHostedRoleJSON",
@@ -15078,7 +15078,7 @@
           "kind": "route",
           "definition": "e.GET(hostedOrganizationBase+\"/fleet\", s.hostedFleet, session) [route=\"/api/v2/organizations/:organization/fleet\"]",
           "occurrence": 1,
-          "line": 42,
+          "line": 46,
           "method": "GET",
           "path": "hostedOrganizationBase + \"/fleet\"",
           "handler": "s.hostedFleet",
@@ -15340,7 +15340,7 @@
           "kind": "route",
           "definition": "e.GET(hostedOrganizationBase+\"/plan\", s.hostedPlanJSON, session) [route=\"/api/v2/organizations/:organization/plan\"]",
           "occurrence": 1,
-          "line": 43,
+          "line": 47,
           "method": "GET",
           "path": "hostedOrganizationBase + \"/plan\"",
           "handler": "s.hostedPlanJSON",
@@ -16136,7 +16136,7 @@
           "kind": "route",
           "definition": "e.POST(hostedOrganizationBase+\"/members/invitations\", s.inviteHostedMemberJSON, session) [route=\"/api/v2/organizations/:organization/members/invitations\"]",
           "occurrence": 1,
-          "line": 36,
+          "line": 38,
           "method": "POST",
           "path": "hostedOrganizationBase + \"/members/invitations\"",
           "handler": "s.inviteHostedMemberJSON",
@@ -16147,7 +16147,7 @@
           "kind": "route",
           "definition": "e.POST(\"/organization/invite\", s.inviteHostedMember) [route=\"/organization/invite\"]",
           "occurrence": 1,
-          "line": 43,
+          "line": 52,
           "method": "POST",
           "path": "\"/organization/invite\"",
           "handler": "s.inviteHostedMember",
@@ -16172,21 +16172,21 @@
           "kind": "attribute",
           "definition": "onSubmit={async (event) => { event.preventDefault(); const value = email.trim(); if (pending || value.length === 0) return; setInvitedEmail(null); if (await onInvite({ email: value, role, grants })) { setEmail(\"\"); setRole(\"member\"); setGrants([]); setInvitedEmail(value); } }}",
           "occurrence": 1,
-          "line": 366
+          "line": 372
         },
         {
           "source": "web/conversation/src/app/account/Organization.tsx",
           "kind": "form",
           "definition": "<form className=\"flex flex-col gap-2 py-3\" onSubmit={async (event) => { event.preventDefault(); const value = email.trim(); if (pending || value.length === 0) return; setInvitedEmail(null); if (await onInvite({ email: value, role, grants })) { setEmail(\"\"); setRole(\"member\"); setGrants([]); setInvitedEmail(value); } }} >",
           "occurrence": 1,
-          "line": 364
+          "line": 370
         },
         {
           "source": "web/conversation/src/app/account/api.ts",
           "kind": "request",
           "definition": "send(Schema.Unknown,\"POST\",`${base}/members/invitations`,{ email: input.email, role: input.role, grants: input.grants ?? [], idempotency_key: input.key, })",
           "occurrence": 1,
-          "line": 170
+          "line": 179
         }
       ],
       "availability": [
@@ -16205,7 +16205,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools."
         },
         {
           "deployment": "hosted_shared",
@@ -16213,7 +16213,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools."
         },
         {
           "deployment": "credential_maintenance",
@@ -16243,12 +16243,12 @@
         }
       ],
       "application": "s.inviteHostedMemberFor; s.validateHostedInvitationGrants; hosted invitation command receipt and provider issuance",
-      "extraction": "Existing invitation_send delegates to inviteHostedMemberFor with no grants. Extend the typed application input and exact approval preview for explicit invitation grants before claiming full parity.",
+      "extraction": "AdministrationCatalog and hubAdministration delegate typed inputs to the existing invitation command owner. Current connection authority, grants and pending target are rechecked; exact target/input approval and existing durable command receipts preserve replay.",
       "tool": {
         "set": "organization",
         "name": "invitation_send",
-        "arguments": "Proposed bounded email, role and explicit project grants (project_id, write, runner), plus request_id. The current AdministrationCatalog accepts email and role only; grants are unsupported, not silently dropped.",
-        "result": "Bounded fresh read or exact action receipt with resource ID, destination URL and fresh_at; approval_url/action_result for pending actions. Credential data is deliberate connection-bound delivery and is omitted from durable receipts. Context selection requires fresh authentication at its destination.",
+        "arguments": "Bounded email, role, optional explicit grants (project_id, write, runner; at most 200) and request_id. Omitted grants grant no project access.",
+        "result": "Exact pending action with approval_url and action_result; completed succeeded/rejected/failed receipts have no approval destination. Safe invitation resource IDs and fresh_at, without provider diagnostics or credentials.",
         "annotations": {
           "readOnly": false,
           "destructive": false,
@@ -16257,9 +16257,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3344",
-      "status": "pending",
-      "coverage": "TestAdministrationExecution, TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestNativeCredentialAdministration, TestDedicatedAdministrationSetup, TestEntryAdministrationContext, TestMCPCredentialAdministration; existing role/project/owner fixtures and WorkOS invitation table cover authorization and command behavior. Browser/API invitation grants: TestHostedInvitationGrants. MCP grant-bearing invitation execution remains unimplemented.",
-      "decision": "Email/role invitation_send is delivered by #3344, but the browser now supports explicit project grants absent from the MCP schema and executor. This row remains pending for that variant; current role, project access, ownership, exact approval and provider refusal boundaries remain."
+      "status": "implemented",
+      "coverage": "TestHostedInvitationMCP: dedicated/shared and stdio/HTTP pending approval, exact browser confirmation, grants/empty replacement, success/rejection/failure receipts, replay and delivery call counts, invalid/foreign grants, role/project revocation, foreign/expired/completed/revoked invitations, stale previews, input conflicts and selected-key bounds. TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestHostedInvitationGrants and TestHostedInvitationLifecycle retain application boundaries. Fixture providers only; no live mail.",
+      "decision": "Native #235 completes send-with-grants, edit and resend through existing hosted application owners, bounded by current role, organization, project and provider authority. No bearer expansion or bypass of human confirmation. Native parent #26 (imported #3259) retains strict final conformance and unconditional zero-pending acceptance."
     },
     {
       "id": "hubserver.land_change",
@@ -16728,7 +16728,7 @@
           "kind": "route",
           "definition": "e.GET(hostedOrganizationBase+\"/members\", s.listHostedMembers, session) [route=\"/api/v2/organizations/:organization/members\"]",
           "occurrence": 1,
-          "line": 35,
+          "line": 37,
           "method": "GET",
           "path": "hostedOrganizationBase + \"/members\"",
           "handler": "s.listHostedMembers",
@@ -16871,7 +16871,7 @@
           "kind": "route",
           "definition": "e.GET(hostedOrganizationBase+\"/projects\", s.listHostedProjects, session) [route=\"/api/v2/organizations/:organization/projects\"]",
           "occurrence": 1,
-          "line": 40,
+          "line": 45,
           "method": "GET",
           "path": "hostedOrganizationBase + \"/projects\"",
           "handler": "s.listHostedProjects",
@@ -21303,7 +21303,7 @@
           "kind": "route",
           "definition": "e.DELETE(hostedOrganizationBase+\"/members/invitations/:invitation\", s.revokeHostedInvitationJSON, session) [route=\"/api/v2/organizations/:organization/members/invitations/:invitation\"]",
           "occurrence": 1,
-          "line": 37,
+          "line": 40,
           "method": "DELETE",
           "path": "hostedOrganizationBase + \"/members/invitations/:invitation\"",
           "handler": "s.revokeHostedInvitationJSON",
@@ -21399,7 +21399,7 @@
           "kind": "route",
           "definition": "e.DELETE(hostedOrganizationBase+\"/members/:member\", s.revokeHostedMemberJSON, session) [route=\"/api/v2/organizations/:organization/members/:member\"]",
           "occurrence": 1,
-          "line": 38,
+          "line": 42,
           "method": "DELETE",
           "path": "hostedOrganizationBase + \"/members/:member\"",
           "handler": "s.revokeHostedMemberJSON",
@@ -22906,7 +22906,7 @@
           "kind": "route",
           "definition": "e.POST(hostedOrganizationBase+\"/support/start\", s.startHostedSupportJSON, session) [route=\"/api/v2/organizations/:organization/support/start\"]",
           "occurrence": 1,
-          "line": 46,
+          "line": 50,
           "method": "POST",
           "path": "hostedOrganizationBase + \"/support/start\"",
           "handler": "s.startHostedSupportJSON",
@@ -23292,7 +23292,7 @@
           "kind": "route",
           "definition": "e.POST(hostedOrganizationBase+\"/switch\", s.switchHostedOrganizationJSON, session) [route=\"/api/v2/organizations/:organization/switch\"]",
           "occurrence": 1,
-          "line": 44,
+          "line": 48,
           "method": "POST",
           "path": "hostedOrganizationBase + \"/switch\"",
           "handler": "s.switchHostedOrganizationJSON",
@@ -35515,7 +35515,7 @@
           "kind": "route",
           "definition": "e.PUT(hostedOrganizationBase+\"/members/invitations/:invitation\", s.editHostedInvitationJSON, session) [route=\"/api/v2/organizations/:organization/members/invitations/:invitation\"]",
           "occurrence": 1,
-          "line": 38,
+          "line": 39,
           "method": "PUT",
           "path": "hostedOrganizationBase + \"/members/invitations/:invitation\"",
           "handler": "s.editHostedInvitationJSON",
@@ -35526,7 +35526,7 @@
           "kind": "request",
           "definition": "send(null,\"PUT\",`${base}/members/invitations/${encodeURIComponent(input.invitation)}`,{ grants: input.grants, idempotency_key: input.key, })",
           "occurrence": 1,
-          "line": 177
+          "line": 186
         }
       ],
       "availability": [
@@ -35545,8 +35545,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service",
-          "unsupported": "HTTP application is available; typed MCP invitation_edit execution is not implemented."
+          "service": "Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools."
         },
         {
           "deployment": "hosted_shared",
@@ -35554,8 +35553,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service",
-          "unsupported": "HTTP application is available; typed MCP invitation_edit execution is not implemented."
+          "service": "Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools."
         },
         {
           "deployment": "credential_maintenance",
@@ -35585,23 +35583,23 @@
         }
       ],
       "application": "s.editHostedInvitationFor; s.validateHostedInvitationGrants",
-      "extraction": "Expose the existing application command through a bounded typed administration adapter with current authority, exact preview, browser approval and the shared audit/retry contract; no HTTP proxy.",
+      "extraction": "AdministrationCatalog and hubAdministration delegate typed inputs to the existing invitation command owner. Current connection authority, grants and pending target are rechecked; exact target/input approval and existing durable command receipts preserve replay.",
       "tool": {
         "set": "organization",
         "name": "invitation_edit",
-        "arguments": "Proposed invitation_id and request_id, plus explicit project grants (project_id, write, runner).",
-        "result": "Proposed bounded application command receipt identifying the pending invitation; opaque unavailable/refused errors without provider diagnostics or credentials.",
+        "arguments": "Exact invitation_id, required complete replacement grants (project_id, write, runner; at most 200; empty removes all access) and request_id.",
+        "result": "Exact pending action with approval_url and action_result; completed succeeded/rejected/failed receipts have no approval destination. Safe invitation resource IDs and fresh_at, without provider diagnostics or credentials.",
         "annotations": {
           "readOnly": false,
           "destructive": true,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3344",
-      "status": "pending",
-      "coverage": "Existing HTTP behavior: TestHostedInvitationGrants. No typed MCP catalog/adapter or execution coverage exists for this operation.",
-      "decision": "Browser/API edit is available through the existing hosted application owner; AdministrationCatalog and hubAdministration expose no invitation_edit tool. Operator parity remains pending; do not treat member_grant or invitation_send as this command."
+      "status": "implemented",
+      "coverage": "TestHostedInvitationMCP: dedicated/shared and stdio/HTTP pending approval, exact browser confirmation, grants/empty replacement, success/rejection/failure receipts, replay and delivery call counts, invalid/foreign grants, role/project revocation, foreign/expired/completed/revoked invitations, stale previews, input conflicts and selected-key bounds. TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestHostedInvitationGrants and TestHostedInvitationLifecycle retain application boundaries. Fixture providers only; no live mail.",
+      "decision": "Native #235 completes send-with-grants, edit and resend through existing hosted application owners, bounded by current role, organization, project and provider authority. No bearer expansion or bypass of human confirmation. Native parent #26 (imported #3259) retains strict final conformance and unconditional zero-pending acceptance."
     },
     {
       "id": "hubserver.get_native_runtime",
@@ -35697,7 +35695,7 @@
           "kind": "route",
           "definition": "e.POST(hostedOrganizationBase+\"/members/invitations/:invitation/resend\", s.resendHostedInvitationJSON, session) [route=\"/api/v2/organizations/:organization/members/invitations/:invitation/resend\"]",
           "occurrence": 1,
-          "line": 40,
+          "line": 41,
           "method": "POST",
           "path": "hostedOrganizationBase + \"/members/invitations/:invitation/resend\"",
           "handler": "s.resendHostedInvitationJSON",
@@ -35708,7 +35706,7 @@
           "kind": "request",
           "definition": "send(null,\"POST\",`${base}/members/invitations/${encodeURIComponent(input.invitation)}/resend`,{ idempotency_key: input.key })",
           "occurrence": 1,
-          "line": 189
+          "line": 198
         }
       ],
       "availability": [
@@ -35727,8 +35725,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service",
-          "unsupported": "HTTP application is available; typed MCP invitation_resend execution is not implemented."
+          "service": "Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools."
         },
         {
           "deployment": "hosted_shared",
@@ -35736,8 +35733,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service",
-          "unsupported": "HTTP application is available; typed MCP invitation_resend execution is not implemented."
+          "service": "Existing hosted invitation commands and provider; edit requires invitation-by-ID administration, resend also requires delivery. Unsupported providers do not advertise those tools."
         },
         {
           "deployment": "credential_maintenance",
@@ -35767,23 +35763,23 @@
         }
       ],
       "application": "s.resendHostedInvitationFor; existing provider invitation resend",
-      "extraction": "Expose the existing application command through a bounded typed administration adapter with current authority, exact preview, browser approval and the shared audit/retry contract; no HTTP proxy.",
+      "extraction": "AdministrationCatalog and hubAdministration delegate typed inputs to the existing invitation command owner. Current connection authority, grants and pending target are rechecked; exact target/input approval and existing durable command receipts preserve replay.",
       "tool": {
         "set": "organization",
         "name": "invitation_resend",
-        "arguments": "Proposed invitation_id and request_id.",
-        "result": "Proposed bounded application command receipt identifying the pending invitation; opaque unavailable/refused errors without provider diagnostics or credentials.",
+        "arguments": "Exact invitation_id and request_id; no arbitrary email or provider payload.",
+        "result": "Exact pending action with approval_url and action_result; completed succeeded/rejected/failed receipts have no approval destination. Safe invitation resource IDs and fresh_at, without provider diagnostics or credentials.",
         "annotations": {
           "readOnly": false,
           "destructive": false,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3344",
-      "status": "pending",
-      "coverage": "Existing HTTP behavior: TestHostedInvitationLifecycle. No typed MCP catalog/adapter or execution coverage exists for this operation.",
-      "decision": "Browser/API resend is available through the existing hosted application owner; AdministrationCatalog and hubAdministration expose no invitation_resend tool. Operator parity remains pending; do not treat member_grant or invitation_send as this command."
+      "status": "implemented",
+      "coverage": "TestHostedInvitationMCP: dedicated/shared and stdio/HTTP pending approval, exact browser confirmation, grants/empty replacement, success/rejection/failure receipts, replay and delivery call counts, invalid/foreign grants, role/project revocation, foreign/expired/completed/revoked invitations, stale previews, input conflicts and selected-key bounds. TestAdministrationInputBounds, TestHostedAdministrationAuthority, TestHostedInvitationGrants and TestHostedInvitationLifecycle retain application boundaries. Fixture providers only; no live mail.",
+      "decision": "Native #235 completes send-with-grants, edit and resend through existing hosted application owners, bounded by current role, organization, project and provider authority. No bearer expansion or bypass of human confirmation. Native parent #26 (imported #3259) retains strict final conformance and unconditional zero-pending acceptance."
     },
     {
       "id": "hubserver.get_runner_update",

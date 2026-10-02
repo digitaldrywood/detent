@@ -177,12 +177,56 @@ func (s *Service) revokeHostedInvitationFor(ctx context.Context, id string) erro
 	return tx.Commit()
 }
 
-func (s *Service) resendHostedInvitationFor(ctx context.Context, id string) error {
-	var email string
-	if err := s.database.db.QueryRowContext(ctx, "SELECT email FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", id, s.config.Hosted.OrganizationID).Scan(&email); err != nil {
+func (s *Service) resendHostedInvitationFor(ctx context.Context, credential apiCredential, id string) error {
+	view, err := s.pendingHostedInvitationFor(ctx, s.database.db, credential, id)
+	if err != nil {
+		return err
+	}
+	if err := s.validateHostedInvitationGrants(ctx, s.database.db, credential, view.Email, view.Grants); err != nil {
 		return err
 	}
 	return auth.ResendInvitationID(ctx, s.config.Hosted.Provider, id)
+}
+
+func (s *Service) pendingHostedInvitationFor(ctx context.Context, query nativeQueryer, credential apiCredential, id string) (hostedInvitationView, error) {
+	var view hostedInvitationView
+	var grants string
+	var providerID string
+	err := query.QueryRowContext(ctx, "SELECT provider_id FROM hosted_tenant WHERE singleton=1").Scan(&providerID)
+	if err != nil || credential.Hosted == nil || credential.Hosted.OrganizationID != providerID || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+		return view, operatortool.ErrAccessDenied
+	}
+	if err := query.QueryRowContext(ctx, "SELECT id,email,role,created_at,expires_at,grants_json FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", id, s.config.Hosted.OrganizationID).Scan(&view.ID, &view.Email, &view.Role, &view.CreatedAt, &view.ExpiresAt, &grants); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return view, nativeNotFound()
+		}
+		return view, err
+	}
+	if view.Role == "owner" && credential.HostedRole != "owner" {
+		return view, &nativeError{Code: "forbidden", Message: "You cannot change owner invitations", status: 403}
+	}
+	invitation, err := auth.LookupInvitationID(ctx, s.config.Hosted.Provider, id)
+	if err != nil {
+		return view, operatoradmin.ErrUnavailable
+	}
+	if invitation.ID != id || invitation.OrganizationID != credential.Hosted.OrganizationID || !strings.EqualFold(invitation.Email, view.Email) || invitation.State != "pending" || !invitation.ExpiresAt.After(s.config.now()) {
+		return view, nativeNotFound()
+	}
+	if view.ExpiresAt != "" {
+		expiry, err := parseTimeValue(view.ExpiresAt)
+		if err != nil || !expiry.After(s.config.now()) {
+			return view, nativeNotFound()
+		}
+		if invitation.ExpiresAt.Before(expiry) {
+			view.ExpiresAt = formatHubTime(invitation.ExpiresAt)
+		}
+	} else {
+		view.ExpiresAt = formatHubTime(invitation.ExpiresAt)
+	}
+	if err := json.Unmarshal([]byte(grants), &view.Grants); err != nil {
+		return view, operatoradmin.ErrUnavailable
+	}
+	return view, nil
 }
 
 func (s *Service) sendReservedHostedInvitationFor(ctx context.Context, credential apiCredential, email, role string, reserved bool, grants []hostedMemberGrant) (view hostedInvitationView, resultErr error) {
@@ -246,6 +290,14 @@ func (s *Service) validateHostedGrants(ctx context.Context, query nativeQueryer,
 			return nativeInvalid("Select each project only once")
 		}
 		seen[grant.ProjectID] = true
+		if credential.HostedKeyScope != "" {
+			condition, args := credential.projectGrantSQL("p.organization_id", "p.id")
+			args = append([]any{s.config.Hosted.OrganizationID, grant.ProjectID}, args...)
+			var count int
+			if err := query.QueryRowContext(ctx, "SELECT count(*) FROM projects p WHERE p.organization_id=? AND p.id=? AND ("+condition+")", args...).Scan(&count); err != nil || count != 1 {
+				return operatortool.ErrAccessDenied
+			}
+		}
 		var count int
 		err := query.QueryRowContext(ctx, `SELECT count(*) FROM projects p JOIN hosted_project_grants g ON g.project_id=p.id AND g.organization_id=p.organization_id
 WHERE p.organization_id=? AND p.id=? AND g.user_id=? AND (?=0 OR g.can_write=1) AND (?=0 OR g.manage_runner=1)`, s.config.Hosted.OrganizationID, grant.ProjectID, credential.Hosted.Subject, grant.Write, grant.Runner).Scan(&count)
@@ -302,14 +354,11 @@ func (s *Service) editHostedInvitationFor(ctx context.Context, credential apiCre
 	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
 		return &nativeError{Code: "forbidden", Message: "You cannot edit invitations", status: 403}
 	}
-	var email string
-	if err := tx.QueryRowContext(ctx, "SELECT email FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", id, s.config.Hosted.OrganizationID).Scan(&email); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nativeNotFound()
-		}
+	view, err := s.pendingHostedInvitationFor(ctx, tx, credential, id)
+	if err != nil {
 		return err
 	}
-	if err := s.validateHostedInvitationGrants(ctx, tx, credential, email, grants); err != nil {
+	if err := s.validateHostedInvitationEdit(ctx, tx, credential, view, grants); err != nil {
 		return err
 	}
 	if grants == nil {
@@ -327,4 +376,15 @@ func (s *Service) editHostedInvitationFor(ctx context.Context, credential apiCre
 		return nativeNotFound()
 	}
 	return tx.Commit()
+}
+
+func (s *Service) validateHostedInvitationEdit(ctx context.Context, query nativeQueryer, credential apiCredential, view hostedInvitationView, grants []hostedMemberGrant) error {
+	previous := make([]hostedMemberGrant, 0, len(view.Grants))
+	for _, grant := range view.Grants {
+		previous = append(previous, hostedMemberGrant{ProjectID: grant.ProjectID})
+	}
+	if err := s.validateHostedGrants(ctx, query, credential, previous); err != nil {
+		return err
+	}
+	return s.validateHostedInvitationGrants(ctx, query, credential, view.Email, grants)
 }
