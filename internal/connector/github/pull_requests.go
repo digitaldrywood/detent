@@ -824,7 +824,8 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 	}
 	var response restPullRequestMergeResponse
 	if err := c.client.REST(ctx, http.MethodPut, restPullRequestMergePath(repo, number), body, &response); err != nil {
-		err = ClassifyPullRequestMergeError(http.MethodPut, restPullRequestMergePath(repo, number), err)
+		err = classifyPullRequestMergeError(http.MethodPut, restPullRequestMergePath(repo, number), err,
+			"head branch is out of date", "base branch was modified")
 		if errors.Is(err, ErrRateLimited) {
 			return fmt.Errorf("merge github pull request: %w", err)
 		}
@@ -867,6 +868,10 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 }
 
 func ClassifyPullRequestMergeError(method, path string, err error) error {
+	return classifyPullRequestMergeError(method, path, err, "base branch was modified")
+}
+
+func classifyPullRequestMergeError(method, path string, err error, prefixes ...string) error {
 	if err == nil || errors.Is(err, ErrRateLimited) || method != http.MethodPut {
 		return err
 	}
@@ -889,8 +894,10 @@ func ClassifyPullRequestMergeError(method, path string, err error) error {
 		return err
 	}
 	message := strings.ToLower(strings.TrimSpace(response.Message))
-	if strings.HasPrefix(message, "head branch is out of date") || strings.HasPrefix(message, "base branch was modified") {
-		return fmt.Errorf("%s %s: %w: %w", method, path, connector.ErrPullRequestBaseOutOfDate, err)
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(message, prefix) {
+			return fmt.Errorf("%s %s: %w: %w", method, path, connector.ErrPullRequestBaseOutOfDate, err)
+		}
 	}
 	return err
 }

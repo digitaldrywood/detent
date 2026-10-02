@@ -55,7 +55,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		wantContinue       bool
 		err                error
 		wantInfrastructure bool
-		baseRace           bool
+		mergeMessage       string
 	}{
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a refused landing returns to review with the reason", landing: refused, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
@@ -63,8 +63,10 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "a conflict enters configured rework with human review", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
 		{name: "a protected refusal remains blocked without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "was not landed", wantMoves: 1},
 		{name: "unproven conflict retains landing retry without coding rework", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, err: projectionErr, wantInfrastructure: true},
-		{name: "base race retains reviewed landing without human review", baseRace: true, landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, wantInfrastructure: true},
-		{name: "base race retains reviewed landing with human review", baseRace: true, landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
+		{name: "base race retains reviewed landing without human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, wantInfrastructure: true},
+		{name: "base race retains reviewed landing with human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
+		{name: "strict head protection returns to review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
+		{name: "strict head protection blocks without human review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "Head branch is out of date", wantMoves: 1},
 		{name: "a conflict with absent configured rework is handed off", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Missing", wantDeferred: true},
 		{name: "a conflict with disallowed rework is handed off", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Human Review", "Done"}}, {Name: "Human Review"}, {Name: "Rework", Dispatchable: true}, {Name: "Done", Terminal: true}}, wantDeferred: true},
 		{name: "a conflict cannot enter operator-only rework", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework"}}, {Name: "Rework", Dispatchable: true, OperatorOnly: true}}, wantDeferred: true},
@@ -87,14 +89,21 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			branch := "detent/land"
 			landingHead := head
 			landed := *landed
-			if test.baseRace {
-				journey = newNativeLandingJourney(t, issue)
+			if test.mergeMessage != "" {
+				journey = newNativeLandingJourney(t, issue, test.mergeMessage)
 				result, runErr = journey.run(t)
 				branch, landingHead = journey.issue.BranchName, journey.target.HeadSHA
 				landed.HeadSHA = landingHead
-				var status *github.StatusError
-				if !errors.Is(runErr, connector.ErrPullRequestBaseOutOfDate) || !errors.As(runErr, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, "Base branch was modified. Review and try the merge again.") || !strings.Contains(runErr.Error(), "PUT repos/example/repo/pulls/7/merge") || !strings.Contains(runErr.Error(), journey.base) || !strings.Contains(runErr.Error(), landingHead) || len(journey.execution.recorded) != 0 {
-					t.Fatalf("base race lost refusal evidence or fabricated landing: result %#v, error %v", result, runErr)
+				if test.wantInfrastructure {
+					var status *github.StatusError
+					if !errors.Is(runErr, connector.ErrPullRequestBaseOutOfDate) || !errors.As(runErr, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.mergeMessage) || !strings.Contains(runErr.Error(), "PUT repos/example/repo/pulls/7/merge") || !strings.Contains(runErr.Error(), journey.base) || !strings.Contains(runErr.Error(), landingHead) || len(journey.execution.recorded) != 0 {
+						t.Fatalf("base race lost refusal evidence or fabricated landing: result %#v, error %v", result, runErr)
+					}
+				} else {
+					if runErr != nil || result.Output != runpkg.RunOutputNativeLandingRefused || result.NativeLanding.RefusalKind != workspace.LandRefusalProtected || !strings.Contains(result.NativeLanding.Refusal, test.mergeMessage) || !strings.Contains(result.NativeLanding.Refusal, "status 405") || result.NativeLanding.Landed || result.NativeLanding.MergeSHA != "" || len(journey.execution.recorded) != 0 || journey.provider.calls.Load() != 0 || journey.execution.started != 1 {
+						t.Fatalf("strict protection lost refusal ownership or fabricated landing: landing %#v, error %v", result.NativeLanding, runErr)
+					}
+					test.landing = result.NativeLanding
 				}
 			}
 			hubIssue := cloneIssue(issue)
@@ -111,7 +120,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				cfg.AutoPromote.HumanReview = &humanReview
 			}
 			cfg.AutoPromote.ReworkState = test.reworkState
-			cfg.Policy.Gates.GitHubPullRequest = test.wantInfrastructure
+			cfg.Policy.Gates.GitHubPullRequest = test.wantInfrastructure || journey != nil
 			attempts := &recordingWorkAttemptStore{}
 			scheduling := &hubSchedulingSource{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
@@ -124,7 +133,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			if test.landing != nil && !test.landing.Landed {
 				output = runpkg.RunOutputNativeLandingRefused
 			}
-			if !test.baseRace {
+			if journey == nil {
 				result = runpkg.RunResult{FinalState: FinalStateCompleted, FinalMessage: test.finalMessage, Output: output, NativeLanding: test.landing, WorkspaceBranch: branch}
 			}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
@@ -140,8 +149,8 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 					t.Fatalf("unproven conflict changed source ownership: retry %#v, updates %#v, state %#v", retry, tick.updates, state)
 				}
 				message := "Pull Request has merge conflicts"
-				if test.baseRace {
-					message = "Base branch was modified. Review and try the merge again."
+				if test.mergeMessage != "" {
+					message = test.mergeMessage
 				}
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity || !strings.Contains(attempts.completions[0].ErrorMessage, message) {
 					t.Fatalf("original refusal not preserved: %#v", attempts.completions)
@@ -168,7 +177,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 					t.Fatal("landing retry cannot use the existing forge probe")
 				}
 				retryResult := runpkg.RunResult{FinalState: FinalStateCompleted, Output: runpkg.RunOutputNativeLanded, NativeLanding: &landed, ForgeWriteCompleted: true}
-				if test.baseRace {
+				if journey != nil {
 					var err error
 					retryResult, err = journey.run(t)
 					if err != nil || retryResult.NativeLanding == nil || !retryResult.NativeLanding.Landed || len(journey.execution.recorded) != 1 || journey.execution.target != journey.target || journey.provider.calls.Load() != 0 || journey.execution.started != 2 {
@@ -207,6 +216,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				}
 				return
 			}
+			if journey != nil && (retried || len(state.ForgeUnavailable) != 0 || nativeLandingGit(t, journey.remote, "rev-parse", "refs/heads/main") == journey.merge) {
+				t.Fatalf("strict protection retained a base wait or landed without a receipt: retry %#v, state %#v", retry, state)
+			}
 			if len(tick.updates) != test.wantMoves || test.wantMoves == 1 && tick.updates[0].state != test.wantState {
 				t.Fatalf("lane updates = %#v, want %d to %s", tick.updates, test.wantMoves, test.wantState)
 			}
@@ -229,6 +241,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			}
 			if metadata["native_landed"] != test.landing.Landed || metadata["native_version_id"] != test.landing.VersionID || metadata["native_change_id"] != test.landing.ChangeID {
 				t.Fatalf("landing identity = %#v", metadata)
+			}
+			if journey != nil && metadata["native_head_sha"] != landingHead {
+				t.Fatalf("protection refusal lost reviewed head: %#v", metadata)
 			}
 			if !test.landing.Landed && (metadata["native_landing_refusal"] != test.landing.RefusalKind || metadata["native_merge_sha"] != nil) {
 				t.Fatalf("refusal became landing evidence: %#v", metadata)
