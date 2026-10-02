@@ -601,9 +601,31 @@ current grants are still enforced on every execution. Standalone native hubs wit
 an authenticated browser approval service return an opaque unavailable result for
 material operations; reads and ordinary commands retain their application boundaries.
 
-`workspace_terminal` and `workspace_file_read` return an authorized
-`unsupported_transport` result with workspace state/capabilities. They accept no
-shell, path or relay ticket. `stream_conversation_events` returns an authorized
+`workspace_file_list` lists one relative directory (empty `path` means the root),
+with at most 500 entries and an opaque `next_cursor`; pass that cursor back for the
+next page. `show_ignored` uses the runner's existing ignored-file policy.
+`workspace_file_read` requires a relative `path` and accepts a nonnegative byte
+`offset` and `length` from 1 to 32768 (default 32768). Results retain the runner's
+`path`, MIME, file `size`, `offset`, `data`, `encoding` (absent for UTF-8, `base64`
+for binary), and `truncated`. Decode base64 before advancing the offset by the
+returned byte count. These reads use the current project read and runners grants,
+workspace/subject ownership, lease/fencing and the existing runner file owner.
+Read-only workspaces remain readable; traversal, symlink escape and denied secret
+paths retain the existing refusals. No relay tickets, host paths or runner error
+messages are returned.
+
+Both tools return `status: available` with `result` for a successful page/chunk,
+including an empty directory. Non-serving/ended workspaces return `unavailable`
+with workspace state and an existing relay refusal `code`; a bound workspace
+without file capability returns `unsupported_transport`. Missing services, revoked
+credentials and transport timeout/failure remain safe errors, never fabricated
+empty results. Each exchange uses the existing ten-second relay timeout and stream
+limits and releases its stream on completion. The shared catalog supplies the same
+schemas to hosted HTTP MCP and stdio/application bridge clients.
+
+`workspace_terminal` still returns an authorized `unsupported_transport` result
+with workspace state/capabilities and accepts no shell input or relay ticket.
+`stream_conversation_events` returns an authorized
 snapshot/cursor and an explicit unsupported SSE transport result; poll bounded
 conversation history instead. Configured action runs and their output provide
 headless action execution using the existing runner dispatch.
