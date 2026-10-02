@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestReviewPlanIssuesUsesPersistedReworkSignature(t *testing.T) {
@@ -85,44 +86,64 @@ func TestReviewPlanIssuesUsesPersistedReworkSignature(t *testing.T) {
 
 func TestDispatchModeUsesPlanReviewTimelineProvenance(t *testing.T) {
 	t.Parallel()
-
-	issue := planReviewCommentIssue("issue-plan-dispatch", "comment-1")
-	issue.State = autoPromoteReworkState
-	issue.Comments = append(issue.Comments, connector.IssueComment{
-		Body: "Plan review routed this issue from Plan Review to Rework.",
-	})
-
-	tracker := &dependencyAutoUnblockConnector{}
-	metrics := &autoPromoteWorkflowMetricsRecorder{}
-	orch := planReviewTestOrchestrator(tracker, metrics)
-	state := newState(orch.cfg)
-
-	if got := orch.dispatchMode(context.Background(), &state, issue); got != runpkg.RunModeImplement {
-		t.Fatalf("dispatchMode() with only old prose comment = %q, want implement", got)
-	}
-
-	recordPlanReviewReworkSignatureEvent(t, metrics, issue, time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC))
-	freshState := newState(orch.cfg)
-	if got := orch.dispatchMode(context.Background(), &freshState, issue); got != runpkg.RunModePlan {
-		t.Fatalf("dispatchMode() with timeline provenance = %q, want plan", got)
-	}
-
-	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
-		ProjectID:    defaultWorkflowMetricsProjectID,
-		IssueID:      issue.ID,
-		Identifier:   issue.Identifier,
-		IssueURL:     issue.URL,
-		PhaseType:    store.WorkflowPhaseTypeLane,
-		PhaseName:    gate.DefaultPlanStop,
-		Reason:       "plan_worker_completed",
-		Status:       "entered",
-		StartedAt:    time.Date(2026, 7, 8, 15, 2, 0, 0, time.UTC),
-		MetadataJSON: "{}",
-	}); err != nil {
-		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
-	}
-	if got := orch.dispatchMode(context.Background(), &freshState, issue); got != runpkg.RunModeImplement {
-		t.Fatalf("dispatchMode() with stale plan provenance = %q, want implement", got)
+	for _, tt := range []struct {
+		name, supersedingLane, want   string
+		persisted, fallback, disabled bool
+	}{
+		{name: "ordinary rework", want: runpkg.RunModeImplement},
+		{name: "plan review rework", persisted: true, want: runpkg.RunModePlan},
+		{name: "in memory fallback", fallback: true, want: runpkg.RunModePlan},
+		{name: "stale plan provenance", persisted: true, supersedingLane: gate.DefaultPlanStop, want: runpkg.RunModeImplement},
+		{name: "superseded rework", persisted: true, supersedingLane: autoPromoteReworkState, want: runpkg.RunModeImplement},
+		{name: "persisted event overrides fallback", fallback: true, supersedingLane: autoPromoteReworkState, want: runpkg.RunModeImplement},
+		{name: "planning disabled", persisted: true, fallback: true, disabled: true, want: runpkg.RunModeImplement},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			at := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
+			issue := planReviewCommentIssue("issue-plan-dispatch", "comment-1")
+			issue.State = autoPromoteReworkState
+			issue.Comments = append(issue.Comments, connector.IssueComment{Body: "Plan review routed this issue from Plan Review to Rework."})
+			metrics := &autoPromoteWorkflowMetricsRecorder{}
+			orch := planReviewTestOrchestrator(&dependencyAutoUnblockConnector{}, metrics)
+			orch.cfg.Plan.Enabled = !tt.disabled
+			state := newState(orch.cfg)
+			if tt.fallback {
+				state.planRework[issue.ID] = struct{}{}
+			}
+			if tt.persisted {
+				recordPlanReviewReworkSignatureEvent(t, metrics, issue, at)
+			}
+			if tt.supersedingLane != "" {
+				if _, err := metrics.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
+					ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL,
+					PhaseType: store.WorkflowPhaseTypeLane, PhaseName: tt.supersedingLane,
+					Reason: "plan_worker_completed", Status: "entered", StartedAt: at.Add(2 * time.Minute), MetadataJSON: "{}",
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := orch.dispatchMode(t.Context(), &state, issue); got != tt.want {
+				t.Fatalf("dispatchMode = %q, want %q", got, tt.want)
+			}
+			state.BoardIssues = []connector.Issue{issue}
+			state.Pipeline = []connector.Issue{issue}
+			state.Running[issue.ID] = Running{Issue: issue}
+			state.Retry[issue.ID] = Retry{Issue: issue}
+			state.Blocked[issue.ID] = Blocked{Issue: issue}
+			state.Completed[issue.ID] = Completed{Issue: issue}
+			orch.publishState(&state)
+			published := orch.publishedState().clone()
+			orch.startCompletion(&state)
+			for _, observed := range []State{published, orch.publishedState()} {
+				snapshot := observed.Snapshot(at)
+				for _, row := range []telemetry.Issue{snapshot.BoardIssues[0], snapshot.Pipeline[0], snapshot.Running[0].Issue, snapshot.Queue[0].Issue, snapshot.Blocked[0].Issue, snapshot.Completed[0].Issue} {
+					if row.DispatchMode != tt.want {
+						t.Fatalf("snapshot dispatch mode = %q, want %q", row.DispatchMode, tt.want)
+					}
+				}
+			}
+		})
 	}
 }
 

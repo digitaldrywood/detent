@@ -104,9 +104,10 @@ func (s *Server) boardAgentIdentitiesForProject(snapshot telemetry.Snapshot, pro
 		}
 		role := boardSheetRole(snapshot, issue, configs[issue.ProjectID])
 		inputJSON, err := json.Marshal(struct {
-			Issue connector.Issue
-			Role  string
-		}{input, role})
+			Issue        connector.Issue
+			Role         string
+			DispatchMode string
+		}{input, role, issue.DispatchMode})
 		if err != nil {
 			continue
 		}
@@ -120,7 +121,12 @@ func (s *Server) boardAgentIdentitiesForProject(snapshot telemetry.Snapshot, pro
 			}
 			continue
 		}
-		identity, err := resolver.Identity(input)
+		var identity agentidentity.Identity
+		if issue.DispatchMode != "" {
+			identity, err = resolver.IdentityForMode(input, issue.DispatchMode)
+		} else {
+			identity, err = resolver.Identity(input)
+		}
 		stageIdentity := identity
 		if err == nil && role != "" && role != identity.Role {
 			var stageErr error
