@@ -2048,7 +2048,7 @@ so nothing needed pushing.
 #### The runner
 
 ```sh
-go build -o tmp/detent ./cmd/detent
+make app && go build -o tmp/detent ./cmd/detent
 mkdir -m 700 -p <private>/runner-identity
 tmp/detent hub runner init --hub-url http://127.0.0.1:57864 \
   --identity-file <private>/runner-identity/identity.json

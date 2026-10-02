@@ -779,9 +779,11 @@ each. These amend earlier sections; where they conflict, this section wins.
     linking to `/chat` when the conversation product is enabled. The
     single-tenant dashboard's operator chat drawer is a different product
     and stays as is.
-15. **Client tests gate the branch.** `make check` runs the client typecheck,
-    unit tests and a bundle drift check (`make app` must leave
-    `static/app/conversation` unchanged).
+15. **Build owners generate the client.** Feature commits carry source only.
+    `make check-app` retains source and attribution diagnostics in scheduled
+    validation, without a committed-output freshness requirement. Staging,
+    releases and private operator builds regenerate from their selected source;
+    prepared release source archives preserve Go-only end-user builds.
 16. **Delivered-after-revocation is deliberate.** A control accepted before
     the actor lost access is still delivered to the bound worker; acceptance
     is durable and the audit shows who sent it. The actor's later requests

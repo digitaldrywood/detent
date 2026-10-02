@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -449,7 +450,7 @@ func TestInstallScriptAbortsOnChecksumMismatch(t *testing.T) {
 	}
 }
 
-func TestInstallScriptFallsBackToGoInstallWhenReleaseAssetMissing(t *testing.T) {
+func TestInstallScriptBuildsPreparedSourceWhenReleaseAssetMissing(t *testing.T) {
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -457,33 +458,52 @@ func TestInstallScriptFallsBackToGoInstallWhenReleaseAssetMissing(t *testing.T) 
 		t.Fatalf("Getwd() error = %v", err)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/releases/latest" {
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"tag_name":"v1.2.3"}`)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
+	archiveName := "detent_1.2.3_source.tar.gz"
+	archive := tarArchive(t, map[string]string{
+		"detent_1.2.3_source/BUILD_LDFLAGS":                                    "-X main.version=1.2.3 -X main.commit=fixture",
+		"detent_1.2.3_source/static/app/conversation/app.js":                   "prepared-client",
+		"detent_1.2.3_source/static/app/conversation/app.css":                  "prepared-style",
+		"detent_1.2.3_source/static/app/conversation/chunks/lazy.js":           "prepared-lazy",
+		"detent_1.2.3_source/static/app/conversation/THIRD_PARTY_LICENSES.txt": "prepared-license",
+	})
 	tmp := t.TempDir()
+	releaseDir := filepath.Join(tmp, "release")
+	if err := os.MkdirAll(filepath.Join(releaseDir, "v1.2.3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(releaseDir, "releases"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string][]byte{
+		"releases/latest":                   []byte(`{"tag_name":"v1.2.3"}`),
+		"v1.2.3/" + archiveName:             archive,
+		"v1.2.3/detent_1.2.3_checksums.txt": []byte(archiveChecksum(archive) + "  " + archiveName + "\n"),
+	} {
+		if err := os.WriteFile(filepath.Join(releaseDir, name), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releaseURL := (&url.URL{Scheme: "file", Path: releaseDir}).String()
 	fakeBin := filepath.Join(tmp, "fakebin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
 		t.Fatalf("MkdirAll(fakebin) error = %v", err)
 	}
 	fakeGo := filepath.Join(fakeBin, "go")
 	fakeGoScript := `#!/usr/bin/env sh
-if [ "$1" = install ]; then
-mkdir -p "$GOBIN"
-cat > "$GOBIN/detent" <<'EOF'
+set -eu
+[ "$1" = build ]
+[ "$2" = -ldflags ]
+[ "$3" = "-X main.version=1.2.3 -X main.commit=fixture" ]
+[ "$4" = -o ]
+[ "$(cat static/app/conversation/app.js)" = prepared-client ]
+[ "$(cat static/app/conversation/app.css)" = prepared-style ]
+[ "$(cat static/app/conversation/chunks/lazy.js)" = prepared-lazy ]
+[ "$(cat static/app/conversation/THIRD_PARTY_LICENSES.txt)" = prepared-license ]
+cat > "$5" <<'EOF'
 #!/usr/bin/env sh
-printf 'go-install-ok\n'
+printf 'prepared-source-ok\n'
 EOF
-chmod 755 "$GOBIN/detent"
-exit 0
-fi
-exit 1
+chmod 755 "$5"
 `
 	if err := os.WriteFile(fakeGo, []byte(fakeGoScript), 0o755); err != nil {
 		t.Fatalf("WriteFile(fake go) error = %v", err)
@@ -494,8 +514,8 @@ exit 1
 	env := append(os.Environ(),
 		"HOME="+tmp,
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"DETENT_GITHUB_API_BASE="+server.URL,
-		"DETENT_RELEASE_DOWNLOAD_BASE="+server.URL,
+		"DETENT_GITHUB_API_BASE="+releaseURL,
+		"DETENT_RELEASE_DOWNLOAD_BASE="+releaseURL,
 		"DETENT_INSTALL_DIR="+installDir,
 		"DETENT_INSTALL_MODE=release",
 		"DETENT_STATE_DIR="+stateDir,
@@ -517,8 +537,8 @@ exit 1
 	if err != nil {
 		t.Fatalf("installed fallback binary error = %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
 	}
-	if stdout != "go-install-ok\n" {
-		t.Fatalf("installed fallback binary stdout = %q, want go-install-ok", stdout)
+	if stdout != "prepared-source-ok\n" {
+		t.Fatalf("installed fallback binary stdout = %q, want prepared-source-ok", stdout)
 	}
 }
 
@@ -575,26 +595,28 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 
 func detentArchive(t *testing.T, content string) []byte {
 	t.Helper()
+	return tarArchive(t, map[string]string{"detent": content})
+}
 
+func tarArchive(t *testing.T, files map[string]string) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	header := &tar.Header{
-		Name: "detent",
-		Mode: 0o755,
-		Size: int64(len(content)),
-	}
-	if err := tw.WriteHeader(header); err != nil {
-		t.Fatalf("WriteHeader() error = %v", err)
-	}
-	if _, err := tw.Write([]byte(content)); err != nil {
-		t.Fatalf("Write() error = %v", err)
+	for name, content := range files {
+		header := &tar.Header{Name: name, Mode: 0o755, Size: int64(len(content))}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := tw.Close(); err != nil {
-		t.Fatalf("tar Close() error = %v", err)
+		t.Fatal(err)
 	}
 	if err := gz.Close(); err != nil {
-		t.Fatalf("gzip Close() error = %v", err)
+		t.Fatal(err)
 	}
 	return buf.Bytes()
 }

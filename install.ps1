@@ -3,7 +3,6 @@ $ProgressPreference = 'SilentlyContinue'
 
 $Repo = 'digitaldrywood/detent'
 $ProjectName = 'detent'
-$ModulePackage = 'github.com/digitaldrywood/detent/cmd/detent'
 $Headers = @{ 'User-Agent' = 'detent-installer' }
 $ApiBase = if ($env:DETENT_GITHUB_API_BASE) { $env:DETENT_GITHUB_API_BASE } else { "https://api.github.com/repos/$Repo" }
 $DownloadBase = if ($env:DETENT_RELEASE_DOWNLOAD_BASE) { $env:DETENT_RELEASE_DOWNLOAD_BASE } else { "https://github.com/$Repo/releases/download" }
@@ -330,7 +329,7 @@ function Install-Release {
 
 	$tag = Get-ReleaseTag
 	if (-not $tag) {
-		Write-Warning 'Could not resolve the latest Detent release; falling back to go install'
+		Write-Warning 'Could not resolve the latest Detent release; falling back to prepared source'
 		return $false
 	}
 
@@ -338,7 +337,7 @@ function Install-Release {
 	$checksums = Join-Path $TmpDir 'checksums.txt'
 	$assetName = Save-ReleaseArchive $tag $tag $Arch $archive
 	if (-not $assetName) {
-		Write-Warning "No Detent release asset found for $tag windows/$Arch; falling back to go install"
+		Write-Warning "No Detent release asset found for $tag windows/$Arch; falling back to prepared source"
 		return $false
 	}
 
@@ -364,42 +363,43 @@ function Install-Release {
 	return $true
 }
 
-function Install-Go {
-	$version = if ($env:DETENT_VERSION) { $env:DETENT_VERSION } else { 'latest' }
-	if (-not (Test-Command 'go')) {
-		Abort 'Cannot install Detent: release asset unavailable and go is not installed'
-	}
-
-	$goBin = Join-Path $TmpDir 'go-bin'
-	New-Item -ItemType Directory -Force -Path $goBin | Out-Null
-
-	$previousGoBin = $env:GOBIN
+function Install-Source {
+	if (-not (Test-Command 'go')) { Abort 'Prepared source builds require Go' }
+	if (-not (Test-Command 'tar')) { Abort 'Prepared source builds require tar' }
+	$tag = Get-ReleaseTag
+	if (-not $tag) { Abort 'Could not resolve the Detent source release' }
+	$version = $tag.TrimStart('v')
+	$assetName = "${ProjectName}_${version}_source.tar.gz"
+	$archive = Join-Path $TmpDir 'source.tar.gz'
+	$checksums = Join-Path $TmpDir 'source-checksums.txt'
+	Save-Url (Join-Url $DownloadBase "$tag/$assetName") $archive
+	if (-not (Save-Checksums $tag $version $checksums)) { Abort 'Could not download source release checksums' }
+	Assert-Checksum $archive $checksums $assetName
+	$sourceDir = Join-Path $TmpDir 'source'
+	New-Item -ItemType Directory -Path $sourceDir -Force | Out-Null
+	& tar -xzf $archive -C $sourceDir --strip-components=1
+	if ($LASTEXITCODE -ne 0) { Abort 'Could not unpack prepared source' }
+	$identity = Join-Path $sourceDir 'BUILD_LDFLAGS'
+	if (-not (Test-Path -LiteralPath $identity -PathType Leaf)) { Abort 'Prepared source archive is missing build identity' }
+	$ldflags = (Get-Content -LiteralPath $identity -Raw).Trim()
+	Push-Location $sourceDir
 	try {
-		$env:GOBIN = $goBin
-		& go install "$ModulePackage@$version"
-		if ($LASTEXITCODE -ne 0) {
-			Abort 'go install failed'
-		}
+		& go build -ldflags $ldflags -o (Join-Path $TmpDir 'detent.exe') ./cmd/detent
+		if ($LASTEXITCODE -ne 0) { Abort 'Prepared source build failed' }
 	} finally {
-		$env:GOBIN = $previousGoBin
+		Pop-Location
 	}
-
-	$binary = Join-Path $goBin 'detent.exe'
-	if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
-		Abort 'go install did not produce detent.exe'
-	}
-	Copy-Item -LiteralPath $binary -Destination (Join-Path $TmpDir 'detent.exe') -Force
 }
 
-function Install-ReleaseOrGo {
+function Install-ReleaseOrSource {
 	if ($TargetArch) {
 		if (Install-Release $TargetArch) {
 			return
 		}
 	} else {
-		Write-Warning 'No supported Windows release target detected; falling back to go install'
+		Write-Warning 'No supported Windows release target detected; falling back to prepared source'
 	}
-	Install-Go
+	Install-Source
 }
 
 function Split-PathList {
@@ -465,9 +465,9 @@ if ($TargetArch) {
 New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 try {
 	switch ($InstallMode) {
-		'auto' { Install-ReleaseOrGo; break }
-		'release' { Install-ReleaseOrGo; break }
-		'go' { Install-Go; break }
+		'auto' { Install-ReleaseOrSource; break }
+		'release' { Install-ReleaseOrSource; break }
+		'go' { Install-Source; break }
 		default { Abort "Unknown DETENT_INSTALL_MODE: $InstallMode" }
 	}
 

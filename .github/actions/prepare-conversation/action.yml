@@ -1,0 +1,12 @@
+name: Prepare conversation assets
+description: Build embed inputs from the checked-out conversation source and lockfile
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v6
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: web/conversation/package-lock.json
+    - shell: bash
+      run: make app
