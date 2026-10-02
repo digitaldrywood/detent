@@ -1654,12 +1654,13 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 	}
-	var recoveryState *workspace.RecoveryState
+	recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
+	var promptRecoveryState *workspace.RecoveryState
 	initialDeliverableState := workspaceDeliverableStateObservation{}
 	initialArtifactEvidence := workspaceArtifactEvidenceObservation{}
 	var targetRefObserver func(context.Context) *DeliverableTargetRefEvidence
 	if mode == RunModeImplement {
-		recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
+		promptRecoveryState = recoveryState
 		initialDeliverableState = r.observeWorkspaceDeliverableState(runWorkspace, ctx, info, workspaceIssue, "initial")
 		if workflow.Config.Deliverable.Kind == config.DeliverableArtifact {
 			initialArtifactEvidence = r.observeWorkspaceArtifactEvidence(runWorkspace, ctx, info, workspaceIssue, "initial")
@@ -1689,7 +1690,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		DispatchTargetState:  req.DispatchTargetState,
 		AvailableSkills:      availableSkills,
 		PriorAttempt:         req.PriorAttempt,
-		RecoveryState:        recoveryState,
+		RecoveryState:        promptRecoveryState,
 	}
 	var prompt string
 	if mode == RunModeRoutine && req.Admission != nil {
