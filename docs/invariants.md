@@ -17,6 +17,19 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Inherited host subscription pacing (native #228) remains an operator scheduling
+choice, not execution authority. Policy hashing canonicalizes only its effective
+value to the historical default representation, and the existing live reload
+applies the actual validated pacing without changing approved default policy or
+immutable version identities. Source and prompt hashes, models, validation,
+security, runner selectors and routing authority remain pinned. Authored workflow
+or overlay edits still change source identity and require normal approval.
+Existing approvals made with nondefault effective pacing need genuine reapproval
+after canonicalization; descriptor matching gains no cross-identity exception.
+`TestRunnerPolicyUpgradeKeepsApprovedID`,
+`TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit` and
+`TestProjectPolicyReloadAndGateIsolation` cover these boundaries.
+
 The fleet capacity display (native #225) groups runner identities by the existing
 machine ledger identity. Each physical host contributes capacity once, and every
 visible lease remains running even when its runner drains. Free capacity respects

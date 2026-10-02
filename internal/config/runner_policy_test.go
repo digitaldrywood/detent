@@ -46,6 +46,14 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		match  bool
 	}{
 		{"unchanged upgrade", func(*Workflow) {}, true},
+		{"host pacing off", func(w *Workflow) {
+			w.Config.Agent.RateWindowPacing = RateWindowPacing{Mode: RateWindowPacingOff}.Normalized()
+		}, true},
+		{"host pacing floor", func(w *Workflow) {
+			w.Config.Agent.RateWindowPacing = RateWindowPacing{Mode: RateWindowPacingFloor, FloorPercent: 35}.Normalized()
+		}, true},
+		{"host pacing freshness", func(w *Workflow) { w.Config.Agent.RateWindowPacing.StaleAfterSeconds = 600 }, true},
+		{"model selection", func(w *Workflow) { w.Config.Agents.ModelSelection.NormalModel = new("gpt-6-sol") }, false},
 		{"empty extra domains", func(w *Workflow) { w.Config.Worker.ExtraNetworkDomains = []string{} }, true},
 		{"project domain grant", func(w *Workflow) {
 			w.Config.Worker.ExtraNetworkDomains = []string{"fonts.googleapis.com", "fonts.gstatic.com"}
@@ -71,6 +79,7 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 			candidate := workflow
 			test.change(&candidate)
 			optoutLabel := candidate.Config.Agent.AutoPromote.OptoutLabel
+			pacing := candidate.Config.Agent.RateWindowPacing
 			current, err := ResolvePolicy(candidate)
 			if err != nil {
 				t.Fatal(err)
@@ -81,11 +90,34 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 			if err := current.Match(approved); (err == nil) != test.match {
 				t.Fatalf("upgraded policy match = %v, want match %t (config digest %s)", err, test.match, current.ConfigDigest)
 			}
+			if candidate.Config.Agent.RateWindowPacing != pacing {
+				t.Fatal("policy resolution changed runtime pacing")
+			}
 			if candidate.Config.Agent.AutoPromote.OptoutLabel != optoutLabel {
 				t.Fatal("policy resolution changed the runtime opt-out label")
 			}
 		})
 	}
+	for _, legacyDigest := range []string{
+		"64781f2210b0388368f365317cd9eae84869403c9da2d6f517675bcd45582808",
+		"433e272c428e2239be1a6ceb1275419d3f43c5a2cdcbf1c6061fecb91c54135a",
+		"9042ea475c8d207ccffc8c3edca499fefb0e341264a88163767e486294d3ac4d",
+	} {
+		legacy := approved
+		legacy.ConfigDigest = legacyDigest
+		legacy = legacy.WithID()
+		if err := legacy.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		current, err := ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Match(legacy) == nil {
+			t.Fatal("legacy nondefault pacing approval matched a different policy identity")
+		}
+	}
+
 }
 
 func TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit(t *testing.T) {

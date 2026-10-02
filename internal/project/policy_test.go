@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type policyTestScheduling struct {
@@ -172,23 +174,47 @@ func TestProjectPolicyReloadAndGateIsolation(t *testing.T) {
 			if err := p.updateLiveConfig(t.Context(), cfg); err != nil {
 				t.Fatalf("unchanged host settings: %v", err)
 			}
-			for _, field := range []string{"active hours", "rate pacing"} {
-				t.Run(field, func(t *testing.T) {
-					changed := cfg
-					if field == "active hours" {
-						changed.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}
-					} else {
-						changed.GlobalRateWindowPacing = workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingOff}
-					}
-					if err := p.updateLiveConfig(t.Context(), changed); err == nil || !strings.Contains(err.Error(), "policy_mismatch") {
-						t.Fatalf("host policy change = %v", err)
-					}
-					if p.Workflow().Config.Policy.ID != descriptor.ID {
-						t.Fatal("host reload changed approved policy")
-					}
-				})
+			changed := cfg
+			changed.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}
+			if err := p.updateLiveConfig(t.Context(), changed); err == nil || !strings.Contains(err.Error(), "policy_mismatch") {
+				t.Fatalf("active hours policy change = %v", err)
 			}
-			for _, change := range []string{"invalid", "review relaxation", "privileged runner", "newly approved revision"} {
+			version := tracker.ChangeVersion{
+				ChangeVersionInput: tracker.ChangeVersionInput{PolicyID: descriptor.ID, HeadSHA: strings.Repeat("c", 40)},
+				ID:                 "version_pending", Policy: descriptor,
+				ReviewPolicy: tracker.ChangeReviewPolicy{PolicyID: descriptor.ID},
+			}
+			versionBefore, err := json.Marshal(version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, pacing := range []workflowconfig.RateWindowPacing{
+				{Mode: workflowconfig.RateWindowPacingOff},
+				{Mode: workflowconfig.RateWindowPacingFloor, FloorPercent: 35, StaleAfterSeconds: 600},
+				workflowconfig.DefaultRateWindowPacing(),
+			} {
+				changed := cfg
+				changed.GlobalRateWindowPacing = pacing.Normalized()
+				if err := p.updateLiveConfig(t.Context(), changed); err != nil {
+					t.Fatalf("approved pacing reload = %v", err)
+				}
+				current := p.Workflow()
+				if current.Config.Agent.RateWindowPacing != changed.GlobalRateWindowPacing || current.Config.Policy.ID != descriptor.ID {
+					t.Fatalf("runtime/policy reload = %#v", current.Config.Agent)
+				}
+				resolved, err := ResolvePolicy(changed, current)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := version.Policy.Match(resolved); err != nil || version.PolicyID != resolved.ID || version.ReviewPolicy.PolicyID != resolved.ID {
+					t.Fatalf("pending version policy changed: %v", err)
+				}
+				versionAfter, err := json.Marshal(version)
+				if err != nil || string(versionAfter) != string(versionBefore) {
+					t.Fatalf("immutable pending version changed: %v", err)
+				}
+			}
+			for _, change := range []string{"invalid", "review relaxation", "privileged runner", "model selection", "source instructions", "newly approved revision"} {
 				t.Run(change, func(t *testing.T) {
 					proposal := workflow
 					update := configwatcher.Update{Path: cfg.Workflow, Workflow: proposal}
@@ -199,6 +225,10 @@ func TestProjectPolicyReloadAndGateIsolation(t *testing.T) {
 						update.Workflow.Config.Gate.Kind = gate.KindArtifact
 					case "privileged runner":
 						update.Workflow.Config.Runners = workflowconfig.Runners{Profile: "privileged", Profiles: map[string]policy.Requirements{"privileged": {RequiredTags: []string{"production"}}}}
+					case "model selection":
+						update.Workflow.Config.Agents.ModelSelection.NormalModel = new("gpt-6-sol")
+					case "source instructions":
+						update.Workflow.SourceHash = policy.Digest([]byte("changed instructions"))
 					case "newly approved revision":
 						update.Workflow.Definition.Revision = strings.Repeat("b", 40)
 						approved, err := ResolvePolicy(cfg, update.Workflow)

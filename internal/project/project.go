@@ -608,7 +608,7 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 	}
 	workflow.Config.ActiveHours = EffectiveActiveHours(cfg, p.workflowActiveHours)
 	workflow.Config.Agent.RateWindowPacing = effectiveRateWindowPacing(cfg, workflow.Config)
-	if workflow.Config.Policy.ID != "" && (!reflect.DeepEqual(workflow.Config.ActiveHours, p.workflow.Config.ActiveHours) || workflow.Config.Agent.RateWindowPacing != p.workflow.Config.Agent.RateWindowPacing || !reflect.DeepEqual(workflow.Config.Agents, p.workflow.Config.Agents) || workflow.Config.Budget.PricingPath != p.workflow.Config.Budget.PricingPath) {
+	if workflow.Config.Policy.ID != "" && (!reflect.DeepEqual(workflow.Config.ActiveHours, p.workflow.Config.ActiveHours) || !reflect.DeepEqual(workflow.Config.Agents, p.workflow.Config.Agents) || workflow.Config.Budget.PricingPath != p.workflow.Config.Budget.PricingPath) {
 		p.mu.Unlock()
 		return errors.New("policy_mismatch: host execution overrides changed; approve the effective descriptor and restart Detent before applying them")
 	}
