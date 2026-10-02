@@ -118,11 +118,13 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	}
 	issue.Dependencies = []tracker.NativeWorkItemID{}
 	issue.Blockers = []tracker.NativeDependency{}
+	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+	args := append([]any{internalID, scope.organization}, grantArgs...)
 	rows, err := query.QueryContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0) FROM issue_dependencies d JOIN issues i ON i.id = d.blocker_issue_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE d.dependent_issue_id = ? AND i.organization_id = ?
-AND (? = 1 OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = ? AND g.organization_id = i.organization_id AND g.project_id = i.project_id))
-ORDER BY i.native_id`, internalID, scope.organization, scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly, scope.credential.ID)
+AND (`+condition+`)
+ORDER BY i.native_id`, args...)
 	if err != nil {
 		return issue, 0, err
 	}

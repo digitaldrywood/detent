@@ -38,6 +38,7 @@ type Input struct {
 	Revoke         bool     `json:"revoke,omitempty"`
 	CredentialID   string   `json:"credential_id,omitempty"`
 	Scopes         []string `json:"scopes,omitempty"`
+	ProjectAccess  string   `json:"project_access,omitempty"`
 	ProjectIDs     []string `json:"project_ids,omitempty"`
 	ExpiresIn      string   `json:"expires_in,omitempty"`
 	Grace          string   `json:"grace,omitempty"`

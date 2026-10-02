@@ -250,10 +250,9 @@ func (d *database) authorizeNativeProject(ctx context.Context, scope nativeScope
 	var count int
 	query := "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?"
 	args := []any{scope.organization, scope.project}
-	if scope.credential.Scope != apiScopeAdmin || scope.credential.NativeOnly {
-		query += " AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = ? AND g.organization_id = projects.organization_id AND g.project_id = projects.id)"
-		args = append(args, scope.credential.ID)
-	}
+	condition, grantArgs := scope.credential.projectGrantSQL("projects.organization_id", "projects.id")
+	query += " AND (" + condition + ")"
+	args = append(args, grantArgs...)
 	if err := d.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		return err
 	}
