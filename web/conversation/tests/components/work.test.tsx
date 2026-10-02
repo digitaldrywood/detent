@@ -2,7 +2,7 @@
 //
 // The work surfaces' components: the board card, the lane, the list row, the
 // issue card's pills and the review dock's tabs.
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +28,13 @@ import { WorkList } from "../../src/app/work/components/WorkList.tsx";
 import { StatsRow } from "../../src/app/work/components/StatsRow.tsx";
 import { toAttemptView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
 import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../../src/app/work/lib/model.ts";
+
+import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
+import { ClientContext } from "../../src/app/client.ts";
+import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
+import { parseViewState, serializeViewState, type WorkPage } from "../../src/app/work/lib/viewState.ts";
+import { resetRunnerNamesForTests } from "../../src/app/work/lib/runnerNames.ts";
+import { workPaginationFixture } from "../workPaginationFixture.ts";
 
 afterEach(cleanup);
 
@@ -453,16 +460,21 @@ describe("the stats row", () => {
       item({ id: "d", state: "Done", blockedBy: [] }),
     ];
     const stats = boardStats(items, LANES);
-    render(<StatsRow stats={stats} truncated={false} enriched={2} />);
+    render(<StatsRow stats={stats} truncated={false} loadedCount={4} loading={false} />);
     expect(screen.getByTestId("stat-running").textContent).toContain("1");
     expect(screen.getByTestId("stat-blocked").textContent).toContain("1");
     expect(screen.getByTestId("stat-completed").textContent).toContain("1");
-    expect(screen.getByTestId("stat-coverage").textContent).toContain("4 issues");
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("4 shown / 4 loaded items");
   });
 
-  it("says when it is only looking at the first page", () => {
-    render(<StatsRow stats={boardStats([], LANES)} truncated enriched={0} />);
-    expect(screen.getByTestId("stat-coverage").textContent).toContain("first page");
+  it("qualifies zero activity and preserves observation coverage on partial pages", () => {
+    const items = ["known", "unchecked", "unavailable", "partial"].map((observation, index) => item({
+      id: String(index), observations: { worker: observation, change: observation } as WorkItemView["observations"],
+    }));
+    render(<StatsRow stats={boardStats(items, LANES)} truncated loadedCount={100} loading={false} />);
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("page subset");
+    expect(screen.getByTestId("stat-running").textContent).toBe("0observed running");
+    expect(screen.getByTestId("stat-coverage").textContent).toContain("1 known · 1 unchecked · 1 unavailable · 1 partial");
   });
 });
 
@@ -637,5 +649,168 @@ describe("the Diff surface's source order", () => {
       getWorkItemDiff: () => Promise.resolve({ diff: { ...ATTEMPT_DIFF, files: [] } }),
     } as unknown as Parameters<typeof readAttemptDiff>[0];
     await expect(readAttemptDiff(http, "prj_8c1d", "wi_3363")).resolves.toBeNull();
+  });
+});
+
+vi.mock("../../src/app/App.tsx", () => ({
+  useShell: () => ({ connection: { tone: "dc-ok", label: "Connected", detail: null, tooltip: "Fixture" } }),
+}));
+
+afterEach(() => { vi.unstubAllGlobals(); globalThis.localStorage.clear(); resetRunnerNamesForTests(); });
+
+async function pagedWork(path = "/work") {
+  const fixture = workPaginationFixture();
+  await fixture.control();
+  vi.stubGlobal("fetch", fixture.fetch);
+  const root = createRootRoute({ component: Outlet });
+  const all = createRoute({ getParentRoute: () => root, path: "/work", component: () => <WorkBoard projectId={null} /> });
+  const project = createRoute({ getParentRoute: () => root, path: "/work/p/$projectId", component: () => {
+    const { projectId } = project.useParams();
+    return <WorkBoard projectId={projectId} />;
+  } });
+  const history = createMemoryHistory({ initialEntries: [path] });
+  const router = createRouter({ routeTree: root.addChildren([all, project]), history });
+  render(<ClientContext.Provider value={fixture.client}><RouterProvider router={router} /></ClientContext.Provider>);
+  return { ...fixture, router, history };
+}
+
+async function settledPage(project = "proj_alpha", number = 1) {
+  await waitFor(() => {
+    expect(screen.getByTestId(`work-page-${project}`).textContent).toContain(`Page ${number}`);
+    expect(screen.getByTestId("work-stats").textContent).toContain("Current pages");
+  });
+}
+
+describe("the paged Work surface", () => {
+  it("reaches a later-page worker in both views with scoped search, coverage and navigation", async () => {
+    const { router, requests, history } = await pagedWork();
+    await settledPage();
+    expect(screen.queryByText("Observed later-page worker")).toBeNull();
+    expect(screen.getByTestId("stat-running").textContent).toBe("0observed running");
+    expect(screen.getByTestId("stat-coverage").textContent).toMatch(/unchecked.*1 unavailable.*1 partial/);
+    expect(screen.getAllByTestId("issue-card").some((card) => card.title.includes("Worker observation: unavailable"))).toBe(true);
+    expect(screen.getByText(/Search, sorting and multi-value filters apply to the loaded pages/)).not.toBeNull();
+    const reads = () => requests.filter((request) => request.url.pathname.endsWith("/work-items"));
+    const beforeSearch = reads().length;
+    fireEvent.change(screen.getByTestId("work-search"), { target: { value: "later-page worker" } });
+    await waitFor(() => expect(parseViewState(router.state.location.searchStr).q).toBe("later-page worker"));
+    expect(reads()).toHaveLength(beforeSearch);
+    expect(screen.queryByText("Observed later-page worker")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
+    await settledPage("proj_alpha", 2);
+    expect(await screen.findByText("Observed later-page worker")).not.toBeNull();
+    expect(screen.getByTestId("stat-running").textContent).toBe("1observed running");
+    const pages = parseViewState(router.state.location.searchStr).pages;
+    const secondReads = reads().length;
+    fireEvent.click(screen.getByRole("radio", { name: "List" }));
+    await screen.findByTestId("work-list");
+    expect(parseViewState(router.state.location.searchStr).pages).toEqual(pages);
+    expect(reads()).toHaveLength(secondReads);
+    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "alpha: Previous page" }));
+    await settledPage();
+    expect(screen.queryByText("Observed later-page worker")).toBeNull();
+    expect(parseViewState(router.state.location.searchStr).q).toBe("later-page worker");
+    await act(() => history.back());
+    await settledPage("proj_alpha", 2);
+    fireEvent.change(screen.getByTestId("work-search"), { target: { value: "" } });
+    await waitFor(() => expect(screen.getByTestId("stat-completed").textContent).toBe("1terminal items"));
+    fireEvent.click(screen.getByRole("radio", { name: "Board" }));
+    await screen.findByTestId("work-board");
+    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
+    expect(reads().every((request) => request.url.searchParams.get("limit") === "100")).toBe(true);
+    fireEvent.click(screen.getByTestId("filters-trigger"));
+    fireEvent.click(await screen.findByTestId("filter-state-In Progress"));
+    await settledPage();
+    expect(parseViewState(router.state.location.searchStr).pages).toEqual({});
+    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
+    expect(reads().findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("state")).toBe("In Progress");
+  });
+
+  it.each(["malformed", "cross-project", "expired", "revoked"])("refuses %s scope without retaining stale cards", async (refusal) => {
+    const { router, control } = await pagedWork();
+    await settledPage();
+    fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
+    await settledPage("proj_alpha", 2);
+    const view = parseViewState(router.state.location.searchStr);
+    if (refusal === "revoked" || refusal === "expired") {
+      await control({ [refusal]: true });
+      fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    } else {
+      const entry = view.pages!.proj_alpha!;
+      const pages: Record<string, WorkPage> = refusal === "malformed"
+        ? { proj_alpha: { ...entry, cursor: "malformed+/=" } } : { proj_beta: entry };
+      await act(() => router.navigate({ to: "/work", search: { ...Object.fromEntries(new URLSearchParams(serializeViewState({ ...view, pages }))), pages } }));
+    }
+    expect(await screen.findByTestId("work-error")).not.toBeNull();
+    expect(screen.queryByTestId("issue-card")).toBeNull();
+    expect(screen.queryByTestId("work-list-row")).toBeNull();
+    expect(screen.getByTestId("stat-running").textContent).toBe("0observed running");
+    if (refusal !== "revoked") {
+      await control();
+      const project = refusal === "cross-project" ? "beta" : "alpha";
+      fireEvent.click(screen.getByRole("button", { name: `${project}: First page` }));
+      await settledPage(refusal === "cross-project" ? "proj_beta" : "proj_alpha");
+      expect(screen.queryByTestId("work-error")).toBeNull();
+    }
+  });
+
+  it("restores a linked page without replaying earlier pages", async () => {
+    const first = await pagedWork();
+    await settledPage();
+    fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
+    await settledPage("proj_alpha", 2);
+    const path = first.router.state.location.href;
+    cleanup();
+    resetRunnerNamesForTests();
+    const restored = await pagedWork(path);
+    await settledPage("proj_alpha", 2);
+    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
+    const reads = restored.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items"));
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((request) => request.url.searchParams.has("cursor"))).toBe(true);
+    expect((screen.getByRole("button", { name: "alpha: Previous page" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "alpha: First page" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("aborts a stale page and resets cursors when a server filter changes", async () => {
+    const fixture = await pagedWork();
+    await settledPage();
+    const deferred = fixture.deferPage();
+    fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
+    await deferred.waiting;
+    const pending = fixture.requests.findLast((request) => request.url.searchParams.has("cursor"))!;
+    fireEvent.click(screen.getByTestId("work-archived"));
+    await settledPage();
+    expect(pending.signal?.aborted).toBe(true);
+    expect(parseViewState(fixture.router.state.location.searchStr).pages).toEqual({});
+    await act(async () => { deferred.release(); });
+    expect(screen.queryByText("Observed later-page worker")).toBeNull();
+    expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("archived")).toBe("true");
+    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/attempts")).every((request) => request.url.searchParams.get("limit") === "10")).toBe(true);
+  });
+
+  it("refreshes only selected pages after activity within the observation budget", async () => {
+    const sources: EventTarget[] = [];
+    vi.stubGlobal("EventSource", class extends EventTarget {
+      readyState = 1;
+      constructor() { super(); sources.push(this); }
+      close() {}
+    });
+    const fixture = await pagedWork();
+    await settledPage();
+    act(() => { for (const source of sources) source.dispatchEvent(new MessageEvent("activity", { data: "40" })); });
+    await settledPage();
+    fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
+    await settledPage("proj_alpha", 2);
+    const before = fixture.requests.length;
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "41" })));
+    await waitFor(() => expect(fixture.requests.slice(before).some((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toBe(true));
+    await settledPage("proj_alpha", 2);
+    const refreshed = fixture.requests.slice(before);
+    expect(refreshed.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items")).every((request) => request.url.searchParams.has("cursor"))).toBe(true);
+    expect(refreshed.filter((request) => request.url.pathname.endsWith("/attempts")).length).toBeLessThanOrEqual(24);
+    expect(refreshed.filter((request) => request.url.pathname.endsWith("/changes")).length).toBeLessThanOrEqual(24);
+    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
   });
 });

@@ -8,13 +8,13 @@
 import React from "react";
 
 import type { BootstrapProject } from "../../../contracts/index.ts";
-import type { NativeAttempt, NativeIssue, NativeProject } from "../../../contracts/work.ts";
+import { priorityValue, type NativeAttempt, type NativeIssue, type NativeProject } from "../../../contracts/work.ts";
 import { useClient } from "../../client.ts";
 import { useRunnerNames } from "./runnerNames.ts";
 import { toChangeView, toProjectView, toWorkItemView } from "./fromWire.ts";
 import type { Lane, ProjectView, WorkItemView } from "./model.ts";
 import { makeWorkHttp, newWorkKey, serverFilter, type WorkHttp, WorkApiError } from "./workHttp.ts";
-import type { WorkViewState } from "./viewState.ts";
+import type { WorkPage, WorkViewState } from "./viewState.ts";
 
 /** One `WorkHttp` per client. A second one would only duplicate the config. */
 export function useWorkHttp(): WorkHttp {
@@ -74,7 +74,16 @@ async function pooled<A, B>(
   return results;
 }
 
+export interface BoardPage {
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly number: number;
+  readonly nextCursor?: string;
+  readonly previous?: WorkPage | null;
+}
+
 export interface BoardState {
+  readonly pages: readonly BoardPage[];
   readonly loading: boolean;
   readonly error: string | null;
   /** Null in the all-projects scope, where lanes are the union of every one. */
@@ -84,9 +93,7 @@ export interface BoardState {
   readonly labels: readonly string[];
   readonly assignees: readonly string[];
   readonly priorities: readonly string[];
-  /** True when the hub returned a cursor this load did not follow. */
   readonly truncated: boolean;
-  /** How many issues carry live attempt and change data. */
   readonly enriched: number;
   readonly asOf: number | null;
   /** The activity sequence from the hosted stream, or null when not streaming. */
@@ -97,15 +104,16 @@ export interface BoardState {
 interface Loaded {
   readonly project: NativeProject;
   readonly issues: readonly NativeIssue[];
-  readonly truncated: boolean;
+  readonly nextCursor?: string;
 }
 
 async function loadProject(
   http: WorkHttp,
   projectId: string,
   view: WorkViewState,
+  signal: AbortSignal,
 ): Promise<Loaded> {
-  const project = await http.getProject(projectId);
+  const project = await http.getProject(projectId, signal);
   const page = await http.listWorkItems({
     projectId,
     limit: PAGE_LIMIT,
@@ -115,12 +123,16 @@ async function loadProject(
     archived: view.archived === true,
     label: serverFilter(view.label),
     assignee: serverFilter(view.assignee),
-    priority: undefined,
+    priority: serverFilter(view.priority) === undefined || priorityValue(view.priority[0]!) === null
+      ? undefined
+      : String(priorityValue(view.priority[0]!)),
+    cursor: view.pages?.[projectId]?.cursor,
+    signal,
   });
   return {
     project,
     issues: page.items,
-    truncated: page.next_cursor !== undefined,
+    nextCursor: page.next_cursor,
   };
 }
 
@@ -147,7 +159,9 @@ export function useBoard(
   const http = useWorkHttp();
   const runnerNames = useRunnerNames();
   const projects: readonly BootstrapProject[] = client.bootstrap.projects;
-  const [state, setState] = React.useState<BoardState>({
+  const [state, setState] = React.useState<BoardState & { requestKey: string }>({
+    requestKey: "",
+    pages: [],
     loading: true,
     error: null,
     project: null,
@@ -167,7 +181,9 @@ export function useBoard(
   const applyItem = React.useCallback((item: WorkItemView) => {
     setState((current) => ({
       ...current,
-      items: current.items.map((candidate) => (candidate.id === item.id ? item : candidate)),
+      items: current.items.map((candidate) => candidate.id === item.id
+        ? { ...item, attempt: candidate.attempt, change: candidate.change, observations: candidate.observations }
+        : candidate),
     }));
   }, []);
 
@@ -178,26 +194,47 @@ export function useBoard(
   const serverState = serverFilter(view.state);
   const serverLabel = serverFilter(view.label);
   const serverAssignee = serverFilter(view.assignee);
+  const serverPriority = serverFilter(view.priority);
+  const scope = projectId === null ? projects.map((project) => project.id) : [projectId];
+  const filterKey = JSON.stringify([scope, serverState, serverLabel, serverAssignee, serverPriority, view.archived === true]);
+  const pagesKey = JSON.stringify(Object.fromEntries(scope.map((id) => [id, view.pages?.[id]])));
+  const requestKey = JSON.stringify([filterKey, pagesKey]);
+  const previous = React.useRef({ scope: filterKey, cursors: new Map<string, WorkPage | null>() });
+  if (previous.current.scope !== filterKey) previous.current = { scope: filterKey, cursors: new Map() };
 
   React.useEffect(() => {
     let cancelled = false;
-    const scope = projectId === null ? projects.map((project) => project.id) : [projectId];
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const requestedPages = scope.map((id) => ({
+      projectId: id,
+      projectName: projects.find((project) => project.id === id)?.name ?? id,
+      number: view.pages?.[id]?.number ?? 1,
+      previous: previous.current.cursors.get(JSON.stringify([id, view.pages?.[id]?.cursor])),
+    }));
     if (scope.length === 0) {
-      setState((current) => ({ ...current, loading: false, items: [], lanes: [] }));
+      setState((current) => ({ ...current, requestKey, pages: [], loading: false, error: null,
+        project: null, items: [], lanes: [], labels: [], assignees: [], priorities: [], truncated: false, enriched: 0, asOf: null }));
       return;
     }
-    setState((current) => ({ ...current, loading: true, error: null }));
+    setState((current) => ({ ...current, requestKey, pages: requestedPages, loading: true, error: null,
+      ...(current.requestKey === requestKey ? {} : {
+        items: [], lanes: [], project: null, labels: [], assignees: [], priorities: [], asOf: null, truncated: false, enriched: 0,
+      }),
+    }));
 
     void (async () => {
       try {
-        const loaded = await pooled(scope, ENRICH_CONCURRENCY, (id) =>
-          loadProject(http, id, {
+        const loaded = await pooled(scope, ENRICH_CONCURRENCY, (id) => {
+          signal.throwIfAborted();
+          return loadProject(http, id, {
             ...view,
             state: serverState === undefined ? [] : [serverState],
             label: serverLabel === undefined ? [] : [serverLabel],
             assignee: serverAssignee === undefined ? [] : [serverAssignee],
-          }),
-        );
+            priority: serverPriority === undefined ? [] : [serverPriority],
+          }, signal);
+        });
         if (cancelled) return;
 
         // Lane order is the workflow's array order. Across projects the first
@@ -215,38 +252,65 @@ export function useBoard(
         }
 
         const names = new Map(loaded.map((entry) => [entry.project.project_id, entry.project.name]));
-        const issues = loaded.flatMap((entry) => entry.issues);
-        const terminal = new Set(lanes.filter((lane) => lane.terminal).map((lane) => lane.name));
+        const issues = [...new Map(loaded.flatMap((entry) => entry.issues)
+          .map((issue) => [issue.work_item_id, issue])).values()];
+        const pages = loaded.map((entry) => {
+          const id = entry.project.project_id;
+          const selected = view.pages?.[id];
+          if (entry.nextCursor !== undefined && entry.nextCursor !== selected?.cursor) {
+            previous.current.cursors.set(JSON.stringify([id, entry.nextCursor]), selected ?? null);
+          }
+          return {
+            projectId: id,
+            projectName: entry.project.name,
+            number: selected?.number ?? 1,
+            nextCursor: entry.nextCursor === selected?.cursor ? undefined : entry.nextCursor,
+            previous: previous.current.cursors.get(JSON.stringify([id, selected?.cursor])),
+          };
+        });
 
         // The enrichment budget goes to the issues a reader is most likely to
         // be watching: not finished, most recently touched.
         const enrichable = issues
-          .filter((issue) => !terminal.has(issue.state))
+          .filter((issue) => !issue.terminal)
           .toSorted((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
           .slice(0, ENRICH_LIMIT);
 
-        const extras = new Map<string, { attempts: NativeAttempt[]; change: WorkItemView["change"] }>();
+        const extras = new Map<string, {
+          attempts: NativeAttempt[];
+          change: WorkItemView["change"];
+          observations: NonNullable<WorkItemView["observations"]>;
+        }>();
         await pooled(enrichable, ENRICH_CONCURRENCY, async (issue) => {
-          const [attempts, changes] = await Promise.all([
-            http
-              .listAttempts(issue.project_id, issue.work_item_id, 10)
-              .then((page) => [...page.items])
-              .catch(() => [] as NativeAttempt[]),
-            http.listChanges(issue.project_id, issue.work_item_id).catch(() => []),
+          signal.throwIfAborted();
+          const [attemptRead, changeRead] = await Promise.allSettled([
+            http.listAttempts(issue.project_id, issue.work_item_id, 10, signal),
+            http.listChanges(issue.project_id, issue.work_item_id, signal),
           ]);
-          const change = changes.at(-1);
-          // One more call, and only for an issue that actually has a change:
-          // the summary and the external PR number live on the detail, not on
-          // the list row.
-          const detail =
-            change === undefined
-              ? null
-              : await http
-                  .getChange(issue.project_id, issue.work_item_id, change.change_id)
-                  .catch(() => null);
+          signal.throwIfAborted();
+          for (const read of [attemptRead, changeRead]) {
+            if (read.status === "rejected" && read.reason instanceof WorkApiError &&
+                [401, 403].includes(read.reason.status)) throw read.reason;
+          }
+          const change = changeRead.status === "fulfilled" ? changeRead.value.at(-1) : undefined;
+          let detail = null;
+          if (change !== undefined) {
+            try {
+              detail = await http.getChange(issue.project_id, issue.work_item_id, change.change_id, signal);
+            } catch (cause) {
+              if (cause instanceof WorkApiError && [401, 403].includes(cause.status)) throw cause;
+            }
+          }
+          signal.throwIfAborted();
           extras.set(issue.work_item_id, {
-            attempts,
+            attempts: attemptRead.status === "fulfilled" ? [...attemptRead.value.items] : [],
             change: change === undefined ? null : toChangeView(change, detail),
+            observations: {
+              worker: attemptRead.status === "rejected" ? "unavailable"
+                : attemptRead.value.next_cursor === undefined ? "known" : "partial",
+              change: changeRead.status === "rejected" ? "unavailable"
+                : change !== undefined && detail === null ? "partial" : "known",
+            },
           });
         });
         if (cancelled) return;
@@ -254,7 +318,7 @@ export function useBoard(
         const items = issues.map((issue) => {
           const extra = extras.get(issue.work_item_id);
           return toWorkItemView(issue, names.get(issue.project_id) ?? issue.project_id, {
-            ...(extra === undefined ? {} : { attempts: extra.attempts, change: extra.change }),
+            ...(extra === undefined ? {} : { attempts: extra.attempts, change: extra.change, observations: extra.observations }),
             runnerNames,
           });
         });
@@ -268,6 +332,8 @@ export function useBoard(
         // this used to do — dropped the chip to "Not streaming" on every
         // reload, including the reload the stream itself had just asked for.
         setState((current) => ({
+          requestKey,
+          pages,
           loading: false,
           error: null,
           project:
@@ -279,7 +345,7 @@ export function useBoard(
           labels: facets.labels,
           assignees: facets.assignees,
           priorities: facets.priorities,
-          truncated: loaded.some((entry) => entry.truncated),
+          truncated: pages.some((page) => page.number > 1 || page.nextCursor !== undefined),
           enriched: enrichable.length,
           asOf: Date.now(),
           sequence: current.sequence,
@@ -287,9 +353,18 @@ export function useBoard(
         }));
       } catch (cause) {
         if (cancelled) return;
+        controller.abort();
         setState((current) => ({
           ...current,
           loading: false,
+          project: null,
+          items: [],
+          lanes: [],
+          labels: [],
+          assignees: [],
+          priorities: [],
+          enriched: 0,
+          asOf: null,
           error: cause instanceof Error ? cause.message : String(cause),
         }));
       }
@@ -297,8 +372,9 @@ export function useBoard(
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [http, projectId, projects, nonce, serverState, serverLabel, serverAssignee, runnerNames, view.archived]);
+  }, [http, projects, nonce, requestKey, runnerNames]);
 
   // The hosted activity stream. It carries one integer for the whole project
   // and no event id, so it cannot say what changed and cannot be resumed: the
@@ -398,7 +474,15 @@ export function useBoard(
     };
   }, [http, reload, streamKey, streamScope]);
 
-  return { ...state, reload, applyItem };
+  return {
+    ...state,
+    ...(state.requestKey === requestKey ? {} : {
+      loading: true, error: null, project: null, items: [], lanes: [], pages: [],
+      labels: [], assignees: [], priorities: [], asOf: null, truncated: false, enriched: 0,
+    }),
+    reload,
+    applyItem,
+  };
 }
 
 export type TransitionOutcome =
