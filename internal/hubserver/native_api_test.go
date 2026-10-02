@@ -1,10 +1,8 @@
 package hubserver
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -239,17 +237,13 @@ func TestNativeWorkflowRefusalCode(t *testing.T) {
 			}
 			recorded := httptest.NewRecorder()
 			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/workflow", nil), recorded)
-			var logged bytes.Buffer
-			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: slog.New(slog.NewJSONHandler(&logged, nil))}}
+			service := &Service{config: Config{Hosted: &HostedConfig{}}}
 			if err := service.nativeAPIError(context, &nativeError{Code: failure.Code, Message: failure.Message, status: http.StatusUnprocessableEntity}); err != nil {
 				t.Fatal(err)
 			}
 			redacted := requireNativeCode(t, recorded, http.StatusUnprocessableEntity, "transition_not_allowed")
 			if redacted.Message != "The requested operation is unavailable" {
 				t.Fatalf("hosted message = %q", redacted.Message)
-			}
-			if !strings.Contains(logged.String(), `"reason":"Workflow transition is not allowed"`) {
-				t.Fatalf("hosted refusal log = %q, want the withheld reason", logged.String())
 			}
 		})
 	}

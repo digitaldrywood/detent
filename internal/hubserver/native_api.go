@@ -80,9 +80,6 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 			if failure.Code == "checkout_unavailable" {
 				return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: failure.Message})
 			}
-			if s.config.Logger != nil {
-				s.config.Logger.Info("hosted native request refused", "method", c.Request().Method, "path", c.Path(), "status", failure.status, "code", failure.Code, "reason", failure.Message)
-			}
 			if len(failure.Details) > 0 {
 				return c.JSON(failure.status, &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", Details: failure.Details, status: failure.status})
 			}
