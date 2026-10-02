@@ -98,18 +98,20 @@ for the text of documentation or configuration, or to move a coverage number.
 A test that only re-executes a path another test already asserts is removed in
 review (see [docs/test-suite-audit.md](docs/test-suite-audit.md)).
 
-Focused `go test ./<touched-package>/...`, `go vet`, and targeted regressions
+Focused `go test ./<touched-package>/...`, `go vet`, targeted regressions, and
+[safety-critical coverage and fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)
 are available for diagnostics during edits; they do not become completion
-gates. The scheduled full suite validates pinned `develop` commits and tags
-only green commits. Every `develop` push still deploys to staging.
+gates. Ordinary submission, completion, admission, and merge do not wait for a
+coverage percentage, fuzz duration, local status, or scheduled run. The scheduled
+full suite validates pinned `develop` commits and tags only green commits.
+Every `develop` push still deploys to staging.
 
 Other projects using Detent choose their own validation commands, required
 checks, workflow triggers, and release policies. Do not introduce a product-wide
 bypass to implement this repository's policy.
 
 Detent workers must use their provided `TMPDIR`, `TMP`, or `TEMP`; never
-fall back to host scratch space in a worker. See CLAUDE.md for safety-critical
-coverage and fuzz diagnostics.
+fall back to host scratch space in a worker.
 
 ## Deployment and release failure reporting
 
