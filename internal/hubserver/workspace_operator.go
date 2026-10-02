@@ -273,7 +273,7 @@ func (e workspaceOperatorExecutor) ExecuteAction(ctx context.Context, action cha
 	request.RequestID = action.RequestID
 	// Validate original schema: omit zero selectors absent from the original.
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(action.Arguments, &fields) != nil {
+	if json.Unmarshal(action.Arguments, &fields) != nil || fields == nil {
 		return chat.ActionExecution{}, operatortool.ErrInvalidArguments
 	}
 	requestID, _ := json.Marshal(action.RequestID) //nolint:errcheck // A string cannot fail JSON encoding.

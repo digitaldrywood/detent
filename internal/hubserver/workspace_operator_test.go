@@ -278,6 +278,22 @@ func TestWorkspaceOperatorAttachments(t *testing.T) {
 func TestWorkspaceOperatorActions(t *testing.T) {
 	f := newActionFixture(t)
 	ctx := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "actions")
+	for _, test := range []struct {
+		name      string
+		arguments json.RawMessage
+	}{
+		{"null arguments", json.RawMessage(`null`)},
+		{"padded null arguments", json.RawMessage(" \nnull\t ")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := (workspaceOperatorExecutor{server: f.service}).ExecuteAction(ctx, chat.Action{
+				Kind: "create_project_action", RequestID: "invalid-action", Arguments: test.arguments,
+			})
+			if !errors.Is(err, operatortool.ErrInvalidArguments) {
+				t.Fatalf("invalid action arguments=%v", err)
+			}
+		})
+	}
 	result, err := workspaceOperatorCall(t, f.service, ctx, "create_workspace", map[string]any{"project_id": f.project.ID, "request_id": "workspace", "input": map[string]any{"work_item_id": f.issue.WorkItemID}})
 	if err != nil {
 		t.Fatal(err)
