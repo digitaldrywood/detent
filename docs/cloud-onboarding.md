@@ -170,6 +170,62 @@ health and exclusion reasons come from the existing routing evaluator. Tag edits
 preserve the runner's full access scope and use its expected revision. Other
 projects' grants, leases and provider account records are omitted from readiness.
 
+### Runner in a Fly Sprite
+
+Inside a fresh Sprite, run
+[sprite-runner-bootstrap.sh](../scripts/sprite-runner-bootstrap.sh) and paste
+the Hub's enrollment command when it prompts:
+
+```sh
+bash scripts/sprite-runner-bootstrap.sh
+```
+
+The prompt does not echo. Without a terminal, send the command on standard
+input, for example from a private file you delete afterwards. The script splits
+the command without a shell and rejects `$`, backquotes and shell operators. It
+passes the token to `detent hub runner register` through
+`DETENT_RUNNER_ENROLLMENT_TOKEN`, so the token never appears in an argument
+list, the service launcher or the script's output.
+
+The script installs the Go toolchain named in `go.mod` (the adjacent checkout's,
+`--go-mod PATH`, or the pinned tag's), `gh`, the npm builds of Codex and Claude
+Code, and the checksum-verified Detent `v0.117.41` release. `--version vX.Y.Z`
+selects another release; `--from-source /path/to/detent` builds a checkout
+instead and is never the default. Registration uses the documented defaults,
+`~/.config/detent-runner/global.yaml` and workspace root `~/detent-runner`,
+unless the command or `--config` and `--workspace-root` name others.
+
+The host `--service` flag is replaced by a Sprite Service named
+`detent-runner` that runs `detent --headless` in the foreground. The Sprite
+runtime restarts it after a cold wake or crash and resumes it after a warm
+wake, so polling continues whenever the Sprite runs. Whether the runner's
+outbound polling alone keeps a Sprite from pausing is not yet verified; a
+paused runner picks up work only after its next wake.
+
+Re-running is safe. With empty input the script reuses the registered runner
+and restarts the service. With a pasted command, `register` keeps the existing
+identity and `global.yaml`, so no second runner is created. One runner per
+Sprite is supported; do not copy its identity to another Sprite.
+
+The script ends with `sprite-env checkpoints create` and prints the ID; restore
+the same Sprite with `sprite-env checkpoints restore CHECKPOINT_ID`. A failed
+checkpoint fails the script but leaves the enrollment and service in place.
+
+Remaining manual steps, which the script never performs:
+
+- Sign in to the providers the project uses: `claude auth login`, `codex login`
+  (`codex login --device-auth` without a browser), or a Sprites provider
+  connector.
+- For private clones and pushes, run `gh auth login` and `gh auth setup-git`,
+  or set up the project's own git credentials, and set the git author.
+- Clone each project into the directory `register` printed, with its
+  `WORKFLOW.md` and `detent.yaml`, and install its dependencies.
+- Approve the project's observed repository policy in the Hub if it is pending.
+- Re-run the script with empty input, check
+  `sprite-env services get detent-runner` and the Hub's runner health, then
+  route a Todo issue and confirm it pushes a branch.
+- Take a new checkpoint so the baseline includes the sign-ins and checkouts.
+
 ## Artifact history and GitHub
 
 Preserve the September 7 choices: local-only history, customer-managed durable
