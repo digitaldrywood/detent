@@ -88,12 +88,27 @@ type hostedMemberGrant struct {
 }
 
 type hostedMemberView struct {
-	ID     string              `json:"id"`
-	UserID string              `json:"user_id"`
-	Email  string              `json:"email"`
-	Role   string              `json:"role"`
-	Status string              `json:"status"`
-	Grants []hostedMemberGrant `json:"grants"`
+	ID            string              `json:"id"`
+	UserID        string              `json:"user_id"`
+	Email         string              `json:"email"`
+	Name          string              `json:"name,omitempty"`
+	NeverSignedIn bool                `json:"never_signed_in"`
+	Role          string              `json:"role"`
+	Status        string              `json:"status"`
+	Grants        []hostedMemberGrant `json:"grants"`
+}
+
+func (s *Service) hostedMemberIdentity(ctx context.Context, member auth.Membership, emails map[string]string) (hostedMemberView, error) {
+	email, signedIn := emails[member.UserID]
+	view := hostedMemberView{ID: member.ID, UserID: member.UserID, Email: email, NeverSignedIn: !signedIn, Role: member.Role.Slug, Status: member.Status, Grants: []hostedMemberGrant{}}
+	if strings.TrimSpace(email) == "" {
+		user, err := auth.LookupHostedUser(ctx, s.config.Hosted.Provider, member.UserID)
+		if err != nil {
+			return view, fmt.Errorf("read hosted member identity: %w", err)
+		}
+		view.Email, view.Name = user.Email, user.Name
+	}
+	return view, nil
 }
 
 type hostedInvitationView struct {
@@ -237,14 +252,17 @@ func (s *Service) hostedMemberResponse(ctx context.Context, member auth.Membersh
 	}
 	for _, current := range memberships {
 		if current.ID == member.ID {
-			view.Role, view.Status = current.Role.Slug, current.Status
+			member = current
 		}
 	}
 	emails, err := s.hostedMemberEmails(ctx)
 	if err != nil {
 		return view, err
 	}
-	view.Email = emails[member.UserID]
+	view, err = s.hostedMemberIdentity(ctx, member, emails)
+	if err != nil {
+		return view, err
+	}
 	grants, err := s.hostedMemberGrants(ctx)
 	if err != nil {
 		return view, err

@@ -459,6 +459,13 @@ func TestWorkOSOrganizationAndMembershipOperations(t *testing.T) {
 		run  func() error
 	}{
 		{name: "organization", run: func() error { _, err := p.Organization(t.Context(), "org_customer"); return err }},
+		{name: "user identity", run: func() error {
+			user, err := auth.LookupHostedUser(t.Context(), p, "user_customer")
+			if err == nil && (user.ID != "user_customer" || user.Email != "customer@example.com" || user.Name != "Customer Person") {
+				t.Fatalf("user identity = %#v", user)
+			}
+			return err
+		}},
 		{name: "create-organization", run: func() error { _, err := p.CreateOrganization(t.Context(), "detent_customer", "Customer"); return err }},
 		{name: "memberships", run: func() error { _, err := p.Memberships(t.Context(), "user_customer", "org_customer"); return err }},
 		{name: "create-membership", run: func() error {
@@ -856,7 +863,7 @@ func (f *workosFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.writeJSON(w, map[string]any{"data": users})
 	case "/user_management/users/user_customer":
-		user := map[string]any{"id": "user_customer", "email": "customer@example.com", "email_verified": true}
+		user := map[string]any{"id": "user_customer", "email": "customer@example.com", "email_verified": true, "first_name": "Customer", "last_name": "Person"}
 		switch mode {
 		case "invitation-wrong-email":
 			user["email"] = "different@example.com"

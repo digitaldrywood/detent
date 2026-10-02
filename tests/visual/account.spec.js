@@ -21,7 +21,7 @@ let hub;
 
 test.beforeAll(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
-  hub = await startHostedHub("account");
+  hub = await startHostedHub("account", { env: { DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER: "1" } });
 });
 
 test.afterAll(async () => {
@@ -144,10 +144,22 @@ test("the organization page lists the members and gates the controls by role", a
   await expectOneHeadingOne(page, "Settings");
   const table = page.getByRole("table");
   await expect(table).toBeVisible();
+  const identities = table.locator("tbody tr td:first-child > div:first-child");
+  await expect(identities).toHaveCount(3);
+  for (const identity of await identities.all()) {
+    await expect(identity).not.toHaveText(/^\s*$/);
+  }
+  const unsigned = table.getByRole("row").filter({ hasText: "unsigned@example.test" });
+  await expect(unsigned).toContainText("Unsigned Member");
+  await expect(unsigned).toContainText("Hasn't signed in yet");
+  await expect(unsigned.getByRole("button", { name: "Remove" })).toBeEnabled();
   // An owner gets the mutating controls.
   await expect(page.getByRole("button", { name: "Remove" }).first()).toBeVisible();
   await expectNoSeriousAxeViolations(page, "/organization as owner");
   expect(errors, "console errors on /organization").toEqual([]);
+  await unsigned.getByRole("button", { name: "Remove" }).click();
+  await page.getByRole("button", { name: "Remove", exact: true }).last().click();
+  await expect(unsigned).toHaveCount(0);
 
   // A viewer sees the same data and none of the controls (decisions.md §10.11).
   await openAs(page, "viewer", "/settings/organization");
