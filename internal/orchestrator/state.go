@@ -133,6 +133,7 @@ type State struct {
 	graphQLUsageSamples      []graphQLUsageSample
 	laneEntries              map[string]time.Time
 	laneProvenance           map[string]provenance.Attribution
+	dispatchModes            map[string]string
 	dispatchLoopResets       map[string]time.Time
 	planRework               map[string]struct{}
 	epicTransitionWatch      []connector.Issue
@@ -589,6 +590,7 @@ func (s State) clone() State {
 		graphQLUsageSamples:      append([]graphQLUsageSample(nil), s.graphQLUsageSamples...),
 		laneEntries:              maps.Clone(s.laneEntries),
 		laneProvenance:           maps.Clone(s.laneProvenance),
+		dispatchModes:            maps.Clone(s.dispatchModes),
 		dispatchLoopResets:       maps.Clone(s.dispatchLoopResets),
 		planRework:               make(map[string]struct{}, len(s.planRework)),
 		epicTransitionWatch:      cloneIssues(s.epicTransitionWatch),

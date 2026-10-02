@@ -35,6 +35,10 @@ func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.I
 	if r.cfg.Plan.Enabled && strings.EqualFold(strings.TrimSpace(issue.State), "todo") {
 		mode = RunModePlan
 	}
+	return r.IdentityForMode(issue, mode)
+}
+
+func (r *BoardIdentityResolver) IdentityForMode(issue connector.Issue, mode string) (agentidentity.Identity, error) {
 	return r.IdentityForRole(issue, runRole(mode, issue))
 }
 

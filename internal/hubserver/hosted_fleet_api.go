@@ -29,6 +29,7 @@ type hostedFleetLease struct {
 }
 
 type hostedFleetRunner struct {
+	Sprite             *hostedFleetSprite       `json:"sprite,omitempty"`
 	Update             runnerauth.UpdateView    `json:"update"`
 	Capacity           *runnerauth.CapacityView `json:"capacity_configuration,omitempty"`
 	Problems           []runnerauth.Problem     `json:"problems"`
@@ -56,6 +57,13 @@ type hostedFleetRunner struct {
 	Availability       runnerauth.Availability  `json:"availability"`
 	Routing            *runnerauth.Routing      `json:"routing,omitempty"`
 	Revision           int64                    `json:"revision,omitempty"`
+}
+
+type hostedFleetSprite struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	CanWake    bool   `json:"can_wake"`
+	WakeFailed bool   `json:"wake_failed"`
 }
 
 type hostedFleetAllowance struct {
@@ -128,7 +136,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 		visible[tracker.ProjectID(project.ID)] = true
 	}
 	editable := credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(ctx, credential)
-	runners, err := s.hostedFleetRunners(ctx, visible, editable)
+	runners, err := s.hostedFleetRunners(ctx, credential, visible, editable)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
@@ -151,7 +159,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 	return hostedFleetResponse{Runners: runners, Editable: editable, Usage: usage, Current: detentVersion(s.config.Version), MinimumRunnerVersion: minimumRunnerVersion(s.config.Version)}, nil
 }
 
-func (s *Service) hostedFleetRunners(ctx context.Context, visible map[tracker.ProjectID]bool, editable bool) ([]hostedFleetRunner, error) {
+func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool, editable bool) ([]hostedFleetRunner, error) {
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
 	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, '') FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
 WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
@@ -172,6 +180,8 @@ WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	fleet := make([]hostedFleetRunner, 0, len(runners))
+	spriteContext, cancelSprites := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelSprites()
 	for _, entry := range runners {
 		runner, err := readRunner(ctx, s.database.db, organization, entry.id, s.config.now())
 		if err != nil {
@@ -179,6 +189,9 @@ WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
 		}
 		view := hostedFleetRunnerView(runner, entry.version, visible, s.config.now())
 		view.ClaimRefusalReason = runnerClaimRefusal(minimumRunnerVersion(s.config.Version), entry.version)
+		if err := s.hostedFleetSprite(ctx, spriteContext, credential, &view, runner, visible); err != nil {
+			return nil, err
+		}
 		if editable {
 			view.Routing = &runner.Routing
 			view.Revision = runner.Revision

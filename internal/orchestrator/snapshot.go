@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -165,7 +166,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Blocked:   len(snapshot.Blocked),
 		Completed: len(snapshot.Completed),
 	}
-	applySnapshotLaneProvenance(&snapshot, s.laneProvenance)
+	applySnapshotIssueProvenance(&snapshot, s.laneProvenance, s.dispatchModes)
 	return snapshot
 }
 
@@ -252,7 +253,20 @@ func forgeUnavailableSnapshots(conditions map[string]ForgeCondition) []telemetry
 	return result
 }
 
-func applySnapshotLaneProvenance(snapshot *telemetry.Snapshot, laneProvenance map[string]provenance.Attribution) {
+func (o *Orchestrator) snapshotDispatchModes(state *State) {
+	state.dispatchModes = make(map[string]string)
+	for _, issue := range stateLaneEntryIssues(state) {
+		key := workflowLaneEntryKey(issue)
+		if key == "" {
+			continue
+		}
+		if _, exists := state.dispatchModes[key]; !exists {
+			state.dispatchModes[key] = o.dispatchMode(context.Background(), state, issue)
+		}
+	}
+}
+
+func applySnapshotIssueProvenance(snapshot *telemetry.Snapshot, laneProvenance map[string]provenance.Attribution, dispatchModes map[string]string) {
 	if snapshot == nil {
 		return
 	}
@@ -260,7 +274,9 @@ func applySnapshotLaneProvenance(snapshot *telemetry.Snapshot, laneProvenance ma
 		if issue == nil {
 			return
 		}
-		attribution, ok := laneProvenance[telemetryIssueLaneKey(*issue)]
+		key := telemetryIssueLaneKey(*issue)
+		issue.DispatchMode = dispatchModes[key]
+		attribution, ok := laneProvenance[key]
 		if !ok {
 			return
 		}

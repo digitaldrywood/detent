@@ -252,6 +252,9 @@ func (s *Service) redeemRunnerEnrollment(c echo.Context) error {
 	if !request.Valid() || !runnerauth.ValidCredential(request.Credential) || token == request.Credential || strings.TrimSpace(request.Hostname) == "" || len(request.Hostname) > 200 || len(request.DisplayName) > 200 || request.Capacity < 0 || strings.TrimSpace(request.Version) == "" || len(request.Version) > 100 || !validRunnerPlatform(request.OS, request.Architecture) {
 		return s.nativeAPIError(c, nativeInvalid("Host identity, a separate generated credential, hostname, version and nonnegative capacity are required"))
 	}
+	if request.SpriteName != "" && (request.SpriteName != request.Hostname || !validSpritesSlug(request.SpriteName)) {
+		return s.nativeAPIError(c, nativeInvalid("Sprite name must match the runner hostname"))
+	}
 	if err := request.BackendIsolation.Validate(); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
@@ -282,6 +285,11 @@ VALUES (?, ?, ?, ?, 'worker', ?, ?, 1, ?)`, binding.RunnerID, binding.RunnerID, 
 		if !shared {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.MachineID, request.Hostname, request.DisplayName, request.Capacity, request.Version, formatHubTime(now), formatHubTime(now), formatHubTime(now), identity.OrganizationID, binding.RunnerID); err != nil {
+				return nil, err
+			}
+		}
+		if request.SpriteName != "" && !shared {
+			if _, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_name', ?) WHERE id=?", request.SpriteName, binding.MachineID); err != nil {
 				return nil, err
 			}
 		}
