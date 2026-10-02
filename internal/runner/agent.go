@@ -1174,6 +1174,7 @@ func (r *Runner) runAgentTurn(
 		}
 	}
 	turnStarted := false
+	providerResume := turnRequest.Resume
 	workerProcessObserved := false
 	conversation := conversationRunFromContext(ctx)
 	turnRequest = conversation.prepareTurn(turnRequest)
@@ -1216,6 +1217,14 @@ func (r *Runner) runAgentTurn(
 			return err
 		}
 		r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
+		if !update.AuxiliaryTurn {
+			if strings.TrimSpace(update.ThreadID) != "" {
+				providerResume.ThreadID = strings.TrimSpace(update.ThreadID)
+			}
+			if strings.TrimSpace(update.ProviderSessionID) != "" {
+				providerResume.SessionID = strings.TrimSpace(update.ProviderSessionID)
+			}
+		}
 		if err := publishAgentActivity(runRequest, detentSessionID, update, eventAt); err != nil {
 			return err
 		}
@@ -1252,6 +1261,12 @@ func (r *Runner) runAgentTurn(
 		}
 		return nil
 	}), r.turnLimit)
+	if strings.TrimSpace(turnResult.ThreadID) == "" {
+		turnResult.ThreadID = providerResume.ThreadID
+	}
+	if strings.TrimSpace(turnResult.SessionID) == "" {
+		turnResult.SessionID = providerResume.SessionID
+	}
 	result.Compute = stopCompute()
 	conversation.finishTurn(ctx, turnResult, turnErr)
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
@@ -1481,7 +1496,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 		req.ResumeState = resume
-		req.RetryMode = RetryModeResume
+		if !agentResumeStateEmpty(resume) {
+			req.RetryMode = RetryModeResume
+		}
 		req.retainCheckpoint = true
 	}
 	if err := r.checkResumePolicy(ctx, req, req.ResumeState); err != nil {
@@ -1602,7 +1619,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	afterRunPending := true
 	defer func() {
 		if afterRunPending {
-			if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+			if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState)); err != nil {
 				r.logger.Warn("native execution epilogue deferred", "issue_id", req.Issue.ID, "error", err)
 			}
 		}
@@ -1623,7 +1640,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if nativeLanding {
 		afterRunPending = false
 		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue, workerGitHub, &landingTarget)
-		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); afterErr != nil && err == nil {
+		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState)); afterErr != nil && err == nil {
 			err = afterErr
 		}
 		return result, err
@@ -1643,7 +1660,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			mergePrecheck = mergePrecheckFromWorkspace(precheck)
 			if handled {
 				afterRunPending = false
-				if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+				if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState)); err != nil {
 					return precheckResult, err
 				}
 				r.logWorkerEvent(req.Issue, "worker_after_run_finished",
@@ -2205,7 +2222,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			"error", turnErr,
 		)
 	} else {
-		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); err != nil {
+		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}); err != nil {
 			turnErr = errors.Join(turnErr, err)
 		}
 		r.logWorkerEvent(req.Issue, "worker_after_run_finished",

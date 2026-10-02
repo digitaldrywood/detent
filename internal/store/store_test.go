@@ -4274,3 +4274,58 @@ func TestPendingCredentialWaitRequiresWriteProof(t *testing.T) {
 		})
 	}
 }
+
+func TestLatestAgentResumeStateSeparatesStartupFromContinuation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		state      string
+		turns      int64
+		tokens     int64
+		provider   string
+		incomplete bool
+		found      bool
+	}{
+		{name: "failed startup", state: "failed", found: true},
+		{name: "missing identity after turn", state: "failed", turns: 1},
+		{name: "missing identity after tokens", state: "failed", tokens: 1},
+		{name: "completed without identity", state: "completed"},
+		{name: "attempt still active", state: "failed", incomplete: true},
+		{name: "real continuation", state: "failed", turns: 1, provider: "original-thread", found: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			backend := openTestStore(t, ctx)
+			started := time.Date(2026, 10, 2, 23, 0, 0, 0, time.UTC)
+			attempt, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{ProjectID: "native", IssueID: "work", WorkerType: "agent", StartedAt: started})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := backend.StartSession(ctx, SessionStart{ProjectID: "native", IssueID: "work", WorkAttemptID: attempt, StartedAt: started, RequestedModel: "original-model", Model: "original-model", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.FinishSession(ctx, session, SessionFinish{CompletedAt: started.Add(time.Second), FinalState: test.state, Turns: test.turns, InputTokens: test.tokens, TotalTokens: test.tokens, ProviderThreadID: test.provider}); err != nil {
+				t.Fatal(err)
+			}
+			if !test.incomplete {
+				if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: attempt, CompletedAt: started.Add(time.Second), Status: WorkAttemptStatusTerminal, TerminalState: WorkAttemptTerminalFailure}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			lookup := AgentResumeLookup{WorkAttemptID: attempt, ProjectID: "native", IssueID: "work", RequestedModel: "original-model", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
+			got, err := backend.LatestAgentResumeState(ctx, lookup)
+			if test.found {
+				if err != nil || got.DetentSessionID != session || got.ProviderThreadID != test.provider || got.ProviderSessionID != "" {
+					t.Fatalf("exact persisted session=%+v error=%v", got, err)
+				}
+			} else if !errors.Is(err, ErrNotFound) {
+				t.Fatalf("ineligible session=%+v error=%v", got, err)
+			}
+			lookup.WorkAttemptID = 0
+			if got, err := backend.LatestAgentResumeState(ctx, lookup); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("history selected startup/failed continuation=%+v error=%v", got, err)
+			}
+		})
+	}
+}
