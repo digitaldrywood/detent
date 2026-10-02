@@ -332,7 +332,11 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		}
 		a.IssueID = r.RunnerID
 		a.Identifier = r.RunnerID
-		a.CurrentState = strconv.FormatInt(runner.Revision, 10) + ":" + runner.Health
+		a.CurrentState = strconv.FormatInt(runner.Revision, 10)
+		switch runner.ConnectionHealth {
+		case "revoked", "expired":
+			a.CurrentState += ":" + runner.ConnectionHealth
+		}
 		if name == operatortool.UpdateRunnerCapacity {
 			var change runnerCapacityChange
 			if operatortool.DecodeArguments(r.Change, &change) != nil || change.Validate() != nil || change.ExpectedRevision != runner.Revision {
@@ -398,7 +402,7 @@ func (e hubFleetExecutor) ExecuteAction(ctx context.Context, a chatpkg.Action) (
 		if err != nil {
 			return chatpkg.ActionExecution{}, err
 		}
-		if current.IssueID != a.IssueID || current.CurrentState != a.CurrentState || current.MaterialChange != a.MaterialChange {
+		if current.IssueID != a.IssueID || current.CurrentState != a.CurrentState {
 			return chatpkg.ActionExecution{}, errHubOperatorUnavailable
 		}
 		value, err := e.executeCommand(ctx, a)
