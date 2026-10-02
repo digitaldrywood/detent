@@ -1429,6 +1429,16 @@ retained diagnostic detail, final usage/diff accounting, CI scheduling after a p
 and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
+Already merged native GitHub PRs (native #199) obtain the real merge commit from
+one authenticated GraphQL projection bound to repository, PR number, reviewed
+head, source branch and target branch. REST API 2026-03-10 no longer supplies
+`merge_commit_sha`. The existing LocalGit owner verifies the projected commit on
+the fetched target ancestry before recording genuine landing. Open PRs retain
+atomic reviewed-head merges and current GitHub protection. No already merged PR
+is mutated, global API version downgraded or completion fabricated.
+`TestLocalGitLandChangeViaGitHubAlreadyMerged` covers modern runner-created and
+external PR responses, exact identity and missing/non-ancestor commit refusals.
+
 ## INV-3 — Mechanism moratorium
 
 Hosted fleet approval (native #168) removes volatile heartbeat health from the

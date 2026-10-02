@@ -17,12 +17,11 @@ import (
 )
 
 type githubLandingPull struct {
-	Number         int    `json:"number"`
-	State          string `json:"state"`
-	Merged         bool   `json:"merged"`
-	MergedAt       string `json:"merged_at"`
-	MergeCommitSHA string `json:"merge_commit_sha"`
-	Head           struct {
+	Number   int    `json:"number"`
+	State    string `json:"state"`
+	Merged   bool   `json:"merged"`
+	MergedAt string `json:"merged_at"`
+	Head     struct {
 		SHA  string `json:"sha"`
 		Ref  string `json:"ref"`
 		Repo struct {
@@ -153,7 +152,10 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	}
 	var mergeSHA string
 	if pull.Merged || pull.MergedAt != "" {
-		mergeSHA = pull.MergeCommitSHA
+		mergeSHA, err = githubLandingMergedCommit(ctx, opts.GitHubClient, repository, pull.Number, head, githubLandingBranch(normalized, opts), base)
+		if err != nil {
+			return LandResult{}, err
+		}
 	} else {
 		if pull.State != "open" {
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the GitHub pull request no longer names the reviewed head")
@@ -184,6 +186,43 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		return LandResult{}, fmt.Errorf("GitHub merge commit %s is not on %s: %w", mergeSHA, base, err)
 	}
 	return LandResult{MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil}, nil
+}
+
+func githubLandingMergedCommit(ctx context.Context, client GitHubRESTClient, repository string, number int, head, branch, base string) (string, error) {
+	owner, name, _ := strings.Cut(repository, "/")
+	var result struct {
+		Repository *struct {
+			NameWithOwner string `json:"nameWithOwner"`
+			PullRequest   *struct {
+				Number         int    `json:"number"`
+				Merged         bool   `json:"merged"`
+				HeadRefOID     string `json:"headRefOid"`
+				HeadRefName    string `json:"headRefName"`
+				BaseRefName    string `json:"baseRefName"`
+				HeadRepository *struct {
+					NameWithOwner string `json:"nameWithOwner"`
+				} `json:"headRepository"`
+				MergeCommit *struct {
+					OID string `json:"oid"`
+				} `json:"mergeCommit"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	query := `query NativeLandingMergedCommit($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){nameWithOwner pullRequest(number:$number){number merged headRefOid headRefName baseRefName headRepository{nameWithOwner} mergeCommit{oid}}}}`
+	if err := client.GraphQL(ctx, query, map[string]any{"owner": owner, "name": name, "number": number}, &result); err != nil {
+		return "", fmt.Errorf("read already merged pull request commit: %w", err)
+	}
+	if result.Repository == nil || result.Repository.NameWithOwner != repository || result.Repository.PullRequest == nil {
+		return "", refuse(LandRefusalProtected, "the merged pull request repository differs from the authorized landing source")
+	}
+	pull := result.Repository.PullRequest
+	if pull.Number != number || !pull.Merged || pull.HeadRefOID != head || pull.HeadRefName != branch || pull.BaseRefName != base || pull.HeadRepository == nil || pull.HeadRepository.NameWithOwner != repository {
+		return "", refuse(LandRefusalHeadMoved, "the merged pull request no longer names the reviewed source")
+	}
+	if pull.MergeCommit == nil || !validLandingHead(pull.MergeCommit.OID) {
+		return "", errors.New("GitHub reported a merged pull request without a merge commit")
+	}
+	return pull.MergeCommit.OID, nil
 }
 
 func githubLandingBranch(info Info, opts LandOptions) string {
