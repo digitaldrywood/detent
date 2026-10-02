@@ -36,19 +36,17 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 		want          string
 	}{
 		{
-			name:          "token ceiling ignores changing counters",
+			name:          "token ceiling stays with its issue owner",
 			err:           errors.New("session token ceiling exceeded: total_tokens=16000001 ceiling_tokens=16000000"),
 			terminalState: store.WorkAttemptTerminalFailure,
-			want:          projectFailureClassSessionTokenCeiling,
 		},
 		{
-			name:          "legacy deliverable command names the failing command",
+			name:          "legacy deliverable failure stays with its issue owner",
 			err:           errors.New("deliverable command failed (gh pr create): exit status 1"),
 			terminalState: store.WorkAttemptTerminalFailure,
-			want:          projectFailureClassDeliverableCommand + ":gh pr create",
 		},
 		{
-			name: "structured deliverable command names the failing command",
+			name: "structured deliverable failure stays with its issue owner",
 			err: &runpkg.DeliverableCommandError{
 				Operation: "codex_apps/github.create_pull_request",
 				Arguments: `{"head":"detent/acme_widgets_18"}`,
@@ -56,10 +54,9 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 				Message:   "HTTP 503: unavailable",
 			},
 			terminalState: store.WorkAttemptTerminalFailure,
-			want:          projectFailureClassDeliverableCommand + ":codex_apps/github.create_pull_request",
 		},
 		{
-			name: "published push later failure has distinct class",
+			name: "post-push failure stays with its deliverable owner",
 			err: &runpkg.DeliverableCommandError{
 				OperationClass: "post_push",
 				Operation:      "post-push command",
@@ -67,7 +64,6 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 			},
 			terminalState: store.WorkAttemptTerminalFailure,
 			errorClass:    workAttemptErrorPostPushCommand,
-			want:          projectFailureClassDeliverableCommand + ":post-push command",
 		},
 		{
 			name:          "backend body is hashed",
@@ -76,10 +72,9 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 			want:          projectFailureClassBackendError + ":" + projectFailureHash(`{"code":"overloaded"}`),
 		},
 		{
-			name:          "durable error class is retained",
+			name:          "durable issue error class stays issue scoped",
 			terminalState: store.WorkAttemptTerminalNoProgress,
 			errorClass:    "spend_since_progress_circuit_breaker",
-			want:          "spend_since_progress_circuit_breaker",
 		},
 		{
 			name:          "startup timeout shares systemic startup class",
@@ -94,14 +89,36 @@ func TestProjectAttemptFailureClass(t *testing.T) {
 			want:          backendcapacity.StartupFailureErrorClass,
 		},
 		{
+			name:          "workspace infrastructure retains its owner",
+			terminalState: store.WorkAttemptTerminalFailure,
+			errorClass:    workAttemptErrorWorkspace,
+			want:          workAttemptErrorWorkspace,
+		},
+		{
+			name:          "merge receipt metadata stays attempt scoped",
+			err:           errors.New("merged pull request did not report mergeCommit"),
+			terminalState: store.WorkAttemptTerminalFailure,
+			errorClass:    workAttemptErrorRunner,
+		},
+		{
+			name:          "wrapped backend reset stays with backend capacity",
+			err:           backendcapacity.NewError(backendcapacity.Scope{BackendID: "codex", Provider: "openai"}, backendcapacity.Details{Type: backendcapacity.ErrorTypeUsageLimit}, failureBreakerBackendError{body: `{"code":"usage_limit"}`}),
+			terminalState: store.WorkAttemptTerminalFailure,
+			errorClass:    backendcapacity.ErrorClass,
+		},
+		{
+			name:          "provider reset stays with backend capacity",
+			terminalState: store.WorkAttemptTerminalFailure,
+			errorClass:    backendcapacity.ErrorClass,
+		},
+		{
 			name:          "generic no progress stays issue scoped",
 			terminalState: store.WorkAttemptTerminalNoProgress,
 		},
 		{
-			name:          "final state is hashed",
+			name:          "generic final state stays issue scoped",
 			terminalState: store.WorkAttemptTerminalFailure,
 			errorMessage:  "failed",
-			want:          projectFailureClassRunnerFinalState + ":" + projectFailureHash("failed"),
 		},
 	}
 
@@ -126,6 +143,18 @@ func TestGenericNoProgressDoesNotPauseProject(t *testing.T) {
 	}
 	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 || !projectFailureBreakerAllowsDispatch(&state, now) {
 		t.Fatalf("unrelated issue outcomes paused project: %+v", state.FailureBreaker)
+	}
+	resetAt := now.Add(39 * time.Minute)
+	capacityErr := backendcapacity.NewError(backendcapacity.Scope{BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic"}, backendcapacity.Details{
+		Type: backendcapacity.ErrorTypeUsageLimit, Kind: "usage_limit_exceeded", Reason: "provider usage limit reached", ResetAt: &resetAt,
+	}, errors.New("You've hit your limit. Try again at 9:39 PM"))
+	for range 5 {
+		orch.recordProjectAttemptOutcome(&state, "merged", now, store.WorkAttemptTerminalFailure, errors.New("merged pull request did not report mergeCommit"), workAttemptErrorRunner, "merged pull request did not report mergeCommit")
+		orch.recordProjectAttemptOutcome(&state, "deliverable", now, store.WorkAttemptTerminalFailure, &runpkg.DeliverableCommandError{Operation: "gh pr view", Status: "failed", Message: "merge receipt unavailable"}, workAttemptErrorPostPushCommand, "merge receipt unavailable")
+		orch.recordProjectAttemptOutcome(&state, "provider-reset", now, store.WorkAttemptTerminalFailure, capacityErr, backendcapacity.ErrorClass, capacityErr.Error())
+	}
+	if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 || !projectFailureBreakerAllowsDispatch(&state, now) {
+		t.Fatalf("ordinary attempt metadata or owned provider reset paused project: %+v", state.FailureBreaker)
 	}
 	for _, issueID := range []string{"backend-1", "backend-2", "backend-3", "backend-4", "backend-5"} {
 		orch.recordProjectAttemptOutcome(&state, issueID, now, store.WorkAttemptTerminalFailure, nil, backendcapacity.StartupFailureErrorClass, "startup failed")
@@ -159,7 +188,7 @@ func TestProjectFailureBreakerCapturesOperatorEvidence(t *testing.T) {
 	}, errors.New("You've hit your limit. Try again at 9:39 PM"))
 
 	orch := &Orchestrator{}
-	orch.recordProjectAttemptOutcome(&state, issue.ID, now, store.WorkAttemptTerminalFailure, capacityErr, backendcapacity.ErrorClass, capacityErr.Error())
+	orch.recordProjectFailureBreakerEvidence(&state, orch.projectFailureEvidence(&state, issue.ID, capacityErr, capacityErr.Error(), now), backendcapacity.ErrorClass, now)
 
 	failures := state.FailureBreaker.Failures[backendcapacity.ErrorClass]
 	if len(failures) != 1 {
@@ -234,8 +263,8 @@ func TestProjectFailureBreakerCanaryStateMachine(t *testing.T) {
 	orch := &Orchestrator{cfg: Config{FailureBreaker: config}, now: func() time.Time { return base }}
 	state := State{FailureBreaker: newProjectFailureBreaker(config)}
 
-	orch.recordProjectAttemptOutcome(&state, "issue-1", base, store.WorkAttemptTerminalFailure, errors.New("same error"), workAttemptErrorRunner, "same error")
-	orch.recordProjectAttemptOutcome(&state, "issue-2", base.Add(time.Second), store.WorkAttemptTerminalFailure, errors.New("same error"), workAttemptErrorRunner, "same error")
+	orch.recordProjectAttemptOutcome(&state, "issue-1", base, store.WorkAttemptTerminalFailure, failureBreakerBackendError{body: "same error"}, workAttemptErrorRunner, "same error")
+	orch.recordProjectAttemptOutcome(&state, "issue-2", base.Add(time.Second), store.WorkAttemptTerminalFailure, failureBreakerBackendError{body: "same error"}, workAttemptErrorRunner, "same error")
 	if !state.FailureBreaker.Active() {
 		t.Fatal("FailureBreaker.Active() = false, want true")
 	}
@@ -259,7 +288,7 @@ func TestProjectFailureBreakerCanaryStateMachine(t *testing.T) {
 		t.Fatal("workflow reload allowed a second dispatch while canary is running")
 	}
 
-	orch.recordProjectAttemptOutcome(&state, "canary-1", canaryAt.Add(time.Second), store.WorkAttemptTerminalFailure, errors.New("same error"), workAttemptErrorRunner, "same error")
+	orch.recordProjectAttemptOutcome(&state, "canary-1", canaryAt.Add(time.Second), store.WorkAttemptTerminalFailure, failureBreakerBackendError{body: "same error"}, workAttemptErrorRunner, "same error")
 	if got := state.FailureBreaker.ResumeAt; got != canaryAt.Add(time.Second+config.Cooldown) {
 		t.Fatalf("ResumeAt = %s, want full cooldown through %s", got, canaryAt.Add(time.Second+config.Cooldown))
 	}
@@ -276,14 +305,14 @@ func TestProjectFailureBreakerCanaryStateMachine(t *testing.T) {
 	if !canary || !allowed {
 		t.Fatalf("tryReserveProjectFailureBreakerCanary() after reload = (%t, %t), want (true, true)", canary, allowed)
 	}
-	orch.recordProjectAttemptOutcome(&state, "canary-2", reloadAt.Add(time.Second), store.WorkAttemptTerminalFailure, errors.New("different error"), workAttemptErrorRunner, "different error")
+	orch.recordProjectAttemptOutcome(&state, "canary-2", reloadAt.Add(time.Second), store.WorkAttemptTerminalFailure, failureBreakerBackendError{body: "different error"}, workAttemptErrorRunner, "different error")
 	if state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want different class to close it", state.FailureBreaker)
 	}
 
 	successAt := reloadAt.Add(2 * time.Second)
-	orch.recordProjectAttemptOutcome(&state, "issue-3", successAt, store.WorkAttemptTerminalFailure, errors.New("same error"), workAttemptErrorRunner, "same error")
-	orch.recordProjectAttemptOutcome(&state, "issue-4", successAt.Add(time.Second), store.WorkAttemptTerminalFailure, errors.New("same error"), workAttemptErrorRunner, "same error")
+	orch.recordProjectAttemptOutcome(&state, "issue-3", successAt, store.WorkAttemptTerminalFailure, failureBreakerBackendError{body: "same error"}, workAttemptErrorRunner, "same error")
+	orch.recordProjectAttemptOutcome(&state, "issue-4", successAt.Add(time.Second), store.WorkAttemptTerminalFailure, failureBreakerBackendError{body: "same error"}, workAttemptErrorRunner, "same error")
 	if !state.FailureBreaker.Active() {
 		t.Fatal("FailureBreaker.Active() = false before success canary")
 	}
