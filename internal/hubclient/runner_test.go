@@ -532,6 +532,134 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 	}
 }
 
+func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
+	approved := clientTestPolicy()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	var registrations atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/prj_blocked/machines/register"):
+			if registrations.Add(1) == 1 {
+				close(entered)
+			}
+			select {
+			case <-release:
+				w.WriteHeader(http.StatusNoContent)
+			case <-r.Context().Done():
+			}
+
+		case strings.HasSuffix(r.URL.Path, "/policy"):
+			_ = json.NewEncoder(w).Encode(policy.Approval{Policy: approved})
+		case strings.HasSuffix(r.URL.Path, "/renew"):
+			var mutation tracker.NativeLeaseMutation
+			if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {
+				t.Error(err)
+			}
+			now := time.Now().UTC()
+			_ = json.NewEncoder(w).Encode(tracker.NativeLease{ID: "lease", PolicyID: approved.ID, FencingToken: mutation.FencingToken, ServerTime: now, ExpiresAt: now.Add(time.Minute)})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	defer releaseOnce.Do(func() { close(release) })
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler, err := NewScheduler(client, SchedulerConfig{
+		OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"blocked": "prj_blocked", "free": "prj_free"},
+		Machine:           Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 2},
+		HeartbeatInterval: time.Second, LeaseTTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler.nativeHeartbeats["prj_blocked"] = time.Now().Add(-time.Minute)
+	scheduler.nativeHeartbeats["prj_free"] = time.Now().Add(time.Hour)
+	free := scheduler.nativeProjects["free"]
+	install := func(id, policyID string, token tracker.FencingToken) nativeClaim {
+		claim := nativeClaim{source: free, lease: tracker.NativeLease{ID: "lease", PolicyID: policyID, FencingToken: token}}
+		scheduler.mu.Lock()
+		defer scheduler.mu.Unlock()
+		scheduler.nativeClaims[id] = claim
+		scheduler.claims[id] = nativeTrackerLease(claim.lease)
+		scheduler.claimPolicies[id] = claimPolicy{project: "free", descriptor: approved}
+		return claim
+	}
+	done := make(chan error, 1)
+	go func() { done <- scheduler.ensureNativeMachine(ctx, scheduler.nativeProjects["blocked"]) }()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("machine report returned before reaching registration: %v", err)
+	case <-ctx.Done():
+		t.Fatal("machine registration did not start")
+	}
+	for _, tc := range []struct {
+		name      string
+		policyID  string
+		renewed   tracker.FencingToken
+		current   tracker.FencingToken
+		wantLost  bool
+		wantToken tracker.FencingToken
+		retained  bool
+	}{
+		{name: "unrelated lease renews", policyID: approved.ID, renewed: 1, current: 1, wantToken: 1, retained: true},
+		{name: "stale pinned policy drops the claim", policyID: "stale", renewed: 1, current: 1, wantLost: true},
+		{name: "superseded fencing token cannot reinstall", policyID: approved.ID, renewed: 1, current: 2, wantLost: true, wantToken: 2, retained: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stale := install(tc.name, tc.policyID, tc.renewed)
+			if tc.current != tc.renewed {
+				install(tc.name, tc.policyID, tc.current)
+			}
+			result := make(chan error, 1)
+			go func() {
+				_, err := scheduler.renewNativeClaim(ctx, tc.name, stale)
+				result <- err
+			}()
+			select {
+			case err := <-result:
+				if lost := errors.Is(err, orchestrator.ErrSchedulingClaimLost); lost != tc.wantLost || !lost && err != nil {
+					t.Fatalf("renewNativeClaim() error = %v, want lost %t", err, tc.wantLost)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("lease renewal waited on another project's machine report")
+			}
+			scheduler.mu.Lock()
+			current, ok := scheduler.nativeClaims[tc.name]
+			scheduler.mu.Unlock()
+			if ok != tc.retained || ok && current.lease.FencingToken != tc.wantToken {
+				t.Fatalf("claim after renewal = %+v, present %t", current.lease, ok)
+			}
+		})
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("machine report did not finish")
+	}
+	if got := registrations.Load(); got != 1 {
+		t.Fatalf("machine reports = %d, want 1", got)
+	}
+	scheduler.mu.Lock()
+	reported := scheduler.nativeHeartbeats["prj_blocked"]
+	scheduler.mu.Unlock()
+	if time.Since(reported) > time.Minute {
+		t.Fatalf("blocked project heartbeat not committed: %v", reported)
+	}
+}
+
 func TestRunnerAvailabilityHeartbeatAndClaim(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "private", "runner.json")
