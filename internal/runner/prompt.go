@@ -739,9 +739,9 @@ func appendNativeIssueInstructions(prompt string, issue connector.Issue) string 
 		return prompt
 	}
 	return prompt + "\n\n## Native Detent issue authority\n\n" +
-		"This issue's content, discussion, dependencies and workflow are owned by Detent. Route issue reads and writes through `detent hub issue` using the configured Hub runner identity. " +
-		"Use `get`, `create`, `edit`, `comment`, `edit-comment`, `transition`, `dependency`, `comments`, and `history`; mutation commands accept the v2 JSON request on stdin, including a stable idempotency_key and expected_revision for edits. " +
-		"Use --project " + issue.Metadata["hub_project_id"] + " and work-item " + issue.ID + ". Preserve the persistent Workpad as a native comment. " +
+		"This issue's content, discussion, dependencies and workflow are owned by Detent. Use the supplied read tools work_item, work_comments, work_history, list_changes and get_change when available. The runner authenticates these bounded reads on the host; never copy its identity or credentials, load host configuration, or bypass sandbox network restrictions. " +
+		"Use project_id " + issue.Metadata["hub_project_id"] + " and work-item " + issue.ID + "; work_item/comments/history use reference, and list_changes/get_change use work_item_id. get_change also requires change_id. " +
+		"If the backend does not supply these tools, use the provided native issue and recovery context. Report unavailable required read context as an instance limitation; never invent verification or switch tracker authority. The runner owns comments and workflow mutations. " +
 		"Historical GitHub issue links are provenance; do not use gh issue, GitHub issue labels, or GitHub issue comments for this native work item. " +
 		"GitHub repository, pull request, CI and merge operations remain subject to the configured repository integration and required GitHub protections. Native approval does not satisfy a required GitHub review."
 }
