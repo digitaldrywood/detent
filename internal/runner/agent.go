@@ -1664,6 +1664,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if workflow.Config.Deliverable.Kind == config.DeliverableArtifact {
 			initialArtifactEvidence = r.observeWorkspaceArtifactEvidence(runWorkspace, ctx, info, workspaceIssue, "initial")
 		}
+		if req.Execution != nil && recoveryState != nil && recoveryState.HeadSHA != "" {
+			evidenceIssue := workspaceIssue
+			evidenceIssue.BaseRef = recoveryState.HeadSHA
+			req.validationEvidenceSource = r.attemptDiffSource(ctx, info, evidenceIssue)
+		}
 		r.publishDispatchLoopStart(req, recoveryState)
 		targetRefObserver = func(observerCtx context.Context) *DeliverableTargetRefEvidence {
 			postCommand := r.observeWorkspaceDeliverableState(runWorkspace, observerCtx, info, workspaceIssue, "post_command")

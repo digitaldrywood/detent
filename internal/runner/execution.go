@@ -281,13 +281,16 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		checkpoint.Resume = "resume_session"
 	}
 	var artifactErr error
-	if publisher, ok := req.Execution.(ValidationEvidenceExecution); ok && ctx.Err() == nil {
-		evidence, err := validationScreenshots(info.Path)
-		if err != nil {
-			return err
-		}
-		if err := publisher.PublishValidationEvidence(artifactCtx, evidence); err != nil {
-			return err
+	if publisher, ok := req.Execution.(ValidationEvidenceExecution); ok && ctx.Err() == nil && req.validationEvidenceSource != nil {
+		diff, available := req.validationEvidenceSource(artifactCtx)
+		if available {
+			evidence, err := validationScreenshots(info.Path, diff.Files)
+			if err != nil {
+				return err
+			}
+			if err := publisher.PublishValidationEvidence(artifactCtx, evidence); err != nil {
+				return err
+			}
 		}
 	}
 	if artifacts, ok := req.Execution.(ArtifactExecution); ok && finalizationErr == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {

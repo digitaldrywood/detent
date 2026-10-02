@@ -34,6 +34,16 @@ the bytes. Markdown references bind to the same project and item/comment in the
 content transaction; copied references never grant read access or reassign a
 bound upload. `TestAttachmentRoutesIsolation` covers API/MCP PNG round-trips,
 foreign-project tokens, automatic comment binding and the evidence publisher.
+Worker screenshot capture (#197) selects only changed image paths from the
+existing attempt diff anchored before native Code/Rework execution. Unchanged
+inherited images and deleted paths are not current evidence. Programmatic
+landing never collects or republishes validation screenshots. The same rooted
+filesystem, regular-file, ten-image and per-image byte limits remain in force;
+no directory-wide fallback substitutes historical evidence when attribution is
+unavailable. `TestValidationEvidenceUsesCurrentAttemptDiff` covers inherited,
+new, modified, renamed and deleted images, bounds and publication failures.
+`TestNativeLandingDoesNotRepublishValidationEvidence` preserves the genuine
+landing receipt and successful completion with excess inherited images.
 `TestArtifactsFinalizeBeforeWorkspaceCleanup` covers worker screenshot capture.
 The client renders only the exact Cloud attachment path as a direct same-origin
 image; other filesystem paths retain workspace classification.
