@@ -58,7 +58,7 @@ interface MockIssue {
   dependencies: string[];
   blockers: { work_item_id: string; project_id: string; state: string; terminal: boolean }[];
   external_references: unknown[];
-  provenance?: { provider: string; external_id: string; author_id: string; created_at: string };
+  provenance?: { provider: string; external_id: string; author_id: string; created_at: string; updated_at?: string; observed_at?: string };
 }
 
 const STATES: readonly MockState[] = [
@@ -191,13 +191,14 @@ export function createWorkMock(options: {
           labels: index % 3 === 0 ? [LABELS[index % LABELS.length]!, "effort:medium"] : [],
           assignees: ASSIGNEES[index % ASSIGNEES.length] === "" ? [] : [ASSIGNEES[index % ASSIGNEES.length]!],
           actor: { kind: "human", principal_id: "tok_mock" },
-          created_at: pagination && index === 120 ? "2019-01-01T00:00:00Z" : created,
+          created_at: created,
           updated_at: new Date(now - index * 600_000).toISOString(),
           dependencies: [],
           blockers: [],
           external_references: [],
           ...(pagination && index === 120 ? { provenance: {
             provider: "github", external_id: String(number), author_id: "imported-operator", created_at: "2019-01-01T00:00:00Z",
+            updated_at: "2019-02-01T00:00:00Z", observed_at: created,
           } } : {}),
         });
       }

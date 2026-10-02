@@ -103,6 +103,19 @@ export function IssueCard({
   const live = isLive(item, terminal);
   const status = statusPill(item, terminal);
   const attempt = item.attempt;
+  const age = ageLabel(item.updatedAt, now);
+  const sourceContext = item.sourceProvider === null ? null : [
+    `Imported from ${item.sourceProvider}${item.source === null ? "" : ` · ${item.source.externalId}`}`,
+    ...[
+      ["Original source created", item.source?.createdAt],
+      ["Original source updated", item.source?.updatedAt],
+      ["Source observed", item.source?.observedAt],
+    ].map(([label, at]) => {
+      const sourceAge = ageLabel(at, now);
+      return `${label}: ${sourceAge === "" ? "unavailable" : `${sourceAge} ago (${at})`}`;
+    }),
+  ].join("\n");
+  const updateContext = `${item.sourceProvider === null ? "Updated" : "Native update"}: ${age === "" ? "unavailable" : `${age} ago (${item.updatedAt})`}`;
 
   return (
     <article
@@ -151,9 +164,9 @@ export function IssueCard({
             <span className="sr-only">{item.projectName}</span>
           </span>
         )}
-        {terminal && item.sourceProvider !== null ? (
-          <span className="shrink-0 whitespace-nowrap text-[11px]" title={`Imported from ${item.sourceProvider}`}>
-            Source history
+        {sourceContext !== null ? (
+          <span className="shrink-0 whitespace-nowrap text-[11px]" title={sourceContext}>
+            {terminal ? "Source history" : "Imported"}
           </span>
         ) : null}
         <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground/70 tabular-nums">
@@ -214,8 +227,12 @@ export function IssueCard({
         {attempt === null || attempt.attemptNumber === null || attempt.attemptNumber < 2 ? null : (
           <span>attempt {attempt.attemptNumber}</span>
         )}
-        <span className="ml-auto shrink-0 tabular-nums" data-testid="issue-age">
-          {ageLabel(item.updatedAt, now)}
+        <span
+          className="ml-auto shrink-0 tabular-nums"
+          data-testid="issue-age"
+          title={[updateContext, sourceContext].filter((part) => part !== null).join("\n")}
+        >
+          {age === "" ? "" : `${item.sourceProvider === null ? "Updated" : "Native update"} ${age}`}
         </span>
         {item.priority === null ? null : (
           <Pill tone={priorityTone(item.priority, terminal)} aria-label={`Priority: ${item.priority}`}>

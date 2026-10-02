@@ -191,6 +191,12 @@ export function toWorkItemView(
     stateId: issue.state,
     terminal: issue.terminal,
     sourceProvider: issue.provenance?.provider ?? null,
+    source: issue.provenance === undefined ? null : {
+      externalId: issue.provenance.external_id,
+      createdAt: issue.provenance.created_at ?? null,
+      updatedAt: issue.provenance.updated_at ?? null,
+      observedAt: issue.provenance.observed_at ?? null,
+    },
     priority: priorityName(issue.priority),
     labels,
     assignees: [...issue.assignees],
