@@ -203,7 +203,9 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 			value, err = s.readRunnerRouting(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID)
 		case operatortool.ListRunnerRouting:
 			runners, readErr := s.listRunnerRoutingData(ctx, tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), r.Limit+1, r.Offset)
-			err = readErr
+			if readErr != nil {
+				return operatortool.Result{}, errHubOperatorUnavailable
+			}
 			more := len(runners) > r.Limit
 			if more {
 				runners = runners[:r.Limit]
