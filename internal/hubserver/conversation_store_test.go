@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"io/fs"
 	"net/http"
 	"strconv"
 	"sync"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/pressly/goose/v3"
 )
 
 type conversationFixture struct {
@@ -827,18 +825,18 @@ func TestConversationMigrationTables(t *testing.T) {
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
-		migrations, err := fs.Sub(migrationFiles, "migrations")
+		if _, err := service.database.db.ExecContext(t.Context(), "ALTER TABLE conversations DROP COLUMN origin"); err != nil {
+			t.Fatal(err)
+		}
+		migrationTx, err := service.database.db.BeginTx(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		provider, err := goose.NewProvider(goose.DialectSQLite3, service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()), goose.WithGoMigrations(hubGoMigrations()...))
-		if err != nil {
+		t.Cleanup(func() { _ = migrationTx.Rollback() })
+		if err := migrateConversationOrigin(t.Context(), migrationTx); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := provider.DownTo(t.Context(), 61); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := provider.Up(t.Context()); err != nil {
+		if err := migrationTx.Commit(); err != nil {
 			t.Fatal(err)
 		}
 		for _, test := range []struct{ name, id, origin string }{

@@ -451,6 +451,130 @@ func TestOpenMigratesLegacyWebhookPayloads(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesConversationOriginHistories(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		version       int
+		originVersion int
+	}{
+		{"schema60", 60, 0},
+		{"attachments62", 62, 0},
+		{"origin62", 62, 62},
+		{"origin63", 63, 63},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hub.db")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			db.SetMaxOpenConns(1)
+			if _, err := db.ExecContext(t.Context(), fmt.Sprintf("PRAGMA application_id = %d", hubApplicationID)); err != nil {
+				t.Fatal(err)
+			}
+			legacy := fstest.MapFS{}
+			entries, err := migrationFiles.ReadDir("migrations")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				version, err := strconv.Atoi(strings.SplitN(entry.Name(), "_", 2)[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if version > test.version || version == test.originVersion {
+					continue
+				}
+				data, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacy[entry.Name()] = &fstest.MapFile{Data: data}
+			}
+			if test.originVersion != 0 {
+				data, err := os.ReadFile("testdata/legacy_conversation_origin.sql")
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacy[fmt.Sprintf("%05d_conversation_origin.sql", test.originVersion)] = &fstest.MapFile{Data: data}
+			}
+			provider, err := goose.NewProvider(goose.DialectSQLite3, db, legacy,
+				goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable),
+				goose.WithSlog(discardLogger()), goose.WithGoMigrations(hubGoMigrations()[0]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.Up(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `
+INSERT INTO organizations (id, name, created_at) VALUES ('org_history', 'History', 'now');
+INSERT INTO projects (id, organization_id, name, profile, created_at) VALUES ('prj_history', 'org_history', 'History', 'native', 'now');
+INSERT INTO api_tokens (id, name, token_hash, token_fingerprint, scope, created_at, updated_at)
+VALUES ('tok_history', 'History', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'history', 'operator', 'now', 'now');
+INSERT INTO conversations (id, organization_id, project_id, owner_principal_id, visibility, status, work_item_id, execution_json, created_at, updated_at)
+VALUES ('conv_history', 'org_history', 'prj_history', 'tok_history', 'shared', 'active', 'wi_history', '{}', 'now', 'now');
+`); err != nil {
+				t.Fatal(err)
+			}
+			if test.originVersion != 0 {
+				if _, err := db.ExecContext(t.Context(), "UPDATE conversations SET origin = 'user' WHERE id = 'conv_history'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.version >= 62 && test.originVersion != 62 {
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO attachments
+(id, organization_id, project_id, uploader, name, content_type, size, sha256, created_at)
+VALUES ('att_history', 'org_history', 'prj_history', 'tok_history', 'preserved.txt', 'text/plain', 1, 'hash', 'now')`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			service := openTestService(t, Config{DatabasePath: path})
+			if service.database.schemaVersion != 64 {
+				t.Fatalf("schema version = %d, want 64", service.database.schemaVersion)
+			}
+			for _, object := range []struct{ kind, name string }{
+				{"table", "attachments"}, {"index", "attachments_retention"},
+				{"trigger", "attachments_issue_deleted"}, {"trigger", "attachments_comment_deleted"},
+			} {
+				var count int
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM sqlite_schema WHERE type = ? AND name = ?", object.kind, object.name).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("schema object %s = %d, %v", object.name, count, err)
+				}
+			}
+			var observation int
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM pragma_table_info('runner_identities') WHERE name = 'update_observation_json'").Scan(&observation); err != nil || observation != 1 {
+				t.Fatalf("runner observation column = %d, %v", observation, err)
+			}
+			var origin string
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT origin FROM conversations WHERE id = 'conv_history'").Scan(&origin); err != nil {
+				t.Fatal(err)
+			}
+			want := conversationOriginWorker
+			if test.originVersion != 0 {
+				want = conversationOriginUser
+			}
+			if origin != want {
+				t.Fatalf("conversation origin = %q, want %q", origin, want)
+			}
+			if test.version >= 62 && test.originVersion != 62 {
+				var name string
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT name FROM attachments WHERE id = 'att_history'").Scan(&name); err != nil || name != "preserved.txt" {
+					t.Fatalf("preserved attachment = %q, %v", name, err)
+				}
+			}
+			if _, err := runMigrations(t.Context(), service.database.db, discardLogger()); err != nil {
+				t.Fatalf("repeat unchanged-schema startup: %v", err)
+			}
+		})
+	}
+}
+
 func TestSchemaEnforcesIdentityAndAppendOnlyConstraints(t *testing.T) {
 	t.Parallel()
 
