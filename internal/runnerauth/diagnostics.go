@@ -22,11 +22,8 @@ func (c LocalChecks) Validate() error {
 			return errors.New("local check status is invalid")
 		}
 	}
-	if len(c.ProviderKinds) > 2 {
-		return errors.New("too many provider kinds")
-	}
-	for _, kind := range c.ProviderKinds {
-		if !slices.Contains([]string{"codex", "claude-code"}, kind) {
+	for i, kind := range c.ProviderKinds {
+		if !slices.Contains([]string{"codex", "claude_code", "claude-code", "pi_agent"}, kind) || slices.Contains(c.ProviderKinds[:i], kind) {
 			return errors.New("local check provider is invalid")
 		}
 	}
