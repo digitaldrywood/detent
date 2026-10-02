@@ -1498,6 +1498,25 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		runWorkspace = &admissionWorkspace{logger: r.logger, leaks: &r.admissionLeaks}
 	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	var landingTarget NativeLandingTarget
+	landing, nativeLanding := req.Execution.(LandingExecution)
+	nativeLanding = nativeLanding && mode == RunModeMerge
+	if nativeLanding {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return RunResult{}, err
+		}
+		landingTarget, err = landing.LandingTarget(ctx)
+		if errors.Is(err, ErrLandingNotReviewed) {
+			return r.refusedLanding(req, landingTarget, workspace.LandRefusalNothing, err.Error()), nil
+		}
+		if err != nil {
+			return RunResult{}, fmt.Errorf("resolve landing target: %w", err)
+		}
+		if landingTarget.External != nil && !landingTarget.GitHubPullRequest {
+			return r.refusedLanding(req, landingTarget, workspace.LandRefusalProtected, "the approved policy does not enable GitHub pull request landing"), nil
+		}
+		workspaceIssue.Landing = &workspace.LandOptions{HeadSHA: landingTarget.HeadSHA, Repository: landingTarget.Repository, External: landingTarget.External}
+	}
 	if usage, ok := runWorkspace.(workspace.Usage); ok {
 		release, err := usage.Use(ctx, workspaceIssue)
 		if err != nil {
@@ -1511,6 +1530,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
+		var refusal *workspace.LandRefusal
+		if nativeLanding && errors.As(err, &refusal) {
+			return r.refusedLanding(req, landingTarget, refusal.Kind, refusal.Reason), nil
+		}
 		if heldErr, held := workspaceBranchHeldError(err, req.Issue); held {
 			return RunResult{}, heldErr
 		}
@@ -1546,11 +1569,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	mergePrecheck := MergePrecheck{}
 	mergeFallback := false
-	if landing, ok := req.Execution.(LandingExecution); ok && mode == RunModeMerge {
-		// A hub-native landing has no pull request to prepare and no agent to
-		// run: the runner lands the reviewed version itself.
+	if nativeLanding {
 		afterRunPending = false
-		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue)
+		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue, &landingTarget)
 		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); afterErr != nil && err == nil {
 			err = afterErr
 		}

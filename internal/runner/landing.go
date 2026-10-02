@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -17,13 +18,24 @@ import (
 // base branch the forge protects) is reported on the run for the
 // orchestrator to hand back to review with its reason; only an
 // infrastructure failure fails the run.
-func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing LandingExecution, backend workspace.Backend, info workspace.Info, issue workspace.Issue) (RunResult, error) {
+func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing LandingExecution, backend workspace.Backend, info workspace.Info, issue workspace.Issue, prepared *NativeLandingTarget) (RunResult, error) {
+	if req.Execution != nil {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return RunResult{}, err
+		}
+	}
 	target, err := landing.LandingTarget(ctx)
 	if err != nil {
 		if errors.Is(err, ErrLandingNotReviewed) {
 			return r.refusedLanding(req, target, workspace.LandRefusalNothing, err.Error()), nil
 		}
 		return RunResult{}, fmt.Errorf("resolve landing target: %w", err)
+	}
+	if prepared != nil {
+		previous := *prepared
+		if previous.ChangeID != target.ChangeID || previous.VersionID != target.VersionID || previous.HeadSHA != target.HeadSHA || previous.Repository != target.Repository || previous.Method != target.Method || previous.GitHubPullRequest != target.GitHubPullRequest || !sameLandingExternal(previous.External, target.External) {
+			return r.refusedLanding(req, previous, workspace.LandRefusalHeadMoved, "the reviewed version changed during workspace preparation"), nil
+		}
 	}
 	lander, ok := backend.(workspace.Lander)
 	if !ok {
@@ -34,7 +46,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		message = "Land " + target.HeadSHA
 	}
 	message += fmt.Sprintf("\n\nChange Request %s, round %d, head %s.", target.ChangeID, target.Number, target.HeadSHA)
-	options := workspace.LandOptions{HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository}
+	options := workspace.LandOptions{HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External}
 	var result workspace.LandResult
 	if target.GitHubPullRequest {
 		github, supported := backend.(workspace.GitHubPRLander)
@@ -73,6 +85,13 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	r.logWorkerEvent(req.Issue, "worker_native_landed",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "base_ref", result.BaseRef, "method", result.Method)
 	return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLanded, NativeLanding: &landed}, nil
+}
+
+func sameLandingExternal(a, b *tracker.ChangeExternalReference) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 const (

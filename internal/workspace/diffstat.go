@@ -76,12 +76,31 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 	if err != nil {
 		return err
 	}
+	remoteHead, err := fetchReviewHead(ctx, normalized.Path, normalized.Branch, issue)
+	if err != nil {
+		return err
+	}
+	localHead, err := l.Head(ctx, normalized, issue)
+	if err != nil {
+		return err
+	}
+	if err := l.VerifyReviewTree(ctx, normalized, issue); err != nil {
+		return err
+	}
+	if strings.TrimSpace(localHead) == remoteHead {
+		return nil
+	}
+	_, err = runGitAt(ctx, normalized.Path, "reset", "--hard", remoteHead)
+	return err
+}
+
+func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Issue) (string, error) {
 	branch := strings.TrimSpace(issue.PullRequestBranch)
 	if branch == "" {
-		branch = strings.TrimSpace(normalized.Branch)
+		branch = strings.TrimSpace(fallbackBranch)
 	}
 	if branch == "" && issue.PullRequestNumber == 0 {
-		return errors.New("review branch is empty")
+		return "", errors.New("review branch is empty")
 	}
 	remoteRef := "refs/remotes/origin/" + branch
 	sourceRef := "refs/heads/" + branch
@@ -94,32 +113,21 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 		repository := strings.TrimSpace(issue.PullRequestRepository)
 		parts := strings.Split(repository, "/")
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repository, " \\:@") {
-			return fmt.Errorf("invalid pull request repository %q", repository)
+			return "", fmt.Errorf("invalid pull request repository %q", repository)
 		}
 		remote = "https://github.com/" + repository + ".git"
 	}
-	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-write-fetch-head", remote, "+"+sourceRef+":"+remoteRef); err != nil {
-		return fmt.Errorf("fetch review head: %w", err)
+	if _, err := runGitAt(ctx, path, "fetch", "--no-write-fetch-head", remote, "+"+sourceRef+":"+remoteRef); err != nil {
+		return "", fmt.Errorf("fetch review head: %w", err)
 	}
-	remoteHead, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", remoteRef)
+	remoteHead, err := runGitAt(ctx, path, "rev-parse", "--verify", remoteRef)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if strings.TrimSpace(remoteHead) != strings.TrimSpace(issue.PullRequestHeadSHA) {
-		return fmt.Errorf("review branch head mismatch: fetched %s, expected %s", strings.TrimSpace(remoteHead), strings.TrimSpace(issue.PullRequestHeadSHA))
+		return "", refuse(LandRefusalHeadMoved, fmt.Sprintf("review branch head mismatch: fetched %s, expected %s", strings.TrimSpace(remoteHead), strings.TrimSpace(issue.PullRequestHeadSHA)))
 	}
-	localHead, err := l.Head(ctx, normalized, issue)
-	if err != nil {
-		return err
-	}
-	if err := l.VerifyReviewTree(ctx, normalized, issue); err != nil {
-		return err
-	}
-	if strings.TrimSpace(localHead) == strings.TrimSpace(remoteHead) {
-		return nil
-	}
-	_, err = runGitAt(ctx, normalized.Path, "reset", "--hard", strings.TrimSpace(remoteHead))
-	return err
+	return strings.TrimSpace(remoteHead), nil
 }
 
 func (l *LocalGit) VerifyReviewTree(ctx context.Context, info Info, issue Issue) error {

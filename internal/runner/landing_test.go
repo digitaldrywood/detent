@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -48,6 +51,57 @@ func (s *landingStub) RecordLanding(_ context.Context, landing NativeLanding) er
 	return s.recordErr
 }
 
+type landingRunExecution struct {
+	testExecution
+	landingStub
+}
+
+func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		targetErr error
+		createErr error
+		github    bool
+		created   bool
+	}{
+		{name: "approved external source", github: true, created: true, createErr: errors.New("stop at creation")},
+		{name: "unreviewed source", github: true, targetErr: ErrLandingNotReviewed},
+		{name: "current policy disables PR landing"},
+		{name: "hydration refusal", github: true, created: true, createErr: &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "external PR moved"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &fakeWorkspaceBackend{createErr: test.createErr}
+			external := &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example/repo/pull/7"}
+			execution := &landingRunExecution{landingStub: landingStub{targetErr: test.targetErr, target: NativeLandingTarget{
+				ChangeID: "change_1", VersionID: "version_1", HeadSHA: strings.Repeat("c", 40), Repository: "https://github.com/example/repo", GitHubPullRequest: test.github, External: external,
+			}}}
+			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Run(t.Context(), RunRequest{Mode: RunModeMerge, Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#98"}})
+			if backend.created != test.created || len(execution.recorded) != 0 {
+				t.Fatalf("workspace created = %v, receipts = %#v", backend.created, execution.recorded)
+			}
+			if test.created {
+				options := backend.createIssue.Landing
+				if options == nil || options.HeadSHA != execution.target.HeadSHA || options.Repository != execution.target.Repository || options.External == nil || *options.External != *external {
+					t.Fatalf("workspace lost reviewed target: %#v", options)
+				}
+			}
+			var refusal *workspace.LandRefusal
+			if test.createErr != nil && !errors.As(test.createErr, &refusal) {
+				if !errors.Is(err, test.createErr) {
+					t.Fatalf("run error = %v", err)
+				}
+			} else if err != nil || result.Output != RunOutputNativeLandingRefused || result.NativeLanding == nil || result.NativeLanding.Landed {
+				t.Fatalf("run result = %#v, error = %v", result, err)
+			}
+		})
+	}
+}
+
 func TestLandNativeChange(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("c", 40)
@@ -62,6 +116,7 @@ func TestLandNativeChange(t *testing.T) {
 		wantRecorded int
 		wantRefusal  string
 		wantGitHub   bool
+		prepared     *NativeLandingTarget
 	}{
 		{name: "lands and records", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1},
@@ -79,6 +134,8 @@ func TestLandNativeChange(t *testing.T) {
 			wantErr: "resolve landing target"},
 		{name: "an unreviewed change from the hub is a refusal", stub: landingStub{target: target, targetErr: ErrLandingNotReviewed},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalNothing},
+		{name: "a replaced version cannot land the prepared workspace", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: "new_version", HeadSHA: head}}, prepared: &target,
+			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalHeadMoved},
 		{name: "a git failure fails the run", stub: landingStub{target: target}, backend: landingBackend{err: errors.New("git fetch origin: network down")},
 			wantErr: "network down"},
 		{name: "an unrecorded landing fails the run after retrying the report", stub: landingStub{target: target, recordErr: errors.New("hub unavailable")}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
@@ -88,7 +145,7 @@ func TestLandNativeChange(t *testing.T) {
 			t.Parallel()
 			r := &Runner{}
 			stub, backend := test.stub, test.backend
-			result, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, workspace.Info{Path: t.TempDir(), Branch: "detent/land"}, workspace.Issue{Identifier: "DD-1"})
+			result, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, workspace.Info{Path: t.TempDir(), Branch: "detent/land"}, workspace.Issue{Identifier: "DD-1"}, test.prepared)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 					t.Fatalf("error = %v, want %q", err, test.wantErr)
@@ -146,7 +203,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 	stub := landingStub{target: target, recordErr: errors.New("hub unavailable")}
 	backend := landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "squash"}}
 	r := &Runner{}
-	_, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"})
+	_, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "record landing") {
 		t.Fatalf("error = %v, want the report failure", err)
 	}
@@ -162,7 +219,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 	}
 	// The next run reports it and forgets it.
 	stub.recordErr = nil
-	if _, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"}); err != nil {
+	if _, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git", "detent-landing.json")); !errors.Is(err, os.ErrNotExist) {
