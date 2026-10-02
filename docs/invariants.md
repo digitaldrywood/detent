@@ -1972,6 +1972,14 @@ source-only replay instructions are checked before privileged continuation.
 Sandbox metadata roots grant only the assigned branch's ref, reflog and lock
 files, plus the existing worktree metadata and objects; they never grant branch
 parent directories, sibling ref writes or the common Git directory.
+Native implementation with an execution owner omits branch ref, reflog and lock
+file grants from the model's writable paths. The existing host finalizer owns
+those writes; the worker retains directory grants for its assigned worktree
+metadata and objects so source edits can be staged. This avoids treating Git
+metadata files as Codex workspace directories on Linux without widening their
+parent directories or changing legacy worker permissions. The opt-in Linux
+case in `TestNativeReworkFinalizesBeforeImmutableEvidence` verifies real Codex
+staging, owned and sibling ref denial, and subsequent host commit finalization.
 
 Late host replay conflicts (#163) share the existing successful dirty-source
 continuation under INV-1, INV-2 and INV-3. A successful model turn may leave
