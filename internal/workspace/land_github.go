@@ -130,7 +130,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if pull.Merged || pull.MergedAt != "" {
 		mergeSHA = pull.MergeCommitSHA
 	} else {
-		if pull.State != "open" || pull.Head.SHA != head {
+		if pull.State != "open" {
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the GitHub pull request no longer names the reviewed head")
 		}
 		var merged githubLandingMerge
@@ -177,6 +177,9 @@ func githubLandingAPI(ctx context.Context, result any, method, path string, fiel
 	if err != nil {
 		message := strings.TrimSpace(string(output))
 		lower := strings.ToLower(message)
+		if method == "PUT" && strings.HasSuffix(path, "/merge") && (strings.Contains(lower, "http 409") && strings.Contains(lower, "head branch was modified") || strings.Contains(lower, "http 405") && (strings.Contains(lower, "pull request is closed") || strings.Contains(lower, "pull request is not open"))) {
+			return refuse(LandRefusalHeadMoved, "GitHub refused the reviewed head merge: "+message)
+		}
 		if method == "PUT" && strings.HasSuffix(path, "/merge") && strings.Contains(lower, "http 405") && (strings.Contains(lower, "merge conflict") || strings.Contains(lower, "pull request is not mergeable")) {
 			return refuse(LandRefusalConflict, "GitHub refused the pull request merge: "+message)
 		}

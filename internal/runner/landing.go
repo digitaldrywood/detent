@@ -45,6 +45,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	} else {
 		result, err = lander.LandChange(ctx, info, issue, options)
 	}
+	if IsCapacityError(err) {
+		return RunResult{}, err
+	}
 	var refusal *workspace.LandRefusal
 	if errors.As(err, &refusal) {
 		r.logWorkerEvent(req.Issue, "worker_native_landing_refused",

@@ -13,21 +13,27 @@ import (
 )
 
 func TestLocalGitLandChangeViaGitHub(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
-		name       string
-		mergeError bool
-		method     string
-		pullState  string
-		reworked   bool
+		name        string
+		mergeError  string
+		wantRefusal string
+		moved       bool
+		method      string
+		pullState   string
+		reworked    bool
 	}{
 		{name: "merges the reviewed head", method: "merge"},
 		{name: "uses the policy squash method", method: "squash"},
 		{name: "uses the policy rebase method", method: "rebase"},
-		{name: "reports protected merge refusal", method: "merge", mergeError: true},
+		{name: "reports protected merge refusal", method: "merge", mergeError: "HTTP 405: Branch protection requires reviews", wantRefusal: LandRefusalProtected},
 		{name: "reuses an open PR", method: "merge", pullState: "open"},
 		{name: "records an already merged reviewed head", method: "merge", pullState: "merged"},
 		{name: "ignores an older merged PR", method: "merge", pullState: "older"},
-		{name: "publishes a reworked branch", method: "squash", reworked: true},
+		{name: "publishes a reworked branch despite a stale list head", method: "squash", reworked: true, pullState: "stale"},
+		{name: "atomic merge rejects a genuinely moved head", method: "squash", reworked: true, pullState: "stale", moved: true, wantRefusal: LandRefusalHeadMoved},
+		{name: "atomic merge rejects a closed PR", method: "squash", pullState: "open", mergeError: "gh: Pull Request is closed (HTTP 405)", wantRefusal: LandRefusalHeadMoved},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newLandingFixture(t)
@@ -37,51 +43,53 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			// bare repository. Neither test touches a real GitHub repository.
 			runGit(t, fixture.source, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
 			runGit(t, fixture.source, "remote", "set-url", "origin", repository+".git")
+			previous := base
 			if test.reworked {
 				tree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", fixture.head+"^{tree}"))
-				previous := strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Previous attempt"))
+				previous = strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Previous attempt"))
 				runGit(t, fixture.source, "push", "origin", previous+":refs/heads/"+fixture.info.Branch)
 			}
 			bin := installLandingGitHubCLI(t)
 			t.Setenv("TEST_BARE_REPOSITORY", fixture.remote)
 			t.Setenv("TEST_REVIEWED_HEAD", fixture.head)
-			t.Setenv("TEST_OLD_HEAD", base)
+			t.Setenv("TEST_OLD_HEAD", previous)
 			t.Setenv("TEST_PULL_STATE", test.pullState)
+			t.Setenv("TEST_ATTEMPT_BRANCH", fixture.info.Branch)
+			t.Setenv("TEST_MOVE_HEAD", fmt.Sprint(test.moved))
 			callsPath := filepath.Join(bin, "calls")
 			t.Setenv("TEST_GH_CALLS", callsPath)
-			mergeRefusal := ""
-			if test.mergeError {
-				mergeRefusal = "HTTP 405: Branch protection requires reviews"
-			}
-			t.Setenv("TEST_MERGE_REFUSED", mergeRefusal)
+			t.Setenv("TEST_MERGE_REFUSED", test.mergeError)
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), fixture.info, fixture.issue, LandOptions{
 				HeadSHA: fixture.head, Method: test.method, Repository: repository,
 				Message: "Review this change\n\nNative Change Request", PushAttemptBranch: true,
 			})
-			if test.mergeError {
-				var refusal *LandRefusal
-				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected || fixture.remoteMain(t) == fixture.head {
-					t.Fatalf("protected merge = %#v, %v; base = %s", result, err, fixture.remoteMain(t))
-				}
-				return
+			calls, readErr := os.ReadFile(callsPath)
+			if readErr != nil {
+				t.Fatal(readErr)
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if result.MergeSHA != fixture.head || result.BaseRef != "main" || result.Method != test.method || !result.AttemptBranchPushed || fixture.remoteMain(t) != fixture.head {
-				t.Fatalf("GitHub landing = %#v; base = %s", result, fixture.remoteMain(t))
-			}
-			calls, err := os.ReadFile(callsPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantCreate := test.pullState != "open" && test.pullState != "merged"
+			wantCreate := test.pullState != "open" && test.pullState != "stale" && test.pullState != "merged"
 			wantMerge := test.pullState != "merged"
 			if strings.Contains(string(calls), "--method POST") != wantCreate || strings.Contains(string(calls), "--method PUT") != wantMerge {
 				t.Fatalf("unexpected PR operations: %s", calls)
 			}
 			if wantMerge && (!strings.Contains(string(calls), "merge_method="+test.method) || !strings.Contains(string(calls), "sha="+fixture.head)) {
 				t.Fatalf("merge did not name the approved method and head: %s", calls)
+			}
+			if test.wantRefusal != "" {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != test.wantRefusal || fixture.remoteMain(t) != base || result.MergeSHA != "" {
+					t.Fatalf("merge refusal = %#v, %v; base = %s", result, err, fixture.remoteMain(t))
+				}
+				if test.moved && !strings.Contains(refusal.Reason, "Head branch was modified") {
+					t.Fatalf("head refusal did not come from the atomic merge: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.MergeSHA != fixture.head || result.BaseRef != "main" || result.BaseBefore != base || result.Method != test.method || !result.AttemptBranchPushed || fixture.remoteMain(t) != fixture.head {
+				t.Fatalf("GitHub landing = %#v; base = %s", result, fixture.remoteMain(t))
 			}
 			published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
 			if published != fixture.head {
@@ -129,6 +137,9 @@ func TestGitHubLandingAPIRefusal(t *testing.T) {
 		{name: "unmergeable pull request", message: `{"message":"Pull Request is not mergeable","status":"405"}
 gh: Pull Request is not mergeable (HTTP 405)`, kind: LandRefusalConflict},
 		{name: "authentication", message: "HTTP 401: Bad credentials", kind: LandRefusalProtected},
+		{name: "authoritative moved head", message: "gh: Head branch was modified. Review and try the merge again. (HTTP 409)", kind: LandRefusalHeadMoved},
+		{name: "authoritative closed PR", message: "gh: Pull Request is closed (HTTP 405)", kind: LandRefusalHeadMoved},
+		{name: "authoritative PR is not open", message: "gh: Pull Request is not open (HTTP 405)", kind: LandRefusalHeadMoved},
 		{name: "primary quota never becomes a conflict", message: "HTTP 403: API rate limit exceeded", quota: true},
 		{name: "secondary quota never becomes a conflict", message: "HTTP 429: You have exceeded a secondary rate limit", quota: true},
 	} {
@@ -142,8 +153,8 @@ gh: Pull Request is not mergeable (HTTP 405)`, kind: LandRefusalConflict},
 				t.Fatalf("refusal = %v, response = %#v", err, response)
 			}
 			if test.quota {
-				if typed && refusal.Kind == LandRefusalConflict {
-					t.Fatalf("quota became a conflict: %v", err)
+				if typed && (refusal.Kind == LandRefusalConflict || refusal.Kind == LandRefusalHeadMoved) {
+					t.Fatalf("quota became a conflict or head refusal: %v", err)
 				}
 				return
 			}
@@ -218,7 +229,16 @@ func landingGitHubCLIHelper() int {
 	switch args[2] {
 	case "GET":
 		switch os.Getenv("TEST_PULL_STATE") {
-		case "open":
+		case "open", "stale":
+			cmd := exec.CommandContext(context.Background(), "git", "--git-dir", os.Getenv("TEST_BARE_REPOSITORY"), "rev-parse", "refs/heads/"+os.Getenv("TEST_ATTEMPT_BRANCH"))
+			published, err := cmd.Output()
+			if err != nil || strings.TrimSpace(string(published)) != head {
+				fmt.Fprintf(os.Stderr, "list read preceded reviewed head publication: %s, %v\n", published, err)
+				return 1
+			}
+			if os.Getenv("TEST_PULL_STATE") == "stale" {
+				pull = strings.ReplaceAll(pull, head, os.Getenv("TEST_OLD_HEAD"))
+			}
 			response = "[" + pull + "]"
 		case "merged":
 			if err := updateBase(); err != nil {
@@ -235,6 +255,31 @@ func landingGitHubCLIHelper() int {
 	case "POST":
 		response = pull
 	case "PUT":
+		if branch := os.Getenv("TEST_ATTEMPT_BRANCH"); branch != "" {
+			if os.Getenv("TEST_MOVE_HEAD") == "true" {
+				cmd := exec.CommandContext(context.Background(), "git", "--git-dir", os.Getenv("TEST_BARE_REPOSITORY"), "update-ref", "refs/heads/"+branch, os.Getenv("TEST_OLD_HEAD"), head)
+				if err := cmd.Run(); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					return 1
+				}
+			}
+			cmd := exec.CommandContext(context.Background(), "git", "--git-dir", os.Getenv("TEST_BARE_REPOSITORY"), "rev-parse", "refs/heads/"+branch)
+			current, err := cmd.Output()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			guarded := false
+			for _, arg := range args[4:] {
+				if arg == "sha="+strings.TrimSpace(string(current)) {
+					guarded = true
+				}
+			}
+			if !guarded {
+				fmt.Fprintln(os.Stderr, "gh: Head branch was modified. Review and try the merge again. (HTTP 409)")
+				return 1
+			}
+		}
 		if refusal := os.Getenv("TEST_MERGE_REFUSED"); refusal != "" {
 			fmt.Fprintln(os.Stderr, refusal)
 			return 1
