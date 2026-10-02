@@ -42,6 +42,7 @@ import {
 } from "../../components/composerFooterLayout.ts";
 import { formatAttachmentSize } from "../../runtime/state/attachments.ts";
 import type { ComposerAttachments } from "../adapters/attachments.ts";
+import { attachmentInputHandlers } from "../work/components/AttachmentEditor.tsx";
 import type { PendingQuestionState } from "../adapters/pendingQuestions.ts";
 import {
   builtinSlashCommands,
@@ -97,6 +98,9 @@ export interface ComposerProps {
   readonly editorRef?: React.Ref<ComposerPromptEditorHandle>;
 
   readonly attachments?: ComposerAttachments;
+  readonly onFiles?: ((files: readonly File[]) => void) | undefined;
+  readonly uploadingFiles?: boolean | undefined;
+  readonly attachmentErrors?: readonly string[] | undefined;
 
   readonly banners?: readonly ComposerBannerEntry[];
 
@@ -150,7 +154,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
   const attachments = props.attachments;
   const staged = attachments?.staged ?? NO_STAGED;
   const attachControl = props.attachControl ?? "attach";
-  const attachingBlocked = attachControl === "none" || attachments === undefined || disabled;
+  const attachingBlocked = attachControl === "none" || (attachments === undefined && props.onFiles === undefined) || disabled;
   const fileInput = React.useRef<HTMLInputElement>(null);
   const formRef = React.useRef<HTMLFormElement>(null);
   // A draft with a staged file is sendable: the first send uploads it.
@@ -160,6 +164,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
     !props.sending &&
     props.blockedReason == null &&
     !disabled &&
+    props.uploadingFiles !== true &&
     attachments?.uploading !== true;
   const label = props.label ?? "Message";
   const domId = props.domId ?? "dc-composer";
@@ -388,6 +393,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
       <ComposerSurface.Host>
         <div className="relative z-10">
           <form
+            {...(props.onFiles === undefined ? {} : attachmentInputHandlers(props.onFiles, disabled || props.sending))}
             ref={formRef}
             data-chat-composer-form="true"
             className="mx-auto w-full min-w-0 max-w-3xl"
@@ -406,6 +412,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
             }}
           >
 
+            {props.attachmentErrors?.map((error, index) => <p key={index} role="alert" className="text-sm text-destructive">{error}</p>)}
             <ComposerBanner.Dock>
               <ComposerBanner.Column>
                 <ComposerBannerStack className="relative z-0" items={banners} />
@@ -742,7 +749,8 @@ export function Composer(props: ComposerProps): React.ReactElement {
                             onChange={(event) => {
                               const picked = Array.from(event.currentTarget.files ?? []);
                               event.currentTarget.value = "";
-                              attachments?.addFiles(picked);
+                              if (props.onFiles) props.onFiles(picked);
+                              else attachments?.addFiles(picked);
                             }}
                           />
                           <Tooltip>
@@ -776,7 +784,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
                         sendDisabledReason={
                           disabled
                             ? (props.blockedReason ?? "Sending is unavailable")
-                            : attachments?.uploading === true
+                            : attachments?.uploading === true || props.uploadingFiles === true
                               ? "Waiting for the upload to finish"
                               : (props.blockedReason ?? null)
                         }

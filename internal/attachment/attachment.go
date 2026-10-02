@@ -28,21 +28,27 @@ var ErrInvalid = errors.New("invalid attachment")
 var ErrTooLarge = errors.New("attachment exceeds 20 MiB")
 
 type Metadata struct {
-	Reference           string     `json:"reference,omitempty"`
-	ID                  string     `json:"id"`
-	ProjectID           string     `json:"project_id"`
-	Uploader            string     `json:"uploader"`
-	Name                string     `json:"name"`
-	ContentType         string     `json:"content_type"`
-	Size                int64      `json:"size"`
-	SHA256              string     `json:"sha256"`
-	Width               int        `json:"width"`
-	Height              int        `json:"height"`
-	CreatedAt           time.Time  `json:"created_at"`
-	WorkItemID          string     `json:"work_item_id,omitempty"`
-	CommentID           string     `json:"comment_id,omitempty"`
-	DeletedAt           *time.Time `json:"deleted_at,omitempty"`
-	AuthorizedPrincipal string     `json:"authorized_principal,omitempty"`
+	Reference           string            `json:"reference,omitempty"`
+	ReferencedBy        []SourceReference `json:"referenced_by,omitempty"`
+	ID                  string            `json:"id"`
+	ProjectID           string            `json:"project_id"`
+	Uploader            string            `json:"uploader"`
+	Name                string            `json:"name"`
+	ContentType         string            `json:"content_type"`
+	Size                int64             `json:"size"`
+	SHA256              string            `json:"sha256"`
+	Width               int               `json:"width"`
+	Height              int               `json:"height"`
+	CreatedAt           time.Time         `json:"created_at"`
+	WorkItemID          string            `json:"work_item_id,omitempty"`
+	CommentID           string            `json:"comment_id,omitempty"`
+	DeletedAt           *time.Time        `json:"deleted_at,omitempty"`
+	AuthorizedPrincipal string            `json:"authorized_principal,omitempty"`
+}
+
+type SourceReference struct {
+	WorkItemID string `json:"work_item_id"`
+	CommentID  string `json:"comment_id,omitempty"`
 }
 
 func (m Metadata) Validate() error {

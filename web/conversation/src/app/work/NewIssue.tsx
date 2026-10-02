@@ -20,7 +20,7 @@ import {
 } from "../../components/ui/dialog.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
-import { Textarea } from "../../components/ui/textarea.tsx";
+import { AttachmentEditor } from "./components/AttachmentEditor.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
 import type { AccountProject } from "../../contracts/account.ts";
 import { ControlError, NativeSelect } from "../account/controls.tsx";
@@ -101,9 +101,11 @@ export function NewIssueDialog({
   const [title, setTitle] = React.useState("");
 	const [githubIssueUrl, setGithubIssueUrl] = React.useState("");
   const [body, setBody] = React.useState("");
+  const [uploading, setUploading] = React.useState(false);
   const [state, setState] = React.useState(() => newIssueState(project, requestedState));
   const key = React.useRef(newKey());
   const create = useMutation(async () => {
+    if (uploading) return;
     const created = await api.createFirstIssue({
       projectId: target,
 	  githubIssueUrl: githubIssueUrl.trim() || undefined,
@@ -182,10 +184,14 @@ export function NewIssueDialog({
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="new-issue-body">What needs doing</Label>
-              <Textarea
+              <AttachmentEditor
+                key={target}
+                projectId={target}
+                onUploadingChange={setUploading}
+                disabled={create.pending}
                 id="new-issue-body"
                 value={body}
-                onChange={(event) => setBody(event.currentTarget.value)}
+                onChange={setBody}
               />
             </div>
             {project !== undefined && project.states.length > 1 ? (
@@ -210,7 +216,7 @@ export function NewIssueDialog({
           <Button
             type="submit"
             form="new-issue-form"
-            disabled={create.pending || (title.trim().length === 0 && githubIssueUrl.trim().length === 0) || project === undefined}
+            disabled={uploading || create.pending || (title.trim().length === 0 && githubIssueUrl.trim().length === 0) || project === undefined}
           >
             {create.pending ? "Creating…" : "Create issue"}
           </Button>

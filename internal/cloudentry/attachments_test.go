@@ -232,6 +232,18 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	if record.ProjectID != project || record.Name != "secret.txt" || record.Size <= cloudassert.MaxBodyBytes {
 		t.Fatalf("metadata=%+v", record)
 	}
+	beforeMetadata := len(store.requests())
+	metadata := attachmentRequest(t, alice, http.MethodGet, base+"/"+record.ID+"/metadata", nil, nil)
+	if metadata.Code != http.StatusOK || metadata.Header().Get("Cache-Control") != "private, no-store" || len(store.requests()) != beforeMetadata {
+		t.Fatalf("metadata read=%d %s touched storage=%v", metadata.Code, metadata.Body.String(), len(store.requests()) != beforeMetadata)
+	}
+	var public attachment.Metadata
+	if err := json.Unmarshal(metadata.Body.Bytes(), &public); err != nil {
+		t.Fatal(err)
+	}
+	if public.ID != record.ID || public.Name != record.Name || public.AuthorizedPrincipal != "" {
+		t.Fatalf("public metadata=%+v", public)
+	}
 	key, err := attachment.Key("org_alpha", record.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -325,13 +337,18 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 		want               int
 	}{
 		{name: "another org", method: http.MethodGet, path: "/organizations/org_beta/api/v2/projects/" + betaProject + "/attachments/" + record.ID, client: alice, want: 404},
+		{name: "another org metadata", method: http.MethodGet, path: "/organizations/org_beta/api/v2/projects/" + betaProject + "/attachments/" + record.ID + "/metadata", client: alice, want: 404},
 		{name: "another project", method: http.MethodGet, path: "/organizations/org_alpha/api/v2/projects/prj_other/attachments/" + record.ID, client: alice, want: 404},
+		{name: "another project metadata", method: http.MethodGet, path: "/organizations/org_alpha/api/v2/projects/prj_other/attachments/" + record.ID + "/metadata", client: alice, want: 404},
 		{name: "another org project", method: http.MethodGet, path: "/organizations/org_alpha/api/v2/projects/" + betaProject + "/attachments/" + record.ID, client: alice, want: 404},
+		{name: "another org project metadata", method: http.MethodGet, path: "/organizations/org_alpha/api/v2/projects/" + betaProject + "/attachments/" + record.ID + "/metadata", client: alice, want: 404},
 		{name: "anonymous", method: http.MethodGet, path: base + "/" + record.ID, client: anonymous, want: 404},
+		{name: "anonymous metadata", method: http.MethodGet, path: base + "/" + record.ID + "/metadata", client: anonymous, want: 404},
 		{name: "anonymous write", method: http.MethodPost, path: base, client: anonymous, want: 404},
 		{name: "cross org write", method: http.MethodPost, path: base, client: alice, headers: map[string]string{"X-CSRF-Token": betaCSRF}, want: 404},
 		{name: "another project write", method: http.MethodPost, path: strings.Replace(base, project, betaProject, 1), client: alice, headers: map[string]string{"X-CSRF-Token": csrf}, want: 404},
 		{name: "metadata injection", method: http.MethodPost, path: "/api/v2/organizations/org_alpha/projects/" + project + "/attachment-metadata", client: alice, want: 404},
+		{name: "private metadata read", method: http.MethodGet, path: "/api/v2/organizations/org_alpha/projects/" + project + "/attachment-metadata/" + record.ID, client: alice, want: 404},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			before := len(store.requests())
@@ -358,7 +375,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	if err := f.service.auth.store.db.QueryRow("SELECT count(*) FROM audit WHERE event IN ('attachment_uploaded','attachment_read') AND organization_id='org_alpha'").Scan(&audits); err != nil {
 		t.Fatal(err)
 	}
-	if audits != 5 {
+	if audits != 6 {
 		t.Fatalf("audit entries=%d", audits)
 	}
 	exerciseAttachmentClients(t, f, alice, anonymous, project, writeToken)
@@ -619,8 +636,8 @@ func exerciseAttachmentClients(t *testing.T, f entryFixture, browser, anonymous 
 				t.Fatal(err)
 			}
 			rebind := attachmentRequest(t, anonymous, http.MethodPost, ref.URL+"/reference", bytes.NewReader(binding), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
-			if rebind.Code != 404 {
-				t.Fatalf("comment attachment remained unbound: %d %s", rebind.Code, rebind.Body.String())
+			if rebind.Code != http.StatusNoContent {
+				t.Fatalf("additional attachment reference=%d %s", rebind.Code, rebind.Body.String())
 			}
 			page, body := browser.get("/organizations/org_alpha/work/i/" + string(issue.WorkItemID))
 			if page.StatusCode != 200 || !strings.Contains(body, `id="root"`) {

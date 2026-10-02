@@ -49,6 +49,14 @@ landing never reset, repoint or steal a retained Code or source checkout/ref.
 External versions through the real Runner and LocalGit without a provider turn,
 including unchanged owner files, raw indexes, HEADs and source refs.
 
+Issue and comment saves (native #176) record attachment references in the same
+collaboration transaction and only within the current organization and project.
+Multiple sources may retain one attachment; deleting one source keeps bytes
+referenced by another. Markdown stores only opaque attachment IDs. Cloud renders
+metadata authorized for the current project before assigning a same-origin byte
+URL and retains `img-src 'self' data:`. `TestCloudAttachmentSavedReferences` covers
+save, edit, deletion, orphan retention and project isolation.
+
 Native failed coding and rework completion (#169) selects an allowed configured
 review destination under the existing leased completion owner before publishing
 `run.finished` or releasing the claim. It records the authentic failed or cancelled

@@ -41,6 +41,7 @@ import { newCommandKey, useClient } from "../client.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { ChatWorkspace, useWorkspacePanel } from "../components/ChatWorkspace.tsx";
 import { Markdown } from "../components/Markdown.tsx";
+import { AttachmentEditor } from "./components/AttachmentEditor.tsx";
 import { canInterrupt, executionCopy, expectedOwner, isActive } from "../lib/execution.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useActivityCitation } from "./lib/useActivityCitation.ts";
@@ -527,6 +528,7 @@ function IssueSurface({
           title: "Could not post the comment",
           description: cause instanceof Error ? cause.message : String(cause),
         });
+        throw cause;
       } finally {
         setPosting(false);
       }
@@ -589,6 +591,11 @@ function IssueSurface({
 
   return frame(
     <IssueBody
+      onBodySave={async (body) => {
+        const updated = await http.patchWorkItem({ projectId, itemId: workItemId, key: newWorkKey("body"), expectedRevision: data.issue.revision, body });
+        apply((current) => current === null ? current : { ...current, issue: updated });
+        reload();
+      }}
       ask={ask}
       item={item}
       data={data}
@@ -720,6 +727,7 @@ function IssueSurface({
 }
 
 interface IssueBodyProps {
+  readonly onBodySave: (body: string) => Promise<void>;
   readonly ask: IssueAsk;
   readonly item: WorkItemView;
   readonly data: IssueData;
@@ -757,6 +765,11 @@ interface IssueBodyProps {
  * published inside `ChatWorkspace`.
  */
 function IssueBody(props: IssueBodyProps): React.ReactElement {
+  const [editingBody, setEditingBody] = React.useState(false);
+  const [bodyDraft, setBodyDraft] = React.useState("");
+  const [bodyUploading, setBodyUploading] = React.useState(false);
+  const [bodySaving, setBodySaving] = React.useState(false);
+  const [bodyError, setBodyError] = React.useState<string | null>(null);
   const panel = useWorkspacePanel();
   const panelOpen = panel?.open === true;
   // The composer's `/shortcuts`. The keybindings are a settings section rather
@@ -1044,17 +1057,32 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
 							<summary>Original source context</summary>
 							<p className="text-xs text-muted-foreground">Observed {data.issue.linked_source.snapshot.provenance.observed_at}</p>
 							<p>{data.issue.linked_source.snapshot.title}</p>
-							<Markdown source={data.issue.linked_source.snapshot.body} />
+                            <Markdown projectId={data.project.project_id} source={data.issue.linked_source.snapshot.body} />
 						</details>
 					)}
 				</div>
 			)}
-            <div className={truncated ? "relative max-h-64 overflow-hidden" : undefined}>
-              <Markdown source={truncated ? item.body.slice(0, BODY_CLAMP) : item.body} />
+            {editingBody ? <form onSubmit={(event) => {
+              event.preventDefault();
+              if (bodyUploading || bodySaving) return;
+              setBodySaving(true);
+              setBodyError(null);
+              void props.onBodySave(bodyDraft).then(() => setEditingBody(false), (cause: unknown) => setBodyError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBodySaving(false));
+            }}>
+              <AttachmentEditor projectId={data.project.project_id} value={bodyDraft} onChange={setBodyDraft}
+                onUploadingChange={setBodyUploading} disabled={bodySaving} aria-label="Issue body" />
+              {bodyError === null ? null : <p role="alert" className="text-sm text-destructive">{bodyError}</p>}
+              <div className="mt-2 flex gap-2">
+                <Button type="submit" size="xs" disabled={bodyUploading || bodySaving}>Save body</Button>
+                <Button type="button" size="xs" variant="ghost" disabled={bodySaving} onClick={() => setEditingBody(false)}>Cancel</Button>
+              </div>
+            </form> : <div className={truncated ? "relative max-h-64 overflow-hidden" : undefined}>
+              <Markdown projectId={data.project.project_id} source={truncated ? item.body.slice(0, BODY_CLAMP) : item.body} />
               {truncated ? (
                 <span className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-card to-transparent" />
               ) : null}
-            </div>
+            </div>}
+            {props.canWrite && !editingBody && data.project.profile === "native" ? <Button type="button" size="xs" variant="ghost" onClick={() => { setBodyDraft(item.body); setBodyError(null); setEditingBody(true); }}>Edit body</Button> : null}
             {conversation?.detail?.conversation.visibility !== "shared" ? null : (
               <p className="mt-2.5 text-muted-foreground text-xs">
                 Conversation history shared with the project
@@ -1098,11 +1126,12 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
           <IssueResources rows={resources} />
 
           <ActivityFeed
+            projectId={data.project.project_id}
             highlightedId={highlightedId}
             rows={rows}
             live={live}
             liveAt={liveAt}
-            onReply={props.canWrite ? (body) => void props.onComment(body) : null}
+            onReply={props.canWrite ? props.onComment : null}
             posting={props.posting}
           />
 
@@ -1110,6 +1139,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
               runner is steered from the conversation surface the Activity
               feed's live row opens, not from a second mode on this card. */}
           <IssueComposer
+            projectId={data.project.project_id}
             canWrite={props.canWrite}
             onComment={props.onComment}
             onOpenShortcuts={() =>

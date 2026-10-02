@@ -11,7 +11,134 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestCloudAttachmentSavedReferences(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"issue", "comment", "issue-path", "comment-path"} {
+		t.Run(source, func(t *testing.T) {
+			f := newHostedSharedFixture(t)
+			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
+			csrf := cloudassert.CSRFToken("shared-"+owner.identity.Subject, "org_security")
+			send := func(method, suffix string, input any, want int) []byte {
+				t.Helper()
+				body, err := json.Marshal(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := f.serve(t, hostedSharedRequest{user: &owner, method: method, target: f.base + suffix, body: string(body), csrf: csrf})
+				if response.Code != want {
+					t.Fatalf("%s %s: %d %s", method, suffix, response.Code, response.Body.String())
+				}
+				return response.Body.Bytes()
+			}
+			record := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "image.png", ContentType: "image/png", Size: 100, Width: 1, Height: 1, SHA256: artifact.Digest([]byte("image"))}
+			raw := send(http.MethodPost, "/attachment-metadata", record, http.StatusCreated)
+			if err := json.Unmarshal(raw, &record); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.Exec(`INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) SELECT 'prj_foreign',organization_id,'foreign',profile,states_json,created_at,0 FROM projects WHERE id=?`, f.project); err != nil {
+				t.Fatal(err)
+			}
+			foreign := conversation.NewAttachmentID()
+			if _, err := f.service.database.db.Exec(`INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES(?,'org_security','prj_foreign',?,'file.txt','text/plain',10,?,?)`, foreign, record.Uploader, record.SHA256, formatHubTime(time.Now())); err != nil {
+				t.Fatal(err)
+			}
+			body := "![image](attachment:" + record.ID + ")\n[file](attachment:" + record.ID + ")\n![foreign](attachment:" + foreign + ")"
+			copyBody := body
+			if strings.HasSuffix(source, "-path") {
+				body = record.Markdown("org_security")
+			}
+			issue := tracker.NativeIssue{}
+			comment := tracker.NativeComment{}
+			if strings.HasPrefix(source, "issue") {
+				raw = send(http.MethodPost, "/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "save-image"}, Title: "Image issue", Body: body, State: "Todo"}, http.StatusOK)
+				if err := json.Unmarshal(raw, &issue); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				issue.WorkItemID = f.seedIssue(t, 1)
+				raw = send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "save-image"}, Body: body}, http.StatusOK)
+				if err := json.Unmarshal(raw, &comment); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertReference := func(id, item, comment string) {
+				t.Helper()
+				var gotItem, gotComment string
+				if err := f.service.database.db.QueryRow("SELECT coalesce(work_item_id,''),coalesce(comment_id,'') FROM attachments WHERE id=?", id).Scan(&gotItem, &gotComment); err != nil {
+					t.Fatal(err)
+				}
+				if gotItem != item || gotComment != comment {
+					t.Fatalf("reference=%s/%s want %s/%s", gotItem, gotComment, item, comment)
+				}
+			}
+			assertReference(record.ID, string(issue.WorkItemID), comment.ID)
+			assertReference(foreign, "", "")
+			var count int
+			if err := f.service.database.db.QueryRow("SELECT count(*) FROM attachment_references WHERE attachment_id=?", record.ID).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("references=%d err=%v", count, err)
+			}
+			if _, err := f.service.database.db.Exec("UPDATE attachments SET created_at=? WHERE id=?", formatHubTime(time.Now().Add(-attachment.OrphanTTL-time.Hour)), record.ID); err != nil {
+				t.Fatal(err)
+			}
+			sweep := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/attachments/expired", body: "{}"})
+			if sweep.Code != http.StatusOK || strings.Contains(sweep.Body.String(), record.ID) {
+				t.Fatalf("referenced image swept: %d %s", sweep.Code, sweep.Body.String())
+			}
+			var other tracker.NativeComment
+			raw = send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "copy-image"}, Body: copyBody}, http.StatusOK)
+			if err := json.Unmarshal(raw, &other); err != nil {
+				t.Fatal(err)
+			}
+			var metadata attachment.Metadata
+			response := f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + record.ID})
+			if response.Code != http.StatusOK {
+				t.Fatalf("metadata=%d", response.Code)
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &metadata); err != nil {
+				t.Fatal(err)
+			}
+			if len(metadata.ReferencedBy) != 2 {
+				t.Fatalf("referenced_by=%v", metadata.ReferencedBy)
+			}
+			if strings.HasPrefix(source, "issue") {
+				removed := "No image"
+				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: issue.Revision, Body: &removed}, http.StatusOK)
+			} else {
+				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID)+"/comments/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: comment.Revision, Body: "No image"}, http.StatusOK)
+			}
+			assertReference(record.ID, string(issue.WorkItemID), other.ID)
+			var last tracker.NativeComment
+			raw = send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "retain-copy"}, Body: copyBody}, http.StatusOK)
+			if err := json.Unmarshal(raw, &last); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.Exec("DELETE FROM native_comments WHERE id=?", other.ID); err != nil {
+				t.Fatal(err)
+			}
+			response = f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + record.ID})
+			if response.Code != http.StatusOK {
+				t.Fatalf("retained copy read=%d %s", response.Code, response.Body.String())
+			}
+			assertReference(record.ID, string(issue.WorkItemID), last.ID)
+			send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID)+"/comments/"+last.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "orphan-copy"}, ExpectedRevision: last.Revision, Body: "No attachment"}, http.StatusOK)
+			assertReference(record.ID, "", "")
+			raw = send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "last-copy"}, Body: body}, http.StatusOK)
+			if err := json.Unmarshal(raw, &last); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.Exec("DELETE FROM native_comments WHERE id=?", last.ID); err != nil {
+				t.Fatal(err)
+			}
+			response = f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + record.ID})
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("last source deletion read=%d", response.Code)
+			}
+		})
+	}
+}
 
 func TestCloudAttachmentQuota(t *testing.T) {
 	t.Parallel()
