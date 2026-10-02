@@ -18,6 +18,14 @@ function renderSection(fleet: FleetResponse = FLEET) {
 }
 
 describe("runner rows", () => {
+  it("shows sleeping Sprites without capacity or attention warnings", () => {
+    renderSection({ ...FLEET, runners: [{ ...FLEET.runners[1]!, health: "asleep", claim_refusal_reason: "", problems: [], sprite: { name: "build-host", status: "warm", can_wake: true, wake_failed: false } }] });
+    expect(screen.getByText("Asleep, wakes on new work")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/slots can't take work/)).toBeNull();
+    expect(screen.getByRole("link", { name: "Needs attention 0" })).toBeTruthy();
+    expect(document.querySelectorAll('[data-slot-state="unavailable"]')).toHaveLength(0);
+  });
   it.each([
     ["v1.2.3", "Too old to take work, needs v1.2.4"],
     ["v1.2.4", ""],

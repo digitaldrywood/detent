@@ -23,6 +23,14 @@ hostname at a time. Each provider request uses the current project secret and
 records its own secret-use audit; duplicate hostnames do not grant authority.
 Grant removal, token revocation, heartbeat updates, workflow changes and secret
 replacement between requests take effect on the next candidate read.
+The existing fleet read uses the same visible project grants and audited secret
+use to verify a Sprite's provider state before displaying idle runners as
+asleep (#220). Enrollment and heartbeats report Sprite identity only when the
+runner observes the Sprite management socket, and store it in existing machine
+metadata. A matching hostname alone is never Sprite identity evidence;
+the existing wake pass records its failure time there. Missing tokens and wake
+failures remain attention states, and a fresh heartbeat supersedes an older
+wake failure. This adds no dispatch, recovery or lane writer.
 `TestWakeSpriteRunnersFreshAuthority` and
 `TestWakeSpriteRunnersProjectIsolation` preserve these boundaries.
 

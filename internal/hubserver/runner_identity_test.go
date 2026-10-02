@@ -111,6 +111,28 @@ func TestRunnerUnboundEnrollment(t *testing.T) {
 	unbound := runnerauth.EnrollmentRequest{ProjectIDs: []tracker.ProjectID{f.project.ID}, Operations: []string{runnerauth.Read, runnerauth.Heartbeat}, TTLSeconds: 60}
 
 	for _, test := range []struct {
+		sprite string
+		status int
+	}{
+		{"customer-host", http.StatusCreated},
+		{"other-host", http.StatusUnprocessableEntity},
+		{"Customer-host", http.StatusUnprocessableEntity},
+	} {
+		t.Run("Sprite identity "+test.sprite, func(t *testing.T) {
+			enrollment := create(t, unbound)
+			body := redemption(t, runnerauth.NewBinding())
+			body.SpriteName = test.sprite
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/runner-enrollments/redeem", enrollment.Token, body), test.status)
+			if test.status == http.StatusCreated {
+				var name string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(capabilities_json, '$.sprite_name') FROM machines WHERE id=?", body.MachineID).Scan(&name); err != nil || name != test.sprite {
+					t.Fatalf("persisted Sprite = %q, %v", name, err)
+				}
+			}
+		})
+	}
+
+	for _, test := range []struct {
 		name    string
 		request runnerauth.EnrollmentRequest
 		status  int
@@ -319,6 +341,25 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 	r.enroll(t)
 	other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	other.enroll(t)
+	for _, test := range []struct {
+		name   string
+		status int
+	}{
+		{"", http.StatusOK},
+		{"another-host", http.StatusUnprocessableEntity},
+		{r.redemption.Hostname, http.StatusOK},
+	} {
+		t.Run("Sprite heartbeat "+test.name, func(t *testing.T) {
+			body := map[string]any{"display_name": r.redemption.DisplayName, "capacity": r.redemption.Capacity, "version": "test", "sprite_name": test.name, "backend_isolation": r.redemption.BackendIsolation}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, body), test.status)
+			if test.status == http.StatusOK {
+				var name string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(json_extract(capabilities_json, '$.sprite_name'), '') FROM machines WHERE id=?", r.binding.MachineID).Scan(&name); err != nil || name != test.name {
+					t.Fatalf("heartbeat Sprite identity = %q, %v", name, err)
+				}
+			}
+		})
+	}
 	issue := f.create(t, "work")
 	descriptor := hubTestPolicy()
 	descriptor.Requirements.RunnerID = r.binding.RunnerID

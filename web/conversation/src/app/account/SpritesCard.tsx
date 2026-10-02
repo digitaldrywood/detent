@@ -35,6 +35,7 @@ export function SpritesCard({ projectId, canManage }: {
 
   return (
     <SettingsRow
+      id="sprites"
       title="Sprites"
       description={
         <>

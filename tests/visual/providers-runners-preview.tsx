@@ -8,6 +8,7 @@ import fleet from "../../web/conversation/src/contracts/fixtures/account-fleet.j
 
 const client = {
   account: {
+    version: "v0.9.1",
     organization: { id: "org_preview", name: "Threefold" },
     organizations: [{ current: true, public_url: "https://runners.detent.test" }],
     actor: { can_manage: true, can_manage_runners: true },
@@ -24,7 +25,9 @@ if (location.protocol === "file:") {
     { ...fleet.runners[1], display_name: "Build runner", health: "needs_attention", host_capacity: 4, claim_refusal_reason: "", problems: [problem] },
     { ...fleet.runners[1], id: "runner_outside", display_name: "Night runner", health: "outside_hours", host_capacity: 1, claim_refusal_reason: "" },
   ] };
-  globalThis.fetch = async (input) => new Response(JSON.stringify(String(input).endsWith("/runner-enrollments")
+  globalThis.fetch = async (input) => new Response(JSON.stringify(String(input).endsWith("/secrets/fly_sprites_token")
+    ? { kind: "fly_sprites_token", present: false }
+    : String(input).endsWith("/runner-enrollments")
     ? { id: "preview_enrollment", token: "preview_token", expires_at: "2026-09-10T12:24:31Z" }
     : preview), { status: String(input).endsWith("/runner-enrollments") ? 201 : 200 });
 }

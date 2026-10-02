@@ -16,9 +16,12 @@ const fleet = {
 
 test.beforeAll(async () => { html = await providersRunnersPreview(); });
 
-async function openFleet(page, data = fleet, search = "") {
+async function openFleet(page, data = fleet, search = "", spritesPresent = false) {
   await page.clock.setFixedTime(new Date("2026-09-10T12:09:31Z"));
   await page.route(origin + "/**", (route) => {
+    if (new URL(route.request().url()).pathname.endsWith("/secrets/fly_sprites_token")) {
+      return route.fulfill({ json: { kind: "fly_sprites_token", present: spritesPresent } });
+    }
     if (new URL(route.request().url()).pathname.endsWith("/runner-enrollments")) {
       return route.fulfill({ status: 201, json: { id: "enrollment_build", token: "det_enroll_preview", expires_at: "2026-09-10T12:24:31Z" } });
     }
@@ -30,6 +33,71 @@ async function openFleet(page, data = fleet, search = "") {
 }
 
 for (const width of [1440, 390]) {
+  for (const location of ["machine", "sprite", "sprite without token"]) {
+    test(`enrollment on ${location} at ${width}px`, async ({ page, context }) => {
+      await page.setViewportSize({ width, height: 1100 });
+      await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+      await openFleet(page, fleet, "", location === "sprite");
+      await page.getByRole("button", { name: "Enroll a runner", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
+      const sprite = location.startsWith("sprite");
+      if (sprite) {
+        await dialog.getByLabel("A Fly Sprite").check();
+        await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue(/^detent-[a-z0-9]+$/);
+        await expect(dialog.getByText(/The Sprite gets the same name/)).toBeVisible();
+        if (location === "sprite without token") {
+          await expect(dialog.getByText(/No Sprites token is set/)).toBeVisible();
+          await expect(dialog.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations?project=proj_preview#sprites");
+        } else {
+          await expect(dialog.getByText("Checking Sprites tokens…")).toHaveCount(0);
+          await expect(dialog.getByRole("link", { name: "Set a Sprites token" })).toHaveCount(0);
+        }
+      } else {
+        await expect(dialog.getByLabel("A machine I run")).toBeChecked();
+      }
+      const name = sprite ? "build-sprite" : "Build machine";
+      await dialog.getByLabel("Name", { exact: true }).fill(name);
+      await dialog.getByRole("button", { name: "Create command" }).click();
+      const copy = dialog.getByRole("button", { name: "Copy the register command" });
+      await expect(copy).toBeVisible();
+      await expect(dialog).toContainText("detent_••••••••");
+      expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
+      if (sprite) {
+        const instructions = dialog.getByRole("list", { name: "Sprite setup instructions" });
+        await expect(instructions.getByRole("listitem")).toHaveCount(8);
+        await expect(instructions).toContainText("sprite create build-sprite");
+        await expect(instructions).toContainText("sprite console -s build-sprite");
+        await expect(instructions).toContainText("/v0.9.1/scripts/sprite-runner-bootstrap.sh");
+        await expect(instructions).toContainText("bash sprite-runner-bootstrap.sh --version v0.9.1");
+        await expect(instructions).toContainText("claude auth login");
+        await expect(instructions).toContainText("codex login --device-auth");
+        await expect(instructions).toContainText("Approve the repository policy");
+        await expect(dialog.getByRole("button", { name: "Show token" })).toHaveCount(0);
+      }
+      await copy.click();
+      const copied = await page.evaluate(() => navigator.clipboard.readText());
+      expect(copied).toContain("--token det_enroll_preview");
+      expect(copied).toContain(sprite ? "--name build-sprite" : "--name 'Build machine'");
+      expect(copied.includes("--service")).toBe(!sprite);
+      expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
+      expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      await page.unroute("**/fleet");
+      await page.route("**/fleet", (route) => route.fulfill({ json: { ...fleet, runners: [...fleet.runners, { ...fleetFixture.runners[0], id: "runner_new", display_name: name, hostname: sprite ? name : "build-machine", health: "healthy" }] } }));
+      await expect(dialog.getByText(`${name} is connected`)).toBeVisible();
+      await expect(dialog.getByText("Sleeps when idle; the Hub wakes it for new work")).toHaveCount(location === "sprite" ? 1 : 0);
+      await dialog.getByRole("button", { name: "Done" }).click();
+      await expect(dialog).toHaveCount(0);
+    });
+  }
+  test(`sleeping Sprite has no warning at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 1100 });
+    await openFleet(page, { ...fleet, runners: [{ ...fleetFixture.runners[1], health: "asleep", problems: [], claim_refusal_reason: "", sprite: { name: "build-sprite", status: "warm", can_wake: true, wake_failed: false } }] });
+    await expect(page.getByText("Asleep, wakes on new work")).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(page.getByText(/slots can't take work/)).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Needs attention 0" })).toBeVisible();
+  });
   test("capacity, attention, providers and URL filter at " + width + "px", async ({ page }) => {
     await page.setViewportSize({ width, height: 1100 });
     await openFleet(page);
