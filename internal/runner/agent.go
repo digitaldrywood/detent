@@ -1174,10 +1174,10 @@ func (r *Runner) runAgentTurn(
 		}
 	}
 	turnStarted := false
-	providerResume := turnRequest.Resume
 	workerProcessObserved := false
 	conversation := conversationRunFromContext(ctx)
 	turnRequest = conversation.prepareTurn(turnRequest)
+	providerResume := turnRequest.Resume
 	profileWorkflow, _, _, _ := r.runtimeSnapshot()
 	profileStage := "implementation"
 	if runRole(runRequest.Mode, runRequest.Issue) == RoleRework {
