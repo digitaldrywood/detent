@@ -3566,6 +3566,12 @@ policy identity and lease fencing retain their existing owners. Batch hydration
 or claim errors release acquired leases through the existing native release
 owner; dispatch releases candidates it cannot select. No additional refresh,
 reservation, recovery path or configuration is introduced (#153).
+Normal typed provider, runner and host capacity refusals terminate both empty
+and partial batches successfully (#183). They acquire no rejected work and
+leave candidate refresh health and configured cadence with their existing
+owners, without scheduling-unavailable failure streaks or exponential delay.
+Policy, authorization, operator draining and protocol failures retain their
+error and lease-release owners. Provider quota/reset waits remain authoritative.
 The existing preview evaluates local readiness before claim within that shared
 allowance. The planner's existing known-wait classification
 excludes known local waits from expensive evaluation. Unavailable local or
