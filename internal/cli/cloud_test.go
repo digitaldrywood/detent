@@ -47,6 +47,36 @@ func TestTenantEnvironmentPassesOpenAIKeyOnlyWhenPresent(t *testing.T) {
 	}
 }
 
+func TestTenantEnvironmentPassesSecretKeysOnlyWhenPresent(t *testing.T) {
+	config := cloudFileConfig{Allocation: &cloudAllocationFileConfig{}}
+	config.WorkOS.APIKeyEnv = "WORKOS_API_KEY"
+	for _, test := range []struct {
+		name string
+		keys string
+		want []string
+	}{
+		{name: "missing", want: []string{"WORKOS_API_KEY=workos-test-key"}},
+		{name: "present", keys: `{"1":"a2V5"}`, want: []string{"WORKOS_API_KEY=workos-test-key", `DETENT_HUB_SECRET_KEYS={"1":"a2V5"}`, "DETENT_HUB_SECRET_KEY_VERSION=1"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			env := tenantEnvironment(config, func(name string) string {
+				switch name {
+				case "WORKOS_API_KEY":
+					return "workos-test-key"
+				case "DETENT_HUB_SECRET_KEYS":
+					return test.keys
+				case "DETENT_HUB_SECRET_KEY_VERSION":
+					return "1"
+				}
+				return ""
+			})
+			if strings.Join(env, "\n") != strings.Join(test.want, "\n") {
+				t.Fatalf("tenant environment = %q, want %q", env, test.want)
+			}
+		})
+	}
+}
+
 func TestReadCloudConfig(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
