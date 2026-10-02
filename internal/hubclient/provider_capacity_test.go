@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ import (
 
 func TestProviderSchedulerEndToEnd(t *testing.T) {
 	t.Parallel()
-	for _, unavailable := range []string{"fallback", "fail", "local wait", "bounded", "plain", "known waits"} {
+	for _, unavailable := range []string{"fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots"} {
 		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })
 	}
 }
@@ -67,7 +68,7 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 		t.Error("empty preview should not resolve a model")
 		return providercapacity.Requirement{}, nil
 	}}
-	_, err = scheduler.claimPreviewCandidate(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{})
+	_, err = scheduler.claimPreviewCandidates(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{}, 1)
 	if !errors.Is(err, ErrNoClaimableWork) || claims != 1 {
 		t.Fatalf("empty preview: claims=%d, error=%v", claims, err)
 	}
@@ -75,6 +76,7 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 
 func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	t.Helper()
+	batch := unavailable == "six slots" || unavailable == "provider slots" || unavailable == "mixed providers" || unavailable == "provider hydration" || unavailable == "stage slots"
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte("provider-test-admin")})
 	if err != nil {
 		t.Fatal(err)
@@ -115,6 +117,9 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		t.Fatal(err)
 	}
 	machine := Machine{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 2, Version: "test"}
+	if batch {
+		machine.Capacity = 6
+	}
 	var enrolledIdentity runnerauth.Identity
 	redemption := runnerauth.Redemption{BackendIsolation: machine.BackendIsolation, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version}
 	if err := admin.runnerRequest(t.Context(), enrollment.Token, http.MethodPost, "/api/v2/organizations/"+string(organization)+"/runner-enrollments/redeem", redemption, &enrolledIdentity); err != nil {
@@ -124,7 +129,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err := runnerauth.Save(path, file); err != nil {
 		t.Fatal(err)
 	}
-	routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}, HomeProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}}}
+	routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: machine.Capacity, ProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}, HomeProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}}}
 	if unavailable == "plain" {
 		routing.HomeProjectIDs = []tracker.ProjectID{project.ID}
 	}
@@ -160,7 +165,11 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			}
 		}
 	}
-	for _, title := range []string{"unsupported model", "compatible model"} {
+	titles := []string{"unsupported model", "compatible model"}
+	if batch {
+		titles = []string{"rework-0", "rework-1", "rework-2", "independent-0", "independent-1", "independent-2", "independent-3", "independent-4"}
+	}
+	for _, title := range titles {
 		model := "sol"
 		state := "Todo"
 		if title == "unsupported model" {
@@ -169,13 +178,31 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 				model = "astra"
 			}
 		}
+		if strings.HasPrefix(title, "rework-") {
+			state = "Rework"
+		}
 		body := "```detent-agent\nschema: 1\nmodel: " + model + "\n```"
 		if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: title}, Title: title, Body: body, State: state}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	report := providercapacity.Report{Provider: "openai", Backend: "codex", AccountAlias: "work", SharedAccountAlias: "team", Models: []string{"sol"}, MaxConcurrent: 1, Availability: "available", ObservedAt: time.Now()}
-	providerReports := func() ([]providercapacity.Report, error) { return []providercapacity.Report{report}, nil }
+	if batch {
+		report.MaxConcurrent = 6
+	}
+	if unavailable == "provider slots" {
+		report.MaxConcurrent = 2
+	}
+	if unavailable == "mixed providers" {
+		report.MaxConcurrent = 1
+	}
+	providerReports := func() ([]providercapacity.Report, error) {
+		reports := []providercapacity.Report{report}
+		if unavailable == "mixed providers" {
+			reports = append(reports, providercapacity.Report{Provider: "anthropic", Backend: "claude", AccountAlias: "other", Models: []string{"sonnet"}, MaxConcurrent: 2, Availability: "available", ObservedAt: report.ObservedAt})
+		}
+		return reports, nil
+	}
 	if unavailable == "plain" {
 		providerReports = nil
 	}
@@ -210,6 +237,92 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			}
 			return localRunner.DispatchCapacity(ctx, runner.RunRequest{Issue: issue, ProviderReports: reports})
 		}}
+	if batch {
+		request.AdmissionLimit, request.CandidateLimit = 6, 14
+		admittedRework := 0
+		if unavailable == "stage slots" {
+			request.CandidateAdmitted = func(issue connector.Issue) {
+				if issue.State == "Rework" {
+					admittedRework++
+				}
+			}
+			request.CandidateReady = func(_ context.Context, issue connector.Issue) bool {
+				return issue.State != "Rework" || admittedRework == 0
+			}
+		}
+		ready := request.CandidateReady
+		evaluations := 0
+		request.CandidateReady = func(ctx context.Context, issue connector.Issue) bool {
+			evaluations++
+			return ready(ctx, issue)
+		}
+		request.ProviderRequirement = func(_ context.Context, issue connector.Issue, _ []providercapacity.Report) (providercapacity.Requirement, error) {
+			if unavailable == "mixed providers" && issue.State == "Todo" {
+				return providercapacity.Requirement{Role: runner.RoleCode, Backend: "claude", Model: "sonnet"}, nil
+			}
+			return providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex", Model: "sol"}, nil
+		}
+		transport := client.httpClient.Transport
+		if unavailable == "provider hydration" {
+			reads := 0
+			client.httpClient.Transport = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/comments") {
+					reads++
+					if reads == 2 {
+						return nil, errors.New("injected hydration failure")
+					}
+				}
+				return transport.RoundTrip(r)
+			})
+			issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err == nil || len(issues) != 0 {
+				t.Fatalf("provider hydration failure = %d, %v", len(issues), err)
+			}
+			client.httpClient.Transport = transport
+			evaluations = 0
+		}
+		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+		want := 6
+		if unavailable == "provider slots" {
+			want = 2
+		}
+		if unavailable == "mixed providers" {
+			want = 3
+		}
+		if err != nil || len(issues) != want || issues[0].State != "Rework" || evaluations > request.CandidateLimit {
+			t.Fatalf("provider batch = %d, %v, want %d with Rework first", len(issues), err, want)
+		}
+		if unavailable == "stage slots" && admittedRework != 1 {
+			t.Fatalf("overcommitted Rework slots: %d", admittedRework)
+		}
+		used := make(map[string]int)
+		for _, issue := range issues {
+			execution := scheduler.RunExecution(issue.ID)
+			reservation := execution.(runner.ProviderCapacityExecution).ProviderCapacity()
+			if reservation == nil || scheduler.nativeClaims[issue.ID].lease.PolicyID != descriptor.ID {
+				t.Fatal("batch lost provider reservation or immutable policy")
+			}
+			used[reservation.Backend]++
+			if unavailable == "mixed providers" && issue.State == "Todo" && reservation.Backend != "claude" {
+				t.Fatal("independent provider work was not admitted")
+			}
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: reservation.Role, Backend: reservation.Backend, Model: reservation.Model}); err != nil {
+				t.Fatal(err)
+			}
+			if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "dispatch_deferred"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if unavailable == "mixed providers" && (used["codex"] != 1 || used["claude"] != 2) {
+			t.Fatalf("overcommitted providers: %v", used)
+		}
+		admittedRework = 0
+		evaluations = 0
+		if again, err := scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(again) != want {
+			t.Fatalf("released provider reservations retained slots: %d, %v", len(again), err)
+		}
+		return
+	}
 	if unavailable == "bounded" {
 		request.CandidateLimit = 1
 		candidates, err := scheduler.FetchCandidateIssues(t.Context(), request)

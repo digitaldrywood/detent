@@ -11,10 +11,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Scheduler) claimPreviewCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim) (tracker.NativeLease, error) {
+func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim, limit int) ([]tracker.NativeLease, error) {
+	leases := make([]tracker.NativeLease, 0, limit)
 	providerEnabled := s.providerReports != nil
 	if providerEnabled && request.ProviderRequirement == nil {
-		return tracker.NativeLease{}, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("provider dispatch needs the local runner's model resolver"))
+		return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("provider dispatch needs the local runner's model resolver"))
 	}
 	s.mu.Lock()
 	reports := append([]providercapacity.Report(nil), s.machine.ProviderReports...)
@@ -28,12 +29,11 @@ func (s *Scheduler) claimPreviewCandidate(ctx context.Context, request orchestra
 	for {
 		var page tracker.NativeCapacityPage
 		if err := source.client.client.request(ctx, http.MethodPost, source.client.base()+"/claims/preview", preview, &page); err != nil {
-			return tracker.NativeLease{}, err
+			return leases, err
 		}
 		if len(page.Items) > 100 {
-			return tracker.NativeLease{}, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("provider candidate page exceeds the negotiated bound"))
+			return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("provider candidate page exceeds the negotiated bound"))
 		}
-		claim.ProviderCandidates = nil
 		for _, issue := range page.Items {
 			if request.CandidateLimit > 0 && evaluated >= request.CandidateLimit {
 				break
@@ -46,49 +46,64 @@ func (s *Scheduler) claimPreviewCandidate(ctx context.Context, request orchestra
 			if request.CandidateReady != nil && !request.CandidateReady(ctx, candidate) {
 				continue
 			}
-			if !providerEnabled {
+			if providerEnabled {
+				requirement, err := request.ProviderRequirement(ctx, candidate, reports)
+				if err != nil {
+					waiting = errors.Join(orchestrator.ErrSchedulingUnavailable, err)
+					continue
+				}
+				claim.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: requirement}}
+			} else {
 				claim.WorkItemID = issue.WorkItemID
-				lease, err := source.client.Claim(ctx, claim)
-				if err == nil {
-					return lease, nil
-				}
-				var failure *APIError
-				if !errors.Is(err, ErrNoClaimableWork) && !(errors.As(err, &failure) && failure.Code == "lease_conflict") {
-					return tracker.NativeLease{}, err
-				}
-				waiting = err
-				continue
 			}
-			requirement, err := request.ProviderRequirement(ctx, candidate, reports)
-			if err != nil {
-				waiting = errors.Join(orchestrator.ErrSchedulingUnavailable, err)
-				continue
+			if len(leases) > 0 {
+				session, err := s.sessionID()
+				if err != nil {
+					return leases, err
+				}
+				claim.SessionID = session
 			}
-			claim.ProviderCandidates = append(claim.ProviderCandidates, tracker.NativeCapacityCandidate{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: requirement})
-		}
-		if providerEnabled && (len(claim.ProviderCandidates) != 0 || len(page.Items) == 0 && page.Next == 0) {
 			lease, err := source.client.Claim(ctx, claim)
 			if err == nil {
-				if lease.ProviderReservation == nil {
-					return tracker.NativeLease{}, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub omitted the required provider reservation"), source.client.Release(context.WithoutCancel(ctx), lease, "failed"))
+				if providerEnabled && lease.ProviderReservation == nil {
+					return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub omitted the required provider reservation"), source.client.Release(context.WithoutCancel(ctx), lease, "failed"))
 				}
-				return lease, nil
+				leases = append(leases, lease)
+				if request.CandidateAdmitted != nil {
+					request.CandidateAdmitted(candidate)
+				}
+				if len(leases) == limit {
+					return leases, nil
+				}
+				continue
 			}
 			var failure *APIError
-			providerDeferred := errors.As(err, &failure) && failure != nil && (failure.Code == "provider_capacity" || failure.Code == "provider_incompatible" || failure.Code == "provider_candidate_changed")
-			if !errors.Is(err, ErrNoClaimableWork) && !providerDeferred {
-				return tracker.NativeLease{}, err
+			leaseConflict := errors.As(err, &failure) && failure != nil && failure.Code == "lease_conflict"
+			providerDeferred := providerEnabled && failure != nil && (failure.Code == "provider_capacity" || failure.Code == "provider_incompatible" || failure.Code == "provider_candidate_changed")
+			if !errors.Is(err, ErrNoClaimableWork) && !leaseConflict && !providerDeferred {
+				return leases, err
 			}
 			waiting = err
 		}
-		if page.Next == 0 || request.CandidateLimit > 0 && evaluated >= request.CandidateLimit {
-			if waiting != nil {
-				return tracker.NativeLease{}, waiting
+		if providerEnabled && len(page.Items) == 0 && page.Next == 0 && len(leases) == 0 {
+			claim.ProviderCandidates = nil
+			lease, err := source.client.Claim(ctx, claim)
+			if err == nil {
+				return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub claimed work absent from its provider preview"), source.client.Release(context.WithoutCancel(ctx), lease, "failed"))
 			}
-			return tracker.NativeLease{}, ErrNoClaimableWork
+			return leases, err
+		}
+		if page.Next == 0 || request.CandidateLimit > 0 && evaluated >= request.CandidateLimit {
+			if len(leases) > 0 {
+				return leases, nil
+			}
+			if waiting != nil {
+				return leases, waiting
+			}
+			return leases, ErrNoClaimableWork
 		}
 		if page.Next == preview.After {
-			return tracker.NativeLease{}, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub repeated provider candidate cursor"))
+			return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub repeated provider candidate cursor"))
 		}
 		preview.After = page.Next
 	}

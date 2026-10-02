@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -39,6 +40,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 		expired     bool
 		gitLanding  bool
 		mergeOnly   bool
+		slots       int
+		batchSize   int
 	}{
 		{name: "Hub dispatches without connector reads", githubPause: true, wantRunning: true},
 		{name: "Hub outage degrades without spending work budgets", fetchError: errors.Join(ErrSchedulingUnavailable, errors.New("Hub unavailable")), wantDegrade: true},
@@ -47,12 +50,23 @@ func TestHubSchedulingCycle(t *testing.T) {
 		{name: "expired REST wait restores native merging", native: true, restPause: true, expired: true, mergeOnly: true, wantRunning: true},
 		{name: "native Git landing stays eligible during REST wait", native: true, restPause: true, gitLanding: true, mergeOnly: true, wantRunning: true},
 		{name: "non-native REST safety stays active", restPause: true},
+		{name: "one refresh starts six scheduled candidates", slots: 6, batchSize: 6, wantRunning: true},
+		{name: "unselected batch claims are released", slots: 2, batchSize: 6, wantRunning: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			trackerBackend := &hubSchedulingConnector{}
 			scheduling := &hubSchedulingSource{issue: issue, fetchError: test.fetchError}
 			selected := issue
+			if test.batchSize > 0 {
+				for i := range test.batchSize {
+					candidate := cloneIssue(issue)
+					candidate.ID = fmt.Sprintf("scheduled-%d", i)
+					candidate.Identifier = fmt.Sprintf("acme/widgets#%d", i+20)
+					scheduling.issues = append(scheduling.issues, candidate)
+				}
+				selected = scheduling.issues[0]
+			}
 			var backend connector.Connector = trackerBackend
 			if test.native {
 				backend = &nativeHubSchedulingConnector{trackerBackend}
@@ -70,7 +84,7 @@ func TestHubSchedulingCycle(t *testing.T) {
 			}
 			runner := &hubSchedulingRunner{started: make(chan struct{}, 1)}
 			cfg := normalizeConfig(Config{
-				PollInterval: 30 * time.Second, MaxConcurrentAgents: 1,
+				PollInterval: 30 * time.Second, MaxConcurrentAgents: max(1, test.slots),
 				DispatchPriorityByState: []string{"Merging", "Rework", "Todo"}, DispatchPriorityByLabel: []string{"hotfix", "bug"}, PrioritizeUnblockers: true, TerminalStates: []string{"Done"},
 				Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets",
 			})
@@ -107,7 +121,7 @@ func TestHubSchedulingCycle(t *testing.T) {
 
 			orch.tick(t.Context(), &state, now)
 			request := scheduling.request
-			if scheduling.fetches != 0 && (!reflect.DeepEqual(request.DispatchPriorityByState, cfg.DispatchPriorityByState) || !reflect.DeepEqual(request.DispatchPriorityByLabel, cfg.DispatchPriorityByLabel) || !request.PrioritizeUnblockers || request.CandidateLimit != 9 || request.CandidateReady == nil) {
+			if scheduling.fetches != 0 && (!reflect.DeepEqual(request.DispatchPriorityByState, cfg.DispatchPriorityByState) || !reflect.DeepEqual(request.DispatchPriorityByLabel, cfg.DispatchPriorityByLabel) || !request.PrioritizeUnblockers || request.CandidateLimit != cfg.MaxConcurrentAgents+8 || request.AdmissionLimit != cfg.MaxConcurrentAgents || request.CandidateReady == nil || request.CandidateAdmitted == nil) {
 				t.Fatalf("scheduling request lost configured ranking/readiness: %+v", request)
 			}
 			if test.native && test.mergeOnly && test.restPause && !test.expired && !test.gitLanding && scheduling.fetches != 0 {
@@ -124,7 +138,15 @@ func TestHubSchedulingCycle(t *testing.T) {
 			if running != test.wantRunning {
 				t.Fatalf("running = %t, want %t", running, test.wantRunning)
 			}
-			if test.wantRunning && (scheduling.fetches != 1 || scheduling.adoptions != 1 || scheduling.releases != 0) {
+			wantAdoptions, wantReleases := 1, 0
+			if test.batchSize > 0 {
+				wantAdoptions = min(test.batchSize, cfg.MaxConcurrentAgents)
+				wantReleases = test.batchSize - wantAdoptions
+				if len(state.Running) != wantAdoptions {
+					t.Fatalf("refresh started %d attempts, want %d", len(state.Running), wantAdoptions)
+				}
+			}
+			if test.wantRunning && (scheduling.fetches != 1 || scheduling.adoptions != wantAdoptions || scheduling.releases != wantReleases) {
 				t.Fatalf("Hub scheduling calls = fetch %d adopt %d release %d", scheduling.fetches, scheduling.adoptions, scheduling.releases)
 			}
 			if test.native && test.restPause && !test.expired && !test.gitLanding {
@@ -210,12 +232,13 @@ func (s *hubSchedulingSource) FetchCandidateIssues(_ context.Context, request Sc
 		return nil, s.fetchError
 	}
 	if s.issues != nil {
+		var candidates []connector.Issue
 		for _, issue := range s.issues {
 			if stateIn(issue.State, request.WorkflowStates) {
-				return []connector.Issue{issue}, nil
+				candidates = append(candidates, issue)
 			}
 		}
-		return nil, nil
+		return candidates, nil
 	}
 	return []connector.Issue{s.issue}, nil
 }
@@ -438,6 +461,18 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			}
 			if ready := source.request.CandidateReady(t.Context(), issue); ready != test.want {
 				t.Errorf("ready = %t, want %t", ready, test.want)
+			}
+			if test.want && test.native && test.state == "Merging" {
+				source.request.CandidateAdmitted(issue)
+				next := cloneIssue(issue)
+				next.ID = "next-merge"
+				if source.request.CandidateReady(t.Context(), next) {
+					t.Fatal("batch ignored the occupied Merging slot")
+				}
+				next.ID, next.State = "independent", "Todo"
+				if !source.request.CandidateReady(t.Context(), next) {
+					t.Fatal("selected merge starved independent coding")
+				}
 			}
 			afterRetry, hasRetry := state.Retry[issue.ID]
 			afterBlocked, hasBlocked := state.Blocked[issue.ID]
