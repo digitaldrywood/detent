@@ -167,11 +167,6 @@ export function sortItems(
   });
 }
 
-/**
- * Client-side search over what is already loaded. The hub filters by state,
- * label, assignee and priority; it has no text search on work items, so this
- * is the honest fallback and the toolbar says it searches the loaded board.
- */
 export function searchItems(
   items: readonly WorkItemView[],
   query: string,

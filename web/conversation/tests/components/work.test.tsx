@@ -29,7 +29,8 @@ import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { ClientContext } from "../../src/app/client.ts";
 import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
-import { parseViewState, serializeViewState, type WorkPage } from "../../src/app/work/lib/viewState.ts";
+import { DEFAULT_VIEW_STATE, parseViewState, serializeViewState } from "../../src/app/work/lib/viewState.ts";
+import { useBoard } from "../../src/app/work/lib/useWork.ts";
 import { resetRunnerNamesForTests } from "../../src/app/work/lib/runnerNames.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
 
@@ -469,7 +470,7 @@ describe("the stats row", () => {
       id: String(index), observations: { worker: observation, change: observation } as WorkItemView["observations"],
     }));
     render(<StatsRow stats={boardStats(items, LANES)} truncated loadedCount={100} loading={false} />);
-    expect(screen.getByTestId("stat-loaded").textContent).toContain("page subset");
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("matching results remain");
     expect(screen.getByTestId("stat-running").textContent).toBe("0observed running");
     expect(screen.getByTestId("stat-coverage").textContent).toContain("1 known · 1 unchecked · 1 unavailable · 1 partial");
   });
@@ -671,130 +672,189 @@ async function pagedWork(path = "/work") {
   return { ...fixture, router, history };
 }
 
-async function settledPage(project = "proj_alpha", number = 1) {
-  await waitFor(() => {
-    expect(screen.getByTestId(`work-page-${project}`).textContent).toContain(`Page ${number}`);
-    expect(screen.getByTestId("work-stats").textContent).toContain("Project scope");
-  });
+async function settledWork() {
+  await waitFor(() => expect(screen.getByTestId("work-stats").textContent).toContain("Project scope · all filters"));
 }
 
-describe("the paged Work surface", () => {
-  it("keeps a later-page worker visible in both views with scoped totals, coverage and navigation", async () => {
-    const { router, requests, history } = await pagedWork();
-    await settledPage();
-    expect(screen.queryByText("Observed later-page worker")).not.toBeNull();
+describe("the filter-first Work surface", () => {
+  it("keeps active workers visible with full-scope totals and appends matching results in both views", async () => {
+    const { router, requests } = await pagedWork();
+    await settledWork();
+    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
     expect(screen.getByTestId("stat-running").textContent).toBe("1observed running");
     expect(screen.getByTestId("stat-coverage").textContent).toMatch(/unchecked.*1 unavailable.*1 partial/);
-    expect(screen.getAllByTestId("issue-card").some((card) => card.title.includes("Worker observation: unavailable"))).toBe(true);
-    expect(screen.getByText(/Search, sorting and multi-value filters apply to the loaded pages/)).not.toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Work pages" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /First page|Previous|Next page/ })).toBeNull();
     expect(screen.getByTestId("lane-count-Todo").textContent).toBe("8");
     expect(screen.getByTestId("lane-count-In Progress").textContent).toBe("2");
     expect(screen.getByTestId("lane-count-Done").textContent).toBe("131");
     expect(screen.getByTestId("stat-completed").textContent).toBe("131terminal inventory");
-    expect(screen.getByText("Queue item 133")).not.toBeNull();
-    expect(screen.getByText("Queue item 135")).not.toBeNull();
-    const reads = () => requests.filter((request) => request.url.pathname.endsWith("/work-items"));
-    const beforeSearch = reads().length;
-    fireEvent.change(screen.getByTestId("work-search"), { target: { value: "later-page worker" } });
-    await waitFor(() => expect(parseViewState(router.state.location.searchStr).q).toBe("later-page worker"));
-    expect(reads()).toHaveLength(beforeSearch);
-    expect(screen.queryByText("Observed later-page worker")).not.toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
-    await settledPage("proj_alpha", 2);
-    expect(await screen.findByText("Observed later-page worker")).not.toBeNull();
-    expect(screen.getByTestId("stat-running").textContent).toBe("1observed running");
-    const pages = parseViewState(router.state.location.searchStr).pages;
-    const secondReads = reads().length;
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("matching results remain");
+    fireEvent.click(screen.getByRole("button", { name: "Load more matching work" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Load more matching work" })).toBeNull());
+    await settledWork();
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("141 loaded items / 141 matching");
+    expect(router.state.location.searchStr).toBe("");
+    const before = requests.length;
     fireEvent.click(screen.getByRole("radio", { name: "List" }));
     await screen.findByTestId("work-list");
-    expect(parseViewState(router.state.location.searchStr).pages).toEqual(pages);
-    expect(reads()).toHaveLength(secondReads);
+    expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "alpha: Previous page" }));
-    await settledPage();
-    expect(screen.queryByText("Observed later-page worker")).not.toBeNull();
-    expect(parseViewState(router.state.location.searchStr).q).toBe("later-page worker");
-    await act(() => history.back());
-    await settledPage("proj_alpha", 2);
-    fireEvent.change(screen.getByTestId("work-search"), { target: { value: "" } });
-    await waitFor(() => expect(screen.getByTestId("stat-completed").textContent).toBe("131terminal inventory"));
-    fireEvent.click(screen.getByRole("radio", { name: "Board" }));
-    await screen.findByTestId("work-board");
-    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
-    expect(reads().every((request) => request.url.searchParams.get("limit") === "100"
-      && request.url.searchParams.get("include") === "work")).toBe(true);
-    fireEvent.click(screen.getByTestId("filters-trigger"));
-    fireEvent.click(await screen.findByTestId("filter-state-In Progress"));
-    await settledPage();
-    expect(parseViewState(router.state.location.searchStr).pages).toEqual({});
-    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
-    expect(reads().findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("state")).toBe("In Progress");
+    expect(requests).toHaveLength(before);
+    expect(requests.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) =>
+      request.url.searchParams.get("limit") === "100" && request.url.searchParams.get("include") === "work")).toBe(true);
   });
 
-  it.each(["malformed", "cross-project", "expired", "revoked"])("refuses %s scope without retaining stale cards", async (refusal) => {
-    const { router, control } = await pagedWork();
-    await settledPage();
-    fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
-    await settledPage("proj_alpha", 2);
-    const view = parseViewState(router.state.location.searchStr);
-    if (refusal === "revoked" || refusal === "expired") {
-      await control({ [refusal]: true });
-      fireEvent.click(screen.getByRole("button", { name: "Reload" }));
-    } else {
-      const entry = view.pages!.proj_alpha!;
-      const pages: Record<string, WorkPage> = refusal === "malformed"
-        ? { proj_alpha: { ...entry, cursor: "malformed+/=" } } : { proj_beta: entry };
-      await act(() => router.navigate({ to: "/work", search: { ...Object.fromEntries(new URLSearchParams(serializeViewState({ ...view, pages }))), pages } }));
+  it.each(["Older title needle", "alpha#3421", "older-label"])("finds older %s matches beyond the initial inventory and open selection", async (q) => {
+    const fixture = await pagedWork();
+    await settledWork();
+    fireEvent.click(screen.getByRole("radio", { name: "List" }));
+    await screen.findByTestId("work-list");
+    expect(screen.queryByText("Older title needle a")).toBeNull();
+    fireEvent.change(screen.getByTestId("work-search"), { target: { value: q } });
+    await settledWork();
+    expect(screen.getByText("Older title needle a")).not.toBeNull();
+    expect(screen.queryByText("Observed later-page worker")).toBeNull();
+    expect(screen.getByTestId("stat-loaded").textContent).toContain(q === "alpha#3421" ? "1 matching" : "2 matching");
+    expect(parseViewState(fixture.router.state.location.searchStr).q).toBe(q);
+    expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(q);
+  });
+
+  it("applies multiple values in all dimensions to items and counts without expanding the selected project", async () => {
+    const view = parseViewState("view=list&q=Older title needle&state=Todo,Done&label=choice-a,choice-b&assignee=operator-a,operator-b&priority=Urgent,High");
+    const fixture = await pagedWork(`/work/p/proj_alpha?${serializeViewState(view)}`);
+    await settledWork();
+    expect(screen.getByText("Older title needle a")).not.toBeNull();
+    expect(screen.getByText("Older title needle b")).not.toBeNull();
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2terminal inventory");
+    fireEvent.click(screen.getByTestId("filters-trigger"));
+    for (const filter of ["label-choice-b", "assignee-operator-b", "priority-High"]) {
+      fireEvent.click(await screen.findByTestId(`filter-${filter}`));
+      await settledWork();
+      expect(screen.getByTestId("stat-loaded").textContent).toContain("1 matching");
+      fireEvent.click(await screen.findByTestId(`filter-${filter}`));
+      await settledWork();
+      expect(screen.getByTestId("stat-loaded").textContent).toContain("2 matching");
     }
+    fireEvent.keyDown(document, { key: "Escape" });
+    const reads = fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items"));
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toBe(true);
+    const params = reads.at(-1)!.url.searchParams;
+    expect(params.getAll("state")).toEqual(["Done", "Todo"]);
+    expect(params.getAll("label")).toEqual(["choice-a", "choice-b"]);
+    expect(params.getAll("assignee")).toEqual(["operator-a", "operator-b"]);
+    expect(params.getAll("priority")).toEqual(["1", "0"]);
+    fireEvent.click(screen.getByRole("radio", { name: "Board" }));
+    await screen.findByTestId("work-board");
+    expect(parseViewState(fixture.router.state.location.searchStr)).toEqual({ ...view, view: "board" });
+    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items"))).toHaveLength(reads.length);
+  });
+
+  it("keeps a second filter choice available after the first narrows results", async () => {
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&q=Older+title+needle");
+    await settledWork();
+    fireEvent.click(screen.getByTestId("filters-trigger"));
+    fireEvent.click(await screen.findByTestId("filter-label-choice-a"));
+    await settledWork();
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("1 matching");
+    fireEvent.click(await screen.findByTestId("filter-label-choice-b"));
+    await settledWork();
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("2 matching");
+    expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/work-items"))!.url.searchParams.getAll("label"))
+      .toEqual(["choice-a", "choice-b"]);
+  });
+
+  it("does not expose the previous client's cards or choices during a refused read", async () => {
+    const fixture = workPaginationFixture();
+    await fixture.control();
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    let blocked = false;
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fixture.fetch>) => {
+      if (blocked) await waiting;
+      return fixture.fetch(...args);
+    });
+    const observed: { items: number; labels: number }[] = [];
+    function BoardProbe() {
+      const board = useBoard("proj_alpha", DEFAULT_VIEW_STATE);
+      observed.push({ items: board.items.length, labels: board.labels.length });
+      return <div data-testid="client-read">{board.error ?? `${board.items.length} items`}</div>;
+    }
+    const mounted = render(<ClientContext.Provider value={fixture.client}><BoardProbe /></ClientContext.Provider>);
+    await waitFor(() => expect(observed.at(-1)!.items).toBeGreaterThan(0));
+    await fixture.control({ revoked: true });
+    blocked = true;
+    const before = observed.length;
+    const nextClient = { ...fixture.client, http: { ...fixture.client.http, csrfToken: "other-client" } };
+    mounted.rerender(<ClientContext.Provider value={nextClient}><BoardProbe /></ClientContext.Provider>);
+    expect(observed.slice(before).every((value) => value.items === 0 && value.labels === 0)).toBe(true);
+    blocked = false;
+    await act(async () => { release(); });
+    await waitFor(() => expect(screen.getByTestId("client-read").textContent).not.toMatch(/items$/));
+    expect(observed.slice(before).every((value) => value.items === 0 && value.labels === 0)).toBe(true);
+  });
+
+  it("loads all matching open work beyond the transport limit without replaying other projects", async () => {
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&state=Todo,In+Progress&q=Queue+item");
+    await settledWork();
+    await fixture.control({ openOverflow: true });
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    await settledWork();
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("134 matching");
+    fireEvent.click(screen.getByRole("button", { name: "Load more matching work" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Load more matching work" })).toBeNull());
+    await settledWork();
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("134 loaded items / 134 matching");
+    expect(screen.getByText("Queue item 1")).not.toBeNull();
+    expect(screen.getByText("Queue item 136")).not.toBeNull();
+    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) =>
+      request.url.pathname.endsWith("/proj_alpha/work-items"))).toBe(true);
+  });
+
+  it("restores linked filters and discards legacy transport cursors", async () => {
+    const fixture = await pagedWork('/work?view=list&q=older-label&pages=legacy-cursor');
+    await settledWork();
+    expect(screen.getByText("Older title needle a")).not.toBeNull();
+    expect(screen.getByTestId("stat-loaded").textContent).toContain("2 matching");
+    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) =>
+      !request.url.searchParams.has("cursor"))).toBe(true);
+  });
+
+  it.each(["search", "multi-select", "archived"])("aborts stale continuation and resets cursors when %s changes", async (change) => {
+    const fixture = await pagedWork();
+    await settledWork();
+    const deferred = fixture.deferPage();
+    fireEvent.click(screen.getByRole("button", { name: "Load more matching work" }));
+    await deferred.waiting;
+    const pending = fixture.requests.findLast((request) => request.url.searchParams.has("cursor"))!;
+    if (change === "search") fireEvent.change(screen.getByTestId("work-search"), { target: { value: "older-label" } });
+    else if (change === "archived") fireEvent.click(screen.getByTestId("work-archived"));
+    else {
+      const view = parseViewState(fixture.router.state.location.searchStr);
+      await act(() => fixture.router.navigate({ to: "/work", search: Object.fromEntries(new URLSearchParams(serializeViewState({ ...view, state: ["Todo", "In Progress"] }))) }));
+    }
+    await settledWork();
+    expect(pending.signal?.aborted).toBe(true);
+    const newest = fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))!;
+    expect(newest.url.searchParams.has("cursor")).toBe(false);
+    await act(async () => { deferred.release(); });
+    if (change !== "multi-select") expect(screen.queryByText("Observed later-page worker")).toBeNull();
+    expect(screen.getByTestId("stat-loaded").textContent).not.toContain("141 loaded");
+  });
+
+  it("refuses revoked scope without retaining stale cards or counts", async () => {
+    const fixture = await pagedWork();
+    await settledWork();
+    await fixture.control({ revoked: true });
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
     expect(await screen.findByTestId("work-error")).not.toBeNull();
     expect(screen.queryByTestId("issue-card")).toBeNull();
     expect(screen.queryByTestId("work-list-row")).toBeNull();
     expect(screen.getByTestId("stat-running").textContent).toBe("0observed running");
-    if (refusal !== "revoked") {
-      await control();
-      const project = refusal === "cross-project" ? "beta" : "alpha";
-      fireEvent.click(screen.getByRole("button", { name: `${project}: First page` }));
-      await settledPage(refusal === "cross-project" ? "proj_beta" : "proj_alpha");
-      expect(screen.queryByTestId("work-error")).toBeNull();
-    }
   });
 
-  it("restores a linked page without replaying earlier pages", async () => {
-    const first = await pagedWork();
-    await settledPage();
-    fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
-    await settledPage("proj_alpha", 2);
-    const path = first.router.state.location.href;
-    cleanup();
-    resetRunnerNamesForTests();
-    const restored = await pagedWork(path);
-    await settledPage("proj_alpha", 2);
-    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
-    const reads = restored.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items"));
-    expect(reads.length).toBeGreaterThan(0);
-    expect(reads.every((request) => request.url.searchParams.has("cursor"))).toBe(true);
-    expect((screen.getByRole("button", { name: "alpha: Previous page" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "alpha: First page" }) as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it("aborts a stale page and resets cursors when a server filter changes", async () => {
-    const fixture = await pagedWork();
-    await settledPage();
-    const deferred = fixture.deferPage();
-    fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
-    await deferred.waiting;
-    const pending = fixture.requests.findLast((request) => request.url.searchParams.has("cursor"))!;
-    fireEvent.click(screen.getByTestId("work-archived"));
-    await settledPage();
-    expect(pending.signal?.aborted).toBe(true);
-    expect(parseViewState(fixture.router.state.location.searchStr).pages).toEqual({});
-    await act(async () => { deferred.release(); });
-    expect(screen.queryByText("Observed later-page worker")).toBeNull();
-    expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("archived")).toBe("true");
-    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/attempts")).every((request) => request.url.searchParams.get("limit") === "10")).toBe(true);
-  });
-
-  it("refreshes only selected pages after activity within the observation budget", async () => {
+  it("refreshes a bounded current selection after activity within the observation budget", async () => {
     const sources: EventTarget[] = [];
     vi.stubGlobal("EventSource", class extends EventTarget {
       readyState = 1;
@@ -802,21 +862,19 @@ describe("the paged Work surface", () => {
       close() {}
     });
     const fixture = await pagedWork();
-    await settledPage();
+    await settledWork();
     act(() => { for (const source of sources) source.dispatchEvent(new MessageEvent("activity", { data: "40" })); });
-    await settledPage();
-    fireEvent.click(screen.getByRole("button", { name: "alpha: Next page" }));
-    await settledPage("proj_alpha", 2);
+    fireEvent.click(screen.getByRole("button", { name: "Load more matching work" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Load more matching work" })).toBeNull());
     const before = fixture.requests.length;
     await fixture.control({ openOverflow: true });
     act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "41" })));
     await waitFor(() => expect(fixture.requests.slice(before).some((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toBe(true));
-    await settledPage("proj_alpha", 2);
+    await settledWork();
     const refreshed = fixture.requests.slice(before);
-    expect(refreshed.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items")).every((request) => request.url.searchParams.has("cursor"))).toBe(true);
+    expect(refreshed.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) => !request.url.searchParams.has("cursor"))).toBe(true);
     expect(refreshed.filter((request) => request.url.pathname.endsWith("/attempts"))).toHaveLength(24);
     expect(refreshed.filter((request) => request.url.pathname.endsWith("/changes"))).toHaveLength(24);
-    expect(screen.getByTestId("stat-coverage").textContent).toContain("Open selection limited");
     expect(screen.getByText("Observed later-page worker")).not.toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,19 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET labels_json = '[\"selected\"]', assignees_json = '[\"operator\"]' WHERE native_id = ?", todo[0].WorkItemID); err != nil {
 		t.Fatal(err)
 	}
+	for _, issue := range []tracker.NativeIssue{history[120], todo[1]} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title = ?, labels_json = '[\"alternate\",\"Historical label\"]', assignees_json = '[\"reviewer\"]' WHERE native_id = ?", "Historical needle "+strconv.Itoa(issue.Number), issue.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = 1 WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", issue.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = 0 WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", todo[0].WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	otherProject := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-project")
+	otherProject.create(t, "Historical needle")
 	read := func(query string) tracker.NativeIssuePage {
 		t.Helper()
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work&limit=100"+query, f.token, nil)
@@ -58,6 +72,14 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		{"label", "&label=selected", 1, 0, 1},
 		{"assignee", "&assignee=operator", 1, 0, 1},
 		{"archived", "&archived=true", 0, 0, 0},
+		{"multiple states", "&state=Todo&state=Done", 134, 0, 4},
+		{"multiple dimensions", "&state=Todo&state=Done&label=selected&label=alternate&assignee=operator&assignee=reviewer&priority=0&priority=1", 3, 0, 2},
+		{"older title", "&q=Historical%20needle", 2, 0, 1},
+		{"older label", "&q=historical%20LABEL", 2, 0, 1},
+		{"older identifier", "&q=" + url.QueryEscape(f.project.Name+"#"+strconv.Itoa(history[120].Number)), 1, 0, 0},
+		{"native identifier", "&q=" + url.QueryEscape(string(f.project.ID)+"#"+strconv.Itoa(history[120].Number)), 1, 0, 0},
+		{"body is not operational search", "&q=Preserved%20body", 0, 0, 0},
+		{"AND dimensions", "&state=In%20Progress&label=selected&label=alternate", 0, 0, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			page := read(test.query)
@@ -107,7 +129,48 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			}
 		})
 	}
-	seedArchiveIssues(t, f.service, scope, 130, "Todo")
+	more := seedArchiveIssues(t, f.service, scope, 130, "Todo")
+	for _, issue := range more {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title = 'Open needle', labels_json = '[\"open-match\"]', assignees_json = '[\"reviewer\"]' WHERE native_id = ?", issue.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = 1 WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", issue.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query := "&q=Open%20needle&state=Todo&state=Done&label=open-match&label=selected&assignee=operator&assignee=reviewer&priority=0&priority=1"
+	matching := read(query)
+	found := map[tracker.NativeWorkItemID]bool{}
+	for {
+		total := 0
+		for _, lane := range matching.Work.Lanes {
+			total += lane.Total
+		}
+		if total != 130 || len(matching.Items) > 100 || len(matching.Work.Items) > 100 {
+			t.Fatalf("matching scope or bounds changed: %+v", matching.Work)
+		}
+		for _, issue := range matching.Items {
+			if issue.ProjectID != f.project.ID || issue.Title != "Open needle" || issue.Body != "" {
+				t.Fatalf("matching query leaked an item: %+v", issue)
+			}
+			found[issue.WorkItemID] = true
+		}
+		if matching.NextCursor == "" {
+			break
+		}
+		matching = read(query + "&cursor=" + url.QueryEscape(matching.NextCursor))
+	}
+	if len(found) != 130 || !found[more[0].WorkItemID] {
+		t.Fatal("older open match was unreachable")
+	}
+	for _, invalid := range []string{
+		"&q=one&q=two", "&include=work", "&state=" + strings.Repeat("x", 4097),
+		strings.Repeat("&state=Todo", 33), query + "&q=changed&cursor=" + url.QueryEscape(read(query).NextCursor),
+	} {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work&limit=100"+invalid, f.token, nil), http.StatusUnprocessableEntity)
+	}
+	changed := strings.Replace(query, "state=Todo", "state=In%20Progress", 1)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work&limit=100"+changed+"&cursor="+url.QueryEscape(read(query).NextCursor), f.token, nil), http.StatusUnprocessableEntity)
 	page := read("")
 	if !page.Work.Truncated || len(page.Work.Items) != 100 || page.Work.Items[0].WorkItemID != ip[1].WorkItemID {
 		t.Fatal("large open inventory displaced live work or exceeded the bound")

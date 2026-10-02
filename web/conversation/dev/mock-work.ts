@@ -484,14 +484,13 @@ export function createWorkMock(options: {
     json(response, 422, { code: "invalid_request", message });
   }
 
-  /** The real hub's rule: every parameter must be known and appear once. */
-  function validateQuery(url: URL, allowed: readonly string[]): string | null {
+  function validateQuery(url: URL, allowed: readonly string[], multi: readonly string[] = []): string | null {
     const seen = new Set<string>();
     for (const key of url.searchParams.keys()) {
       if (!allowed.includes(key) && key !== "limit" && key !== "cursor") {
         return "Query contains an unsupported field or value";
       }
-      if (seen.has(key)) return "Query contains an unsupported field or value";
+      if (seen.has(key) && !multi.includes(key)) return "Query contains an unsupported field or value";
       seen.add(key);
     }
     return null;
@@ -545,6 +544,14 @@ export function createWorkMock(options: {
         if (!pagination) {
           pagination = true;
           build();
+          for (const [index, choice] of [[120, "a"], [121, "b"]] as const) {
+            const older = issues[index];
+            if (older === undefined) continue;
+            older.title = `Older title needle ${choice}`;
+            older.labels = ["older-label", `choice-${choice}`];
+            older.assignees = [`operator-${choice}`];
+            older.priority = choice === "a" ? 0 : 1;
+          }
           const active = issues.find((issue) => issue.title === "Observed later-page worker");
           if (active !== undefined) active.updated_at = new Date(now).toISOString();
         }
@@ -656,17 +663,18 @@ export function createWorkMock(options: {
       const scoped = issues.filter((issue) => issue.project_id === projectId);
 
       if (segments.length === 2 && method === "GET") {
-        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived"]);
+        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived", "q"], ["state", "label", "assignee", "priority"]);
         if (problem !== null) {
           invalid(response, problem);
           return true;
         }
-        const state = url.searchParams.get("state");
-        const label = url.searchParams.get("label");
-        const assignee = url.searchParams.get("assignee");
-        const priority = url.searchParams.get("priority");
+        const state = url.searchParams.getAll("state");
+        const label = url.searchParams.getAll("label");
+        const assignee = url.searchParams.getAll("assignee");
+        const priority = url.searchParams.getAll("priority");
         const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), 200);
-        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, url.searchParams.get("archived")]);
+        const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
+        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, q, url.searchParams.get("archived")]);
         let after = Number(url.searchParams.get("cursor") ?? "0");
         if (pagination && url.searchParams.has("cursor")) {
           try {
@@ -680,10 +688,14 @@ export function createWorkMock(options: {
         }
         const filtered = scoped
           .filter(() => url.searchParams.get("archived") !== "true")
-          .filter((issue) => state === null || issue.state === state)
-          .filter((issue) => label === null || issue.labels.includes(label))
-          .filter((issue) => assignee === null || issue.assignees.includes(assignee))
-          .filter((issue) => priority === null || String(issue.priority ?? "") === priority);
+          .filter((issue) => state.length === 0 || state.includes(issue.state))
+          .filter((issue) => label.length === 0 || label.some((value) => issue.labels.includes(value)))
+          .filter((issue) => assignee.length === 0 || assignee.some((value) => issue.assignees.includes(value)))
+          .filter((issue) => priority.length === 0 || priority.includes(String(issue.priority ?? "")))
+          .filter((issue) => q === "" || issue.title.toLowerCase().includes(q)
+            || `${project(projectId)?.name}#${issue.number}`.toLowerCase().includes(q)
+            || `${projectId}#${issue.number}`.toLowerCase().includes(q)
+            || issue.labels.some((value) => value.toLowerCase().includes(q)));
         const matching = filtered.filter((issue) => issue.number > after)
           .toSorted((a, b) => a.number - b.number);
         const page = matching.slice(0, limit);

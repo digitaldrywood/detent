@@ -32,7 +32,7 @@ export function StatsRow({
       data-testid="work-stats"
       className="flex flex-wrap items-center gap-x-5 gap-y-1 px-5 pb-3 text-muted-foreground text-xs"
     >
-      <span>{loading ? "Refreshing…" : totals === null ? "Current pages" : "Project scope · server filters"}</span>
+      <span>{loading ? "Refreshing…" : totals === null ? "Loaded results" : "Project scope · all filters"}</span>
       {counters.map((counter) => (
         <span key={counter.key} data-testid={`stat-${counter.key}`}>
           <b className="mr-1 font-semibold text-foreground tabular-nums">{counter.value}</b>
@@ -41,12 +41,12 @@ export function StatsRow({
       ))}
       <span className="flex-1" />
       <span className="font-mono text-[11px] tabular-nums" data-testid="stat-loaded">
-        {stats.total} shown / {loadedCount} loaded items{truncated ? " (page subset)" : ""}
+        {stats.total} shown / {loadedCount} loaded items{totals === null ? "" : ` / ${totals.total} matching`}{truncated ? " (matching results remain)" : ""}
       </span>
       <span className="w-full" data-testid="stat-coverage">
         {totals === null ? null : <span className="mr-4" title={totals.asOf}>
           {totals.total} scoped items · Worker count observed {new Date(totals.asOf).toLocaleTimeString()}
-          {totals.truncated ? " · Open selection limited; use state filters and pages for more" : ""}
+          {truncated ? " · Partial result coverage; load more matching work" : " · All matching results loaded"}
         </span>}
         <span className="mr-2">Shown item observations:</span>
         {(["worker", "change"] as const).map((kind) => {

@@ -65,8 +65,6 @@ export interface WorkToolbarProps {
   readonly searchRef?: React.Ref<HTMLInputElement>;
   /** The freshness chip, rendered as given so the shell owns its vocabulary. */
   readonly freshness: React.ReactNode;
-  /** How many issues the facet lists were built from. */
-  readonly loadedCount: number;
 }
 
 export function WorkToolbar({
@@ -76,13 +74,12 @@ export function WorkToolbar({
   facets,
   searchRef,
   freshness,
-  loadedCount,
 }: WorkToolbarProps): React.ReactElement {
   const filters = activeFilterCount(view);
   const laneNames = React.useMemo(() => lanes.map((lane) => lane.name), [lanes]);
   const visibleLanes = laneNames.filter((lane) => laneVisible(view, lane)).length;
 
-  const values = (key: FilterKey): readonly string[] => facets[key];
+  const values = (key: FilterKey): readonly string[] => [...new Set([...facets[key], ...view[key]])].toSorted();
 
   return (
     <div data-testid="work-toolbar" className="flex flex-wrap items-center gap-2 px-5 pt-1.5 pb-3">
@@ -97,8 +94,8 @@ export function WorkToolbar({
           type="search"
           value={view.q}
           placeholder="Search issues…"
-          aria-label="Search the loaded issues"
-          title="Searches the issues already loaded; the hub has no work-item text search."
+          aria-label="Search issues"
+          title="Search titles, identifiers and labels across the selected projects."
           data-testid="work-search"
           onChange={(event) => onChange({ ...view, q: event.target.value })}
           className="min-w-0 flex-1 border-0 bg-transparent p-0 text-foreground text-xs outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:appearance-none"
@@ -157,8 +154,7 @@ export function WorkToolbar({
             </React.Fragment>
           ))}
           <p className="px-2 py-1 text-muted-foreground text-xs">
-            Built from the {loadedCount} issues on this board. One value per field is filtered by
-            the hub; any others are applied here.
+            Choices come from loaded issues in this scope. Every selected value filters the full project scope.
           </p>
           {isDefaultViewState(view) ? null : (
             <MenuCheckboxItem
