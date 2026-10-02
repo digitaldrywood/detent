@@ -29,6 +29,7 @@ func TestRunnerHomeClaims(t *testing.T) {
 		{"at threshold", "after", 5, 5 * time.Minute, "", false, http.StatusOK, true},
 		{"immediate", "after", 0, 0, "", false, http.StatusOK, true},
 		{"home todo", "after", 0, 0, "todo", false, http.StatusConflict, false},
+		{"another project order does not hide home todo", "never", 0, 0, "todo", false, http.StatusConflict, false},
 		{"leased home does not count", "after", 0, 0, "leased", false, http.StatusOK, true},
 		{"blocked home does not count", "after", 0, 0, "blocked", false, http.StatusOK, true},
 		{"home rework", "after", 0, 0, "rework", false, http.StatusConflict, false},
@@ -63,6 +64,9 @@ func TestRunnerHomeClaims(t *testing.T) {
 				}
 				if test.homeState == "blocked" {
 					blocker := home.create(t, "home blocker")
+					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET dispatchable = 0 WHERE project_id = ? AND detent_state = 'In Progress'", home.project.ID); err != nil {
+						t.Fatal(err)
+					}
 					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'In Progress') WHERE native_id = ?", home.project.ID, blocker.WorkItemID); err != nil {
 						t.Fatal(err)
 					}
@@ -71,12 +75,16 @@ func TestRunnerHomeClaims(t *testing.T) {
 					}
 				}
 				if test.homeState == "planning" || test.homeState == "rework" {
-					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET detent_state = ? WHERE project_id = ? AND lower(detent_state) = 'todo'", test.homeState, home.project.ID); err != nil {
+					if _, err := service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET detent_state = ?, dispatchable = ? WHERE project_id = ? AND lower(detent_state) = 'todo'", test.homeState, test.homeState != "planning", home.project.ID); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
 			claim := tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: r.binding.MachineID, SessionID: "first", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			if test.name == "another project order does not hide home todo" {
+				claim.DispatchPriorityByState = []string{"Merging"}
+				claim.WorkflowStates = []string{"Merging"}
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, general.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
 			now = now.Add(test.elapsed)
 			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", formatHubTime(now), r.binding.RunnerID); err != nil {

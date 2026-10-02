@@ -15,6 +15,8 @@ import (
 
 const NativeProtocolMajor = 2
 
+const NativeDispatchPriorityCapability = "dispatch_priority"
+
 const NativeProviderCapacityCapability = "provider_capacity_reservations"
 const NativeCheckoutRepositoryCapability = "runner_checkout_repository"
 const NativeRunnerCapacityCapability = "runner_capacity_configuration"
@@ -346,19 +348,22 @@ type NativeProject struct {
 }
 
 type NativeClaim struct {
-	ProviderCandidates []NativeCapacityCandidate `json:"provider_candidates,omitempty"`
-	PolicyID           string                    `json:"policy_id"`
-	WorkItemID         NativeWorkItemID          `json:"work_item_id,omitempty"`
-	MachineID          MachineID                 `json:"machine_id"`
-	SessionID          string                    `json:"session_id"`
-	TTLSeconds         int64                     `json:"ttl_seconds"`
-	ProtocolMajor      int                       `json:"protocol_major"`
-	Capabilities       []string                  `json:"capabilities"`
-	WorkflowStates     []string                  `json:"workflow_states,omitempty"`
-	Authors            []string                  `json:"authors,omitempty"`
-	Assignees          []string                  `json:"assignees,omitempty"`
-	LabelInclude       []string                  `json:"label_include,omitempty"`
-	LabelExclude       []string                  `json:"label_exclude,omitempty"`
+	DispatchPriorityByState []string                  `json:"dispatch_priority_by_state,omitempty"`
+	DispatchPriorityByLabel []string                  `json:"dispatch_priority_by_label,omitempty"`
+	PrioritizeUnblockers    bool                      `json:"prioritize_unblockers,omitempty"`
+	ProviderCandidates      []NativeCapacityCandidate `json:"provider_candidates,omitempty"`
+	PolicyID                string                    `json:"policy_id"`
+	WorkItemID              NativeWorkItemID          `json:"work_item_id,omitempty"`
+	MachineID               MachineID                 `json:"machine_id"`
+	SessionID               string                    `json:"session_id"`
+	TTLSeconds              int64                     `json:"ttl_seconds"`
+	ProtocolMajor           int                       `json:"protocol_major"`
+	Capabilities            []string                  `json:"capabilities"`
+	WorkflowStates          []string                  `json:"workflow_states,omitempty"`
+	Authors                 []string                  `json:"authors,omitempty"`
+	Assignees               []string                  `json:"assignees,omitempty"`
+	LabelInclude            []string                  `json:"label_include,omitempty"`
+	LabelExclude            []string                  `json:"label_exclude,omitempty"`
 }
 
 type NativeLease struct {

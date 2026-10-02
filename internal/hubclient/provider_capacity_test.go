@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,7 +32,7 @@ import (
 
 func TestProviderSchedulerEndToEnd(t *testing.T) {
 	t.Parallel()
-	for _, unavailable := range []string{"fallback", "fail"} {
+	for _, unavailable := range []string{"fallback", "fail", "local wait", "bounded", "plain", "known waits"} {
 		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })
 	}
 }
@@ -39,7 +40,7 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 	t.Parallel()
 	claims := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v2/organizations/org_test/projects/prj_test/claims/preview":
@@ -52,9 +53,8 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 			t.Errorf("unexpected request: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
-	}))
-	t.Cleanup(server.Close)
-	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }, HTTPClient: server.Client()})
+	})
+	client, err := New(Config{URL: "https://hub.test", TokenSource: func() string { return "test-token" }, HTTPClient: providerHandlerClient(handler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,12 +62,12 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scheduler := &Scheduler{}
+	scheduler := &Scheduler{providerReports: func() ([]providercapacity.Report, error) { return nil, nil }}
 	request := orchestrator.SchedulingRequest{ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
 		t.Error("empty preview should not resolve a model")
 		return providercapacity.Requirement{}, nil
 	}}
-	_, err = scheduler.claimProviderCandidate(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{})
+	_, err = scheduler.claimPreviewCandidate(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{})
 	if !errors.Is(err, ErrNoClaimableWork) || claims != 1 {
 		t.Fatalf("empty preview: claims=%d, error=%v", claims, err)
 	}
@@ -84,9 +84,9 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			t.Error(err)
 		}
 	})
-	server := httptest.NewServer(service.Handler())
-	t.Cleanup(server.Close)
-	admin, err := New(Config{URL: server.URL, TokenSource: func() string { return "provider-test-admin" }, HTTPClient: server.Client()})
+	httpClient := providerHandlerClient(service.Handler())
+	const hubURL = "https://hub.test"
+	admin, err := New(Config{URL: hubURL, TokenSource: func() string { return "provider-test-admin" }, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	}
 	organization := organizations.Items[0].ID
 	var project tracker.NativeProject
-	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "capacity", "idempotency_key": "capacity", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &project); err != nil {
+	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "capacity", "idempotency_key": "capacity", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Rework", Dispatchable: true}}}, &project); err != nil {
 		t.Fatal(err)
 	}
 	var otherHome tracker.NativeProject
@@ -106,7 +106,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
-	file, err := runnerauth.Initialize(path, server.URL)
+	file, err := runnerauth.Initialize(path, hubURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,14 +115,23 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		t.Fatal(err)
 	}
 	machine := Machine{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "customer", DisplayName: "Runner", Capacity: 2, Version: "test"}
-	if _, err := EnrollRunner(t.Context(), path, organization, enrollment.Token, machine); err != nil {
+	var enrolledIdentity runnerauth.Identity
+	redemption := runnerauth.Redemption{BackendIsolation: machine.BackendIsolation, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version}
+	if err := admin.runnerRequest(t.Context(), enrollment.Token, http.MethodPost, "/api/v2/organizations/"+string(organization)+"/runner-enrollments/redeem", redemption, &enrolledIdentity); err != nil {
+		t.Fatal(err)
+	}
+	file.Identity = enrolledIdentity
+	if err := runnerauth.Save(path, file); err != nil {
 		t.Fatal(err)
 	}
 	routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}, HomeProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}}}
+	if unavailable == "plain" {
+		routing.HomeProjectIDs = []tracker.ProjectID{project.ID}
+	}
 	if err := admin.request(t.Context(), http.MethodPut, "/api/v2/organizations/"+string(organization)+"/runners/"+file.Identity.RunnerID+"/routing", routing, nil); err != nil {
 		t.Fatal(err)
 	}
-	client, err := New(Config{URL: server.URL, IdentityFile: path, HTTPClient: server.Client()})
+	client, err := New(Config{URL: hubURL, IdentityFile: path, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,32 +153,71 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if _, err := other.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-unsupported"}, Title: "higher priority unsupported home", Body: "```detent-agent\nschema: 1\nmodel: astra\n```", State: "Todo", Priority: new(1)}); err != nil {
 		t.Fatal(err)
 	}
+	if unavailable == "known waits" {
+		for i := range 12 {
+			if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("waiting-%d", i)}, Title: "Known waiting work", State: "Rework"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	for _, title := range []string{"unsupported model", "compatible model"} {
 		model := "sol"
+		state := "Todo"
 		if title == "unsupported model" {
-			model = "astra"
+			state = "Rework"
+			if unavailable != "local wait" && unavailable != "plain" {
+				model = "astra"
+			}
 		}
 		body := "```detent-agent\nschema: 1\nmodel: " + model + "\n```"
-		if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: title}, Title: title, Body: body, State: "Todo"}); err != nil {
+		if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: title}, Title: title, Body: body, State: state}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	report := providercapacity.Report{Provider: "openai", Backend: "codex", AccountAlias: "work", SharedAccountAlias: "team", Models: []string{"sol"}, MaxConcurrent: 1, Availability: "available", ObservedAt: time.Now()}
-	scheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, ProviderReports: func() ([]providercapacity.Report, error) { return []providercapacity.Report{report}, nil }})
+	providerReports := func() ([]providercapacity.Report, error) { return []providercapacity.Report{report}, nil }
+	if unavailable == "plain" {
+		providerReports = nil
+	}
+	scheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, ProviderReports: providerReports})
 	if err != nil {
 		t.Fatal(err)
 	}
 	backend, launches := providerWorkspaceWrapper(t)
 	cfg := config.Default()
 	cfg.Agents.ModelSelection.Preset = new("sol_first")
-	cfg.Agents.ModelSelection.Unavailable = &unavailable
+	modelUnavailable := "fallback"
+	if unavailable == "fail" {
+		modelUnavailable = "fail"
+	}
+	cfg.Agents.ModelSelection.Unavailable = &modelUnavailable
 	localRunner, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &providerPreviewWorkspace{}, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor, ProviderRequirement: func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
-		return localRunner.DispatchCapacity(ctx, runner.RunRequest{Issue: issue, ProviderReports: reports})
-	}}
+	request := orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor,
+		WorkflowStates: []string{"Rework", "Todo"}, DispatchPriorityByState: []string{"Rework", "Todo"}, CandidateLimit: 2,
+		CandidateKnownWait: func(issue connector.Issue) bool { return unavailable == "known waits" && issue.State == "Rework" },
+		CandidateReady: func(_ context.Context, issue connector.Issue) bool {
+			if unavailable == "known waits" && issue.State == "Rework" {
+				t.Fatal("known wait consumed readiness evaluation")
+			}
+			return (unavailable != "local wait" && unavailable != "plain") || issue.State != "Rework"
+		},
+		ProviderRequirement: func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
+			if (unavailable == "local wait" || unavailable == "plain") && issue.State == "Rework" {
+				t.Fatal("unready head reached model selection")
+			}
+			return localRunner.DispatchCapacity(ctx, runner.RunRequest{Issue: issue, ProviderReports: reports})
+		}}
+	if unavailable == "bounded" {
+		request.CandidateLimit = 1
+		candidates, err := scheduler.FetchCandidateIssues(t.Context(), request)
+		if err != nil && !errors.Is(err, orchestrator.ErrSchedulingUnavailable) || len(candidates) != 0 {
+			t.Fatalf("bounded unavailable head = %+v, %v", candidates, err)
+		}
+		request.CandidateLimit = 2
+	}
 	candidates, err := scheduler.FetchCandidateIssues(t.Context(), request)
 	if err != nil || len(candidates) != 1 || candidates[0].Title != "compatible model" {
 		t.Fatalf("selection = %+v, %v", candidates, err)
@@ -178,6 +226,15 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		t.Fatalf("provider scheduling launched wrapper %d times before workspace existed", *launches)
 	}
 	issue := candidates[0]
+	if unavailable == "local wait" || unavailable == "bounded" || unavailable == "plain" || unavailable == "known waits" {
+		if unavailable == "plain" && scheduler.nativeClaims[issue.ID].lease.ProviderReservation != nil {
+			t.Fatal("plain claim acquired a provider reservation")
+		}
+		if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	if _, err := scheduler.AdoptClaim(t.Context(), issue, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -345,4 +402,14 @@ func TestProviderWorkspaceWrapperProcess(t *testing.T) {
 		}
 	}
 	os.Exit(0)
+}
+
+func providerHandlerClient(handler http.Handler) *http.Client {
+	return &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		recorder := httptest.NewRecorder()
+		incoming := request.Clone(request.Context())
+		incoming.RequestURI = incoming.URL.RequestURI()
+		handler.ServeHTTP(recorder, incoming)
+		return recorder.Result(), nil
+	})}
 }

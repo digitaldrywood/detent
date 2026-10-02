@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -37,18 +40,21 @@ type claimAPIRequest struct {
 }
 
 type claimCandidateQuery struct {
-	ProviderCandidates []tracker.NativeCapacityCandidate
-	PolicyID           string
-	RequirePolicy      bool
-	NativeScope        *nativeScope
-	RepositoryIDs      []tracker.RepositoryID
-	Repositories       []string
-	WorkflowStates     []string
-	Authors            []string
-	Assignees          []string
-	LabelInclude       []string
-	LabelExclude       []string
-	Scope              string
+	DispatchPriorityByState []string
+	DispatchPriorityByLabel []string
+	PrioritizeUnblockers    bool
+	ProviderCandidates      []tracker.NativeCapacityCandidate
+	PolicyID                string
+	RequirePolicy           bool
+	NativeScope             *nativeScope
+	RepositoryIDs           []tracker.RepositoryID
+	Repositories            []string
+	WorkflowStates          []string
+	Authors                 []string
+	Assignees               []string
+	LabelInclude            []string
+	LabelExclude            []string
+	Scope                   string
 	// WorkspaceLane reports that the claim came from a runner's workspace
 	// lane, which asked for workspace items by declaring the workspace
 	// capability. Every other claim, and the provider candidate preview, is
@@ -369,7 +375,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 		}
 	}
-	homeID, homeRestricted, err := d.runnerHomeSelection(ctx, tx, query, now)
+	homeID, homeRestricted, err := d.runnerHomeSelection(ctx, tx, query, request.WorkItemID, now)
 	if err != nil {
 		return tracker.Lease{}, err
 	}
@@ -405,6 +411,13 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			if request.WorkItemID > 0 {
 				return tracker.Lease{}, fmt.Errorf("%w: work item %d is held by lease %s", tracker.ErrLeaseConflict, id, current.session.ID)
 			}
+			continue
+		}
+		ready, err := nativeLandingCandidateReady(ctx, tx, query.NativeScope, id, now)
+		if err != nil {
+			return tracker.Lease{}, err
+		}
+		if !ready {
 			continue
 		}
 		// A workspace claim reserves one slot of the runner's capacity and
@@ -583,7 +596,13 @@ func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuer
 	}
 	rows, err := tx.QueryContext(ctx, `
 SELECT i.id, COALESCE(r.id, 0), COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), lower(trim(ws.detent_state)),
-       lower(trim(i.author_login)), i.labels_json, i.assignees_json
+       lower(trim(i.author_login)), i.labels_json, i.assignees_json,
+       q.priority_override, COALESCE(q.rank, ''), COALESCE(i.native_created_at, i.created_at), i.project_id, i.number,
+       CASE WHEN ? THEN (SELECT count(DISTINCT d.dependent_issue_id) FROM issue_dependencies d
+         JOIN issues dependent ON dependent.id = d.dependent_issue_id
+         JOIN projects dp ON dp.id = dependent.project_id AND dp.require_dependencies = 1
+         LEFT JOIN workflow_states ds ON ds.id = dependent.workflow_state_id
+         WHERE d.blocker_issue_id = i.id AND dependent.archived = 0 AND COALESCE(ds.terminal, 0) = 0) ELSE 0 END
 FROM issues i
 LEFT JOIN repositories r ON r.id = i.repository_id
 JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
@@ -618,12 +637,13 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
 ORDER BY
   CASE q.priority_override WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 3 THEN 3 ELSE 4 END,
   CASE WHEN q.rank IS NULL OR trim(q.rank) = '' THEN 1 ELSE 0 END,
-  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, scope, scope, scope, organization, organization, project, len(query.HomeProjects), homeProjects, claimWorkspaceExclusionArg(query), scope, len(query.HomeProjects))
+  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, query.PrioritizeUnblockers, scope, scope, scope, organization, organization, project, len(query.HomeProjects), homeProjects, claimWorkspaceExclusionArg(query), scope, len(query.HomeProjects))
 	if err != nil {
 		return nil, fmt.Errorf("query hub claim candidates: %w", err)
 	}
 	defer rows.Close()
 	var ids []tracker.WorkItemID
+	candidates := make(map[tracker.WorkItemID]dispatchpriority.Candidate)
 	for rows.Next() {
 		var id tracker.WorkItemID
 		var repositoryID tracker.RepositoryID
@@ -633,7 +653,10 @@ ORDER BY
 		var authorID string
 		var labelsJSON string
 		var assigneesJSON string
-		if err := rows.Scan(&id, &repositoryID, &repositoryOwner, &repositoryName, &workflowState, &authorID, &labelsJSON, &assigneesJSON); err != nil {
+		var priority sql.NullInt64
+		var rank, created, projectID string
+		var number, unblockerCount int
+		if err := rows.Scan(&id, &repositoryID, &repositoryOwner, &repositoryName, &workflowState, &authorID, &labelsJSON, &assigneesJSON, &priority, &rank, &created, &projectID, &number, &unblockerCount); err != nil {
 			return nil, fmt.Errorf("scan hub claim candidate: %w", err)
 		}
 		if _, ok := claimableRepositories[repositoryID]; !ok && query.NativeScope == nil {
@@ -673,10 +696,31 @@ ORDER BY
 		if !setContainsAll(labels, labelIncludeFilter) || setsIntersect(labels, labelExcludeFilter) {
 			continue
 		}
+		if query.NativeScope != nil {
+			createdAt, err := parseTimeValue(created)
+			if err != nil {
+				return nil, fmt.Errorf("parse hub claim candidate creation: %w", err)
+			}
+			issue := connector.Issue{State: workflowState, CreatedAt: &createdAt, Identifier: projectID + "#" + strconv.Itoa(number), UnblockerCount: unblockerCount}
+			if priority.Valid {
+				value := int(priority.Int64) + 1
+				issue.Priority = &value
+			}
+			for label := range labels {
+				issue.Labels = append(issue.Labels, label)
+			}
+			candidates[id] = dispatchpriority.Candidate{Issue: issue, Rank: rank}
+		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate hub claim candidates: %w", err)
+	}
+	if query.NativeScope != nil {
+		ranker := dispatchpriority.New(query.DispatchPriorityByState, query.DispatchPriorityByLabel)
+		slices.SortStableFunc(ids, func(a, b tracker.WorkItemID) int {
+			return ranker.Compare(candidates[a], candidates[b], query.PrioritizeUnblockers)
+		})
 	}
 	return ids, nil
 }

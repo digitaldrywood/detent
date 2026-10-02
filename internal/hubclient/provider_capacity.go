@@ -11,15 +11,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Scheduler) claimProviderCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim) (tracker.NativeLease, error) {
-	if request.ProviderRequirement == nil {
+func (s *Scheduler) claimPreviewCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim) (tracker.NativeLease, error) {
+	providerEnabled := s.providerReports != nil
+	if providerEnabled && request.ProviderRequirement == nil {
 		return tracker.NativeLease{}, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("provider dispatch needs the local runner's model resolver"))
 	}
 	s.mu.Lock()
 	reports := append([]providercapacity.Report(nil), s.machine.ProviderReports...)
 	s.mu.Unlock()
 	preview := tracker.NativeCapacityPreview{NativeClaim: claim}
-	claim.Capabilities = append(claim.Capabilities, tracker.NativeProviderCapacityCapability)
+	if providerEnabled {
+		claim.Capabilities = append(claim.Capabilities, tracker.NativeProviderCapacityCapability)
+	}
+	evaluated := 0
 	var waiting error
 	for {
 		var page tracker.NativeCapacityPage
@@ -31,14 +35,38 @@ func (s *Scheduler) claimProviderCandidate(ctx context.Context, request orchestr
 		}
 		claim.ProviderCandidates = nil
 		for _, issue := range page.Items {
-			requirement, err := request.ProviderRequirement(ctx, issueFromNative(issue), reports)
+			if request.CandidateLimit > 0 && evaluated >= request.CandidateLimit {
+				break
+			}
+			candidate := issueFromNative(issue)
+			if request.CandidateKnownWait != nil && request.CandidateKnownWait(candidate) {
+				continue
+			}
+			evaluated++
+			if request.CandidateReady != nil && !request.CandidateReady(ctx, candidate) {
+				continue
+			}
+			if !providerEnabled {
+				claim.WorkItemID = issue.WorkItemID
+				lease, err := source.client.Claim(ctx, claim)
+				if err == nil {
+					return lease, nil
+				}
+				var failure *APIError
+				if !errors.Is(err, ErrNoClaimableWork) && !(errors.As(err, &failure) && failure.Code == "lease_conflict") {
+					return tracker.NativeLease{}, err
+				}
+				waiting = err
+				continue
+			}
+			requirement, err := request.ProviderRequirement(ctx, candidate, reports)
 			if err != nil {
 				waiting = errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 				continue
 			}
 			claim.ProviderCandidates = append(claim.ProviderCandidates, tracker.NativeCapacityCandidate{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: requirement})
 		}
-		if len(claim.ProviderCandidates) != 0 || page.Next == 0 {
+		if providerEnabled && (len(claim.ProviderCandidates) != 0 || len(page.Items) == 0 && page.Next == 0) {
 			lease, err := source.client.Claim(ctx, claim)
 			if err == nil {
 				if lease.ProviderReservation == nil {
@@ -53,7 +81,7 @@ func (s *Scheduler) claimProviderCandidate(ctx context.Context, request orchestr
 			}
 			waiting = err
 		}
-		if page.Next == 0 {
+		if page.Next == 0 || request.CandidateLimit > 0 && evaluated >= request.CandidateLimit {
 			if waiting != nil {
 				return tracker.NativeLease{}, waiting
 			}

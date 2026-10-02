@@ -45,6 +45,7 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 	if s.workspaces != nil {
 		features = append(features, tracker.NativeWorkspaceCapability)
 	}
+	features = append(features, tracker.NativeDispatchPriorityCapability)
 	return nativeCapabilitiesResponse{serverID, []int{1, 2}, []int{1}, features, maxAPIRequestBodyBytes, maxAPIPageLimit}, nil
 }
 
