@@ -1,19 +1,9 @@
-// One lane column (artifact screen 1's `.lane`).
-//
-// A terminal lane renders dimmed and collapsed, which is the artifact's own
-// `.lane.dim` treatment for `Merging`: a state that closes work is evidence,
-// not a queue, and it should not take a third of the board's width from the
-// lanes that still need someone.
-//
-// The drop target is the lane body. It accepts a drop only when the dragged
-// card's workflow allows this lane, so a card cannot be dropped into a lane
-// the hub would refuse — the refusal is prevented rather than reported.
 import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
 import React from "react";
 
 import { Button } from "../../../components/ui/button.tsx";
 import { cn } from "../../../lib/utils.ts";
-import type { Lane, WorkItemView } from "../lib/model.ts";
+import { isBlocked, isLive, type Lane, type WorkItemView } from "../lib/model.ts";
 import { IssueCard } from "./IssueCard.tsx";
 
 export interface BoardLaneProps {
@@ -56,8 +46,8 @@ export function BoardLane({
   onCreate = null,
 }: BoardLaneProps): React.ReactElement {
   const [over, setOver] = React.useState(false);
-  const live = items.filter((item) => item.attempt?.running === true).length;
-  const blocked = lane.name.toLowerCase().includes("block") || items.some((item) => item.blockedBy.length > 0);
+  const live = lane.terminal ? 0 : items.filter((item) => isLive(item)).length;
+  const blocked = lane.name.toLowerCase().includes("block") || items.some((item) => isBlocked(item));
 
   return (
     <section
@@ -68,7 +58,6 @@ export function BoardLane({
       className={cn(
         "flex max-h-full shrink-0 flex-col rounded-xl border border-border bg-muted",
         collapsed ? "w-11" : "w-[300px]",
-        lane.terminal && "opacity-70",
       )}
     >
       <h2 className={cn("flex items-center gap-2 px-3 pt-2.5 pb-2 font-semibold text-[13px]", collapsed && "flex-col px-0")}>
@@ -156,6 +145,7 @@ export function BoardLane({
               <IssueCard
                 key={item.id}
                 item={item}
+                terminal={lane.terminal}
                 showProject={showProject}
                 now={now}
                 onOpen={onOpen}

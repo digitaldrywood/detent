@@ -11,7 +11,7 @@ import {
 } from "../../../components/ui/table.tsx";
 import { cn } from "../../../lib/utils.ts";
 import { ageLabel, elapsedLabel, issueNumber, projectHue } from "../lib/format.ts";
-import type { WorkItemView } from "../lib/model.ts";
+import { isLive, type WorkItemView } from "../lib/model.ts";
 import { LaneMenu } from "./LaneMenu.tsx";
 import { Pill, priorityTone, statusPill } from "./IssueCard.tsx";
 
@@ -63,8 +63,8 @@ export function WorkList({
                     <span className="inline-flex min-w-0 items-center gap-1.5">
                       <span
                         aria-hidden
-                        className="size-2 shrink-0 rounded-full"
-                        style={{
+                        className={cn("size-2 shrink-0 rounded-full", item.terminal && "bg-muted-foreground")}
+                        style={item.terminal ? undefined : {
                           backgroundColor: `oklch(0.72 0.15 ${projectHue(item.projectId)})`,
                         }}
                       />
@@ -96,11 +96,17 @@ export function WorkList({
                   {status === null ? (
                     <span className="text-muted-foreground">—</span>
                   ) : (
-                    <Pill tone={status.tone}>{status.label}</Pill>
+                    <Pill
+                      tone={status.tone}
+                      title={item.terminal && item.attempt !== null ? `Last attempt: ${item.attempt.status}` : undefined}
+                      aria-label={item.terminal && item.attempt !== null ? `${status.label}. Last attempt: ${item.attempt.status}` : undefined}
+                    >
+                      {status.label}
+                    </Pill>
                   )}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {item.attempt?.running === true ? (
+                  {isLive(item) && item.attempt !== null ? (
                     <span className={cn("inline-flex items-center gap-1.5")}>
                       <span
                         aria-hidden
@@ -118,7 +124,9 @@ export function WorkList({
                   {item.priority === null ? (
                     <span className="text-muted-foreground">—</span>
                   ) : (
-                    <Pill tone={priorityTone(item.priority)}>{item.priority}</Pill>
+                    <Pill tone={priorityTone(item.priority, item.terminal)} aria-label={`Priority: ${item.priority}`}>
+                      {item.priority}
+                    </Pill>
                   )}
                 </TableCell>
                 <TableCell className="text-right text-muted-foreground tabular-nums">

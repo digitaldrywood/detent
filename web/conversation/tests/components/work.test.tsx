@@ -27,7 +27,7 @@ import { diffSource, readAttemptDiff, type DiffSource } from "../../src/app/adap
 import { WorkList } from "../../src/app/work/components/WorkList.tsx";
 import { StatsRow } from "../../src/app/work/components/StatsRow.tsx";
 import { toAttemptView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
-import { boardStats, type Lane, type WorkItemView } from "../../src/app/work/lib/model.ts";
+import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../../src/app/work/lib/model.ts";
 
 afterEach(cleanup);
 
@@ -120,6 +120,101 @@ describe("the board card", () => {
       />,
     );
     expect(screen.queryByTestId("worker-strip")).toBeNull();
+  });
+
+  it.each([
+    { state: "Done", priority: "Urgent", attemptStatus: "failed", showProject: true },
+    { state: "Done", priority: "High", attemptStatus: "interrupted", showProject: false },
+    { state: "Cancelled", priority: "Urgent", attemptStatus: "running", showProject: true },
+    { state: "Retired", priority: "High", attemptStatus: "running", showProject: false },
+    { state: "Failed", priority: "Urgent", attemptStatus: "failed", showProject: true },
+  ] as const)("closes $state before $attemptStatus activity and $priority priority", ({
+    state, priority, attemptStatus, showProject,
+  }) => {
+    const issue = toWorkItemView(
+      { ...itemFixture as unknown as NativeIssue, state, terminal: true },
+      "parable",
+      { attempts: [{ ...ATTEMPTS[0]!, status: attemptStatus }] },
+    );
+    const closed = { ...issue, priority };
+    const onOpen = vi.fn();
+    render(
+      <IssueCard item={closed} showProject={showProject} now={NOW}
+        onOpen={onOpen} moves={["Todo"]} onMove={vi.fn()} moving />,
+    );
+    const card = screen.getByTestId("issue-card");
+    const cue = screen.getByText(state);
+    expect(cue.className).toContain("text-muted-foreground");
+    expect(cue.getAttribute("title")).toBe(`Last attempt: ${attemptStatus}`);
+    expect(cue.getAttribute("aria-label")).toBe(`${state}. Last attempt: ${attemptStatus}`);
+    expect(screen.getByLabelText(`Priority: ${priority}`).className).toContain("bg-muted");
+    expect(card.getAttribute("data-live")).toBeNull();
+    expect(card.className).toContain("bg-muted");
+    expect(card.className).not.toMatch(/border-success|animate-pulse|opacity-/);
+    expect(card.innerHTML).not.toMatch(/bg-success|text-success|bg-error|text-error|bg-warning|text-warning/);
+    expect(screen.queryByTestId("worker-strip")).toBeNull();
+    expect(screen.queryByText("Running")).toBeNull();
+    expect(screen.queryByText(/Blocked/)).toBeNull();
+    expect(screen.queryByText("Attempt failed")).toBeNull();
+    expect(screen.queryByText("Interrupted")).toBeNull();
+    expect(closed.attempt?.status).toBe(attemptStatus);
+    expect(closed.attempt?.running).toBe(attemptStatus === "running");
+    expect(closed.blockedBy).toEqual(issue.blockedBy);
+    expect(isLive(closed)).toBe(false);
+    expect(isBlocked(closed)).toBe(false);
+    if (showProject) {
+      expect(screen.getByTestId("project-dot").getAttribute("style")).toBeNull();
+      expect(screen.getByText("parable")).not.toBeNull();
+    } else {
+      expect(card.querySelector(".grayscale")).not.toBeNull();
+      expect(screen.getByText("parable").className).toBe("sr-only");
+    }
+    const open = screen.getByTestId("issue-card-open");
+    expect(open.className).toContain("focus-visible:ring-2");
+    open.focus();
+    expect(document.activeElement).toBe(open);
+    fireEvent.click(open);
+    expect(onOpen).toHaveBeenCalledWith(closed);
+    expect(screen.getByTestId("lane-menu-trigger")).not.toBeNull();
+  });
+
+  it.each([
+    { attemptStatus: "running", priority: "Urgent", blockedBy: [], label: "Running", tone: "text-success-foreground" },
+    { attemptStatus: "failed", priority: "High", blockedBy: ["wi_blocker"], label: "Blocked · 1", tone: "text-error-foreground" },
+    { attemptStatus: "failed", priority: "Urgent", blockedBy: [], label: "Attempt failed", tone: "text-error-foreground" },
+    { attemptStatus: "interrupted", priority: "High", blockedBy: [], label: "Interrupted", tone: "text-warning-foreground" },
+  ] as const)("keeps nonterminal $label treatment", ({ attemptStatus, priority, blockedBy, label, tone }) => {
+    const attempt = toAttemptView([{ ...ATTEMPTS[0]!, status: attemptStatus }]);
+    render(
+      <IssueCard item={item({ terminal: false, attempt, priority, blockedBy })}
+        showProject now={NOW} onOpen={vi.fn()} moves={[]} onMove={vi.fn()} />,
+    );
+    expect(screen.getByText(label).className).toContain(tone);
+    expect(screen.getByLabelText(`Priority: ${priority}`).className).toContain(
+      priority === "Urgent" ? "text-error-foreground" : "text-warning-foreground",
+    );
+    expect(screen.getByTestId("project-dot").getAttribute("style")).toContain("oklch");
+    expect(screen.queryByTestId("worker-strip") !== null).toBe(attemptStatus === "running");
+    expect(screen.getByTestId("issue-card").className.includes("border-success")).toBe(attemptStatus === "running");
+  });
+
+  it("keeps imported terminal inventory visibly distinct from native completion", () => {
+    const imported = toWorkItemView({
+      ...itemFixture as unknown as NativeIssue,
+      state: "Done", terminal: true,
+      provenance: { provider: "github", external_id: "91", author_id: "source_author" },
+    }, "parable");
+    render(
+      <>
+        <IssueCard item={imported} showProject now={NOW} onOpen={vi.fn()} moves={[]} onMove={vi.fn()} />
+        <IssueCard item={item({ id: "native", state: "Done", terminal: true })} showProject
+          now={NOW} onOpen={vi.fn()} moves={[]} onMove={vi.fn()} />
+      </>,
+    );
+    expect(screen.getAllByText("Source history")).toHaveLength(1);
+    expect(screen.getByText("Source history").getAttribute("title")).toBe("Imported from github");
+    expect(screen.getAllByText("Done")).toHaveLength(2);
+    expect(screen.queryByText(/shipped|landed/i)).toBeNull();
   });
 
   it("draws no progress bar, because the hub serves no progress", () => {
@@ -269,28 +364,23 @@ describe("a lane", () => {
     expect(refusing).not.toBeNull();
   });
 
-  it("dims a terminal lane", () => {
-    cleanup();
-    render(
-      <BoardLane
-        lane={LANES.find((lane) => lane.terminal)!}
-        items={[]}
-        showProject={false}
-        now={NOW}
-        onOpen={vi.fn()}
-        movesFor={() => []}
-        onMove={vi.fn()}
-        movingIds={new Set()}
-        draggingId={null}
-        onDragStart={vi.fn()}
-        onDragEnd={vi.fn()}
-        onDrop={null}
-        collapsed
-        onToggleCollapsed={vi.fn()}
-      />,
-    );
-    expect(screen.getByTestId("board-lane").getAttribute("data-terminal")).toBe("true");
+  it.each([true, false])("uses configured terminal=%s before counting and styling live work", (terminal) => {
+    const running = item({ state: "Retired", terminal: false, attempt: toAttemptView(ATTEMPTS) });
+    renderLane({
+      lane: { id: "Retired", name: "Retired", terminal, category: terminal ? "completed" : "started" },
+      items: [running],
+    });
+    const lane = screen.getByTestId("board-lane");
+    expect(lane.getAttribute("data-terminal")).toBe(terminal ? "true" : null);
+    expect(lane.className).not.toContain("opacity-");
+    expect(screen.queryByText("1 live") !== null).toBe(!terminal);
+    expect(screen.queryByText("Running") !== null).toBe(!terminal);
+    expect(screen.queryByTestId("worker-strip") !== null).toBe(!terminal);
+    expect(screen.getByTestId("issue-card").getAttribute("data-terminal")).toBe(terminal ? "true" : null);
+    if (terminal) expect(within(screen.getByTestId("issue-card")).getByText("Retired").className).toContain("text-muted-foreground");
+    expect(running.attempt?.running).toBe(true);
   });
+
 });
 
 describe("the list view", () => {
@@ -310,6 +400,17 @@ describe("the list view", () => {
     expect(within(rows[0]!).getByText("Blocked · 1")).not.toBeNull();
     expect(within(rows[0]!).getByText("High")).not.toBeNull();
     expect(within(rows[1]!).getByText("Todo")).not.toBeNull();
+  });
+
+  it("retains neutral terminal status and history in the shared list presentation", () => {
+    render(
+      <WorkList items={[item({ state: "Cancelled", terminal: true, attempt: toAttemptView(ATTEMPTS) })]}
+        showProject now={NOW} onOpen={vi.fn()} movesFor={() => []} onMove={vi.fn()} />,
+    );
+    const row = screen.getByTestId("work-list-row");
+    expect(row.innerHTML).not.toMatch(/bg-success|animate-status-pulse|bg-warning|text-warning/);
+    expect(screen.getByLabelText("Cancelled. Last attempt: running").className).toContain("bg-muted");
+    expect(screen.getByLabelText("Priority: High").className).toContain("text-muted-foreground");
   });
 
   it("opens an issue from its title", () => {
