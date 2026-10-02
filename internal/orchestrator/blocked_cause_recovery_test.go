@@ -2531,17 +2531,25 @@ func TestRecoverBlockedReadyPullRequestExactHeadLookup(t *testing.T) {
 func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name        string
-		mutate      func(*connector.Issue, time.Time)
-		audit       string
-		wantMerging bool
+		name      string
+		priorLane string
+		mutate    func(*connector.Issue, time.Time)
+		audit     string
+		wantState string
 	}{
-		{name: "same head green", wantMerging: true},
+		{name: "same head green", priorLane: autoPromoteReworkState, wantState: autoPromoteReworkState},
+		{name: "prior In Progress with green head", priorLane: "In Progress", wantState: "In Progress"},
+		{name: "Rework with CI running", priorLane: autoPromoteReworkState, mutate: func(issue *connector.Issue, _ time.Time) {
+			issue.PullRequest.CIStatus = "pending"
+			issue.PullRequest.RunningChecks = []string{"Test"}
+		}, wantState: autoPromoteReworkState},
+		{name: "Rework with failed audit", priorLane: autoPromoteReworkState, audit: "failed", wantState: autoPromoteReworkState},
+		{name: "Merging same head green", wantState: autoPromoteMergingState},
 		{name: "newer head green", mutate: func(issue *connector.Issue, at time.Time) {
 			issue.PullRequest.HeadSHA = "new-head"
 			committed := at.Add(time.Minute)
 			issue.PullRequest.HeadCommittedAt = &committed
-		}, wantMerging: true},
+		}, wantState: autoPromoteMergingState},
 		{name: "changed head without newer commit evidence", mutate: func(issue *connector.Issue, _ time.Time) {
 			issue.PullRequest.HeadSHA = "unverified-head"
 		}},
@@ -2552,8 +2560,8 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 		{name: "CI failing", mutate: func(issue *connector.Issue, _ time.Time) {
 			issue.PullRequest.CIStatus = "failure"
 		}},
-		{name: "audit not yet run", audit: "missing", wantMerging: true},
-		{name: "audit passed", audit: "passed", wantMerging: true},
+		{name: "audit not yet run", audit: "missing", wantState: autoPromoteMergingState},
+		{name: "audit passed", audit: "passed", wantState: autoPromoteMergingState},
 		{name: "audit running", audit: "running"},
 		{name: "audit failed", audit: "failed"},
 		{name: "audit findings", audit: "findings"},
@@ -2565,7 +2573,10 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			at := time.Date(2026, 9, 25, 8, 37, 0, 0, time.UTC)
 			issue := blockedReadyPullRequestIssue()
-			issue.State = "Rework"
+			issue.State = autoPromoteMergingState
+			if tt.priorLane != "" {
+				issue.State = tt.priorLane
+			}
 			issue.PullRequest.CIStatus = "pending"
 			issue.PullRequest.RunningChecks = []string{"Test"}
 			tracker := &blockedReadyPullRequestLookupConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{}}
@@ -2610,12 +2621,19 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 			if tt.audit != "" && !orch.cfg.AutoPromote.Gate.SecurityAudit.Enabled {
 				t.Fatal("recovery disabled the configured security audit")
 			}
-			if tt.wantMerging {
-				if len(tracker.updates) != 1 || tracker.updates[0].state != autoPromoteMergingState {
-					t.Fatalf("updates = %#v, want Merging", tracker.updates)
+			if tt.wantState != "" {
+				if len(tracker.updates) != 1 || tracker.updates[0] != (dependencyAutoUnblockUpdate{issueID: issue.ID, state: tt.wantState}) {
+					t.Fatalf("updates = %#v, want %s", tracker.updates, tt.wantState)
 				}
-				if tracker.hydrateCalls != 1 {
-					t.Fatalf("hydrate calls = %d, want 1", tracker.hydrateCalls)
+				wantHydrateCalls := 1
+				if tt.priorLane != "" {
+					wantHydrateCalls = 0
+				}
+				if tracker.hydrateCalls != wantHydrateCalls {
+					t.Fatalf("hydrate calls = %d, want %d", tracker.hydrateCalls, wantHydrateCalls)
+				}
+				if _, held := state.Blocked[issue.ID]; held {
+					t.Fatal("recovered triage park remains blocked")
 				}
 			} else if len(tracker.updates) != 0 {
 				t.Fatalf("updates = %#v, want park held", tracker.updates)
