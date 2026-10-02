@@ -20,7 +20,7 @@ Neither verified CLI surface publishes a durable TTL in the command help or gene
 - Resume automatically only for implement workers dispatched from the configured Rework state with an unchanged pull request head and base.
 - Force fresh dispatch when the requested model, backend ID, backend kind, or agent role changes.
 - Fall back to a fresh thread only when the resume attempt fails before a new turn starts.
-- Keep per-issue handoff notes as the durable cross-machine fallback, because provider thread/session IDs can expire, be pruned, or be unavailable on another host.
+- Use Detent's durable attempt, session, and conversation records for cross-machine handoff when provider thread/session IDs expire, are pruned, or are unavailable on another host. Do not create repository runtime handoff files.
 
 ## Prototype Shape
 
