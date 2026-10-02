@@ -224,17 +224,25 @@ func (s *Service) appUpdates(c echo.Context) error {
 		}
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
-	if credential.HostedRole == "viewer" || !s.hostedAllRunnerGrants(c.Request().Context(), credential) {
-		return s.nativeAPIError(c, nativeNotFound())
+	payload, err := s.readAppUpdates(c.Request().Context(), credential)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, payload)
+}
+
+func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) (appUpdates, error) {
+	if credential.Hosted == nil || credential.HostedRole == "viewer" || !s.appAllRunnerGrants(ctx, credential) {
+		return appUpdates{}, nativeNotFound()
 	}
 	current := detentVersion(s.config.Version)
 	minimum := minimumRunnerVersion(current)
 	payload := appUpdates{MinimumRunnerVersion: minimum, Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
-	rows, err := s.database.db.QueryContext(c.Request().Context(), `SELECT r.id, r.display_name, m.version, r.last_heartbeat_at
+	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id, r.display_name, m.version, r.last_heartbeat_at
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id
 WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.id`, s.config.Hosted.OrganizationID)
 	if err != nil {
-		return s.nativeAPIError(c, fmt.Errorf("list runner versions: %w", err))
+		return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	now := s.config.now()
@@ -242,11 +250,11 @@ WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.
 		var runner appUpdateRunner
 		var heartbeat string
 		if err := rows.Scan(&runner.RunnerID, &runner.DisplayName, &runner.Version, &heartbeat); err != nil {
-			return s.nativeAPIError(c, fmt.Errorf("scan runner version: %w", err))
+			return appUpdates{}, fmt.Errorf("scan runner version: %w", err)
 		}
 		at, err := parseTimeValue(heartbeat)
 		if err != nil {
-			return s.nativeAPIError(c, fmt.Errorf("read runner heartbeat: %w", err))
+			return appUpdates{}, fmt.Errorf("read runner heartbeat: %w", err)
 		}
 		// The same window readRunner calls "offline".
 		runner.Online = !now.Before(at) && now.Before(at.Add(runnerauth.HeartbeatTimeout))
@@ -258,9 +266,9 @@ WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.
 		payload.Runners = append(payload.Runners, runner)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return s.nativeAPIError(c, fmt.Errorf("list runner versions: %w", err))
+		return appUpdates{}, fmt.Errorf("list runner versions: %w", err)
 	}
-	return c.JSON(http.StatusOK, payload)
+	return payload, nil
 }
 
 // Bootstrap payload (decisions section 12).
@@ -361,7 +369,7 @@ type appBootstrap struct {
 	Actor         appBootstrapActor          `json:"actor"`
 	Projects      []appBootstrapProject      `json:"projects"`
 	Support       *appBootstrapSupport       `json:"support"`
-	CSRFToken     string                     `json:"csrf_token"`
+	CSRFToken     string                     `json:"csrf_token,omitempty"`
 	Capabilities  appBootstrapCapabilities   `json:"capabilities"`
 	Preferences   appBootstrapPreferences    `json:"preferences"`
 	Feature       appBootstrapFeature        `json:"feature"`
@@ -405,54 +413,64 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 	if csrf == "" {
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
-	ctx := c.Request().Context()
+	payload, err := s.readAppBootstrap(c.Request().Context(), credential, session)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	payload.CSRFToken = csrf
+	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, payload)
+}
+
+func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential, session auth.Session) (appBootstrap, error) {
 	organization := s.config.Hosted.OrganizationID
 	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
 	payload := appBootstrap{
 		Organization:  appBootstrapOrganization{ID: organization, Name: organization, PublicURL: s.config.Hosted.PublicURL, Current: true},
 		Organizations: []appBootstrapOrganization{},
 		Actor: appBootstrapActor{
-			PrincipalID: credential.ID, Subject: credential.Hosted.Subject, Email: session.Email, Role: credential.HostedRole,
+			PrincipalID: operatorIdentity(credential, organization).PrincipalID, Subject: credential.Hosted.Subject, Email: session.Email, Role: credential.HostedRole,
 			CanManage:        manage,
-			CanManageRunners: credential.HostedRole != "viewer" && s.hostedAllRunnerGrants(ctx, credential),
+			CanManageRunners: credential.HostedRole != "viewer" && s.appAllRunnerGrants(ctx, credential),
 		},
 		Projects:   []appBootstrapProject{},
-		CSRFToken:  csrf,
 		APIBase:    "/api/v2/organizations/" + organization,
 		BasePath:   s.hostedBase(),
 		SignInPath: s.hostedSignInPath(),
 		Version:    s.config.Version,
 	}
 	if err := s.database.db.QueryRowContext(ctx, "SELECT name FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name); err != nil {
-		return s.nativeAPIError(c, fmt.Errorf("read organization name: %w", err))
+		return appBootstrap{}, fmt.Errorf("read organization name: %w", err)
 	}
 	if identity := credential.Hosted; identity.SupportActor != "" {
 		payload.Support = &appBootstrapSupport{Actor: identity.SupportActor, Reason: identity.SupportReason, ExpiresAt: identity.ExpiresAt.UTC().Format(time.RFC3339)}
 	}
+	var err error
 	payload.Projects, err = s.hostedReadableProjects(ctx, credential)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return appBootstrap{}, err
 	}
-	payload.Organizations, err = s.hostedOrganizationChoices(ctx, session)
+	if credential.HostedKeyScope == "" {
+		payload.Organizations, err = s.hostedOrganizationChoices(ctx, session)
+	}
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return appBootstrap{}, err
 	}
 	for index := range payload.Organizations {
 		if payload.Organizations[index].Current {
 			payload.Organizations[index].Name = payload.Organization.Name
 		}
 	}
-	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator.Available()
+	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator != nil && s.conversations.coordinator.Available()
 	payload.Feature = s.appBootstrapFeature()
 	payload.Preferences, err = s.appBootstrapPreferences(ctx, organization, payload.Projects)
 	if err != nil {
-		return s.nativeAPIError(c, err)
+		return appBootstrap{}, err
 	}
 	payload.Plan = s.appBootstrapPlan(ctx)
-	if err := s.hostedAudit(ctx, credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusOK, payload)
+	return payload, nil
 }
 
 // appBootstrapPreferences publishes the turn preference choices: every model
@@ -588,6 +606,21 @@ WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("list project grants: %w", err)
+	}
+	if credential.HostedKeyScope != "" {
+		filtered := projects[:0]
+		for _, project := range projects {
+			scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project.ID), credential: credential}
+			if err := s.database.authorizeNativeProject(ctx, scope); err != nil {
+				var native *nativeError
+				if errors.As(err, &native) && native.Code == "not_found" {
+					continue
+				}
+				return nil, err
+			}
+			filtered = append(filtered, project)
+		}
+		projects = filtered
 	}
 	for index := range projects {
 		project := &projects[index]

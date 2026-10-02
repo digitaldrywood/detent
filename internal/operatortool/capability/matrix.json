@@ -6518,7 +6518,7 @@
           "kind": "route",
           "definition": "e.GET(\"/app/bootstrap\", s.appBootstrapPayload) [route=\"/app/bootstrap\"]",
           "occurrence": 1,
-          "line": 62,
+          "line": 63,
           "method": "GET",
           "path": "\"/app/bootstrap\"",
           "handler": "s.appBootstrapPayload",
@@ -6529,7 +6529,7 @@
           "kind": "route",
           "definition": "e.GET(\"/chat/bootstrap\", s.appBootstrapPayload) [route=\"/chat/bootstrap\"]",
           "occurrence": 1,
-          "line": 63,
+          "line": 64,
           "method": "GET",
           "path": "\"/chat/bootstrap\"",
           "handler": "s.appBootstrapPayload",
@@ -6540,14 +6540,14 @@
           "kind": "request",
           "definition": "send(Bootstrap,\"GET\",url(hubPath(\"/chat/bootstrap\")))",
           "occurrence": 1,
-          "line": 384
+          "line": 386
         },
         {
           "source": "web/conversation/src/app/App.tsx",
           "kind": "attribute",
           "definition": "href={hubPath(\"/chat\")}",
           "occurrence": 1,
-          "line": 1008
+          "line": 1029
         }
       ],
       "availability": [
@@ -6557,8 +6557,8 @@
             "github",
             "native"
           ],
-          "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "shared hosted application read and operator authority",
+          "unsupported": "Hosted context is not advertised in this deployment; direct calls return safe unavailable or access denied without application context."
         },
         {
           "deployment": "hosted_dedicated",
@@ -6566,7 +6566,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "shared hosted application read and operator authority"
         },
         {
           "deployment": "hosted_shared",
@@ -6574,7 +6574,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "shared hosted application read and operator authority"
         },
         {
           "deployment": "credential_maintenance",
@@ -6582,21 +6582,20 @@
             "github",
             "native"
           ],
-          "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "shared hosted application read and operator authority",
+          "unsupported": "Hosted context is not advertised in this deployment; direct calls return safe unavailable or access denied without application context."
         }
       ],
       "authority": {
-        "role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes",
-        "credential_scope": "worker or operator (native project); exact registration middleware retained in source",
-        "project_grant": "not project-scoped; organization/instance authority still enforced",
-        "ownership": "current organization/account; no cross-organization resource lookup"
+        "role": "current hosted organization member; updates additionally requires non-viewer with runner management on every project",
+        "credential_scope": "hosted session or expiring hosted API key with read scope; freshly resolved dedicated/shared binding",
+        "project_grant": "bootstrap and model preferences include only currently readable projects and key grants; events require current selected-project read grant; updates require runner management and key read authority on all projects",
+        "ownership": "organization comes from authenticated connection; project/workspace/cursor ownership rechecked each call; directory choices retain dedicated membership authority"
       },
       "preconditions": [
-        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
-        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
-        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
-        "Current handler authority checks: s.hostedCredential(c)"
+        "Fresh authenticated dedicated/shared organization session or hosted API key; current membership, role, scope and project grants resolved for discovery and each call.",
+        "Complete result must fit existing 200-item/256-KiB bounds; no silent truncation or raw errors. Missing optional conversation/workspace/coordinator/plan services are explicit; required unavailable services yield opaque errors.",
+        "Browser CSRF/form/session data is never part of the shared application read result. No approval or mutation is introduced; existing hosted read audit is retained."
       ],
       "confirmation": [
         {
@@ -6604,13 +6603,13 @@
           "class": "none"
         }
       ],
-      "application": "s.appBootstrapPayload; s.appBootstrapFeature, s.appBootstrapPlan, s.appBootstrapPreferences, s.conversations.coordinator.Available, s.database.db.QueryRowContext, s.hostedAllRunnerGrants, s.hostedBase, s.hostedCredential, s.hostedOrganizationChoices, s.hostedPageCSRF, s.hostedReadableProjects",
-      "extraction": "Extract hubserver.appBootstrapPayload application inputs/results and validation from Echo; reuse s.appBootstrapFeature, s.appBootstrapPlan, s.appBootstrapPreferences, s.conversations.coordinator.Available, s.database.db.QueryRowContext, s.hostedAllRunnerGrants, s.hostedBase, s.hostedCredential, s.hostedOrganizationChoices, s.hostedPageCSRF, s.hostedReadableProjects. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "s.readAppBootstrap; s.hostedReadableProjects, s.hostedOrganizationChoices, s.appBootstrapPreferences, s.appBootstrapPlan, s.appBootstrapFeature, s.appAllRunnerGrants",
+      "extraction": "The browser handler and both MCP transports delegate to the same application read. Browser-only CSRF/session framing stays in Echo. MCP uses the current authority resolver, safe projection, existing hosted audit and result bounds; no proxy, polling, grant cache or new mechanism.",
       "tool": {
         "set": "connection",
         "name": "app_bootstrap_payload",
-        "arguments": "Bounded appBootstrapPayloadRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "appBootstrapPayloadResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "Empty typed object; organization/actor come only from the current authenticated connection. Request <=64 KiB; additional properties rejected.",
+        "result": "Complete typed current application context with observed_at and current_observation freshness; project/organization-choice/model-choice/runner lists <=200 and result <=256 KiB, otherwise opaque safe unavailable. No credentials, session data, CSRF or form tokens.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -6619,9 +6618,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3336",
-      "status": "pending",
-      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestHostedContextMCP, TestHostedContextKeyProjection and TestHostedContextUnavailable execute the canonical reads through stdio and HTTP with dedicated and signed shared-entry authority: complete shared browser bootstrap/update results, preferences/plan/build, absent services/coordinator, viewer and removed role/grants/membership/session, direct calls before discovery, failed partial discovery, restricted key projects/model catalogs, revoked keys, project/result bounds, safe service errors, activity/workspace changes and scoped cursors. TestHostedOperatorCurrentAuthority covers cross-organization authority. Parent #3259 generic-client and zero-pending acceptance remains pending.",
+      "decision": "Implemented by the canonical app_bootstrap_payload tool in the shared hostedContextExecutor. Bootstrap contains organization/directory, actor, projects/workspace capabilities, support, features/coordinator, model/effort/access preferences, plan and hub build; browser secrets are omitted."
     },
     {
       "id": "hubserver.app_shell",
@@ -6726,7 +6725,7 @@
           "kind": "route",
           "definition": "e.GET(\"/app/updates\", s.appUpdates) [route=\"/app/updates\"]",
           "occurrence": 1,
-          "line": 64,
+          "line": 65,
           "method": "GET",
           "path": "\"/app/updates\"",
           "handler": "s.appUpdates",
@@ -6747,8 +6746,8 @@
             "github",
             "native"
           ],
-          "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "shared hosted application read and operator authority",
+          "unsupported": "Hosted context is not advertised in this deployment; direct calls return safe unavailable or access denied without application context."
         },
         {
           "deployment": "hosted_dedicated",
@@ -6756,7 +6755,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "shared hosted application read and operator authority"
         },
         {
           "deployment": "hosted_shared",
@@ -6764,7 +6763,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "shared hosted application read and operator authority"
         },
         {
           "deployment": "credential_maintenance",
@@ -6772,21 +6771,20 @@
             "github",
             "native"
           ],
-          "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "shared hosted application read and operator authority",
+          "unsupported": "Hosted context is not advertised in this deployment; direct calls return safe unavailable or access denied without application context."
         }
       ],
       "authority": {
-        "role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes",
-        "credential_scope": "worker or operator (native project); exact registration middleware retained in source",
-        "project_grant": "not project-scoped; organization/instance authority still enforced",
-        "ownership": "current organization/account; no cross-organization resource lookup"
+        "role": "current hosted organization member; updates additionally requires non-viewer with runner management on every project",
+        "credential_scope": "hosted session or expiring hosted API key with read scope; freshly resolved dedicated/shared binding",
+        "project_grant": "bootstrap and model preferences include only currently readable projects and key grants; events require current selected-project read grant; updates require runner management and key read authority on all projects",
+        "ownership": "organization comes from authenticated connection; project/workspace/cursor ownership rechecked each call; directory choices retain dedicated membership authority"
       },
       "preconditions": [
-        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
-        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
-        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
-        "Current handler authority checks: s.hostedCredential(c)"
+        "Fresh authenticated dedicated/shared organization session or hosted API key; current membership, role, scope and project grants resolved for discovery and each call.",
+        "Complete result must fit existing 200-item/256-KiB bounds; no silent truncation or raw errors. Missing optional conversation/workspace/coordinator/plan services are explicit; required unavailable services yield opaque errors.",
+        "Browser CSRF/form/session data is never part of the shared application read result. No approval or mutation is introduced; existing hosted read audit is retained."
       ],
       "confirmation": [
         {
@@ -6794,13 +6792,13 @@
           "class": "none"
         }
       ],
-      "application": "s.appUpdates; s.config.now, s.database.db.QueryContext, s.hostedAllRunnerGrants, s.hostedCredential",
-      "extraction": "Extract hubserver.appUpdates application inputs/results and validation from Echo; reuse s.config.now, s.database.db.QueryContext, s.hostedAllRunnerGrants, s.hostedCredential. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "s.readAppUpdates; s.appAllRunnerGrants, minimumRunnerVersion, runnerClaimRefusal, runnerauth.HeartbeatTimeout",
+      "extraction": "The browser handler and both MCP transports delegate to the same application read. Browser-only CSRF/session framing stays in Echo. MCP uses the current authority resolver, safe projection, existing hosted audit and result bounds; no proxy, polling, grant cache or new mechanism.",
       "tool": {
         "set": "connection",
         "name": "app_updates",
-        "arguments": "Bounded appUpdatesRequest: organization context; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "appUpdatesResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "Empty typed object; organization/actor come only from the current authenticated connection. Request <=64 KiB; additional properties rejected.",
+        "result": "Complete typed current application context with observed_at and current_observation freshness; project/organization-choice/model-choice/runner lists <=200 and result <=256 KiB, otherwise opaque safe unavailable. No credentials, session data, CSRF or form tokens.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -6809,9 +6807,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3336",
-      "status": "pending",
-      "coverage": "internal/operatortool/authority_test.go; internal/hubserver/operator_authority_test.go; internal/cloudentry/pilot_shared_origin_test.go; internal/web/mcp_http_test.go. Connection authority is implemented by #3336; pending typed application operations remain pending for parent parity.",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands."
+      "status": "implemented",
+      "coverage": "TestHostedContextMCP, TestHostedContextKeyProjection and TestHostedContextUnavailable execute the canonical reads through stdio and HTTP with dedicated and signed shared-entry authority: complete shared browser bootstrap/update results, preferences/plan/build, absent services/coordinator, viewer and removed role/grants/membership/session, direct calls before discovery, failed partial discovery, restricted key projects/model catalogs, revoked keys, project/result bounds, safe service errors, activity/workspace changes and scoped cursors. TestHostedOperatorCurrentAuthority covers cross-organization authority. Parent #3259 generic-client and zero-pending acceptance remains pending.",
+      "decision": "Implemented by the canonical app_updates tool in the shared hostedContextExecutor. Hub/minimum/client builds and every active enrolled runner version, online/behind/refusal context and behind count reuse the browser read with its non-viewer/all-project runner boundary; restricted key access cannot widen that boundary."
     },
     {
       "id": "hubserver.append_native_run_event",
@@ -14991,7 +14989,7 @@
           "kind": "route",
           "definition": "e.GET(\"/projects/:project/events\", s.hostedEvents) [route=\"/projects/:project/events\"]",
           "occurrence": 1,
-          "line": 48,
+          "line": 57,
           "method": "GET",
           "path": "\"/projects/:project/events\"",
           "handler": "s.hostedEvents",
@@ -15005,8 +15003,8 @@
             "github",
             "native"
           ],
-          "service": "hub application service",
-          "unsupported": "Hosted organization/billing/identity service is absent in an unhosted hub."
+          "service": "shared hosted application read and operator authority",
+          "unsupported": "Hosted context is not advertised in this deployment; direct calls return safe unavailable or access denied without application context."
         },
         {
           "deployment": "hosted_dedicated",
@@ -15014,7 +15012,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "shared hosted application read and operator authority"
         },
         {
           "deployment": "hosted_shared",
@@ -15022,7 +15020,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "shared hosted application read and operator authority"
         },
         {
           "deployment": "credential_maintenance",
@@ -15030,21 +15028,20 @@
             "github",
             "native"
           ],
-          "service": "hub application service",
-          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+          "service": "shared hosted application read and operator authority",
+          "unsupported": "Hosted context is not advertised in this deployment; direct calls return safe unavailable or access denied without application context."
         }
       ],
       "authority": {
-        "role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes",
-        "credential_scope": "hosted browser session; bearer credentials refused by session-only APIs; CSRF for mutation",
-        "project_grant": "native project read grant; writes need write grant; runner/terminal access additionally needs runner grant",
-        "ownership": "resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain"
+        "role": "current hosted organization member; updates additionally requires non-viewer with runner management on every project",
+        "credential_scope": "hosted session or expiring hosted API key with read scope; freshly resolved dedicated/shared binding",
+        "project_grant": "bootstrap and model preferences include only currently readable projects and key grants; events require current selected-project read grant; updates require runner management and key read authority on all projects",
+        "ownership": "organization comes from authenticated connection; project/workspace/cursor ownership rechecked each call; directory choices retain dedicated membership authority"
       },
       "preconditions": [
-        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
-        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
-        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
-        "Current handler authority checks: s.hostedCredential(c); s.requireHostedProject(c.Request().Context(), s.database.db, initialScope, false); err != nil; s.requireHostedProject(c.Request().Context(), s.database.db, scope, false); err != nil"
+        "Fresh authenticated dedicated/shared organization session or hosted API key; current membership, role, scope and project grants resolved for discovery and each call.",
+        "Complete result must fit existing 200-item/256-KiB bounds; no silent truncation or raw errors. Missing optional conversation/workspace/coordinator/plan services are explicit; required unavailable services yield opaque errors.",
+        "Browser CSRF/form/session data is never part of the shared application read result. No approval or mutation is introduced; existing hosted read audit is retained."
       ],
       "confirmation": [
         {
@@ -15052,13 +15049,13 @@
           "class": "none"
         }
       ],
-      "application": "s.hostedEvents; s.database.db.QueryRowContext, s.hostedCredential, s.requireHostedProject",
-      "extraction": "Extract hubserver.hostedEvents application inputs/results and validation from Echo; reuse s.database.db.QueryRowContext, s.hostedCredential, s.requireHostedProject. The HTTP handler and MCP must delegate to this same application operation.",
+      "application": "s.readHostedEventObservation; s.requireHostedProject, s.database.authorizeNativeProject, s.readWorkspace, operatorWorkspaceProjection",
+      "extraction": "The browser handler and both MCP transports delegate to the same application read. Browser-only CSRF/session framing stays in Echo. MCP uses the current authority resolver, safe projection, existing hosted audit and result bounds; no proxy, polling, grant cache or new mechanism.",
       "tool": {
         "set": "work_reads",
         "name": "hosted_events",
-        "arguments": "Bounded hostedEventsRequest: project; pagination/cursor where listing; existing validated fields only; bounds: identifiers 1\u2013256 bytes, pagination 1\u2013200, request at most 64 KiB, action fields use existing application validation",
-        "result": "hostedEventsResult: bounded application data or command receipt with identifiers/URLs, outcome and freshness where relevant; at most 256 KiB, pagination 1\u2013200, opaque service-unavailable errors",
+        "arguments": "Required project_id (1-256 bytes), optional workspace_id (1-256 bytes) and observation cursor (<=2048 bytes); request <=64 KiB, additional properties rejected. Authority never comes from the cursor.",
+        "result": "One typed current observation: organization/project, sequence, optional safe workspace, observed_at, current_observation freshness, explicit semantics, changed and scoped cursor. <=256 KiB; safe unavailable without services, no heartbeat/event replay/SSE.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -15067,9 +15064,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Expose the meaningful application operation through a typed tool using shared dashboard authority and commands. Ownership correction from #3340: this operation belongs to the existing #3346 scope; required parity remains pending."
+      "status": "implemented",
+      "coverage": "TestHostedContextMCP, TestHostedContextKeyProjection and TestHostedContextUnavailable execute the canonical reads through stdio and HTTP with dedicated and signed shared-entry authority: complete shared browser bootstrap/update results, preferences/plan/build, absent services/coordinator, viewer and removed role/grants/membership/session, direct calls before discovery, failed partial discovery, restricted key projects/model catalogs, revoked keys, project/result bounds, safe service errors, activity/workspace changes and scoped cursors. TestHostedOperatorCurrentAuthority covers cross-organization authority. Parent #3259 generic-client and zero-pending acceptance remains pending.",
+      "decision": "Implemented by the canonical hosted_events tool in the shared hostedContextExecutor as one bounded current project invalidation observation. The cursor compares the collaboration sequence and optional authorized workspace revision, bound to organization/project/workspace. Changed=false distinguishes an unchanged SSE tick from meaningful updates; no event replay or stream is promised. Browser SSE framing is transport-only and delegates to the same observation read. Workspace paths and relay sessions reuse the existing MCP projection."
     },
     {
       "id": "hubserver.hosted_fleet",
