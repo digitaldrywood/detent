@@ -67,12 +67,9 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 	return descriptor, descriptor.Validate()
 }
 
-// normalizePolicyConfig preserves the approved JSON representation across
-// binary upgrades. Only equivalent absent/default execution settings collapse;
-// explicit policy changes remain digest inputs. Normalize a copy so runtime
-// configuration keeps its execution defaults.
 func normalizePolicyConfig(cfg Config) Config {
 	cfg.Policy = policy.Descriptor{}
+	cfg.Agent.RateWindowPacing = DefaultRateWindowPacing()
 	if !cfg.Worker.EffectiveAllowLocalBinding() {
 		cfg.Worker.AllowLocalBinding = nil
 	}
