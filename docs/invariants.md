@@ -442,6 +442,24 @@ introduced. `TestHostedBillingMCP`, `TestBillingCommandResponseLoss`,
 `TestUsageReportAggregates`, `TestHostedArtifactAllowanceBoundary`, and
 `TestPlatformComplimentaryPlansThroughTenantHub` cover these boundaries.
 
+AI credit MCP parity (native #234) reuses the browser credit checkout and
+funding settings commands, the organization owner predicate, the exact chat
+approval form and existing credit purchase/provider keys. Installed adapters
+advertise credit operations only with a hosted credit provider and account mode;
+checkout additionally respects the existing checkout pause. Purchase and enabled
+funding previews bind the configured pack amount, account/mode, organization,
+return destination and exact input. Funding approval also binds current settings
+and saved payment authority without exposing payment method identifiers. Owner
+revocation, support impersonation, another organization and changed financial
+inputs cannot approve or execute. Disabling funding remains an ordinary write.
+Completed settings replay uses the existing native command receipt and cannot
+overwrite newer settings. Failed approved purchase retries resume the original
+purchase key; result reads remain read-only. Pending results alone expose the
+human approval URL, and terminal receipts preserve their true status and safe
+provider destination. `TestHostedCreditMCP`, `TestAICreditPaymentConfirmation`,
+`TestAICreditOwnerSettings` and `TestActionConfirmationClassification` exercise
+these boundaries with fixture providers and no live financial transactions.
+
 Work-item MCP parity (#3341) reuses the dashboard work creation, discussion,
 priority, native collaboration, park acknowledgement and security-disposition
 commands. Native edits keep expected revisions and workflow authority; connection

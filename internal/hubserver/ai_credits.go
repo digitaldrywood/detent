@@ -2,18 +2,17 @@ package hubserver
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
 type aiCreditTransaction struct {
@@ -76,9 +75,8 @@ func (s *Service) creditPack(id string) (HostedCreditPack, bool) {
 
 func (s *Service) hostedCreditCheckout(c echo.Context) error {
 	api := hostedBillingAPI(c)
-	credential, err := s.hostedBillingOwner(c)
-	if err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusForbidden, "AI credits require an organization owner")
+	if _, err := s.hostedBillingOwner(c); err != nil {
+		return s.creditCommandFailure(c, api, err)
 	}
 	var request struct {
 		hostedIdempotent
@@ -94,78 +92,20 @@ func (s *Service) hostedCreditCheckout(c echo.Context) error {
 	} else {
 		request.Price = c.FormValue("price")
 	}
-	pack, ok := s.creditPack(request.Price)
-	if !ok {
-		return s.hostedBillingFailure(c, api, http.StatusBadRequest, "Choose a configured AI credit pack")
-	}
-	w := s.billing
-	if w == nil {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "Billing is unavailable")
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	ctx := c.Request().Context()
-	binding, err := s.ensureHostedCustomer(ctx, credential.Hosted.Subject)
+	authorize := func(context.Context) (apiCredential, error) { return s.hostedBillingOwner(c) }
+	result, err := s.checkoutCredits(c.Request().Context(), authorize, request.Price, request.IdempotencyKey)
 	if err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "Billing is temporarily unavailable")
+		return s.creditCommandFailure(c, api, err)
 	}
-	key := "detent-credit-" + s.config.newLeaseID()
-	if api {
-		digest := sha256.Sum256([]byte(s.config.Hosted.OrganizationID + "\x00" + s.config.Hosted.Billing.mode() + "\x00" + request.IdempotencyKey))
-		key = fmt.Sprintf("detent-credit-%x", digest)
-	}
-	var raw string
-	var cents, at int64
-	var price, mode, state string
-	err = s.database.db.QueryRowContext(ctx, "SELECT price_id,usd_cents,created_at,session_json,mode,state FROM ai_credit_purchases WHERE purchase_key=? AND organization_id=? AND automatic=0", key, binding.OrganizationID).Scan(&price, &cents, &at, &raw, &mode, &state)
-	if errors.Is(err, sql.ErrNoRows) {
-		price, cents, at, mode, state = pack.PriceID, pack.USDCents, s.config.now().UnixMicro(), s.config.Hosted.Billing.mode(), "pending"
-		_, err = s.database.db.ExecContext(ctx, "INSERT INTO ai_credit_purchases(purchase_key,organization_id,mode,price_id,usd_cents,automatic,created_at) VALUES(?,?,?,?,?,0,?)", key, binding.OrganizationID, mode, price, cents, at)
-		raw = "{}"
-	}
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if price != pack.PriceID || cents != pack.USDCents || mode != s.config.Hosted.Billing.mode() {
-		return s.hostedBillingFailure(c, api, http.StatusConflict, "The purchase key already refers to another credit pack")
-	}
-	var session billing.Session
-	if err := json.Unmarshal([]byte(raw), &session); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if session.URL == "" {
-		if state != "pending" || s.config.now().Sub(time.UnixMicro(at)) >= 23*time.Hour {
-			return s.hostedBillingFailure(c, api, http.StatusConflict, "This purchase needs billing review")
-		}
-		provider, ok := s.config.Hosted.Billing.Provider.(billing.CreditProvider)
-		if !ok {
-			return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "AI credit purchases are unavailable")
-		}
-		session, err = provider.CreditCheckout(ctx, billing.CreditRequest{CheckoutRequest: billing.CheckoutRequest{Binding: binding, PriceID: price, IdempotencyKey: key, ReturnURL: s.hostedBillingReturn(true), ExpiresAt: time.UnixMicro(at).Truncate(time.Second).Add(time.Hour)}, USDCents: cents})
-		if err != nil {
-			return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "Credit checkout is temporarily unavailable; retry the same purchase")
-		}
-		encoded, err := json.Marshal(session)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		if _, err := s.database.db.ExecContext(ctx, "UPDATE ai_credit_purchases SET session_json=? WHERE purchase_key=?", string(encoded), key); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	return s.hostedBillingDestination(c, api, session.URL)
+	return s.hostedBillingDestination(c, api, result.URL)
 }
 
 func (s *Service) hostedCreditAutoFund(c echo.Context) error {
 	api := hostedBillingAPI(c)
 	if _, err := s.hostedBillingOwner(c); err != nil {
-		return s.hostedBillingFailure(c, api, http.StatusForbidden, "Auto-fund requires an organization owner")
+		return s.creditCommandFailure(c, api, err)
 	}
-	var request struct {
-		Enabled   bool   `json:"enabled"`
-		Threshold int64  `json:"threshold_cents"`
-		Price     string `json:"price"`
-	}
+	var request creditFundingInput
 	if api {
 		if err := decodeAPIJSON(c, &request); err != nil {
 			return invalidAPIRequest(c, err)
@@ -179,63 +119,28 @@ func (s *Service) hostedCreditAutoFund(c echo.Context) error {
 		}
 		request.Threshold = threshold
 	}
-	if s.database.aiCreditMode == "" {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "AI credit purchases are unavailable")
-	}
-	if request.Enabled {
-		pack, ok := s.creditPack(request.Price)
-		if !ok || request.Threshold <= 0 || request.Threshold >= pack.USDCents {
-			return s.hostedBillingFailure(c, api, http.StatusBadRequest, "Choose a threshold greater than zero and smaller than the credit pack")
-		}
-	}
-	if s.billing == nil {
-		return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "Billing is unavailable")
-	}
-	s.billing.mu.Lock()
-	defer s.billing.mu.Unlock()
-	if request.Enabled {
-		ctx := c.Request().Context()
-		var method string
-		if err := s.database.db.QueryRowContext(ctx, "SELECT payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&method); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		binding, err := s.database.hostedBillingBinding(ctx, s.config.Hosted.Billing)
-		if err != nil {
-			return s.hostedBillingFailure(c, api, http.StatusConflict, "Buy credits or save a payment method in the billing portal first")
-		}
-		provider, ok := s.config.Hosted.Billing.Provider.(billing.CreditProvider)
-		if !ok {
-			return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "AI credit purchases are unavailable")
-		}
-		current, err := provider.SavedCreditPaymentMethod(ctx, binding)
-		if err != nil && !errors.Is(err, billing.ErrPaymentFailed) {
-			return s.hostedBillingFailure(c, api, http.StatusServiceUnavailable, "The saved payment method is temporarily unavailable")
-		}
-		if current != "" {
-			method = current
-		}
-		if method == "" {
-			return s.hostedBillingFailure(c, api, http.StatusConflict, "Buy credits or save a payment method in the billing portal first")
-		}
-		if _, err := s.database.db.ExecContext(ctx, "UPDATE ai_credit_accounts SET payment_method=? WHERE organization_id=? AND mode=?", method, s.database.hostedOrganization, s.database.aiCreditMode); err != nil {
-			return s.nativeAPIError(c, err)
-		}
-	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), `UPDATE ai_credit_accounts SET auto_enabled=?,threshold_cents=?,price_id=?,failure='' WHERE organization_id=? AND mode=? AND (?=0 OR payment_method<>'')`, request.Enabled, max(request.Threshold, 0), request.Price, s.database.hostedOrganization, s.database.aiCreditMode, request.Enabled)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if n != 1 {
-		return s.hostedBillingFailure(c, api, http.StatusConflict, "Buy credits or save a payment method in the billing portal first")
+	authorize := func(context.Context) (apiCredential, error) { return s.hostedBillingOwner(c) }
+	if _, err := s.configureCreditFunding(c.Request().Context(), authorize, request, ""); err != nil {
+		return s.creditCommandFailure(c, api, err)
 	}
 	if api {
 		return c.NoContent(http.StatusNoContent)
 	}
 	return c.Redirect(http.StatusSeeOther, s.hostedBillingReturn(true))
+}
+
+func (s *Service) creditCommandFailure(c echo.Context, api bool, err error) error {
+	var failure *nativeError
+	switch {
+	case errors.Is(err, auth.ErrHostedIdentity):
+		return s.hostedBillingFailure(c, api, http.StatusForbidden, "AI credits require an organization owner without support impersonation")
+	case errors.Is(err, mutation.ErrConflict), errors.Is(err, mutation.ErrUncertain):
+		return s.hostedBillingFailure(c, api, http.StatusConflict, err.Error())
+	case errors.As(err, &failure):
+		return s.hostedBillingFailure(c, api, failure.status, failure.Message)
+	default:
+		return s.nativeAPIError(c, err)
+	}
 }
 
 func (d *database) applyCreditPayment(ctx context.Context, tx *sql.Tx, payment billing.CreditPayment) error {

@@ -14386,7 +14386,7 @@
           "kind": "route",
           "definition": "e.POST(\"/api/v2/organizations/:organization/billing/credits/checkout\", s.hostedCreditCheckout) [route=\"/api/v2/organizations/:organization/billing/credits/checkout\"]",
           "occurrence": 1,
-          "line": 41,
+          "line": 46,
           "method": "POST",
           "path": "\"/api/v2/organizations/:organization/billing/credits/checkout\"",
           "handler": "s.hostedCreditCheckout",
@@ -14397,7 +14397,7 @@
           "kind": "route",
           "definition": "e.POST(\"/organization/billing/credits/checkout\", s.hostedCreditCheckout) [route=\"/organization/billing/credits/checkout\"]",
           "occurrence": 1,
-          "line": 36,
+          "line": 41,
           "method": "POST",
           "path": "\"/organization/billing/credits/checkout\"",
           "handler": "s.hostedCreditCheckout",
@@ -14422,7 +14422,7 @@
           "kind": "request",
           "definition": "send(CheckoutResponse,\"POST\",`${base}/billing/credits/checkout`,{ price: input.price, idempotency_key: input.key, })",
           "occurrence": 1,
-          "line": 421
+          "line": 453
         }
       ],
       "availability": [
@@ -14441,7 +14441,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "hosted billing application with installed credit provider, credit account mode and existing approval service; checkout must be enabled"
         },
         {
           "deployment": "hosted_shared",
@@ -14449,7 +14449,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "hosted billing application with installed credit provider, credit account mode and existing approval service; checkout must be enabled"
         },
         {
           "deployment": "credential_maintenance",
@@ -14479,24 +14479,24 @@
           "class": "operator"
         }
       ],
-      "application": "s.hostedCreditCheckout; s.hostedBillingOwner, s.creditPack, s.ensureHostedCustomer, ai_credit_purchases and billing.CreditProvider.CreditCheckout",
-      "extraction": "Extract the credit checkout application command and durable purchase-key retry contract from Echo. HTTP and MCP must share current owner checks, configured pack validation and the same purchase intent; do not proxy the handler.",
+      "application": "s.hostedCreditCheckout and s.checkoutCredits; shared fresh billing owner authorization, configured pack, existing ai_credit_purchases and billing.CreditProvider.CreditCheckout",
+      "extraction": "HTTP and MCP call the same application command. MCP reuses the existing chat approval, material input binding, audit and retry owners; no handler proxy or alternate payment authority.",
       "tool": {
         "set": "billing_usage",
         "name": "hosted_credit_checkout",
-        "arguments": "Bounded price identifier (1\u2013256 bytes) and request_id (1\u2013256 bytes); current organization and confirmation mode come from connection authority, never arguments.",
-        "result": "Bounded credit checkout destination URL and purchase receipt; at most 256 KiB; opaque service-unavailable errors.",
+        "arguments": "Bounded price identifier (1\u2013256 bytes) and request_id (1\u2013128 bytes); organization and confirmation mode come from current connection authority.",
+        "result": "Bounded pending approval URL or truthful terminal action receipt with original checkout destination and purchase identity; at most 256 KiB; opaque unavailable errors.",
         "annotations": {
           "readOnly": false,
           "destructive": true,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3345",
-      "status": "pending",
-      "coverage": "TestDashboardCapabilityCoverage inventories the exact browser/API/frontend sites; TestAICreditPaymentConfirmation covers HTTP purchase replay and provider confirmation. MCP authority, approval and replay parity remains pending under #3345.",
-      "decision": "Credit purchases are distinct from implemented subscription checkout. Required operator MCP parity remains pending under #3345; this inventory does not expose a runtime tool."
+      "status": "implemented",
+      "coverage": "TestHostedCreditMCP and TestActionConfirmationClassification prove installed discovery, denied/unavailable, pending exact approval, stale input/current authority, rejection, YOLO, terminal receipt redaction and replay with fixture providers. TestAICreditPaymentConfirmation proves the shared HTTP purchase key and provider confirmation; approved response-loss replay retains the original purchase key.",
+      "decision": "Implemented for native #234 through the existing billing command and authority; strict full dashboard/MCP parity remains native parent #26 acceptance, not universal blocking CI."
     },
     {
       "id": "hubserver.hosted_credit_auto_fund",
@@ -14508,7 +14508,7 @@
           "kind": "route",
           "definition": "e.POST(\"/organization/billing/credits/auto-fund\", s.hostedCreditAutoFund) [route=\"/organization/billing/credits/auto-fund\"]",
           "occurrence": 1,
-          "line": 37,
+          "line": 42,
           "method": "POST",
           "path": "\"/organization/billing/credits/auto-fund\"",
           "handler": "s.hostedCreditAutoFund",
@@ -14519,7 +14519,7 @@
           "kind": "route",
           "definition": "e.PUT(\"/api/v2/organizations/:organization/billing/credits/auto-fund\", s.hostedCreditAutoFund) [route=\"/api/v2/organizations/:organization/billing/credits/auto-fund\"]",
           "occurrence": 1,
-          "line": 42,
+          "line": 47,
           "method": "PUT",
           "path": "\"/api/v2/organizations/:organization/billing/credits/auto-fund\"",
           "handler": "s.hostedCreditAutoFund",
@@ -14544,7 +14544,7 @@
           "kind": "request",
           "definition": "send(Empty,\"PUT\",`${base}/billing/credits/auto-fund`,input)",
           "occurrence": 1,
-          "line": 425
+          "line": 457
         },
         {
           "source": "web/conversation/src/app/settings/CreditSettings.tsx",
@@ -14577,7 +14577,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "hosted billing application with installed credit provider, credit account mode and existing approval service"
         },
         {
           "deployment": "hosted_shared",
@@ -14585,7 +14585,7 @@
             "github",
             "native"
           ],
-          "service": "hub application service"
+          "service": "hosted billing application with installed credit provider, credit account mode and existing approval service"
         },
         {
           "deployment": "credential_maintenance",
@@ -14619,24 +14619,24 @@
           "class": "none"
         }
       ],
-      "application": "s.hostedCreditAutoFund; s.hostedBillingOwner, s.creditPack, s.database.hostedBillingBinding, ai_credit_accounts and billing.CreditProvider.SavedCreditPaymentMethod",
-      "extraction": "Extract the auto-fund settings application command from Echo. HTTP and MCP must share current owner checks, pack/threshold/payment-method validation and organization-bound account updates; mutations reuse the shared audit/retry contract (#3338).",
+      "application": "s.hostedCreditAutoFund and s.configureCreditFunding; shared fresh billing owner authorization, configured pack/threshold, current payment authority and existing native_commands receipts",
+      "extraction": "HTTP and MCP call the same application command. MCP reuses the existing chat approval, material input binding, audit and retry owners; no handler proxy or alternate payment authority.",
       "tool": {
         "set": "billing_usage",
         "name": "hosted_credit_auto_fund",
-        "arguments": "Bounded enabled boolean, threshold_cents integer and price identifier (1\u2013256 bytes), plus request_id (1\u2013256 bytes) for the shared mutation receipt; current organization and confirmation mode come from connection authority.",
-        "result": "Bounded organization credit auto-fund settings receipt with outcome and freshness; at most 256 KiB; opaque service-unavailable errors.",
+        "arguments": "Required enabled boolean, nonnegative threshold_cents integer, bounded price identifier (up to 256 bytes; configured pack required when enabled), and request_id (1\u2013128 bytes); organization and confirmation mode come from current connection authority.",
+        "result": "Bounded pending approval URL or truthful terminal action receipt with applied organization credit settings and resolution time; at most 256 KiB; opaque unavailable errors.",
         "annotations": {
           "readOnly": false,
           "destructive": true,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3345",
-      "status": "pending",
-      "coverage": "TestDashboardCapabilityCoverage inventories the exact browser/API/frontend sites; TestAICreditOwnerSettings and TestAICreditAutoFund cover HTTP owner settings and automatic charges. MCP authority, approval and replay parity remains pending under #3345.",
-      "decision": "Automatic credit funding settings are a separate operator command from subscription checkout. Required operator MCP parity remains pending under #3345; this inventory does not expose a runtime tool."
+      "status": "implemented",
+      "coverage": "TestHostedCreditMCP and TestActionConfirmationClassification prove installed discovery, denied/unavailable, pending exact approval, stale input/current authority, rejection, YOLO, terminal receipt redaction and replay with fixture providers. TestAICreditOwnerSettings and TestAICreditAutoFund retain HTTP settings/charge behavior; MCP disabling requires no material approval and settings replay preserves newer settings.",
+      "decision": "Implemented for native #234 through the existing billing command and authority; strict full dashboard/MCP parity remains native parent #26 acceptance, not universal blocking CI."
     },
     {
       "id": "hubserver.hosted_billing_export",
