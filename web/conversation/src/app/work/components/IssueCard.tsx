@@ -42,7 +42,8 @@ export function Pill({
 }
 
 /** Urgent and High read as pressure; Normal and Low do not. */
-export function priorityTone(priority: string | null): PillTone {
+export function priorityTone(priority: string | null, terminal = false): PillTone {
+  if (terminal) return "mute";
   switch (priority) {
     case "Urgent":
       return "err";
@@ -54,9 +55,10 @@ export function priorityTone(priority: string | null): PillTone {
 }
 
 /** The one sentence the card's status pill says about this issue. */
-export function statusPill(item: WorkItemView): { tone: PillTone; label: string } | null {
-  if (isLive(item)) return { tone: "ok", label: "Running" };
-  if (isBlocked(item))
+export function statusPill(item: WorkItemView, terminal = item.terminal): { tone: PillTone; label: string } | null {
+  if (terminal) return { tone: "mute", label: item.state };
+  if (isLive(item, terminal)) return { tone: "ok", label: "Running" };
+  if (isBlocked(item, terminal))
     return {
       tone: "err",
       label: item.blockedBy.length === 1 ? "Blocked · 1" : `Blocked · ${item.blockedBy.length}`,
@@ -70,6 +72,7 @@ export function statusPill(item: WorkItemView): { tone: PillTone; label: string 
 
 export interface IssueCardProps {
   readonly item: WorkItemView;
+  readonly terminal?: boolean;
   /** The project dot renders in the all-projects scope only (A.1, A.6). */
   readonly showProject: boolean;
   readonly now: number;
@@ -86,6 +89,7 @@ export interface IssueCardProps {
 
 export function IssueCard({
   item,
+  terminal = item.terminal,
   showProject,
   now,
   onOpen,
@@ -96,8 +100,8 @@ export function IssueCard({
   onDragStart,
   onDragEnd,
 }: IssueCardProps): React.ReactElement {
-  const live = isLive(item);
-  const status = statusPill(item);
+  const live = isLive(item, terminal);
+  const status = statusPill(item, terminal);
   const attempt = item.attempt;
 
   return (
@@ -105,6 +109,7 @@ export function IssueCard({
       data-testid="issue-card"
       data-work-item={item.id}
       data-live={live ? "true" : undefined}
+      data-terminal={terminal ? "true" : undefined}
       draggable={moves.length > 0}
       onDragStart={(event) => {
         if (event.dataTransfer !== null && event.dataTransfer !== undefined) {
@@ -117,9 +122,10 @@ export function IssueCard({
       className={cn(
         "relative flex flex-col gap-1.5 rounded-[var(--radius)] border bg-card p-3 shadow-xs transition-colors",
         live ? "border-success/35 shadow-[0_0_0_1px_--theme(--color-success/8%)]" : "border-border",
+        terminal && "bg-muted shadow-none",
         "hover:border-input",
         dragging && "opacity-50",
-        moving && "animate-pulse",
+        moving && !terminal && "animate-pulse",
       )}
     >
       <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
@@ -128,14 +134,28 @@ export function IssueCard({
             <span
               aria-hidden
               data-testid="project-dot"
-              className="size-2 shrink-0 rounded-full"
-              style={{ backgroundColor: `oklch(0.72 0.15 ${projectHue(item.projectId)})` }}
+              className={cn("size-2 shrink-0 rounded-full", terminal && "bg-muted-foreground")}
+              style={terminal ? undefined : {
+                backgroundColor: `oklch(0.72 0.15 ${projectHue(item.projectId)})`,
+              }}
             />
             <span className="min-w-0 truncate">{item.projectName}</span>
           </>
         ) : (
-          <ProjectGlyph className="size-3.5" projectId={item.projectId} projectName={item.projectName} />
+          <span className="inline-flex" title={item.projectName}>
+            <ProjectGlyph
+              className={cn("size-3.5", terminal && "text-muted-foreground grayscale")}
+              projectId={item.projectId}
+              projectName={item.projectName}
+            />
+            <span className="sr-only">{item.projectName}</span>
+          </span>
         )}
+        {terminal && item.sourceProvider !== null ? (
+          <span className="shrink-0 whitespace-nowrap text-[11px]" title={`Imported from ${item.sourceProvider}`}>
+            Source history
+          </span>
+        ) : null}
         <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground/70 tabular-nums">
           {issueNumber(item.identifier, item.number)}
         </span>
@@ -152,7 +172,7 @@ export function IssueCard({
         {item.title}
       </button>
 
-      {attempt !== null && attempt.running ? (
+      {live && attempt !== null ? (
         <div
           data-testid="worker-strip"
           className="mt-0.5 flex items-center gap-2 overflow-hidden whitespace-nowrap rounded-lg border border-border bg-muted px-2.5 py-2 text-xs"
@@ -172,7 +192,15 @@ export function IssueCard({
       ) : null}
 
       <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        {status === null ? null : <Pill tone={status.tone}>{status.label}</Pill>}
+        {status === null ? null : (
+          <Pill
+            tone={status.tone}
+            title={terminal && attempt !== null ? `Last attempt: ${attempt.status}` : undefined}
+            aria-label={terminal && attempt !== null ? `${status.label}. Last attempt: ${attempt.status}` : undefined}
+          >
+            {status.label}
+          </Pill>
+        )}
         {item.change === null ? null : (
           <span
             data-testid="pr-chip"
@@ -190,7 +218,9 @@ export function IssueCard({
           {ageLabel(item.updatedAt, now)}
         </span>
         {item.priority === null ? null : (
-          <Pill tone={priorityTone(item.priority)}>{item.priority}</Pill>
+          <Pill tone={priorityTone(item.priority, terminal)} aria-label={`Priority: ${item.priority}`}>
+            {item.priority}
+          </Pill>
         )}
         {/* Drag is a pointer gesture and nothing else, so every card carries
             the same move as a menu. A board a keyboard cannot reorder is a
