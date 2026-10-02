@@ -613,8 +613,12 @@
 # recovery:
 #   # recovery.terminal_attempt_retry_limit | type: integer | default: 3 | required: No | validation: must be greater than or equal to 0
 #   terminal_attempt_retry_limit: 3
-# # worker | type: object | default: see child fields | required: No | validation: None
+# # worker | type: object | default: see child fields | required: No | validation: .extra_network_domains: extra network domains must be unique lowercase exact DNS hosts
 # worker:
+#   # worker.extra_network_domains | type: list<string> | default: [] | required: No | validation: None
+#   extra_network_domains: []
+#   # worker.allow_local_binding | type: boolean | default: global.worker.allow_local_binding, otherwise false | required: No | validation: None
+#   allow_local_binding: null
 #   # worker.compute_rates | type: mapping<string, mapping> | default: {} | required: No | validation: None
 #   compute_rates: {}
 #   # worker.ssh_hosts | type: list<string> | default: [] | required: No | validation: must contain unique SSH destinations or local; worker.host_caps.__invalid__ must name a configured worker.ssh_hosts entry

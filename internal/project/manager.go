@@ -132,6 +132,7 @@ func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
 	for index := range projects {
 		projects[index].GlobalAgents = cfg.Global.Agents
 		projects[index].GlobalBudget = cfg.Global.Budget
+		projects[index].GlobalWorker = cfg.Global.Worker
 		projects[index].GlobalKnowledge = cfg.Global.Knowledge
 		projects[index].GlobalRateWindowPacing = cfg.Global.RateWindowPacing
 		projects[index].GlobalMemory = cfg.Global.Memory

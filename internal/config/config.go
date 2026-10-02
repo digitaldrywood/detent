@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/publication"
@@ -331,7 +332,15 @@ type DeliverableElicitationRule struct {
 	Repository string `yaml:"repository"`
 }
 
+type WorkerDefaults struct {
+	AllowLocalBinding *bool `yaml:"allow_local_binding,omitempty"`
+}
+
 type Worker struct {
+	ExtraNetworkDomains []string `yaml:"extra_network_domains,omitempty" json:"ExtraNetworkDomains,omitempty"`
+	AllowLocalBinding   *bool    `yaml:"allow_local_binding,omitempty" json:"AllowLocalBinding,omitempty"`
+	localDefaults       *WorkerDefaults
+
 	ComputeRates                   map[string]compute.Rates `yaml:"compute_rates,omitempty" json:"ComputeRates,omitempty"`
 	SSHHosts                       []string                 `yaml:"ssh_hosts"`
 	HostSelection                  string                   `yaml:"host_selection,omitempty" json:"HostSelection,omitempty"`
@@ -1670,6 +1679,9 @@ func StringValue(value string) StringOrMap {
 
 func (c *Config) Validate() error {
 	var problems []string
+	if err := isolation.ValidateExtraNetworkDomains(c.Worker.ExtraNetworkDomains); err != nil {
+		problems = append(problems, "worker.extra_network_domains: "+err.Error())
+	}
 	problems = append(problems, c.Runners.Validate()...)
 
 	problems = append(problems, c.Identity.Validate("identity")...)

@@ -1957,6 +1957,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	deliverableKind, deliverableRepository := agentTurnDeliverable(workflow.Config, req.Issue, mode)
 	turnRequest := AgentTurnRequest{
+		AllowLocalBinding:     workflow.Config.Worker.EffectiveAllowLocalBinding(),
+		ExtraNetworkDomains:   workflow.Config.Worker.ExtraNetworkDomains,
 		Workspace:             info.Path,
 		Prompt:                turnPrompt,
 		ReadOnly:              mode == RunModeRoutine,
@@ -3258,21 +3260,23 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	defer activityProfile.finish()
 	stopCompute := r.meterCompute(runReq.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
-		Workspace:          info.Path,
-		Prompt:             prompt,
-		Model:              selectedModel,
-		ModelProvider:      modelProvider,
-		ServiceTier:        serviceTier,
-		ReasoningEffort:    effort,
-		MaxTurns:           workflow.Config.Agent.MaxTurns,
-		TurnTimeout:        durationFromMillis(validator.TurnTimeoutMS),
-		MaxDuration:        durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
-		ExtraWritableRoots: extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger),
-		Environment:        baseEnvironment,
-		MaxRSSBytes:        r.maxAgentRSSBytes,
-		RSSPollInterval:    r.rssPollInterval,
-		workerGitHub:       workerGitHub,
-		processRSS:         r.processRSS,
+		AllowLocalBinding:   workflow.Config.Worker.EffectiveAllowLocalBinding(),
+		ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains,
+		Workspace:           info.Path,
+		Prompt:              prompt,
+		Model:               selectedModel,
+		ModelProvider:       modelProvider,
+		ServiceTier:         serviceTier,
+		ReasoningEffort:     effort,
+		MaxTurns:            workflow.Config.Agent.MaxTurns,
+		TurnTimeout:         durationFromMillis(validator.TurnTimeoutMS),
+		MaxDuration:         durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
+		ExtraWritableRoots:  extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, r.logger),
+		Environment:         baseEnvironment,
+		MaxRSSBytes:         r.maxAgentRSSBytes,
+		RSSPollInterval:     r.rssPollInterval,
+		workerGitHub:        workerGitHub,
+		processRSS:          r.processRSS,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		activityProfile.observe(update, eventAt, workspaceIssue.PullRequestHeadSHA, runStartedAt)

@@ -53,6 +53,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 		project.GlobalActiveHours = cfg.Global.ActiveHours
 		project.GlobalAgents = cfg.Global.Agents
 		project.GlobalBudget = cfg.Global.Budget
+		project.GlobalWorker = cfg.Global.Worker
 		project.Identity = cfg.Global.Identity
 		checks = append(checks, checkDoctorProjectWithStore(ctx, project, doctorRuntimeStorePath(cfg.Path), deps, githubToken, allowWriteProbes)...)
 		if cfg.Client.Configured() {
@@ -238,6 +239,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 		project.GlobalActiveHours = cfg.Global.ActiveHours
 		project.GlobalAgents = cfg.Global.Agents
 		project.GlobalBudget = cfg.Global.Budget
+		project.GlobalWorker = cfg.Global.Worker
 		project.Identity = cfg.Global.Identity
 		id := doctorProjectID(project)
 		progress := newDoctorCheckProgress()

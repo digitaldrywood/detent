@@ -23,11 +23,19 @@ func IsolationSettings(p isolation.Policy) (Options, map[string]any, error) {
 	for _, domain := range isolation.Domains() {
 		domains[domain] = "allow"
 	}
+	for _, domain := range p.ExtraNetworkDomains {
+		domains[domain] = "allow"
+	}
+	if p.AllowLocalBinding {
+		for _, host := range []string{"localhost", "127.0.0.1", "::1"} {
+			domains[host] = "allow"
+		}
+	}
 	sockets := map[string]any{}
 	for _, service := range p.HostServices {
 		sockets[strings.TrimPrefix(service, "unix:")] = "allow"
 	}
-	network := map[string]any{"enabled": true, "mode": "limited", "domains": domains, "unix_sockets": sockets, "allow_local_binding": false, "allow_upstream_proxy": false, "dangerously_allow_all_unix_sockets": false, "dangerously_allow_non_loopback_proxy": false, "enable_socks5_udp": false}
+	network := map[string]any{"enabled": true, "mode": "limited", "domains": domains, "unix_sockets": sockets, "allow_local_binding": p.AllowLocalBinding, "allow_upstream_proxy": false, "dangerously_allow_all_unix_sockets": false, "dangerously_allow_non_loopback_proxy": false, "enable_socks5_udp": false}
 	roots := map[string]any{}
 	for _, root := range p.WritableRoots {
 		roots[root] = true

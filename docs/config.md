@@ -673,6 +673,46 @@ worker:
     local: 1
 ```
 
+Sandboxed workers can opt into localhost servers and connections for HTTP tests
+with `worker.allow_local_binding`. It defaults to false. Set the instance default
+in the global config:
+
+```yaml
+global:
+  worker:
+    allow_local_binding: true
+```
+
+Override that default in a project's `detent.yaml` or machine-local
+`detent.local.yaml`:
+
+```yaml
+worker:
+  allow_local_binding: false
+```
+
+An omitted project value inherits the instance default; explicit false disables
+it even when the instance default is true. The effective grant participates in
+Cloud policy approval. It keeps the sandbox tier and file restrictions, but
+permits connections to other localhost services as well as temporary test servers.
+Codex also skips its proxy's private-network destination check with this grant;
+proxy domain rules still apply. Restricted Codex turns keep networking disabled.
+
+A project can grant additional exact DNS hosts through
+`worker.extra_network_domains` in `detent.yaml` or `detent.local.yaml`:
+
+```yaml
+worker:
+  extra_network_domains:
+    - fonts.googleapis.com
+    - fonts.gstatic.com
+```
+
+The list adds to Detent's dependency/provider hosts. It defaults to empty and
+participates in Cloud policy approval. Wildcards, URLs, IP addresses, ports,
+duplicates and uppercase hosts are rejected. Filesystem restrictions and the
+sandbox tier remain in effect; restricted Codex turns keep networking disabled.
+
 `preference` fills hosts in list order to their project-specific cap. The default
 `least_loaded` selects the least busy available host and retains retry affinity
 when that host has capacity. `host_caps` overrides the fallback
@@ -1719,8 +1759,10 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.status_page_url` | `string` | `"https://linearstatus.com" for linear; "https://www.githubstatus.com" for github or github_local; unused otherwise` | No | must be an absolute http or https base URL without credentials, path, query, or fragment |
 | `tracker.terminal_states` | `list<string>` | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | No | state names must be unique<br>state names must not be blank |
 | `tracker.write_probe_issue` | `string` | `none` | No | None |
-| `worker` | `object` | `see child fields` | No | None |
+| `worker` | `object` | `see child fields` | No | .extra_network_domains: extra network domains must be unique lowercase exact DNS hosts |
+| `worker.allow_local_binding` | `boolean` | `global.worker.allow_local_binding, otherwise false` | No | None |
 | `worker.compute_rates` | `mapping<string, mapping>` | `{}` | No | None |
+| `worker.extra_network_domains` | `list<string>` | `[]` | No | None |
 | `worker.github_rest_min_remaining_reserve` | `integer` | `1250` | No | must be greater than 0 |
 | `worker.github_rest_poll_interval_ms` | `integer` | `60000` | No | must be greater than or equal to 60000 |
 | `worker.github_token` | `string` | `top-level github_token` | No | None |

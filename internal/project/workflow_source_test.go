@@ -464,6 +464,8 @@ func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
 			}
 			project.mu.Lock()
 			project.cfg.GlobalAgents = workflowconfig.Agents{Backends: []workflowconfig.AgentBackend{{ID: "new-backend", Kind: workflowconfig.AgentBackendCodex, Command: "codex"}}}
+			allowLocalBinding := true
+			project.cfg.GlobalWorker = workflowconfig.WorkerDefaults{AllowLocalBinding: &allowLocalBinding}
 			project.mu.Unlock()
 			if ref != "" {
 				path = workflowconfig.LocalWorkflowPath(path)
@@ -484,6 +486,9 @@ func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
 			}
 			if !found {
 				t.Fatal("watcher used obsolete host backends")
+			}
+			if !update.Workflow.Config.Worker.EffectiveAllowLocalBinding() {
+				t.Fatal("watcher used obsolete host localhost permission")
 			}
 		})
 	}

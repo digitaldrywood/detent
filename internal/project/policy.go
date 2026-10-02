@@ -26,7 +26,7 @@ func ResolvePolicy(cfg globalconfig.Project, workflow workflowconfig.Workflow) (
 // EffectivePolicyConfig applies the project settings used when resolving a
 // policy, including the global intake override.
 func EffectivePolicyConfig(cfg globalconfig.Project, workflow workflowconfig.Config) workflowconfig.Config {
-	workflow = workflow.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget)
+	workflow = workflow.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget).WithWorkerDefaults(cfg.GlobalWorker)
 	return workflowConfigWithProjectIdentity(cfg, workflow)
 }
 
