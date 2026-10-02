@@ -127,7 +127,7 @@ async function allIssueRecords<T>(read: (cursor?: string) => Promise<{ readonly 
   return result;
 }
 
-function useIssue(
+export function useIssue(
   http: WorkHttp,
   workItemId: string,
   requestedChange: string | null = null,
@@ -142,53 +142,99 @@ function useIssue(
   const [data, setData] = React.useState<IssueData | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
-  const [nonce, setNonce] = React.useState(0);
+  const current = React.useRef(data);
+  current.current = data;
+  const requestReload = React.useRef<() => void>(() => undefined);
+  const reload = React.useCallback(() => requestReload.current(), []);
 
   React.useEffect(() => {
     let cancelled = false;
-    setError(null);
-    setLoading(true);
-    void (async () => {
-      try {
-        const issue = await http.getWorkItemById(workItemId);
-        const projectId = issue.project_id;
-        const [project, attempts, history, comments, changes] = await Promise.all([
-          http.getProject(projectId),
-          allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)),
-          allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })),
-          allIssueRecords((cursor) => http.listComments({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) }))
-            .catch(() => []),
-          http.listChanges(projectId, workItemId).catch(() => []),
-        ]);
-        const details = await Promise.all(
-          changes.map(async (record) => ({
-            record,
-            detail: await http.getChange(projectId, workItemId, record.change_id).catch(() => null),
-          })),
-        );
-        const selected = selectChangeId(changes, requestedChange);
-        const change = details.find((entry) => entry.record.change_id === selected)?.detail ?? null;
-        if (cancelled) return;
-        setData({ issue, project, attempts, history, comments, change, changes: details });
-        setError(null);
-      } catch (cause) {
-        if (cancelled) return;
-        setData(null);
-        setError(cause instanceof Error ? cause.message : String(cause));
-      } finally {
-        if (!cancelled) setLoading(false);
+    let reading = false;
+    let pending = false;
+    const read = () => {
+      if (reading) {
+        pending = true;
+        return;
       }
-    })();
+      reading = true;
+      setError(null);
+      if (current.current?.issue.work_item_id !== workItemId) setLoading(true);
+      void (async () => {
+        try {
+          const issue = await http.getWorkItemById(workItemId);
+          const projectId = issue.project_id;
+          const [project, attempts, history, comments, changes] = await Promise.all([
+            http.getProject(projectId),
+            allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)),
+            allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })),
+            allIssueRecords((cursor) => http.listComments({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) }))
+              .catch(() => []),
+            http.listChanges(projectId, workItemId).catch(() => []),
+          ]);
+          const details = await Promise.all(
+            changes.map(async (record) => ({
+              record,
+              detail: await http.getChange(projectId, workItemId, record.change_id).catch(() => null),
+            })),
+          );
+          const selected = selectChangeId(changes, requestedChange);
+          const change = details.find((entry) => entry.record.change_id === selected)?.detail ?? null;
+          if (cancelled) return;
+          setData({ issue, project, attempts, history, comments, change, changes: details });
+          setError(null);
+        } catch (cause) {
+          if (cancelled) return;
+          if (cause instanceof WorkApiError && [401, 403, 404].includes(cause.status)) setData(null);
+          setError(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          reading = false;
+          if (!cancelled) {
+            setLoading(false);
+            if (pending) {
+              pending = false;
+              read();
+            }
+          }
+        }
+      })();
+    };
+    requestReload.current = read;
+    read();
     return () => {
       cancelled = true;
     };
-  }, [http, workItemId, requestedChange, nonce]);
+  }, [http, workItemId, requestedChange]);
+
+  const projectId = data?.issue.work_item_id === workItemId ? data.issue.project_id : null;
+  React.useEffect(() => {
+    if (projectId === null || typeof globalThis.EventSource !== "function") return;
+    const source = new globalThis.EventSource(http.eventsUrl(projectId, undefined, workItemId), { withCredentials: true });
+    let previous: bigint | null = null;
+    const onActivity = (event: MessageEvent<string>) => {
+      if (!/^\d+$/.test(event.data)) return;
+      const next = BigInt(event.data);
+      const seen = previous;
+      previous = next;
+      const loaded = current.current?.history.at(-1)?.aggregate_sequence ?? "0";
+      if (next > (seen ?? BigInt(loaded))) reload();
+    };
+    const onError = () => {
+      if (source.readyState === 2) reload();
+    };
+    source.addEventListener("activity", onActivity as EventListener);
+    source.addEventListener("error", onError);
+    return () => {
+      source.removeEventListener("activity", onActivity as EventListener);
+      source.removeEventListener("error", onError);
+      source.close();
+    };
+  }, [http, projectId, workItemId, reload]);
 
   return {
     data: data?.issue.work_item_id === workItemId ? data : null,
     error,
     loading,
-    reload: () => setNonce((value) => value + 1),
+    reload,
     apply: setData,
   };
 }
