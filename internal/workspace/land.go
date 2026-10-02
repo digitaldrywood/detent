@@ -21,14 +21,17 @@ type Lander interface {
 	LandChange(context.Context, Info, Issue, LandOptions) (LandResult, error)
 }
 
-// GitHubPRLander is used only by a project whose approved policy opts in to
-// GitHub pull request landing. The runner supplies its own gh credentials.
 type GitHubPRLander interface {
 	LandChangeViaGitHub(context.Context, Info, Issue, LandOptions) (LandResult, error)
 }
 
+type GitHubRESTClient interface {
+	REST(context.Context, string, string, any, any) error
+}
+
 type LandOptions struct {
-	External *tracker.ChangeExternalReference
+	GitHubClient GitHubRESTClient
+	External     *tracker.ChangeExternalReference
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
 	// a branch that moved past its review is not landed.
 	HeadSHA string
@@ -103,7 +106,7 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 				return info, false, err
 			}
 		}
-		pull, err := readExternalLandingPull(ctx, opts.Repository, opts.External, opts.HeadSHA, base)
+		pull, err := readExternalLandingPull(ctx, opts.GitHubClient, opts.Repository, opts.External, opts.HeadSHA, base)
 		if err != nil {
 			return info, false, err
 		}

@@ -394,6 +394,10 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
 			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2}
 		}},
+		{name: "native due coding retry retains recorded REST wait", state: "Rework", native: true, githubPR: true, setup: func(s *State, issue connector.Issue) {
+			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
+			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2, CapacityScope: githubRESTCapacityScope}
+		}},
 		{name: "native due PR landing retry retains REST wait", state: "Merging", native: true, githubPR: true, setup: func(s *State, issue connector.Issue) {
 			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
 			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2}

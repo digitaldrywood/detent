@@ -115,6 +115,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
+	o.captureNativeLandingRESTUsage(state, event.Result, event.CompletedAt)
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
@@ -300,7 +301,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 {
 		o.recordProjectFailureBreakerProgress(state, event.IssueID, event.CompletedAt)
 		o.advanceDispatchRecovery(state, event.IssueID, event.CompletedAt)
-	} else if !isGitHubRESTBudgetHeadroomError(event.Err) {
+	} else if _, capacity := githubRESTBudgetEvidenceFromError(event.Err); !capacity {
 		delay := event.RetryDelay
 		if delay <= 0 {
 			delay = o.cfg.OverloadRetryDelay

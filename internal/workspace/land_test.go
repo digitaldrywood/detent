@@ -3,11 +3,15 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -25,6 +29,7 @@ type landingFixture struct {
 func newLandingFixture(t *testing.T) landingFixture {
 	t.Helper()
 	source := initSourceRepo(t)
+	runGit(t, source, "config", "commit.gpgsign", "false")
 	remote := initBareRemote(t)
 	runGit(t, source, "remote", "add", "origin", remote)
 	runGit(t, source, "push", "-u", "origin", "main")
@@ -102,14 +107,19 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			bin := installLandingGitHubCLI(t)
-			t.Setenv("TEST_REVIEWED_HEAD", fixture.head)
-			t.Setenv("TEST_ATTEMPT_BRANCH", branch)
-			callsPath := filepath.Join(bin, "calls")
-			t.Setenv("TEST_GH_CALLS", callsPath)
-			t.Setenv("TEST_EXTERNAL_PULL_ERROR", "")
-			t.Setenv("TEST_LOOKUP_REFUSED", "")
-			options := &LandOptions{Repository: repository, HeadSHA: fixture.head}
+			var requests []string
+			client, err := github.NewClient(github.ClientConfig{
+				TokenSource: github.StaticTokenSource(t.Name()),
+				HTTPClient: landingHTTPClient(func(req *http.Request) (*http.Response, error) {
+					requests = append(requests, req.Method)
+					body := fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":"%s","repo":{"full_name":"example/repo"}},"base":{"ref":"main","repo":{"full_name":"example/repo"}}}`, fixture.head, branch)
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+				}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := &LandOptions{Repository: repository, HeadSHA: fixture.head, GitHubClient: client}
 			if test.external {
 				options.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
 			}
@@ -181,8 +191,10 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 			if head := strings.TrimSpace(runGit(t, fixture.info.Path, "rev-parse", "HEAD")); head != fixture.head {
 				t.Fatal("source worktree was changed", head)
 			}
-			if calls, err := os.ReadFile(callsPath); err == nil && (strings.Contains(string(calls), "--method POST") || strings.Contains(string(calls), "--method PUT")) {
-				t.Fatalf("workspace hydration performed external writes: %s", calls)
+			for _, method := range requests {
+				if method != http.MethodGet {
+					t.Fatalf("workspace hydration performed external writes: %v", requests)
+				}
 			}
 		})
 	}

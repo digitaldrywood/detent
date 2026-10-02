@@ -3,13 +3,18 @@ package orchestrator
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -254,5 +259,151 @@ func TestWithNativeLandingLane(t *testing.T) {
 	state := newState(native)
 	if decision := planner.dispatchableIssueDecisionForModelRequirement(issue, &state, false, time.Now(), "", false); decision.reason == dispatchSkipInactiveState {
 		t.Fatalf("a native Merging item is skipped as inactive: %#v", decision)
+	}
+}
+
+func TestNativeLandingQuotaWait(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		status     int
+		reset      bool
+		retryAfter string
+		remaining  string
+	}{
+		{name: "primary 403", status: 403, reset: true},
+		{name: "secondary 429", status: 429, retryAfter: "120"},
+		{name: "secondary 429 with healthy primary reset", status: 429, retryAfter: "120", reset: true, remaining: "4990"},
+		{name: "body-only 403", status: 403},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now().UTC()
+			reset := now.Add(time.Hour).Truncate(time.Second)
+			client, err := github.NewClient(github.ClientConfig{
+				Endpoint:    "https://" + strings.ReplaceAll(test.name, " ", "-") + ".test/graphql",
+				TokenSource: github.StaticTokenSource("native-landing"),
+				HTTPClient: restRecoveryHTTPClient(func(*http.Request) (*http.Response, error) {
+					headers := make(http.Header)
+					if test.reset {
+						headers.Set("X-RateLimit-Limit", "5000")
+						if test.remaining == "" {
+							headers.Set("X-RateLimit-Remaining", "0")
+						} else {
+							headers.Set("X-RateLimit-Remaining", test.remaining)
+						}
+						headers.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+					}
+					if test.retryAfter != "" {
+						headers.Set("Retry-After", test.retryAfter)
+					}
+					return &http.Response{StatusCode: test.status, Header: headers, Body: io.NopCloser(strings.NewReader(`{"message":"API rate limit exceeded for user585100"}`))}, nil
+				}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = client.REST(t.Context(), "GET", "/repos/example/repo/pulls?state=all", nil, nil)
+			if !errors.Is(err, github.ErrRateLimited) {
+				t.Fatalf("response = %v", err)
+			}
+			usage := client.FlushRESTRateLimitUsage()
+			issue := completionTransitionIssue("Merging", "")
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Merging"}, TerminalStates: []string{"Done"}, MaxConcurrentAgents: 4})
+			cfg.Policy.Gates.GitHubPullRequest = true
+			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			tracker := &nativeWorkflowConnector{autoPromoteTickConnector: tick}
+			attempts := &recordingWorkAttemptStore{}
+			scheduling := &hubSchedulingSource{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
+			state := newState(cfg)
+			head := strings.Repeat("c", 40)
+			landing := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head}
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 4, WorkAttemptID: 42, Mode: runpkg.RunModeMerge, DispatchSourceState: "Merging", StartedAt: now.Add(-time.Minute)}
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 2}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID: issue.ID, CompletedAt: now, Err: err,
+				Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge},
+				Result:  runpkg.RunResult{NativeLanding: landing, GitHubRESTUsage: &usage, GitHubRESTConsumer: telemetry.RESTConsumerWorker},
+			})
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity {
+				t.Fatalf("completions = %#v", attempts.completions)
+			}
+			completion := attempts.completions[0]
+			attempt := store.WorkAttempt{ID: 42, IssueID: issue.ID, Identifier: issue.Identifier, Lane: "Merging", AttemptNumber: 4, Status: store.WorkAttemptStatusTerminal, TerminalState: completion.TerminalState, ErrorClass: completion.ErrorClass, WorkerMetadataJSON: completion.WorkerMetadataJSON, CompletedAt: now}
+			wait, ok := githubRESTWaitMetadataFromAttempt(attempt)
+			if !ok || wait.Reserve != 0 || wait.NativeLanding == nil || *wait.NativeLanding != *landing || wait.RateLimitKind == "" {
+				t.Fatalf("wait = %#v, valid %t", wait, ok)
+			}
+			if test.reset != !wait.ResetAt.IsZero() || test.retryAfter != "" && wait.RetryAfter != 120*time.Second {
+				t.Fatalf("response evidence = %#v", wait)
+			}
+			retry, ok := state.Retry[issue.ID]
+			if test.remaining != "" && !retry.DueAt.Before(reset) {
+				t.Fatal("secondary wait used healthy primary reset")
+			}
+			if !ok || retry.Attempt != 4 || retry.Issue.State != "Merging" || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 {
+				t.Fatalf("quota completion changed item: retry %#v state %#v", retry, state.Blocked)
+			}
+			if state.RepeatedFailures[issue.ID].Count != 2 || len(state.InstantFailures) != 0 || scheduling.releases != 1 {
+				t.Fatalf("attempt allowance or claim changed: %#v releases %d", state.RepeatedFailures, scheduling.releases)
+			}
+			if orch.adaptivePollInterval(&state, now) > cfg.PollInterval {
+				t.Fatal("landing quota lengthened native polling")
+			}
+			if _, signaled := orch.currentGitHubLookupSignal(&state, now); signaled {
+				t.Fatal("landing quota paused native tracker reads")
+			}
+			if state.RateLimits.RESTUsage == nil || !state.RateLimits.RESTUsage.RateLimited || state.RateLimits.RESTUsage.TotalRequests != 1 {
+				t.Fatalf("REST metrics = %#v", state.RateLimits)
+			}
+			restarted := newState(cfg)
+			orch.recoverGitHubRESTCapacityWaits(t.Context(), &restarted, []store.WorkAttempt{attempt}, now.Add(time.Second))
+			if restored := restarted.Retry[issue.ID]; restored.Attempt != 4 || restored.Issue.State != "Merging" || !restored.DueAt.Equal(retry.DueAt) {
+				t.Fatalf("restart lost wait: %#v", restored)
+			}
+			restarted.RateLimits.GitHubRESTBudgets = append(restarted.RateLimits.GitHubRESTBudgets, telemetry.RESTBudget{
+				Consumer: telemetry.RESTConsumerWorker, CredentialIdentity: wait.CredentialIdentity, EndpointFamily: "worker credential", Resource: "core", Remaining: 5000, Limit: 5000, MinRemainingReserve: 1000, ResetAt: &reset, ObservedAt: timePointer(now.Add(time.Second)),
+			})
+			orch.syncGitHubRESTCapacityOutage(&restarted, now.Add(time.Second))
+			if _, active := activeGitHubRESTCapacityOutage(&restarted, now.Add(time.Second)); !active {
+				t.Fatal("restart lost outage")
+			}
+			coding := completionTransitionIssue("In Progress", "")
+			coding.ID = "coding"
+			if !orch.dispatchPlanner().dispatchableIssueDecision(coding, &restarted, false, now.Add(time.Second), "").dispatchable {
+				t.Fatal("quota outage blocked native coding dispatch")
+			}
+			if _, allowed, reason := orch.dispatchPlanner().retryAction(&restarted, coding, Retry{Issue: coding, DueAt: now}, now.Add(time.Second)); !allowed {
+				t.Fatalf("quota outage blocked native coding retry: %s", reason)
+			}
+			if orch.handleGitHubRESTCapacityCompletion(t.Context(), &restarted, runpkg.Completion{CompletedAt: now.Add(time.Second)}, Running{Issue: coding}) {
+				t.Fatal("quota outage absorbed successful coding completion")
+			}
+			if _, allowed, reason := orch.dispatchPlanner().retryAction(&restarted, issue, restarted.Retry[issue.ID], now.Add(time.Second)); allowed || reason != dispatchSkipGitHubRESTCapacity {
+				t.Fatalf("landing did not retain wait: %t %s", allowed, reason)
+			}
+			if _, allowed, reason := orch.dispatchPlanner().retryAction(&restarted, issue, restarted.Retry[issue.ID], retry.DueAt); !allowed {
+				t.Fatalf("landing retry did not resume: %s", reason)
+			}
+			freshAt := retry.DueAt.Add(time.Second)
+			landed := *landing
+			landed.Landed, landed.MergeSHA, landed.BaseRef = true, strings.Repeat("d", 40), "main"
+			freshUsage := connector.RESTRateLimitUsage{HasRateLimit: true, Budgets: []connector.RESTRateLimitBudget{{CredentialIdentity: wait.CredentialIdentity, EndpointFamily: "pull requests", RateLimit: connector.RESTRateLimit{Remaining: 4999, Limit: 5000, UpdatedAt: freshAt}}}}
+			tick.stateIssues[0].State = "Done"
+			restarted.Running[issue.ID] = Running{Issue: issue, Attempt: 4, WorkAttemptID: 43, Mode: runpkg.RunModeMerge, StartedAt: retry.DueAt}
+			restarted.Claimed[issue.ID] = Claimed{Issue: issue}
+			orch.handleRunResult(t.Context(), &restarted, runpkg.Completion{IssueID: issue.ID, CompletedAt: freshAt, Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, NativeLanding: &landed, GitHubRESTUsage: &freshUsage}})
+			if done := restarted.Completed[issue.ID]; done.Issue.State != "Done" || len(attempts.completions) != 2 || attempts.completions[1].TerminalState != store.WorkAttemptTerminalSuccess {
+				t.Fatalf("retry completion = %#v / %#v", done, attempts.completions)
+			}
+			if _, _, exists := githubRESTCapacityOutage(restarted.BackendOutages); exists {
+				t.Fatal("fresh same-credential landing retained outage")
+			}
+			if bytes, err := json.Marshal(wait); err != nil || !strings.Contains(string(bytes), head) {
+				t.Fatalf("durable exact head = %s, %v", bytes, err)
+			}
+		})
 	}
 }

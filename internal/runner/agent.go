@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
@@ -1516,6 +1517,18 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return r.refusedLanding(req, landingTarget, workspace.LandRefusalProtected, "the approved policy does not enable GitHub pull request landing"), nil
 		}
 		workspaceIssue.Landing = &workspace.LandOptions{HeadSHA: landingTarget.HeadSHA, Repository: landingTarget.Repository, External: landingTarget.External}
+		if landingTarget.GitHubPullRequest {
+			client, policy, err := r.nativeLandingGitHubClient(ctx, req, workerGitHub)
+			if err != nil {
+				return RunResult{}, err
+			}
+			workspaceIssue.Landing.GitHubClient = client
+			defer func() {
+				usage := client.FlushRESTRateLimitUsage()
+				returnValue.GitHubRESTUsage = &usage
+				returnValue.GitHubRESTConsumer = policy.budgetConsumer()
+			}()
+		}
 	}
 	if usage, ok := runWorkspace.(workspace.Usage); ok {
 		release, err := usage.Use(ctx, workspaceIssue)
@@ -1530,6 +1543,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
+		if nativeLanding && (IsCapacityError(err) || errors.Is(err, github.ErrRateLimited)) {
+			return RunResult{NativeLanding: &NativeLanding{ChangeID: landingTarget.ChangeID, VersionID: landingTarget.VersionID, HeadSHA: landingTarget.HeadSHA}}, err
+		}
 		var refusal *workspace.LandRefusal
 		if nativeLanding && errors.As(err, &refusal) {
 			return r.refusedLanding(req, landingTarget, refusal.Kind, refusal.Reason), nil
@@ -1571,7 +1587,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	mergeFallback := false
 	if nativeLanding {
 		afterRunPending = false
-		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue, &landingTarget)
+		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue, workerGitHub, &landingTarget)
 		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue); afterErr != nil && err == nil {
 			err = afterErr
 		}

@@ -82,12 +82,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		reviewed     *bool
 		updateErr    error
 		plain        bool
+		quotaWait    bool
 		humanReview  *bool
 		wantState    string
 		wantComment  string
 		wantDeferred bool
 		wantContinue bool
 	}{
+		{name: "successful coding publishes during landing quota wait", change: accepted, states: landing, quotaWait: true, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "commits move to the configured review lane", change: opened, states: workflow, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "a version that needs no reviewer goes straight to landing", change: accepted, states: landing, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "a version waiting for a reviewer goes to review", change: opened, states: landing, wantState: "In Review", wantComment: "opened Change Request change_1"},
@@ -135,6 +137,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
 			state := newState(cfg)
 			now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+			if test.quotaWait {
+				orch.setGitHubRESTCapacityOutage(&state, githubRESTBudgetEvidence{Consumer: "worker", CredentialIdentity: "runner", RateLimitKind: "primary_exhausted", ObservedAt: now, ResetAt: now.Add(time.Hour)}, now)
+			}
 			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Generation: 7, SessionID: "native-session", Tokens: TokenTotals{TotalTokens: 42}, Mode: runpkg.RunModeImplement, DispatchSourceState: "In Progress", StartedAt: now.Add(-time.Minute)}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
 			finalState := test.finalState

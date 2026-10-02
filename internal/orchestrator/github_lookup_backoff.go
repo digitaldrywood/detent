@@ -323,7 +323,7 @@ func (o *Orchestrator) currentGitHubLookupSignal(state *State, now time.Time) (g
 			}, true
 		}
 		usage := state.RateLimits.RESTUsage
-		if usage != nil && usage.BackoffUntil != nil && usage.BackoffUntil.After(now) {
+		if !o.nativeWorkflow() && usage != nil && usage.BackoffUntil != nil && usage.BackoffUntil.After(now) {
 			return githubLookupSignal{
 				trigger: githubLookupTriggerREST,
 				reason:  "GitHub REST returned a rate-limit response",

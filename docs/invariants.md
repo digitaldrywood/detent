@@ -630,6 +630,36 @@ adapter exceptions; do not expand an exception to admit another lane owner.
 
 ## INV-2 — Instance-owned infrastructure failures
 
+Native runner GitHub PR landing (#89) uses the existing REST client classifier,
+response accounting, and instance REST capacity completion owner. Actual primary
+or secondary quota responses retain their credential identity, reset and
+Retry-After evidence in the existing persisted wait contract, without fabricated
+reserve or reset values. The reviewed Change Request/version/head stays in
+Merging across retries and restart; capacity completions consume no failed coding
+attempt allowance. Native coding and completions that need no exhausted GitHub
+operation continue normally. Pre-claim readiness, dispatch, retry and completion
+share the existing REST dependency decision; retries carrying a recorded REST
+capacity wait remain held while the instance outage is active.
+Explicit native `worker.github_token` access retains
+the existing worker credential policy, isolated environment and capacity accounting;
+omitted access performs no worker credential lookup or GitHub request. Synthetic
+quota probes cannot clear actual landing response evidence; the runner retries
+through ordinary landing dispatch and fresh same-credential operation evidence
+establishes recovery. Quota evidence takes precedence over joined repository
+refusals while preserving the exact reviewed identity. Reviewed-head hydration
+and external PR validation use the same runner REST client as landing, so quota
+errors during workspace preparation retain that identity, actual usage and an
+honest failed native Finish for the existing capacity completion owner. External
+PR heads remain read-only and retain their repository/base authority. Authentication,
+review, check and repository refusals keep their existing handling. Runner
+credentials remain local. This consolidates classification and completion under
+INV-1/INV-2/INV-3 without a mechanism or lane writer.
+`TestLocalGitLandChangeViaGitHub`, `TestNativeLandingQuotaWait`,
+`TestLandNativeChange`, `TestNativeLandingQuotaFinishesRun`,
+`TestRunnerResolvesLandingBeforeWorkspace`, `TestLocalGitCreateReviewedLanding`,
+`TestNativeRunnerPublishesOnlyAfterRecovery` and `TestSSHErrorRoundTrip` exercise
+these boundaries.
+
 Native landing merge conflicts are repository refusals, not infrastructure
 failures or shipped work. Explicit GitHub HTTP 405 merge-conflict evidence uses
 the existing `LandRefusalConflict`; unspecified 405 responses, actual branch
@@ -637,7 +667,7 @@ protection, required checks and reviews retain their refusal classification.
 Quota responses retain their separate owner (#89) and never become conflict
 evidence. Unreadable workflow state or an unavailable refusal transition uses
 the existing deferred completion owner without inventing a successful landing.
-`TestGitHubLandingAPIRefusal` and `TestNativeLandingRunCompletion` exercise these
+`TestLocalGitLandChangeViaGitHub` and `TestNativeLandingRunCompletion` exercise these
 classification and settlement boundaries (#96).
 
 Cloud shared provider capacity aggregates reports only from runners with current,
@@ -956,7 +986,7 @@ rejections retain `LandRefusalHeadMoved`; reviews, checks, protection and
 authentication remain enforced by GitHub. Typed quota evidence reaches the
 existing capacity owner before repository refusal classification. Only actual
 successful receipts reach the Hub, which receives no GitHub credentials.
-`TestLocalGitLandChangeViaGitHub`, `TestGitHubLandingAPIRefusal` and
+`TestLocalGitLandChangeViaGitHub` and
 `TestLandNativeChange` cover stale list heads after rework publication, guarded
 remote head rejection, refusal identity and quota precedence. No retry loop,
 recovery path, reason code, policy bypass or lane writer is added.

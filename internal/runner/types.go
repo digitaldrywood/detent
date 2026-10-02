@@ -767,6 +767,8 @@ type SecurityAuditExecution struct {
 }
 
 type RunResult struct {
+	GitHubRESTUsage         *connector.RESTRateLimitUsage
+	GitHubRESTConsumer      string
 	Compute                 *compute.Usage
 	TokenUSD                float64
 	Checkpoint              *workspace.CheckpointRecord

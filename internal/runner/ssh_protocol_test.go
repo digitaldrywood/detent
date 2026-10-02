@@ -13,8 +13,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/compute"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
+	"time"
 )
 
 func TestSSHErrorRoundTrip(t *testing.T) {
@@ -32,6 +34,10 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 		{"cancelled", context.Canceled, context.Canceled, nil},
 		{"artifact quota", artifact.ErrQuota, artifact.ErrQuota, nil},
 		{"artifact storage", artifact.ErrStorage, artifact.ErrStorage, nil},
+		{"GitHub quota authority", &github.StatusError{StatusCode: 429, Err: github.ErrRateLimited, CredentialIdentity: "local-credential", RateLimitKind: "secondary_throttled", RetryAfter: 120 * time.Second, ObservedAt: time.Date(2026, 10, 1, 21, 42, 42, 0, time.UTC)}, github.ErrRateLimited, func(err error) bool {
+			var status *github.StatusError
+			return errors.As(err, &status) && status.CredentialIdentity == "local-credential" && status.RetryAfter == 120*time.Second && !status.ObservedAt.IsZero()
+		}},
 		{"landing refusal", ErrLandingNotReviewed, ErrLandingNotReviewed, nil},
 		{"joined", errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded), context.DeadlineExceeded, nil},
 		{"capacity", backendcapacity.NewError(backendcapacity.Scope{BackendID: "code"}, backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload}, errors.New("busy")), nil, func(err error) bool {
