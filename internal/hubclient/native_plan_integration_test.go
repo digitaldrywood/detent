@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -17,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -28,18 +31,24 @@ import (
 // publication and the lane handoff to the orchestrator before that retirement.
 func TestNativePlannerAutomaticHandoff(t *testing.T) {
 	isolateNativeChangeGit(t)
-	for _, abandon := range []bool{false, true} {
-		name := "automatic handoff"
-		if abandon {
-			name = "abandon deferred planner and recover"
-		}
-		t.Run(name, func(t *testing.T) { testNativePlannerHandoff(t, abandon) })
+	for _, test := range []struct {
+		name    string
+		abandon bool
+		failure string
+	}{
+		{name: "automatic handoff"},
+		{name: "abandon deferred planner and recover", abandon: true},
+		{name: "provider failure settles before lease retirement", failure: "provider"},
+		{name: "owned cleanup failure settles instance outcome", failure: "cleanup"},
+		{name: "completed provider with exited process preserves staged finalization", failure: "exited"},
+	} {
+		t.Run(test.name, func(t *testing.T) { testNativePlannerHandoff(t, test.abandon, test.failure) })
 	}
 }
 
-func testNativePlannerHandoff(t *testing.T, abandon bool) {
+func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	t.Helper()
-	h := newNativeChangeHubWithStates(t, "Human Review", hubserverPlanStates())
+	h := newNativeChangeHubTransport(t, "Human Review", hubserverPlanStates(), true)
 	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Plan then implement", Body: "Update the README."})
 	if err != nil {
 		t.Fatal(err)
@@ -51,10 +60,17 @@ func testNativePlannerHandoff(t *testing.T, abandon bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated}
+	plan := gate.PlanConfig{Enabled: failure == "", Review: gate.PlanReviewAutomated}
+	provider := &nativePlanningAgent{failure: failure}
 	agent, err := runner.NewRunner(runner.Dependencies{
 		Workflow:  config.Workflow{Config: config.Config{Policy: h.descriptor, Plan: plan, Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Complete the issue"},
-		Workspace: backend, AgentBackend: &nativePlanningAgent{},
+		Workspace: backend, AgentBackend: provider,
+		ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) {
+			if failure == "cleanup" {
+				return 0, errors.Join(errors.New("owned child cleanup deadline"), context.DeadlineExceeded)
+			}
+			return 0, nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +110,9 @@ func testNativePlannerHandoff(t *testing.T, abandon bool) {
 		}
 	})
 	wantStates := []string{"In Progress", "Human Review"}
+	if failure != "" {
+		wantStates = []string{"Human Review"}
+	}
 	if abandon {
 		select {
 		case <-transport.blocked:
@@ -148,6 +167,23 @@ func testNativePlannerHandoff(t *testing.T, abandon bool) {
 		}
 	}
 	changes := h.changes(t, issue.ID)
+	if failure == "provider" || failure == "cleanup" {
+		if len(changes) != 0 || provider.calls.Load() != 1 {
+			t.Fatalf("failed native run created a Change or repeated coding: changes=%v calls=%d", changes, provider.calls.Load())
+		}
+		if _, err := os.Stat(filepath.Join(provider.workspace, "CHANGE.md")); err != nil {
+			t.Fatalf("failed native source not preserved: %v", err)
+		}
+		staged, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "diff", "--cached", "--name-only").Output()
+		if err != nil || strings.TrimSpace(string(staged)) != "CHANGE.md" {
+			t.Fatalf("failed native staged source = %q, error=%v", staged, err)
+		}
+		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || len(current.Attempts) != 1 || current.Attempts[0].Status != "failed" {
+			t.Fatalf("native failed outcome = %+v, error=%v", current.Attempts, err)
+		}
+		return
+	}
 	if len(changes) != 1 || changes[0].CurrentVersion == "" {
 		t.Fatalf("implementation did not publish Change Request: %+v", changes)
 	}
@@ -161,7 +197,11 @@ func testNativePlannerHandoff(t *testing.T, abandon bool) {
 			plans++
 		}
 	}
-	if plans != 1 {
+	if want := 1; failure != "" {
+		if plans != 0 {
+			t.Fatalf("non-planning run published a plan")
+		}
+	} else if plans != want {
 		t.Fatalf("plan publications = %d, want one", plans)
 	}
 }
@@ -176,16 +216,31 @@ func hubserverPlanStates() []tracker.NativeState {
 	}
 }
 
-type nativePlanningAgent struct{}
+type nativePlanningAgent struct {
+	failure   string
+	calls     atomic.Int64
+	workspace string
+}
 
-func (*nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	a.calls.Add(1)
+	a.workspace = req.Workspace
+	if a.failure == "cleanup" || a.failure == "exited" {
+		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 2081001, GroupID: 2081001, StartedAt: time.Now()}}); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+	}
 	plan := strings.Contains(req.Prompt, "This dispatch is plan-only.")
 	if plan {
 		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "Implement README changes and verify them.\n\n## Detent Plan Review\n\n- state: approved\n\nThe plan covers acceptance, tests and risks."}); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
 	}
-	return (&committingAgent{commit: !plan}).RunTurn(ctx, req, update)
+	result, err := (&committingAgent{staged: !plan}).RunTurn(ctx, req, update)
+	if a.failure == "provider" {
+		return result, errors.Join(err, errors.New("provider task failed"))
+	}
+	return result, err
 }
 
 type nativePlanFinish struct {

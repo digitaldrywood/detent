@@ -98,14 +98,22 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		wantContinue  bool
 		wantAbandoned bool
 		wantTerminal  store.WorkAttemptTerminalState
+		roundTrip     bool
 	}{
+		{name: "deferred cleanup deadline retains instance attribution", states: workflow, runErr: errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded), wantState: "In Review", wantTerminal: store.WorkAttemptTerminalTimedOut, roundTrip: true},
+		{name: "deferred provider cancellation retains its outcome", states: workflow, runErr: context.Canceled, wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled, roundTrip: true},
+		{name: "failed native stale authority is rejected", states: workflow, runErr: errors.New("provider failed"), updateErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, errors.New("final diff unavailable")), wantAbandoned: true},
+		{name: "failed provider without native change settles for review", states: workflow, runErr: errors.New("provider failed"), wantState: "In Review"},
+		{name: "failed provider lane refusal retains authority", states: workflow, runErr: errors.New("provider failed"), updateErr: errors.New("stale fencing token"), wantDeferred: true},
+		{name: "failed provider missing allowed lane retains authority", states: hosted, runErr: errors.New("provider failed"), wantDeferred: true},
+		{name: "failed outcome without error cannot publish", states: workflow, finalState: runpkg.FinalStateFailed, change: accepted, wantState: "In Review", wantTerminal: store.WorkAttemptTerminalFailure},
 		{name: "successful native coding completes during drain", change: accepted, states: landing, draining: true, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "successful native rework retains current version during drain", change: accepted, states: rework, sourceState: "Rework", draining: true, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "native publication authority failure during drain is instance owned", states: rework, sourceState: "Rework", draining: true, runErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, errors.New("final diff unavailable")), wantAbandoned: true},
 		{name: "missing native result during drain keeps ordinary cleanup", states: rework, sourceState: "Rework", draining: true, wantOrdinary: true},
 		{name: "refused native lane write during drain stays with native completion", change: waiting, states: rework, sourceState: "Rework", draining: true, updateErr: errors.New("stale fencing token"), wantDeferred: true},
-		{name: "failed native rework during drain cannot complete a published version", change: accepted, states: rework, sourceState: "Rework", draining: true, runErr: errors.New("backend failed during drain"), wantContinue: true},
-		{name: "interrupted native rework during drain cannot complete a published version", change: accepted, states: rework, sourceState: "Rework", draining: true, runErr: context.Canceled, wantTerminal: store.WorkAttemptTerminalCancelled, wantContinue: true},
+		{name: "failed native rework during drain cannot complete a published version", change: accepted, states: rework, sourceState: "Rework", draining: true, runErr: errors.New("backend failed during drain"), wantState: "In Review"},
+		{name: "interrupted native rework during drain cannot complete a published version", change: accepted, states: rework, sourceState: "Rework", draining: true, runErr: context.Canceled, wantTerminal: store.WorkAttemptTerminalCancelled, wantState: "In Review"},
 		{name: "successful coding publishes during landing quota wait", change: accepted, states: landing, quotaWait: true, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "commits move to the configured review lane", change: waiting, states: workflow, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "a version that needs no reviewer goes straight to landing", change: accepted, states: landing, wantState: "Merging", wantComment: "runner lands it next"},
@@ -128,9 +136,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "human attention with synthetic unchanged change", change: &runpkg.NativeChange{}, states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", wantHuman: true},
 		{name: "human attention with failed producer and no change", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: deliveryErr, wantHuman: true},
 		{name: "human attention retains instance workspace failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, runpkg.ErrWorkspacePreparation)},
-		{name: "human attention retains checkpoint failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("checkpoint persistence failed")), wantContinue: true},
-		{name: "human attention retains lease failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("native execution lease lost")), wantContinue: true},
-		{name: "human attention retains session failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("session persistence failed")), wantContinue: true},
+		{name: "human attention retains checkpoint failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("checkpoint persistence failed")), wantState: "In Review"},
+		{name: "human attention retains lease failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("native execution lease lost")), wantState: "In Review"},
+		{name: "human attention retains session failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("session persistence failed")), wantState: "In Review"},
 		{name: "human attention defers a refused lane write", states: workflow, finalMessage: "May I merge?", updateErr: errors.New("stale fencing token"), wantDeferred: true},
 		{name: "no commits end the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, wantState: "Done", wantComment: "nothing to review"},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
@@ -143,7 +151,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "dirty untracked native Rework keeps ordinary continuation", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, UntrackedPaths: []string{"source.go"}}},
 		{name: "late host source conflict preserves progress", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, Fingerprint: "late-host-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
 		{name: "late host conflict after replay preserves unpublished progress", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, UnpushedCommits: 1, Fingerprint: "late-host-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
-		{name: "already paused conflict left unresolved remains failure", states: rework, sourceState: "Rework", runErr: fmt.Errorf("finalize native work: %w: unresolved source conflicts: docs/invariants.md", workspace.ErrMergeResolutionInvalid), wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, Fingerprint: "existing-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
+		{name: "already paused conflict left unresolved remains failure", states: rework, sourceState: "Rework", runErr: fmt.Errorf("finalize native work: %w: unresolved source conflicts: docs/invariants.md", workspace.ErrMergeResolutionInvalid), wantState: "In Review", diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, Fingerprint: "existing-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
 		{name: "non-native final question keeps the ordinary path", finalMessage: "May I merge?", plain: true, wantContinue: true},
 		{name: "a connector without a workflow keeps the ordinary path", change: &runpkg.NativeChange{}, plain: true, wantContinue: true},
 	} {
@@ -159,7 +167,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			cfg.AutoPromote.SourceState = "In Review"
 			cfg.AutoPromote.HumanReview = test.humanReview
 			attempts := &recordingWorkAttemptStore{}
-			scheduling := &hubSchedulingSource{}
+			scheduling := &nativeCompletionScheduling{hubSchedulingSource: &hubSchedulingSource{}}
+			scheduling.release = func() {
+				if test.wantState != "" && (len(tick.updates) != 1 || tick.updates[0].state != test.wantState) {
+					t.Fatalf("claim released before lane settlement: updates=%v, want=%s", tick.updates, test.wantState)
+				}
+			}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
 			state := newState(cfg)
 			state.Draining = test.draining
@@ -186,6 +199,17 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement, WorkAttemptID: 42, Generation: 7},
 				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats, TurnStarted: test.diffStats.Fingerprint != ""},
 			}
+			if test.roundTrip {
+				data, err := json.Marshal(newDeferredCompletion(event, state.Running[issue.ID], errors.New("lane unavailable"), now))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var restored deferredCompletion
+				if err := json.Unmarshal(data, &restored); err != nil {
+					t.Fatal(err)
+				}
+				event = restored.completion()
+			}
 			if test.wantOrdinary && orch.completeNativeChangeRun(t.Context(), &state, event, state.Running[issue.ID], finalState) {
 				t.Fatal("nil native result bypassed ordinary continuation ownership")
 			}
@@ -194,7 +218,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalAbandoned || !strings.Contains(attempts.completions[0].ErrorMessage, "final diff unavailable") {
 					t.Fatalf("native authority failure = %#v", attempts.completions)
 				}
-				if len(tick.updates) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.deferredCompletions) != 0 || len(state.FailureBreaker.Failures) != 0 {
+				if test.updateErr == nil && len(tick.updates) != 0 || tick.stateIssues[0].State != issue.State || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.deferredCompletions) != 0 || len(state.FailureBreaker.Failures) != 0 {
 					t.Fatal("native authority failure changed the issue or repeated an obsolete completion")
 				}
 				return
@@ -269,12 +293,18 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				return
 			}
-			if test.runErr != nil && !test.wantHuman {
+			if test.wantDeferred && test.runErr != nil {
+				if scheduling.releases != 0 || len(attempts.completions) != 0 || len(state.Completed) != 0 {
+					t.Fatal("failed native completion refusal released authority or fabricated completion")
+				}
+				return
+			}
+			if (test.runErr != nil || finalState == runpkg.FinalStateFailed) && !test.wantHuman {
 				wantTerminal := test.wantTerminal
 				if wantTerminal == "" {
 					wantTerminal = store.WorkAttemptTerminalFailure
 				}
-				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != wantTerminal || attempts.completions[0].ErrorClass == permissionWaitReason || !strings.Contains(attempts.completions[0].ErrorMessage, test.runErr.Error()) {
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != wantTerminal || attempts.completions[0].ErrorClass == permissionWaitReason || test.runErr != nil && !strings.Contains(attempts.completions[0].ErrorMessage, test.runErr.Error()) {
 					t.Fatalf("failure outcome = %#v", attempts.completions)
 				}
 				if errors.Is(test.runErr, workspace.ErrMergeResolutionInvalid) {
@@ -283,8 +313,16 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 						t.Fatal("unresolved model conflict escaped genuine failure accounting")
 					}
 				}
-				if test.draining && (len(tick.updates) != 0 || len(tick.comments) != 0) {
-					t.Fatal("failed or interrupted draining run published a lane transition")
+				if errors.Is(test.runErr, runpkg.ErrWorkerProcessReap) {
+					receipt := attempts.completions[0]
+					if receipt.ErrorClass != workAttemptErrorWorkspace || !allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: receipt.MetricsJSON}) {
+						t.Fatal("native cleanup failure consumed issue failure allowance")
+					}
+				}
+				if test.wantState != "" {
+					if len(tick.updates) != 1 || tick.updates[0].state != test.wantState || retried || scheduling.releases != 1 || len(tick.comments) != 0 {
+						t.Fatalf("failed native handoff: updates=%v retry=%t releases=%d comments=%v", tick.updates, retried, scheduling.releases, tick.comments)
+					}
 				}
 				if _, blocked := state.Blocked[issue.ID]; blocked {
 					t.Fatal("mixed failure became a human park")
@@ -293,7 +331,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					t.Fatal("mixed failure completed")
 				}
 				for _, update := range tick.updates {
-					if update.state != "Todo" {
+					if update.state != firstNonBlank(test.wantState, "Todo") {
 						t.Fatalf("failure transition = %#v", update)
 					}
 				}
@@ -380,4 +418,16 @@ func TestNativeCompletionComment(t *testing.T) {
 			}
 		})
 	}
+}
+
+type nativeCompletionScheduling struct {
+	*hubSchedulingSource
+	release func()
+}
+
+func (s *nativeCompletionScheduling) ReleaseClaim(ctx context.Context, issueID, reason string) error {
+	if s.release != nil {
+		s.release()
+	}
+	return s.hubSchedulingSource.ReleaseClaim(ctx, issueID, reason)
 }

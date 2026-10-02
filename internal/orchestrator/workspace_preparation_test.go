@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -23,6 +24,16 @@ func TestWorkspacePreparationDrainsInstanceAndPreservesIssueFailureBreakers(t *t
 		err      error
 		postTurn bool
 	}{
+		{
+			name:     "owned process cleanup deadline",
+			err:      errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded),
+			postTurn: true,
+		},
+		{
+			name:     "owned process signal failure",
+			err:      errors.Join(runpkg.ErrWorkerProcessReap, errors.New("owned process remained alive")),
+			postTurn: true,
+		},
 		{
 			name: "dangling gitdir",
 			err:  fmt.Errorf("%w: create workspace: dangling gitdir", runpkg.ErrWorkspacePreparation),
