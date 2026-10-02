@@ -359,6 +359,27 @@ writes tracker lanes, creates confirmations or adds a protection mechanism.
 `TestHostedOperatorCurrentAuthority` and `TestProtocolWorkReadParity` exercise
 the application boundary and both transports, including direct-call denial.
 
+Native `work_list` results (#237) use the existing authorized issue page's
+`include=summary` projection through both Cloud and local adapters. Summaries
+retain identity, revision, title, state, priority, labels, assignees, timestamps
+and authorized dependencies/blockers. `omitted_fields` explicitly names body,
+linked source, provenance, external references and change detail; empty body and
+null external-reference placeholders do not claim those resources are empty.
+Complete content remains with `work_item` and `work_export`, under their existing
+result bounds. Search matches full authorized bodies before projection.
+The page owner fits serialized summaries and the signed continuation into a
+budget derived from the existing 256 KiB result bound, reserving space for the
+read envelope and both MCP text/structured serialization. Item limits are upper
+bounds; byte-limited pages continue after the last returned item, without an
+unbounded scan or a new size setting. Summary selection grants no authority and
+does not change credential/session/filter cursor scope, expiry or item order;
+existing inventory cursors remain compatible. A single summary whose metadata
+cannot fit retains the existing safe unavailable result. No limit is weakened.
+`TestOperatorNativeWorkListBytePages` verifies 61 real application items,
+maximum and escaped bodies, limits 1/100/200, continuation, detail ownership,
+full-body search, metadata, cursor compatibility and current authority through
+both transports; `TestOperatorNativeClientReads` verifies the local projection.
+
 The native work-items read's optional `include=work` projection keeps scoped
 lane totals and a bounded open selection independent of the inventory cursor
 (#179). Live attempts with current leases sort before dispatchable lanes; lane

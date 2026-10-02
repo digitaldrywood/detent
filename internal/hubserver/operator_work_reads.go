@@ -37,6 +37,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	if name == operatortool.WorkList {
+		params.Set("include", "summary")
 		if request.State != "" {
 			params.Set("state", request.State)
 		}

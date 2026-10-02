@@ -15,6 +15,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -137,8 +138,8 @@ func parseNativeIssueIncludes(value string) (bool, error) {
 		return false, nil
 	}
 	for name := range strings.SplitSeq(value, ",") {
-		if name = strings.TrimSpace(name); name != "workspace" && name != "work" {
-			return false, nativeInvalid("include supports workspace,work")
+		if name = strings.TrimSpace(name); name != "workspace" && name != "work" && name != "summary" {
+			return false, nativeInvalid("include supports workspace,work,summary")
 		}
 	}
 	return slices.ContainsFunc(strings.Split(value, ","), func(name string) bool { return strings.TrimSpace(name) == "workspace" }), nil
@@ -168,7 +169,20 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 	if err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
-	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
+	summary := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "summary" })
+	cursorParams := params
+	if summary {
+		cursorParams = url.Values{}
+		for name, values := range params {
+			cursorParams[name] = values
+		}
+		includes := slices.DeleteFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "summary" })
+		cursorParams.Del("include")
+		if len(includes) > 0 {
+			cursorParams.Set("include", strings.Join(includes, ","))
+		}
+	}
+	limit, cursor, key, err := s.readNativePage(ctx, scope, path, cursorParams)
 	if err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
@@ -210,6 +224,9 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		}
 	}
 	workIncluded := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
+	if summary && workIncluded {
+		return tracker.NativeIssuePage{}, nativeInvalid("summary cannot include work")
+	}
 	if value := strings.TrimSpace(params.Get("q")); value != "" {
 		text := "i.title"
 		if !workIncluded {
@@ -249,13 +266,35 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	for _, id := range ids {
 		issue, loaded := operational[id]
 		if !loaded {
-			issue, _, err = readNativeIssueProjection(ctx, s.database.db, scope, id, workIncluded)
+			issue, _, err = readNativeIssueProjection(ctx, s.database.db, scope, id, workIncluded || summary)
 			if err != nil {
 				return tracker.NativeIssuePage{}, err
 			}
 		}
-		page.Items = append(page.Items, s.nativeIssueResponse(issue))
-		cursor.After = strconv.Itoa(issue.Number)
+		issue = s.nativeIssueResponse(issue)
+		next := cursor
+		next.After = strconv.Itoa(issue.Number)
+		if summary {
+			issue = operatortool.NativeListIssue(issue)
+			candidate := tracker.Page[tracker.NativeIssue]{Items: append(page.Items, issue)}
+			candidate.NextCursor, err = encodeNativeCursor(next, key)
+			if err != nil {
+				return tracker.NativeIssuePage{}, err
+			}
+			raw, encodeErr := json.Marshal(operatortool.NativeItemPage(string(scope.project), candidate))
+			if encodeErr != nil {
+				return tracker.NativeIssuePage{}, encodeErr
+			}
+			if len(raw) > operatortool.WorkListPageBytes {
+				if len(page.Items) == 0 {
+					return tracker.NativeIssuePage{}, operatortool.ErrReadUnavailable
+				}
+				hasMore = true
+				break
+			}
+		}
+		page.Items = append(page.Items, issue)
+		cursor = next
 	}
 	if hasMore {
 		page.NextCursor, err = encodeNativeCursor(cursor, key)

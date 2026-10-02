@@ -324,7 +324,7 @@ func (s *Server) readNativeWork(ctx context.Context, client *hubclient.NativeCli
 	}
 
 	if name == operatortool.WorkList {
-		params := url.Values{"limit": {strconv.Itoa(request.Limit)}, "cursor": {request.Cursor}}
+		params := url.Values{"limit": {strconv.Itoa(request.Limit)}, "cursor": {request.Cursor}, "include": {"summary"}}
 		if request.State != "" {
 			params.Set("state", request.State)
 		}

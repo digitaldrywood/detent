@@ -216,6 +216,26 @@ For 401, check private key configuration, expiry and revocation. For 403 or a
 hidden 404, check current membership, role, key scope and project grants. Local
 and self-hosted daemon instructions remain expandable on the same settings page.
 
+## Native work-item list results
+
+Native `work_list` accepts item limits through 200 and returns summaries in
+`data.items` with an opaque `data.next_cursor` when more matching items remain.
+The requested limit is a maximum: the existing issue page owner may return fewer
+items to fit its 64 KiB serialized summary/cursor budget, derived from the 256 KiB
+tool-result limit and reserving room for the envelope and MCP serialization.
+Pass the cursor with the same project, query, state and label; the limit may
+change. Existing cursor authority, one-hour expiry and ordering remain intact.
+Both stdio and HTTP return the same shape.
+
+Summaries retain stable IDs, identifiers, URLs, revisions, title, state, priority,
+labels, assignees, timestamps and authorized dependencies/blockers. Their
+`omitted_fields` is `["body", "linked_source", "provenance",
+"external_references", "change"]`; the empty body and null external-reference
+placeholders mean omitted detail, not an empty original resource. Use `work_item`
+or `work_export` for complete authorized detail under their existing byte bounds.
+Queries still search full authorized original bodies. A single summary whose
+metadata exceeds the page budget returns the existing safe unavailable error.
+
 ## Hosted application context reads
 
 Hosted dedicated and shared connections expose `app_bootstrap_payload`,

@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/workflowmetrics"
+	"fmt"
 	"net/http"
+	"net/url"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +17,175 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
+
+func TestOperatorNativeWorkListBytePages(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "bounded-list")
+	const needle = "body-only-list-match"
+	var expected []tracker.NativeIssue
+	for i := range 61 {
+		body := needle
+		if i < 60 {
+			unit := "x"
+			if i%2 != 0 {
+				unit = "<\"\\"
+			}
+			body = strings.Repeat(unit, ((256<<10)-len(needle))/len(unit))
+			body += strings.Repeat("x", (256<<10)-len(body)-len(needle)) + needle
+		}
+		request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("large-%d", i)}, Title: strings.Repeat("<", 492) + fmt.Sprintf("%08d", i), Body: body, State: "Todo", Labels: []string{"bounded"}}
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		expected = append(expected, issue)
+	}
+	unmatched := f.create(t, "unmatched body and label")
+	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-list")
+	hidden := foreign.create(t, "hidden-list-item")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(expected[0].WorkItemID)+"/dependencies", f.token,
+		tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "list-dependency"}, ExpectedRevision: expected[0].Revision, RelatedWorkItemID: expected[1].WorkItemID, Operation: "add"})
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &expected[0])
+	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	var firstCursor string
+	var baseline []byte
+	for _, transport := range []string{"stdio", "http"} {
+		t.Run(transport, func(t *testing.T) {
+			call := hostedContextProtocol(t, f.service, ctx, transport)
+			for _, limit := range []int{1, 100, 200} {
+				t.Run(fmt.Sprint(limit), func(t *testing.T) {
+					args := map[string]any{"project_id": string(f.project.ID), "query": needle, "state": "Todo", "label": "bounded", "limit": limit}
+					seen, pages := 0, 0
+					for {
+						reply := call("tools/call", operatortool.WorkList, args)
+						if len(reply.Result) > mcp.MaxHTTPResponseBytes || strings.Contains(string(reply.Result), f.token) || strings.Contains(string(reply.Result), string(hidden.WorkItemID)) || strings.Contains(string(reply.Result), string(unmatched.WorkItemID)) {
+							t.Fatal("unbounded or unauthorized list result")
+						}
+						raw := hostedContextData(t, reply, false)
+						if len(raw) > operatortool.MaxResultBytes {
+							t.Fatalf("work result bytes=%d", len(raw))
+						}
+						var result operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]
+						if err := json.Unmarshal(raw, &result); err != nil {
+							t.Fatal(err)
+						}
+						page := result.Data
+						if len(page.Items) == 0 || len(page.Items) > limit || result.Freshness != explain.SourceAvailable || result.ProjectID != string(f.project.ID) {
+							t.Fatalf("invalid page count=%d freshness=%s", len(page.Items), result.Freshness)
+						}
+						if pages == 0 && limit > 1 {
+							if page.NextCursor == "" || len(page.Items) >= len(expected) {
+								t.Fatal("large list has no genuine byte continuation")
+							}
+							firstCursor = page.NextCursor
+							shape, err := json.Marshal(page.Items)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if baseline == nil {
+								baseline = shape
+								t.Logf("bounded first page: items=%d result_bytes=%d protocol_result_bytes=%d", len(page.Items), len(raw), len(reply.Result))
+							} else if string(shape) != string(baseline) {
+								t.Fatal("limit or transport changed the bounded shape")
+							}
+						}
+						for _, item := range page.Items {
+							if seen >= len(expected) {
+								t.Fatal("duplicate or extra item")
+							}
+							want := expected[seen]
+							if item.WorkItemID != want.WorkItemID || item.Revision != want.Revision || item.Title != want.Title || item.Identifier == "" || item.URL == "" || !reflect.DeepEqual(item.Dependencies, want.Dependencies) || !reflect.DeepEqual(item.Blockers, want.Blockers) || item.Body != "" || !slices.Contains(item.OmittedFields, "body") || item.LinkedSource != nil {
+								t.Fatalf("lost summary metadata or omission at item %d", seen)
+							}
+							seen++
+						}
+						pages++
+						if page.NextCursor == "" {
+							break
+						}
+						if pages > len(expected) {
+							t.Fatal("cursor did not advance")
+						}
+						args["cursor"] = page.NextCursor
+					}
+					if seen != len(expected) {
+						t.Fatalf("lost items: got %d want %d", seen, len(expected))
+					}
+				})
+			}
+			itemArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(expected[60].WorkItemID)}
+			for _, tool := range []string{operatortool.WorkItem, operatortool.WorkExport} {
+				data := hostedContextData(t, call("tools/call", tool, itemArgs), false)
+				var result operatortool.WorkReadResult[tracker.NativeIssue]
+				if err := json.Unmarshal(data, &result); err != nil || result.Data.Body != needle || len(result.Data.OmittedFields) != 0 {
+					t.Fatalf("%s lost full detail", tool)
+				}
+			}
+			for _, changes := range []map[string]any{
+				{"state": "Done"}, {"label": "other"}, {"query": "other"},
+				{"project_id": string(foreign.project.ID)}, {"cursor": firstCursor + "invalid"},
+			} {
+				args := map[string]any{"project_id": string(f.project.ID), "query": needle, "state": "Todo", "label": "bounded", "limit": 200, "cursor": firstCursor}
+				for key, value := range changes {
+					args[key] = value
+				}
+				hostedContextData(t, call("tools/call", operatortool.WorkList, args), true)
+			}
+			credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			params := url.Values{"q": {needle}, "state": {"Todo"}, "label": {"bounded"}, "cursor": {firstCursor}}
+			_, cursor, key, err := f.service.readNativePage(t.Context(), scope, f.base+"/work-items", params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cursor.Expires = f.service.config.now().Add(-time.Second).Unix()
+			expired, err := encodeNativeCursor(cursor, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostedContextData(t, call("tools/call", operatortool.WorkList, map[string]any{"project_id": string(f.project.ID), "query": needle, "state": "Todo", "label": "bounded", "cursor": expired}), true)
+		})
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=1&state=Todo&label=bounded&q="+url.QueryEscape(needle), f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var original tracker.Page[tracker.NativeIssue]
+	decodeHubResponse(t, response, &original)
+	if original.Items[0].Body != expected[0].Body || len(original.Items[0].OmittedFields) != 0 {
+		t.Fatal("original list resource lost its complete body")
+	}
+	executor := hostedOperatorExecutor{service: f.service}
+	args := operatortool.WorkReadRequest{ProjectID: string(f.project.ID), Query: needle, State: "Todo", Label: "bounded", Limit: 1, Cursor: original.NextCursor}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.WorkList, Arguments: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compatible operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]
+	if err := json.Unmarshal(result.Content, &compatible); err != nil || len(compatible.Data.Items) != 1 || compatible.Data.Items[0].WorkItemID != expected[1].WorkItemID {
+		t.Fatal("original list cursor is incompatible with summary projection")
+	}
+	credential := operatortool.ConnectionIdentity(ctx).PrincipalID
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(f.service.config.now()), credential); err != nil {
+		t.Fatal(err)
+	}
+	for _, transport := range []string{"stdio", "http"} {
+		t.Run("revoked/"+transport, func(t *testing.T) {
+			call := hostedContextProtocol(t, f.service, ctx, transport)
+			hostedContextData(t, call("tools/call", operatortool.WorkList, map[string]any{"project_id": string(f.project.ID), "limit": 200}), true)
+		})
+	}
+}
 
 func TestOperatorNativeWorkReads(t *testing.T) {
 	// Real application writes populate the reads; catches bypassing native scope,

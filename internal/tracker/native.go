@@ -64,6 +64,7 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
+	OmittedFields      []string           `json:"omitted_fields,omitempty"`
 	LinkedSource       *LinkedIssueSource `json:"linked_source,omitempty"`
 	IgnoreDependencies bool               `json:"ignore_dependencies,omitempty"`
 	NativeReference

@@ -212,7 +212,7 @@ func TestOperatorNativeClientReads(t *testing.T) {
 		{"work_references", nil, "https://github.com/example/repo/pull/10"},
 		{"work_relationships", nil, "wi_visible"},
 		{"work_version", map[string]any{"revision": 7}, "Full native body"},
-		{"work_list", map[string]any{"query": "native", "limit": 1}, "Full native body"},
+		{"work_list", map[string]any{"query": "native", "limit": 1}, `"omitted_fields":["body"`},
 		{"work_config", nil, "bug"},
 	} {
 		t.Run(test.tool, func(t *testing.T) {
@@ -233,6 +233,11 @@ func TestOperatorNativeClientReads(t *testing.T) {
 			}
 			if strings.Contains(response.Body.String(), "FormToken") || strings.Contains(response.Body.String(), "hub-operator") {
 				t.Fatalf("UI credential leak: %s", response.Body)
+			}
+			if test.tool == "work_list" {
+				if strings.Contains(response.Body.String(), "Full native body") || strings.Contains(response.Body.String(), "private imported") || fixture.last["include"] != "summary" {
+					t.Fatalf("list projection or selector=%s include=%q", response.Body, fixture.last["include"])
+				}
 			}
 			if (test.tool == "board_receipt" || test.tool == "board_session" || test.tool == "explain_item") && strings.Contains(response.Body.String(), "private imported") {
 				t.Fatalf("runtime content leak: %s", response.Body)
