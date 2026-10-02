@@ -2415,10 +2415,17 @@ timeout into a project-wide dispatch outage.
 Generic issue no-progress outcomes do not become a shared project failure class
 (#3489). Existing issue progress, retry, and workpad paths own those
 outcomes; unrelated unpushed work and external evidence waits cannot pause the
-whole project. Concrete backend, startup, deliverable, and durable error classes
-retain the configured project failure policy. Terminal attempt outcomes remain
-unchanged. `TestGenericNoProgressDoesNotPauseProject` covers repeated unrelated
-stalls and preservation of a concrete backend failure pause.
+whole project. Only structured backend errors, concrete startup failures, and
+workspace infrastructure failures retain the configured project failure policy.
+Arbitrary runner errors, merge receipt metadata, deliverable commands, token
+ceilings, final states, and issue error classes remain with their existing
+attempt, deliverable, policy, and provider capacity owners; they do not become
+project-wide outages. This removes catch-all failure promotion under INV-2 and
+INV-3 without another guard, reset, or recovery mechanism. Terminal attempt
+outcomes and historical failure diagnostics remain unchanged.
+`TestProjectAttemptFailureClass` and `TestGenericNoProgressDoesNotPauseProject`
+cover repeated merge metadata failures, owned provider resets, unrelated stalls,
+and preservation of a concrete backend failure pause.
 
 Operator rejection (#2943) consolidates promotion eligibility with existing lane
 history (INV-1). The reviewed `applyOperatorMove` fingerprint changes to hydrate

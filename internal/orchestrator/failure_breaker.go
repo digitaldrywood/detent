@@ -463,18 +463,18 @@ func projectAttemptFailureClass(
 	if issueConfigurationFailure(err, errorClass, errorMessage) {
 		return ""
 	}
-	combined := strings.ToLower(strings.TrimSpace(errorMessage))
-	if err != nil {
-		combined += "\n" + strings.ToLower(strings.TrimSpace(err.Error()))
+	switch class := normalizeProjectFailureClass(errorClass); class {
+	case backendcapacity.StartupFailureErrorClass, backendcapacity.StartupTimeoutErrorClass:
+		return backendcapacity.StartupFailureErrorClass
+	case workAttemptErrorWorkspace:
+		return class
 	}
-	if errors.Is(err, runpkg.ErrSessionTokenCeilingExceeded) || strings.Contains(combined, "session token ceiling exceeded") {
-		return projectFailureClassSessionTokenCeiling
+	if _, ok := backendcapacity.As(err); ok {
+		return ""
 	}
-	if command := deliverableFailureCommand(err, combined); command != "" {
-		return projectFailureClassDeliverableCommand + ":" + command
-	}
-	if strings.Contains(combined, "deliverable command failed") {
-		return projectFailureClassDeliverableCommand + ":unknown"
+	var deliverableErr *runpkg.DeliverableCommandError
+	if errors.As(err, &deliverableErr) {
+		return ""
 	}
 	var backendError interface {
 		BackendErrorBody() string
@@ -492,25 +492,7 @@ func projectAttemptFailureClass(
 			return projectFailureClassBackendError + ":" + projectFailureHash(message)
 		}
 	}
-	if class := normalizeProjectFailureClass(errorClass); class == backendcapacity.StartupFailureErrorClass || class == backendcapacity.StartupTimeoutErrorClass {
-		return backendcapacity.StartupFailureErrorClass
-	} else if class != "" && class != workAttemptErrorRunner {
-		return class
-	}
-	if terminalState == store.WorkAttemptTerminalNoProgress {
-		return ""
-	}
-	if err == nil && terminalState == store.WorkAttemptTerminalFailure {
-		return projectFailureClassRunnerFinalState + ":" + projectFailureHash(errorMessage)
-	}
-	message := errorMessage
-	if err != nil {
-		message = err.Error()
-	}
-	if strings.TrimSpace(message) == "" {
-		return ""
-	}
-	return projectFailureClassRunnerError + ":" + projectFailureHash(message)
+	return ""
 }
 
 func issueConfigurationFailure(err error, errorClass, message string) bool {
@@ -531,31 +513,6 @@ func issueConfigurationFailure(err error, errorClass, message string) bool {
 		}
 	}
 	return false
-}
-
-func deliverableFailureCommand(err error, message string) string {
-	var deliverableErr *runpkg.DeliverableCommandError
-	if errors.As(err, &deliverableErr) && deliverableErr != nil {
-		return normalizeDeliverableFailureCommand(deliverableErr.Operation)
-	}
-	const prefix = "deliverable command failed ("
-	index := strings.Index(message, prefix)
-	if index < 0 {
-		return ""
-	}
-	command := message[index+len(prefix):]
-	if end := strings.Index(command, ")"); end >= 0 {
-		command = command[:end]
-	}
-	return normalizeDeliverableFailureCommand(command)
-}
-
-func normalizeDeliverableFailureCommand(command string) string {
-	command = strings.Join(strings.Fields(strings.TrimSpace(command)), " ")
-	if len(command) > 160 {
-		command = command[:160]
-	}
-	return command
 }
 
 func normalizeProjectFailureClass(value string) string {
