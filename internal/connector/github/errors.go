@@ -88,6 +88,8 @@ type StatusError struct {
 	ResetAt            time.Time
 }
 
+func (e *StatusError) HTTPStatus() int { return e.StatusCode }
+
 type RESTFanoutDeferralError struct {
 	EndpointFamily string
 	BudgetScope    string

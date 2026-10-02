@@ -14,11 +14,12 @@ type graphQLClient interface {
 	GraphQL(context.Context, string, map[string]any, any) error
 }
 
-const importEditsQuery = `query($id:ID!, $after:String) {
+const importEditsQuery = `query AuditEditHistory($id:ID!, $after:String) {
 node(id:$id) {
   ... on Issue { userContentEdits(first:100, after:$after) { ...Edits } }
   ... on IssueComment { userContentEdits(first:100, after:$after) { ...Edits } }
 }
+rateLimit { limit used remaining cost resetAt }
 }
 fragment Edits on UserContentEditConnection {
   nodes { id createdAt updatedAt editedAt deletedAt diff editor { login ... on Node { id } } }

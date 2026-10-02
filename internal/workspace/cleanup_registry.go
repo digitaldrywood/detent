@@ -328,6 +328,8 @@ func (l *LocalGit) unrecordedWorkspaces(ctx context.Context, recorded map[string
 		if err != nil {
 			return nil, err
 		}
+		// Git can print forward slashes on Windows while ownership records
+		// contain the canonical path returned by validateWorkspacePath.
 		if recorded[path] || filepath.Dir(path) != l.root {
 			continue
 		}
