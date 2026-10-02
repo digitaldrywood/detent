@@ -80,6 +80,10 @@ func newNativeChangeHub(t *testing.T) *nativeChangeHub {
 // newNativeChangeHubWithStates builds the hub with a given workflow and the
 // review lane the orchestrator is configured with.
 func newNativeChangeHubWithStates(t *testing.T, review string, states []tracker.NativeState, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
+	return newNativeChangeHubTransport(t, review, states, false, repositoryBackend...)
+}
+
+func newNativeChangeHubTransport(t *testing.T, review string, states []tracker.NativeState, inMemory bool, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
 	t.Helper()
 	config := hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(nativeChangeAdminToken)}
 	if len(repositoryBackend) > 0 {
@@ -94,9 +98,21 @@ func newNativeChangeHubWithStates(t *testing.T, review string, states []tracker.
 			t.Error(err)
 		}
 	})
-	server := httptest.NewServer(service.Handler())
-	t.Cleanup(server.Close)
-	admin, err := New(Config{URL: server.URL, TokenSource: func() string { return nativeChangeAdminToken }, HTTPClient: server.Client()})
+	var serverURL string
+	var httpClient *http.Client
+	if inMemory {
+		serverURL = "http://native-hub.test"
+		httpClient = &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			recorder := httptest.NewRecorder()
+			service.Handler().ServeHTTP(recorder, request)
+			return recorder.Result(), nil
+		})}
+	} else {
+		server := httptest.NewServer(service.Handler())
+		t.Cleanup(server.Close)
+		serverURL, httpClient = server.URL, server.Client()
+	}
+	admin, err := New(Config{URL: serverURL, TokenSource: func() string { return nativeChangeAdminToken }, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,8 +145,8 @@ func newNativeChangeHubWithStates(t *testing.T, review string, states []tracker.
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{Policy: h.descriptor}); err != nil {
 		t.Fatal(err)
 	}
-	h.failChanges = &changeFailingTransport{next: server.Client().Transport}
-	worker, err := New(Config{URL: server.URL, TokenSource: func() string { return token.Token }, HTTPClient: &http.Client{Transport: h.failChanges}})
+	h.failChanges = &changeFailingTransport{next: httpClient.Transport}
+	worker, err := New(Config{URL: serverURL, TokenSource: func() string { return token.Token }, HTTPClient: &http.Client{Transport: h.failChanges}})
 	if err != nil {
 		t.Fatal(err)
 	}

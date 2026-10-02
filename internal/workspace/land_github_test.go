@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestLocalGitLandChangeViaGitHub(t *testing.T) {
@@ -23,6 +25,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		method      string
 		pullState   string
 		reworked    bool
+		external    bool
+		pullError   string
+		lookupError string
 	}{
 		{name: "merges the reviewed head", method: "merge"},
 		{name: "uses the policy squash method", method: "squash"},
@@ -34,6 +39,13 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "publishes a reworked branch despite a stale list head", method: "squash", reworked: true, pullState: "stale"},
 		{name: "atomic merge rejects a genuinely moved head", method: "squash", reworked: true, pullState: "stale", moved: true, wantRefusal: LandRefusalHeadMoved},
 		{name: "atomic merge rejects a closed PR", method: "squash", pullState: "open", mergeError: "gh: Pull Request is closed (HTTP 405)", wantRefusal: LandRefusalHeadMoved},
+		{name: "reuses the explicit external PR", method: "merge", external: true},
+		{name: "external moved head is never overwritten", method: "merge", external: true, pullError: "head", wantRefusal: LandRefusalHeadMoved},
+		{name: "external branch must match", method: "merge", external: true, pullError: "branch", wantRefusal: LandRefusalHeadMoved},
+		{name: "external repository must match", method: "merge", external: true, pullError: "repository", wantRefusal: LandRefusalProtected},
+		{name: "external fork must match", method: "merge", external: true, pullError: "fork", wantRefusal: LandRefusalProtected},
+		{name: "external base must match", method: "merge", external: true, pullError: "base", wantRefusal: LandRefusalProtected},
+		{name: "external authentication denied", method: "merge", external: true, lookupError: "HTTP 401: Bad credentials", wantRefusal: LandRefusalProtected},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newLandingFixture(t)
@@ -44,6 +56,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			runGit(t, fixture.source, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
 			runGit(t, fixture.source, "remote", "set-url", "origin", repository+".git")
 			previous := base
+			externalHead := fixture.head
+			if test.external {
+				runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+fixture.info.Branch)
+				if test.pullError == "head" {
+					externalHead = previous
+					runGit(t, fixture.remote, "update-ref", "refs/heads/"+fixture.info.Branch, externalHead)
+				}
+			}
 			if test.reworked {
 				tree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", fixture.head+"^{tree}"))
 				previous = strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Previous attempt"))
@@ -59,16 +79,29 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			callsPath := filepath.Join(bin, "calls")
 			t.Setenv("TEST_GH_CALLS", callsPath)
 			t.Setenv("TEST_MERGE_REFUSED", test.mergeError)
-			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), fixture.info, fixture.issue, LandOptions{
+			t.Setenv("TEST_EXTERNAL_PULL_ERROR", test.pullError)
+			t.Setenv("TEST_LOOKUP_REFUSED", test.lookupError)
+			options := LandOptions{
 				HeadSHA: fixture.head, Method: test.method, Repository: repository,
 				Message: "Review this change\n\nNative Change Request", PushAttemptBranch: true,
-			})
+			}
+			if test.external {
+				options.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
+			}
+			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), fixture.info, fixture.issue, options)
 			calls, readErr := os.ReadFile(callsPath)
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
 			wantCreate := test.pullState != "open" && test.pullState != "stale" && test.pullState != "merged"
 			wantMerge := test.pullState != "merged"
+			if test.external {
+				wantCreate = false
+				wantMerge = test.wantRefusal == ""
+				if !strings.Contains(string(calls), "GET repos/example/repo/pulls/7") || strings.Contains(string(calls), "state=all") {
+					t.Fatalf("external PR was not read directly: %s", calls)
+				}
+			}
 			if strings.Contains(string(calls), "--method POST") != wantCreate || strings.Contains(string(calls), "--method PUT") != wantMerge {
 				t.Fatalf("unexpected PR operations: %s", calls)
 			}
@@ -83,12 +116,18 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				if test.moved && !strings.Contains(refusal.Reason, "Head branch was modified") {
 					t.Fatalf("head refusal did not come from the atomic merge: %v", err)
 				}
+				if test.external {
+					published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
+					if published != externalHead {
+						t.Fatalf("external branch was rewritten: %s", published)
+					}
+				}
 				return
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.MergeSHA != fixture.head || result.BaseRef != "main" || result.BaseBefore != base || result.Method != test.method || !result.AttemptBranchPushed || fixture.remoteMain(t) != fixture.head {
+			if result.MergeSHA != fixture.head || result.BaseRef != "main" || result.BaseBefore != base || result.Method != test.method || result.AttemptBranchPushed != !test.external || fixture.remoteMain(t) != fixture.head {
 				t.Fatalf("GitHub landing = %#v; base = %s", result, fixture.remoteMain(t))
 			}
 			published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
@@ -228,6 +267,27 @@ func landingGitHubCLIHelper() int {
 	var response string
 	switch args[2] {
 	case "GET":
+		if !strings.Contains(args[3], "?") {
+			if refusal := os.Getenv("TEST_LOOKUP_REFUSED"); refusal != "" {
+				fmt.Fprintln(os.Stderr, refusal)
+				return 1
+			}
+			headRef, baseRef, headRepo, baseRepo := os.Getenv("TEST_ATTEMPT_BRANCH"), "main", "example/repo", "example/repo"
+			switch os.Getenv("TEST_EXTERNAL_PULL_ERROR") {
+			case "head":
+				head = os.Getenv("TEST_OLD_HEAD")
+			case "branch":
+				headRef = "another-branch"
+			case "base":
+				baseRef = "another-base"
+			case "repository":
+				baseRepo = "another/repo"
+			case "fork":
+				headRepo = "another/repo"
+			}
+			response = fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}},"base":{"ref":"%s","repo":{"full_name":"%s"}}}`, head, headRef, headRepo, baseRef, baseRepo)
+			break
+		}
 		switch os.Getenv("TEST_PULL_STATE") {
 		case "open", "stale":
 			cmd := exec.CommandContext(context.Background(), "git", "--git-dir", os.Getenv("TEST_BARE_REPOSITORY"), "rev-parse", "refs/heads/"+os.Getenv("TEST_ATTEMPT_BRANCH"))

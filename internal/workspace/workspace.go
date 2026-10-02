@@ -231,6 +231,7 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
+	Landing                 *LandOptions
 	ProjectID               string
 	ID                      string
 	Identifier              string
@@ -555,7 +556,12 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 		return Info{}, err
 	}
 
-	created, err := l.createWorktree(ctx, info.Path, info.Branch)
+	var created bool
+	if issue.Landing != nil {
+		info, created, err = l.createLandingWorktree(ctx, info, issue)
+	} else {
+		created, err = l.createWorktree(ctx, info.Path, info.Branch)
+	}
 	if err != nil {
 		var creationErr *worktreeCreationError
 		if errors.As(err, &creationErr) {
