@@ -49,6 +49,7 @@ type Enrollment struct {
 }
 
 type Redemption struct {
+	SpriteName       string           `json:"sprite_name,omitempty"`
 	BackendIsolation isolation.Report `json:"backend_isolation,omitempty"`
 	Binding
 	Credential   string `json:"credential"`

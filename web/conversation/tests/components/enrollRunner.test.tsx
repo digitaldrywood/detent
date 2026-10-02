@@ -34,11 +34,14 @@ function projectBox(id: string): HTMLElement {
   return box;
 }
 
-async function mountDialog(projectIds?: readonly string[], settings = false, initialRunners: readonly FleetRunner[] = [], initialFleetRead?: Promise<Response>) {
+async function mountDialog(projectIds?: readonly string[], settings = false, initialRunners: readonly FleetRunner[] = [], initialFleetRead?: Promise<Response>, spritesPresent = false) {
   let runners = initialRunners;
   const fleetReads = vi.fn();
   const enrollmentRequests = vi.fn();
   vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+    if (String(input).endsWith("/secrets/fly_sprites_token")) {
+      return new Response(JSON.stringify({ kind: "fly_sprites_token", present: spritesPresent, organization_slug: "preview" }));
+    }
     if (String(input).endsWith("/runner-enrollments")) {
       enrollmentRequests(JSON.parse(String(init?.body)));
       return new Response(JSON.stringify({ id: "enrollment_build", token: "det_enroll_secret", expires_at: "2026-10-02T20:00:00Z" }), { status: 201 });
@@ -49,6 +52,7 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
   }));
   client = {
     account: {
+      version: "v1.2.3",
       organization: { id: "org_build" },
       organizations: [{ current: true, public_url: "https://hub.example.test" }],
       actor: { can_manage_runners: true },
@@ -127,6 +131,41 @@ describe("the Enroll dialog", () => {
     expect(enrollmentRequests).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])("guides Sprite setup with token presence %s and keeps copied credentials masked", async (present) => {
+    userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    await mountDialog(["project_build"], false, [], undefined, present);
+    fireEvent.click(screen.getByLabelText("A Fly Sprite"));
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toMatch(/^detent-[a-z0-9]+$/);
+    expect(screen.getByText(/The Sprite gets the same name/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("Checking Sprites tokens…")).toBeNull());
+    if (!present) {
+      expect(screen.getByText(/No Sprites token is set/)).toBeTruthy();
+      expect(screen.getByRole("link", { name: "Set a Sprites token" }).getAttribute("href")).toBe("/settings/integrations?project=project_build#sprites");
+    } else {
+      expect(screen.queryByRole("link", { name: "Set a Sprites token" })).toBeNull();
+    }
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build host" } });
+    expect((screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "build-host" } });
+    expect(screen.queryByLabelText("Install it as a background service")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Create command" }));
+    const instructions = await screen.findByRole("list", { name: "Sprite setup instructions" });
+    expect(within(instructions).getAllByRole("listitem")).toHaveLength(8);
+    expect(instructions.textContent).toContain("sprite create build-host");
+    expect(instructions.textContent).toContain("sprite console -s build-host");
+    expect(instructions.textContent).toContain("/v1.2.3/scripts/sprite-runner-bootstrap.sh");
+    expect(instructions.textContent).toContain("bash sprite-runner-bootstrap.sh --version v1.2.3");
+    expect(instructions.textContent).toContain("claude auth login");
+    expect(instructions.textContent).toContain("codex login --device-auth");
+    expect(instructions.textContent).toContain("Approve the repository policy");
+    expect(document.body.innerHTML).not.toContain("det_enroll_secret");
+    expect(screen.queryByRole("button", { name: "Show token" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy the register command" }));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("--token det_enroll_secret --name build-host"));
+    expect(writeText.mock.calls[0]![0]).not.toContain("--service");
+    expect(document.body.innerHTML).not.toContain("det_enroll_secret");
+  });
   it("asks for no host IDs and shows one register command", async () => {
     userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();

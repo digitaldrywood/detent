@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -29,6 +30,13 @@ type runnerCredentialSource struct {
 	routingChanged   chan struct{}
 	mu               sync.Mutex
 	path             string
+}
+
+func runnerSpriteName(hostname string) string {
+	if info, err := os.Stat("/.sprite/api.sock"); err == nil && info.Mode()&os.ModeSocket != 0 {
+		return hostname
+	}
+	return ""
 }
 
 func runnerOrganizationPath(organization tracker.OrganizationID) (string, error) {
@@ -177,6 +185,7 @@ func EnrollRunner(ctx context.Context, path string, organization tracker.Organiz
 			return identity, err
 		}
 		request := runnerauth.Redemption{BackendIsolation: machine.BackendIsolation, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH}
+		request.SpriteName = runnerSpriteName(machine.Hostname)
 		if err := client.runnerRequest(ctx, enrollment, http.MethodPost, base+"/runner-enrollments/redeem", request, &identity); err != nil {
 			return identity, err
 		}
@@ -271,6 +280,7 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		problems, rejected = c.client.runner.heartbeatProblems(ctx, machine)
 	}
 	request := struct {
+		SpriteName       string                        `json:"sprite_name,omitempty"`
 		Update           *runnerauth.UpdateObservation `json:"update,omitempty"`
 		CapacityConfig   *runnerauth.CapacityConfig    `json:"capacity_configuration,omitempty"`
 		LocalChecks      *runnerauth.LocalChecks       `json:"local_checks,omitempty"`
@@ -289,7 +299,7 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
 		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
-	}{machine.Update, machine.CapacityConfig, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository}
+	}{runnerSpriteName(machine.Hostname), machine.Update, machine.CapacityConfig, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository}
 	if c.client.runner == nil {
 		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 	}

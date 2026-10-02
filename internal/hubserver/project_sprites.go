@@ -229,6 +229,13 @@ ORDER BY m.hostname LIMIT 1`, scope.project, flySpritesToken, scope.organization
 		if err != nil {
 			return woken, err
 		}
+		failedAt := ""
+		if !started {
+			failedAt = formatHubTime(s.config.now())
+		}
+		if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_wake_failed_at', ?) WHERE organization_id=? AND hostname=? AND json_extract(capabilities_json, '$.sprite_name')=hostname AND id IN (SELECT r.machine_id FROM runner_identities r JOIN token_grants g ON g.token_id=r.token_id AND g.organization_id=r.organization_id JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL WHERE r.organization_id=? AND g.project_id=? AND r.state='active')`, failedAt, scope.organization, name, scope.organization, scope.project); err != nil {
+			return woken, err
+		}
 		if started {
 			woken++
 		}

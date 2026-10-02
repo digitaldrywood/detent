@@ -19,7 +19,7 @@ import type { FleetResponse, FleetRunner } from "../../contracts/account.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
-import { useMutation, type Resource } from "../account/useResource.ts";
+import { useMutation, useResource, type Resource } from "../account/useResource.ts";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
 
 /** The operations a runner needs to take issue runs and coordinator turns. */
@@ -191,6 +191,7 @@ export function EnrollRunnerDialog({
   React.useEffect(() => {
     if (open) setName(initialName);
   }, [open, initialName]);
+  const [location, setLocation] = React.useState<"machine" | "sprite">("machine");
   const [capacityText, setCapacityText] = React.useState("1");
   const capacity = parseCapacity(capacityText);
   // A response for a dialog the reader already closed must not come back as
@@ -203,6 +204,20 @@ export function EnrollRunnerDialog({
     readonly maskedCommand: string;
     readonly existingRunnerIds: readonly string[];
   }) | null>(null);
+  const selectedKey = selected.join(",");
+  const sprites = useResource(async () => {
+    if (!open || location !== "sprite") return [];
+    return Promise.all(selected.map(async (id) => {
+      try {
+        return { id, present: (await api.spritesSecret(id)).present };
+      } catch {
+        return { id, present: null };
+      }
+    }));
+  }, [api, open, location, selectedKey]);
+  const canWake = sprites.value?.length === selected.length && sprites.value.every((entry) => entry.present === true);
+  const publishedVersion = fleet.value?.current ?? bootstrap?.version ?? "";
+  const release = /^v?\d+\.\d+\.\d+$/.test(publishedVersion) ? `v${publishedVersion.replace(/^v/, "")}` : null;
   const [showToken, setShowToken] = React.useState(false);
   const [connected, setConnected] = React.useState<FleetRunner | null>(null);
 
@@ -214,6 +229,7 @@ export function EnrollRunnerDialog({
     setName(initialName);
     setCapacityText("1");
     setService(true);
+    setLocation("machine");
     setEnrollment(null);
     setShowToken(false);
     setConnected(null);
@@ -260,7 +276,7 @@ export function EnrollRunnerDialog({
       name: name.trim() || "Unnamed runner",
     };
     if (generation.current === mine) {
-      const input = { hubUrl, organizationId, token: created.token, name: entry.name, capacity: capacity ?? 1, service };
+      const input = { hubUrl, organizationId, token: created.token, name: entry.name, capacity: capacity ?? 1, service: location === "machine" && service };
       setEnrollment({
         ...entry,
         command: registerCommand(input),
@@ -273,7 +289,8 @@ export function EnrollRunnerDialog({
   });
 
   const nameFits = runnerNameFits(name);
-  const ready = fleet.value !== undefined && selected.length > 0 && capacity !== null && nameFits;
+  const spriteNameFits = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name.trim());
+  const ready = fleet.value !== undefined && selected.length > 0 && capacity !== null && nameFits && (location === "machine" || (spriteNameFits && release !== null));
   const baselinePending = enrollment === null && fleet.value === undefined;
   const step = connected !== null ? 2 : enrollment !== null ? 1 : 0;
 
@@ -304,6 +321,7 @@ export function EnrollRunnerDialog({
               <h3 id="enroll-connected" role="status" className="text-sm font-medium">
                 {connected.display_name} is connected
               </h3>
+              {location === "sprite" && canWake ? <p className="text-sm text-muted-foreground">Sleeps when idle; the Hub wakes it for new work</p> : null}
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[13px]">
                 <dt className="text-muted-foreground">Hostname</dt><dd className="break-all">{connected.hostname}</dd>
                 <dt className="text-muted-foreground">OS / architecture</dt><dd>{connected.os} / {connected.architecture}</dd>
@@ -314,6 +332,29 @@ export function EnrollRunnerDialog({
             </section>
           ) : enrollment === null ? (
             <>
+              <fieldset className="flex flex-col gap-2 text-[13px]">
+                <legend className="pb-1 font-medium">Where will it run?</legend>
+                {([["machine", "A machine I run"], ["sprite", "A Fly Sprite"]] as const).map(([value, label]) => (
+                  <label key={value} className="flex items-center gap-2">
+                    <input type="radio" name="runner-location" value={value} checked={location === value} onChange={() => {
+                      setLocation(value);
+                      if (value === "sprite") setName(name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/g, "") || `detent-${globalThis.crypto.randomUUID().slice(0, 8)}`);
+                    }} />
+                    {label}
+                  </label>
+                ))}
+              </fieldset>
+              {location === "sprite" ? <>
+                <p className="text-xs text-muted-foreground">The Sprite gets the same name as this runner. Use lowercase letters, numbers and hyphens.</p>
+                {!spriteNameFits ? <p className="text-xs text-destructive-foreground">Enter a lowercase Sprite name, up to 63 characters, starting and ending with a letter or number.</p> : null}
+                {release === null ? <ControlError message="The Hub has not published a release version for the Sprite bootstrap." /> : null}
+                {sprites.loading ? <p className="text-xs text-muted-foreground">Checking Sprites tokens…</p> : sprites.value?.filter((entry) => entry.present !== true).map((entry) => (
+                  <p key={entry.id} className="text-xs text-warning">
+                    {entry.present === false ? "No Sprites token is set" : "Could not check the Sprites token"} for {projects.find((project) => project.id === entry.id)?.name}. Without it the Hub cannot wake the Sprite.{" "}
+                    <a className="underline" href={`${bootstrap?.base_path ?? ""}/settings/integrations?project=${encodeURIComponent(entry.id)}#sprites`}>Set a Sprites token</a>
+                  </p>
+                ))}
+              </> : null}
               <div className="flex flex-col gap-2 sm:flex-row">
                 <div className="flex flex-1 flex-col gap-1.5">
                   <Label htmlFor="enroll-runner-name" className="sm:min-h-7">Name</Label>
@@ -321,7 +362,7 @@ export function EnrollRunnerDialog({
                     id="enroll-runner-name"
                     autoComplete="off"
                     spellCheck={false}
-                    aria-invalid={!nameFits}
+                    aria-invalid={!nameFits || (location === "sprite" && !spriteNameFits)}
                     placeholder="Build host"
                     value={name}
                     onChange={(event) => setName(event.currentTarget.value)}
@@ -405,7 +446,7 @@ export function EnrollRunnerDialog({
                   ))
                 )}
               </fieldset>
-              <label className="flex items-start gap-2 text-[13px]" htmlFor="enroll-runner-service">
+              {location === "machine" ? <label className="flex items-start gap-2 text-[13px]" htmlFor="enroll-runner-service">
                 <Checkbox
                   id="enroll-runner-service"
                   checked={service}
@@ -419,10 +460,35 @@ export function EnrollRunnerDialog({
                     then the command prints what to clone and how to start it.
                   </span>
                 </span>
-              </label>
+              </label> : null}
             </>
           ) : (
             <section className="flex flex-col gap-2" aria-labelledby="enroll-run-command">
+              {location === "sprite" ? (
+                <>
+                  <h3 id="enroll-run-command" className="text-[13px] font-medium">Set up {enrollment.name} on a Fly Sprite</h3>
+                  <ol aria-label="Sprite setup instructions" className="list-decimal space-y-4 pl-5 text-[13px]">
+                    <li>Create the Sprite from your machine with the Sprite CLI.
+                      <CopyableCommand value={`sprite create ${enrollment.name}`} label="the create command" />
+                    </li>
+                    <li>Open its console.
+                      <CopyableCommand value={`sprite console -s ${enrollment.name}`} label="the console command" />
+                    </li>
+                    <li>Inside the Sprite, download the bootstrap script pinned to {release}.
+                      <CopyableCommand value={`curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/${release}/scripts/sprite-runner-bootstrap.sh -o sprite-runner-bootstrap.sh`} label="the download command" />
+                    </li>
+                    <li>Run the bootstrap. It installs Detent and the toolchain, registers the runner, and starts the detent-runner Sprite Service.
+                      <CopyableCommand value={`bash sprite-runner-bootstrap.sh --version ${release}`} label="the bootstrap command" />
+                    </li>
+                    <li>Copy this enrollment command and paste it at the bootstrap’s hidden prompt.
+                      <CopyableCommand value={enrollment.command} displayValue={enrollment.maskedCommand} label="the register command" />
+                    </li>
+                    <li>Sign in to your project’s provider inside the Sprite: <code>claude auth login</code> or <code>codex login --device-auth</code>.</li>
+                    <li>Set up the project’s git credentials, clone it into the directory printed by the script, and install its dependencies.</li>
+                    <li>Approve the repository policy in the Hub if pending. Re-run the bootstrap with empty input after cloning, then take a new checkpoint with <code>sprite-env checkpoints create</code>.</li>
+                  </ol>
+                </>
+              ) : <>
               <h3 id="enroll-run-command" className="text-[13px] font-medium">
                 Run this on the machine that will take the work.
               </h3>
@@ -440,6 +506,7 @@ export function EnrollRunnerDialog({
               >
                 {showToken ? "Hide token" : "Show token"}
               </Button>
+              </>}
               <p role="status" className="text-[13px] text-muted-foreground">
                 Waiting for {enrollment.name || "the runner"} to check in. The command works once, until{" "}
                 {new Date(enrollment.expiresAt).toLocaleTimeString()}.

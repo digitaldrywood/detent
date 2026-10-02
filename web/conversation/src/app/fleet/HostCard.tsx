@@ -20,7 +20,8 @@ export function HostCard({
   readonly now?: number;
   readonly onOpen: () => void;
 }): React.ReactElement {
-  const health = runner.health === "healthy" ? "Healthy"
+  const health = runner.health === "asleep" ? "Asleep, wakes on new work"
+    : runner.health === "healthy" ? "Healthy"
     : runner.health === "needs_attention" ? "Needs attention"
     : runner.health === "outside_hours" ? "Outside hours"
     : runner.health;
