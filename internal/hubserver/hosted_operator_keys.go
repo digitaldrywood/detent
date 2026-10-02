@@ -100,11 +100,11 @@ func (s *Service) hostedAPIKeys(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var key hostedAPIKey
 		var revoked sql.NullString
 		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &key.Expiry, &key.Fingerprint, &revoked); err != nil {
-			rows.Close()
 			return s.nativeAPIError(c, err)
 		}
 		key.Revoked = revoked.Valid
@@ -116,21 +116,22 @@ func (s *Service) hostedAPIKeys(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	for i := range keys {
-		grants, err := s.database.db.QueryContext(c.Request().Context(), "SELECT project_id FROM token_grants WHERE token_id=? AND organization_id=? ORDER BY project_id", keys[i].ID, s.config.Hosted.OrganizationID)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
-		keys[i].Projects = []string{}
-		for grants.Next() {
-			var project string
-			if err := grants.Scan(&project); err != nil {
-				grants.Close()
-				return s.nativeAPIError(c, err)
+		err := func() error {
+			grants, err := s.database.db.QueryContext(c.Request().Context(), "SELECT project_id FROM token_grants WHERE token_id=? AND organization_id=? ORDER BY project_id", keys[i].ID, s.config.Hosted.OrganizationID)
+			if err != nil {
+				return err
 			}
-			keys[i].Projects = append(keys[i].Projects, project)
-		}
-		err = grants.Err()
-		grants.Close()
+			defer grants.Close()
+			keys[i].Projects = []string{}
+			for grants.Next() {
+				var project string
+				if err := grants.Scan(&project); err != nil {
+					return err
+				}
+				keys[i].Projects = append(keys[i].Projects, project)
+			}
+			return grants.Err()
+		}()
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}

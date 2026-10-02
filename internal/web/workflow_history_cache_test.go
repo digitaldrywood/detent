@@ -141,15 +141,15 @@ func TestWorkflowHistoryCacheCadence(t *testing.T) {
 			if backend.shipped.Load() != wantCycles {
 				t.Fatalf("shipped reads = %d, want %d", backend.shipped.Load(), wantCycles)
 			}
-			if len(firstShipped.Shipped) != 1 || firstShipped.Shipped[0].Issue.Title != "Completed DONE-1" || firstShipped.Shipped[0].Issue.URL != "https://example.com/issues/1" || firstShipped.Shipped[0].Issue.PullRequest.Number != 42 || firstShipped.Shipped[0].FinalState != "Done" || !firstShipped.Shipped[0].CompletedAt.Equal(base.Add(-time.Hour)) {
+			if len(firstShipped.Shipped) != 1 || firstShipped.Shipped[0].Title != "Completed DONE-1" || firstShipped.Shipped[0].URL != "https://example.com/issues/1" || firstShipped.Shipped[0].PullRequest.Number != 42 || firstShipped.Shipped[0].FinalState != "Done" || !firstShipped.Shipped[0].CompletedAt.Equal(base.Add(-time.Hour)) {
 				t.Fatalf("initial shipping projection = %+v", firstShipped.Shipped)
 			}
 			if tt.ledgerWrite && tt.want == 12 {
-				if len(shipped.Shipped) != 1 || shipped.Shipped[0].Issue.ID != "new" || shipped.Shipped[0].Issue.PullRequest.Number != 99 || !shipped.Shipped[0].CompletedAt.Equal(now) {
+				if len(shipped.Shipped) != 1 || shipped.Shipped[0].ID != "new" || shipped.Shipped[0].PullRequest.Number != 99 || !shipped.Shipped[0].CompletedAt.Equal(now) {
 					t.Fatalf("independent ledger write did not refresh: %+v", shipped.Shipped)
 				}
 			} else if tt.changed {
-				if len(shipped.Shipped) != 1 || shipped.Shipped[0].Issue.PullRequest.Number != 43 {
+				if len(shipped.Shipped) != 1 || shipped.Shipped[0].PullRequest.Number != 43 {
 					t.Fatalf("revised association did not refresh: %+v", shipped.Shipped)
 				}
 			} else if !reflect.DeepEqual(firstShipped.Shipped, shipped.Shipped) {
@@ -252,7 +252,7 @@ func TestWorkflowHistoryCacheFailureAndConcurrentMutation(t *testing.T) {
 			if backend.reports.Load() != before+6 {
 				t.Fatal("invalid load was cached")
 			}
-			if got := server.snapshotShippedCompletions(t.Context(), snapshot); len(got.Shipped) != 1 || got.Shipped[0].Issue.ID != "completed" {
+			if got := server.snapshotShippedCompletions(t.Context(), snapshot); len(got.Shipped) != 1 || got.Shipped[0].ID != "completed" {
 				t.Fatalf("retry did not recover shipping: %+v", got.Shipped)
 			}
 		})

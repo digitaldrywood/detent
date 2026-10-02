@@ -111,7 +111,7 @@ esac
 				t.Fatal(err)
 			}
 			outputPath := filepath.Join(dir, "output")
-			cmd := exec.Command("bash", "-c", script)
+			cmd := exec.CommandContext(t.Context(), "bash", "-c", script)
 			cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_EVENT_NAME="+event, "GITHUB_OUTPUT="+outputPath)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("preflight: %v: %s", err, output)
