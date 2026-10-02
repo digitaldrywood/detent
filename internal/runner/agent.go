@@ -1504,6 +1504,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	landing, nativeLanding := req.Execution.(LandingExecution)
 	nativeLanding = nativeLanding && mode == RunModeMerge
 	if nativeLanding {
+		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
+			if err := runtime.StartLanding(ctx, req.WorkAttemptID, req.Generation); err != nil {
+				return RunResult{}, err
+			}
+		}
 		if err := req.Execution.Validate(ctx); err != nil {
 			return RunResult{}, err
 		}
@@ -1804,6 +1809,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if repository, ok := req.Execution.(RepositoryExecution); ok {
 			repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
+		}
+		if runtime, ok := req.Execution.(RuntimeExecution); ok {
+			if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Identity: runtimeIdentity}); err != nil {
+				return RunResult{}, err
+			}
 		}
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return RunResult{}, err
@@ -5317,6 +5327,11 @@ func (r *Runner) publishRunUpdate(
 	runStartedAt time.Time,
 	detentSessionID int64,
 ) error {
+	if runtime, ok := req.Execution.(RuntimeExecution); ok {
+		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: eventAt, Identity: result.RuntimeIdentity}); err != nil {
+			return err
+		}
+	}
 	if req.OnUsageUpdate == nil {
 		return nil
 	}

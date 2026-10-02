@@ -1,6 +1,8 @@
 package workflowmetrics
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,5 +43,31 @@ func TestActivityBreakdownPartitionsObservedWallTime(t *testing.T) {
 				t.Fatalf("partition sums to %v", sum)
 			}
 		})
+	}
+}
+
+func TestPublicActivityProfileBoundsAndRedaction(t *testing.T) {
+	p := ActivityProfile{Schema: 1, AttemptID: 168, Generation: 27, Status: "running", Stage: "implementation", Instance: "/private/instance", CoverageNotes: []string{"private instruction text"}, Dropped: 2, Unpaired: 3, ProviderThreadRef: "private thread"}
+	for range 1024 {
+		span := ActivitySpan{ID: "private shell command", ParentID: "private parent", Kind: "implementation", Evidence: "edit_tool", Attribution: "inferred_text_match", CausalAttribution: "private origin", Sources: []InstructionRef{{Name: "/private/instructions", Hash: "private contents", PathRef: "/private/path"}}}
+		for range 32 {
+			span.Actions = append(span.Actions, ActivityAction{Type: "read", Fingerprint: strings.Repeat("a", 64), NameRef: "private name", PathRef: "/private/path", Evidence: "native_read", Kind: "context_read", CausalAttribution: "private cause"})
+		}
+		p.Spans = append(p.Spans, span)
+	}
+	public := PublicActivityProfile(p)
+	raw, err := json.Marshal(public)
+	if err != nil || len(raw) > 128*1024 || len(public.Spans) == 0 || public.Dropped <= p.Dropped || public.Unpaired != 3 || public.Coverage != "partial" {
+		t.Fatalf("public profile: bytes=%d spans=%d dropped=%d err=%v", len(raw), len(public.Spans), public.Dropped, err)
+	}
+	if strings.Contains(string(raw), "private") {
+		t.Fatalf("private data survived public projection: %s", raw)
+	}
+	if p.Spans[0].ID != "private shell command" || p.Instance != "/private/instance" {
+		t.Fatal("projection changed the local recorder")
+	}
+	second, err := json.Marshal(PublicActivityProfile(public))
+	if err != nil || string(raw) != string(second) {
+		t.Fatal("public projection is not stable across producer and owner")
 	}
 }

@@ -38,17 +38,18 @@ var ErrReadUnavailable = errors.New("work read service is unavailable")
 // WorkReadRequest contains application selectors only. Organization and principal
 // always come from the connection. Each operation permits only its own fields.
 type WorkReadRequest struct {
-	ProjectID string `json:"project_id"`
-	Reference string `json:"reference,omitempty"`
-	Query     string `json:"query,omitempty"`
-	State     string `json:"state,omitempty"`
-	Label     string `json:"label,omitempty"`
-	Cursor    string `json:"cursor,omitempty"`
-	Offset    int    `json:"offset,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
-	CommentID string `json:"comment_id,omitempty"`
-	Revision  int64  `json:"revision,omitempty"`
-	AttemptID int64  `json:"attempt_id,omitempty"`
+	ProjectID       string `json:"project_id"`
+	Reference       string `json:"reference,omitempty"`
+	Query           string `json:"query,omitempty"`
+	State           string `json:"state,omitempty"`
+	Label           string `json:"label,omitempty"`
+	Cursor          string `json:"cursor,omitempty"`
+	Offset          int    `json:"offset,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	CommentID       string `json:"comment_id,omitempty"`
+	Revision        int64  `json:"revision,omitempty"`
+	AttemptID       int64  `json:"attempt_id,omitempty"`
+	NativeAttemptID string `json:"native_attempt_id,omitempty"`
 }
 
 // WorkReader is implemented by dashboard application adapters, not transports.
@@ -84,11 +85,11 @@ func WorkReadCatalog() []Definition {
 		{WorkRuns, "Read work-item run history and change/artifact references.", "reference cursor offset limit"},
 		{WorkReferences, "Read PR, change, diff and artifact identifiers and links; detail is owned by the review/artifact tools.", "reference cursor offset limit"},
 		{WorkExport, "Export the native work-item application resource as JSON.", "reference"},
-		{BoardActivity, "Read the board activity model, with durable and live event provenance.", "reference limit"},
-		{BoardReceipt, "Read a work item's efficiency receipt.", "reference"},
+		{BoardActivity, "Read the board activity model, with durable and live event provenance.", "reference cursor limit"},
+		{BoardReceipt, "Read a work item's recorded receipt and runtime evidence; efficiency requires its application owner.", "reference"},
 		{BoardSession, "Read the current or latest work-item session.", "reference"},
-		{BoardSessionHistory, "Read a bounded page of the work item's persisted session rollout.", "reference offset limit"},
-		{WorkAttemptReceipt, "Read an attempt receipt owned by this work item.", "reference attempt_id"},
+		{BoardSessionHistory, "Read a bounded page of the work item's persisted session rollout or native instruction activity, including coverage limits.", "reference attempt_id native_attempt_id offset limit"},
+		{WorkAttemptReceipt, "Read an attempt receipt owned by this work item; select a local attempt_id or a native_attempt_id.", "reference attempt_id native_attempt_id"},
 	} {
 		properties := map[string]any{"project_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}}
 		required := []string{"project_id"}
@@ -100,7 +101,9 @@ func WorkReadCatalog() []Definition {
 				properties[field] = map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000}
 			case "revision", "attempt_id":
 				properties[field] = map[string]any{"type": "integer", "minimum": 1}
-				required = append(required, field)
+				if field != "attempt_id" {
+					required = append(required, field)
+				}
 			default:
 				bound := 256
 				if field == "cursor" {
@@ -114,7 +117,11 @@ func WorkReadCatalog() []Definition {
 				}
 			}
 		}
-		schema, _ := json.Marshal(map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}) //nolint:errcheck // The schema contains only JSON primitives, slices and maps.
+		shape := map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
+		if spec.name == WorkAttemptReceipt {
+			shape["oneOf"] = []map[string]any{{"required": []string{"attempt_id"}}, {"required": []string{"native_attempt_id"}}}
+		}
+		schema, _ := json.Marshal(shape) //nolint:errcheck // The schema contains only JSON primitives, slices and maps.
 		d := definition(spec.name, spec.description, string(schema))
 		d.Meta = toolset(BoardState)
 		d.Annotations.OpenWorld = true
@@ -186,7 +193,13 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 	if rawLimit, ok := fields["limit"]; ok && (string(rawLimit) == "null" || request.Limit == 0) {
 		return request, ErrInvalidArguments
 	}
+	if _, present := fields["attempt_id"]; present && request.AttemptID <= 0 {
+		return request, ErrInvalidArguments
+	}
 	request.Limit = itemLimit(request.Limit)
+	if len(request.NativeAttemptID) > 128 || request.NativeAttemptID != "" && !strings.HasPrefix(request.NativeAttemptID, "attempt_") || request.AttemptID != 0 && request.NativeAttemptID != "" || name == WorkAttemptReceipt && request.AttemptID <= 0 && request.NativeAttemptID == "" {
+		return request, ErrInvalidArguments
+	}
 	return request, nil
 }
 

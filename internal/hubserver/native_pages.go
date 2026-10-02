@@ -347,6 +347,9 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 		if err := json.Unmarshal([]byte(data), &event.Data); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
+		if event.Data.Run != nil {
+			event.Data.Run.Runtime = event.Data.Run.Runtime.WithoutActivitySpans()
+		}
 		if event.RecordedAt, err = parseTimeValue(recorded); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}

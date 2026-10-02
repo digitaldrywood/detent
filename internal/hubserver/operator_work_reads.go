@@ -33,7 +33,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	if request.Cursor != "" {
 		params.Set("cursor", request.Cursor)
 	}
-	if request.Offset != 0 && name != operatortool.WorkReferences {
+	if request.Offset != 0 && name != operatortool.WorkReferences && name != operatortool.BoardSessionHistory {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	if name == operatortool.WorkList {
@@ -67,6 +67,19 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	}
 	request.Reference = string(item.WorkItemID)
 	switch name {
+	case operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt:
+		if request.Cursor != "" {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		selector := request.NativeAttemptID
+		if request.AttemptID > 0 {
+			selector = strconv.FormatInt(request.AttemptID, 10)
+		}
+		evidence, err := s.readNativeRuntime(ctx, scope, request.Reference, selector)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
+		return operatortool.NativeRuntimeResult(name, request, evidence)
 	case operatortool.WorkItem:
 		return hubWorkResult(r, request, operatortool.NativeItemView(request.ProjectID, item), nil)
 	case operatortool.WorkExport:
@@ -134,6 +147,10 @@ func hubWorkResult[T any](r operatorWorkReads, request operatortool.WorkReadRequ
 }
 
 func safeWorkReadError(err error) error {
+	var ambiguous *explain.AmbiguousIdentityError
+	if errors.Is(err, explain.ErrNotFound) || errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.As(err, &ambiguous) {
+		return err
+	}
 	if errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
 		return explain.ErrNotFound
 	}
@@ -141,7 +158,7 @@ func safeWorkReadError(err error) error {
 	if errors.As(err, &native) && native.status == 422 {
 		return operatortool.ErrInvalidArguments
 	}
-	return err
+	return operatortool.ErrReadUnavailable
 }
 
 func (s *Service) resolveOperatorNativeItem(ctx context.Context, scope nativeScope, reference string) (tracker.NativeIssue, error) {
@@ -169,5 +186,23 @@ func (s *Service) resolveOperatorNativeItem(ctx context.Context, scope nativeSco
 }
 
 func (operatorWorkReads) WorkReadNames(context.Context) []string {
-	return []string{operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity}
+	return []string{operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt}
+}
+
+func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (explain.IssueExplanation, error) {
+	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: query.ProjectID})
+	if err != nil {
+		return explain.IssueExplanation{}, err
+	}
+	scope := r.scope
+	scope.project = tracker.ProjectID(query.ProjectID)
+	issue, err := r.service.resolveOperatorNativeItem(ctx, scope, query.Reference)
+	if err != nil {
+		return explain.IssueExplanation{}, safeWorkReadError(err)
+	}
+	evidence, err := r.service.readNativeRuntime(ctx, scope, string(issue.WorkItemID), "")
+	if err != nil {
+		return explain.IssueExplanation{}, safeWorkReadError(err)
+	}
+	return explain.FromNativeEvidence(evidence), nil
 }

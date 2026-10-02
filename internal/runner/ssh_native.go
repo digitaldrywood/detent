@@ -143,3 +143,13 @@ func (e *sshNativeExecution) AvailabilityDeadline() time.Time {
 func (e *sshNativeExecution) RecordUsage(ctx context.Context, usage tracker.NativeUsage) error {
 	return e.peer.Call(ctx, "execution.RecordUsage", nil, usage)
 }
+
+func (e *sshNativeExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) error {
+	return e.peer.Call(ctx, "execution.ObserveRuntime", nil, observation)
+}
+func (e *sshNativeExecution) StartLanding(ctx context.Context, attempt int64, generation uint64) error {
+	return e.peer.Call(ctx, "execution.StartLanding", nil, attempt, generation)
+}
+func (e *sshNativeExecution) ObserveLanding(ctx context.Context, landing NativeLanding) error {
+	return e.peer.Call(ctx, "execution.ObserveLanding", nil, landing)
+}

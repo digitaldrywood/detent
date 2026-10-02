@@ -1329,6 +1329,8 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 		}
 	}
 	request.LastStatus = status
+	request.LastObservedAt = now
+	request.UsedObserved = hasUsed
 	if currentCredential {
 		request.RateLimited = request.RateLimited || rateLimited
 	}

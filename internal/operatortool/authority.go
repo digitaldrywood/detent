@@ -55,6 +55,7 @@ type Authority struct {
 	// It is resolved anew with Check, never retained as a permission or supplied
 	// by a transport. Approval must bind the originating connection's inputs.
 	BindContext func(context.Context) context.Context
+	Explainer   Explainer
 	WorkReads   WorkReader
 	Changes     ChangeApplication
 }
@@ -136,12 +137,13 @@ func (e *AuthorizedExecutor) ListTools(ctx context.Context) ([]Definition, error
 	if e.executor == nil {
 		return definitions, nil
 	}
+	authority, _ := authorized.Value(authorityKey{}).(Authority)
 	for _, definition := range Catalog() {
-		if definition.Name == ExplainItem && e.executor.explainer != nil || definition.Name != ExplainItem && e.executor.snapshots != nil {
+		if definition.Name == ExplainItem && (e.executor.explainer != nil || authority.Explainer != nil) || definition.Name != ExplainItem && e.executor.snapshots != nil {
 			definitions = append(definitions, definition)
 		}
 	}
-	authority, _ := authorized.Value(authorityKey{}).(Authority) //nolint:errcheck // AuthorizeCurrent always attaches the resolved Authority on success.
+
 	if e.executor.workReads != nil || authority.WorkReads != nil {
 		reader := e.executor.workReads
 		if authority.WorkReads != nil {

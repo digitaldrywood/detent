@@ -11,8 +11,10 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -23,6 +25,11 @@ type IssueExplainer interface {
 }
 
 func (s *Server) apiIssueExplanation(c echo.Context) error {
+	ctx, err := operatortool.AuthorizeCurrent(c.Request().Context(), operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: c.Param("project_id")})
+	if err != nil {
+		return writeAPIAuthError(c, http.StatusForbidden, "access_denied", operatortool.ErrAccessDenied.Error())
+	}
+	c.SetRequest(c.Request().WithContext(ctx))
 	explanation, ok, err := s.issueExplanation(c)
 	if !ok {
 		return err
@@ -107,13 +114,9 @@ func (s *Server) issueExplanation(c echo.Context) (explain.IssueExplanation, boo
 	if response, ok := issueExplanationVersionProblem(c.QueryParam("schema")); ok {
 		return explain.IssueExplanation{}, false, c.JSON(response.status, errorResponse(response.code, response.message))
 	}
-	if s.issueExplainer == nil {
-		return explain.IssueExplanation{}, false, c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue explanation runtime is unavailable"))
-	}
-
 	ctx, cancel := context.WithTimeout(c.Request().Context(), issueExplanationTimeout)
 	defer cancel()
-	explanation, err := s.issueExplainer.Explain(ctx, explain.Query{ProjectID: projectID, Reference: reference})
+	explanation, err := (nativeIssueExplainer{server: s, fallback: s.issueExplainer}).Explain(ctx, explain.Query{ProjectID: projectID, Reference: reference})
 	if err == nil {
 		return explanation, true, nil
 	}

@@ -348,6 +348,14 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		return tracker.Lease{}, err
 	}
 	if capacity <= 0 {
+		if query.NativeScope != nil && request.WorkItemID > 0 {
+			if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, request.WorkItemID, tracker.NativeSchedulerDecision{Source: "native_host_capacity", Outcome: "skipped", Reason: "Shared host capacity is full or paused"}, now); err != nil {
+				return tracker.Lease{}, err
+			}
+			if err := tx.Commit(); err != nil {
+				return tracker.Lease{}, err
+			}
+		}
 		if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
 			return tracker.Lease{}, &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
 		}
@@ -355,6 +363,15 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	}
 	if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
 		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now); err != nil {
+			var refusal *nativeError
+			if request.WorkItemID > 0 && errors.As(err, &refusal) {
+				if recordErr := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, request.WorkItemID, tracker.NativeSchedulerDecision{Source: "native_runner_routing", Outcome: "skipped", Reason: refusal.Code}, now); recordErr != nil {
+					return tracker.Lease{}, recordErr
+				}
+				if commitErr := tx.Commit(); commitErr != nil {
+					return tracker.Lease{}, commitErr
+				}
+			}
 			return tracker.Lease{}, err
 		}
 		if !query.WorkspaceLane {
@@ -417,6 +434,9 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		if err != nil {
 			return tracker.Lease{}, err
 		}
+		if err := recordNativeSchedulingDecision(ctx, tx, query.NativeScope, id, ready, now); err != nil {
+			return tracker.Lease{}, err
+		}
 		if !ready {
 			continue
 		}
@@ -429,6 +449,11 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		if !workspaceGate.skipsProviderReservation(id) {
 			reservation, reserved, err = selectProviderCapacity(ctx, tx, query, id, now)
 			if err != nil {
+				if errors.Is(err, ErrNoClaimableWork) || isProviderWait(err) {
+					if recordErr := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_provider_capacity", Outcome: "skipped", Reason: "Current provider requirement has no available reservation"}, now); recordErr != nil {
+						return tracker.Lease{}, recordErr
+					}
+				}
 				if errors.Is(err, ErrNoClaimableWork) {
 					continue
 				}
@@ -466,6 +491,9 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			if err := writeProviderReservation(ctx, tx, lease.ID, query.NativeScope.organization, reservation); err != nil {
 				return tracker.Lease{}, err
 			}
+		}
+		if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", Reason: "The scheduler granted a fenced lease"}, now); err != nil {
+			return tracker.Lease{}, err
 		}
 		if err := tx.Commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit hub claim next: %w", err)

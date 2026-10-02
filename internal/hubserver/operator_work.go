@@ -44,7 +44,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 }
 
 func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
-	if operatortool.IsWorkRead(call.Name) {
+	if operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
 		return operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{})).Execute(ctx, call)
 	}
 	definition, ok := operatortool.Lookup(call.Name)

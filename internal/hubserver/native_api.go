@@ -135,6 +135,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/work-items/:item/comments", s.createNativeComment, write)
 	e.PATCH(nativeBase+"/work-items/:item/comments/:comment", s.updateNativeComment, write)
 	e.GET(nativeBase+"/work-items/:item/history", s.listNativeHistory, read)
+	e.GET(nativeBase+"/work-items/:item/runtime", s.getNativeRuntime, read)
 	e.GET(nativeBase+"/work-items/:item/attempts", s.listNativeAttempts, read)
 	e.GET(nativeBase+"/work-items/:item/attempts/:attempt", s.getNativeAttempt, read)
 	e.GET(nativeBase+"/work-items/:item/versions/:revision", s.getNativeVersion, read)

@@ -163,7 +163,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 	if credential.Hosted != nil {
 		account = operatortool.Account{Subject: credential.Hosted.Subject, Role: credential.HostedRole, SupportActor: credential.Hosted.SupportActor}
 	}
-	return operatortool.Authority{Account: account, Identity: operatorIdentity(credential, organization), WorkReads: operatorWorkReads{service: s, scope: scope}, Changes: hubChangeApplication{service: s, scope: scope}, BindContext: func(ctx context.Context) context.Context {
+	return operatortool.Authority{Account: account, Identity: operatorIdentity(credential, organization), Explainer: operatorWorkReads{service: s, scope: scope}, WorkReads: operatorWorkReads{service: s, scope: scope}, Changes: hubChangeApplication{service: s, scope: scope}, BindContext: func(ctx context.Context) context.Context {
 		// Commands consume the freshly resolved originating credential, even when
 		// the context initially came from a different approving browser.
 		ctx = context.WithValue(ctx, operatorScopeKey{}, scope)

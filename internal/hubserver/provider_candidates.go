@@ -55,6 +55,9 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 			if err != nil {
 				return nil, err
 			}
+			if err := recordNativeSchedulingDecision(ctx, tx, &scope, id, ready, now); err != nil {
+				return nil, err
+			}
 			if !ready {
 				continue
 			}

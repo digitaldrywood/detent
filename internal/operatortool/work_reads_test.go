@@ -27,6 +27,14 @@ func TestWorkReadArguments(t *testing.T) {
 		{"missing revision", WorkVersion, `{"project_id":"project","reference":"item"}`, false},
 		{"null revision", WorkVersion, `{"project_id":"project","reference":"item","revision":null}`, false},
 		{"version", WorkVersion, `{"project_id":"project","reference":"item","revision":1}`, true},
+		{"native receipt", WorkAttemptReceipt, `{"project_id":"project","reference":"item","native_attempt_id":"attempt_123"}`, true},
+		{"local receipt", WorkAttemptReceipt, `{"project_id":"project","reference":"item","attempt_id":168}`, true},
+		{"missing attempt", WorkAttemptReceipt, `{"project_id":"project","reference":"item"}`, false},
+		{"ambiguous attempt", WorkAttemptReceipt, `{"project_id":"project","reference":"item","attempt_id":168,"native_attempt_id":"attempt_123"}`, false},
+		{"ambiguous history", BoardSessionHistory, `{"project_id":"project","reference":"item","attempt_id":168,"native_attempt_id":"attempt_123"}`, false},
+		{"invalid native attempt", WorkAttemptReceipt, `{"project_id":"project","reference":"item","native_attempt_id":"other"}`, false},
+		{"null local attempt", WorkAttemptReceipt, `{"project_id":"project","reference":"item","attempt_id":null}`, false},
+		{"paged native activity", BoardActivity, `{"project_id":"project","reference":"item","cursor":"page","limit":1}`, true},
 		{"trailing payload", WorkList, `{"project_id":"project"}{}`, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -49,10 +57,14 @@ func TestWorkReadArguments(t *testing.T) {
 type workReadProbe struct {
 	calls   int
 	failure error
+	content json.RawMessage
 }
 
 func (p *workReadProbe) ReadWork(context.Context, string, WorkReadRequest) (Result, error) {
 	p.calls++
+	if p.content != nil {
+		return Result{Content: p.content}, p.failure
+	}
 	return Result{Content: json.RawMessage(`{"items":[]}`)}, p.failure
 }
 
@@ -62,15 +74,20 @@ func TestWorkReadDirectAuthorityAndSafeFailure(t *testing.T) {
 		project, org string
 		denied       bool
 		failure      error
+		oversized    bool
 	}{
 		{name: "authorized empty", project: "project", org: "org"},
 		{name: "foreign project", project: "other", org: "org", denied: true},
 		{name: "foreign organization", project: "project", org: "other", denied: true},
 		{name: "provider detail opaque", project: "project", org: "org", failure: errors.New("secret provider URL and token")},
+		{name: "oversized read", project: "project", org: "org", oversized: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			identity := Identity{PrincipalID: "principal", OrganizationID: "org", CredentialID: "key"}
 			probe := &workReadProbe{failure: test.failure}
+			if test.oversized {
+				probe.content = json.RawMessage(`{"private":"` + strings.Repeat("secret", MaxResultBytes/6) + `"}`)
+			}
 			current := identity
 			current.OrganizationID = test.org
 			ctx := WithConnection(t.Context(), Connection{Identity: identity, Resolve: func(context.Context) (Authority, error) {
@@ -88,7 +105,7 @@ func TestWorkReadDirectAuthorityAndSafeFailure(t *testing.T) {
 				if !errors.Is(err, ErrAccessDenied) || probe.calls != 0 {
 					t.Fatalf("err=%v calls=%d", err, probe.calls)
 				}
-			case test.failure != nil:
+			case test.failure != nil || test.oversized:
 				if !errors.Is(err, ErrReadUnavailable) || strings.Contains(err.Error(), "secret") {
 					t.Fatal(err)
 				}

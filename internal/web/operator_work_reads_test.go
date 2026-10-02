@@ -157,6 +157,7 @@ func TestOperatorNativeClientReads(t *testing.T) {
 	// A broader connector credential must not leak foreign project relations
 	// through current detail, lists, saved versions, history or exports.
 	fixture.issue.Dependencies = []tracker.NativeWorkItemID{"wi_hidden", "wi_visible"}
+	fixture.issue.LinkedSource = &tracker.LinkedIssueSource{Status: "historical", Snapshot: &tracker.GitHubIssueSnapshot{Body: "private imported instruction body", Comments: []tracker.GitHubIssueComment{{Body: "private imported command"}}}}
 	fixture.issue.Blockers = []tracker.NativeDependency{{ID: "wi_hidden", ProjectID: "prj_foreign", State: "Secret lane"}, {ID: "wi_visible", ProjectID: "prj_example", State: "Todo"}}
 	for _, test := range []struct {
 		tool  string
@@ -164,6 +165,9 @@ func TestOperatorNativeClientReads(t *testing.T) {
 		want  string
 	}{
 		{"work_item", nil, "Full native body"},
+		{"board_receipt", nil, "runtime_phase_heartbeat"},
+		{"board_session", nil, "historical_scheduler_decision"},
+		{"explain_item", nil, "native_runtime"},
 		{"work_export", nil, "Full native body"},
 		{"work_comments", map[string]any{"limit": 1}, "Discussion"},
 		{"work_history", map[string]any{"limit": 1}, "items"},
@@ -193,6 +197,9 @@ func TestOperatorNativeClientReads(t *testing.T) {
 			if strings.Contains(response.Body.String(), "FormToken") || strings.Contains(response.Body.String(), "hub-operator") {
 				t.Fatalf("UI credential leak: %s", response.Body)
 			}
+			if (test.tool == "board_receipt" || test.tool == "board_session" || test.tool == "explain_item") && strings.Contains(response.Body.String(), "private imported") {
+				t.Fatalf("runtime content leak: %s", response.Body)
+			}
 			if strings.Contains(response.Body.String(), "wi_hidden") || strings.Contains(response.Body.String(), "prj_foreign") || strings.Contains(response.Body.String(), "Secret lane") {
 				t.Fatalf("foreign relation leak: %s", response.Body)
 			}
@@ -201,4 +208,17 @@ func TestOperatorNativeClientReads(t *testing.T) {
 			}
 		})
 	}
+	response := performJSON(t, server.Handler(), http.MethodGet, "/api/v1/projects/native/issues/explanation?reference=wi_example", "", map[string]string{"Authorization": "Bearer " + fixture.keys["readnative"]})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "native_runtime") || strings.Contains(response.Body.String(), "private imported") || strings.Contains(response.Body.String(), "wi_hidden") {
+		t.Fatalf("native explanation API=%d %s", response.Code, response.Body)
+	}
+	response = performJSON(t, server.Handler(), http.MethodGet, "/api/v1/projects/native/issues/explanation?reference=wi_example", "", map[string]string{"Authorization": "Bearer " + fixture.keys["readother"]})
+	if response.Code != http.StatusForbidden || strings.Contains(response.Body.String(), "Native collaboration") {
+		t.Fatalf("foreign explanation API=%d %s", response.Code, response.Body)
+	}
+	response = performJSON(t, server.Handler(), http.MethodGet, "/api/v1/operator-tools", "", map[string]string{"Authorization": "Bearer " + fixture.keys["readnative"]})
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "explain_item") {
+		t.Fatalf("native read discovery=%d %s", response.Code, response.Body)
+	}
+
 }

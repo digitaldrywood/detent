@@ -313,16 +313,17 @@ type CollaborationEvent struct {
 }
 
 type CollaborationData struct {
-	Change            *NativeChangeReference `json:"change,omitempty"`
-	Run               *NativeRunData         `json:"run,omitempty"`
-	Revision          Revision               `json:"revision,string,omitempty"`
-	Fields            []string               `json:"fields,omitempty"`
-	CommentID         string                 `json:"comment_id,omitempty"`
-	RelatedWorkItemID NativeWorkItemID       `json:"related_work_item_id,omitempty"`
-	Operation         string                 `json:"operation,omitempty"`
-	FromState         string                 `json:"from_state,omitempty"`
-	ToState           string                 `json:"to_state,omitempty"`
-	Reason            string                 `json:"reason,omitempty"`
+	Decision          *NativeSchedulerDecision `json:"decision,omitempty"`
+	Change            *NativeChangeReference   `json:"change,omitempty"`
+	Run               *NativeRunData           `json:"run,omitempty"`
+	Revision          Revision                 `json:"revision,string,omitempty"`
+	Fields            []string                 `json:"fields,omitempty"`
+	CommentID         string                   `json:"comment_id,omitempty"`
+	RelatedWorkItemID NativeWorkItemID         `json:"related_work_item_id,omitempty"`
+	Operation         string                   `json:"operation,omitempty"`
+	FromState         string                   `json:"from_state,omitempty"`
+	ToState           string                   `json:"to_state,omitempty"`
+	Reason            string                   `json:"reason,omitempty"`
 }
 
 type Page[T any] struct {
@@ -404,19 +405,20 @@ type NativeLeaseMutation struct {
 }
 
 type NativeRunData struct {
-	Sequence     int64                    `json:"sequence,string,omitempty"`
-	Identity     *NativeExecutionIdentity `json:"identity,omitempty"`
-	MachineID    MachineID                `json:"machine_id,omitempty"`
-	RunnerID     string                   `json:"runner_id,omitempty"`
-	SessionID    string                   `json:"session_id,omitempty"`
-	Handoff      *NativeCheckpoint        `json:"handoff,omitempty"`
-	LeaseID      LeaseID                  `json:"lease_id"`
-	FencingToken FencingToken             `json:"fencing_token,string"`
-	RunID        string                   `json:"run_id"`
-	AttemptID    string                   `json:"attempt_id"`
-	PolicyID     string                   `json:"policy_id"`
-	Outcome      string                   `json:"outcome,omitempty"`
-	ArtifactIDs  []string                 `json:"artifact_ids,omitempty"`
+	Runtime      *NativeRuntimeObservation `json:"runtime,omitempty"`
+	Sequence     int64                     `json:"sequence,string,omitempty"`
+	Identity     *NativeExecutionIdentity  `json:"identity,omitempty"`
+	MachineID    MachineID                 `json:"machine_id,omitempty"`
+	RunnerID     string                    `json:"runner_id,omitempty"`
+	SessionID    string                    `json:"session_id,omitempty"`
+	Handoff      *NativeCheckpoint         `json:"handoff,omitempty"`
+	LeaseID      LeaseID                   `json:"lease_id"`
+	FencingToken FencingToken              `json:"fencing_token,string"`
+	RunID        string                    `json:"run_id"`
+	AttemptID    string                    `json:"attempt_id"`
+	PolicyID     string                    `json:"policy_id"`
+	Outcome      string                    `json:"outcome,omitempty"`
+	ArtifactIDs  []string                  `json:"artifact_ids,omitempty"`
 	// Usage is what the attempt has spent so far, one entry per provider and
 	// model (decisions section 17.5). A runner that reports none leaves the
 	// field out, so the event is byte-identical to what it was before.

@@ -146,6 +146,13 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 				if test.status == http.StatusTooManyRequests && (status.StatusCode != test.status || status.RetryAfter != 120*time.Second || status.RateLimit.Remaining != 4990) {
 					t.Fatalf("secondary response evidence = %#v", status)
 				}
+				if !execution.started || len(execution.observations) != 1 || execution.observations[0].Phase != "completed" || execution.observations[0].REST == nil || len(execution.observations[0].REST.Windows) != 1 || len(execution.landingObservations) != 0 {
+					t.Fatalf("quota runtime evidence=%#v", execution)
+				}
+				operation := execution.observations[0].REST.Windows[0]
+				if operation.Status != quotaStatus || operation.ResetAt != status.ResetAt || operation.ObservedAt.IsZero() || operation.CredentialIdentity != status.CredentialIdentity || !operation.RateLimited || test.status == http.StatusTooManyRequests && operation.RetryAfterSeconds != 120 {
+					t.Fatalf("quota operation authority=%#v", operation)
+				}
 				return
 			}
 			var refusal *workspace.LandRefusal
@@ -326,7 +333,25 @@ func gitCommand(dir string, args ...string) (string, error) {
 type landingRunExecution struct {
 	testExecution
 	landingStub
-	stopped bool
+	stopped             bool
+	started             bool
+	observations        []tracker.NativeRuntimeObservation
+	landingObservations []NativeLanding
+}
+
+func (e *landingRunExecution) StartLanding(context.Context, int64, uint64) error {
+	e.started = true
+	return nil
+}
+
+func (e *landingRunExecution) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
+	e.observations = append(e.observations, observation)
+	return nil
+}
+
+func (e *landingRunExecution) ObserveLanding(_ context.Context, landing NativeLanding) error {
+	e.landingObservations = append(e.landingObservations, landing)
+	return nil
 }
 
 func (e *landingRunExecution) Guard(ctx context.Context) (context.Context, func(), error) {
