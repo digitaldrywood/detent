@@ -458,7 +458,13 @@ cover exact remote publication, retained journals and native capabilities.
 Native worker finish prepares the result and Change Request while retaining the
 existing claim. The orchestrator publishes plan and review evidence, writes the
 lane through its ledger, and records `run.finished` when surrendering that claim
-(#3437). Automated native plans return their review section in the worker result;
+(#3437). Authorized native code and rework retain that completion owner during
+graceful drain (#152); drain stops intake without discarding genuine publication
+or its allowed lane transition. Final diff, Change reads and creation failures
+remain publication diagnostics, while actual claim, lease and fencing loss keep
+their existing instance owner. Version refusals retain the diagnostic and code,
+enter the configured review lane, and cannot inherit an earlier version's approval.
+Automated native plans return their review section in the worker result;
 workers never publish approval comments or move lanes. Native workflows are
 resolved before planner dispatch: approved plans enter In Progress, while holds
 use the configured plan stop or review destination, including the existing
@@ -747,11 +753,16 @@ credential rotation, atomic private persistence and pending-credential recovery
 keep their existing owners, with no new mechanism or authority bypass.
 
 Native code and rework completion (#152) requires a stored final diff and
-available fenced publication authority before a successful attempt is reported.
-Missing diff, Change or version evidence preserves its actual error through the
-existing execution-authority completion owner, without charging an issue failure
-or suppressing its current revision as succeeded. Claim release retains failed
-publication preparation. `TestNativeExecutionSettlesFinishedRun` and
+available fenced publication authority before a genuine deliverable advances.
+Missing diff and Change evidence retain their actual publication diagnostics
+through the existing completion handoff. Version publication refusals retain
+their diagnostic and code, preserve the previous immutable version, and move to
+the configured review lane without inheriting earlier approval or redispatching
+coding. Only actual claim, lease or fencing loss uses the existing
+execution-authority completion owner, without charging an issue failure.
+Absent native results remain with existing source and conversation continuation
+owners. Claim release retains failed publication preparation.
+`TestNativeExecutionSettlesFinishedRun` and
 `TestNativeChangeRunCompletion` cover these outcomes.
 
 Native runner GitHub PR landing (#89) uses the existing REST client classifier,
@@ -1129,14 +1140,20 @@ application authority instead of the blanket aggregate-dashboard read refusal.
 The schema migration extends the existing append-only event vocabulary and
 preserves all prior evidence; rollback refuses to discard new event types.
 
-Native completion (#152) owns missing publication results instead of falling
-through to legacy pull-request remote truth. Clean preserved rework heads reuse
+Native completion (#152) owns recorded publication results instead of falling
+through to legacy pull-request remote truth. A successful nil native result stays
+with existing dirty-source, conversation and drain continuation owners; it does
+not replay an immutable tracker-unavailable completion. A version missing without
+a diagnostic remains an incomplete handoff. Clean preserved rework heads reuse
 the genuine current immutable Change version only under its current approved
 policy; a policy refusal cannot fabricate another version of unchanged source.
 Changed source retains the existing fenced and idempotent version publisher.
 The orchestrator alone selects an allowed review or landing lane, and landing
 revalidates the exact reviewed head through its existing owner. Successful-attempt
-revision/generation suppression stays intact. `TestNativeExecutionSettlesFinishedRun`,
+revision/generation suppression stays intact. Graceful drain stops intake while
+already-authorized native code and rework retain that completion owner, including
+publication diagnostics and refused lane writes; drain never substitutes legacy PR
+remote truth for a genuine native completion. `TestNativeExecutionSettlesFinishedRun`,
 `TestNativeRunnerOpensChangeAndLeavesDispatch` and `TestNativeChangeRunCompletion`
 cover consolidation without a retry loop, reason code, or policy bypass.
 

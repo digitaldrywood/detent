@@ -20,7 +20,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	finalState string,
 ) bool {
 	change := event.Result.NativeChange
-	if state.Draining || event.Result.NativeLanding != nil {
+	if event.Result.NativeLanding != nil {
 		return false
 	}
 	reader, ok := o.connector.(connector.WorkflowStateReader)
@@ -54,18 +54,15 @@ func (o *Orchestrator) completeNativeChangeRun(
 		return false
 	}
 	if change == nil {
-		return handoff(errors.New("the native run did not report its final publication result"))
+		return false
 	}
 	if change.Error != "" {
 		return handoff(errors.New(change.Error))
 	}
-	if change.VersionError != "" {
-		return handoff(errors.New(change.VersionError))
-	}
 	if change.Changed && change.ChangeID == "" {
 		return handoff(fmt.Errorf("native change request was not opened: %s", change.Error))
 	}
-	if change.Changed && change.VersionID == "" {
+	if change.Changed && change.VersionID == "" && change.VersionError == "" {
 		return handoff(errors.New("the native change has no published current version"))
 	}
 	states, err := reader.WorkflowStates(ctx)
@@ -126,6 +123,11 @@ func (o *Orchestrator) completeNativeChangeRun(
 // captured may be stale. A failed read keeps the captured answer.
 func (o *Orchestrator) refreshNativeChangeReview(ctx context.Context, issueID string, change *runpkg.NativeChange) *runpkg.NativeChange {
 	reader, ok := o.connector.(connector.ChangeReviewReader)
+	if change.VersionError != "" {
+		refused := *change
+		refused.Reviewed = false
+		return &refused
+	}
 	if !ok || !change.Changed || change.ChangeID == "" || change.VersionID == "" {
 		return change
 	}
@@ -168,11 +170,21 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 	if change.VersionID != "" {
 		metadata["native_version_id"] = change.VersionID
 	}
+	if change.VersionError != "" {
+		metadata["native_version_error"] = change.VersionError
+	}
+	if change.VersionCode != "" {
+		metadata["native_version_code"] = change.VersionCode
+	}
 	return metadata
 }
 
 func nativeCompletionComment(change *runpkg.NativeChange, from, to string) string {
 	from, to = displayStateName(from), displayStateName(to)
+	if change.VersionError != "" {
+		return fmt.Sprintf("The run completed, but Change Request %s could not publish its final version for head %s: %s. Moved from %s to %s for review.",
+			change.ChangeID, shortCommit(change.HeadSHA), change.VersionError, from, to)
+	}
 	if change.Changed {
 		comment := fmt.Sprintf("The run succeeded and opened Change Request %s (%d files, head %s). Moved from %s to %s.",
 			change.ChangeID, change.Files, shortCommit(change.HeadSHA), from, to)

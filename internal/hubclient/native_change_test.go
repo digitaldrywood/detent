@@ -325,27 +325,29 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 	base := strings.Repeat("a", 40)
 	head := strings.Repeat("c", 40)
 	for _, test := range []struct {
-		name            string
-		role            string
-		outcome         string
-		worktree        string
-		source          runner.AttemptDiffSource
-		loseLease       bool
-		failCreate      bool
-		failDiff        bool
-		failDetail      bool
-		failVersion     bool
-		deferredFinish  bool
-		unreadFinal     bool
-		checkpointHead  string
-		existing        bool
-		published       string
-		repolicy        bool
-		noRemote        bool
-		reviewer        bool
-		wantChange      *runner.NativeChange
-		wantFinishError string
-		wantChanges     int
+		name           string
+		role           string
+		outcome        string
+		worktree       string
+		source         runner.AttemptDiffSource
+		loseLease      bool
+		failCreate     bool
+		failDiff       bool
+		failDetail     bool
+		failVersion    bool
+		versionCode    string
+		diffCode       string
+		conversation   bool
+		unreadFinal    bool
+		checkpointHead string
+		existing       bool
+		published      string
+		repolicy       bool
+		noRemote       bool
+		reviewer       bool
+		wantChange     *runner.NativeChange
+		wantDiagnostic string
+		wantChanges    int
 		// wantVersions is the versions the item's change carries after the
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
@@ -365,31 +367,34 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "removed clean worktree reuses its matching final checkpoint diff", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: head,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "an unavailable final diff cannot reuse an older checkpoint head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: strings.Repeat("b", 40),
-			wantFinishError: "checkpoint head", wantChanges: 1, wantVersions: 1},
+			wantDiagnostic: "checkpoint head", wantChanges: 1, wantVersions: 1},
 		{name: "rework refuses the same head under a changed policy", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true,
-			wantFinishError: "policy_mismatch", wantChanges: 1, wantVersions: 1},
+			wantDiagnostic: "policy_mismatch", wantChanges: 1, wantVersions: 1},
 		{name: "a policy that asks for a reviewer leaves the version waiting", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), reviewer: true,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "a remote no https URL names opens the change without a version", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), noRemote: true,
-			wantFinishError: "https", wantChanges: 1},
+			wantDiagnostic: "https", wantChanges: 1},
 		{name: "a clean worktree with no commits opens nothing", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base),
 			wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "a dirty worktree takes the ordinary path", role: runner.RoleCode, outcome: "succeeded", worktree: "dirty", source: nativeChangeDiff(base, "scratch.txt")},
 		{name: "committed work left dirty takes the ordinary path", role: runner.RoleCode, outcome: "succeeded", worktree: "dirty", source: nativeChangeDiff(head, "README.md")},
-		{name: "an unread final worktree cannot succeed", role: runner.RoleCode, outcome: "succeeded", worktree: "unknown", source: nativeChangeDiff(head, "README.md"), wantFinishError: "checkpoint is unavailable"},
+		{name: "an unread final worktree cannot succeed", role: runner.RoleCode, outcome: "succeeded", worktree: "unknown", source: nativeChangeDiff(head, "README.md"), wantDiagnostic: "checkpoint is unavailable"},
 		{name: "an unstored final diff is not reviewable", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), failDiff: true,
-			wantFinishError: "diff storage unavailable"},
+			wantDiagnostic: "diff storage unavailable"},
 		{name: "a refused create reports the commits without a change", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), failCreate: true,
-			wantFinishError: "change creation unavailable"},
+			wantDiagnostic: "change creation unavailable"},
 		{name: "an inaccessible preserved version cannot succeed", role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head), existing: true, published: head, failDetail: true,
-			wantFinishError: "change detail unavailable", wantChanges: 1, wantVersions: 1},
+			wantDiagnostic: "change detail unavailable", wantChanges: 1, wantVersions: 1},
 		{name: "a refused new version cannot succeed", role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), existing: true, published: strings.Repeat("b", 40), failVersion: true,
-			wantFinishError: "version publication unavailable", wantChanges: 1, wantVersions: 1},
+			wantDiagnostic: "version publication unavailable", wantChanges: 1, wantVersions: 1},
 		{name: "a lost lease decides nothing", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), loseLease: true},
 		{name: "a failed run decides nothing", role: runner.RoleCode, outcome: "failed", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
 		{name: "a plan run decides nothing", role: runner.RolePlan, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
-		{name: "no readable worktree cannot succeed", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", wantFinishError: "diff source is unavailable"},
-		{name: "claim release retains failed publication preparation", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", deferredFinish: true, wantFinishError: "diff source is unavailable"},
+		{name: "no readable worktree cannot succeed", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", wantDiagnostic: "diff source is unavailable"},
+		{name: "version allowance refusal retains the previous immutable version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: strings.Repeat("b", 40), versionCode: "allowance_exhausted", wantDiagnostic: "allowance_exhausted", wantChanges: 1, wantVersions: 1},
+		{name: "diff allowance refusal is a publication diagnostic", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), diffCode: "allowance_exhausted", wantDiagnostic: "allowance_exhausted"},
+		{name: "fenced diff refusal retains lost authority", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), diffCode: "stale_fencing_token", wantDiagnostic: "stale_fencing_token"},
+		{name: "conversation completion remains conversation owned", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", conversation: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -448,26 +453,63 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			h.failChanges.failDiffs.Store(test.failDiff)
 			h.failChanges.failDetails.Store(test.failDetail)
 			h.failChanges.failVersions.Store(test.failVersion)
+			if test.versionCode != "" || test.diffCode != "" {
+				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					code := ""
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/versions") {
+						code = test.versionCode
+					}
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/diff") {
+						code = test.diffCode
+					}
+					if code != "" {
+						response := httptest.NewRecorder()
+						response.Header().Set("Content-Type", "application/json")
+						status := http.StatusTooManyRequests
+						if code == "stale_fencing_token" {
+							status = http.StatusConflict
+						}
+						response.WriteHeader(status)
+						if err := json.NewEncoder(response).Encode(map[string]string{"code": code, "message": "producer refused publication"}); err != nil {
+							return nil, err
+						}
+						return response.Result(), nil
+					}
+					return h.failChanges.RoundTrip(request)
+				})
+			}
+			if test.conversation {
+				owner := execution.(*nativeExecution)
+				owner.mu.Lock()
+				owner.conversation = true
+				owner.mu.Unlock()
+			}
 			finish := execution.Finish
-			if test.deferredFinish {
+			if test.wantDiagnostic != "" {
 				finish = execution.(runner.CompletionExecution).PrepareFinish
 			}
 			finishErr := finish(guarded, test.outcome)
-			if (test.loseLease || test.wantFinishError != "") != (finishErr != nil) {
+			lostAuthority := test.loseLease || test.diffCode == "stale_fencing_token"
+			if lostAuthority != (finishErr != nil) {
 				t.Fatalf("finish error = %v, lease lost = %t", finishErr, test.loseLease)
 			}
-			if test.wantFinishError != "" {
-				if !errors.Is(finishErr, runner.ErrExecutionAuthorityUnavailable) || !strings.Contains(finishErr.Error(), test.wantFinishError) {
-					t.Fatalf("finish error lost publication failure: %v", finishErr)
+			if lostAuthority {
+				if !errors.Is(finishErr, runner.ErrExecutionAuthorityUnavailable) || execution.(runner.ChangeExecution).NativeChange() != nil {
+					t.Fatalf("lost authority fabricated a native result: %v", finishErr)
 				}
-				if test.deferredFinish {
-					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
-						t.Fatal(err)
-					}
+				return
+			}
+			if test.wantDiagnostic != "" {
+				change := execution.(runner.ChangeExecution).NativeChange()
+				if change == nil || !strings.Contains(change.Error+change.VersionError, test.wantDiagnostic) || change.Reviewed || change.VersionID != "" {
+					t.Fatalf("native result lost publication failure: %#v", change)
+				}
+				if change.VersionError != "" && change.VersionCode != test.versionCode && !(test.repolicy && change.VersionCode == "policy_mismatch") {
+					t.Fatalf("native result lost publication code: %#v", change)
 				}
 				h.failChanges.failDetails.Store(false)
 				recovery, err := h.admin.Recovery(t.Context(), item)
-				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "failed" {
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "running" {
 					t.Fatalf("unavailable publication evidence recorded success: %#v, %v", recovery.Attempts, err)
 				}
 				stored := h.changes(t, issue.ID)
@@ -482,6 +524,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				if h.state(t, issue.ID) != "In Progress" {
 					t.Fatal("failed preparation changed the issue lane")
+				}
+				if change.VersionError != "" {
+					h.complete(t, issue.ID, change)
+					if h.state(t, issue.ID) != h.review || len(h.candidates(t)) != 0 {
+						t.Fatal("publication refusal returned to coding instead of review")
+					}
 				}
 				return
 			}
@@ -619,6 +667,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		rework      bool
 		formal      bool
 		failDetail  bool
+		failVersion bool
 		land        bool
 		commit      bool
 		staged      bool
@@ -640,6 +689,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "host commits staged Rework", rework: true, formal: true, staged: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "host signing unavailable preserves requested changes", rework: true, formal: true, staged: true, signingFail: true},
 		{name: "Rework lands the clean preserved reviewed head without source changes", rework: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "Rework forwards a refused version to review", rework: true, commit: true, failVersion: true, wantState: "Human Review"},
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -789,7 +839,8 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			h.failChanges.failVersions.Store(test.failVersion)
+			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 			if test.signingFail {
 				if !errors.Is(err, runner.ErrWorkspacePreparation) || errors.Is(err, workspace.ErrMergeResolutionInvalid) || result.NativeChange != nil {
 					t.Fatalf("host signing failure lost identity or published: result=%+v, error=%v", result.NativeChange, err)
@@ -837,6 +888,20 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 			}
 			change := result.NativeChange
+			if test.failVersion {
+				if change == nil || change.ChangeID != expected.Change.ID || change.VersionID != "" || change.Reviewed || !strings.Contains(change.VersionError, "version publication unavailable") {
+					t.Fatalf("runner lost refused publication result: %+v", change)
+				}
+				h.complete(t, issue.ID, change)
+				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+				if err != nil || !reflect.DeepEqual(detail.Versions, expected.Versions) || detail.Change.CurrentVersion != expected.Change.CurrentVersion {
+					t.Fatalf("refused publication replaced an immutable version: %+v, %v", detail, err)
+				}
+				if h.state(t, issue.ID) != test.wantState || len(h.candidatesIn(t, "Rework")) != 0 || provider.calls != 1 {
+					t.Fatal("refused publication redispatched coding instead of review")
+				}
+				return
+			}
 			if test.wantNone {
 				if change != nil {
 					t.Fatalf("dirty work reported %#v; it takes the ordinary completion path", change)

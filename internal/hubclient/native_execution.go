@@ -297,11 +297,23 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	if outcome == "succeeded" {
 		if e.storedSeq != finish {
 			if err := e.postDiff(ctx, finish); err != nil && e.ownsChangeCompletion() {
-				return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+				if e.remaining() <= 0 || nativeLeaseLost(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+				}
+				e.change = &runner.NativeChange{Error: err.Error()}
+				return nil
 			}
 		}
 		if err := e.settle(ctx, outcome, finish); err != nil {
-			return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+			if e.remaining() <= 0 || nativeLeaseLost(err) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+			}
+			if e.change == nil {
+				e.change = &runner.NativeChange{}
+			}
+			if e.change.VersionError == "" {
+				e.change.Error = err.Error()
+			}
 		}
 	}
 	return nil
