@@ -531,6 +531,17 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason` |
 | `POST /work-items/{id}/events` | Idempotent, versioned run fact with current lease and typed references |
 
+Every work-item representation returned by create, get, list and update includes
+`web_url`. Hosted Hubs build this absolute link from the configured
+`hosted.public_url`, never from request Host or forwarding headers. Shared Cloud
+links use
+`https://cloud.detent.build/organizations/{organization_id}/work/i/{work_item_id}`;
+dedicated hosted Hubs use `{public_url}/work/i/{work_item_id}`. The link opens the
+existing conversation app route. Non-hosted Hubs have no configured public URL
+or conversation app and return an empty string. Replayed mutations and historical
+work-item versions project the link using the serving Hub's current configuration;
+the URL is not immutable content.
+
 Collaboration mutations return the committed representation with status 200,
 including identical retries. Idempotency keys are scoped to the authenticated
 principal, organization and operation/resource. Reusing a key with different

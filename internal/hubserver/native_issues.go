@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -14,6 +15,30 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeIssue {
+	issue.WebURL = ""
+	if s.config.Hosted != nil {
+		issue.WebURL = s.config.Hosted.PublicURL + s.hostedPath("/work/i/"+url.PathEscape(string(issue.WorkItemID)))
+	}
+	return issue
+}
+
+func (s *Service) nativeIssueJSON(body json.RawMessage) (json.RawMessage, error) {
+	var issue tracker.NativeIssue
+	if err := json.Unmarshal(body, &issue); err != nil {
+		return nil, err
+	}
+	return json.Marshal(s.nativeIssueResponse(issue))
+}
+
+func (s *Service) executeNativeIssueMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (json.RawMessage, error) {
+	result, err := s.executeNativeMutation(ctx, scope, options, command, input, operation)
+	if err != nil {
+		return nil, err
+	}
+	return s.nativeIssueJSON(result)
+}
 
 func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
@@ -124,7 +149,7 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	return c.JSON(http.StatusOK, issue)
+	return c.JSON(http.StatusOK, s.nativeIssueResponse(issue))
 }
 
 // nativeIssueChangeIncluded reads the work item resource's include query. The
@@ -400,7 +425,7 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 
 func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
 	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/workflow"), Item: item, RequireLease: true, Feature: "collaboration"}
-	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
 			return nil, err

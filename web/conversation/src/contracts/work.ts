@@ -131,6 +131,7 @@ export const NativeIssue = Schema.Struct({
   project_id: ProjectId,
   work_item_id: NativeWorkItemId,
   number: Schema.Number,
+  web_url: Schema.String,
   revision: Revision,
   profile: Schema.String,
   title: Schema.String,

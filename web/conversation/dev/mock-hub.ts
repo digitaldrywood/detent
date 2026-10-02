@@ -3032,6 +3032,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
             organization_id: ORGANIZATION.id,
             project_id: projectId,
             work_item_id: `wi_${number}`,
+            web_url: `http://mock.local/work/i/wi_${number}`,
             number,
             revision: "1",
             profile: project?.profile ?? "native",

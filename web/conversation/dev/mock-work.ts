@@ -41,6 +41,7 @@ interface MockIssue {
   organization_id: string;
   project_id: string;
   work_item_id: string;
+  web_url: string;
   number: number;
   revision: string;
   profile: string;
@@ -176,6 +177,7 @@ export function createWorkMock(options: {
           organization_id: options.organizationId,
           project_id: project.id,
           work_item_id: id,
+          web_url: `http://mock.local/work/i/${id}`,
           number,
           revision: "1",
           profile: "native",

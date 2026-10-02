@@ -164,7 +164,7 @@ func safeWorkReadError(err error) error {
 func (s *Service) resolveOperatorNativeItem(ctx context.Context, scope nativeScope, reference string) (tracker.NativeIssue, error) {
 	if strings.HasPrefix(reference, "wi_") {
 		item, _, err := readNativeIssue(ctx, s.database.db, scope, reference)
-		return item, err
+		return s.nativeIssueResponse(item), err
 	}
 	value := reference
 	if prefix, number, ok := strings.Cut(reference, "#"); ok {
@@ -182,7 +182,7 @@ func (s *Service) resolveOperatorNativeItem(ctx context.Context, scope nativeSco
 		return tracker.NativeIssue{}, err
 	}
 	item, _, err := readNativeIssue(ctx, s.database.db, scope, id)
-	return item, err
+	return s.nativeIssueResponse(item), err
 }
 
 func (operatorWorkReads) WorkReadNames(context.Context) []string {
