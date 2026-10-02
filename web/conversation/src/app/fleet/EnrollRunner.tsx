@@ -19,7 +19,7 @@ import type { FleetResponse, FleetRunner } from "../../contracts/account.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
-import { useMutation } from "../account/useResource.ts";
+import { useMutation, type Resource } from "../account/useResource.ts";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
 
 /** The operations a runner needs to take issue runs and coordinator turns. */
@@ -157,10 +157,7 @@ export function EnrollRunnerDialog({
   readonly onOpenChange: (open: boolean) => void;
   readonly onEnrolled: (enrollment: PendingEnrollment) => void;
   readonly onConnected?: (enrollment: PendingEnrollment) => void;
-  readonly fleet: {
-    readonly value: FleetResponse | undefined;
-    readonly refresh: () => Promise<void>;
-  };
+  readonly fleet: Pick<Resource<FleetResponse>, "value" | "error" | "loading" | "refresh">;
   /** Preselects these projects instead of every readable one. */
   readonly projectIds?: readonly string[];
 }): React.ReactElement {
@@ -244,9 +241,9 @@ export function EnrollRunnerDialog({
     };
   }, [open, enrollment, connected, fleet.refresh]);
 
-  const create = useMutation(async () => {
+  const create = useMutation(async (baseline: FleetResponse) => {
     const mine = generation.current;
-    const existingRunnerIds = fleet.value?.runners.map((runner) => runner.id) ?? [];
+    const existingRunnerIds = baseline.runners.map((runner) => runner.id);
     const created = await api.enrollRunner({
       projectIds: selected,
       operations: [...ENROLLMENT_OPERATIONS],
@@ -271,7 +268,8 @@ export function EnrollRunnerDialog({
   });
 
   const nameFits = runnerNameFits(name);
-  const ready = selected.length > 0 && capacity !== null && nameFits;
+  const ready = fleet.value !== undefined && selected.length > 0 && capacity !== null && nameFits;
+  const baselinePending = enrollment === null && fleet.value === undefined;
   const step = connected !== null ? 2 : enrollment !== null ? 1 : 0;
 
   return (
@@ -446,12 +444,18 @@ export function EnrollRunnerDialog({
               </p>
             </section>
           )}
-          <ControlError message={create.error?.message ?? null} />
+          {baselinePending && fleet.error === null ? (
+            <p role="status" className="text-xs text-muted-foreground">Reading runners before creating a command…</p>
+          ) : null}
+          <ControlError message={create.error?.message ?? (baselinePending ? fleet.error?.message : null) ?? null} />
+          {baselinePending && fleet.error !== null ? (
+            <Button variant="outline" disabled={fleet.loading} onClick={() => void fleet.refresh()}>Retry runner read</Button>
+          ) : null}
         </DialogPanel>
         <DialogFooter>
           <DialogClose render={<Button variant="outline">{connected !== null ? "Done" : enrollment === null ? "Cancel" : "Close"}</Button>} />
           {enrollment === null ? (
-            <Button disabled={!ready || create.pending} onClick={() => void create.call()}>
+            <Button disabled={!ready || create.pending} onClick={() => void create.call(fleet.value!)}>
               {create.pending ? "Creating…" : "Create command"}
             </Button>
           ) : null}

@@ -719,6 +719,13 @@ enabled picker through panel state, scoped workspace metadata, ticket minting,
 directory listing and a file read, and `workspaces.test.tsx` rejects stale attempt
 binding. Existing relay and filesystem authority is unchanged.
 
+Runner enrollment's existing name/new-ID connection match requires a known
+initial fleet baseline (native #223). The command consumes that snapshot; an
+unavailable read is never an invented empty roster. Initial read loading and
+errors use the existing resource readiness and refresh controls, while a known
+empty fleet remains valid. The enrollment's serial refresh, close cleanup and
+selected project grants retain their existing owners.
+
 Enrolled runner updates (native #93) reuse the installed update scheduler,
 configured release discovery, signed artifact/provenance verification, runtime
 drain/restart and startup rollback owners. Hub MCP and API queue typed delivery

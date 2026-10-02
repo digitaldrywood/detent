@@ -11,6 +11,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClientContext } from "../../src/app/client.ts";
 import { EnrollRunnerDialog, type PendingEnrollment } from "../../src/app/fleet/EnrollRunner.tsx";
 import { RunnersSettings } from "../../src/app/fleet/RunnersSection.tsx";
+import { useAccountApi } from "../../src/app/account/context.ts";
+import { useResource } from "../../src/app/account/useResource.ts";
 import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
 import type { FleetRunner } from "../../src/contracts/account.ts";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
@@ -32,7 +34,7 @@ function projectBox(id: string): HTMLElement {
   return box;
 }
 
-async function mountDialog(projectIds?: readonly string[], settings = false, initialRunners: readonly FleetRunner[] = []) {
+async function mountDialog(projectIds?: readonly string[], settings = false, initialRunners: readonly FleetRunner[] = [], initialFleetRead?: Promise<Response>) {
   let runners = initialRunners;
   const fleetReads = vi.fn();
   const enrollmentRequests = vi.fn();
@@ -42,6 +44,7 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
       return new Response(JSON.stringify({ id: "enrollment_build", token: "det_enroll_secret", expires_at: "2026-10-02T20:00:00Z" }), { status: 201 });
     }
     fleetReads();
+    if (fleetReads.mock.calls.length === 1 && initialFleetRead !== undefined) return initialFleetRead;
     return new Response(JSON.stringify({ runners, usage: { window_ends_at: "", allowances: {} }, spend: null }), { status: 200 });
   }));
   client = {
@@ -62,19 +65,68 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
     routeTree: createRootRoute({ component: RunnersSettings }),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
+  function DirectDialog() {
+    const api = useAccountApi();
+    const fleet = useResource(() => api.fleet(), [api]);
+    return <EnrollRunnerDialog open onOpenChange={() => undefined} onEnrolled={onEnrolled} fleet={fleet} {...(projectIds === undefined ? {} : { projectIds })} />;
+  }
   render(
     <ClientContext.Provider value={client}>
       {settings ? (
         <RouterProvider router={router as never} />
       ) : (
-        <EnrollRunnerDialog open onOpenChange={() => undefined} onEnrolled={onEnrolled} fleet={{ value: undefined, refresh: async () => undefined }} {...(projectIds === undefined ? {} : { projectIds })} />
+        <DirectDialog />
       )}
     </ClientContext.Provider>,
   );
+  if (!settings && initialFleetRead === undefined) {
+    await waitFor(() => expect((screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement).disabled).toBe(false));
+  }
   return { onEnrolled, enrollmentRequests, projects: client.account?.projects ?? [], fleetReads, setRunners: (next: readonly FleetRunner[]) => { runners = next; } };
 }
 
 describe("the Enroll dialog", () => {
+  it("waits for a delayed initial fleet baseline before matching a new runner", async () => {
+    let release!: (response: Response) => void;
+    const initial = new Promise<Response>((resolve) => { release = resolve; });
+    const existing = { ...fleetFixture.runners[0]!, display_name: "Build host" } as FleetRunner;
+    const { enrollmentRequests, setRunners } = await mountDialog(undefined, false, [existing], initial);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build host" } });
+    const create = screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    expect(screen.getByRole("status").textContent).toContain("Reading runners");
+    fireEvent.click(create);
+    expect(enrollmentRequests).not.toHaveBeenCalled();
+    await act(async () => release(new Response(JSON.stringify({ runners: [existing], usage: { window_ends_at: "", allowances: {} }, spend: null }), { status: 200 })));
+    await waitFor(() => expect(create.disabled).toBe(false));
+    vi.useFakeTimers();
+    await act(async () => fireEvent.click(create));
+    expect(screen.getByRole("button", { name: "Copy the register command" })).toBeTruthy();
+    expect(enrollmentRequests).toHaveBeenCalledOnce();
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(screen.queryByText("Build host is connected")).toBeNull();
+    setRunners([existing, { ...existing, id: "rnr_new" }]);
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(screen.getByText("Build host is connected")).toBeTruthy();
+  });
+
+  it("keeps creation unavailable after an initial fleet error and retries the existing read", async () => {
+    const initial = Promise.resolve(new Response(JSON.stringify({ code: "unavailable", message: "Fleet unavailable" }), { status: 503 }));
+    const { enrollmentRequests, fleetReads } = await mountDialog(undefined, false, [], initial);
+    const create = screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement;
+    await screen.findByText("Fleet unavailable");
+    expect(create.disabled).toBe(true);
+    fireEvent.click(create);
+    expect(enrollmentRequests).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry runner read" }));
+    await waitFor(() => expect(create.disabled).toBe(false));
+    expect(fleetReads).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Fleet unavailable")).toBeNull();
+    fireEvent.click(create);
+    await screen.findByRole("button", { name: "Copy the register command" });
+    expect(enrollmentRequests).toHaveBeenCalledOnce();
+  });
+
   it("asks for no host IDs and shows one register command", async () => {
     userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
