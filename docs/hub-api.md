@@ -530,7 +530,7 @@ events require worker scope. Instance administrators can perform these operation
 | --- | --- |
 | `GET /` | Project profile, states, transitions and readiness policy |
 | `POST /work-items` | `idempotency_key`, `title`, full `body`, configured `state`, optional `priority`, `labels`, `assignees`, import `provenance` |
-| `GET /work-items` | Paged issues; repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor |
+| `GET /work-items` | Paged issues; repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor. `include=summary` provides the byte-bounded MCP list projection with explicit detail omissions and continuation; it cannot be combined with `work` |
 | `GET /work-items/{id}` | Full content, immutable scope, revision, authenticated author, import provenance, dependencies and optional external references |
 | `PATCH /work-items/{id}` | `idempotency_key`, `expected_revision`, supplied `title`, `body`, `priority`, `labels` or `assignees` |
 | `POST /work-items/{id}/workflow` | `idempotency_key`, `expected_revision`, target `state`, typed `reason` |

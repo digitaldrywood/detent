@@ -36,6 +36,8 @@ const (
 
 var ErrReadUnavailable = errors.New("work read service is unavailable")
 
+const WorkListPageBytes = MaxResultBytes / 4
+
 // WorkReadRequest contains application selectors only. Organization and principal
 // always come from the connection. Each operation permits only its own fields.
 type WorkReadRequest struct {
@@ -292,7 +294,17 @@ func NativeItemView(projectID string, issue tracker.NativeIssue) NativeItem {
 func NativeItemPage(projectID string, page tracker.Page[tracker.NativeIssue]) tracker.Page[NativeItem] {
 	out := tracker.Page[NativeItem]{Items: []NativeItem{}, NextCursor: page.NextCursor}
 	for _, issue := range page.Items {
-		out.Items = append(out.Items, NativeItemView(projectID, issue))
+		out.Items = append(out.Items, NativeItemView(projectID, NativeListIssue(issue)))
 	}
 	return out
+}
+
+func NativeListIssue(issue tracker.NativeIssue) tracker.NativeIssue {
+	issue.Body = ""
+	issue.LinkedSource = nil
+	issue.Provenance = nil
+	issue.ExternalReferences = nil
+	issue.Change = nil
+	issue.OmittedFields = []string{"body", "linked_source", "provenance", "external_references", "change"}
+	return issue
 }
