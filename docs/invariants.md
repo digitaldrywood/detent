@@ -347,11 +347,19 @@ and its observation times without direct GitHub access. Diff pages bound encoded
 JSON bytes and mark patch truncation. The daemon artifact library reuses its
 project-scoped dashboard reads. Historical artifact downloads preserve read grants, retention,
 TTL and original session authority; tokens appear only in the usable client result,
-never in URLs, audit summaries or durable retry receipts. Publishing, expected CI
+never in URLs, audit summaries or durable retry receipts. Operator publication
+(native #196) calls the same immutable version command as HTTP, without run,
+attempt, lease or caller-selected producer attribution. It requires the explicit
+expected current version and current approved repository/review policy, retains
+unverified artifact semantics and authentic external PR references, and returns
+the stable publication receipt plus live current Change and lane state. The existing
+promotion owner still applies normal review/check policy; no-review/no-check
+versions may promote on publication. Worker fenced publication, expected CI
 attestation, publisher callbacks and landing reports remain producer/service
-operations, not operator MCP tools. No merger or tracker lane writer is introduced.
+operations. Repository protection and the runner's landing authority remain
+independent. No merger or tracker lane writer is introduced.
 `TestOperatorChangeCommands`, `TestOperatorArtifactResults`,
-`TestHostedOperatorPolicyApproval`, and the existing hosted artifact pilot cover
+`TestOperatorChangePublication`, `TestHostedOperatorPolicyApproval`, and the existing hosted artifact pilot cover
 these boundaries. This extracts application commands rather than adding a
 protection mechanism (INV-3).
 

@@ -19901,7 +19901,7 @@
     {
       "id": "hubserver.publish_change_version",
       "summary": "Publish change version",
-      "audience": "worker",
+      "audience": "operator",
       "sources": [
         {
           "source": "internal/hubserver/changes.go",
@@ -19947,34 +19947,41 @@
         }
       ],
       "authority": {
-        "role": "organization member/viewer for reads; owner/admin/operator or explicit project grant for writes",
-        "credential_scope": "worker or operator (native project); exact registration middleware retained in source",
-        "project_grant": "native project read grant; writes need write grant; runner/terminal access additionally needs runner grant",
-        "ownership": "resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain"
+        "role": "current authorized organization operator or administrator",
+        "credential_scope": "current operator/admin connection write authority; worker and runner identities refused by MCP",
+        "project_grant": "current project write grant, rechecked before effects and replay",
+        "ownership": "current organization/project and primary work item/Change ownership; no caller-selected attribution"
       },
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
-        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
+        "Explicit expected_version_id (empty for first publication), currently approved policy_id and review policy, immutable lowercase base/head/merge-base, bounded repository and artifact references, and matching GitHub external PR identity when supplied."
       ],
       "confirmation": [
         {
-          "when": "non-operator source authority",
-          "class": "not_applicable"
+          "when": "ordinary authorized operator publication",
+          "class": "none"
         }
       ],
-      "application": "s.publishChangeVersion; s.nativeMutation",
-      "extraction": "No operator command: retain the existing producer/service/application authority.",
+      "application": "s.publishChangeVersionCommand; s.executeNativeMutation; hubChangeApplication.MutateChange; dashboardChangeApplication.MutateChange via NativeClient.PublishChangeVersion",
+      "extraction": "HTTP and MCP share immutable publication, expected-current comparison, approved repository/review policy, artifact validation, audit and idempotency. The existing promotion owner applies normal checks/review, including automatic promotion when none are required.",
       "tool": {
-        "set": "",
-        "name": "",
-        "arguments": "",
-        "result": ""
+        "set": "changes_artifacts",
+        "name": "publish_change_version",
+        "arguments": "project_id, work_item_id, change_id, request_id, explicit expected_version_id, base_sha, head_sha, merge_base_sha, repository, policy_id, code; optional artifacts (at most 63 plus code) and external. No worker identities or producer attribution. References cap at 2048 bytes and input at 64 KiB.",
+        "result": "Bounded ChangeResult: stable published version and receipt; live current Change and review/check summary in detail; observed work_item_state. Replays preserve the original receipt while current version/lane may have advanced. Unverified artifacts remain unverified.",
+        "annotations": {
+          "readOnly": false,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": true
+        }
       },
       "owner": "digitaldrywood/detent#3347",
-      "status": "excluded",
-      "coverage": "internal/hubserver/operator_changes_test.go; internal/operatortool/changes_test.go; internal/hubserver/pilot_artifacts_test.go; existing dashboard authorization/review/artifact regressions.",
-      "decision": "Publishing attests an immutable Git/run snapshot with producer provenance. The dashboard provides no operator publication action; preserve runner/producer authority rather than infer operator access from a native API route."
+      "status": "implemented",
+      "coverage": "TestOperatorChangePublication; TestHubMCPWorkCommands; TestChangeArgumentBoundary; TestActionConfirmationClassification; existing REST fenced publication and hosted authorization regressions.",
+      "decision": "Native #196 exposes genuine operator-authored immutable versions through the existing publication owner. No Run/Attempt, lease, actor or producer fields are accepted. Fenced worker publication, CI attestation and landing remain distinct; external PR references do not bypass repository protection."
     },
     {
       "id": "hubserver.redeem_runner_enrollment",

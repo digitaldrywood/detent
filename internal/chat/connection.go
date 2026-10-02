@@ -221,7 +221,7 @@ func RequiresConfirmation(action Action) bool {
 			return true
 		}
 		return request.Input.Command != nil || request.Input.RunOnWorktreeCreation != nil
-	case ActionKind(operatortool.CreateChange), ActionKind(operatortool.DiscussChange), ActionKind(operatortool.ViewChangeFile), ActionKind(operatortool.ArtifactAccess):
+	case ActionKind(operatortool.CreateChange), ActionKind(operatortool.PublishChangeVersion), ActionKind(operatortool.DiscussChange), ActionKind(operatortool.ViewChangeFile), ActionKind(operatortool.ArtifactAccess):
 		return false
 	case ActionKind(operatortool.ReviewChange):
 		var args operatortool.ChangeArguments

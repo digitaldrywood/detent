@@ -4251,19 +4251,20 @@ Sources: [GET /api/v2/organizations/:organization/projects/:project/secrets/:kin
 
 Publish change version
 
-- Audience: worker; status: **excluded**; owner: digitaldrywood/detent#3347.
-- Decision: Publishing attests an immutable Git/run snapshot with producer provenance. The dashboard provides no operator publication action; preserve runner/producer authority rather than infer operator access from a native API route.
-- Tool: `boundary.no_tool` — not applicable → explicit source decision
-- Authority: role organization member/viewer for reads; owner/admin/operator or explicit project grant for writes; credential worker or operator (native project); exact registration middleware retained in source; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
-- Application: s.publishChangeVersion; s.nativeMutation
-- Extraction: No operator command: retain the existing producer/service/application authority.
-- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
-- Coverage: internal/hubserver/operator_changes_test.go; internal/operatortool/changes_test.go; internal/hubserver/pilot_artifacts_test.go; existing dashboard authorization/review/artifact regressions.
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3347.
+- Decision: Native #196 exposes genuine operator-authored immutable versions through the existing publication owner. No Run/Attempt, lease, actor or producer fields are accepted. Fenced worker publication, CI attestation and landing remain distinct; external PR references do not bypass repository protection.
+- Tool: `changes_artifacts.publish_change_version` — project_id, work_item_id, change_id, request_id, explicit expected_version_id, base_sha, head_sha, merge_base_sha, repository, policy_id, code; optional artifacts (at most 63 plus code) and external. No worker identities or producer attribution. References cap at 2048 bytes and input at 64 KiB. → Bounded ChangeResult: stable published version and receipt; live current Change and review/check summary in detail; observed work_item_state. Replays preserve the original receipt while current version/lane may have advanced. Unverified artifacts remain unverified.
+- Authority: role current authorized organization operator or administrator; credential current operator/admin connection write authority; worker and runner identities refused by MCP; project current project write grant, rechecked before effects and replay; ownership current organization/project and primary work item/Change ownership; no caller-selected attribution.
+- Application: s.publishChangeVersionCommand; s.executeNativeMutation; hubChangeApplication.MutateChange; dashboardChangeApplication.MutateChange via NativeClient.PublishChangeVersion
+- Extraction: HTTP and MCP share immutable publication, expected-current comparison, approved repository/review policy, artifact validation, audit and idempotency. The existing promotion owner applies normal checks/review, including automatic promotion when none are required.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Explicit expected_version_id (empty for first publication), currently approved policy_id and review policy, immutable lowercase base/head/merge-base, bounded repository and artifact references, and matching GitHub external PR identity when supplied.
+- Coverage: TestOperatorChangePublication; TestHubMCPWorkCommands; TestChangeArgumentBoundary; TestActionConfirmationClassification; existing REST fenced publication and hosted authorization regressions.
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: self_hosted / native / hub application service
 - Availability: hosted_dedicated / native / hub application service
 - Availability: hosted_shared / native / hub application service
 - Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
-- Confirmation: non-operator source authority → not_applicable
+- Confirmation: ordinary authorized operator publication → none
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/work-items/:item/changes/:change/versions](../internal/hubserver/changes.go#L79)
 ## hubserver.redeem_runner_enrollment

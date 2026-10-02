@@ -12,11 +12,41 @@ import (
 // Catches bypasses of wire bounds/required selectors and credential or producer
 // authority smuggled into direct calls, independent of client-side schemas.
 func TestChangeArgumentBoundary(t *testing.T) {
+	publication := map[string]any{"project_id": "prj_p", "work_item_id": "wi_i", "change_id": "change_c", "request_id": "r", "expected_version_id": "", "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "merge_base_sha": strings.Repeat("a", 40), "repository": "https://github.com/example/repo", "policy_id": "policy_p", "code": tracker.ChangeArtifact{Kind: "code", URI: "s3://customer/code", SHA256: strings.Repeat("a", 64), Availability: "unverified"}}
+	publishRaw := func(key string, value any) string {
+		fields := make(map[string]any, len(publication)+1)
+		for k, v := range publication {
+			fields[k] = v
+		}
+		if key != "" {
+			if value == nil {
+				delete(fields, key)
+			} else {
+				fields[key] = value
+			}
+		}
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
 	for _, test := range []struct {
 		name, tool, raw string
 		valid           bool
 	}{
 		{"read", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c"}`, true},
+		{"operator publication", PublishChangeVersion, publishRaw("", nil), true},
+		{"missing expected version", PublishChangeVersion, publishRaw("expected_version_id", nil), false},
+		{"publication run", PublishChangeVersion, publishRaw("run_id", "run_forged"), false},
+		{"publication attempt", PublishChangeVersion, publishRaw("attempt_id", "attempt_forged"), false},
+		{"publication lease", PublishChangeVersion, publishRaw("lease_id", "lease_forged"), false},
+		{"publication fence", PublishChangeVersion, publishRaw("fencing_token", 1), false},
+		{"publication actor", PublishChangeVersion, publishRaw("actor", map[string]string{"principal_id": "forged"}), false},
+		{"publication provenance", PublishChangeVersion, publishRaw("code", map[string]string{"kind": "code", "uri": "s3://customer/code", "sha256": strings.Repeat("a", 64), "availability": "available", "producer": "forged"}), false},
+		{"publication base", PublishChangeVersion, publishRaw("base_sha", "main"), false},
+		{"publication artifact limit", PublishChangeVersion, publishRaw("artifacts", make([]tracker.ChangeArtifact, 64)), false},
+		{"publication credentials", PublishChangeVersion, publishRaw("repository", "https://user:secret@github.com/example/repo"), false},
 		{"missing selector", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i"}`, false},
 		{"forged authority", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","yolo":true}`, false},
 		{"wrong tool field", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","request_id":"r"}`, false},

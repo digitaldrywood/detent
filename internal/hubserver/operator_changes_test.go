@@ -47,6 +47,153 @@ func changeToolCall(name string, args operatortool.ChangeArguments) operatortool
 	return operatortool.Call{Name: name, Arguments: raw}
 }
 
+func TestOperatorChangePublication(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		review, checks bool
+		availability   string
+		lane, status   string
+	}{
+		{"automatic promotion", false, false, "available", "Merging", "reviewed"},
+		{"unverified artifacts", false, false, "unverified", "Merging", "reviewed"},
+		{"required review", true, false, "available", "Human Review", "needs_evidence"},
+		{"required checks", false, true, "available", "Human Review", "needs_evidence"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newChangeFixture(t, nil)
+			states := append(nativeFixtureStates(), tracker.NativeState{Name: "Human Review", Transitions: []string{"Merging"}}, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}})
+			raw, err := json.Marshal(states)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", raw, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, state := range states[3:] {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", f.project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Human Review') WHERE native_id=?", f.project.ID, f.issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			rules := f.rules
+			rules.RequireReview = test.review
+			if !test.checks {
+				rules.RequiredChecks = []tracker.ChangeCheckSpec{}
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "publication-rules"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
+			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+			executor := hubOperatorExecutor{f.service}
+			created, err := executor.Execute(ctx, changeToolCall(operatortool.CreateChange, operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), RequestID: "operator-create", Title: "Human source"}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result operatortool.ChangeResult
+			if err := json.Unmarshal(created.Content, &result); err != nil {
+				t.Fatal(err)
+			}
+			f.change.ID, f.path = result.ChangeID, result.URL
+			input := changeTestInput()
+			input.Code.Availability = test.availability
+			expected := ""
+			args := operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(f.issue.WorkItemID), ChangeID: result.ChangeID, RequestID: "operator-publish", ExpectedVersionID: &expected, BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, MergeBaseSHA: input.MergeBaseSHA, Repository: input.Repository, Code: &input.Code, Artifacts: input.Artifacts, PolicyID: input.PolicyID, External: &tracker.ChangeExternalReference{Provider: "github", ID: "42", URL: "https://github.com/example/repo/pull/42"}}
+			for _, denied := range []struct {
+				name string
+				edit func(*operatortool.ChangeArguments)
+			}{
+				{"stale current version", func(a *operatortool.ChangeArguments) { v := "version_stale"; a.ExpectedVersionID = &v }},
+				{"stale policy", func(a *operatortool.ChangeArguments) { a.PolicyID = "policy_stale" }},
+				{"foreign project", func(a *operatortool.ChangeArguments) { a.ProjectID = "prj_foreign" }},
+				{"foreign change", func(a *operatortool.ChangeArguments) { a.ChangeID = "change_foreign" }},
+				{"foreign item", func(a *operatortool.ChangeArguments) { a.ItemID = "wi_foreign" }},
+				{"forged PR identity", func(a *operatortool.ChangeArguments) {
+					external := *a.External
+					external.ID = "43"
+					a.External = &external
+				}},
+			} {
+				t.Run(denied.name, func(t *testing.T) {
+					a := args
+					a.RequestID = denied.name
+					denied.edit(&a)
+					if _, err := executor.Execute(ctx, changeToolCall(operatortool.PublishChangeVersion, a)); err == nil {
+						t.Fatal("invalid publication succeeded")
+					}
+				})
+			}
+			foreign := changeOperatorContext(t, f.service, f.token, "org_foreign")
+			if _, err := executor.Execute(foreign, changeToolCall(operatortool.PublishChangeVersion, args)); !errors.Is(err, operatortool.ErrAccessDenied) {
+				t.Fatalf("foreign organization: %v", err)
+			}
+			worker := changeOperatorContext(t, f.service, f.worker(t, "publication-worker"), string(f.project.OrganizationID))
+			if _, err := executor.Execute(worker, changeToolCall(operatortool.PublishChangeVersion, args)); !errors.Is(err, operatortool.ErrAccessDenied) {
+				t.Fatalf("worker operator publication: %v", err)
+			}
+			if len(f.detail(t).Versions) != 0 {
+				t.Fatal("denied publication had effects")
+			}
+			call := changeToolCall(operatortool.PublishChangeVersion, args)
+			published, err := executor.Execute(ctx, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(published.Content, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Version == nil || result.Detail == nil || result.Detail.Change.CurrentVersion != result.Version.ID || result.WorkItemState != test.lane || result.Detail.Summary.Status != test.status || result.Detail.Summary.ExternalReview != "external_gate" {
+				t.Fatalf("publication effects: %s", published.Content)
+			}
+			version := *result.Version
+			if version.RunID != "" || version.AttemptID != "" || version.Actor != (tracker.Actor{Kind: "human", PrincipalID: operatortool.ConnectionIdentity(ctx).PrincipalID}) || version.Code.Availability != test.availability || version.External == nil || *version.External != *args.External || len(version.Checks) != len(rules.RequiredChecks) {
+				t.Fatalf("forged publication identity or policy: %#v", version)
+			}
+			originalReceipt := result.Receipt
+			connection := operatortool.CurrentConnection(ctx)
+			connection.ID = "publication-reconnect"
+			ctx = operatortool.WithConnection(ctx, connection)
+			replayed, err := executor.Execute(ctx, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if json.Unmarshal(replayed.Content, &result) != nil || !bytes.Equal(originalReceipt, result.Receipt) || len(f.detail(t).Versions) != 1 {
+				t.Fatal("replay changed identity or repeated effects")
+			}
+			input.External = args.External
+			rest := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: args.RequestID}, ChangeVersionInput: input})
+			requireNativeStatus(t, rest, http.StatusOK)
+			if !bytes.Equal(bytes.TrimSpace(rest.Body.Bytes()), originalReceipt) {
+				t.Fatal("REST and MCP do not share the publication receipt")
+			}
+			args.HeadSHA = strings.Repeat("d", 40)
+			if _, err := executor.Execute(ctx, changeToolCall(operatortool.PublishChangeVersion, args)); !errors.Is(err, mutation.ErrConflict) {
+				t.Fatalf("changed retry: %v", err)
+			}
+			args.RequestID = "stale-current"
+			if _, err := executor.Execute(ctx, changeToolCall(operatortool.PublishChangeVersion, args)); !errors.Is(err, mutation.ErrConflict) {
+				t.Fatalf("stale current: %v", err)
+			}
+			args.RequestID, expected = "second-publication", version.ID
+			if _, err := executor.Execute(ctx, changeToolCall(operatortool.PublishChangeVersion, args)); err != nil {
+				t.Fatal(err)
+			}
+			replayed, err = executor.Execute(ctx, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if json.Unmarshal(replayed.Content, &result) != nil || result.Version.ID != version.ID || result.Detail.Change.CurrentVersion == version.ID || !bytes.Equal(originalReceipt, result.Receipt) || len(f.detail(t).Versions) != 2 {
+				t.Fatal("historical replay lost original receipt or live current version")
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", operatortool.ConnectionIdentity(ctx).CredentialID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := executor.Execute(ctx, call); !errors.Is(err, operatortool.ErrAccessDenied) {
+				t.Fatalf("lost authority replay: %v", err)
+			}
+		})
+	}
+}
+
 // Catches discovery bypass reaching foreign nested resources, stale review
 // identities, and replay repeating discussion effects after reconnect.
 func TestOperatorChangeCommands(t *testing.T) {
@@ -69,7 +216,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		{"foreign item", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ItemID = "wi_foreign" }, operatortool.ErrAccessDenied},
 		{"foreign change", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ChangeID = "change_foreign" }, operatortool.ErrAccessDenied},
 		{"foreign version", operatortool.GetChangeVersion, func(a *operatortool.ChangeArguments) { a.VersionID = "version_foreign" }, operatortool.ErrAccessDenied},
-		{"worker publish", "publish_change_version", nil, operatortool.ErrUnknownTool},
+		{"missing publication identity", operatortool.PublishChangeVersion, nil, operatortool.ErrInvalidArguments},
 		{"worker landing", "land_change", nil, operatortool.ErrUnknownTool},
 		{"worker CI", "submit_change_check", nil, operatortool.ErrUnknownTool},
 	} {
