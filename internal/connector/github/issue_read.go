@@ -640,6 +640,7 @@ func (c *Connector) fetchProjectRefreshIssues(
 	}
 
 	validated := false
+	reobserveRetained := resumed
 	scan, err := c.scanProjectItems(ctx, thinRefreshProjectItemsQuery, graphQLQueryObservedStatus, filter, func(connector.Issue) bool {
 		return true
 	}, 0, repairBlankStatuses, &c.refreshScan, func(ctx context.Context, progress *projectItemsScanProgress) error {
@@ -649,7 +650,11 @@ func (c *Connector) fetchProjectRefreshIssues(
 			}
 			validated = true
 		}
-		return c.hydrateRefreshPage(ctx, progress, schedulerStates, matches)
+		err := c.hydrateRefreshPage(ctx, progress, schedulerStates, matches, reobserveRetained)
+		if err == nil {
+			reobserveRetained = false
+		}
+		return err
 	}, func(ctx context.Context, items []projectItemNode) error {
 		return c.completeRefreshSelectors(ctx, items, hint)
 	}, matches)

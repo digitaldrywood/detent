@@ -2706,6 +2706,13 @@ pacer, configuration key, or recovery loop is added.
 `TestCandidatePageObservation`, and
 `TestCandidatePRLargeCollectionsRemainAuthoritative` cover this consolidation.
 
+Resumed board scans reobserve retained PR evidence once before continuing
+hydration (#3072). Checks and mergeability can change on the same base/head
+without an issue revision; retaining scheduler evidence must not freeze those
+observations. `TestRetainedRefreshObservesCompletedCheckOnSameHead` covers
+pending, successful, and failed checks and entry into the trusted audit stage.
+The hourly workload scenarios bound the additional resumed-scan requests.
+
 Non-draft dirty PRs in In Progress reuse the existing merge-mode precheck,
 fallback rebase prompt, and deterministic verification (#2842), regardless of
 the programmatic merge fast-path flag. Verified repairs rejoin ordinary progress
