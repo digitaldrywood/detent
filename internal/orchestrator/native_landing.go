@@ -43,6 +43,11 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
+	if !landing.Landed && landing.RefusalKind == workspace.LandRefusalBaseMoved {
+		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt, landing.Refusal,
+			"merge_worker_waiting", "waiting to retry landing of ")
+		return true
+	}
 	handoff := func(err error) bool {
 		o.warnNativeCompletion(issue, err)
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -35,8 +36,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 	refused := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: "base_protected", Refusal: "the base branch main refused the push: GH006. Allow the runner to push to main, or enable GitHub pull request mode for this project."}
 	conflict := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalConflict, Refusal: "GitHub refused the merge (HTTP 405); source merge of exact reviewed head and current base conflicts"}
 	unproven := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head}
-	projectionErr := forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request repos/example/repo/pulls/7/merge"}, forgeavailability.ClassServer,
-		&github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: 405, Body: `{"message":"Pull Request has merge conflicts"}`})
+	waiting := *unproven
+	waiting.RefusalKind = workspace.LandRefusalBaseMoved
+	waiting.Refusal = "GitHub refused PUT repos/example/repo/pulls/7/merge: status 405: Pull Request has merge conflicts; current source is unproven"
 	for _, test := range []struct {
 		name               string
 		finalMessage       string
@@ -56,18 +58,26 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		err                error
 		wantInfrastructure bool
 		mergeMessage       string
+		mergeStatus        int
 		sourceConflict     bool
+		wantLandingWait    bool
+		priorOutage        string
 	}{
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a refused landing returns to review with the reason", landing: refused, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
 		{name: "a conflict enters rework without human review", landing: conflict, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "a conflict enters configured rework with human review", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
 		{name: "a protected refusal remains blocked without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "was not landed", wantMoves: 1},
-		{name: "unproven conflict retains landing retry without coding rework", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, err: projectionErr, wantInfrastructure: true},
+		{name: "unproven conflict retains landing retry without coding rework", landing: &waiting, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "stale base projection with current conflict enters configured rework", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
-		{name: "stale base projection with current clean source retains landing wait", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, noHumanReview: true, wantInfrastructure: true},
+		{name: "stale base projection with current clean source retains landing wait", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
+		{name: "responsive clean projection clears only old synthetic outage", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: "projection"},
+		{name: "proven conflict clears only old synthetic outage", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "was not landed", wantMoves: 1, priorOutage: "projection"},
+		{name: "responsive clean projection preserves genuine server outage", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: forgeavailability.ClassServer},
+		{name: "responsive clean projection preserves genuine transport outage", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: forgeavailability.ClassTransport},
 		{name: "base race retains reviewed landing without human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, wantInfrastructure: true},
 		{name: "base race retains reviewed landing with human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
+		{name: "genuine server outage retains native version and host backoff", mergeMessage: "Service Unavailable", mergeStatus: http.StatusServiceUnavailable, landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
 		{name: "strict head protection returns to review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
 		{name: "strict head protection blocks without human review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "Head branch is out of date", wantMoves: 1},
 		{name: "a conflict with absent configured rework is handed off", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Missing", wantDeferred: true},
@@ -93,14 +103,19 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			landingHead := head
 			landed := *landed
 			if test.mergeMessage != "" {
-				journey = newNativeLandingJourney(t, issue, test.mergeMessage, test.sourceConflict)
+				journey = newNativeLandingJourney(t, issue, test.mergeMessage, test.mergeStatus, test.sourceConflict)
 				result, runErr = journey.run(t)
-				branch, landingHead = journey.issue.BranchName, journey.target.HeadSHA
+				branch, landingHead = result.WorkspaceBranch, journey.target.HeadSHA
 				landed.HeadSHA = landingHead
 				if test.wantInfrastructure {
 					var status *github.StatusError
 					wantError := connector.ErrPullRequestBaseOutOfDate
 					base := journey.base
+					statusCode := http.StatusMethodNotAllowed
+					if test.mergeStatus >= http.StatusInternalServerError {
+						wantError = forgeavailability.ErrUnavailable
+						statusCode = test.mergeStatus
+					}
 					if test.mergeMessage == "Pull Request has merge conflicts" {
 						wantError = forgeavailability.ErrUnavailable
 						base = nativeLandingGit(t, journey.info.Path, "rev-parse", "refs/remotes/origin/main")
@@ -108,11 +123,18 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 							t.Fatal("conflict verification did not refresh the advanced base")
 						}
 					}
-					if !errors.Is(runErr, wantError) || !errors.As(runErr, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.mergeMessage) || !strings.Contains(runErr.Error(), "PUT repos/example/repo/pulls/7/merge") || !strings.Contains(runErr.Error(), base) || !strings.Contains(runErr.Error(), landingHead) || len(journey.execution.recorded) != 0 {
+					if !errors.Is(runErr, wantError) || !errors.As(runErr, &status) || status.StatusCode != statusCode || !strings.Contains(status.Body, test.mergeMessage) || test.mergeStatus < 500 && (!strings.Contains(runErr.Error(), "PUT repos/example/repo/pulls/7/merge") || !strings.Contains(runErr.Error(), base) || !strings.Contains(runErr.Error(), landingHead)) || len(journey.execution.recorded) != 0 {
 						t.Fatalf("landing wait lost refusal evidence or fabricated landing: result %#v, error %v", result, runErr)
 					}
 				} else {
 					wantRefusal := workspace.LandRefusalProtected
+					if test.wantLandingWait {
+						wantRefusal = workspace.LandRefusalBaseMoved
+						base := nativeLandingGit(t, journey.remote, "rev-parse", "refs/heads/main")
+						if base == journey.base || !strings.Contains(result.NativeLanding.Refusal, base) || !strings.Contains(result.NativeLanding.Refusal, landingHead) {
+							t.Fatalf("landing wait lost current source verification: %#v", result.NativeLanding)
+						}
+					}
 					if test.sourceConflict {
 						wantRefusal = workspace.LandRefusalConflict
 						base := nativeLandingGit(t, journey.remote, "rev-parse", "refs/heads/main")
@@ -140,7 +162,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				cfg.AutoPromote.HumanReview = &humanReview
 			}
 			cfg.AutoPromote.ReworkState = test.reworkState
-			cfg.Policy.Gates.GitHubPullRequest = test.wantInfrastructure || journey != nil
+			cfg.Policy.Gates.GitHubPullRequest = test.wantInfrastructure || test.wantLandingWait || journey != nil
 			attempts := &recordingWorkAttemptStore{}
 			scheduling := &hubSchedulingSource{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
@@ -149,6 +171,25 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeMerge, DispatchSourceState: "Merging", StartedAt: now.Add(-time.Minute)}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
 			state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 2}
+			var priorCondition ForgeCondition
+			if test.priorOutage != "" {
+				class := test.priorOutage
+				cause := errors.New("connection reset by peer")
+				if class == "projection" {
+					class = forgeavailability.ClassServer
+					cause = fmt.Errorf("GitHub refused PUT repos/example/repo/pulls/7/merge: %w", &github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: 405, Body: `{"message":"Pull Request has merge conflicts"}`})
+				} else if class == forgeavailability.ClassServer {
+					cause = &github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: 503, Body: `{"message":"Service Unavailable"}`}
+				}
+				priorCondition = orch.registerForgeUnavailable(&state, forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request repos/example/repo/pulls/7/merge"}, class, cause), state.Running[issue.ID], now.Add(-time.Minute))
+				priorCondition.ProbeIssueID = issue.ID
+				priorCondition.NextProbeAt = time.Time{}
+				priorCondition.ProbeAttempts = 1
+				state.ForgeUnavailable["github.com"] = priorCondition
+				running := state.Running[issue.ID]
+				running.ForgeProbeHost = "github.com"
+				state.Running[issue.ID] = running
+			}
 			output := runpkg.RunOutputNativeLanded
 			if test.landing != nil && !test.landing.Landed {
 				output = runpkg.RunOutputNativeLandingRefused
@@ -164,6 +205,48 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			})
 			retry, retried := state.Retry[issue.ID]
 			_, deferred := state.deferredCompletions[issue.ID]
+			if test.wantLandingWait {
+				if !retried || retry.ForgeUnavailable || retry.ForgeRetry != nil || retry.Attempt != 1 || retry.Issue.State != "Merging" || !retry.DueAt.Equal(now.Add(cfg.ContinuationRetryDelay)) || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || len(state.InstantFailures) != 0 || scheduling.releases != 1 {
+					t.Fatalf("projection wait lost item-local continuation: retry %#v, state %#v", retry, state)
+				}
+				peer := completionTransitionIssue("Merging", "")
+				peer.ID = "unrelated-merge"
+				peerBlocked := forgeAvailabilityBlocks(&state, peer, Retry{}, "github.com", now)
+				genuineOutage := test.priorOutage != "" && test.priorOutage != "projection"
+				if peerBlocked != genuineOutage || (len(state.ForgeUnavailable) != 0) != genuineOutage {
+					t.Fatalf("projection changed unrelated merge admission: blocked %v, conditions %#v", peerBlocked, state.ForgeUnavailable)
+				}
+				if genuineOutage {
+					condition := state.ForgeUnavailable["github.com"]
+					if condition.ErrorClass != priorCondition.ErrorClass || condition.LastError != priorCondition.LastError || !condition.LastObservedAt.Equal(priorCondition.LastObservedAt) || condition.ProbeIssueID != "" {
+						t.Fatalf("responsive refusal replaced genuine outage authority: %#v", condition)
+					}
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess || attempts.completions[0].Phase != "waiting" || attempts.completions[0].ErrorClass != "" {
+					t.Fatalf("projection wait consumed failure/capacity: %#v", attempts.completions)
+				}
+				var metadata map[string]any
+				if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
+					t.Fatal(err)
+				}
+				if metadata["native_landed"] != false || metadata["native_version_id"] != unproven.VersionID || metadata["native_head_sha"] != landingHead || metadata["native_landing_refusal"] != workspace.LandRefusalBaseMoved || metadata["forge_wait"] != nil || metadata["native_merge_sha"] != nil {
+					t.Fatalf("continuation lost immutable reviewed identity: %#v", metadata)
+				}
+				if journey != nil && !genuineOutage {
+					retryResult, err := journey.run(t)
+					if err != nil || !retryResult.NativeLanding.Landed || journey.execution.target.HeadSHA != landingHead || len(journey.execution.recorded) != 1 || journey.provider.calls.Load() != 0 {
+						t.Fatalf("same-version continuation failed to land: %#v, %v", retryResult, err)
+					}
+					tick.stateIssues[0].State = "Done"
+					state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 43, Mode: runpkg.RunModeMerge, DispatchSourceState: "Merging", StartedAt: retry.DueAt}
+					state.Claimed[issue.ID] = Claimed{Issue: issue}
+					orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: retry.DueAt.Add(time.Second), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: retryResult})
+					if len(state.ForgeUnavailable) != 0 || state.Completed[issue.ID].Issue.State != "Done" || len(attempts.completions) != 2 || len(tick.updates) != 0 {
+						t.Fatalf("same-version continuation failed to settle: %#v", state)
+					}
+				}
+				return
+			}
 			if test.wantInfrastructure {
 				if !retried || !retry.ForgeUnavailable || retry.Attempt != 1 || retry.Issue.State != "Merging" || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || state.RepeatedFailures[issue.ID].Count != 2 || len(state.InstantFailures) != 0 || scheduling.releases != 1 {
 					t.Fatalf("unproven conflict changed source ownership: retry %#v, updates %#v, state %#v", retry, tick.updates, state)
