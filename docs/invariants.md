@@ -17,6 +17,22 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Native acceptance (native #233) uses the existing `detent-status` schema in the
+authenticated attempt's final DB report, not provider execution success or prose
+classification. The host remains the only comment and lane writer. Typed
+unfinished or blocked acceptance cannot auto-land or end an item merely because
+the turn succeeded or changed no files. A missing or invalid unchanged report
+uses the existing configured review handoff with successful-turn cost and claim
+settlement preserved; it is not a coding failure or a fabricated human request.
+Valid unchanged inspection acceptance and authoritative already-landed receipts
+remain valid completion. Legacy missing reports with genuine published versions
+retain their existing policy, exact-head and current-review landing authority.
+This explicit compatibility boundary does not reinterpret old prose as typed
+status or add a validation gate, failure allowance, recovery loop or reason code.
+`TestNativeChangeRunCompletion` exercises acceptance and review through the real
+completion owner, including the native #26 missing-status result and deferred
+completion replay.
+
 Inherited host subscription pacing (native #228) remains an operator scheduling
 choice, not execution authority. Policy hashing canonicalizes only its effective
 value to the historical default representation, and the existing live reload

@@ -751,7 +751,7 @@ const nativeCompletionContract = "## Native completion contract\n\n" +
 	"Stage only your finished issue changes with git add on the current attempt branch in this workspace. The runner owns commit signing and native commit/rebase finalization under the active lease before publishing an immutable Change version. Do not commit, run rebase or rebase --continue, update branches/refs, or use signing workarounds. Leave the staged index for the runner, including during a paused rebase. " +
 	"Never push to or open or update pull requests on the forge, never run `gh` or call the GitHub API, do not post or edit tracker, GitHub issue, or Workpad comments, and do not change issue state or labels. " +
 	"When host finalization and artifact capture succeed, Detent records the Change Request from the exact finalized head. " +
-	"Report any blocker in your final message."
+	"End your final message with the existing detent-status YAML block (schema: 1, status: complete, in_progress, or blocked; blockers; human_action). Use complete only when the issue acceptance is met, including an unchanged inspection or verified already-landed result. Report unfinished acceptance as in_progress or blocked even when the provider turn succeeds or no files changed. Include blockers with their existing owner/predicate fields and human_action only when a real human decision is needed. This final report is persisted by the runner; do not post a Workpad or change tracker state. Missing or invalid acceptance on unchanged work is preserved for configured review, not recorded as Done."
 
 func appendNativeCompletionContract(prompt string) string {
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + nativeCompletionContract + "\n"
