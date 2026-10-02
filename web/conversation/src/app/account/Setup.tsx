@@ -372,6 +372,7 @@ export function SetupRoute({
   const [repositoryName, setRepositoryName] = React.useState("");
   const [pastedPolicy, setPastedPolicy] = React.useState("");
   const [enrolling, setEnrolling] = React.useState(false);
+  const fleet = useResource(() => enrolling ? api.fleet() : Promise.resolve(undefined), [api, enrolling]);
   const [serviceId, setServiceId] = React.useState("");
   const [serviceOrigin, setServiceOrigin] = React.useState("");
   const [servicePublisher, setServicePublisher] = React.useState("");
@@ -757,8 +758,10 @@ export function SetupRoute({
           <EnrollRunnerDialog
             open={enrolling}
             onOpenChange={setEnrolling}
+            fleet={fleet}
             projectIds={[projectId]}
             onEnrolled={() => void onboarding.refresh()}
+            onConnected={() => void onboarding.refresh()}
           />
         </div>
         {(integration.value?.checkout_repository || integration.value?.repository) ? <GitHubIssueIntake projectId={projectId} repository={integration.value.checkout_repository || integration.value.repository || ""} runners={(onboarding.value?.runners ?? []).map(entry => ({ id: entry.runner.runner_id, name: entry.runner.display_name }))} /> : null}

@@ -14,8 +14,8 @@ import {
   DialogTitle,
 } from "../../components/ui/dialog.tsx";
 import { Input } from "../../components/ui/input.tsx";
-import { Kbd } from "../../components/ui/kbd.tsx";
 import { Label } from "../../components/ui/label.tsx";
+import type { FleetResponse, FleetRunner } from "../../contracts/account.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
@@ -113,9 +113,11 @@ export function runnerNameFits(name: string): boolean {
 /** A monospace value with the copy affordance, sized for a command line. */
 export function CopyableCommand({
   value,
+  displayValue = value,
   label,
 }: {
   readonly value: string;
+  readonly displayValue?: string;
   readonly label: string;
 }): React.ReactElement {
   const [copied, setCopied] = React.useState(false);
@@ -126,7 +128,7 @@ export function CopyableCommand({
   }, [copied]);
   return (
     <div className="flex items-start gap-2 rounded-lg border border-border/60 bg-muted px-3 py-2">
-      <code className="min-w-0 flex-1 break-all font-mono text-xs text-foreground">{value}</code>
+      <code className="min-w-0 flex-1 break-all font-mono text-xs text-foreground">{displayValue}</code>
       <Button
         size="xs"
         variant="outline"
@@ -147,11 +149,18 @@ export function EnrollRunnerDialog({
   open,
   onOpenChange,
   onEnrolled,
+  onConnected,
+  fleet,
   projectIds,
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onEnrolled: (enrollment: PendingEnrollment) => void;
+  readonly onConnected?: (enrollment: PendingEnrollment) => void;
+  readonly fleet: {
+    readonly value: FleetResponse | undefined;
+    readonly refresh: () => Promise<void>;
+  };
   /** Preselects these projects instead of every readable one. */
   readonly projectIds?: readonly string[];
 }): React.ReactElement {
@@ -187,7 +196,13 @@ export function EnrollRunnerDialog({
   const generation = React.useRef(0);
   const [service, setService] = React.useState(true);
   const [selected, setSelected] = React.useState<readonly string[]>(initialSelection);
-  const [enrollment, setEnrollment] = React.useState<(PendingEnrollment & { readonly command: string }) | null>(null);
+  const [enrollment, setEnrollment] = React.useState<(PendingEnrollment & {
+    readonly command: string;
+    readonly maskedCommand: string;
+    readonly existingRunnerIds: readonly string[];
+  }) | null>(null);
+  const [showToken, setShowToken] = React.useState(false);
+  const [connected, setConnected] = React.useState<FleetRunner | null>(null);
 
   // Reopening starts a fresh enrollment: the previous token was shown once and
   // leaving it on screen invites redeeming a token that has already expired.
@@ -198,11 +213,40 @@ export function EnrollRunnerDialog({
     setCapacityText("1");
     setService(true);
     setEnrollment(null);
+    setShowToken(false);
+    setConnected(null);
     setSelected(initialSelection());
   }, [open, initialSelection]);
 
+  React.useEffect(() => {
+    if (!open || enrollment === null || connected !== null) return;
+    const runner = fleet.value?.runners.find((entry) =>
+      !enrollment.existingRunnerIds.includes(entry.id) &&
+      entry.display_name === enrollment.name && entry.last_heartbeat_at !== "",
+    );
+    if (runner === undefined) return;
+    setConnected(runner);
+    onConnected?.(enrollment);
+  }, [open, enrollment, connected, fleet.value, onConnected]);
+
+  React.useEffect(() => {
+    if (!open || enrollment === null || connected !== null) return;
+    let stopped = false;
+    let timer: ReturnType<typeof globalThis.setTimeout>;
+    const refresh = async () => {
+      await fleet.refresh();
+      if (!stopped) timer = globalThis.setTimeout(() => void refresh(), 2_000);
+    };
+    timer = globalThis.setTimeout(() => void refresh(), 2_000);
+    return () => {
+      stopped = true;
+      globalThis.clearTimeout(timer);
+    };
+  }, [open, enrollment, connected, fleet.refresh]);
+
   const create = useMutation(async () => {
     const mine = generation.current;
+    const existingRunnerIds = fleet.value?.runners.map((runner) => runner.id) ?? [];
     const created = await api.enrollRunner({
       projectIds: selected,
       operations: [...ENROLLMENT_OPERATIONS],
@@ -211,12 +255,15 @@ export function EnrollRunnerDialog({
     const entry: PendingEnrollment = {
       id: created.id,
       expiresAt: created.expires_at,
-      name: name.trim(),
+      name: name.trim() || "Unnamed runner",
     };
     if (generation.current === mine) {
+      const input = { hubUrl, organizationId, token: created.token, name: entry.name, capacity: capacity ?? 1, service };
       setEnrollment({
         ...entry,
-        command: registerCommand({ hubUrl, organizationId, token: created.token, name, capacity: capacity ?? 1, service }),
+        command: registerCommand(input),
+        maskedCommand: registerCommand({ ...input, token: "detent_••••••••" }),
+        existingRunnerIds,
       });
     }
     onEnrolled(entry);
@@ -225,6 +272,7 @@ export function EnrollRunnerDialog({
 
   const nameFits = runnerNameFits(name);
   const ready = selected.length > 0 && capacity !== null && nameFits;
+  const step = connected !== null ? 2 : enrollment !== null ? 1 : 0;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -237,7 +285,31 @@ export function EnrollRunnerDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="flex flex-col gap-4">
-          {enrollment === null ? (
+          <ol aria-label="Runner enrollment steps" className="flex gap-3 text-xs sm:gap-6">
+            {["Set it up", "Run the command", "Connected"].map((label, index) => (
+              <li
+                key={label}
+                aria-current={step === index ? "step" : undefined}
+                className={step === index ? "font-medium text-foreground" : "text-muted-foreground"}
+              >
+                <span aria-hidden="true">{index + 1}. </span>{label}
+              </li>
+            ))}
+          </ol>
+          {connected !== null ? (
+            <section className="flex flex-col gap-3" aria-labelledby="enroll-connected">
+              <h3 id="enroll-connected" role="status" className="text-sm font-medium">
+                {connected.display_name} is connected
+              </h3>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[13px]">
+                <dt className="text-muted-foreground">Hostname</dt><dd className="break-all">{connected.hostname}</dd>
+                <dt className="text-muted-foreground">OS / architecture</dt><dd>{connected.os} / {connected.architecture}</dd>
+                <dt className="text-muted-foreground">Slots</dt><dd>{connected.reported_capacity}</dd>
+                <dt className="text-muted-foreground">Providers</dt>
+                <dd>{[...new Set(connected.provider_capacity.map((provider) => provider.provider))].join(", ") || "None reported"}</dd>
+              </dl>
+            </section>
+          ) : enrollment === null ? (
             <>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <div className="flex flex-1 flex-col gap-1.5">
@@ -349,21 +421,35 @@ export function EnrollRunnerDialog({
           ) : (
             <section className="flex flex-col gap-2" aria-labelledby="enroll-run-command">
               <h3 id="enroll-run-command" className="text-[13px] font-medium">
-                Run this on the machine that will take the work
+                Run this on the machine that will take the work.
               </h3>
-              <CopyableCommand value={enrollment.command} label="the register command" />
+              <CopyableCommand
+                value={enrollment.command}
+                displayValue={showToken ? enrollment.command : enrollment.maskedCommand}
+                label="the register command"
+              />
+              <Button
+                size="xs"
+                variant="outline"
+                className="self-start"
+                aria-pressed={showToken}
+                onClick={() => setShowToken((current) => !current)}
+              >
+                {showToken ? "Hide token" : "Show token"}
+              </Button>
               <p role="status" className="text-[13px] text-muted-foreground">
-                It creates the runner's identity on that machine, connects it to this organization
-                and writes its configuration. The token in it works once and expires{" "}
-                {new Date(enrollment.expiresAt).toLocaleTimeString()}. Copy it now; closing this
-                dialog with <Kbd>Esc</Kbd> throws it away.
+                Waiting for {enrollment.name || "the runner"} to check in. The command works once, until{" "}
+                {new Date(enrollment.expiresAt).toLocaleTimeString()}.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Closing this dialog clears the command from the page. The runner still connects if you already ran it.
               </p>
             </section>
           )}
           <ControlError message={create.error?.message ?? null} />
         </DialogPanel>
         <DialogFooter>
-          <DialogClose render={<Button variant="outline">{enrollment === null ? "Cancel" : "Done"}</Button>} />
+          <DialogClose render={<Button variant="outline">{connected !== null ? "Done" : enrollment === null ? "Cancel" : "Close"}</Button>} />
           {enrollment === null ? (
             <Button disabled={!ready || create.pending} onClick={() => void create.call()}>
               {create.pending ? "Creating…" : "Create command"}
