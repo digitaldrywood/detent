@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,8 +18,9 @@ import (
 )
 
 func TestRunnerCapacityOwner(t *testing.T) {
-	for _, scenario := range []string{"apply and reload", "stale configuration", "different identity", "different selected path", "different machine", "immutable configuration"} {
+	for _, scenario := range []string{"apply and reload", "stale configuration", "concurrent configuration", "concurrent replay", "concurrent machine", "different identity", "different selected path", "different machine", "immutable configuration"} {
 		t.Run(scenario, func(t *testing.T) {
+			concurrent := strings.HasPrefix(scenario, "concurrent ")
 			root := t.TempDir()
 			if err := os.Chmod(root, 0700); err != nil {
 				t.Fatal(err)
@@ -47,7 +50,14 @@ func TestRunnerCapacityOwner(t *testing.T) {
 			cfg.Global.MaxConcurrentAgents = 2
 			cfg.Client = globalconfig.HubClient{URL: file.HubURL, IdentityFile: identityPath, OrganizationID: "org_test", NativeProjects: map[string]string{"native": "prj_test"}, Capacity: 2, ProviderCapacityFile: providerPath}
 			cfg.APIToken = "private-api-credential"
-			if err := globalconfig.Write(path, cfg); err != nil {
+			if concurrent {
+				workflow := filepath.Join(root, "WORKFLOW.md")
+				if err := os.WriteFile(workflow, []byte("# Workflow\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				cfg.Projects = []globalconfig.Project{{ID: "native", Workflow: workflow, Workdir: root, Weight: 1}}
+			}
+			if err := globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err = globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
@@ -97,7 +107,59 @@ func TestRunnerCapacityOwner(t *testing.T) {
 				other.Path = filepath.Join(root, "other.yaml")
 				state.set(other)
 			}
-			result := owner(t.Context(), request)
+			var result *runnerauth.CapacityConfig
+			if concurrent {
+				observed := make(chan struct{})
+				resume := make(chan struct{})
+				done := make(chan struct{})
+				release := sync.OnceFunc(func() { close(resume) })
+				defer func() {
+					release()
+					<-done
+				}()
+				ctx := &capacityMutationContext{Context: t.Context(), beforeErr: func() {
+					close(observed)
+					<-resume
+				}}
+				completed := make(chan *runnerauth.CapacityConfig, 1)
+				go func() {
+					defer close(done)
+					completed <- owner(ctx, request)
+				}()
+				<-observed
+				cfg.APIToken = "private-updated-api-credential"
+				cfg.GitHubToken = "private-updated-github-credential"
+				cfg.Projects[0].Paused = true
+				cfg.Projects[0].PausedReason = "operator hold"
+				cfg.Projects[0].Priority = 3
+				cfg.Projects[0].Weight = 4
+				cfg.Projects[0].CredentialRef = "updated-credential"
+				cfg.Projects = append(cfg.Projects, globalconfig.Project{ID: "added", Workflow: cfg.Projects[0].Workflow, Workdir: root, Weight: 1})
+				switch scenario {
+				case "concurrent replay":
+					cfg.Global.MaxConcurrentAgents, cfg.Client.Capacity = 6, 6
+				case "concurrent machine":
+					cfg.Client.MachineID = string(runnerauth.NewBinding().MachineID)
+				}
+				if err := globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
+					t.Fatal(err)
+				}
+				saved, err := globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if saved.APIToken != cfg.APIToken || saved.GitHubToken != cfg.GitHubToken || len(saved.Projects) != 2 || !saved.Projects[0].Paused || saved.Projects[0].PausedReason != "operator hold" || saved.Projects[0].Priority != 3 || saved.Projects[0].Weight != 4 || saved.Projects[0].CredentialRef != "updated-credential" || saved.Projects[1].ID != "added" {
+					t.Fatal("concurrent edit was not saved before capacity resumed")
+				}
+				original, err = os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				release()
+				result = <-completed
+			} else {
+				result = owner(t.Context(), request)
+			}
 			updated, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -109,10 +171,16 @@ func TestRunnerCapacityOwner(t *testing.T) {
 				if scenario == "immutable configuration" && (result == nil || result.Manageable || result.Constraint == "") {
 					t.Fatalf("immutable result=%+v", result)
 				}
-				if scenario == "stale configuration" && (result == nil || result.Constraint == "") {
+				if (scenario == "stale configuration" || scenario == "concurrent configuration") && (result == nil || result.Constraint == "" || result.LocalLimit != 2 || result.ClientLimit != 2) {
 					t.Fatalf("stale result=%+v", result)
 				}
-				if scenario == "stale configuration" || scenario == "immutable configuration" {
+				if scenario == "concurrent machine" && result != nil {
+					t.Fatalf("changed enrollment remained manageable: %+v", result)
+				}
+				if scenario == "concurrent replay" && (result == nil || result.LocalLimit != 6 || result.ClientLimit != 6 || result.RuntimeLimit != 2 || result.Constraint != "Waiting for the existing configuration reload to apply the saved limits.") {
+					t.Fatalf("concurrent replay=%+v", result)
+				}
+				if scenario == "stale configuration" || scenario == "concurrent configuration" || scenario == "immutable configuration" {
 					observed := owner(t.Context(), nil)
 					if observed == nil || observed.Constraint != result.Constraint || observed.Manageable != result.Manageable {
 						t.Fatalf("application failure lost before heartbeat: result=%+v observed=%+v", result, observed)
@@ -128,9 +196,18 @@ func TestRunnerCapacityOwner(t *testing.T) {
 						t.Fatalf("old failure attributed to new configuration: observed=%+v", observed)
 					}
 					request.ExpectedConfigRevision = observed.Revision
+					beforeRetry, err := globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+					if err != nil {
+						t.Fatal(err)
+					}
 					applied := owner(t.Context(), request)
 					if applied == nil || applied.LocalLimit != 6 || applied.ClientLimit != 6 || !applied.Manageable || applied.Constraint != "Waiting for the existing configuration reload to apply the saved limits." {
 						t.Fatalf("corrected request did not apply: %+v", applied)
+					}
+					beforeRetry.Global.MaxConcurrentAgents, beforeRetry.Client.Capacity = 6, 6
+					afterRetry, err := globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+					if err != nil || !reflect.DeepEqual(afterRetry, beforeRetry) {
+						t.Fatal("corrected capacity request changed unrelated settings")
 					}
 				}
 				return
@@ -212,4 +289,15 @@ func TestRunnerCapacityOwner(t *testing.T) {
 			}
 		})
 	}
+}
+
+type capacityMutationContext struct {
+	context.Context
+	once      sync.Once
+	beforeErr func()
+}
+
+func (c *capacityMutationContext) Err() error {
+	c.once.Do(c.beforeErr)
+	return c.Context.Err()
 }

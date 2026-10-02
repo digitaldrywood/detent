@@ -319,6 +319,21 @@ configuration revision; a changed configuration or corrected request replaces
 that outcome. This retains application evidence without another retry or recovery
 owner.
 
+Capacity mutation (native #142) reads the current configuration, rechecks its
+revision and enrollment, and changes only `global.max_concurrent_agents` and
+`client.capacity` under the global configuration writer's shared mutation lock.
+Supported in-process writes use that same lock and persistence implementation;
+the capacity callback's mutex only serializes its application evidence. Its
+former separate read/check/write could overwrite unrelated settings saved by
+another writer, so configuration synchronization belongs to the existing writer.
+An intervening saved edit rejects a stale request through the existing revision
+constraint; already-saved requested limits retain replay without another write.
+`TestRunnerCapacityOwner` deterministically saves credentials, pause, project
+settings and membership after observation and before mutation, verifies the save
+before resuming, and checks preservation and current-enrollment authority. This
+consolidates INV-1 enforcement without another writer or recovery mechanism
+(INV-3).
+
 `TestRunnerCapacityOwner`, `TestRunnerCapacityHeartbeat`,
 `TestRunnerCapacityApplication`, the capacity cases in `TestHostedMCPFleetControls`
 and `TestFleetArgumentBoundary` cover persistence, reload, old-Hub compatibility,
