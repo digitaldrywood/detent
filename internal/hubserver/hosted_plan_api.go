@@ -247,6 +247,20 @@ func insertHostedComplimentaryGrant(ctx context.Context, tx *sql.Tx, command hos
 	return err
 }
 
+func hostedNativeMutationMetrics(input any, completion bool) []string {
+	metrics := []string{"events_total", "usage_windows"}
+	if _, runEvent := input.(tracker.NativeRunEvent); !runEvent {
+		metrics = append(metrics, "unarchived_issues", "projects", "repositories", "registered_runners")
+		if !completion {
+			metrics = append(metrics, "connected_runners")
+		}
+	}
+	if !completion {
+		metrics = append(metrics, "collaboration_bytes", "history_records")
+	}
+	return metrics
+}
+
 func hostedCompletionMutation(c echo.Context, input any) bool {
 	if strings.HasSuffix(c.Path(), "/work-items/:item/archive") {
 		return true

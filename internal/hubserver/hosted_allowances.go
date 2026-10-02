@@ -4,10 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"time"
 )
 
-func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, now time.Time) (map[string]int64, error) {
+func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, now time.Time, metrics ...string) (map[string]int64, error) {
 	result := make(map[string]int64)
 	if d.hostedPlans == nil {
 		return result, nil
@@ -34,6 +35,9 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		(SELECT coalesce(sum(size),0) FROM attachments WHERE object_deleted_at IS NULL)`,
 	}
 	for name, statement := range queries {
+		if len(metrics) > 0 && !slices.Contains(metrics, name) {
+			continue
+		}
 		var count int64
 		var args []any
 		if name == "unarchived_issues" {
@@ -51,17 +55,25 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		{"concurrent_work", "SELECT expires_at FROM leases WHERE released_at IS NULL", now},
 		{"connected_runners", `SELECT r.last_heartbeat_at FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL UNION ALL SELECT m.last_heartbeat_at FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id)`, now.Add(-time.Duration(d.hostedPlans.ConnectedSeconds) * time.Second)},
 	} {
+		if len(metrics) > 0 && !slices.Contains(metrics, sample.name) {
+			continue
+		}
 		count, err := countHostedAfter(ctx, query, sample.statement, sample.after)
 		if err != nil {
 			return nil, err
 		}
 		result[sample.name] = count
 	}
-	var reserved int64
-	if err := query.QueryRowContext(ctx, "SELECT count(*) FROM hosted_member_reservations WHERE expires_at > ?", now.Unix()).Scan(&reserved); err != nil {
-		return nil, err
+	if len(metrics) == 0 || slices.Contains(metrics, "members") {
+		var reserved int64
+		if err := query.QueryRowContext(ctx, "SELECT count(*) FROM hosted_member_reservations WHERE expires_at > ?", now.Unix()).Scan(&reserved); err != nil {
+			return nil, err
+		}
+		result["members"] += reserved
 	}
-	result["members"] += reserved
+	if len(metrics) > 0 && !slices.Contains(metrics, "usage_windows") {
+		return result, nil
+	}
 	window := now.Unix() / d.hostedPlans.WindowSeconds * d.hostedPlans.WindowSeconds
 	rows, err := query.QueryContext(ctx, "SELECT metric,amount FROM hosted_usage_windows WHERE window_start = ?", window)
 	if err != nil {
@@ -114,11 +126,11 @@ func (d *database) recordHostedUsage(ctx context.Context, tx *sql.Tx, now time.T
 	return err
 }
 
-func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map[string]int64, now time.Time, completion bool) error {
+func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map[string]int64, now time.Time, completion bool, metrics ...string) error {
 	if d.hostedPlans == nil {
 		return nil
 	}
-	after, err := d.hostedConsumption(ctx, tx, now)
+	after, err := d.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
 		return err
 	}
