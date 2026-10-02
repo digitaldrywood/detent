@@ -249,14 +249,65 @@ external effects; restoring a snapshot does not roll back a GitHub mutation.
 
 ## Upgrade, interruption and compatibility
 
-Pin a release and retain the old binary plus a verified pre-upgrade snapshot.
-Drain runners, stop the unit, create/verify a backup, install the selected binary,
-then start the Hub. Startup applies embedded forward goose migrations before
-health becomes ready. Each migration is transactional; a crash rolls back the
-unfinished migration. Earlier completed migrations remain applied and the same
-binary retries the remainder on restart. Fix disk/permission problems first.
+For an ordinary binary deploy with an unchanged Hub schema, prepare the verified
+new executable on the host before stopping the unit. Keep the previous executable
+and an independently verified backup. Atomically replace the executable on the
+same filesystem, then restart the Hub unit immediately. Linux keeps the old
+process running from its original executable until the restart. Keep downloads,
+builds, archive extraction, backup creation/verification and proxy reconfiguration
+outside this restart window. Do not drain runners for this binary-only restart:
+their existing lease and session continue when the Hub returns in time. Do not
+restore an older database to roll back a same-schema binary; retain current run
+events and lease ownership.
+
+The restart budget is less than the configured runner renewal interval (30
+seconds by default), including shutdown, database reopen and authenticated HTTPS
+readiness through the existing proxy. Shutdown closes conversation streams and
+control polls before waiting for HTTP handlers; the hosted activity stream exits
+on its existing one-second tick. SQLite opens at the current schema without
+repeating a full foreign-key scan. It still verifies ownership, identity, pragmas
+and migration history; `hub verify` retains full offline integrity/foreign-key
+verification. These changes do not extend a lease or accept an expired owner.
+
+When adopting this procedure from a binary that verified foreign keys after
+committing the final migration, use the existing offline `hub verify` during a
+maintenance window first. A failed upgrade from that binary may already have
+recorded its final schema version; unchanged-schema startup does not repeat its
+data verification. Retain the verified snapshot and resolve any reported failure
+before using the quick restart procedure.
+
+A schema-changing upgrade requires a separate maintenance window. Rehearse the
+selected binary's migrations against a verified snapshot before cut-over and
+record the duration. The live Hub holds an exclusive SQLite connection and an
+instance lock: a second binary cannot pre-migrate its live database while it
+serves requests. Do not copy a migrated snapshot over the live database or open a
+second owner; either loses or competes with current run events. If the measured
+migration cannot fit the restart budget, let active runners finish while the old
+Hub remains online, then stop the unit, create/verify the pre-upgrade backup and
+start the prepared binary. Never hold a stopped Hub while waiting for active
+runners to finish.
+
+Startup applies embedded forward goose migrations before health becomes ready.
+Foreign keys are checked inside the final migration transaction before recording
+its version. Each migration is transactional; a crash or failed final validation
+rolls back the unfinished migration. Earlier completed migrations remain applied
+and the same binary retries the remainder on restart. Fix disk/permission
+problems first.
 Never manually advance the schema table or run the unrelated local orchestrator
 `make db-migrate` against a Hub database.
+
+The deployment/release owner must verify a normal production restart after
+integration. Record the finalized Change head, deployed binary version, stop time
+and first authenticated HTTPS-ready time; measure the entire unavailable interval
+and require it to be below one renewal interval. Start a real runner session
+before deployment and retain its work-item, machine, lease, fencing token, session,
+run and attempt identifiers. After deployment, confirm renewal and successful
+`run.finished` under those same identifiers, with one attempt and no replacement
+dispatch. Keep credentials and content out of this evidence. A local reopen test
+does not establish production deploy timing. The restricted staging deploy script
+and production host integration are operator-owned, outside this source checkout;
+their preparation/restart ordering must follow this procedure before claiming
+production acceptance.
 
 Schema 19 repairs the two formerly valid schema-18 branches. Migration 18 remains
 `00018_change_viewed_files.sql`; onboarding moves to

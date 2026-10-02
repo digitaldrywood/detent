@@ -220,7 +220,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	c.Response().Header().Set(echo.HeaderContentType, "text/event-stream")
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	for {
+	for s.ready.Load() {
 		credential, _, err := s.hostedCredential(c)
 		if err != nil {
 			return nil
@@ -243,6 +243,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		case <-ticker.C:
 		}
 	}
+	return nil
 }
 
 func (s *Service) hostedMetadata(c echo.Context) error {

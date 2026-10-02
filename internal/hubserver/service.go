@@ -329,6 +329,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	s.ready.Store(false)
+	if s.conversations != nil {
+		s.conversations.broker.closeAll()
+	}
 	var mcpErr error
 	if s.mcpHTTP != nil {
 		mcpErr = s.mcpHTTP.Shutdown(ctx)
