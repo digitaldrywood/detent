@@ -335,7 +335,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		a.CurrentState = strconv.FormatInt(runner.Revision, 10) + ":" + runner.Health
 		if name == operatortool.UpdateRunnerCapacity {
 			var change runnerCapacityChange
-			if operatortool.DecodeArguments(r.Change, &change) != nil || change.CapacityRequest.Validate() != nil || change.ExpectedRevision != runner.Revision {
+			if operatortool.DecodeArguments(r.Change, &change) != nil || change.Validate() != nil || change.ExpectedRevision != runner.Revision {
 				return a, errHubOperatorUnavailable
 			}
 			a.MaterialChange = true

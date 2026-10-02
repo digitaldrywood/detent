@@ -512,18 +512,3 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 		})
 	}
 }
-
-type allowanceResetConnector struct {
-	attemptTriageConnector
-	edits int
-}
-
-func (c *allowanceResetConnector) UpdateIssueComment(_ context.Context, _, id, body string) error {
-	c.edits++
-	for i := range c.refreshed.Comments {
-		if c.refreshed.Comments[i].ID == id {
-			c.refreshed.Comments[i].Body = body
-		}
-	}
-	return nil
-}

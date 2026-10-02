@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -294,7 +295,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?) WHERE native_id = ?", f.project.ID, test.states[i], issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				rank := fmt.Sprint(i)
+				rank := strconv.Itoa(i)
 				if test.ranks != nil {
 					rank = test.ranks[i]
 				}
@@ -493,7 +494,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 				if test.leaseEnd == "release" {
 					owner = current
 				}
-				issue := owner.nativeFixture.create(t, "reserved")
+				issue := owner.create(t, "reserved")
 				response := performHubAPIRequest(t, f.service, http.MethodPost, owner.nativeFixture.base+"/claims", owner.redemption.Credential, providerClaim(owner, issue, "reserved"))
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &lease)
@@ -530,9 +531,10 @@ func TestProviderPoolIsolation(t *testing.T) {
 			}
 			if statement != "" {
 				args := []any{otherRunner.binding.RunnerID}
-				if test.authority == "expired" {
+				switch test.authority {
+				case "expired":
 					args = []any{formatHubTime(now), otherRunner.binding.RunnerID}
-				} else if test.authority == "future" {
+				case "future":
 					args = []any{formatHubTime(now.Add(time.Second)), otherRunner.binding.RunnerID}
 				}
 				if _, err := f.service.database.db.ExecContext(t.Context(), statement, args...); err != nil {
