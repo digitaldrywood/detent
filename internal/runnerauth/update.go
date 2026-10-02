@@ -53,10 +53,11 @@ type UpdateRequest struct {
 	Version               string    `json:"version"`
 	Release               bool      `json:"release"`
 	FromRelease           bool      `json:"from_release"`
+	Urgent                bool      `json:"urgent,omitempty"`
 }
 
 func (r UpdateRequest) Validate() error {
-	if !updateIdentifier.MatchString(r.ID) || r.Service != "detent" || r.RequestedAt.IsZero() || !updateDigest(r.ExpectedBuildRevision) || !updateIdentifier.MatchString(r.Version) || r.FromRelease && !r.Release {
+	if !updateIdentifier.MatchString(r.ID) || r.Service != "detent" || r.RequestedAt.IsZero() || !r.Urgent && !updateDigest(r.ExpectedBuildRevision) || r.Urgent && (!r.Release || r.ExpectedBuildRevision != "") || !updateIdentifier.MatchString(r.Version) || r.FromRelease && !r.Release {
 		return errors.New("update requires the selected detent service, observed build revision and release version")
 	}
 	return nil

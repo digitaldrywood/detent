@@ -7478,3 +7478,43 @@ Apply enrolled runner update through the installed owner
 - Confirmation: selected runner update and coordinated restart → operator
 
 Sources: [POST /api/v2/organizations/:organization/runners/:runner/update/apply](../internal/hubserver/runner_enrollment.go#L0)
+## hubserver.get_urgent_runner_update
+
+Read the organization urgent runner release
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#186 extends the runner update application owned by this inventory child. Reuse the existing draining state and installed updater drain. Urgency never cancels sessions; active leases remain renewable and matching startup evidence removes only the derived drain.
+- Tool: `runs_fleet.get_urgent_runner_update` — No arguments. → Organization urgent release revision and typed request. Queued urgency is not applied or running evidence.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership Current organization and its urgent runner release; the existing runner routing and installed updater retain session, lease, artifact and restart ownership..
+- Application: Service.readUrgentRunnerUpdateCommand
+- Extraction: MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current installed owner protocol/readiness, heartbeat freshness, exact runner/build revision and selected configured release version. No paths, artifact URLs, commands, environment or credentials.
+- Coverage: TestUrgentRunnerUpdateFleet; TestHostedMCPFleetControls; TestFleetArgumentBoundary; TestUrgentUpdateOwnerKeepsHeartbeatsAvailable; TestSchedulerEnrolledUpdate; TestServiceChoosesHubUpdateTarget.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service
+- Availability: hosted_dedicated / github,native / hub application service
+- Availability: hosted_shared / github,native / hub application service
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: read → none
+
+Sources: [GET /api/v2/organizations/:organization/runner-update/urgent](../internal/hubserver/runner_enrollment.go#L0)
+## hubserver.mark_urgent_runner_update
+
+Mark a release urgent and drain older runners without cancelling sessions
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
+- Decision: Native Detent work item prj_6d4919bebd73446798e6cd807feda10e#186 extends the runner update application owned by this inventory child. Reuse the existing draining state and installed updater drain. Urgency never cancels sessions; active leases remain renewable and matching startup evidence removes only the derived drain.
+- Tool: `runs_fleet.mark_urgent_runner_update` — request_id and change containing expected_revision and published semantic version. API requires confirm=true and idempotency_key. → Organization urgent release revision and typed request. Queued urgency is not applied or running evidence.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential current authenticated runner administrator; workers receive no configuration administration authority; project current all-project runner grants, checked again before execution and replay; ownership Current organization and its urgent runner release; the existing runner routing and installed updater retain session, lease, artifact and restart ownership..
+- Application: Service.markUrgentRunnerUpdateCommand / existing routing delivery / installed enrolled drain updater
+- Extraction: MCP and authenticated API use current runner administration, existing routing/heartbeat delivery and installed scheduler state. Artifact verification, coordinated drain/restart and rollback remain owned by the installed updater; no polling or recovery owner is added.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.; Current installed owner protocol/readiness, heartbeat freshness, exact runner/build revision and selected configured release version. No paths, artifact URLs, commands, environment or credentials.
+- Coverage: TestUrgentRunnerUpdateFleet; TestHostedMCPFleetControls; TestFleetArgumentBoundary; TestUrgentUpdateOwnerKeepsHeartbeatsAvailable; TestSchedulerEnrolledUpdate; TestServiceChoosesHubUpdateTarget.
+- Proposed hints: readOnly=false; destructive=true; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: Unhosted hub has no authenticated approval browser. Ordinary display edits run directly; material actions return opaque unavailable unless a real approval service exists. Use the dashboard daemon command where configured.
+- Availability: hosted_dedicated / github,native / hub application service
+- Availability: hosted_shared / github,native / hub application service
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: selected runner update and coordinated restart → operator
+
+Sources: [PUT /api/v2/organizations/:organization/runner-update/urgent](../internal/hubserver/runner_enrollment.go#L0)

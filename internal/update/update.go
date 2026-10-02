@@ -323,6 +323,7 @@ type Service struct {
 
 type ApplyOptions struct {
 	ExpectedVersion       string
+	Urgent                bool
 	AssumeYes             bool
 	FromRelease           bool
 	Confirm               func(Status) (bool, error)
@@ -405,7 +406,14 @@ func (s *Service) Check(ctx context.Context) (Status, error) {
 }
 
 func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) {
-	status, release, err := s.plan(ctx)
+	target := ""
+	if opts.Urgent {
+		if opts.ExpectedVersion == "" {
+			return Status{Action: ActionRefused}, ErrRefused
+		}
+		target = opts.ExpectedVersion
+	}
+	status, release, err := s.planForVersion(ctx, target)
 	if err != nil {
 		return status, err
 	}
@@ -641,6 +649,10 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 }
 
 func (s *Service) plan(ctx context.Context) (Status, Release, error) {
+	return s.planForVersion(ctx, "")
+}
+
+func (s *Service) planForVersion(ctx context.Context, target string) (Status, Release, error) {
 	info := DetectInstallSource(DetectionOptions{
 		CurrentVersion: s.cfg.CurrentVersion,
 		ExecutablePath: s.cfg.ExecutablePath,
@@ -668,7 +680,7 @@ func (s *Service) plan(ctx context.Context) (Status, Release, error) {
 		return status, Release{}, ErrRefused
 	}
 
-	release, ok, err := s.targetRelease(ctx)
+	release, ok, err := s.targetRelease(ctx, target)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -700,17 +712,20 @@ func (s *Service) plan(ctx context.Context) (Status, Release, error) {
 	return status, release, nil
 }
 
-func (s *Service) targetRelease(ctx context.Context) (Release, bool, error) {
-	if s.cfg.TargetVersion == nil {
+func (s *Service) targetRelease(ctx context.Context, target string) (Release, bool, error) {
+	if target == "" && s.cfg.TargetVersion == nil {
 		releases, err := s.cfg.Client.ListReleases(ctx)
 		if err != nil {
 			return Release{}, false, err
 		}
 		return SelectLatestRelease(s.cfg.CurrentVersion, releases)
 	}
-	target, err := s.cfg.TargetVersion(ctx)
-	if err != nil {
-		return Release{}, false, fmt.Errorf("read Hub update target: %w", err)
+	if target == "" {
+		var err error
+		target, err = s.cfg.TargetVersion(ctx)
+		if err != nil {
+			return Release{}, false, fmt.Errorf("read Hub update target: %w", err)
+		}
 	}
 	target = strings.TrimSpace(target)
 	cmp, err := CompareVersions(target, s.cfg.CurrentVersion)

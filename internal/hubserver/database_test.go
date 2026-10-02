@@ -465,6 +465,7 @@ func TestOpenMigratesConversationOriginHistories(t *testing.T) {
 		{"origin63", 63, 63},
 		{"references64", 64, 0},
 		{"origin65", 65, 0},
+		{"hostedEvents66", 66, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "hub.db")
@@ -554,8 +555,12 @@ VALUES ('att_history', 'org_history', 'prj_history', 'tok_history', 'preserved.t
 				t.Fatal(err)
 			}
 			service := openTestService(t, Config{DatabasePath: path})
-			if service.database.schemaVersion != 66 {
-				t.Fatalf("schema version = %d, want 66", service.database.schemaVersion)
+			if service.database.schemaVersion != supportedSchemaVersion {
+				t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion)
+			}
+			var urgentUpdate string
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT urgent_runner_update_json FROM organizations WHERE id = 'org_history'").Scan(&urgentUpdate); err != nil || urgentUpdate != `{"revision":0,"request":null}` {
+				t.Fatalf("initial urgent update = %q, %v", urgentUpdate, err)
 			}
 			for _, object := range []struct{ kind, name string }{
 				{"table", "attachments"}, {"table", "attachment_references"}, {"index", "attachments_retention"},

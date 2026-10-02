@@ -993,6 +993,7 @@ func TestServiceChoosesHubUpdateTarget(t *testing.T) {
 		wantPath    string
 		applyTarget string
 		applyError  error
+		urgent      bool
 	}{
 		{name: "Hub pinned below latest", target: "1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4"},
 		{name: "Hub older than runner", target: "v1.2.2", wantTag: "v1.2.2"},
@@ -1006,6 +1007,7 @@ func TestServiceChoosesHubUpdateTarget(t *testing.T) {
 		{name: "Hub explicitly pins prerelease", target: "v1.2.4-rc.1", release: "v1.2.4-rc.1", wantTag: "v1.2.4-rc.1", available: true, wantPath: "/releases/tags/v1.2.4-rc.1"},
 		{name: "Hub rolls back before apply", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyTarget: "v1.2.2"},
 		{name: "Hub unreachable before apply", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyError: errors.New("Hub unavailable before apply")},
+		{name: "urgent target survives Hub advancing during drain", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyTarget: "v1.2.5", urgent: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1050,6 +1052,13 @@ func TestServiceChoosesHubUpdateTarget(t *testing.T) {
 			}
 			if test.applyTarget != "" || test.applyError != nil {
 				target, hubError = test.applyTarget, test.applyError
+				if test.urgent {
+					selected, err := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.4", Urgent: true})
+					if !errors.Is(err, ErrRefused) || selected.LatestTag != "v1.2.4" || len(paths) != 2 || paths[1] != test.wantPath {
+						t.Fatalf("urgent target changed during drain: %+v, %v, requests=%v", selected, err, paths)
+					}
+					return
+				}
 				applied, err := service.Apply(t.Context(), ApplyOptions{AssumeYes: true})
 				if !errors.Is(err, test.applyError) || applied.UpdateAvailable || len(paths) != 1 {
 					t.Fatalf("Apply() reused obsolete target: status %#v, error %v, release requests %v", applied, err, paths)
