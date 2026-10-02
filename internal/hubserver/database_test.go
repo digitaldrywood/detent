@@ -61,6 +61,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"artifact_services",
 		"artifact_references",
 		"artifact_grants",
+		"attachment_references",
 		"attachments",
 		"change_evidence",
 		"change_issue_links",
@@ -462,6 +463,7 @@ func TestOpenMigratesConversationOriginHistories(t *testing.T) {
 		{"attachments62", 62, 0},
 		{"origin62", 62, 62},
 		{"origin63", 63, 63},
+		{"references64", 64, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "hub.db")
@@ -500,6 +502,13 @@ func TestOpenMigratesConversationOriginHistories(t *testing.T) {
 				}
 				legacy[fmt.Sprintf("%05d_conversation_origin.sql", test.originVersion)] = &fstest.MapFile{Data: data}
 			}
+			if test.version >= 64 {
+				data, err := migrationFiles.ReadFile("migration_steps/00064_cloud_attachment_references.sql")
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacy["00064_cloud_attachment_references.sql"] = &fstest.MapFile{Data: data}
+			}
 			provider, err := goose.NewProvider(goose.DialectSQLite3, db, legacy,
 				goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable),
 				goose.WithSlog(discardLogger()), goose.WithGoMigrations(hubGoMigrations()[0]))
@@ -530,16 +539,21 @@ VALUES ('conv_history', 'org_history', 'prj_history', 'tok_history', 'shared', '
 VALUES ('att_history', 'org_history', 'prj_history', 'tok_history', 'preserved.txt', 'text/plain', 1, 'hash', 'now')`); err != nil {
 					t.Fatal(err)
 				}
+				if test.version >= 64 {
+					if _, err := db.ExecContext(t.Context(), "INSERT INTO attachment_references (attachment_id, work_item_id) VALUES ('att_history', 'wi_reference')"); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
 			service := openTestService(t, Config{DatabasePath: path})
-			if service.database.schemaVersion != 64 {
-				t.Fatalf("schema version = %d, want 64", service.database.schemaVersion)
+			if service.database.schemaVersion != 65 {
+				t.Fatalf("schema version = %d, want 65", service.database.schemaVersion)
 			}
 			for _, object := range []struct{ kind, name string }{
-				{"table", "attachments"}, {"index", "attachments_retention"},
+				{"table", "attachments"}, {"table", "attachment_references"}, {"index", "attachments_retention"},
 				{"trigger", "attachments_issue_deleted"}, {"trigger", "attachments_comment_deleted"},
 			} {
 				var count int
@@ -566,6 +580,12 @@ VALUES ('att_history', 'org_history', 'prj_history', 'tok_history', 'preserved.t
 				var name string
 				if err := service.database.db.QueryRowContext(t.Context(), "SELECT name FROM attachments WHERE id = 'att_history'").Scan(&name); err != nil || name != "preserved.txt" {
 					t.Fatalf("preserved attachment = %q, %v", name, err)
+				}
+				if test.version >= 64 {
+					var workItem string
+					if err := service.database.db.QueryRowContext(t.Context(), "SELECT work_item_id FROM attachment_references WHERE attachment_id = 'att_history'").Scan(&workItem); err != nil || workItem != "wi_reference" {
+						t.Fatalf("preserved attachment reference = %q, %v", workItem, err)
+					}
 				}
 			}
 			if _, err := runMigrations(t.Context(), service.database.db, discardLogger()); err != nil {
