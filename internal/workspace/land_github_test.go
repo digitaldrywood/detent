@@ -32,6 +32,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		failureMethod string
 		status        int
 		message       string
+		failureBody   string
+		emptyBody     bool
 		rate          bool
 		retryAfter    string
 		wantRefusal   string
@@ -47,6 +49,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "ignores an older merged PR", method: "merge", pullState: "older"},
 		{name: "publishes a reworked branch despite a stale list head", method: "squash", reworked: true, pullState: "stale"},
 		{name: "atomic merge rejects a genuinely moved head", method: "squash", reworked: true, pullState: "stale", moved: true, wantRefusal: LandRefusalHeadMoved},
+		{name: "atomic 409 rejects the head without English text", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, message: "La branche a été modifiée", wantRefusal: LandRefusalHeadMoved},
+		{name: "atomic 409 rejects the head without a body", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, emptyBody: true, wantRefusal: LandRefusalHeadMoved},
+		{name: "atomic 409 rejects the head without JSON", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, failureBody: "upstream refused the merge", wantRefusal: LandRefusalHeadMoved},
 		{name: "atomic merge rejects a closed PR", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull Request is closed", wantRefusal: LandRefusalHeadMoved},
 		{name: "atomic merge rejects a PR that is not open", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull Request is not open", wantRefusal: LandRefusalHeadMoved},
 		{name: "authentication 403", method: "merge", failureMethod: "GET", status: 403, message: "Resource not accessible by integration"},
@@ -56,6 +61,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "required checks", method: "merge", failureMethod: "PUT", status: 405, message: "Required status checks have not passed"},
 		{name: "protected base 405", method: "merge", failureMethod: "PUT", status: 405, message: "Protected branch update failed"},
 		{name: "unspecified merge refusal", method: "merge", failureMethod: "PUT", status: 405, message: "Method Not Allowed"},
+		{name: "closed wording in metadata is not a head refusal", method: "merge", failureMethod: "PUT", status: 405, failureBody: `{"message":"Method Not Allowed","documentation_url":"Pull Request is closed"}`},
+		{name: "conflict wording in metadata is not a conflict refusal", method: "merge", failureMethod: "PUT", status: 405, failureBody: `{"message":"Required status checks have not passed","errors":["Pull Request is not mergeable"]}`},
+		{name: "malformed conflict text retains protection refusal", method: "merge", failureMethod: "PUT", status: 405, failureBody: `{"message":"Pull Request has merge conflicts"`},
 		{name: "explicit merge conflict", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", wantRefusal: LandRefusalConflict},
 		{name: "unmergeable pull request", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request is not mergeable", wantRefusal: LandRefusalConflict},
 		{name: "read refusal is not a merge conflict", method: "merge", failureMethod: "GET", status: 405, message: "Pull Request is not mergeable"},
@@ -63,9 +71,11 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "read primary quota 403", method: "merge", failureMethod: "GET", status: 403, message: "API rate limit exceeded for user585100", rate: true},
 		{name: "create primary quota 403", method: "merge", failureMethod: "POST", status: 403, message: "API rate limit exceeded", rate: true},
 		{name: "merge primary quota 403", method: "merge", failureMethod: "PUT", status: 403, message: "API rate limit exceeded", rate: true},
+		{name: "primary quota wins over closed refusal text", method: "merge", failureMethod: "PUT", status: 403, message: "Pull Request is closed", rate: true},
 		{name: "read secondary quota 429", method: "merge", failureMethod: "GET", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
 		{name: "create secondary quota 429", method: "merge", failureMethod: "POST", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
 		{name: "merge secondary quota 429", method: "merge", failureMethod: "PUT", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
+		{name: "secondary quota wins over conflict refusal text", method: "merge", failureMethod: "PUT", status: 429, message: "Pull Request has merge conflicts", rate: true, retryAfter: "120"},
 		{name: "reuses the explicit external PR", method: "merge", external: true},
 		{name: "external moved head is never overwritten", method: "merge", external: true, pullError: "head", wantRefusal: LandRefusalHeadMoved},
 		{name: "external branch must match", method: "merge", external: true, pullError: "branch", wantRefusal: LandRefusalHeadMoved},
@@ -138,6 +148,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						if !healthy && req.Method == test.failureMethod {
 							status = test.status
 							response = fmt.Sprintf(`{"message":%q}`, test.message)
+							if test.failureBody != "" || test.emptyBody {
+								response = test.failureBody
+							}
 							if test.rate && test.retryAfter == "" {
 								headers.Set("X-RateLimit-Remaining", "0")
 							}
@@ -233,14 +246,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					if !usage.RateLimited || usage.TotalRequests != int64(len(methods)) || len(usage.Budgets) == 0 {
 						t.Fatalf("REST usage = %#v", usage)
 					}
-					if fixture.remoteMain(t) != base {
+					if fixture.remoteMain(t) != base || result.MergeSHA != "" {
 						t.Fatal("quota failure advanced base")
 					}
 					methods = nil
 					opts.GitHubClient = newClient(true)
 					result, err = fixture.backend.LandChangeViaGitHub(t.Context(), fixture.info, fixture.issue, opts)
 				} else {
-					if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected || errors.Is(err, github.ErrRateLimited) {
+					if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected || errors.Is(err, github.ErrRateLimited) || fixture.remoteMain(t) != base || result.MergeSHA != "" {
 						t.Fatalf("refusal = %v", err)
 					}
 					return
@@ -264,6 +277,46 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubLandingAPIEndpointOwnership(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, method, path string
+	}{
+		{"branch merge", "PUT", "repos/example/repo/branches/main/merge"},
+		{"repository merge", "PUT", "repos/example/repo/merge"},
+		{"read merge", "GET", "repos/example/repo/pulls/7/merge"},
+		{"create merge", "POST", "repos/example/repo/pulls/7/merge"},
+		{"zero pull number", "PUT", "repos/example/repo/pulls/0/merge"},
+		{"negative pull number", "PUT", "repos/example/repo/pulls/-7/merge"},
+		{"nonnumeric pull number", "PUT", "repos/example/repo/pulls/main/merge"},
+		{"missing owner", "PUT", "repos//repo/pulls/7/merge"},
+		{"missing repository", "PUT", "repos/example//pulls/7/merge"},
+		{"wrong resource", "PUT", "repos/example/repo/issues/7/merge"},
+		{"extra path component", "PUT", "repos/example/repo/pulls/7/extra/merge"},
+		{"query suffix", "PUT", "repos/example/repo/pulls/7/merge?operation=merge"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := github.NewClient(github.ClientConfig{
+				TokenSource: github.StaticTokenSource(test.name),
+				HTTPClient: landingHTTPClient(func(*http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"message":"Head branch was modified"}`))}, nil
+				}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result githubLandingMerge
+			err = githubLandingAPI(t.Context(), client, &result, test.method, test.path)
+			var refusal *LandRefusal
+			var status *github.StatusError
+			if err == nil || errors.As(err, &refusal) || !errors.As(err, &status) || status.StatusCode != http.StatusConflict || !errors.Is(err, github.ErrUnexpectedStatus) || result.Merged || result.SHA != "" {
+				t.Fatalf("unrelated operation = %#v, %v", result, err)
+			}
+		})
+	}
+}
+
 func TestGitHubLandingRepository(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
