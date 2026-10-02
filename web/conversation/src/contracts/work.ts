@@ -560,12 +560,6 @@ export type ChangeRequest = typeof ChangeRequest.Type;
 export const ChangeRequestList = Schema.Array(ChangeRequest);
 export type ChangeRequestList = typeof ChangeRequestList.Type;
 
-/**
- * The code artifact of a version. This is as close to a diff as the API gets:
- * an opaque URI and a digest. The hub serves no file list, no hunks and no
- * per-file counts, so the review dock reports what it has instead of drawing a
- * diff it cannot fetch.
- */
 export const ChangeArtifact = Schema.Struct({
   kind: Schema.String,
   uri: Schema.String,

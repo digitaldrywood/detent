@@ -1,7 +1,4 @@
 // @vitest-environment jsdom
-//
-// The work surfaces' components: the board card, the lane, the list row, the
-// issue card's pills and the review dock's tabs.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
