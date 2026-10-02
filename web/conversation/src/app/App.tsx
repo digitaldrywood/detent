@@ -51,6 +51,8 @@ import { QuestionRecord } from "./components/QuestionRecord.tsx";
 import { Timeline } from "./components/Timeline.tsx";
 import { ChatWorkspace } from "./components/ChatWorkspace.tsx";
 import { SidebarDataProvider } from "./adapters/sidebarData.tsx";
+import { sidebarProjectScopeKey } from "./adapters/shell.ts";
+import { setSidebarProjectScopeKey, useUiStateStore } from "../uiStateStore.ts";
 import { publishPaletteShell } from "./adapters/paletteContext.ts";
 import { useKeybindingActions } from "./adapters/keybindingActions.ts";
 import { CommandPalette } from "./components/CommandPalette.tsx";
@@ -79,7 +81,7 @@ import { expectedOwner, isActive } from "./lib/execution.ts";
 import { dialogOpen, shortcutFor } from "./lib/shortcuts.ts";
 import { conversationDestination } from "./lib/conversationDestination.ts";
 import { shouldSearchServer } from "./lib/sidebarLogic.ts";
-import { hubPath } from "../runtime/basePath.ts";
+import { hubPath, withoutBasePath } from "../runtime/basePath.ts";
 import { usePageTitle } from "./pageTitle.ts";
 
 function hasLunaCoordinator(choices: PreferenceChoices | undefined): boolean {
@@ -211,16 +213,25 @@ function ShellBody(): React.ReactElement {
   const list = useListState(client);
   const search = useAtomSet(client.searchConversations, { mode: "promise" });
   const refreshList = useAtomSet(client.refreshList, { mode: "promise" });
-  const params = useParams({ strict: false }) as { conversationId?: string };
+  const params = useParams({ strict: false }) as { conversationId?: string; projectId?: string };
   // The Work destination and the Browse group need to know where they are.
   // `useRouterState` is the only source of the current path that stays correct
   // through a redirect; `params` alone cannot tell `/work` from `/work/changes`.
-  const activePath = useRouterState({ select: (state) => state.location.pathname });
+  const activePath = useRouterState({ select: (state) => withoutBasePath(state.location.pathname) });
 
   const projects = client.bootstrap.projects;
-  const [projectId, setProjectIdState] = React.useState(
+  const [selectedProjectId, setProjectIdState] = React.useState(
     () => readLastProject() ?? projects[0]?.id ?? "",
   );
+  const projectId = params.projectId ?? (activePath === "/work" ? "" : selectedProjectId);
+  React.useEffect(() => {
+    setProjectIdState(projectId);
+    writeLastProject(projectId);
+    const project = projects.find((candidate) => candidate.id === projectId);
+    useUiStateStore.setState((state) =>
+      setSidebarProjectScopeKey(state, project === undefined ? null : sidebarProjectScopeKey(project)),
+    );
+  }, [projectId, projects]);
   // The copied `components/Sidebar.tsx` owns its search box and searches its
   // own list by title (`Sidebar.logic.ts`). The shell reads that query back
   // off the input so it can ask the hub for conversations past the first page
@@ -295,7 +306,11 @@ function ShellBody(): React.ReactElement {
     activeProjectId: projectId === "" ? null : projectId,
     onProjectChange: (id: string) => {
       setProjectId(id);
-      void navigate({ to: "/chat/p/$projectId", params: { projectId: id } });
+      if (activePath.startsWith("/work")) {
+        void navigate({ to: id === "" ? "/work" : `/work/p/${id}` });
+      } else {
+        void navigate({ to: id === "" ? "/chat" : `/chat/p/${id}` });
+      }
     },
     conversations,
     serverResults,
