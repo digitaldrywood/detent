@@ -8,15 +8,17 @@ import (
 )
 
 type fieldSchema struct {
-	Type      string       `json:"type"`
-	MinLength int          `json:"minLength"`
-	MaxLength int          `json:"maxLength"`
-	Minimum   int          `json:"minimum"`
-	Maximum   int          `json:"maximum"`
-	MinItems  int          `json:"minItems"`
-	MaxItems  int          `json:"maxItems"`
-	Enum      []string     `json:"enum"`
-	Items     *fieldSchema `json:"items"`
+	Type       string                 `json:"type"`
+	MinLength  int                    `json:"minLength"`
+	MaxLength  int                    `json:"maxLength"`
+	Minimum    int                    `json:"minimum"`
+	Maximum    int                    `json:"maximum"`
+	MinItems   int                    `json:"minItems"`
+	MaxItems   int                    `json:"maxItems"`
+	Enum       []string               `json:"enum"`
+	Items      *fieldSchema           `json:"items"`
+	Properties map[string]fieldSchema `json:"properties"`
+	Required   []string               `json:"required"`
 }
 
 // Decode enforces each named tool's bounded fields before producing typed
@@ -66,6 +68,23 @@ func validField(raw json.RawMessage, s fieldSchema) bool {
 		return false
 	}
 	switch s.Type {
+	case "object":
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw, &fields) != nil || fields == nil {
+			return false
+		}
+		for _, key := range s.Required {
+			if _, ok := fields[key]; !ok {
+				return false
+			}
+		}
+		for key, value := range fields {
+			spec, ok := s.Properties[key]
+			if !ok || !validField(value, spec) {
+				return false
+			}
+		}
+		return true
 	case "string":
 		var value string
 		if json.Unmarshal(raw, &value) != nil || len(value) < s.MinLength || s.MaxLength > 0 && len(value) > s.MaxLength || s.MinLength > 0 && strings.TrimSpace(value) == "" {

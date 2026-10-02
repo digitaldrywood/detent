@@ -176,11 +176,30 @@ func TestAdministrationInputBounds(t *testing.T) {
 		{"null scopes", operatortool.CredentialCreate, `{"request_id":"x","name":"key","scopes":null}`, false},
 		{"invalid role", operatortool.MemberRole, `{"request_id":"x","member_id":"id","role":"staff"}`, false},
 		{"blank request", operatortool.InvitationRevoke, `{"request_id":" ","invitation_id":"id"}`, false},
+		{"invitation grants", operatortool.InvitationSend, `{"request_id":"x","email":"a@example.test","role":"member","grants":[{"project_id":"p","write":true,"runner":false}]}`, true},
+		{"clear invitation grants", operatortool.InvitationEdit, `{"request_id":"x","invitation_id":"id","grants":[]}`, true},
+		{"edit requires grants", operatortool.InvitationEdit, `{"request_id":"x","invitation_id":"id"}`, false},
+		{"null invitation grants", operatortool.InvitationEdit, `{"request_id":"x","invitation_id":"id","grants":null}`, false},
+		{"grant requires project", operatortool.InvitationEdit, `{"request_id":"x","invitation_id":"id","grants":[{"write":true}]}`, false},
+		{"unknown grant authority", operatortool.InvitationEdit, `{"request_id":"x","invitation_id":"id","grants":[{"project_id":"p","admin":true}]}`, false},
+		{"null grant permission", operatortool.InvitationEdit, `{"request_id":"x","invitation_id":"id","grants":[{"project_id":"p","write":null}]}`, false},
+		{"bounded invitation grants", operatortool.InvitationEdit, `{"request_id":"x","invitation_id":"id","grants":[` + strings.Repeat(`{"project_id":"p"},`, 200) + `{"project_id":"p"}]}`, false},
+		{"resend exact target", operatortool.InvitationResend, `{"request_id":"x","invitation_id":"id"}`, true},
+		{"resend cannot proxy email", operatortool.InvitationResend, `{"request_id":"x","invitation_id":"id","email":"a@example.test"}`, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := Decode(test.tool, json.RawMessage(test.raw))
+			input, err := Decode(test.tool, json.RawMessage(test.raw))
 			if (err == nil) != test.valid {
 				t.Fatalf("decode=%v", err)
+			}
+			if test.valid {
+				raw, err := json.Marshal(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := Decode(test.tool, raw); err != nil {
+					t.Fatalf("action input lost required fields: %s: %v", raw, err)
+				}
 			}
 		})
 	}

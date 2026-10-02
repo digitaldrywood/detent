@@ -65,6 +65,20 @@ func TestHostedAdministrationAuthority(t *testing.T) {
 			if !names[operatortool.MembershipList] || names[operatortool.InvitationSend] != (role == "owner" || role == "admin") {
 				t.Fatalf("administration discovery for %s: %v", role, names)
 			}
+			for _, name := range []string{operatortool.InvitationEdit, operatortool.InvitationResend} {
+				if names[name] != (role == "owner" || role == "admin") {
+					t.Fatalf("invitation discovery for %s: %s", role, name)
+				}
+				if role == "member" || role == "viewer" {
+					arguments := `{"request_id":"denied","invitation_id":"foreign"}`
+					if name == operatortool.InvitationEdit {
+						arguments = `{"request_id":"denied","invitation_id":"foreign","grants":[]}`
+					}
+					if _, err := dispatch.Execute(ctx, operatortool.Call{Name: name, Arguments: json.RawMessage(arguments)}); !errors.Is(err, operatortool.ErrAccessDenied) {
+						t.Fatalf("ordinary role direct %s=%v", name, err)
+					}
+				}
+			}
 			if _, err := dispatch.Execute(ctx, operatortool.Call{Name: operatortool.MembershipList, Arguments: json.RawMessage(`{}`)}); err != nil {
 				t.Fatal(err)
 			}

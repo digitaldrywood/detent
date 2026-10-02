@@ -22,27 +22,34 @@ var ErrUnavailable = errors.New("administration operation is unavailable")
 // Input is an application input, decoded against each individual tool schema.
 // Authority and confirmation mode never appear here.
 type Input struct {
-	RequestID      string   `json:"request_id,omitempty"`
-	Offset         int      `json:"offset,omitempty"`
-	Limit          int      `json:"limit,omitempty"`
-	OrganizationID string   `json:"organization_id,omitempty"`
-	Name           string   `json:"name,omitempty"`
-	ConfirmName    string   `json:"confirm_name,omitempty"`
-	InvitationID   string   `json:"invitation_id,omitempty"`
-	MemberID       string   `json:"member_id,omitempty"`
-	Email          string   `json:"email,omitempty"`
-	Role           string   `json:"role,omitempty"`
-	ProjectID      string   `json:"project_id,omitempty"`
-	Write          bool     `json:"write,omitempty"`
-	Runner         bool     `json:"runner,omitempty"`
-	Revoke         bool     `json:"revoke,omitempty"`
-	CredentialID   string   `json:"credential_id,omitempty"`
-	Scopes         []string `json:"scopes,omitempty"`
-	ProjectAccess  string   `json:"project_access,omitempty"`
-	ProjectIDs     []string `json:"project_ids,omitempty"`
-	ExpiresIn      string   `json:"expires_in,omitempty"`
-	Grace          string   `json:"grace,omitempty"`
-	Reason         string   `json:"reason,omitempty"`
+	Grants         []ProjectGrant `json:"grants,omitzero"`
+	RequestID      string         `json:"request_id,omitempty"`
+	Offset         int            `json:"offset,omitempty"`
+	Limit          int            `json:"limit,omitempty"`
+	OrganizationID string         `json:"organization_id,omitempty"`
+	Name           string         `json:"name,omitempty"`
+	ConfirmName    string         `json:"confirm_name,omitempty"`
+	InvitationID   string         `json:"invitation_id,omitempty"`
+	MemberID       string         `json:"member_id,omitempty"`
+	Email          string         `json:"email,omitempty"`
+	Role           string         `json:"role,omitempty"`
+	ProjectID      string         `json:"project_id,omitempty"`
+	Write          bool           `json:"write,omitempty"`
+	Runner         bool           `json:"runner,omitempty"`
+	Revoke         bool           `json:"revoke,omitempty"`
+	CredentialID   string         `json:"credential_id,omitempty"`
+	Scopes         []string       `json:"scopes,omitempty"`
+	ProjectAccess  string         `json:"project_access,omitempty"`
+	ProjectIDs     []string       `json:"project_ids,omitempty"`
+	ExpiresIn      string         `json:"expires_in,omitempty"`
+	Grace          string         `json:"grace,omitempty"`
+	Reason         string         `json:"reason,omitempty"`
+}
+
+type ProjectGrant struct {
+	ProjectID string `json:"project_id"`
+	Write     bool   `json:"write"`
+	Runner    bool   `json:"runner"`
 }
 
 type Preview struct {
@@ -311,7 +318,7 @@ func (e *Executor) actionResult(ctx context.Context, action chat.Action) (operat
 		ResultTool  string          `json:"result_tool"`
 		FreshAt     time.Time       `json:"fresh_at"`
 		Output      json.RawMessage `json:"output,omitempty"`
-	}{action, approvalURL(ctx), operatortool.ActionResult, time.Now().UTC(), data})
+	}{action, action.PendingApprovalURL(approvalURL(ctx)), operatortool.ActionResult, time.Now().UTC(), data})
 }
 
 func approvalURL(ctx context.Context) string {

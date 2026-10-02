@@ -19,6 +19,8 @@ const (
 	InvitationAccept    = "invitation_accept"
 	MembershipList      = "membership_list"
 	InvitationSend      = "invitation_send"
+	InvitationEdit      = "invitation_edit"
+	InvitationResend    = "invitation_resend"
 	InvitationRevoke    = "invitation_revoke"
 	MemberRemove        = "member_remove"
 	MemberRole          = "member_role"
@@ -37,6 +39,7 @@ func AdministrationCatalog() []Definition {
 	id := `{"type":"string","minLength":1,"maxLength":256}`
 	role := `{"type":"string","enum":["owner","admin","member","viewer"]}`
 	projects := `{"type":"array","maxItems":200,"items":` + id + `}`
+	grants := `{"type":"array","maxItems":200,"items":{"type":"object","properties":{"project_id":` + id + `,"write":{"type":"boolean"},"runner":{"type":"boolean"}},"required":["project_id"],"additionalProperties":false}}`
 	scopes := `{"type":"array","minItems":1,"maxItems":3,"items":{"type":"string","enum":["read","write","admin"]}}`
 	return []Definition{
 		adminDefinition(SessionLogout, "End the current account session and provider sessions after human approval. Later calls and retries are denied; sign in and reconnect for new access.", "", "", false, true),
@@ -50,7 +53,9 @@ func AdministrationCatalog() []Definition {
 		adminDefinition(ResumeProvisioning, "Resume a creator-owned allocation through the existing provisioning command after operator approval; existing retry and capacity rules apply.", `"organization_id":`+id, `"organization_id"`, false, false),
 		adminDefinition(OrganizationDelete, "Delete the current owned organization after an exact operator preview.", `"organization_id":`+id+`,"confirm_name":{"type":"string","minLength":1,"maxLength":120}`, `"organization_id","confirm_name"`, false, true),
 		adminDefinition(InvitationAccept, "Accept an invitation for the authenticated account and return a fresh login destination.", `"invitation_id":`+id, `"invitation_id"`, false, false),
-		adminDefinition(InvitationSend, "Invite a member with the exact email and role after operator approval.", `"email":{"type":"string","minLength":1,"maxLength":254},"role":`+role, `"email","role"`, false, false),
+		adminDefinition(InvitationSend, "Invite a member with the exact email, role and project grants after operator approval. Omitted grants give no project access.", `"email":{"type":"string","minLength":1,"maxLength":254},"role":`+role+`,"grants":`+grants, `"email","role"`, false, false),
+		adminDefinition(InvitationEdit, "Replace the exact pending invitation project grants after operator approval. An empty grants list removes all project access.", `"invitation_id":`+id+`,"grants":`+grants, `"invitation_id","grants"`, false, true),
+		adminDefinition(InvitationResend, "Resend the exact pending organization invitation after operator approval.", `"invitation_id":`+id, `"invitation_id"`, false, false),
 		adminDefinition(InvitationRevoke, "Withdraw an existing pending organization invitation.", `"invitation_id":`+id, `"invitation_id"`, false, true),
 		adminDefinition(MemberRemove, "Remove an organization member, preserving existing owner rules.", `"member_id":`+id, `"member_id"`, false, true),
 		adminDefinition(MemberRole, "Change a member role, preserving existing ownership and last-owner rules.", `"member_id":`+id+`,"role":`+role, `"member_id","role"`, false, true),

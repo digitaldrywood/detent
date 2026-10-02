@@ -599,6 +599,18 @@ in one transaction; revoked invitations cannot establish local access.
 privilege escalation, and the account Playwright spec covers read-only access
 to one project with no access to another.
 
+Invitation MCP parity (native #235) delegates send-with-grants, grant replacement
+and resend to those same command owners. Edit/resend recheck organization,
+owner/admin authority, provider ownership, pending status and expiry; exact
+approval previews bind the current invitation and grants. Selected bearer keys
+retain their project bounds for both selected and removed grants. Existing
+command receipts prevent resend replay from delivering again. Administration
+receipts reuse the shared pending-only approval URL projection. Provider
+availability filters discovery, and fixture delivery never contacts live mail.
+`TestHostedInvitationMCP`, `TestAdministrationInputBounds` and the invitation
+cases in `TestHostedAdministrationAuthority` preserve these INV-1 boundaries;
+native parent #26 retains strict final conformance acceptance.
+
 Account/session parity (#3662) shares semantic landing/onboarding facts with browser
 account reads and binds destinations to current session/membership checks,
 including cached organization-switch delivery. `session_logout` shares browser
