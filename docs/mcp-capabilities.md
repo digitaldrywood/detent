@@ -2,10 +2,37 @@
 
 The [machine-readable matrix](../internal/operatortool/capability/matrix.json)
 and its [readable view](mcp-capability-matrix.md) are the implementation checklist
-for #3259. #3335 inventories the surface; it does not deliver full MCP parity.
+for native #26 (imported #3259). #3335 inventories the surface; it does not
+deliver full MCP parity.
 The fixture is planning and review evidence, not a runtime authorization policy,
-tool catalog, deployment feature flag, or tracker writer. The current five read
-tool names and schemas in `internal/operatortool/catalog.go` remain unchanged.
+tool catalog, deployment feature flag, or tracker writer. The original five read
+tool names and schemas in `internal/operatortool/catalog.go` remain unchanged;
+the current advertised names, toolsets and schemas come from the existing
+`operatortool.Registry` and deployment executors.
+
+Native #239 reconciles current source decisions, including conversation subjects,
+work search and attempt cursors, selected-workspace events, current key/routing/
+composer forms and Cloud issue attachments. Original imported child owners in
+the fixture retain their provenance. Native #234 delivered credit checkout and
+automatic funding adapters; native #235 delivered invitation grants/edit/resend.
+Their current implemented decisions retain the actual approval, retry and
+deployment restrictions. Those children do not depend on this inventory repair
+or on their acceptance parent. Conversation subject create/list and work-list
+filters stay pending under their existing adapter owners where the current MCP
+schema or executor lacks the application variant.
+
+Cloud issue `upload_attachment` is implemented only through shared Cloud entry:
+the tenant checks current operator write authority, then entry stores bytes and
+returns the genuine attachment receipt. Its schema has no `request_id` and its
+idempotent hint is false; retrying may allocate another attachment. Direct Hub
+markers do not establish storage success. Metadata, bounded byte reads, deletion
+and explicit item/comment reference adapters remain pending. Existing content
+saves bind attachment references in the application transaction; conversation
+attachments are a separate resource and cannot satisfy these pending rows.
+The public entry routes have organization-prefixed and canonical API aliases.
+Signed tenant metadata calls retain native scope and project authority;
+service-only retention, existence and object-deletion callbacks remain explicit
+non-model boundaries. This repair adds no adapters or callback tools.
 
 Each stable operation ID has exact source-site decisions, deployment and tracker
 availability, current role/scope/grant/ownership restrictions, preconditions,
@@ -260,8 +287,8 @@ Focused diagnostics:
 go test ./internal/operatortool/...
 ```
 
-The parent #3259 uses the same coverage test with strict parity enabled, after
-all children implement their rows:
+The parent native #26 (imported #3259) uses the same coverage test with strict
+parity enabled, after all children implement their rows:
 
 ```sh
 DETENT_MCP_REQUIRE_PARITY=1 go test ./internal/operatortool/capability -run '^TestDashboardCapabilityCoverage$'
