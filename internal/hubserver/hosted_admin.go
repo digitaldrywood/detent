@@ -67,6 +67,9 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
+	if err := s.validateHostedInvitationGrants(c.Request().Context(), s.database.db, credential, email, nil); err != nil {
+		return s.hostedError(c, http.StatusForbidden, "You cannot replace this member's project access")
+	}
 	reserved, err := s.reserveHostedInvitationSeat(c.Request().Context(), email)
 	if err != nil {
 		var limit *hostedLimitError
@@ -75,7 +78,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 		}
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
 	}
-	if _, err := s.sendReservedHostedInvitationFor(c.Request().Context(), credential, email, role, reserved); err != nil {
+	if _, err := s.sendReservedHostedInvitationFor(c.Request().Context(), credential, email, role, reserved, nil); err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 	}
 
@@ -185,6 +188,13 @@ func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, use
 		}
 	}()
 	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential}); err != nil {
+		return err
+	}
+	grants := []hostedMemberGrant{{ProjectID: project, Write: write, Runner: runner}}
+	if revoke {
+		grants[0].Write, grants[0].Runner = false, false
+	}
+	if err := s.validateHostedGrants(ctx, tx, credential, grants); err != nil {
 		return err
 	}
 	var principal string

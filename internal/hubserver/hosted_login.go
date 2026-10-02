@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -360,7 +361,7 @@ func (s *Service) acceptHostedInvitationFor(ctx context.Context, identity auth.I
 func (s *Service) acceptHostedInvitationIDFor(ctx context.Context, identity auth.Identity, id string) error {
 	return s.acceptHostedInvitationReference(ctx, identity, id, true)
 }
-func (s *Service) acceptHostedInvitationReference(ctx context.Context, identity auth.Identity, token string, byID bool) error {
+func (s *Service) acceptHostedInvitationReference(ctx context.Context, identity auth.Identity, token string, byID bool) (resultErr error) {
 	if identity.Hosted == nil || token == "" || len(token) > 512 {
 		return auth.ErrHostedIdentity
 	}
@@ -399,17 +400,50 @@ func (s *Service) acceptHostedInvitationReference(ctx context.Context, identity 
 	if err != nil || membership.Role.Slug != role {
 		return auth.ErrHostedIdentity
 	}
-	if err := s.addHostedMember(ctx, identity, membership); err != nil {
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	result, err := s.database.db.ExecContext(ctx, "UPDATE hosted_invitations SET accepted_user_id = ? WHERE id = ? AND accepted_user_id = ''", identity.Subject, invitation.ID)
+	defer func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	var encoded string
+	err = tx.QueryRowContext(ctx, "SELECT grants_json FROM hosted_invitations WHERE id=? AND email=? AND organization_id=? AND role=? AND accepted_user_id=''", invitation.ID, strings.ToLower(identity.Email), s.config.Hosted.OrganizationID, role).Scan(&encoded)
+	if err != nil {
+		return auth.ErrHostedIdentity
+	}
+	var grants []hostedMemberGrant
+	if err := json.Unmarshal([]byte(encoded), &grants); err != nil {
+		return err
+	}
+	if err := s.storeHostedMemberTx(ctx, tx, identity, membership, ""); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM hosted_project_grants WHERE user_id=?", identity.Subject); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM token_grants WHERE token_id=(SELECT principal_id FROM hosted_members WHERE user_id=?)", identity.Subject); err != nil {
+		return err
+	}
+	for _, grant := range grants {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,?,?,?,?)
+ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner`, identity.Subject, s.config.Hosted.OrganizationID, grant.ProjectID, grant.Write, grant.Runner); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) SELECT principal_id,?,? FROM hosted_members WHERE user_id=? ON CONFLICT DO NOTHING", s.config.Hosted.OrganizationID, grant.ProjectID, identity.Subject); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE hosted_invitations SET accepted_user_id = ? WHERE id = ? AND accepted_user_id = ''", identity.Subject, invitation.ID)
 	if err != nil {
 		return err
 	}
 	if rows, err := result.RowsAffected(); err != nil || rows != 1 {
 		return auth.ErrHostedIdentity
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Service) hostedInvitationDenied(c echo.Context, message string, denial auth.HostedDenial) error {

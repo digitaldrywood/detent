@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -115,17 +116,14 @@ func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
 	t.Parallel()
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
-			provider := &browserHostedProvider{invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string)}
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), GitHubDisabled: true, Hosted: &HostedConfig{
-				OrganizationID: "org_expiry", WorkOSOrganizationID: "org_provider_expiry", Provider: provider, PublicURL: "https://expiry.example.test",
-			}})
-			credential := apiCredential{ID: bootstrapTokenID, HostedRole: "owner", Hosted: &auth.HostedIdentity{OrganizationID: "org_provider_expiry", Subject: "user_owner"}}
+			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
+			service, provider := f.service, f.provider
 			var created []hostedInvitationView
 			for _, email := range []string{"older@example.test", "newest@example.test"} {
-				view, err := service.inviteHostedMemberFor(t.Context(), credential, email, "member", email)
-				if err != nil {
-					t.Fatal(err)
-				}
+				var view hostedInvitationView
+				browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/members/invitations", map[string]any{
+					"email": email, "role": "member", "idempotency_key": email,
+				}, http.StatusCreated), &view)
 				issued, err := provider.Invitation(t.Context(), view.ID)
 				if err != nil || view.ExpiresAt != formatHubTime(issued.ExpiresAt) {
 					t.Fatalf("response expiry = %q, provider expiry = %v: %v", view.ExpiresAt, issued.ExpiresAt, err)
@@ -152,7 +150,7 @@ func TestHostedInvitationExpiryIndependentOfSeat(t *testing.T) {
 					t.Fatalf("listed invitations = %#v: %v", listed, err)
 				}
 				for index, view := range listed {
-					if view != created[len(created)-1-index] {
+					if !reflect.DeepEqual(view, created[len(created)-1-index]) {
 						t.Fatalf("listed invitation = %#v, created = %#v", view, created[len(created)-1-index])
 					}
 				}

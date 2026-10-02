@@ -208,6 +208,7 @@ export const Invitation = Schema.Struct({
   role: Schema.String,
   created_at: Schema.String,
   expires_at: Schema.String,
+  grants: Schema.optional(Schema.Array(ProjectGrant)),
 });
 export type Invitation = typeof Invitation.Type;
 

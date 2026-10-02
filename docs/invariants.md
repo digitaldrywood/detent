@@ -206,6 +206,19 @@ acceptance requires the locally issued pending record, including after login has
 started. `TestHostedInvitationLifecycle`, `TestHostedLoginInvitationEmailEntry`
 and the account browser invitation spec cover these INV-1 boundaries.
 
+Organization invitations persist explicit project grants, bounded by the
+inviter's current project access and write/runner permissions. Pending grants
+can be edited through the same authorization boundary. Existing-member replacement
+also authorizes every omitted hosted or principal project grant as a revocation,
+using the existing member-grant authority before provider issuance and local
+persistence. Pending-invitation edits enforce the same complete replacement scope.
+Acceptance commits the
+local membership, exact project grants, principal grants and invitation marker
+in one transaction; revoked invitations cannot establish local access.
+`TestHostedInvitationGrants` covers creation, edits, acceptance, rollback and
+privilege escalation, and the account Playwright spec covers read-only access
+to one project with no access to another.
+
 Account/session parity (#3662) shares semantic landing/onboarding facts with browser
 account reads and binds destinations to current session/membership checks,
 including cached organization-switch delivery. `session_logout` shares browser

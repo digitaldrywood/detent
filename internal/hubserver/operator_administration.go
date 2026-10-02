@@ -376,7 +376,7 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	}
 
 	if name == operatortool.InvitationSend {
-		view, err := s.inviteHostedMemberFor(ctx, credential, in.Email, in.Role, in.RequestID)
+		view, err := s.inviteHostedMemberFor(ctx, credential, in.Email, in.Role, in.RequestID, nil)
 		if err != nil {
 			return operatoradmin.Output{}, err
 		}
