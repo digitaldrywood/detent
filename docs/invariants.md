@@ -746,6 +746,14 @@ This removes the blanket policy-error claim-loss classification under INV-3;
 credential rotation, atomic private persistence and pending-credential recovery
 keep their existing owners, with no new mechanism or authority bypass.
 
+Native code and rework completion (#152) requires a stored final diff and
+available fenced publication authority before a successful attempt is reported.
+Missing diff, Change or version evidence preserves its actual error through the
+existing execution-authority completion owner, without charging an issue failure
+or suppressing its current revision as succeeded. Claim release retains failed
+publication preparation. `TestNativeExecutionSettlesFinishedRun` and
+`TestNativeChangeRunCompletion` cover these outcomes.
+
 Native runner GitHub PR landing (#89) uses the existing REST client classifier,
 response accounting, and instance REST capacity completion owner. Actual primary
 or secondary quota responses retain their credential identity, reset and
@@ -1120,6 +1128,17 @@ Scoped local explanation and operator discovery APIs use the current-grant
 application authority instead of the blanket aggregate-dashboard read refusal.
 The schema migration extends the existing append-only event vocabulary and
 preserves all prior evidence; rollback refuses to discard new event types.
+
+Native completion (#152) owns missing publication results instead of falling
+through to legacy pull-request remote truth. Clean preserved rework heads reuse
+the genuine current immutable Change version only under its current approved
+policy; a policy refusal cannot fabricate another version of unchanged source.
+Changed source retains the existing fenced and idempotent version publisher.
+The orchestrator alone selects an allowed review or landing lane, and landing
+revalidates the exact reviewed head through its existing owner. Successful-attempt
+revision/generation suppression stays intact. `TestNativeExecutionSettlesFinishedRun`,
+`TestNativeRunnerOpensChangeAndLeavesDispatch` and `TestNativeChangeRunCompletion`
+cover consolidation without a retry loop, reason code, or policy bypass.
 
 Native Rework context (#143) uses the same scoped current Change reader as
 landing. Recovery carries Change detail, including discussion and formal review

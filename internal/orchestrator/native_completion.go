@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -32,10 +33,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if o.handlePermissionWaitCompletion(ctx, state, event, running) {
 		return true
 	}
-	if change == nil || event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
-		return false
-	}
-	if mergeWorkerIssue(running.Issue) || running.Mode == runpkg.RunModeMerge || event.Request.Mode == runpkg.RunModeMerge || event.Request.Mode == runpkg.RunModePlan {
+	mode := firstNonBlank(event.Request.Mode, running.Mode)
+	if mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement {
 		return false
 	}
 	if finalState == "" {
@@ -48,8 +47,26 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return true
 	}
+	if errors.Is(event.Err, runpkg.ErrExecutionAuthorityUnavailable) {
+		return handoff(event.Err)
+	}
+	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
+		return false
+	}
+	if change == nil {
+		return handoff(errors.New("the native run did not report its final publication result"))
+	}
+	if change.Error != "" {
+		return handoff(errors.New(change.Error))
+	}
+	if change.VersionError != "" {
+		return handoff(errors.New(change.VersionError))
+	}
 	if change.Changed && change.ChangeID == "" {
 		return handoff(fmt.Errorf("native change request was not opened: %s", change.Error))
+	}
+	if change.Changed && change.VersionID == "" {
+		return handoff(errors.New("the native change has no published current version"))
 	}
 	states, err := reader.WorkflowStates(ctx)
 	if err != nil {
@@ -162,10 +179,6 @@ func nativeCompletionComment(change *runpkg.NativeChange, from, to string) strin
 		switch {
 		case change.Reviewed && normalizeState(to) == normalizeState(autoPromoteMergingState):
 			comment += " The current version needs no further review, so the runner lands it next."
-		case change.VersionID == "" && change.VersionCode == "policy_mismatch":
-			comment += fmt.Sprintf(" No version was published for review: %s. A project owner or admin has to approve a review policy for the current repository policy: approving the repository policy again in Project settings sets the default one. Then move this item back to In Progress so the runner publishes the version.", change.VersionError)
-		case change.VersionID == "":
-			comment += fmt.Sprintf(" No version was published for review: %s. The next successful run publishes one.", change.VersionError)
 		case change.Reviewed:
 			comment += fmt.Sprintf(" The current version needs no further review, but the workflow has no move from %s to %s, so it waits in %s.", from, displayStateName(autoPromoteMergingState), to)
 		}

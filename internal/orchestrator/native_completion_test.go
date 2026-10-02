@@ -70,34 +70,37 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	accepted := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, Files: 2}
 	deliveryErr := &runpkg.DeliverableRecoveryError{Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Message: "pull request publication failed"}}
 	for _, test := range []struct {
-		name         string
-		finalState   string
-		finalMessage string
-		runErr       error
-		wantHuman    bool
-		noUsage      bool
-		change       *runpkg.NativeChange
-		states       []connector.WorkflowState
-		statesErr    error
-		reviewed     *bool
-		updateErr    error
-		plain        bool
-		quotaWait    bool
-		humanReview  *bool
-		wantState    string
-		wantComment  string
-		wantDeferred bool
-		wantContinue bool
+		name          string
+		finalState    string
+		finalMessage  string
+		runErr        error
+		wantHuman     bool
+		noUsage       bool
+		change        *runpkg.NativeChange
+		states        []connector.WorkflowState
+		statesErr     error
+		reviewed      *bool
+		updateErr     error
+		plain         bool
+		quotaWait     bool
+		humanReview   *bool
+		wantState     string
+		wantComment   string
+		wantDeferred  bool
+		wantContinue  bool
+		wantAbandoned bool
 	}{
 		{name: "successful coding publishes during landing quota wait", change: accepted, states: landing, quotaWait: true, wantState: "Merging", wantComment: "runner lands it next"},
-		{name: "commits move to the configured review lane", change: opened, states: workflow, wantState: "In Review", wantComment: "opened Change Request change_1"},
+		{name: "commits move to the configured review lane", change: waiting, states: workflow, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "a version that needs no reviewer goes straight to landing", change: accepted, states: landing, wantState: "Merging", wantComment: "runner lands it next"},
-		{name: "a version waiting for a reviewer goes to review", change: opened, states: landing, wantState: "In Review", wantComment: "opened Change Request change_1"},
-		{name: "disabled review sends unaccepted change to blocked", change: opened, states: blockedLanding, humanReview: &no, wantState: "Blocked", wantComment: "opened Change Request change_1"},
+		{name: "a version waiting for a reviewer goes to review", change: waiting, states: landing, wantState: "In Review", wantComment: "opened Change Request change_1"},
+		{name: "disabled review sends unaccepted change to blocked", change: waiting, states: blockedLanding, humanReview: &no, wantState: "Blocked", wantComment: "opened Change Request change_1"},
 		{name: "disabled review lands accepted change", change: accepted, states: blockedLanding, humanReview: &no, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "an accepted version without a landing move goes to review", change: accepted, states: workflow, wantState: "In Review", wantComment: "so it waits in In Review"},
 		{name: "an approval that arrived after the publish lands", change: waiting, states: landing, reviewed: &yes, wantState: "Merging", wantComment: "runner lands it next"},
-		{name: "a run that published no version never lands an earlier reviewed one", change: opened, states: landing, reviewed: &yes, wantState: "In Review", wantComment: "No version was published for review"},
+		{name: "a run that published no version cannot succeed on an earlier reviewed one", change: opened, states: landing, reviewed: &yes, wantDeferred: true},
+		{name: "unavailable version evidence cannot succeed", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "publication unavailable"}, states: landing, wantDeferred: true},
+		{name: "native publication authority failure is instance owned", states: workflow, runErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, errors.New("final diff unavailable")), wantAbandoned: true},
 		{name: "a version that lost its acceptance goes to review", change: accepted, states: landing, reviewed: &no, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "an accepted version never goes to a landing lane that does not dispatch", change: accepted, states: undispatched, wantState: "In Review", wantComment: "so it waits in In Review"},
 		{name: "unchanged work with final approval question needs human", change: &runpkg.NativeChange{}, states: workflow, finalMessage: "May I merge?", wantHuman: true},
@@ -106,18 +109,18 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "human attention without final text", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, wantHuman: true, noUsage: true},
 		{name: "human attention with synthetic unchanged change", change: &runpkg.NativeChange{}, states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", wantHuman: true},
 		{name: "human attention with failed producer and no change", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: deliveryErr, wantHuman: true},
-		{name: "human attention retains workspace failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, runpkg.ErrWorkspacePreparation), wantContinue: true},
+		{name: "human attention retains instance workspace failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, runpkg.ErrWorkspacePreparation)},
 		{name: "human attention retains checkpoint failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("checkpoint persistence failed")), wantContinue: true},
 		{name: "human attention retains lease failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("native execution lease lost")), wantContinue: true},
 		{name: "human attention retains session failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("session persistence failed")), wantContinue: true},
 		{name: "human attention defers a refused lane write", states: workflow, finalMessage: "May I merge?", updateErr: errors.New("stale fencing token"), wantDeferred: true},
 		{name: "no commits end the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, wantState: "Done", wantComment: "nothing to review"},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
-		{name: "a workflow without the review lane is handed off, never ended", change: opened, states: hosted, wantDeferred: true},
+		{name: "a workflow without the review lane is handed off, never ended", change: waiting, states: hosted, wantDeferred: true},
 		{name: "a workflow without a terminal move is handed off", change: &runpkg.NativeChange{}, states: []connector.WorkflowState{{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked"}}, {Name: "Blocked"}}, wantDeferred: true},
-		{name: "an unreadable workflow is handed off", change: opened, statesErr: errors.New("hub unavailable"), wantDeferred: true},
-		{name: "a refused lane write is handed off", change: opened, states: workflow, updateErr: errors.New("stale fencing token"), wantDeferred: true},
-		{name: "no native change keeps the ordinary path", states: workflow, wantContinue: true},
+		{name: "an unreadable workflow is handed off", change: waiting, statesErr: errors.New("hub unavailable"), wantDeferred: true},
+		{name: "a refused lane write is handed off", change: waiting, states: workflow, updateErr: errors.New("stale fencing token"), wantDeferred: true},
+		{name: "missing native result stays with native completion", states: workflow, wantDeferred: true},
 		{name: "non-native final question keeps the ordinary path", finalMessage: "May I merge?", plain: true, wantContinue: true},
 		{name: "a connector without a workflow keeps the ordinary path", change: &runpkg.NativeChange{}, plain: true, wantContinue: true},
 	} {
@@ -155,6 +158,15 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement, WorkAttemptID: 42, Generation: 7},
 				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: DiffStats{Status: "clean", HeadSHA: head}},
 			})
+			if test.wantAbandoned {
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalAbandoned || !strings.Contains(attempts.completions[0].ErrorMessage, "final diff unavailable") {
+					t.Fatalf("native authority failure = %#v", attempts.completions)
+				}
+				if len(tick.updates) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.deferredCompletions) != 0 || len(state.FailureBreaker.Failures) != 0 {
+					t.Fatal("native authority failure changed the issue or repeated an obsolete completion")
+				}
+				return
+			}
 			retry, retried := state.Retry[issue.ID]
 			_, deferred := state.deferredCompletions[issue.ID]
 			if deferred != test.wantDeferred || test.wantDeferred && !retry.CompletionDeferred {
@@ -212,6 +224,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				return
 			}
 			if test.wantContinue || test.wantDeferred {
+				if test.wantDeferred && len(attempts.completions) != 0 {
+					t.Fatalf("deferred native completion recorded a terminal outcome: %#v", attempts.completions)
+				}
 				for _, update := range tick.updates {
 					if test.updateErr == nil {
 						t.Fatalf("the item was moved: %#v", tick.updates)
@@ -253,8 +268,6 @@ func TestNativeCompletionComment(t *testing.T) {
 		want   []string
 	}{
 		{name: "opened", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "3 files", "head 0123456789ab)", "In Progress to In Review"}},
-		{name: "opened without a version", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "publish version: hub unavailable", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"change_1", "No version was published for review: publish version: hub unavailable", "next successful run publishes one"}},
-		{name: "opened without a review policy", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "publish version: policy_mismatch", VersionCode: "policy_mismatch", HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"owner or admin", "approving the repository policy again in Project settings", "back to In Progress"}},
 		{name: "opened and needing no reviewer", change: runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: "0123456789abcdef", Files: 3}, want: []string{"needs no further review", "runner lands it next"}},
 		{name: "unchanged", change: runpkg.NativeChange{BaseSHA: "abc"}, want: []string{"against abc", "nothing to review"}},
 	} {
