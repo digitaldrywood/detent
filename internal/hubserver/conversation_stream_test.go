@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -252,19 +254,32 @@ func TestConversationStreamClosesOnRevocationAndShutdown(t *testing.T) {
 	})
 }
 
+type streamMembershipFailureProvider struct {
+	auth.HostedProvider
+	err error
+}
+
+func (p streamMembershipFailureProvider) Memberships(context.Context, string, string) ([]auth.Membership, error) {
+	return nil, p.err
+}
+
 func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		account string
-		mutate  func(*testing.T, *browserHostedFixture, nativeScope)
-		refresh bool
-		want    string
+		name             string
+		account          string
+		mutate           func(*testing.T, *browserHostedFixture, nativeScope)
+		refresh          bool
+		shared           bool
+		wantErr          error
+		wantError        string
+		credentialStatus int
+		want             string
 	}{
 		{
-			name: "expired session cookie", account: "owner", refresh: true, want: conversationClosedServerError,
+			name: "expired session cookie", account: "owner", refresh: true, want: conversationClosedServerError, wantErr: auth.ErrInvalidSession,
 		},
 		{
-			name: "expired provider session", account: "owner", want: conversationClosedServerError,
+			name: "expired provider session", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrInvalidSession,
 			mutate: func(_ *testing.T, f *browserHostedFixture, scope nativeScope) {
 				f.provider.mu.Lock()
 				defer f.provider.mu.Unlock()
@@ -279,6 +294,102 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 				f.provider.mu.Lock()
 				defer f.provider.mu.Unlock()
 				delete(f.provider.members, scope.credential.HostedMembership)
+			},
+		},
+		{
+			name: "local membership inactive", account: "owner", want: conversationClosedAccessRevoked,
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active = 0"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "shared membership inactive", account: "owner", shared: true, want: conversationClosedAccessRevoked,
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active = 0"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "member token revoked", account: "owner", want: conversationClosedAccessRevoked,
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = '2026-10-02T00:00:00Z'"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "tenant missing", account: "owner", want: conversationClosedAccessRevoked,
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_tenant RENAME TO original_tenant; CREATE TABLE hosted_tenant (singleton INTEGER, provider_id TEXT)"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "wrong provider organization", account: "owner", want: conversationClosedAccessRevoked,
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_tenant RENAME TO original_tenant; CREATE TABLE hosted_tenant AS SELECT singleton, 'org_other' AS provider_id FROM original_tenant"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "tenant read failure", account: "owner", want: conversationClosedServerError, wantError: "no such table: hosted_tenant",
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_tenant RENAME TO unavailable_tenant"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "member read failure", account: "owner", want: conversationClosedServerError, wantError: "no such table: hosted_members",
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_members RENAME TO unavailable_members"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "shared member read failure", account: "owner", shared: true, want: conversationClosedServerError, wantError: "no such table: hosted_members",
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_members RENAME TO unavailable_members"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "grant read failure", account: "owner", want: conversationClosedServerError, wantError: "no such table: hosted_project_grants",
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "ALTER TABLE hosted_project_grants RENAME TO unavailable_grants"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "provider timeout", account: "owner", want: conversationClosedServerError, wantErr: context.DeadlineExceeded, wantError: "context deadline exceeded",
+			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
+				f.service.config.Hosted.Provider = streamMembershipFailureProvider{HostedProvider: f.provider, err: context.DeadlineExceeded}
+			},
+		},
+		{
+			name: "provider rate limit", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "status 429", credentialStatus: http.StatusInternalServerError,
+			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
+				f.service.config.Hosted.Provider = streamMembershipFailureProvider{HostedProvider: f.provider, err: &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable, Status: http.StatusTooManyRequests}}
+			},
+		},
+		{
+			name: "provider unavailable", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "status 503",
+			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
+				f.service.config.Hosted.Provider = streamMembershipFailureProvider{HostedProvider: f.provider, err: &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable, Status: http.StatusServiceUnavailable}}
+			},
+		},
+		{
+			name: "provider lookup sentinel", account: "owner", want: conversationClosedServerError, wantErr: auth.ErrHostedIdentity, wantError: "lookup hosted memberships",
+			mutate: func(_ *testing.T, f *browserHostedFixture, _ nativeScope) {
+				f.service.config.Hosted.Provider = streamMembershipFailureProvider{HostedProvider: f.provider, err: auth.ErrHostedIdentity}
 			},
 		},
 		{
@@ -309,6 +420,16 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 				t.Fatal(err)
 			}
 			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: credential}
+			if tt.shared {
+				identity := credential.Hosted
+				f.service.config.Hosted.SharedEntry = &HostedSharedEntry{}
+				c.Set(hostedSharedClaimsKey, cloudassert.Claims{
+					Kind: cloudassert.KindBrowser, Subject: identity.Subject, Email: "owner@example.test",
+					ProviderOrganization: identity.OrganizationID, ProviderSession: identity.SessionID,
+					SessionCreatedAt: identity.CreatedAt, SessionExpiresAt: identity.ExpiresAt,
+					Role: credential.HostedRole, AccessExpiresAt: identity.ExpiresAt, Binding: credential.SessionHash,
+				})
+			}
 			if _, err := f.service.reauthorizeConversationStream(c, &scope, f.conversation); err != nil {
 				t.Fatalf("initial authorization: %v", err)
 			}
@@ -324,17 +445,45 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 			} else {
 				tt.mutate(t, f, scope)
 			}
+			if tt.credentialStatus != 0 {
+				if _, status, err := f.service.hostedCredential(c); err == nil || status != tt.credentialStatus {
+					t.Fatalf("credential status = %d (%v), want %d", status, err, tt.credentialStatus)
+				}
+			}
 			_, err = f.service.reauthorizeConversationStream(c, &scope, f.conversation)
 			if err == nil {
-				t.Fatal("reauthorization succeeded after expiry or access removal")
+				t.Fatal("reauthorization succeeded after access removal or authorization failure")
 			}
-			if tt.want == conversationClosedServerError && !errors.Is(err, auth.ErrInvalidSession) {
-				t.Fatalf("reauthorization error = %v, want invalid session", err)
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("reauthorization error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantError != "" && !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("reauthorization error = %v, want %q", err, tt.wantError)
 			}
 			for _, failure := range []error{err, fmt.Errorf("reauthorize: %w", err)} {
 				if got := conversationStreamCloseReason(failure); got != tt.want {
 					t.Fatalf("close reason for %v = %q, want %q", failure, got, tt.want)
 				}
+			}
+			if tt.name != "conversation made private" {
+				sink := &conversationLogSink{}
+				f.service.conversations.logger = slog.New(slog.NewJSONHandler(sink, nil)).With("component", "conversation")
+				response := httptest.NewRecorder()
+				c.Response().Writer = response
+				c.Set("native_scope", scope)
+				c.SetParamNames("conversation")
+				c.SetParamValues(f.conversation)
+				if streamErr := f.service.streamConversationEvents(c); streamErr != nil {
+					t.Fatal(streamErr)
+				}
+				frame, frameErr := readSSEFrame(bufio.NewReader(response.Body))
+				if frameErr != nil {
+					t.Fatal(frameErr)
+				}
+				requireClosed(t, frame, tt.want)
+				requireConversationLogFields(t, sink.only(t, "conversation.stream_reauthorize_failed"), map[string]any{
+					"conversation_id": f.conversation, "reason": tt.want, "error": err.Error(),
+				})
 			}
 			if tt.refresh {
 				reconnect := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation, nil)
