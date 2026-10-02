@@ -174,6 +174,7 @@ func TestCloudReport(t *testing.T) {
 	t.Parallel()
 	const diagnostic = "--- FAIL: TestOne (0s)\nFAIL\towner/repo/pkg\t0s"
 	const lintDiagnostic = "internal/one.go:12:3: unused value (staticcheck)"
+	gosecDiagnostic := fixture(t, "gosec")
 	const jobs = `[{"id":1,"name":"Coverage","conclusion":"failure","html_url":"coverage-job"},{"id":2,"name":"Race","conclusion":"failure","html_url":"race-job"}]`
 	fp := issueorigin.Fingerprint("go-test:owner/repo/pkg:TestOne")
 	stamp := issueorigin.Stamp("Imported diagnostic", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/digitaldrywood/detent/actions/runs/previous", Fingerprint: fp})
@@ -191,6 +192,8 @@ func TestCloudReport(t *testing.T) {
 	}{
 		{name: "source problem replay", log: diagnostic, wantItems: 1, wantWrites: 4},
 		{name: "source lint replay", log: lintDiagnostic, wantItems: 1, wantWrites: 4},
+		{name: "recorded gosec replay", log: gosecDiagnostic, wantItems: 1, wantWrites: 4},
+		{name: "gosec cache keeps instance intake", log: strings.ReplaceAll(gosecDiagnostic, "/home/runner/work/detent/detent/", "/runner/cache/tool/"), wantItems: 2, wantWrites: 4},
 		{name: "lost creation response", log: diagnostic, lost: "file_issue", wantItems: 1, wantWrites: 4, wantErrors: 1},
 		{name: "lost occurrence response", log: diagnostic, lost: "add_comment", wantItems: 1, wantWrites: 4, wantErrors: 1},
 		{name: "imported comment fingerprint", log: diagnostic, imported: true, wantItems: 2, wantWrites: 5, wantEdits: 1},
@@ -211,10 +214,13 @@ func TestCloudReport(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := &fakeCloud{lost: tt.lost, fail: tt.fail, conflict: tt.conflict}
-			sourceFailure := tt.log == diagnostic || tt.log == lintDiagnostic
+			sourceFailure := tt.log == diagnostic || tt.log == lintDiagnostic || tt.log == gosecDiagnostic
 			problemFingerprint := fp
 			if tt.log == lintDiagnostic {
 				problemFingerprint = issueorigin.Fingerprint("go-diagnostic:internal/one.go:12:3:unused value (staticcheck)")
+			}
+			if tt.log == gosecDiagnostic {
+				problemFingerprint = issueorigin.Fingerprint(gosecProblem)
 			}
 			if tt.imported {
 				f.items = []tracker.NativeIssue{cloudItem("wi_unrelated", 1, "Operator work"), cloudItem("wi_imported", 2, "Imported body edited by operator")}
