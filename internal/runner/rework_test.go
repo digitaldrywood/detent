@@ -114,17 +114,21 @@ func (e *reworkArtifactsExecution) FinalizeArtifacts(ctx context.Context, path s
 func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name          string
-		unresolved    bool
-		staged        bool
-		normal        bool
-		signed        bool
-		signingFail   bool
-		authorityLost bool
+		name             string
+		unresolved       bool
+		staged           bool
+		normal           bool
+		signed           bool
+		signingFail      bool
+		authorityLost    bool
+		lateConflict     bool
+		followOnConflict bool
 	}{
 		{name: "resolved source"},
 		{name: "unresolved source", unresolved: true},
 		{name: "unpaused staged repair", staged: true},
+		{name: "preserved staged work with late host conflict", staged: true, lateConflict: true},
+		{name: "resolved pause with next host replay conflict", staged: true, lateConflict: true, followOnConflict: true},
 		{name: "host signs staged native code", staged: true, normal: true, signed: true},
 		{name: "host signs staged Rework", staged: true, signed: true},
 		{name: "host signing unavailable", staged: true, signingFail: true},
@@ -158,13 +162,19 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			original := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
 			runRunnerGit(t, source, "branch", "unrelated", original)
 			basePath := "README.md"
-			if test.staged {
+			if test.staged && !test.lateConflict {
 				basePath = "base.md"
 			}
 			if err := os.WriteFile(filepath.Join(source, basePath), []byte("base\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			runRunnerGit(t, source, "add", basePath)
+			if test.followOnConflict {
+				if err := os.WriteFile(filepath.Join(source, "repair.md"), []byte("parallel repair\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, source, "add", "repair.md")
+			}
 			runRunnerGit(t, source, "commit", "-m", "base")
 			runRunnerGit(t, source, "push", "origin", "main")
 			if !test.staged || test.signingFail {
@@ -198,6 +208,12 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			configBefore, err := os.ReadFile(filepath.Join(source, ".git", "config"))
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.lateConflict {
+				if err := os.WriteFile(filepath.Join(info.Path, "repair.md"), []byte("preserved staged progress\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, info.Path, "add", "repair.md")
 			}
 			agent := &resolvingReworkAgent{unresolved: test.unresolved, staged: test.staged, signer: signer, t: t}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
@@ -243,6 +259,38 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.lateConflict {
+				if execution.finish != "succeeded" || execution.head != "" || execution.diffHead != "" || execution.checkpoint == nil || execution.checkpoint.WorktreeState != "dirty" {
+					t.Fatalf("late host conflict failed or captured unfinished work: %#v", execution)
+				}
+				if paths := strings.TrimSpace(runRunnerGit(t, info.Path, "diff", "--name-only", "--diff-filter=U")); paths != "README.md" {
+					t.Fatalf("late conflict not preserved: %s", paths)
+				}
+				if diff, ok := execution.diffSource(t.Context()); ok {
+					t.Fatalf("paused index was captured: %#v", diff)
+				}
+				branchHead := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "refs/heads/"+info.Branch))
+				if branchHead == original || !strings.Contains(runRunnerGit(t, info.Path, "show", branchHead+":repair.md"), "resolved") {
+					t.Fatal("host did not preserve the successful staged repair")
+				}
+				agent.staged = false
+				result, err := r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.followOnConflict {
+					if result.FinalState != FinalStateCompleted || result.DiffStats.UnpushedCommits != 1 || execution.finish != "succeeded" || execution.head != "" || execution.checkpoint.WorktreeState != "dirty" {
+						t.Fatalf("next host replay conflict erased resolved progress: result=%+v execution=%+v", result, execution)
+					}
+					if paths := strings.TrimSpace(runRunnerGit(t, info.Path, "diff", "--name-only", "--diff-filter=U")); paths != "repair.md" {
+						t.Fatalf("next host replay conflict not preserved: %s", paths)
+					}
+					agent.staged = true
+					if _, err := r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution}); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			head := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
 			if head == original || execution.head != head || execution.diffHead != head || execution.checkpoint == nil || execution.checkpoint.HeadSHA != head || execution.finish != "succeeded" {

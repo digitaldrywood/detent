@@ -662,22 +662,23 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
-		name        string
-		interactive bool
-		hosted      bool
-		rework      bool
-		formal      bool
-		failDetail  bool
-		failVersion bool
-		land        bool
-		commit      bool
-		staged      bool
-		signingFail bool
-		dirty       bool
-		wantNone    bool
-		wantChanged bool
-		wantState   string
-		wantChanges int
+		name         string
+		interactive  bool
+		hosted       bool
+		rework       bool
+		formal       bool
+		failDetail   bool
+		failVersion  bool
+		land         bool
+		commit       bool
+		staged       bool
+		signingFail  bool
+		lateConflict bool
+		dirty        bool
+		wantNone     bool
+		wantChanged  bool
+		wantState    string
+		wantChanges  int
 	}{
 		{name: "commits", commit: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "initial interactive code stays conversation owned", interactive: true, staged: true, wantNone: true, wantState: "In Progress"},
@@ -690,6 +691,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "Rework receives current Change discussion", rework: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "Rework receives formal requested changes", rework: true, formal: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "host commits staged Rework", rework: true, formal: true, staged: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
+		{name: "late host conflict continues to resolved publication and landing", rework: true, formal: true, staged: true, lateConflict: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "host signing unavailable preserves requested changes", rework: true, formal: true, staged: true, signingFail: true},
 		{name: "Rework lands the clean preserved reviewed head without source changes", rework: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "Rework forwards a refused version to review", rework: true, commit: true, failVersion: true, wantState: "Human Review"},
@@ -766,7 +768,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			var expected *tracker.ChangeDetail
 			var candidate connector.Issue
 			if test.rework {
-				if test.land {
+				if test.land && !test.lateConflict {
 					info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
 					if err != nil {
 						t.Fatal(err)
@@ -854,6 +856,24 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			} else {
 				candidate = h.claim(t, issue.ID)
 			}
+			if test.lateConflict {
+				info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, path := range []string{info.Path, source} {
+					content := "preserved staged work\n"
+					if path == source {
+						content = "parallel source\n"
+					}
+					if err := os.WriteFile(filepath.Join(path, "CHANGE.md"), []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					nativeChangeGit(t, path, "add", "CHANGE.md")
+				}
+				nativeChangeGit(t, source, "commit", "-m", "parallel source")
+				nativeChangeGit(t, source, "push", "origin", "main")
+			}
 			execution := h.scheduler.RunExecution(issue.ID)
 			if execution == nil {
 				t.Fatal("claimed native issue has no execution lifecycle")
@@ -874,6 +894,47 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			h.failChanges.failVersions.Store(test.failVersion)
 			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			if test.lateConflict {
+				owner := execution.(*nativeExecution)
+				if err != nil || result.FinalState != runner.FinalStateCompleted || result.NativeChange != nil || owner.data.Outcome != "succeeded" || owner.worktreeState != "dirty" || owner.artifacts.finished {
+					t.Fatalf("late host conflict lost successful dirty continuation: result=%+v outcome=%+v error=%v", result, owner.data, err)
+				}
+				detail, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+				if readErr != nil || !reflect.DeepEqual(detail, *expected) || h.state(t, issue.ID) != "Rework" {
+					t.Fatalf("late conflict changed version, feedback or lane: detail=%+v error=%v", detail, readErr)
+				}
+				if output, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "diff", "--name-only", "--diff-filter=U").Output(); err != nil || strings.TrimSpace(string(output)) != "CHANGE.md" {
+					t.Fatalf("host conflict not preserved: %s, %v", output, err)
+				}
+				if owner.lastDiff != nil {
+					for _, file := range owner.lastDiff.Files {
+						if strings.Contains(file.Patch, "<<<<<<<") {
+							t.Fatal("host conflict captured an unresolved index")
+						}
+					}
+				}
+				recovery, readErr := h.native.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if readErr != nil || len(recovery.Attempts) != 1 {
+					t.Fatalf("late conflict lost durable native attempt: %+v, %v", recovery.Attempts, readErr)
+				}
+				attempt := recovery.Attempts[0]
+				if attempt.Status != "succeeded" || attempt.Sequence != owner.data.Sequence || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != "dirty" || attempt.Checkpoint.HeadSHA != result.DiffStats.HeadSHA {
+					t.Fatalf("late conflict receipt disagrees with authentic outcome: %+v", attempt)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+					t.Fatal(err)
+				}
+				candidates := h.candidatesIn(t, "Rework")
+				if len(candidates) != 1 {
+					t.Fatalf("preserved conflict did not offer existing Rework continuation: %+v", candidates)
+				}
+				candidate = candidates[0]
+				if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				execution = h.scheduler.RunExecution(issue.ID)
+				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			}
 			if !provider.bound {
 				t.Fatal("native worker did not bind its conversation")
 			}
@@ -998,14 +1059,14 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/attempts/"+attempt+"/diff", nil, &stored); err != nil {
 					t.Fatalf("read stored diff: %v", err)
 				}
-				if stored.HeadSHA != change.HeadSHA || !test.land && stored.BaseSHA != change.BaseSHA || !nativeDiffHas(stored.Files, map[bool]string{false: "CHANGE.md", true: "PRESERVED.md"}[test.land && test.rework]) {
+				if stored.HeadSHA != change.HeadSHA || !test.land && stored.BaseSHA != change.BaseSHA || !nativeDiffHas(stored.Files, map[bool]string{false: "CHANGE.md", true: "PRESERVED.md"}[test.land && test.rework && !test.lateConflict]) {
 					t.Fatalf("stored diff = %#v, reported %#v", stored, change)
 				}
 				head, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "rev-parse", "HEAD").Output()
 				if err != nil || strings.TrimSpace(string(head)) != stored.HeadSHA {
 					t.Fatalf("published head is not finalized Git HEAD: %s, %v", head, err)
 				}
-				if !test.rework || !test.land {
+				if !test.rework || !test.land || test.lateConflict {
 					detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
 					if err != nil {
 						t.Fatal(err)
@@ -1021,7 +1082,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if test.land {
+					if test.land && !test.lateConflict {
 						if len(detail.Versions) != len(expected.Versions) || change.VersionID != expected.Change.CurrentVersion || change.HeadSHA != expected.Versions[len(expected.Versions)-1].HeadSHA {
 							t.Fatalf("unchanged Rework replaced the immutable version: change=%+v, detail=%+v", change, detail)
 						}
@@ -1032,7 +1093,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatal("new version changed historical feedback or fabricated review")
 					}
 					current := detail.Versions[len(detail.Versions)-1]
-					if change.VersionID == "" || !test.land && change.VersionID == expected.Change.CurrentVersion || detail.Change.CurrentVersion != change.VersionID || current.ID != change.VersionID || current.HeadSHA != stored.HeadSHA || current.PolicyID != h.descriptor.ID || current.Repository != nativeChangeRepository || current.Code.URI != nativeChangeRepository+"/commit/"+stored.HeadSHA {
+					if change.VersionID == "" || (!test.land || test.lateConflict) && change.VersionID == expected.Change.CurrentVersion || detail.Change.CurrentVersion != change.VersionID || current.ID != change.VersionID || current.HeadSHA != stored.HeadSHA || current.PolicyID != h.descriptor.ID || current.Repository != nativeChangeRepository || current.Code.URI != nativeChangeRepository+"/commit/"+stored.HeadSHA {
 						t.Fatalf("rework version lost final head or artifact authority: change=%+v, detail=%+v", change, detail)
 					}
 				}
@@ -1051,12 +1112,31 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatalf("preserved head was not genuinely landed: %+v, %v", result.NativeLanding, err)
 				}
 				path, expectedContent := "CHANGE.md", "changed\n"
-				if test.rework {
+				if test.rework && !test.lateConflict {
 					path, expectedContent = "PRESERVED.md", "reviewed source\n"
 				}
+				calls := 1
+				if test.lateConflict {
+					calls = 2
+				}
 				content, err := exec.CommandContext(t.Context(), "git", "--git-dir", remote, "show", "main:"+path).Output()
-				if err != nil || string(content) != expectedContent || provider.calls != 1 {
+				if err != nil || string(content) != expectedContent || provider.calls != calls {
 					t.Fatalf("landing did not publish preserved source without another coding turn: %q, %v, calls=%d", content, err, provider.calls)
+				}
+				if test.lateConflict {
+					head, err := exec.CommandContext(t.Context(), "git", "--git-dir", remote, "rev-parse", "main").Output()
+					if err != nil || strings.TrimSpace(string(head)) != result.NativeLanding.MergeSHA {
+						t.Fatalf("landing receipt did not identify the actual merge: %s, %v, receipt=%+v", head, err, result.NativeLanding)
+					}
+					recovery, err := h.native.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+					if err != nil || len(recovery.Attempts) != 3 {
+						t.Fatalf("completed conflict journey lost authentic attempts: %+v, %v", recovery.Attempts, err)
+					}
+					for _, attempt := range recovery.Attempts {
+						if attempt.Status != "succeeded" || attempt.PolicyID != h.descriptor.ID {
+							t.Fatalf("host conflict became a failed or repinned attempt: %+v", attempt)
+						}
+					}
 				}
 			}
 			if candidates := h.candidates(t); len(candidates) != 0 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type nativeWorkflowConnector struct {
@@ -138,6 +141,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "missing native result keeps ordinary continuation", states: workflow, wantOrdinary: true, wantContinue: true},
 		{name: "dirty tracked native Code keeps ordinary continuation", states: workflow, wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"source.go"}}},
 		{name: "dirty untracked native Rework keeps ordinary continuation", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, UntrackedPaths: []string{"source.go"}}},
+		{name: "late host source conflict preserves progress", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, Fingerprint: "late-host-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
+		{name: "late host conflict after replay preserves unpublished progress", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, UnpushedCommits: 1, Fingerprint: "late-host-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
+		{name: "already paused conflict left unresolved remains failure", states: rework, sourceState: "Rework", runErr: fmt.Errorf("finalize native work: %w: unresolved source conflicts: docs/invariants.md", workspace.ErrMergeResolutionInvalid), wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, Fingerprint: "existing-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
 		{name: "non-native final question keeps the ordinary path", finalMessage: "May I merge?", plain: true, wantContinue: true},
 		{name: "a connector without a workflow keeps the ordinary path", change: &runpkg.NativeChange{}, plain: true, wantContinue: true},
 	} {
@@ -178,7 +184,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			event := runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: now, Err: test.runErr,
 				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement, WorkAttemptID: 42, Generation: 7},
-				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats},
+				Result:  runpkg.RunResult{FinalState: finalState, FinalMessage: test.finalMessage, NativeChange: test.change, Tokens: tokens, DiffStats: diffStats, TurnStarted: test.diffStats.Fingerprint != ""},
 			}
 			if test.wantOrdinary && orch.completeNativeChangeRun(t.Context(), &state, event, state.Running[issue.ID], finalState) {
 				t.Fatal("nil native result bypassed ordinary continuation ownership")
@@ -204,6 +210,31 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if test.wantOrdinary {
 				if len(tick.updates) != 0 || len(state.Blocked) != 0 || len(state.deferredCompletions) != 0 {
 					t.Fatal("ordinary continuation acquired native completion effects")
+				}
+				if test.diffStats.Fingerprint != "" {
+					if len(attempts.completions) != 1 {
+						t.Fatalf("continuation lost attempt receipt: %#v", attempts.completions)
+					}
+					receipt := attempts.completions[0]
+					var metadata struct {
+						Progress implementProgressRecord `json:"completion_progress"`
+					}
+					if err := json.Unmarshal([]byte(receipt.WorkerMetadataJSON), &metadata); err != nil {
+						t.Fatal(err)
+					}
+					if receipt.TerminalState != store.WorkAttemptTerminalSuccess || receipt.ErrorClass != "" || metadata.Progress.Reason != "workspace_diff_present_without_pull_request" || metadata.Progress.WorkspaceDiffStats.Fingerprint != test.diffStats.Fingerprint {
+						t.Fatalf("host integration conflict lost successful source progress: receipt=%#v metadata=%#v", receipt, metadata)
+					}
+					if terminalAttemptRetryableFailure(telemetry.WorkAttempt{TerminalState: string(receipt.TerminalState), ErrorClass: receipt.ErrorClass}) || retry.Attempt != 1 {
+						t.Fatal("successful host-conflict continuation consumed failure allowance")
+					}
+					var metrics struct {
+						Tokens int `json:"total_tokens"`
+						Turns  int `json:"turns"`
+					}
+					if err := json.Unmarshal([]byte(receipt.MetricsJSON), &metrics); err != nil || metrics.Tokens != 42 || metrics.Turns != 1 || state.TokenTotals.TotalTokens != 42 {
+						t.Fatalf("host-conflict continuation lost actual session cost: metrics=%+v error=%v", metrics, err)
+					}
 				}
 				return
 			}
@@ -245,6 +276,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != wantTerminal || attempts.completions[0].ErrorClass == permissionWaitReason || !strings.Contains(attempts.completions[0].ErrorMessage, test.runErr.Error()) {
 					t.Fatalf("failure outcome = %#v", attempts.completions)
+				}
+				if errors.Is(test.runErr, workspace.ErrMergeResolutionInvalid) {
+					receipt := attempts.completions[0]
+					if allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: `{"turns":1,"total_tokens":42}`}) || !terminalAttemptRetryableFailure(telemetry.WorkAttempt{TerminalState: string(receipt.TerminalState), ErrorClass: receipt.ErrorClass}) {
+						t.Fatal("unresolved model conflict escaped genuine failure accounting")
+					}
 				}
 				if test.draining && (len(tick.updates) != 0 || len(tick.comments) != 0) {
 					t.Fatal("failed or interrupted draining run published a lane transition")

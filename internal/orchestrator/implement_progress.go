@@ -241,18 +241,20 @@ func (o *Orchestrator) evaluateImplementCompletionCandidate(
 			}
 			return decision
 		}
-		if stranded, deferReason := implementProgressUnpushedClassification(running.DiffStats, nil); deferReason != "" {
-			decision.Reason = deferReason
-			return decision
-		} else if stranded {
-			decision.Outcome = store.WorkAttemptTerminalNoProgress
-			decision.Reason = strandedUnpushedWorkReason
-			decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, autoPromoteReworkSignature{})
-			decision.Block = decision.NoProgressLimit > 0 && decision.ConsecutiveNoProgress >= decision.NoProgressLimit
-			if decision.Block {
-				decision.BlockReason = strandedUnpushedWorkReason
+		if _, native := o.connector.(connector.WorkflowStateReader); !native {
+			if stranded, deferReason := implementProgressUnpushedClassification(running.DiffStats, nil); deferReason != "" {
+				decision.Reason = deferReason
+				return decision
+			} else if stranded {
+				decision.Outcome = store.WorkAttemptTerminalNoProgress
+				decision.Reason = strandedUnpushedWorkReason
+				decision.ConsecutiveNoProgress = 1 + consecutiveImplementStrandedWorkAttempts(attempts, autoPromoteReworkSignature{})
+				decision.Block = decision.NoProgressLimit > 0 && decision.ConsecutiveNoProgress >= decision.NoProgressLimit
+				if decision.Block {
+					decision.BlockReason = strandedUnpushedWorkReason
+				}
+				return decision
 			}
-			return decision
 		}
 		if !diffStatsPresent(running.DiffStats) {
 			decision.Reason = "workspace_diffstat_unavailable_without_pull_request"
