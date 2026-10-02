@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -25,21 +26,26 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
-		name          string
-		method        string
-		pullState     string
-		reworked      bool
-		failureMethod string
-		status        int
-		message       string
-		failureBody   string
-		emptyBody     bool
-		rate          bool
-		retryAfter    string
-		wantRefusal   string
-		moved         bool
-		external      bool
-		pullError     string
+		name           string
+		method         string
+		pullState      string
+		reworked       bool
+		failureMethod  string
+		status         int
+		message        string
+		failureBody    string
+		emptyBody      bool
+		rate           bool
+		retryAfter     string
+		wantRefusal    string
+		moved          bool
+		external       bool
+		pullError      string
+		sourceConflict bool
+		advanceOnMerge bool
+		projection     string
+		wantDeferred   bool
+		refreshQuota   bool
 	}{
 		{name: "merges the reviewed head", method: "merge"},
 		{name: "uses the policy squash method", method: "squash"},
@@ -64,8 +70,16 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "closed wording in metadata is not a head refusal", method: "merge", failureMethod: "PUT", status: 405, failureBody: `{"message":"Method Not Allowed","documentation_url":"Pull Request is closed"}`},
 		{name: "conflict wording in metadata is not a conflict refusal", method: "merge", failureMethod: "PUT", status: 405, failureBody: `{"message":"Required status checks have not passed","errors":["Pull Request is not mergeable"]}`},
 		{name: "malformed conflict text retains protection refusal", method: "merge", failureMethod: "PUT", status: 405, failureBody: `{"message":"Pull Request has merge conflicts"`},
-		{name: "explicit merge conflict", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", wantRefusal: LandRefusalConflict},
-		{name: "unmergeable pull request", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request is not mergeable", wantRefusal: LandRefusalConflict},
+		{name: "unknown clean source defers explicit merge conflict", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", wantDeferred: true},
+		{name: "conflict refresh quota retains capacity ownership", method: "merge", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", refreshQuota: true, rate: true, retryAfter: "120"},
+		{name: "real source conflict reaches rework", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, wantRefusal: LandRefusalConflict},
+		{name: "base advancing at refusal is inspected afresh", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, advanceOnMerge: true, wantRefusal: LandRefusalConflict},
+		{name: "earlier head projection cannot prove a conflict", method: "squash", reworked: true, pullState: "stale", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "head", wantDeferred: true},
+		{name: "stale base projection cannot prove a conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "base", wantDeferred: true},
+		{name: "moved published head cannot prove reviewed conflict", method: "squash", reworked: true, pullState: "stale", moved: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, wantDeferred: true},
+		{name: "different PR branch cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "branch", wantDeferred: true},
+		{name: "missing base evidence cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "missing", wantDeferred: true},
+		{name: "unmergeable pull request", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request is not mergeable", wantDeferred: true},
 		{name: "read refusal is not a merge conflict", method: "merge", failureMethod: "GET", status: 405, message: "Pull Request is not mergeable"},
 		{name: "create refusal is not a head refusal", method: "merge", failureMethod: "POST", status: 405, message: "Pull Request is closed"},
 		{name: "read primary quota 403", method: "merge", failureMethod: "GET", status: 403, message: "API rate limit exceeded for user585100", rate: true},
@@ -89,6 +103,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 			fixture := newLandingFixture(t)
+			originalBase := fixture.remoteMain(t)
+			if test.sourceConflict && !test.advanceOnMerge {
+				fixture.advanceMain(t, "feature.txt", "base conflict\n")
+			}
 			base := fixture.remoteMain(t)
 			repository := "https://github.com/example/repo"
 			runGit(t, fixture.source, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
@@ -147,14 +165,18 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						}
 						if !healthy && req.Method == test.failureMethod {
 							status = test.status
+							if test.advanceOnMerge {
+								fixture.advanceMain(t, "feature.txt", "base conflict\n")
+								base = fixture.remoteMain(t)
+							}
 							response = fmt.Sprintf(`{"message":%q}`, test.message)
 							if test.failureBody != "" || test.emptyBody {
 								response = test.failureBody
 							}
-							if test.rate && test.retryAfter == "" {
+							if test.rate && test.retryAfter == "" && !test.refreshQuota {
 								headers.Set("X-RateLimit-Remaining", "0")
 							}
-							if test.retryAfter != "" {
+							if test.retryAfter != "" && !test.refreshQuota {
 								headers.Del("X-RateLimit-Reset")
 								headers.Set("Retry-After", test.retryAfter)
 							}
@@ -162,10 +184,29 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 							switch req.Method {
 							case "GET":
 								published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
-								if !test.external && published != fixture.head {
+								if !test.external && req.URL.RawQuery != "" && published != fixture.head {
 									t.Fatalf("list read preceded reviewed head publication: %s", published)
 								}
 								switch {
+								case req.URL.Path == "/repos/example/repo/pulls/7" && !test.external:
+									pullHead, pullBase, pullBranch := fixture.head, fixture.remoteMain(t), fixture.info.Branch
+									switch test.projection {
+									case "head":
+										pullHead = previous
+									case "base":
+										pullBase = originalBase
+									case "branch":
+										pullBranch = "other"
+									case "missing":
+										pullBase = ""
+									}
+									response = fmt.Sprintf(`{"number":7,"state":"open","mergeable":null,"mergeable_state":"unknown","head":{"sha":"%s","ref":"%s","repo":{"full_name":"example/repo"}},"base":{"sha":"%s","ref":"main","repo":{"full_name":"example/repo"}}}`, pullHead, pullBranch, pullBase)
+									if test.refreshQuota && !healthy {
+										status = http.StatusTooManyRequests
+										headers.Del("X-RateLimit-Reset")
+										headers.Set("Retry-After", "120")
+										response = `{"message":"secondary rate limit"}`
+									}
 								case test.external:
 									if req.URL.Path != "/repos/example/repo/pulls/7" || req.URL.RawQuery != "" {
 										t.Fatalf("external PR lookup = %s", req.URL)
@@ -216,6 +257,17 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				opts.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
 			}
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), fixture.info, fixture.issue, opts)
+			if test.wantDeferred {
+				var status *github.StatusError
+				var refusal *LandRefusal
+				if !errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.message) || errors.As(err, &refusal) || result.MergeSHA != "" || fixture.remoteMain(t) != base {
+					t.Fatalf("unproven conflict = %#v, %v; base = %s", result, err, fixture.remoteMain(t))
+				}
+				if strings.Join(methods, ",") != "GET,PUT,GET" && strings.Join(methods, ",") != "GET,POST,PUT,GET" {
+					t.Fatalf("conflict refresh sequence = %v", methods)
+				}
+				return
+			}
 			if test.wantRefusal != "" {
 				var refusal *LandRefusal
 				if !errors.As(err, &refusal) || refusal.Kind != test.wantRefusal || errors.Is(err, github.ErrRateLimited) || fixture.remoteMain(t) != base || result.MergeSHA != "" {
@@ -238,6 +290,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					var status *github.StatusError
 					if !errors.Is(err, github.ErrRateLimited) || errors.As(err, &refusal) || !errors.As(err, &status) || status.CredentialIdentity == "" || status.ObservedAt.IsZero() {
 						t.Fatalf("quota error = %v", err)
+					}
+					if test.refreshQuota && (errors.Is(err, forgeavailability.ErrUnavailable) || !strings.Contains(err.Error(), test.message)) {
+						t.Fatalf("refresh quota lost precedence or original refusal: %v", err)
 					}
 					if test.retryAfter == "" && !status.ResetAt.Equal(reset) || test.retryAfter != "" && (status.RetryAfter != 120*time.Second || !status.ResetAt.IsZero()) {
 						t.Fatalf("quota evidence = %#v", status)

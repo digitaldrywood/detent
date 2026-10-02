@@ -1113,6 +1113,22 @@ review or Blocked destination. This consolidates landing refusal routing under
 the existing completion and rework owners; no configuration, reason code,
 recovery loop or worker lane writer is added.
 
+Explicit GitHub merge-conflict refusals (#155) establish source Rework only
+when a bounded refresh identifies the exact reviewed published head, PR
+repository/branch/base and current fetched and published base, and Git
+`merge-tree --write-tree` confirms a conflict for those immutable commits.
+Unknown, missing, stale or contradictory forge projections remain with the
+existing forge infrastructure retry owner in Merging without source failure
+allowance changes. Clean Git evidence never authorizes landing after a refused
+atomic merge. The original HTTP refusal and native Change/version/head remain
+in attempt history; refresh quota evidence keeps capacity precedence. Existing
+protected/review/check refusals and exact-endpoint 409 ownership remain enforced.
+The existing forge wait survives restart and a successful same-version landing
+receipt clears its probe; source cleanliness alone cannot clear the refusal.
+`TestLocalGitLandChangeViaGitHub`, `TestLandNativeChange` and
+`TestNativeLandingRunCompletion` cover these consolidated authorities under
+INV-1 and INV-3 without a new reason, poller, configuration or recovery loop.
+
 Native rework (#141) consolidates rebase preparation and continuation under
 `LocalGit` and its existing source-operation lock. Workspace creation retains a
 verified paused transaction on the assigned branch. Workers resolve and stage

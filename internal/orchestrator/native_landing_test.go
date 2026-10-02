@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -33,29 +34,35 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 	head := strings.Repeat("c", 40)
 	landed := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Landed: true, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}
 	refused := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: "base_protected", Refusal: "the base branch main refused the push: GH006. Allow the runner to push to main, or enable GitHub pull request mode for this project."}
-	conflict := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalConflict, Refusal: "GitHub refused the merge: Pull Request is not mergeable (HTTP 405)"}
+	conflict := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalConflict, Refusal: "GitHub refused the merge (HTTP 405); source merge of exact reviewed head and current base conflicts"}
+	unproven := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head}
+	projectionErr := forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request repos/example/repo/pulls/7/merge"}, forgeavailability.ClassServer,
+		&github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: 405, Body: `{"message":"Pull Request has merge conflicts"}`})
 	for _, test := range []struct {
-		name          string
-		finalMessage  string
-		landing       *runpkg.NativeLanding
-		hubState      string
-		states        []connector.WorkflowState
-		statesErr     error
-		updateErr     error
-		plain         bool
-		noHumanReview bool
-		reworkState   string
-		wantState     string
-		wantMoves     int
-		wantComment   string
-		wantDeferred  bool
-		wantContinue  bool
+		name               string
+		finalMessage       string
+		landing            *runpkg.NativeLanding
+		hubState           string
+		states             []connector.WorkflowState
+		statesErr          error
+		updateErr          error
+		plain              bool
+		noHumanReview      bool
+		reworkState        string
+		wantState          string
+		wantMoves          int
+		wantComment        string
+		wantDeferred       bool
+		wantContinue       bool
+		err                error
+		wantInfrastructure bool
 	}{
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a refused landing returns to review with the reason", landing: refused, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
 		{name: "a conflict enters rework without human review", landing: conflict, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "a conflict enters configured rework with human review", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
 		{name: "a protected refusal remains blocked without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "was not landed", wantMoves: 1},
+		{name: "unproven conflict retains landing retry without coding rework", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, err: projectionErr, wantInfrastructure: true},
 		{name: "a conflict with absent configured rework is handed off", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Missing", wantDeferred: true},
 		{name: "a conflict with disallowed rework is handed off", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Human Review", "Done"}}, {Name: "Human Review"}, {Name: "Rework", Dispatchable: true}, {Name: "Done", Terminal: true}}, wantDeferred: true},
 		{name: "a conflict cannot enter operator-only rework", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework"}}, {Name: "Rework", Dispatchable: true, OperatorOnly: true}}, wantDeferred: true},
@@ -87,6 +94,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				cfg.AutoPromote.HumanReview = &humanReview
 			}
 			cfg.AutoPromote.ReworkState = test.reworkState
+			cfg.Policy.Gates.GitHubPullRequest = test.wantInfrastructure
 			attempts := &recordingWorkAttemptStore{}
 			scheduling := &hubSchedulingSource{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
@@ -94,6 +102,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			now := time.Date(2026, 9, 29, 1, 0, 0, 0, time.UTC)
 			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Mode: runpkg.RunModeMerge, DispatchSourceState: "Merging", StartedAt: now.Add(-time.Minute)}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
+			state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 2}
 			output := runpkg.RunOutputNativeLanded
 			if test.landing != nil && !test.landing.Landed {
 				output = runpkg.RunOutputNativeLandingRefused
@@ -101,10 +110,48 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: now,
 				Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge},
-				Result:  runpkg.RunResult{FinalState: FinalStateCompleted, FinalMessage: test.finalMessage, Output: output, NativeLanding: test.landing},
+				Result:  runpkg.RunResult{FinalState: FinalStateCompleted, FinalMessage: test.finalMessage, Output: output, NativeLanding: test.landing, WorkspaceBranch: "detent/land"},
+				Err:     test.err,
 			})
 			retry, retried := state.Retry[issue.ID]
 			_, deferred := state.deferredCompletions[issue.ID]
+			if test.wantInfrastructure {
+				if !retried || !retry.ForgeUnavailable || retry.Attempt != 1 || retry.Issue.State != "Merging" || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || state.RepeatedFailures[issue.ID].Count != 2 || len(state.InstantFailures) != 0 || scheduling.releases != 1 {
+					t.Fatalf("unproven conflict changed source ownership: retry %#v, updates %#v, state %#v", retry, tick.updates, state)
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity || !strings.Contains(attempts.completions[0].ErrorMessage, "Pull Request has merge conflicts") {
+					t.Fatalf("original refusal not preserved: %#v", attempts.completions)
+				}
+				var metadata map[string]any
+				if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
+					t.Fatal(err)
+				}
+				if metadata["native_landed"] != false || metadata["native_change_id"] != unproven.ChangeID || metadata["native_version_id"] != unproven.VersionID || metadata["native_head_sha"] != head || metadata["native_merge_sha"] != nil || metadata["native_landing_refusal"] != nil {
+					t.Fatalf("landing deferral lost identity or manufactured source conflict: %#v", metadata)
+				}
+				completion := attempts.completions[0]
+				receipt := store.WorkAttempt{ID: 42, IssueID: issue.ID, Identifier: issue.Identifier, Lane: "Merging", AttemptNumber: 1, Status: store.WorkAttemptStatusTerminal, TerminalState: completion.TerminalState, ErrorClass: completion.ErrorClass, ErrorMessage: completion.ErrorMessage, WorkerMetadataJSON: completion.WorkerMetadataJSON, CompletedAt: now}
+				wait, valid := forgeWaitMetadataFromAttempt(receipt)
+				if !valid || wait.Branch != "detent/land" {
+					t.Fatalf("landing wait cannot survive restart: %#v", wait)
+				}
+				restarted := newState(cfg)
+				orch.recoverForgeAvailabilityWaits(t.Context(), &restarted, []store.WorkAttempt{receipt}, now.Add(time.Second))
+				if restored := restarted.Retry[issue.ID]; !restored.ForgeUnavailable || restored.Attempt != 1 || restored.Issue.State != "Merging" || !restored.DueAt.Equal(retry.DueAt) {
+					t.Fatalf("restart lost landing retry ownership: %#v", restored)
+				}
+				if _, reserved := reserveForgeAvailabilityProbe(&state, issue.ID, retry, retry.DueAt); !reserved {
+					t.Fatal("landing retry cannot use the existing forge probe")
+				}
+				tick.stateIssues[0].State = "Done"
+				state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 43, Mode: runpkg.RunModeMerge, DispatchSourceState: "Merging", ForgeProbeHost: "github.com", StartedAt: retry.DueAt}
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+				orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: retry.DueAt.Add(time.Second), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: runpkg.RunResult{FinalState: FinalStateCompleted, Output: runpkg.RunOutputNativeLanded, NativeLanding: landed, ForgeWriteCompleted: true}})
+				if len(state.ForgeUnavailable) != 0 || state.Completed[issue.ID].Issue.State != "Done" || len(attempts.completions) != 2 || attempts.completions[1].TerminalState != store.WorkAttemptTerminalSuccess || len(tick.updates) != 0 {
+					t.Fatalf("same-version landing retry failed to settle: conditions %#v, completions %#v, updates %#v", state.ForgeUnavailable, attempts.completions, tick.updates)
+				}
+				return
+			}
 			if deferred != test.wantDeferred || test.wantDeferred && !retry.CompletionDeferred {
 				t.Fatalf("deferred = %t (retry %#v), want %t", deferred, retry, test.wantDeferred)
 			}

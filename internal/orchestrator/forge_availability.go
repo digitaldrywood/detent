@@ -357,7 +357,7 @@ func (o *Orchestrator) handleForgeUnavailableCompletion(ctx context.Context, sta
 	forgeRetry := forgeRetryFromCompletion(event, running, condition)
 	o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	message := strings.TrimSpace(availabilityErr.Error())
-	o.persistForgeAvailabilityWait(ctx, state, running, event.CompletedAt, condition, forgeRetry, message)
+	o.persistForgeAvailabilityWait(ctx, state, running, event.CompletedAt, condition, forgeRetry, message, event.Result.NativeLanding)
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		return true
 	}
@@ -390,6 +390,7 @@ func (o *Orchestrator) persistForgeAvailabilityWait(
 	condition ForgeCondition,
 	forgeRetry *runpkg.ForgeRetry,
 	message string,
+	landing *runpkg.NativeLanding,
 ) bool {
 	if forgeRetry == nil {
 		return false
@@ -404,7 +405,7 @@ func (o *Orchestrator) persistForgeAvailabilityWait(
 		message,
 		"waiting",
 		message,
-		forgeAvailabilityWaitMetadata(condition, forgeRetry),
+		mergeWorkAttemptMetadata(forgeAvailabilityWaitMetadata(condition, forgeRetry), nativeLandingMetadata(landing)),
 	)
 }
 
