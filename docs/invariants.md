@@ -885,6 +885,21 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Native GitHub landing (#137) consolidates reviewed-head authority on the
+existing atomic merge PUT with `sha` equal to the immutable reviewed head.
+After the runner's lease-protected push, the selected open PR's list head may
+lag publication and cannot refuse landing. Repository, branch and base identity,
+worktree HEAD verification, source locks, current policy/version and ownership
+checks remain required. Explicit authoritative moved-head and closed-PR merge
+rejections retain `LandRefusalHeadMoved`; reviews, checks, protection and
+authentication remain enforced by GitHub. Typed quota evidence reaches the
+existing capacity owner before repository refusal classification. Only actual
+successful receipts reach the Hub, which receives no GitHub credentials.
+`TestLocalGitLandChangeViaGitHub`, `TestGitHubLandingAPIRefusal` and
+`TestLandNativeChange` cover stale list heads after rework publication, guarded
+remote head rejection, refusal identity and quota precedence. No retry loop,
+recovery path, reason code, policy bypass or lane writer is added.
+
 Native conflict completion selects the project's existing configured
 `ReworkState` through `CompletionLane` and the sole orchestrator lane writer
 (#96). Missing, disallowed, operator-only or terminal rework destinations retain
