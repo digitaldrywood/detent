@@ -299,7 +299,7 @@ export function RunnersSectionView({
       {enrollments.length === 0 ? null : (
         <SettingsSection
           id="settings-enrollments"
-          title="Pending enrollments"
+          title="Waiting to connect"
           icon={<ServerIcon className="size-3.5" />}
           headerAction={
             <span className="text-xs text-muted-foreground">Created in this session</span>

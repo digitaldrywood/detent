@@ -28,14 +28,10 @@ const ENROLLMENT_OPERATIONS = ["read", "collaborate", "claim", "heartbeat", "eve
 /** The hub refuses anything over 900 (`runnerauth.MaxEnrollmentTTL`). */
 const ENROLLMENT_TTL_SECONDS = 900;
 
-/** One enrollment this screen created, with the command that redeems it. */
 export interface PendingEnrollment {
   readonly id: string;
-  readonly token: string;
   readonly expiresAt: string;
   readonly name: string;
-  readonly command: string;
-  readonly projectNames: readonly string[];
 }
 
 /**
@@ -191,7 +187,7 @@ export function EnrollRunnerDialog({
   const generation = React.useRef(0);
   const [service, setService] = React.useState(true);
   const [selected, setSelected] = React.useState<readonly string[]>(initialSelection);
-  const [enrollment, setEnrollment] = React.useState<PendingEnrollment | null>(null);
+  const [enrollment, setEnrollment] = React.useState<(PendingEnrollment & { readonly command: string }) | null>(null);
 
   // Reopening starts a fresh enrollment: the previous token was shown once and
   // leaving it on screen invites redeeming a token that has already expired.
@@ -214,15 +210,15 @@ export function EnrollRunnerDialog({
     });
     const entry: PendingEnrollment = {
       id: created.id,
-      token: created.token,
       expiresAt: created.expires_at,
       name: name.trim(),
-      command: registerCommand({ hubUrl, organizationId, token: created.token, name, capacity: capacity ?? 1, service }),
-      projectNames: projects
-        .filter((project) => selected.includes(project.id))
-        .map((project) => project.name),
     };
-    if (generation.current === mine) setEnrollment(entry);
+    if (generation.current === mine) {
+      setEnrollment({
+        ...entry,
+        command: registerCommand({ hubUrl, organizationId, token: created.token, name, capacity: capacity ?? 1, service }),
+      });
+    }
     onEnrolled(entry);
     return created;
   });
@@ -391,21 +387,14 @@ export function PendingEnrollments({
       {enrollments.map((entry) => (
         <SettingsRow
           key={entry.id}
+          className="[&>div>div:first-child]:sm:col-span-2"
           title={
             <span className="flex min-w-0 items-center gap-2">
               <KeyRoundIcon aria-hidden="true" className="size-3.5 shrink-0" />
               <span className="truncate">{entry.name === "" ? "Unnamed runner" : entry.name}</span>
             </span>
           }
-          description={`Waiting to be registered · ${
-            entry.projectNames.length === 0 ? "no projects" : entry.projectNames.join(", ")
-          } · expires ${new Date(entry.expiresAt).toLocaleTimeString()}`}
-          control={
-            <CopyableCommand
-              value={entry.command}
-              label={`the register command for ${entry.name === "" ? "the unnamed runner" : entry.name}`}
-            />
-          }
+          description={`No check-in yet · expires ${new Date(entry.expiresAt).toLocaleTimeString()}`}
         />
       ))}
     </>
