@@ -190,26 +190,26 @@ describe("MCP setup", () => {
       token: "private-api-credential",
     };
     renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Shared API keys" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "API keys" })).toBeTruthy());
     expect(screen.getByRole("button", { name: "API & MCP" }).getAttribute("aria-current")).toBe("true");
     expect(document.body.textContent).not.toContain("private-csrf-credential");
     expect(document.body.textContent).not.toContain("private-api-credential");
     if (expected) {
-      fireEvent.click(screen.getByRole("button", { name: "Copy Organization MCP endpoint" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy MCP endpoint" }));
       await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(expected));
-      expect(screen.getByRole("status", { name: "Organization MCP endpoint copy status" }).textContent).toContain("copied");
-      await waitFor(() => expect(screen.getByRole("button", { name: "Copy API setup prompt" })).toBeTruthy());
-      for (const label of ["API setup prompt", "MCP setup prompt"]) {
+      expect(screen.getByRole("status", { name: "MCP endpoint copy status" }).textContent).toContain("copied");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Copy Direct API setup prompt" })).toBeTruthy());
+      for (const label of ["Direct API setup prompt", "MCP setup prompt"]) {
         fireEvent.click(screen.getByRole("button", { name: `Copy ${label}` }));
         await waitFor(() => expect(writeText.mock.lastCall![0]).toContain("DETENT_API_KEY"));
         const copied = writeText.mock.lastCall![0];
         expect(copied).toContain(expected.replace(/\/mcp$/, "/settings/mcp"));
         expect(copied).not.toContain("private-csrf-credential");
         expect(copied).not.toContain("private-api-credential");
-        expect(copied).toContain(label.startsWith("API") ? "/work-items?limit=20" : "work_list");
+        expect(copied).toContain(label.startsWith("Direct") ? "/work-items?limit=20" : "work_list");
       }
     } else {
-      expect(screen.queryByRole("button", { name: "Copy Organization MCP endpoint" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy MCP endpoint" })).toBeNull();
       expect(screen.getByText(/The organization HTTPS URL is unavailable/)).toBeTruthy();
       expect(writeText).not.toHaveBeenCalled();
     }
@@ -228,27 +228,33 @@ describe("MCP setup", () => {
     const projectAccess = mode === "selected" ? "selected" : "all";
     const projectIds = mode === "selected" ? [account.projects[0]!.id] : [];
     const secret = "detent_synthetic_once_only_key";
-    const metadata = { id: "key1", name: "agent", scope: "read", expires_at: "2026-11-01T00:00:00Z", fingerprint: "fingerprint", revoked: false, project_access: projectAccess, project_ids: projectIds };
+    const metadata = { id: "key1", name: "agent", scope: "read", expires_at: "2099-11-01T00:00:00Z", created_at: "2026-10-01T12:00:00Z", fingerprint: "fingerprint", revoked: false, project_access: projectAccess, project_ids: projectIds };
     let created = false;
+    let revoked = false;
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
       if (options?.method === "POST") { created = true; return new Response(JSON.stringify({ token: secret, project_access: projectAccess, project_ids: projectIds }), { status: 201 }); }
-      if (options?.method === "DELETE") return new Response(null, { status: 204 });
-      return new Response(JSON.stringify({ keys: created ? [metadata] : [] }));
+      if (options?.method === "DELETE") { revoked = true; return new Response(null, { status: 204 }); }
+      return new Response(JSON.stringify({ keys: created ? [{ ...metadata, revoked, ...(revoked ? { revoked_at: "2026-10-02T12:00:00Z" } : {}) }] : [] }));
     });
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: "browser-csrf" }, account: currentAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Create API key" })).toBeTruthy());
-    fireEvent.change(screen.getByLabelText("Key name"), { target: { value: "agent" } });
-    expect(screen.getByLabelText("Project access")).toHaveProperty("value", "all");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create key" })).toBeTruthy());
+    expect(screen.queryByLabelText("Name")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "agent" } });
+    expect(screen.getByRole("radio", { name: "All projects" })).toHaveProperty("checked", true);
     expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "Create API key" })).toHaveProperty("disabled", false);
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Create key" })).toHaveProperty("disabled", false);
     if (mode === "selected") {
-      fireEvent.change(screen.getByLabelText("Project access"), { target: { value: "selected" } });
-      expect(screen.getByRole("button", { name: "Create API key" })).toHaveProperty("disabled", true);
+      fireEvent.click(screen.getByRole("radio", { name: "Selected projects" }));
+      expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Create key" })).toHaveProperty("disabled", true);
       fireEvent.click(screen.getByRole("checkbox", { name: account.projects[0]!.name }));
     }
-    fireEvent.click(screen.getByRole("button", { name: "Create API key" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create key" }));
+    expect(screen.getByLabelText("Name")).toHaveProperty("disabled", true);
+    expect(screen.getByRole("radio", { name: "Read" })).toHaveProperty("disabled", true);
+    expect(screen.getByLabelText("Expires")).toHaveProperty("disabled", true);
     await waitFor(() => expect(screen.getByLabelText("New API key")).toBeTruthy());
     expect(screen.getByLabelText("New API key").getAttribute("type")).toBe("password");
     expect(document.body.textContent).not.toContain(secret);
@@ -258,16 +264,87 @@ describe("MCP setup", () => {
     expect(post[0]).toBe(`${account.api_base}/api-keys`);
     expect(post[1]?.headers).toMatchObject({ "X-CSRF-Token": "browser-csrf" });
     expect(JSON.parse(post[1]!.body as string)).toMatchObject({ name: "agent", scope: "read", expires_days: 30, project_access: projectAccess, project_ids: projectIds });
-    for (const label of ["API setup prompt", "MCP setup prompt"]) {
+    for (const label of ["Direct API prompt", "MCP prompt"]) {
       const copies = writeText.mock.calls.length;
       fireEvent.click(screen.getByRole("button", { name: `Copy ${label}` }));
       await waitFor(() => expect(writeText).toHaveBeenCalledTimes(copies + 1));
       expect(writeText.mock.lastCall![0]).toContain(mode === "selected" ? `Project access: Selected projects: ${account.projects[0]!.name}` : "Project access: All projects, including future projects");
       expect(writeText.mock.lastCall![0]).not.toContain(secret);
     }
+    if (mode === "selected") {
+      fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    } else if (mode === "all before projects") {
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    }
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByLabelText("New API key")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+    await screen.findByRole("heading", { name: "Create API key" });
+    expect(screen.queryByLabelText("New API key")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: "Revoke agent" }));
-    await waitFor(() => expect(screen.queryByLabelText("New API key")).toBeNull());
+    await screen.findByRole("heading", { name: "Revoke agent?" });
+    expect(fetch.mock.calls.some((call) => call[1]?.method === "DELETE")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Keep key" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Revoke agent" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Revoke key" }));
+    await screen.findByRole("button", { name: "Key history · 1 revoked or expired" });
+    expect(screen.queryByRole("heading", { name: /^agent/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Key history · 1 revoked or expired" }));
+    expect(await screen.findByText("Revoked")).toBeTruthy();
     expect(fetch.mock.calls.some((call) => call[0] === `${account.api_base}/api-keys/key1` && call[1]?.method === "DELETE")).toBe(true);
+  });
+
+  it.each([
+    ["viewer", ["Read"]],
+    ["member", ["Read", "Write"]],
+    ["admin", ["Read", "Write", "Admin"]],
+    ["owner", ["Read", "Write", "Admin"]],
+  ])("offers only %s permissions with explanations", async (role, labels) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ keys: [] })));
+    const currentAccount = { ...account, actor: { ...account.actor, role, can_manage: role === "owner" || role === "admin" } };
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: account.csrf_token }, account: currentAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Create key" }));
+    const group = await screen.findByRole("group", { name: "Permissions" });
+    expect(within(group).getAllByRole("radio").map((radio) => radio.getAttribute("aria-label"))).toEqual(labels);
+    for (const radio of within(group).getAllByRole("radio")) {
+      expect(document.getElementById(radio.getAttribute("aria-describedby")!)?.textContent).toBeTruthy();
+    }
+    expect(screen.getByLabelText("Expires")).toHaveProperty("value", "30");
+  });
+
+  it("separates inactive keys, localizes dates and resolves project names with an ID fallback", async () => {
+    const key = { scope: "read", fingerprint: "12345678901234567890", created_at: "2026-10-01T12:00:00.123456789Z", expires_at: "2099-11-01T12:00:00Z", revoked: false, project_access: "selected", project_ids: [account.projects[0]!.id, "unknown-project"] };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ keys: [
+      { ...key, id: "active", name: "Active agent" },
+      { ...key, id: "revoked", name: "Revoked agent", revoked: true, revoked_at: "2026-10-02T12:00:00Z" },
+      { ...key, id: "expired", name: "Expired agent", expires_at: "2020-01-01T12:00:00Z" },
+    ] })));
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    const active = (await screen.findByRole("heading", { name: /Active agent/ })).closest('[data-slot="settings-row"]')!;
+    expect(active.textContent).toContain(account.projects[0]!.name);
+    expect(active.textContent).toContain("unknown-project");
+    expect(active.textContent).toContain("created Oct 1");
+    expect(active.textContent).toContain("123456789012");
+    expect(active.textContent).not.toContain("12345678901234567890");
+    expect(active.textContent).not.toContain("T12:00:00");
+    expect(screen.queryByText("Revoked")).toBeNull();
+    expect(screen.queryByText("Expired")).toBeNull();
+    const toggle = screen.getByRole("button", { name: "Key history · 2 revoked or expired" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(screen.getByText("Revoked")).toBeTruthy();
+    expect(screen.getByText("Expired")).toBeTruthy();
+    expect(screen.getByText(/Revoked Oct 2, 2026/)).toBeTruthy();
+    expect(screen.getByText(/Expired Jan 1, 2020/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Revoke Revoked agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Revoke Expired agent" })).toBeNull();
+    fireEvent.click(toggle);
+    expect(screen.queryByText("Revoked")).toBeNull();
   });
 
   it("keeps setup unavailable when shared key authentication is not installed", async () => {
@@ -275,16 +352,16 @@ describe("MCP setup", () => {
     renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("unavailable"));
     expect(screen.queryByRole("button", { name: "Copy MCP setup prompt" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Create API key" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create key" })).toBeNull();
   });
 
   it("offers manual copying when clipboard access fails", async () => {
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
     vi.spyOn(console, "error").mockImplementation(() => {});
     renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
-    await waitFor(() => expect(screen.getByRole("button", { name: "Copy Organization MCP endpoint" })).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name: "Copy Organization MCP endpoint" }));
-    await waitFor(() => expect(screen.getByRole("status", { name: "Organization MCP endpoint copy status" }).textContent).toContain("Select the text"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy MCP endpoint" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Copy MCP endpoint" }));
+    await waitFor(() => expect(screen.getByRole("status", { name: "MCP endpoint copy status" }).textContent).toContain("Select the text"));
   });
 });
 

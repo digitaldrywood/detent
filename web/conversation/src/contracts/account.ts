@@ -777,6 +777,8 @@ export const OperatorAPIKey = Schema.Struct({
   scope: Schema.Literals(["read", "write", "admin"]),
   expires_at: Schema.String,
   fingerprint: Schema.String,
+  created_at: Schema.optional(Schema.String),
+  revoked_at: Schema.optional(Schema.String),
   revoked: Schema.Boolean,
   project_access: OperatorProjectAccess,
   project_ids: Schema.Array(Schema.String),
