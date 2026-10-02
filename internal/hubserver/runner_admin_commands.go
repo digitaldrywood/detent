@@ -20,23 +20,7 @@ func (s *Service) runnerAdminTransaction(ctx context.Context, scope nativeScope,
 	if err != nil {
 		return nil, err
 	}
-	if scope.credential.Runner.RunnerID != "" || scope.credential.NativeOnly && scope.credential.Hosted == nil {
-		return nil, operatortool.ErrAccessDenied
-	}
-	if scope.credential.Hosted != nil {
-		// Use current application authority, including the same all-project runner
-		// grants checked by the dashboard, inside the command transaction.
-		if scope.credential.HostedRole == "viewer" {
-			return nil, operatortool.ErrAccessDenied
-		}
-		scope.credential.ManageRunners = true
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
-			return nil, err
-		}
-	} else if scope.credential.Scope != apiScopeAdmin {
-		return nil, operatortool.ErrAccessDenied
-	}
-	if err := requireCredentialAuthority(ctx, tx, scope.credential, now); err != nil {
+	if err := s.requireRunnerAdministration(ctx, tx, scope, now); err != nil {
 		return nil, err
 	}
 	before, err := s.database.hostedConsumption(ctx, tx, now)
@@ -54,4 +38,27 @@ func (s *Service) runnerAdminTransaction(ctx context.Context, scope nativeScope,
 		return nil, err
 	}
 	return value, nil
+}
+
+func (s *Service) requireRunnerAdministration(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
+	if scope.credential.Runner.RunnerID != "" || scope.credential.NativeOnly && scope.credential.Hosted == nil {
+		return operatortool.ErrAccessDenied
+	}
+	if scope.credential.Hosted != nil {
+		// Use current application authority, including the same all-project runner
+		// grants checked by the dashboard, inside the command transaction.
+		if scope.credential.HostedRole == "viewer" {
+			return operatortool.ErrAccessDenied
+		}
+		scope.credential.ManageRunners = true
+		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+			return err
+		}
+	} else if scope.credential.Scope != apiScopeAdmin {
+		return operatortool.ErrAccessDenied
+	}
+	if err := requireCredentialAuthority(ctx, tx, scope.credential, now); err != nil {
+		return err
+	}
+	return nil
 }

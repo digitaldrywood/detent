@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -92,6 +93,7 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 		return view, err
 	}
 	defer rows.Close()
+	var freshReports []providercapacity.Report
 	for rows.Next() {
 		var raw, created string
 		var expires, revoked sql.NullString
@@ -106,6 +108,9 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 			return view, err
 		}
 		for _, other := range reports {
+			if !now.Before(other.ObservedAt) && now.Before(other.ObservedAt.Add(providercapacity.MaxAge)) {
+				freshReports = append(freshReports, other)
+			}
 			if !sharedProviderAccount(report, other) {
 				continue
 			}
@@ -149,7 +154,11 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 		}
 		if sharedProviderAccount(report, reservation.Report) {
 			view.Used++
-			view.MaxConcurrent = min(view.MaxConcurrent, reservation.Report.MaxConcurrent)
+			if !slices.ContainsFunc(freshReports, func(current providercapacity.Report) bool {
+				return current.Provider == reservation.Report.Provider && current.Backend == reservation.Report.Backend && current.AccountAlias == reservation.Report.AccountAlias && current.SharedAccountAlias == reservation.Report.SharedAccountAlias && current.Supports(reservation.Requirement)
+			}) {
+				view.MaxConcurrent = min(view.MaxConcurrent, reservation.Report.MaxConcurrent)
+			}
 		}
 	}
 	switch {

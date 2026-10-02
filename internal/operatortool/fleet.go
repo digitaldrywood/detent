@@ -39,6 +39,8 @@ const (
 	GetRunnerRouting         = "get_runner_routing"
 	ListRunnerRouting        = "list_runner_routing"
 	UpdateRunnerRouting      = "update_runner_routing"
+	GetRunnerCapacity        = "get_runner_capacity"
+	UpdateRunnerCapacity     = "update_runner_capacity"
 	UpdateRunnerHost         = "update_runner_host"
 	HostedFleet              = "hosted_fleet"
 	GitHubRequestCounts      = "github_request_counts"
@@ -95,6 +97,9 @@ func FleetCatalog() []Definition {
 	add(CreateRunnerEnrollment, "Create a bounded enrollment using current runner administration authority; requires operator approval. Token is returned only to the originating connection.", `"enrollment":{"type":"object","required":["project_ids","operations","ttl_seconds"],"properties":{"runner_id":{"type":"string","maxLength":256},"machine_id":{"type":"string","maxLength":256},"project_ids":`+boundedList+`,"operations":`+boundedList+`,"ttl_seconds":{"type":"integer","minimum":1,"maximum":900},"shared_machine":{"type":"boolean"}},"additionalProperties":false}`, `"enrollment"`, false, true)
 	add(RevokeRunnerEnrollment, "Revoke an existing unused enrollment; requires operator approval.", `"enrollment_id":`+boundedID, `"enrollment_id"`, false, true)
 	add(RevokeRunnerIdentity, "Revoke the existing exact runner credential; requires operator approval.", `"runner_id":`+boundedID, `"runner_id"`, false, true)
+	capacity := `{"type":"object","required":["expected_revision","expected_config_revision","capacity"],"properties":{"expected_revision":{"type":"integer","minimum":1},"expected_config_revision":{"type":"string","minLength":64,"maxLength":64},"capacity":{"type":"integer","minimum":1,"maximum":10000},"backend":` + boundedID + `},"additionalProperties":false}`
+	add(GetRunnerCapacity, "Read desired, applied and effective enrolled runner capacity with fresh binding-limit evidence.", `"runner_id":`+boundedID+`,"backend":`+boundedID, `"runner_id"`, true, false)
+	add(UpdateRunnerCapacity, "Request capacity through the enrolled runner configuration owner. External provider producers remain authoritative; requires operator approval.", `"runner_id":`+boundedID+`,"change":`+capacity, `"runner_id","change"`, false, true)
 	add(GetRunnerRouting, "Read exact runner settings with current administration authority.", `"runner_id":`+boundedID, `"runner_id"`, true, false)
 	add(ListRunnerRouting, "Read runner settings with current administration authority.", `"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}`, "", true, false)
 	add(HostedFleet, "Read the hosted fleet using current browser membership and project grants.", `"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}`, "", true, false)
@@ -135,6 +140,7 @@ func ValidateFleetArguments(name string, raw json.RawMessage) error {
 func RoutingRequiresApproval(before, after runnerauth.Routing) bool {
 	before, after = before.Normalized(), after.Normalized()
 	before.DisplayName, before.Tags = after.DisplayName, after.Tags
+	before.CapacityRequest, after.CapacityRequest = nil, nil
 	return !reflect.DeepEqual(before, after)
 }
 
