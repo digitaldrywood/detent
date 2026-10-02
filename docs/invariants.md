@@ -17,6 +17,15 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Scheduled diagnostics for the migrated Detent repository call the existing
+Cloud `file_issue` and `add_comment` application owners using the selected
+project and current scoped API/MCP connection. New diagnostics enter only a
+configured nondispatchable Backlog; imported open items and operator holds
+receive occurrences without lane writes. Scheduled success comments are
+validation evidence, never completion, landing, admission or review authority.
+Other repositories keep their existing GitHub reporting policy. No tool,
+scope, project configuration key or alternate tracker owner is introduced.
+
 Hosted project workflow configuration uses the existing administrator-owned
 integration settings command and revision/idempotency boundary. Reviewed
 NativeState definitions remain project-specific, retain existing workflow row
@@ -630,12 +639,17 @@ omitted access performs no worker credential lookup or GitHub request. Synthetic
 quota probes cannot clear actual landing response evidence; the runner retries
 through ordinary landing dispatch and fresh same-credential operation evidence
 establishes recovery. Quota evidence takes precedence over joined repository
-refusals while preserving the exact reviewed identity. Authentication,
+refusals while preserving the exact reviewed identity. Reviewed-head hydration
+and external PR validation use the same runner REST client as landing, so quota
+errors during workspace preparation retain that identity, actual usage and an
+honest failed native Finish for the existing capacity completion owner. External
+PR heads remain read-only and retain their repository/base authority. Authentication,
 review, check and repository refusals keep their existing handling. Runner
 credentials remain local. This consolidates classification and completion under
 INV-1/INV-2/INV-3 without a mechanism or lane writer.
 `TestLocalGitLandChangeViaGitHub`, `TestNativeLandingQuotaWait`,
 `TestLandNativeChange`, `TestNativeLandingQuotaFinishesRun`,
+`TestRunnerResolvesLandingBeforeWorkspace`, `TestLocalGitCreateReviewedLanding`,
 `TestNativeRunnerPublishesOnlyAfterRecovery` and `TestSSHErrorRoundTrip` exercise
 these boundaries.
 
@@ -939,6 +953,21 @@ and promotion after clearance. This replaces symbolic
 ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
+
+Externally published native versions (#98) resolve the reviewed current version
+before the existing workspace owner prepares a landing. The target retains its
+External PR reference. The runner verifies its authorized source, clean owned
+worktree and immutable head, hydrates missing commits through authenticated Git,
+and rechecks current-version authority after preparation. An explicit PR is read
+directly and must match repository, branch, head and the authorized base; it is
+never replaced or force-published. Ordinary worker PR publication retains its
+atomic merge head authority below. Existing policy, scope, authentication,
+review/check refusals and actual landing receipts remain authoritative; the Hub
+receives no forge credentials and workers never write lanes. Source bundles and
+occupied worktrees remain intact. `TestNativeExecutionOperatorLandingTarget`,
+`TestLocalGitCreateReviewedLanding`, `TestLocalGitLandChangeViaGitHub`,
+`TestRunnerResolvesLandingBeforeWorkspace` and `TestLandNativeChange` cover these
+consolidated owners without a new mechanism.
 
 Native GitHub landing (#137) consolidates reviewed-head authority on the
 existing atomic merge PUT with `sha` equal to the immutable reviewed head.
@@ -2759,7 +2788,7 @@ Scheduled and manual full validation always inspect the pinned current
 `develop` commit, including one carrying a release-provenance tag. Release
 annotations are not proof that the scheduled suite passed and do not suppress
 its run. The existing full-suite finalizer alone publishes scheduled success,
-creates a validated tag and closes scheduled repair issues; ordinary shipping
+creates a validated tag and reports scheduled evidence; ordinary shipping
 does not wait for that run. `TestRepositoryWorkflow` executes the preflight
 with an emergency provenance annotation for both event types.
 
@@ -2806,11 +2835,16 @@ Preflight pins the current `develop` SHA for every scheduled or manual run,
 independently of existing release tags. Every full-suite job runs on the pinned
 commit. A green run posts `scheduled-full-ci` status, cuts an annotated patch version tag with
 exact status evidence, and dispatches the release workflow. It does not merge
-to `main` or deploy production. A failing run opens or updates one fingerprinted
-Todo hotfix issue per concrete failed test or source diagnostic, attaching each
-job occurrence to the same repair. Unrecognized or unavailable diagnostics keep
-conservative job-level identity. A later green run closes scheduled repair issues. Manual
-dispatch can force `verify-fast` to fail to exercise issue filing and closure.
+to `main` or deploy production. For this migrated repository a failing run
+files or appends one native Backlog diagnostic per normalized fingerprint,
+retaining pinned commit, run/attempt and job evidence. Unrecognized or unavailable
+diagnostics remain CI-instance intake with conservative job-level identity.
+A green run appends validation evidence through the same native comment owner;
+it never closes work or invents a landed receipt. Other repositories retain
+GitHub Todo source repairs, Backlog instance intake and green-result closure.
+Manual dispatch can force `verify-fast` to fail to exercise diagnostic filing.
+The finalizer retains publication payloads and original job results as artifacts
+for retry and never falls back to GitHub issue writes on Cloud failure.
 
 Every `develop` push deploys to staging even when that commit has not passed
 scheduled validation. Production release artifacts use validated tags only.
@@ -2879,8 +2913,9 @@ including completed and not-planned GitHub issues. Use `file_machine_issue`, wit
 for worker discoveries. Review must ensure a fingerprint describes the problem
 rather than a timestamp, attempt, or wording variation.
 
-Scheduled validation (#3625) reuses `issueorigin.Fingerprint`, `Stamp`, `Parse`,
-and `Occurrence` across the repository's paginated open issues. Plain and JSON
+Scheduled validation (#3625, native #97) reuses `issueorigin.Fingerprint`, `Stamp`,
+`Parse`, and `Occurrence` across the selected destination's paginated open issues
+and native imported comments. Plain and JSON
 Go failures identify the package-qualified test; failed subtests replace a
 parent summary that has no independent assertion. Source diagnostics identify the repository-relative location
 and message. Run, attempt, commit, and job evidence describe occurrences rather
@@ -2896,12 +2931,25 @@ colored-log refusal and verifies test identity and occurrence consolidation;
 unreadable logs retain job identity and CI-instance attribution.
 The repository scheduled reporter creates unknown or unreadable job fallbacks
 as Backlog intake, using the existing admission artifact contract (#3727).
-Parsed test and source diagnostics remain Todo hotfix repairs. Fallbacks retain
+Parsed test and source diagnostics remain Todo hotfix repairs in GitHub mode;
+this migrated repository keeps all new diagnostics in native Backlog for existing
+operator admission. Fallbacks retain
 bounded log evidence and retrieval errors, their legacy fingerprints, and
 repository-wide occurrence matching. Existing issues receive occurrences without
 lane changes; this producer policy does not retroactively close or move an
 instance-owned report. `TestReport` covers destination labels and runner shutdown
 evidence alongside the existing fingerprint and repeated-run scenarios.
+
+Native reporting discovers the existing scoped MCP tools and reads configured
+workflow ownership before filing. Run/attempt/job/problem identities supply
+stable command request IDs and occurrence markers across reconnects and retries.
+Publication stops after a failed or ambiguous response; a retry reads durable
+bodies/comments before another write. `TestCloudReport`, `TestCloudTransport`
+and `TestCloudDestinationAuthority` cover imported provenance, response loss,
+replay, held items, current connection failure and destination isolation.
+The finalizer fixture covers native green evidence without GitHub closure and
+preserves scheduled tag/release publication. No capability parity changes or
+additional intake, recovery or reconciliation owner are introduced (INV-3).
 
 **Change:** Edit INV-7 and origin/deduplication scenarios in the same PR before
 changing identity format or duplicate handling.

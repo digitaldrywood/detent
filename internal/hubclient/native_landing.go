@@ -33,6 +33,7 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 		if version.ID == detail.Change.CurrentVersion {
 			target.HeadSHA, target.Number = version.HeadSHA, version.Number
 			target.Repository, target.GitHubPullRequest = version.Repository, version.Policy.Gates.GitHubPullRequest
+			target.External = version.External
 			if version.Policy.Gates.MergeMethod != "" {
 				target.Method = version.Policy.Gates.MergeMethod
 			}

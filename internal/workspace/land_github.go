@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type githubLandingPull struct {
@@ -18,10 +20,17 @@ type githubLandingPull struct {
 	MergedAt       string `json:"merged_at"`
 	MergeCommitSHA string `json:"merge_commit_sha"`
 	Head           struct {
-		SHA string `json:"sha"`
+		SHA  string `json:"sha"`
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
-		Ref string `json:"ref"`
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"base"`
 }
 
@@ -30,8 +39,6 @@ type githubLandingMerge struct {
 	SHA    string `json:"sha"`
 }
 
-// LandChangeViaGitHub lands a reviewed head through a GitHub pull request
-// on the project runner; the Hub receives only the resulting commit identity.
 func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Issue, opts LandOptions) (LandResult, error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
@@ -56,6 +63,9 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		return LandResult{}, fmt.Errorf("wait for source repository operation: %w", err)
 	}
 	defer release()
+	if err := l.verifyLandingWorktree(ctx, normalized, issue, opts); err != nil {
+		return LandResult{}, err
+	}
 	branch := strings.TrimSpace(normalized.Branch)
 	if branch == "" {
 		return LandResult{}, refuse(LandRefusalProtected, "GitHub pull request landing needs an attempt branch to publish")
@@ -87,43 +97,54 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		return LandResult{}, fmt.Errorf("inspect fetched base: %w", err)
 	}
 	baseBefore = strings.TrimSpace(baseBefore)
+	var pull githubLandingPull
+	if opts.External != nil {
+		pull, err = readExternalLandingPull(ctx, opts.GitHubClient, opts.Repository, opts.External, head, base)
+		if err != nil {
+			return LandResult{}, err
+		}
+		if pull.Head.Ref != branch {
+			return LandResult{}, refuse(LandRefusalHeadMoved, "the external pull request branch differs from the landing workspace")
+		}
+	}
 	if kept, found := keptLanding(ctx, normalized.Path, head, baseRef); found {
 		return kept, nil
 	}
-	previous, exists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
-	if err != nil {
-		return LandResult{}, fmt.Errorf("inspect published attempt branch: %w", err)
-	}
-	push := []string{"push"}
-	if exists {
-		push = append(push, "--force-with-lease=refs/heads/"+branch+":"+previous)
-	}
-	push = append(push, remote, head+":refs/heads/"+branch)
-	if _, err := runGitAt(ctx, normalized.Path, push...); err != nil {
-		var refusal *LandRefusal
-		if classified := classifyLandingPush(err, branch); errors.As(classified, &refusal) && refusal.Kind == LandRefusalProtected {
-			return LandResult{}, refuse(LandRefusalProtected, "the runner cannot publish the reviewed attempt branch "+branch+": "+strings.TrimSpace(commandErrorOutput(err)))
+	if opts.External == nil {
+		previous, exists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
+		if err != nil {
+			return LandResult{}, fmt.Errorf("inspect published attempt branch: %w", err)
 		}
-		return LandResult{}, classifyLandingPush(err, branch)
-	}
-	var pulls []githubLandingPull
-	query := "repos/" + repository + "/pulls?state=all&head=" + url.QueryEscape(owner+":"+branch) + "&per_page=100"
-	if err := githubLandingAPI(ctx, opts.GitHubClient, &pulls, "GET", query); err != nil {
-		return LandResult{}, err
-	}
-	var pull githubLandingPull
-	for _, candidate := range pulls {
-		if candidate.Base.Ref == base && (candidate.State == "open" || candidate.Head.SHA == head && (candidate.Merged || candidate.MergedAt != "")) {
-			pull = candidate
-			break
+		push := []string{"push"}
+		if exists {
+			push = append(push, "--force-with-lease=refs/heads/"+branch+":"+previous)
 		}
-	}
-	if pull.Number == 0 {
-		title, _, _ := strings.Cut(opts.Message, "\n")
-		if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "POST", "repos/"+repository+"/pulls",
-			"title="+title, "body="+opts.Message,
-			"head="+owner+":"+branch, "base="+base); err != nil {
+		push = append(push, remote, head+":refs/heads/"+branch)
+		if _, err := runGitAt(ctx, normalized.Path, push...); err != nil {
+			var refusal *LandRefusal
+			if classified := classifyLandingPush(err, branch); errors.As(classified, &refusal) && refusal.Kind == LandRefusalProtected {
+				return LandResult{}, refuse(LandRefusalProtected, "the runner cannot publish the reviewed attempt branch "+branch+": "+strings.TrimSpace(commandErrorOutput(err)))
+			}
+			return LandResult{}, classifyLandingPush(err, branch)
+		}
+		var pulls []githubLandingPull
+		query := "repos/" + repository + "/pulls?state=all&head=" + url.QueryEscape(owner+":"+branch) + "&per_page=100"
+		if err := githubLandingAPI(ctx, opts.GitHubClient, &pulls, "GET", query); err != nil {
 			return LandResult{}, err
+		}
+		for _, candidate := range pulls {
+			if candidate.Base.Ref == base && (candidate.State == "open" || candidate.Head.SHA == head && (candidate.Merged || candidate.MergedAt != "")) {
+				pull = candidate
+				break
+			}
+		}
+		if pull.Number == 0 {
+			title, _, _ := strings.Cut(opts.Message, "\n")
+			if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "POST", "repos/"+repository+"/pulls",
+				"title="+title, "body="+opts.Message,
+				"head="+owner+":"+branch, "base="+base); err != nil {
+				return LandResult{}, err
+			}
 		}
 	}
 	var mergeSHA string
@@ -152,7 +173,32 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if _, err := runGitAt(ctx, normalized.Path, "merge-base", "--is-ancestor", mergeSHA, baseRef); err != nil {
 		return LandResult{}, fmt.Errorf("GitHub merge commit %s is not on %s: %w", mergeSHA, base, err)
 	}
-	return LandResult{MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: true}, nil
+	return LandResult{MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil}, nil
+}
+
+func readExternalLandingPull(ctx context.Context, client GitHubRESTClient, repositoryURL string, external *tracker.ChangeExternalReference, head, base string) (githubLandingPull, error) {
+	repository, _, ok := githubLandingRepository(repositoryURL)
+	if !ok || external.Provider != "github" {
+		return githubLandingPull{}, refuse(LandRefusalProtected, "the external pull request must belong to the reviewed GitHub repository")
+	}
+	number, err := strconv.Atoi(external.ID)
+	if err != nil || number <= 0 || strconv.Itoa(number) != external.ID || external.URL != repositoryURL+"/pull/"+external.ID {
+		return githubLandingPull{}, refuse(LandRefusalProtected, "the external pull request identity must match the reviewed repository")
+	}
+	if client == nil {
+		return githubLandingPull{}, refuse(LandRefusalProtected, "GitHub pull request landing requires GitHub authentication on the project runner")
+	}
+	var pull githubLandingPull
+	if err := githubLandingAPI(ctx, client, &pull, "GET", fmt.Sprintf("repos/%s/pulls/%d", repository, number)); err != nil {
+		return pull, err
+	}
+	if pull.Number != number || pull.Base.Repo.FullName != repository || pull.Head.Repo.FullName != repository || pull.Base.Ref != base {
+		return pull, refuse(LandRefusalProtected, "the external pull request repository or base differs from the authorized landing source")
+	}
+	if pull.Head.SHA != head || pull.Head.Ref == "" || pull.State != "open" && !pull.Merged && pull.MergedAt == "" {
+		return pull, refuse(LandRefusalHeadMoved, "the external pull request no longer names the reviewed head")
+	}
+	return pull, nil
 }
 
 func githubLandingRepository(repository string) (name, owner string, ok bool) {

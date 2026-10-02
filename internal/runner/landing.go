@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -18,13 +19,24 @@ import (
 // base branch the forge protects) is reported on the run for the
 // orchestrator to hand back to review with its reason; only an
 // infrastructure failure fails the run.
-func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing LandingExecution, backend workspace.Backend, info workspace.Info, issue workspace.Issue, policy workerGitHubPolicy) (runResult RunResult, runErr error) {
+func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing LandingExecution, backend workspace.Backend, info workspace.Info, issue workspace.Issue, policy workerGitHubPolicy, prepared *NativeLandingTarget) (runResult RunResult, runErr error) {
+	if req.Execution != nil {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return RunResult{}, err
+		}
+	}
 	target, err := landing.LandingTarget(ctx)
 	if err != nil {
 		if errors.Is(err, ErrLandingNotReviewed) {
 			return r.refusedLanding(req, target, workspace.LandRefusalNothing, err.Error()), nil
 		}
 		return RunResult{}, fmt.Errorf("resolve landing target: %w", err)
+	}
+	if prepared != nil {
+		previous := *prepared
+		if previous.ChangeID != target.ChangeID || previous.VersionID != target.VersionID || previous.HeadSHA != target.HeadSHA || previous.Repository != target.Repository || previous.Method != target.Method || previous.GitHubPullRequest != target.GitHubPullRequest || !sameLandingExternal(previous.External, target.External) {
+			return r.refusedLanding(req, previous, workspace.LandRefusalHeadMoved, "the reviewed version changed during workspace preparation"), nil
+		}
 	}
 	lander, ok := backend.(workspace.Lander)
 	if !ok {
@@ -35,37 +47,28 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		message = "Land " + target.HeadSHA
 	}
 	message += fmt.Sprintf("\n\nChange Request %s, round %d, head %s.", target.ChangeID, target.Number, target.HeadSHA)
-	options := workspace.LandOptions{HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository}
+	options := workspace.LandOptions{HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External}
 	var result workspace.LandResult
 	if target.GitHubPullRequest {
 		githubLander, supported := backend.(workspace.GitHubPRLander)
 		if !supported {
 			return RunResult{}, errors.New("workspace backend cannot land through a GitHub pull request")
 		}
-		if policy.Token == "" {
-			workflow, _, _, _ := r.runtimeSnapshot()
-			policy, err = newWorkerGitHubPolicy(ctx, workflow.Config, r.projectID, req.Issue.Identifier, r.lookupEnv, nil, nil, r.logger)
-			if err != nil {
-				return RunResult{}, err
+		if issue.Landing != nil {
+			options.GitHubClient = issue.Landing.GitHubClient
+		}
+		if options.GitHubClient == nil {
+			client, resolvedPolicy, clientErr := r.nativeLandingGitHubClient(ctx, req, policy)
+			if clientErr != nil {
+				return RunResult{}, clientErr
 			}
+			options.GitHubClient = client
+			defer func() {
+				usage := client.FlushRESTRateLimitUsage()
+				runResult.GitHubRESTUsage = &usage
+				runResult.GitHubRESTConsumer = resolvedPolicy.budgetConsumer()
+			}()
 		}
-		token := policy.Token
-		if token == "" {
-			token, err = resolveWorkerGitHubToken(ctx, defaultWorkerGitHubToken, workerGitHubTokenResolutionOptions{})
-			if err != nil {
-				return RunResult{}, err
-			}
-		}
-		client, clientErr := newNativeLandingGitHubClient(policy, token)
-		if clientErr != nil {
-			return RunResult{}, clientErr
-		}
-		options.GitHubClient = client
-		defer func() {
-			usage := client.FlushRESTRateLimitUsage()
-			runResult.GitHubRESTUsage = &usage
-			runResult.GitHubRESTConsumer = policy.budgetConsumer()
-		}()
 		result, err = githubLander.LandChangeViaGitHub(ctx, info, issue, options)
 	} else {
 		result, err = lander.LandChange(ctx, info, issue, options)
@@ -98,6 +101,13 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	r.logWorkerEvent(req.Issue, "worker_native_landed",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "base_ref", result.BaseRef, "method", result.Method)
 	return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLanded, NativeLanding: &landed}, nil
+}
+
+func sameLandingExternal(a, b *tracker.ChangeExternalReference) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 const (
@@ -138,4 +148,24 @@ func newNativeLandingGitHubClient(policy workerGitHubPolicy, token string) (*git
 		DisableConditionalRequests: true,
 		Logger:                     policy.Logger,
 	})
+}
+
+func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, policy workerGitHubPolicy) (*github.Client, workerGitHubPolicy, error) {
+	var err error
+	if policy.Token == "" {
+		workflow, _, _, _ := r.runtimeSnapshot()
+		policy, err = newWorkerGitHubPolicy(ctx, workflow.Config, r.projectID, req.Issue.Identifier, r.lookupEnv, nil, nil, r.logger)
+		if err != nil {
+			return nil, policy, err
+		}
+	}
+	token := policy.Token
+	if token == "" {
+		token, err = resolveWorkerGitHubToken(ctx, defaultWorkerGitHubToken, workerGitHubTokenResolutionOptions{})
+		if err != nil {
+			return nil, policy, err
+		}
+	}
+	client, err := newNativeLandingGitHubClient(policy, token)
+	return client, policy, err
 }

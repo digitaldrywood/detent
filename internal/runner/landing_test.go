@@ -7,27 +7,36 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
-	"os/exec"
-	"path/filepath"
-	"strings"
-	"testing"
-
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type landingBackend struct {
 	workspace.Backend
-	result        workspace.LandResult
-	err           error
-	received      workspace.LandOptions
-	githubCalled  bool
-	githubRequest bool
+	result             workspace.LandResult
+	err                error
+	received           workspace.LandOptions
+	githubCalled       bool
+	githubRequest      bool
+	preparationRequest bool
+}
+
+func (b *landingBackend) Create(ctx context.Context, issue workspace.Issue) (workspace.Info, error) {
+	info, err := b.Backend.Create(ctx, issue)
+	if err == nil && b.preparationRequest {
+		err = issue.Landing.GitHubClient.REST(ctx, "GET", "repos/example/repo/pulls/7", nil, nil)
+	}
+	return info, err
 }
 
 func (b *landingBackend) LandChange(_ context.Context, _ workspace.Info, _ workspace.Issue, opts workspace.LandOptions) (workspace.LandResult, error) {
@@ -60,6 +69,96 @@ func (s *landingStub) RecordLanding(_ context.Context, landing NativeLanding) er
 	return s.recordErr
 }
 
+func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
+	originalClient := http.DefaultClient
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
+	quotaStatus := http.StatusForbidden
+	http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "native-prepare.test" {
+			t.Fatalf("unexpected credential request: %s", req.URL)
+		}
+		if req.URL.Path == "/graphql" {
+			return workerGitHubPrincipalResponse(), nil
+		}
+		if req.URL.Path != "/repos/example/repo/pulls/7" {
+			t.Fatalf("unexpected preparation request: %s", req.URL)
+		}
+		headers := make(http.Header)
+		headers.Set("X-RateLimit-Remaining", "0")
+		headers.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+		if quotaStatus == http.StatusTooManyRequests {
+			headers.Set("X-RateLimit-Remaining", "4990")
+			headers.Set("Retry-After", "120")
+		}
+		return &http.Response{StatusCode: quotaStatus, Header: headers, Body: io.NopCloser(strings.NewReader(`{"message":"API rate limit exceeded"}`))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	for _, test := range []struct {
+		name      string
+		targetErr error
+		createErr error
+		github    bool
+		created   bool
+		quota     bool
+		status    int
+	}{
+		{name: "approved external source", github: true, created: true, createErr: errors.New("stop at creation")},
+		{name: "unreviewed source", github: true, targetErr: ErrLandingNotReviewed},
+		{name: "current policy disables PR landing"},
+		{name: "hydration refusal", github: true, created: true, createErr: &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "external PR moved"}},
+		{name: "hydration quota retains reviewed identity and metrics", github: true, created: true, quota: true},
+		{name: "hydration 429 retains Retry-After and healthy primary reset", github: true, created: true, quota: true, status: http.StatusTooManyRequests},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			quotaStatus = http.StatusForbidden
+			if test.status != 0 {
+				quotaStatus = test.status
+			}
+			backend := &fakeWorkspaceBackend{createErr: test.createErr}
+			external := &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example/repo/pull/7"}
+			execution := &landingRunExecution{landingStub: landingStub{targetErr: test.targetErr, target: NativeLandingTarget{
+				ChangeID: "change_1", VersionID: "version_1", HeadSHA: strings.Repeat("c", 40), Repository: "https://github.com/example/repo", GitHubPullRequest: test.github, External: external,
+			}}}
+			cfg := config.Config{}
+			cfg.Worker.GitHubToken = test.name
+			cfg.Tracker.Kind = config.TrackerGitHub
+			cfg.Tracker.Endpoint = "https://native-prepare.test/graphql"
+			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: &landingBackend{Backend: backend, preparationRequest: test.quota}, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Run(t.Context(), RunRequest{Mode: RunModeMerge, Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#98"}})
+			if backend.created != test.created || len(execution.recorded) != 0 {
+				t.Fatalf("workspace created = %v, receipts = %#v", backend.created, execution.recorded)
+			}
+			if test.created {
+				options := backend.createIssue.Landing
+				if options == nil || options.HeadSHA != execution.target.HeadSHA || options.Repository != execution.target.Repository || options.External == nil || *options.External != *external {
+					t.Fatalf("workspace lost reviewed target: %#v", options)
+				}
+			}
+			if test.quota {
+				var status *github.StatusError
+				if !errors.As(err, &status) || !errors.Is(err, github.ErrRateLimited) || !status.ResetAt.Equal(reset) || status.CredentialIdentity == "" || status.ObservedAt.IsZero() || result.NativeLanding == nil || result.NativeLanding.ChangeID != execution.target.ChangeID || result.NativeLanding.VersionID != execution.target.VersionID || result.NativeLanding.HeadSHA != execution.target.HeadSHA || result.NativeLanding.RefusalKind != "" || result.NativeLanding.Landed || result.GitHubRESTUsage == nil || !result.GitHubRESTUsage.RateLimited || result.GitHubRESTUsage.TotalRequests != 1 || execution.finish != "failed" || !execution.stopped {
+					t.Fatalf("hydration quota result = %#v, execution %#v, error %v", result, execution, err)
+				}
+				if test.status == http.StatusTooManyRequests && (status.StatusCode != test.status || status.RetryAfter != 120*time.Second || status.RateLimit.Remaining != 4990) {
+					t.Fatalf("secondary response evidence = %#v", status)
+				}
+				return
+			}
+			var refusal *workspace.LandRefusal
+			if test.createErr != nil && !errors.As(test.createErr, &refusal) {
+				if !errors.Is(err, test.createErr) {
+					t.Fatalf("run error = %v", err)
+				}
+			} else if err != nil || result.Output != RunOutputNativeLandingRefused || result.NativeLanding == nil || result.NativeLanding.Landed {
+				t.Fatalf("run result = %#v, error = %v", result, err)
+			}
+		})
+	}
+}
+
 func TestLandNativeChange(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("c", 40)
@@ -75,6 +174,7 @@ func TestLandNativeChange(t *testing.T) {
 		wantRefusal  string
 		wantGitHub   bool
 		quota        bool
+		prepared     *NativeLandingTarget
 	}{
 		{name: "lands and records", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1},
@@ -95,6 +195,8 @@ func TestLandNativeChange(t *testing.T) {
 			wantErr: "resolve landing target"},
 		{name: "an unreviewed change from the hub is a refusal", stub: landingStub{target: target, targetErr: ErrLandingNotReviewed},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalNothing},
+		{name: "a replaced version cannot land the prepared workspace", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: "new_version", HeadSHA: head}}, prepared: &target,
+			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalHeadMoved},
 		{name: "a git failure fails the run", stub: landingStub{target: target}, backend: landingBackend{err: errors.New("git fetch origin: network down")},
 			wantErr: "network down"},
 		{name: "an unrecorded landing fails the run after retrying the report", stub: landingStub{target: target, recordErr: errors.New("hub unavailable")}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
@@ -111,7 +213,7 @@ func TestLandNativeChange(t *testing.T) {
 				headers.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
 				return &http.Response{StatusCode: 403, Header: headers, Body: io.NopCloser(strings.NewReader(`{"message":"API rate limit exceeded"}`))}, nil
 			})}
-			result, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, workspace.Info{Path: t.TempDir(), Branch: "detent/land"}, workspace.Issue{Identifier: "DD-1"}, policy)
+			result, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, workspace.Info{Path: t.TempDir(), Branch: "detent/land"}, workspace.Issue{Identifier: "DD-1"}, policy, test.prepared)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 					t.Fatalf("error = %v, want %q", err, test.wantErr)
@@ -180,7 +282,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 	stub := landingStub{target: target, recordErr: errors.New("hub unavailable")}
 	backend := landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "squash"}}
 	r := &Runner{}
-	_, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"}, workerGitHubPolicy{Token: "landing-test-token"})
+	_, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"}, workerGitHubPolicy{Token: "landing-test-token"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "record landing") {
 		t.Fatalf("error = %v, want the report failure", err)
 	}
@@ -196,7 +298,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 	}
 	// The next run reports it and forgets it.
 	stub.recordErr = nil
-	if _, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"}, workerGitHubPolicy{Token: "landing-test-token"}); err != nil {
+	if _, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"}, workerGitHubPolicy{Token: "landing-test-token"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git", "detent-landing.json")); !errors.Is(err, os.ErrNotExist) {
