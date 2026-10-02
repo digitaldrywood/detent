@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +15,9 @@ func (s *sqliteStore) populateDailyShippedCohort(ctx context.Context, day *Daily
 	day.ShippedByProject = map[string]int64{}
 	var receipts []efficiency.Receipt
 	for _, outcome := range outcomes {
+		if window.ProjectIDs != nil && !slices.Contains(window.ProjectIDs, outcome.ProjectID) {
+			continue
+		}
 		if outcome.CompletedAt.Before(window.From) || !outcome.CompletedAt.Before(window.To) {
 			continue
 		}

@@ -381,9 +381,11 @@ func (s *Server) apiTimeSeries(c echo.Context) error {
 		return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, "", demoBaseTime, window, bucket))
 	}
 
-	snapshot := s.latestSnapshot(c.Request().Context())
-	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
-	return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, "", generatedAt(snapshot, apiNow()), window, bucket))
+	series, _, _, err := s.readTimeSeries(c.Request().Context(), "", window, bucket, int(^uint(0)>>1), 0)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Time series unavailable"))
+	}
+	return c.JSON(http.StatusOK, series)
 }
 
 func (s *Server) apiProjectTimeSeries(c echo.Context, projectID string) error {
@@ -401,13 +403,14 @@ func (s *Server) apiProjectTimeSeries(c echo.Context, projectID string) error {
 		return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, projectID, demoBaseTime, window, bucket))
 	}
 
-	snapshot := s.latestSnapshot(c.Request().Context())
-	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
-	project, ok := s.dashboardProject(projectID, projects, snapshot)
-	if !ok {
+	series, ids, _, err := s.readTimeSeries(c.Request().Context(), projectID, window, bucket, int(^uint(0)>>1), 0)
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Time series unavailable"))
+	}
+	if len(ids) == 0 {
 		return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 	}
-	return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, project.ID, generatedAt(snapshot, apiNow()), window, bucket))
+	return c.JSON(http.StatusOK, series)
 }
 
 func (s *Server) apiIssue(c echo.Context) error {

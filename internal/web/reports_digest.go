@@ -21,6 +21,10 @@ func (s *Server) dailyDigestData(ctx context.Context, snapshot telemetry.Snapsho
 		location = time.UTC
 	}
 	windows := dailyDigestWindows(now, location, dailyDigestVisibleDays+dailyDigestBaselineDays)
+	return s.dailyDigestDataForWindows(ctx, snapshot, projects, location, windows)
+}
+
+func (s *Server) dailyDigestDataForWindows(ctx context.Context, snapshot telemetry.Snapshot, projects []templates.ProjectSmallMultiple, location *time.Location, windows []store.DailyDigestWindow) (templates.DailyDigestData, error) {
 	runtimeDays, err := s.store.DailyDigest(ctx, windows)
 	if err != nil {
 		return templates.DailyDigestData{}, err

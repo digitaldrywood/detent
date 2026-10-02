@@ -42,7 +42,7 @@ type fleetRequest struct {
 }
 
 func dashboardFleetTool(name string) bool {
-	return slices.Contains([]string{operatortool.InstanceHealth, operatortool.AIDebugPrompt, operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary, operatortool.UpdateApply, operatortool.ProgressCredit, operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost}, name)
+	return slices.Contains([]string{operatortool.InstanceHealth, operatortool.AIDebugPrompt, operatortool.Dashboard, operatortool.HealthDashboard, operatortool.DiagnosticsDashboard, operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports, operatortool.OperationsReport, operatortool.RunnerFleet, operatortool.Refresh, operatortool.CapacityClear, operatortool.TrackerAvailabilityClear, operatortool.ForgeAvailabilityClear, operatortool.FailureBreakerCanary, operatortool.UpdateApply, operatortool.ProgressCredit, operatortool.AcknowledgeWarnings, operatortool.RecoverAttempt, operatortool.UpdateFleetRunner, operatortool.UpdateFleetHost}, name)
 }
 
 func dashboardFleetRequirement(name, projectID string) operatortool.Requirement {
@@ -80,7 +80,7 @@ func (s *Server) fleetToolAvailable(name string) bool {
 		return s.store != nil && s.issueExplainer != nil
 	case operatortool.AcknowledgeWarnings:
 		return s.stalenessWarnings != nil
-	case operatortool.OperationsReport:
+	case operatortool.OperationsReport, operatortool.Reports:
 		return s.store != nil
 	default:
 		return dashboardFleetTool(name)
@@ -105,6 +105,9 @@ func decodeFleetRequest(name string, raw json.RawMessage) (fleetRequest, error) 
 }
 
 func (s *Server) executeFleetRead(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	if call.Name == operatortool.AnalyticsDashboard || call.Name == operatortool.TimeSeries || call.Name == operatortool.Reports {
+		return s.executeAnalyticsRead(ctx, call)
+	}
 	r, err := decodeFleetRequest(call.Name, call.Arguments)
 	if err != nil {
 		return operatortool.Result{}, err

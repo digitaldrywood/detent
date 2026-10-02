@@ -153,6 +153,8 @@ type hostedAPIKey struct {
 	Name          string              `json:"name"`
 	Scope         apikey.Scope        `json:"scope"`
 	Expiry        string              `json:"expires_at"`
+	CreatedAt     string              `json:"created_at"`
+	RevokedAt     *string             `json:"revoked_at,omitempty"`
 	Fingerprint   string              `json:"fingerprint"`
 	Revoked       bool                `json:"revoked"`
 	Projects      []string            `json:"project_ids"`
@@ -178,7 +180,7 @@ func (s *Service) hostedAPIKeysFor(ctx context.Context, credential apiCredential
 		return nil, err
 	}
 	keys := []hostedAPIKey{}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT id,name,operator_key_scope,expires_at,token_fingerprint,revoked_at,operator_project_access FROM api_tokens WHERE hosted_user_id=? AND hosted_organization_id=? ORDER BY created_at DESC,id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
+	rows, err := s.database.db.QueryContext(ctx, `SELECT id,name,operator_key_scope,expires_at,token_fingerprint,revoked_at,operator_project_access,created_at FROM api_tokens WHERE hosted_user_id=? AND hosted_organization_id=? ORDER BY created_at DESC,id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -186,10 +188,13 @@ func (s *Service) hostedAPIKeysFor(ctx context.Context, credential apiCredential
 	for rows.Next() {
 		var key hostedAPIKey
 		var revoked sql.NullString
-		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &key.Expiry, &key.Fingerprint, &revoked, &key.ProjectAccess); err != nil {
+		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &key.Expiry, &key.Fingerprint, &revoked, &key.ProjectAccess, &key.CreatedAt); err != nil {
 			return nil, err
 		}
 		key.Revoked = revoked.Valid
+		if revoked.Valid {
+			key.RevokedAt = &revoked.String
+		}
 		keys = append(keys, key)
 	}
 	err = rows.Err()

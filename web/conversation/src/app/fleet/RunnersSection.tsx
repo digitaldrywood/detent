@@ -299,7 +299,7 @@ export function RunnersSectionView({
       {enrollments.length === 0 ? null : (
         <SettingsSection
           id="settings-enrollments"
-          title="Pending enrollments"
+          title="Waiting to connect"
           icon={<ServerIcon className="size-3.5" />}
           headerAction={
             <span className="text-xs text-muted-foreground">Created in this session</span>
@@ -369,6 +369,8 @@ export function RunnersSettings(): React.ReactElement {
         <EnrollRunnerDialog
           open={open}
           onOpenChange={setOpen}
+          fleet={fleet}
+          onConnected={(entry) => setEnrollments((current) => current.filter((old) => old.id !== entry.id))}
           onEnrolled={(entry) => {
             setEnrollments((current) => [entry, ...current.filter((old) => old.id !== entry.id)]);
             // A redeemed enrollment shows up as a runner, not as an

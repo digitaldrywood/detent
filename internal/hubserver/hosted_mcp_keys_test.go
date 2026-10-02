@@ -865,6 +865,10 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 							if len(metadata.Projects) != wantProjects || metadata.Scope != apikey.ScopeRead || metadata.ProjectAccess != test.access {
 								t.Fatal("key metadata or grants missing")
 							}
+							createdAt, err := time.Parse(time.RFC3339Nano, metadata.CreatedAt)
+							if err != nil || !createdAt.Equal(key.CreatedAt) || metadata.RevokedAt != nil {
+								t.Fatal("active key timestamps missing or revoked")
+							}
 						}
 					}
 					if !found {
@@ -875,6 +879,25 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 						requireNativeStatus(t, request(&viewer, http.MethodDelete, endpoint+"/"+key.ID, "", true, ""), http.StatusNotFound)
 					}
 					requireNativeStatus(t, request(test.user, http.MethodDelete, endpoint+"/"+key.ID, "", true, ""), http.StatusNoContent)
+					listed = request(test.user, http.MethodGet, endpoint, "", false, "")
+					requireNativeStatus(t, listed, http.StatusOK)
+					decodeHubResponse(t, listed, &result)
+					found = false
+					for _, metadata := range result.Keys {
+						if metadata.ID != key.ID {
+							continue
+						}
+						found = true
+						if !metadata.Revoked || metadata.RevokedAt == nil {
+							t.Fatal("revoked key timestamp missing")
+						}
+						if _, err := time.Parse(time.RFC3339Nano, *metadata.RevokedAt); err != nil {
+							t.Fatal("invalid revoked key timestamp")
+						}
+					}
+					if !found {
+						t.Fatal("revoked key missing from history")
+					}
 					if _, _, err := f.service.authenticateAPIToken(t.Context(), key.Token, "", ""); err == nil {
 						t.Fatal("revoked key authenticated")
 					}

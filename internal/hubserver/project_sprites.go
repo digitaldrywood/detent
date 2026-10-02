@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var errSpritesValidation = errors.New("sprites rejected the token or could not validate its organization")
@@ -125,9 +126,11 @@ func (s *Service) checkProjectSprites(ctx context.Context, scope nativeScope) (s
 // Hub treats its Sprite as paused. Runners heartbeat every second while awake.
 const spriteRunnerIdle = 15 * time.Second
 
-// wakeSpriteRunnersAfter wakes the project's paused Sprite runners when a
-// mutation leaves a work item in a dispatchable state. It never delays or fails
-// the mutation that triggered it.
+type spriteWakeKey struct {
+	organization tracker.OrganizationID
+	project      tracker.ProjectID
+}
+
 func (s *Service) wakeSpriteRunnersAfter(scope nativeScope, result json.RawMessage) {
 	if s.config.SecretKeys == nil {
 		return
@@ -138,75 +141,57 @@ func (s *Service) wakeSpriteRunnersAfter(scope nativeScope, result json.RawMessa
 	if json.Unmarshal(result, &issue) != nil || issue.State == "" {
 		return
 	}
+	dispatchable, err := s.spriteWakeDispatchable(s.workerContext, scope, issue.State)
+	if err != nil || !dispatchable {
+		return
+	}
+	key := spriteWakeKey{organization: scope.organization, project: scope.project}
+	s.spriteWakeMu.Lock()
+	defer s.spriteWakeMu.Unlock()
+	if s.workerContext.Err() != nil || s.spriteWakes[key] != nil {
+		return
+	}
+	done := make(chan struct{})
+	s.spriteWakes[key] = done
+	s.spriteWakeWork.Add(1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer s.spriteWakeWork.Done()
+		defer func() {
+			s.spriteWakeMu.Lock()
+			delete(s.spriteWakes, key)
+			close(done)
+			s.spriteWakeMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(s.workerContext, time.Minute)
 		defer cancel()
 		_, _ = s.wakeSpriteRunners(ctx, scope, issue.State)
 	}()
 }
 
-// wakeSpriteRunners starts the detent-runner service on each paused Sprite
-// that runs a runner granted this project. A Sprite's hostname is its name, so
-// the runner's enrolled hostname identifies the Sprite. Starting the service
-// wakes a cold Sprite; the 30-second log stream keeps it active until the
-// runner claims the work and holds its own Sprite task.
-func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, state string) (int, error) {
+func (s *Service) stopSpriteRunners() {
+	s.spriteWakeMu.Lock()
+	s.workerCancel()
+	s.spriteWakeMu.Unlock()
+	s.spriteWakeWork.Wait()
+}
+
+func (s *Service) spriteWakeDispatchable(ctx context.Context, scope nativeScope, state string) (bool, error) {
 	project, err := readNativeProject(ctx, s.database.db, scope)
 	if err != nil {
-		return 0, err
+		return false, err
 	}
-	dispatchable := false
 	for _, candidate := range project.States {
 		if candidate.Name == state && candidate.Dispatchable && !candidate.Terminal {
-			dispatchable = true
+			return true, nil
 		}
 	}
-	if !dispatchable {
+	return false, nil
+}
+
+func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, state string) (int, error) {
+	if s.config.SecretKeys == nil {
 		return 0, nil
 	}
-	cutoff := formatHubTime(s.config.now().Add(-spriteRunnerIdle))
-	rows, err := s.database.db.QueryContext(ctx, `SELECT DISTINCT m.hostname FROM runner_identities r
-JOIN machines m ON m.id = r.machine_id
-JOIN api_tokens t ON t.id = r.token_id AND t.revoked_at IS NULL
-JOIN token_grants g ON g.token_id = r.token_id AND g.project_id = ?
-WHERE r.organization_id = ? AND r.state = 'active' AND r.last_heartbeat_at < ?
-ORDER BY m.hostname`, scope.project, scope.organization, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			_ = rows.Close()
-			return 0, err
-		}
-		if validSpritesSlug(name) {
-			names = append(names, name)
-		}
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return 0, err
-	}
-	if len(names) == 0 {
-		return 0, nil
-	}
-	var envelope hubsecrets.Envelope
-	err = s.database.db.QueryRowContext(ctx, `SELECT ciphertext, nonce, wrapped_data_key, master_key_version FROM project_secrets WHERE organization_id=? AND project_id=? AND kind=?`, scope.organization, scope.project, flySpritesToken).Scan(&envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	if err := s.auditSecretUse(ctx, scope, envelope.Version); err != nil {
-		return 0, err
-	}
-	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(scope.organization), string(scope.project), flySpritesToken))
-	if err != nil {
-		return 0, err
-	}
-	defer clear(token)
 	client := http.Client{Timeout: 45 * time.Second}
 	if s.config.SpritesHTTPClient != nil {
 		client = *s.config.SpritesHTTPClient
@@ -214,22 +199,62 @@ ORDER BY m.hostname`, scope.project, scope.organization, cutoff)
 	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	woken := 0
-	for _, name := range names {
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.sprites.dev/v1/sprites/"+name+"/services/detent-runner/start?duration=30s", nil)
+	last := ""
+	for {
+		dispatchable, err := s.spriteWakeDispatchable(ctx, scope, state)
+		if err != nil || !dispatchable {
+			return woken, err
+		}
+		var name string
+		var envelope hubsecrets.Envelope
+		cutoff := formatHubTime(s.config.now().Add(-spriteRunnerIdle))
+		err = s.database.db.QueryRowContext(ctx, `SELECT m.hostname, ps.ciphertext, ps.nonce, ps.wrapped_data_key, ps.master_key_version FROM runner_identities r
+JOIN machines m ON m.id = r.machine_id
+JOIN api_tokens t ON t.id = r.token_id AND t.revoked_at IS NULL
+JOIN token_grants g ON g.token_id = r.token_id AND g.organization_id = r.organization_id AND g.project_id = ?
+JOIN project_secrets ps ON ps.organization_id = r.organization_id AND ps.project_id = g.project_id AND ps.kind = ?
+WHERE r.organization_id = ? AND r.state = 'active' AND r.last_heartbeat_at < ? AND m.hostname > ?
+ORDER BY m.hostname LIMIT 1`, scope.project, flySpritesToken, scope.organization, cutoff, last).Scan(&name, &envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
+		if errors.Is(err, sql.ErrNoRows) {
+			return woken, nil
+		}
 		if err != nil {
+			return woken, err
+		}
+		last = name
+		if !validSpritesSlug(name) {
 			continue
 		}
-		request.Header.Set("Authorization", "Bearer "+string(token))
-		response, err := client.Do(request)
-		request.Header.Del("Authorization")
+		started, err := s.wakeSpriteRunner(ctx, scope, &client, name, envelope)
 		if err != nil {
-			continue
+			return woken, err
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
-		_ = response.Body.Close()
-		if response.StatusCode >= 200 && response.StatusCode <= 299 {
+		if started {
 			woken++
 		}
 	}
-	return woken, nil
+}
+
+func (s *Service) wakeSpriteRunner(ctx context.Context, scope nativeScope, client *http.Client, name string, envelope hubsecrets.Envelope) (bool, error) {
+	if err := s.auditSecretUse(ctx, scope, envelope.Version); err != nil {
+		return false, err
+	}
+	token, err := s.config.SecretKeys.Open(envelope, secretAAD(string(scope.organization), string(scope.project), flySpritesToken))
+	if err != nil {
+		return false, err
+	}
+	defer clear(token)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.sprites.dev/v1/sprites/"+name+"/services/detent-runner/start?duration=30s", nil)
+	if err != nil {
+		return false, err
+	}
+	request.Header.Set("Authorization", "Bearer "+string(token))
+	response, err := client.Do(request)
+	request.Header.Del("Authorization")
+	if err != nil {
+		return false, nil
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+	_ = response.Body.Close()
+	return response.StatusCode >= 200 && response.StatusCode <= 299, nil
 }

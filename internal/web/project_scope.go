@@ -18,6 +18,8 @@ const (
 
 type timeSeriesAPIResponse struct {
 	GeneratedAt     time.Time           `json:"generated_at"`
+	LastKnown       bool                `json:"snapshot_last_known"`
+	LastKnownUntil  time.Time           `json:"snapshot_last_known_until,omitzero"`
 	Scope           string              `json:"scope"`
 	ProjectID       string              `json:"project_id,omitempty"`
 	Labels          []string            `json:"labels"`

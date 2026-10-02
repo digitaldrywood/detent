@@ -5,6 +5,7 @@ import { cn } from "../../../lib/utils.ts";
 import { ProjectGlyph } from "../../components/ProjectGlyph.tsx";
 import { ageLabel, elapsedLabel, issueNumber, projectHue } from "../lib/format.ts";
 import { isBlocked, isLive, type WorkItemView } from "../lib/model.ts";
+import { useNow } from "../lib/useWork.ts";
 import { LaneMenu } from "./LaneMenu.tsx";
 
 export const PILL_TONE = {
@@ -75,7 +76,7 @@ export interface IssueCardProps {
   readonly terminal?: boolean;
   /** The project dot renders in the all-projects scope only (A.1, A.6). */
   readonly showProject: boolean;
-  readonly now: number;
+  readonly now?: number;
   readonly onOpen: (item: WorkItemView) => void;
   /** Lanes this card may move to, from the workflow's own transition list. */
   readonly moves: readonly string[];
@@ -85,6 +86,49 @@ export interface IssueCardProps {
   readonly dragging?: boolean;
   readonly onDragStart?: (item: WorkItemView) => void;
   readonly onDragEnd?: () => void;
+}
+
+export function AgeText({ at, now }: { at: string | null | undefined; now?: number }): React.ReactElement {
+  const current = useNow();
+  return <>{ageLabel(at, now ?? current)}</>;
+}
+
+export function ElapsedText({ at, now }: { at: string | null | undefined; now?: number }): React.ReactElement {
+  const current = useNow();
+  return <>{elapsedLabel(at, now ?? current)}</>;
+}
+
+function sourceDescription(item: WorkItemView, now: number): string | null {
+  return item.sourceProvider === null ? null : [
+    `Imported from ${item.sourceProvider}${item.source === null ? "" : ` · ${item.source.externalId}`}`,
+    ...[
+      ["Original source created", item.source?.createdAt],
+      ["Original source updated", item.source?.updatedAt],
+      ["Source observed", item.source?.observedAt],
+    ].map(([label, at]) => {
+      const sourceAge = ageLabel(at, now);
+      return `${label}: ${sourceAge === "" ? "unavailable" : `${sourceAge} ago (${at})`}`;
+    }),
+  ].join("\n");
+}
+
+function SourceBadge({ item, terminal, now }: { item: WorkItemView; terminal: boolean; now?: number }): React.ReactElement {
+  const current = useNow();
+  return <span className="shrink-0 whitespace-nowrap text-[11px]" title={sourceDescription(item, now ?? current) ?? undefined}>
+    {terminal ? "Source history" : "Imported"}
+  </span>;
+}
+
+function IssueAge({ item, now }: { item: WorkItemView; now?: number }): React.ReactElement {
+  const current = useNow();
+  const clock = now ?? current;
+  const age = ageLabel(item.updatedAt, clock);
+  const sourceContext = sourceDescription(item, clock);
+  const updateContext = `${item.sourceProvider === null ? "Updated" : "Native update"}: ${age === "" ? "unavailable" : `${age} ago (${item.updatedAt})`}`;
+  return <span className="ml-auto shrink-0 tabular-nums" data-testid="issue-age"
+    title={[updateContext, sourceContext].filter((part) => part !== null).join("\n")}>
+    {age === "" ? "" : `${item.sourceProvider === null ? "Updated" : "Native update"} ${age}`}
+  </span>;
 }
 
 export function IssueCard({
@@ -103,19 +147,6 @@ export function IssueCard({
   const live = isLive(item, terminal);
   const status = statusPill(item, terminal);
   const attempt = item.attempt;
-  const age = ageLabel(item.updatedAt, now);
-  const sourceContext = item.sourceProvider === null ? null : [
-    `Imported from ${item.sourceProvider}${item.source === null ? "" : ` · ${item.source.externalId}`}`,
-    ...[
-      ["Original source created", item.source?.createdAt],
-      ["Original source updated", item.source?.updatedAt],
-      ["Source observed", item.source?.observedAt],
-    ].map(([label, at]) => {
-      const sourceAge = ageLabel(at, now);
-      return `${label}: ${sourceAge === "" ? "unavailable" : `${sourceAge} ago (${at})`}`;
-    }),
-  ].join("\n");
-  const updateContext = `${item.sourceProvider === null ? "Updated" : "Native update"}: ${age === "" ? "unavailable" : `${age} ago (${item.updatedAt})`}`;
 
   return (
     <article
@@ -164,11 +195,7 @@ export function IssueCard({
             <span className="sr-only">{item.projectName}</span>
           </span>
         )}
-        {sourceContext !== null ? (
-          <span className="shrink-0 whitespace-nowrap text-[11px]" title={sourceContext}>
-            {terminal ? "Source history" : "Imported"}
-          </span>
-        ) : null}
+        {item.sourceProvider === null ? null : <SourceBadge item={item} terminal={terminal} now={now} />}
         <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground/70 tabular-nums">
           {issueNumber(item.identifier, item.number)}
         </span>
@@ -199,7 +226,7 @@ export function IssueCard({
             {[attempt.backend, attempt.runner].filter((part) => part !== null).join(" · ")}
           </span>
           <span className="ml-auto shrink-0 text-muted-foreground tabular-nums">
-            {elapsedLabel(attempt.startedAt, now)}
+            <ElapsedText at={attempt.startedAt} now={now} />
           </span>
         </div>
       ) : null}
@@ -227,13 +254,7 @@ export function IssueCard({
         {attempt === null || attempt.attemptNumber === null || attempt.attemptNumber < 2 ? null : (
           <span>attempt {attempt.attemptNumber}</span>
         )}
-        <span
-          className="ml-auto shrink-0 tabular-nums"
-          data-testid="issue-age"
-          title={[updateContext, sourceContext].filter((part) => part !== null).join("\n")}
-        >
-          {age === "" ? "" : `${item.sourceProvider === null ? "Updated" : "Native update"} ${age}`}
-        </span>
+        <IssueAge item={item} now={now} />
         {item.priority === null ? null : (
           <Pill tone={priorityTone(item.priority, terminal)} aria-label={`Priority: ${item.priority}`}>
             {item.priority}

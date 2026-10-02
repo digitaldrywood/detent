@@ -424,8 +424,19 @@ test("the fleet page redirects into settings and renders the hosts and providers
   await expectNoSeriousAxeViolations(page, "/settings/runners as viewer");
 });
 
-test("Providers & runners enrolls a host and shows the one-time token once", async ({ page }) => {
+test("Providers & runners enrolls a host through setup, a masked command, and live check-in", async ({ page }) => {
   const errors = watchConsole(page);
+  let connected = false;
+  const fleet = require("../../web/conversation/src/contracts/fixtures/account-fleet.json");
+  const runner = { ...fleet.runners[0], id: "rnr_enrolled", display_name: "Build host", hostname: "build-host.local" };
+  await page.route("**/api/v2/organizations/*/fleet", (route) => route.fulfill({
+    json: { ...fleet, runners: connected ? [runner] : [] },
+  }));
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+      writeText: async (value) => { window.copiedEnrollmentCommand = value; },
+    } });
+  });
 
   // The hub gates every runner route on the actor holding the runner grant on
   // *every* project in the organization (`hostedAllRunnerGrants`), and the
@@ -467,6 +478,7 @@ test("Providers & runners enrolls a host and shows the one-time token once", asy
 
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "Enroll a runner" })).toBeVisible();
+  await expect(dialog.locator('[aria-current="step"]')).toHaveText("1. Set it up");
   // Nothing to copy from the host first: the dialog asks for a name, a
   // capacity and projects, never for runner or machine IDs.
   await expect(dialog.getByLabel("Runner id")).toHaveCount(0);
@@ -479,16 +491,55 @@ test("Providers & runners enrolls a host and shows the one-time token once", asy
   // One command carries everything the host needs.
   const copy = dialog.getByRole("button", { name: "Copy the register command" });
   await expect(copy).toBeVisible({ timeout: 15_000 });
+  await expect(dialog.locator('[aria-current="step"]')).toHaveText("2. Run the command");
+  await expect(dialog.locator("code")).toContainText("detent_••••••••");
+  await expect(dialog.getByText(/Waiting for Build host to check in/)).toBeVisible();
+  await dialog.getByRole("button", { name: "Show token" }).click();
   await expect(
     dialog.getByText(/^detent hub runner register --url \S+ (--organization \S+ )?--token \S+ --name 'Build host' --capacity 2 --service$/),
   ).toBeVisible();
   await expectNoSeriousAxeViolations(page, "the enrollment dialog with its command");
 
-  // Closing it lists the enrollment as pending, with the same command.
+  const command = await dialog.locator("code").textContent();
+  const token = command.match(/--token (\S+)/)[1];
+  await dialog.getByRole("button", { name: "Hide token" }).click();
+  expect(await dialog.innerHTML()).not.toContain(token);
+  await copy.click();
+  expect(await page.evaluate(() => window.copiedEnrollmentCommand)).toBe(command);
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("heading", { name: "Pending enrollments" })).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Waiting to connect" })).toBeVisible();
   await expect(page.getByText("Build host", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Copy the register command for Build host" })).toBeVisible();
+  expect(await page.locator("body").innerHTML()).not.toContain(token);
+  expect(await page.locator("body").innerHTML()).not.toContain("detent hub runner register");
+  const description = page.locator("#settings-enrollments p");
+  await expect(description).toHaveText(/^No check-in yet · expires /);
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const layout = await description.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const row = element.closest('[data-slot="settings-row"]').getBoundingClientRect();
+      return { x: box.x, width: box.width, height: box.height, lineHeight: parseFloat(getComputedStyle(element).lineHeight), rowWidth: row.width };
+    });
+    expect(layout.height).toBeLessThanOrEqual(layout.lineHeight * 2 + 1);
+    expect(layout.width).toBeGreaterThan(Math.min(400, layout.rowWidth - 40));
+    expect(layout.x + layout.width).toBeLessThanOrEqual(width);
+  }
+  await enroll.click();
+  await dialog.getByLabel("Name").fill("Build host");
+  await dialog.getByRole("button", { name: "Create command" }).click();
+  await expect(dialog.locator('[aria-current="step"]')).toHaveText("2. Run the command");
+  connected = true;
+  await expect(dialog.locator('[aria-current="step"]')).toHaveText("3. Connected");
+  await expect(dialog.getByText("Build host is connected")).toBeVisible();
+  await expect(dialog.getByText("build-host.local")).toBeVisible();
+  await expect(dialog.getByText("darwin / arm64")).toBeVisible();
+  await expect(dialog.getByText("2", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("codex, claude")).toBeVisible();
+  await expect(dialog.locator("code")).toHaveCount(0);
+  await expectNoSeriousAxeViolations(page, "the connected enrollment dialog");
+  await dialog.getByRole("button", { name: "Done" }).click();
+  await expect(dialog).toHaveCount(0);
   expect(errors, "console errors while enrolling a runner").toEqual([]);
 });
 

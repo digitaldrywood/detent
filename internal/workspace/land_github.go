@@ -356,7 +356,8 @@ func githubLandingAPI(ctx context.Context, client GitHubRESTClient, result any, 
 	}
 	err = github.ClassifyPullRequestMergeError(method, path, err)
 	if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) {
-		return forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request " + path}, forgeavailability.ClassServer, err)
+		return fmt.Errorf("GitHub refused %s %s: %w: %w", method, path,
+			refuse(LandRefusalBaseMoved, "GitHub refused the reviewed head merge because the base branch advanced"), err)
 	}
 	var status *github.StatusError
 	if errors.As(err, &status) {

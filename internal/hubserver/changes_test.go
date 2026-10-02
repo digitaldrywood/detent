@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -406,6 +407,31 @@ func TestChangeLanding(t *testing.T) {
 	decodeHubResponse(t, response, &landed)
 	if landed.Landed == nil || landed.Landed.VersionID != first.ID || landed.Landed.MergeSHA != land.MergeSHA || landed.Landed.BaseRef != "main" || landed.Landed.Method != "squash" || landed.Landed.HeadSHA != first.HeadSHA || !landed.Landed.LandedAt.Equal(now) {
 		t.Fatalf("landed change = %#v", landed.Landed)
+	}
+
+	for _, test := range []struct {
+		name     string
+		scope    nativeScope
+		from, to time.Time
+		want     int
+	}{
+		{"landed version", nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, now.Add(-time.Hour), now.Add(time.Hour), 1},
+		{"exclusive end", nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, now.Add(-time.Hour), now, 0},
+		{"outside window", nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, now.Add(time.Second), now.Add(time.Hour), 0},
+		{"foreign project", nativeScope{organization: f.project.OrganizationID, project: "prj_foreign"}, now.Add(-time.Hour), now.Add(time.Hour), 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := readNativeAnalytics(t.Context(), f.service.database.db, test.scope, operatortool.AnalyticsRequest{Limit: 1}, operatortool.AnalyticsWindow{From: test.from, To: test.to, Bucket: time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.CostPerOutcome.Shipped != test.want || len(got.Landings.Items) != test.want {
+				t.Fatalf("shipping evidence %#v", got)
+			}
+			if test.want == 1 && (got.Landings.Items[0].Landing.MergeSHA != land.MergeSHA || got.Landings.Items[0].Landing.VersionID != first.ID || got.Digest[1].Shipped != 1) {
+				t.Fatalf("lost exact-version provenance %#v", got)
+			}
+		})
 	}
 	replay := landing("land", first.ID, land)
 	requireNativeStatus(t, replay, http.StatusOK)

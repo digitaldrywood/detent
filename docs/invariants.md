@@ -17,6 +17,35 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Sprite runner wake work (native #212) resolves current project-selected
+dispatchable states and reads one currently granted, active, stale runner
+hostname at a time. Each provider request uses the current project secret and
+records its own secret-use audit; duplicate hostnames do not grant authority.
+Grant removal, token revocation, heartbeat updates, workflow changes and secret
+replacement between requests take effect on the next candidate read.
+`TestWakeSpriteRunnersFreshAuthority` and
+`TestWakeSpriteRunnersProjectIsolation` preserve these boundaries.
+
+Analytics parity (native #33, imported #3665) uses the same application adapters
+for stdio, HTTP MCP and the daemon bridge. Each direct read resolves current
+read authority and project grants before selecting projects or aggregating
+usage, digest, efficiency and outcome data. Restricted credentials receive no
+unattributed activity or organization totals. Scoped digest queries retain the
+difference between unrestricted and explicitly empty project sets.
+Native throughput counts exact-version Change landing receipts with native
+provenance and merge SHA inside the requested half-open window; coding completion,
+imported Done items and board counts do not count as shipping. Recorded phase
+and skip aggregates retain source and observation times, population limits and
+partial evidence. Queue time, private instruction causality, missing source data
+and sub-hour usage attribution remain explicitly unavailable. These reads add no
+lane writer, mechanism or persistent summary owner; native #91 retains summary
+provenance. `TestMCPAnalyticsReads`, `TestMCPAnalyticsNativeProject`,
+`TestHostedAnalyticsReads`, `TestNativeAnalyticsRuntimePopulation`,
+`TestChangeLanding`, `TestDailyDigestReconcilesRuntimeTables`,
+`TestDailyDigestOutcomeProvenance`, `TestAnalyticsUnavailableServices` and
+`TestNativeAnalyticsUnavailableServices` cover authorization, transport parity,
+bounded windows/populations/results and missing services.
+
 Cloud issue attachments (native #175) retain the existing signed entry and
 tenant membership/project authorities. Only entry holds Spaces credentials or
 constructs organization-prefixed object keys; private startup probing and
@@ -280,6 +309,9 @@ Background refresh keeps existing controls available; initial and explicit
 continuation reads retain their loading state. Both intents compose through the
 same bounded request owner, while scope changes and authorization refusals
 cancel or clear obsolete data.
+The existing shared UI clock updates age and elapsed labels without rerendering
+the board controls, unchanged card bodies, or list rows. Its timer stops when
+no subscribers remain; source updates retain their existing render ownership.
 Sorting and filter-choice discovery remain local to loaded items; terminal counts
 describe inventory, not shipment.
 `TestNativeWorkPageOperationalScope` and the conversation Work pagination fixture
@@ -400,7 +432,11 @@ discovery once regardless of catalog size. Existing opaque cursors still validat
 their principal/catalog digest and bounded offset against current authority,
 then return all remaining tools without another cursor. The `2026-07-28` stateless
 protocol validates per-request metadata and mirrored HTTP headers; older handshakes retain their
-bound sessions. Discovery cursors and client metadata confer no authority.
+bound sessions. Modern `tools/list` and `server/discover` results carry
+`ttlMs: 0` and `cacheScope: "private"` through the shared result serializer
+(native #213), without retaining a catalog cache. Other modern results retain
+their complete discriminator without cache hints; older result shapes stay
+unchanged. Discovery cursors and client metadata confer no authority.
 Project-resource tool discovery preserves member write capabilities using the existing role predicate,
 while organization administration retains its separate role requirements.
 Discovery has no selected project; actual calls always recheck current project
@@ -1577,6 +1613,18 @@ external PR responses, exact identity and missing/non-ancestor commit refusals.
 
 ## INV-3 — Mechanism moratorium
 
+Sprite runner wake work (native #212) consolidates overlapping qualifying
+mutations into one active wake pass per organization/project. The existing
+postmutation owner retains one candidate and at most one sequential provider
+request per pass, releases the pass on every exit, and joins canceled work
+through Hub shutdown. Mutations never wait for provider availability. Later
+mutations resolve fresh authority rather than replaying retained candidates.
+This adds no queue, retry/reconciliation loop, lease, configuration or dispatch
+owner. `TestWakeSpriteRunnersAfterBurst` records fixture request counts, retained
+goroutines and mutation latency; `TestWakeSpriteRunnersCancellation` covers
+context cancellation and service shutdown. This is fixture evidence of the
+conditional source risk, not a measured production incident.
+
 Hosted fleet approval (native #168) removes volatile heartbeat health from the
 existing configuration approval fence and consolidates material classification
 around the recorded configuration mismatch. Actual capacity application retains
@@ -1791,6 +1839,14 @@ cleanliness alone never clears the merge refusal or establishes a landing.
 `TestLocalGitLandChangeViaGitHub`, `TestLandNativeChange` and
 `TestNativeLandingRunCompletion` cover these consolidated authorities under
 INV-1 and INV-3 without a new reason, poller, configuration or recovery loop.
+
+An exact typed atomic GitHub base-advance refusal (#221) belongs to the existing
+item-local `LandRefusalBaseMoved` continuation, not the forge outage owner. The
+original HTTP status and base-out-of-date cause remain inspectable; the same
+immutable reviewed head retries without a coding turn or five-minute provider
+wait. Real outages, quota, protection, malformed or unrelated 405 refusals retain
+their existing owners. `TestLocalGitLandChangeViaGitHub` and the existing native
+landing completion fixture enforce INV-1 and INV-3 without new mechanisms.
 
 Current Git base verification (#164) removes the equality pin to GitHub's
 projected PR base SHA. A stale base SHA alone cannot veto conflict evidence:

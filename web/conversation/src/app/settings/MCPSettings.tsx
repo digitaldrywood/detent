@@ -1,13 +1,29 @@
 import React from "react";
 import { CheckIcon, CopyIcon, PlugIcon } from "lucide-react";
 
-import type { AccountBootstrap, CreatedOperatorAPIKey } from "../../contracts/account.ts";
+import type { AccountBootstrap } from "../../contracts/account.ts";
 import { Button } from "../../components/ui/button.tsx";
+import { Input } from "../../components/ui/input.tsx";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard.ts";
 import { basePath } from "../../runtime/basePath.ts";
 import { useAccountBootstrap } from "../account/context.ts";
-import { APIKeysSettings } from "./APIKeysSettings.tsx";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
+import { ControlError } from "../account/controls.tsx";
+import {
+  Dialog,
+  DialogClose,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../../components/ui/dialog.tsx";
+import { APIKeysSettings, type APIKeyAccess } from "./APIKeysSettings.tsx";
+import {
+  SettingsPageContainer,
+  SettingsRow,
+  SettingsSection,
+} from "./settingsLayout.tsx";
 
 export function organizationMCPEndpoint(account: AccountBootstrap | null): string | null {
   if (account === null) return null;
@@ -56,6 +72,139 @@ function CopyExample({ label, value }: { readonly label: string; readonly value:
   );
 }
 
+function ConnectionValue({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}) {
+  const [failed, setFailed] = React.useState(false);
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: label,
+    onCopy: () => setFailed(false),
+    onError: () => setFailed(true),
+  });
+  return (
+    <SettingsRow
+      title={label}
+      description={
+        <Input
+          size="sm"
+          readOnly
+          value={value}
+          aria-label={`${label} value`}
+          className="font-mono"
+        />
+      }
+      status={
+        <span
+          role="status"
+          aria-label={`${label} copy status`}
+          className={failed ? undefined : "sr-only"}
+        >
+          {failed
+            ? "Could not copy. Select the text and copy it manually."
+            : isCopied
+              ? `${label} copied.`
+              : ""}
+        </span>
+      }
+      control={
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label={`Copy ${label}`}
+          onClick={() => copyToClipboard(value)}
+        >
+          {isCopied ? (
+            <CheckIcon aria-hidden="true" />
+          ) : (
+            <CopyIcon aria-hidden="true" />
+          )}
+        </Button>
+      }
+    />
+  );
+}
+
+function SetupPromptControl({
+  label,
+  value,
+  copyLabel = `Copy ${label}`,
+  preview = false,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly copyLabel?: string;
+  readonly preview?: boolean;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const { copyToClipboard, isCopied } = useCopyToClipboard({
+    target: label,
+    onCopy: () => setError(null),
+    onError: () =>
+      setError("Could not copy. Preview the prompt and copy it manually."),
+  });
+  return (
+    <>
+      {preview && (
+        <Button
+          size="sm"
+          variant="ghost"
+          aria-label={`Preview ${label}`}
+          onClick={() => setOpen(true)}
+        >
+          Preview
+        </Button>
+      )}
+      <Button
+        size={preview ? "sm" : "default"}
+        variant="outline"
+        aria-label={copyLabel}
+        onClick={() => copyToClipboard(value)}
+      >
+        {isCopied ? (
+          <CheckIcon aria-hidden="true" />
+        ) : (
+          <CopyIcon aria-hidden="true" />
+        )}
+        {isCopied ? "Copied" : preview ? "Copy" : copyLabel}
+      </Button>
+      <span role="status" className="sr-only">
+        {isCopied ? `${label} copied.` : ""}
+      </span>
+      <ControlError message={error} />
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogPopup className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{label}</DialogTitle>
+            <DialogDescription>
+              This prompt references your private DETENT_API_KEY environment
+              variable. It contains no key.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <pre
+              tabIndex={0}
+              className="font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
+            >
+              {value}
+            </pre>
+          </DialogPanel>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline">Close</Button>} />
+            <Button onClick={() => copyToClipboard(value)}>
+              {isCopied ? "Copied" : copyLabel}
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+    </>
+  );
+}
+
 const STDIO_CONFIG = JSON.stringify({
   mcpServers: {
     detent: {
@@ -77,7 +226,7 @@ const CURSOR_CONFIG = JSON.stringify({
 
 function keySetupPrompt(endpoint: string, access: string): string {
   const settings = endpoint.replace(/\/mcp$/, "/settings/mcp");
-  return `Use the shared expiring API key from Detent Settings → API & MCP (${settings}). Create or select a key on that same page with Read scope. Default project access is All projects, including future projects; choose Selected projects to restrict it. The same key works for direct HTTP API and MCP. Write/Admin keys still require my current role and project grants; expiry, revocation and membership removal apply to both.
+  return `Use the shared expiring API key from Detent Settings → API & MCP (${settings}). Use the permission level configured for your key on that same page. Start with Read for read-only work. Default project access is All projects, including future projects; choose Selected projects to restrict it. The same key works for direct HTTP API and MCP. Write/Admin keys still require my current role and project grants; expiry, revocation and membership removal apply to both.
 Project access: ${access}. Access always stays within this organization and my current project grants. Newly authorized projects work with an all-project key without replacing it or reconnecting MCP.
 Ask me to store the secret directly in your private secret store or private environment as DETENT_API_KEY. Never ask me to paste it into this conversation. Never expose it in URLs, screenshots, logs, command traces, diagnostics or committed files. All examples below reference a private environment variable, not an embedded secret.
 401: check key configuration, expiry and revocation. 403 or hidden 404: check current membership, role, key scope and project grants. Revoke the key on this page when finished; deleting client configuration alone does not revoke it.`;
@@ -119,28 +268,114 @@ export function MCPSettings(): React.ReactElement {
   const account = useAccountBootstrap();
   const endpoint = organizationMCPEndpoint(account);
   const [available, setAvailable] = React.useState(false);
-  const [createdKey, setCreatedKey] = React.useState<CreatedOperatorAPIKey | null>(null);
+  const [createdKey, setCreatedKey] = React.useState<APIKeyAccess | null>(null);
   React.useEffect(() => setCreatedKey(null), [account]);
-  const access = createdKey?.project_access === "selected"
-    ? `Selected projects: ${createdKey.project_ids.map((id) => account?.projects.find((project) => project.id === id)?.name ?? id).join(", ")}`
-    : createdKey ? "All projects, including future projects" : "As listed for your key: All projects, including future projects, or Selected projects";
-  const project = (createdKey?.project_access === "selected" ? createdKey.project_ids[0] : account?.projects[0]?.id) ?? "YOUR_GRANTED_PROJECT_ID";
+  function prompts(key: APIKeyAccess | null) {
+    const access =
+      key?.project_access === "selected"
+        ? `Selected projects: ${key.project_ids.map((id) => account?.projects.find((project) => project.id === id)?.name ?? id).join(", ")}`
+        : key
+          ? "All projects, including future projects"
+          : "As listed for your key: All projects, including future projects, or Selected projects";
+    const project =
+      (key?.project_access === "selected"
+        ? key.project_ids[0]
+        : account?.projects[0]?.id) ?? "YOUR_GRANTED_PROJECT_ID";
+    return {
+      direct: apiSetupPrompt(
+        endpoint!,
+        account!.organization.id,
+        project,
+        access,
+      ),
+      mcp: mcpSetupPrompt(endpoint!, account!.organization.id, project, access),
+    };
+  }
+  const setup = endpoint && account ? prompts(createdKey) : null;
   return (
     <SettingsPageContainer>
-      <SettingsSection id="settings-mcp" title="API & MCP" icon={<PlugIcon className="size-3.5" />}>
-        <SettingsRow title="Connect your agent" description="Use one expiring API key for direct HTTP API requests and MCP. Every call checks your current organization role, key scope and project permissions." />
-        <SettingsRow title="API base URL">
-          {endpoint && account ? <CopyExample label="API base URL" value={endpoint.replace(/\/mcp$/, `/api/v2/organizations/${encodeURIComponent(account.organization.id)}`)} /> : <p className="pb-3 text-sm text-muted-foreground">The organization HTTPS URL is unavailable. Ask your Cloud operator to confirm its public URL.</p>}
-        </SettingsRow>
-        <SettingsRow title="Organization MCP endpoint" description={account?.organization.name ?? "Loading organization…"}>
-          {endpoint && <CopyExample label="Organization MCP endpoint" value={endpoint} />}
-        </SettingsRow>
-        {endpoint && account && available && <SettingsRow title="Agent setup prompts" description="Copy instructions for your preferred connection. Both use the same key; prompts contain only private environment references.">
-          <CopyExample label="API setup prompt" value={apiSetupPrompt(endpoint, account.organization.id, project, access)} />
-          <CopyExample label="MCP setup prompt" value={mcpSetupPrompt(endpoint, account.organization.id, project, access)} />
-        </SettingsRow>}
-        <APIKeysSettings onAvailability={setAvailable} onKeyCreated={setCreatedKey} />
+      <SettingsSection
+        id="settings-mcp"
+        title="Connect your agent"
+        icon={<PlugIcon className="size-3.5" />}
+      >
+        <div className="px-3 py-3 text-[13px] leading-relaxed text-muted-foreground sm:px-4">
+          One organization connection, one shared key, two setup prompts. Every
+          call checks your current membership, project permissions, key
+          permissions, expiry and revocation.
+        </div>
+        {endpoint && account ? (
+          <>
+            <ConnectionValue label="MCP endpoint" value={endpoint} />
+            <ConnectionValue
+              label="API base URL"
+              value={endpoint.replace(
+                /\/mcp$/,
+                `/api/v2/organizations/${encodeURIComponent(account.organization.id)}`,
+              )}
+            />
+          </>
+        ) : (
+          <SettingsRow
+            title="Organization connection unavailable"
+            description="The organization HTTPS URL is unavailable. Ask your Cloud operator to confirm its public URL."
+          />
+        )}
+        {setup && available && (
+          <>
+            <SettingsRow
+              title="Direct API setup prompt"
+              description="Connect using HTTP requests and your private DETENT_API_KEY."
+              control={
+                <SetupPromptControl
+                  label="Direct API setup prompt"
+                  value={setup.direct}
+                  preview
+                />
+              }
+            />
+            <SettingsRow
+              title="MCP setup prompt"
+              description="Connect a supported MCP client using the same private key."
+              control={
+                <SetupPromptControl
+                  label="MCP setup prompt"
+                  value={setup.mcp}
+                  preview
+                />
+              }
+            />
+          </>
+        )}
       </SettingsSection>
+      <APIKeysSettings
+        onAvailability={setAvailable}
+        onKeyCreated={setCreatedKey}
+        setupActions={(key) => {
+          if (!endpoint || !account)
+            return (
+              <p className="text-xs text-muted-foreground">
+                Return to API & MCP settings when your organization connection
+                is available.
+              </p>
+            );
+          const setup = prompts(key);
+          return (
+            <div className="flex flex-wrap gap-2">
+              <SetupPromptControl
+                label="Direct API setup prompt"
+                copyLabel="Copy Direct API prompt"
+                value={setup.direct}
+              />
+              <SetupPromptControl
+                label="MCP setup prompt"
+                copyLabel="Copy MCP prompt"
+                value={setup.mcp}
+              />
+            </div>
+          );
+        }}
+      />
 
       <SettingsSection id="settings-mcp-permissions" title="Permissions and tools">
         <SettingsRow title="Access follows your current permissions" description="Viewers can read permitted projects. Writes require a role and project grant that allow the operation; administration requires owner or admin authority. Billing requires an owner without a support session. Support access keeps its existing restrictions." />
