@@ -60,11 +60,12 @@ type Authority struct {
 }
 
 type Connection struct {
-	DashboardURL string
-	ID           string
-	Client       string
-	Identity     Identity
-	Resolve      func(context.Context) (Authority, error)
+	RequireConfirmation bool
+	DashboardURL        string
+	ID                  string
+	Client              string
+	Identity            Identity
+	Resolve             func(context.Context) (Authority, error)
 }
 
 type connectionKey struct{}

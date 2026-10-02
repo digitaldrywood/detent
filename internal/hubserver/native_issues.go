@@ -391,8 +391,17 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		issue, _, err := readNativeIssue(ctx, tx, scope, c.Param("item"))
+	result, err := s.transitionNativeIssueCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSONBlob(http.StatusOK, result)
+}
+
+func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
+	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/workflow"), Item: item, RequireLease: true, Feature: "collaboration"}
+	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		issue, _, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
 			return nil, err
 		}

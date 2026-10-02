@@ -37,6 +37,7 @@ type Message struct {
 }
 
 type Action struct {
+	ConversationID    string                      `json:"-"`
 	SignOut           *operatortool.SignOutResult `json:"sign_out,omitempty"`
 	resultData        json.RawMessage             // Never serialized into browser, logs or audit.
 	Work              *operatortool.WorkArguments `json:"work,omitempty"`
@@ -79,15 +80,16 @@ type Action struct {
 }
 
 type Conversation struct {
-	PrincipalID     string `json:"-"`
-	ApprovalBaseURL string
-	ConnectionID    string
-	OrganizationID  string
-	Client          string
-	Mode            ConnectionMode
-	Messages        []Message
-	Actions         []Action
-	Unavailable     bool
+	RequireConfirmation bool
+	PrincipalID         string `json:"-"`
+	ApprovalBaseURL     string
+	ConnectionID        string
+	OrganizationID      string
+	Client              string
+	Mode                ConnectionMode
+	Messages            []Message
+	Actions             []Action
+	Unavailable         bool
 }
 
 type Tool struct {

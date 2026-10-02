@@ -276,7 +276,7 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 	})
 }
 
-func newHostedSecurityFixture(t *testing.T) hostedSecurityFixture {
+func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSecurityFixture {
 	t.Helper()
 	provider := newHostedSecurityProvider()
 	legacyPlans := pilotHostedPlans()
@@ -293,6 +293,9 @@ func newHostedSecurityFixture(t *testing.T) hostedSecurityFixture {
 			SupportActors:        []string{"support@example.test"},
 			Provider:             provider,
 		},
+	}
+	for _, apply := range configure {
+		apply(&cfg)
 	}
 	seedHostedSecurityDatabaseTemplate(t, cfg)
 	service := openTestService(t, cfg)

@@ -42,6 +42,18 @@ function renderTimeline(
 }
 
 describe("Timeline", () => {
+  it.each([
+    ["/chat/approval?connection_id=luna_abcdef", true],
+    ["/organizations/org_demo/chat/approval?connection_id=luna_abcdef", true],
+    ["https://example.test/chat/approval?connection_id=luna_abcdef", false],
+    ["/chat/approval?connection_id=other_connection", false],
+  ])("renders only a local Luna approval form: %s", (url, allowed) => {
+    renderTimeline({ messages: [assistantMessage({ kind: "status", data: { operator_approval: { url } } })] });
+    const frame = screen.queryByTitle("Approve project change");
+    expect(frame !== null).toBe(allowed);
+    if (allowed) expect(frame?.getAttribute("src")).toBe(url);
+  });
+
   it("renders a user bubble and an assistant turn", () => {
     renderTimeline();
     expect(screen.getAllByTestId("user-turn")).toHaveLength(1);

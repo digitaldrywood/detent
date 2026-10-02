@@ -114,6 +114,7 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 	}
 	ctx := c.Request().Context()
+	wasPending := false
 	if actionID != "" {
 		action, ok := s.operatorChat.Action(id, actionID)
 		if !ok {
@@ -122,6 +123,7 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 		if err := s.authorizeOperatorPreview(ctx, action); err != nil {
 			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 		}
+		wasPending = action.Status == chatpkg.ActionPending
 	}
 	ctx = chatpkg.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx))
 	var err error
@@ -146,6 +148,13 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 	default:
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid operator decision")
 	}
+	if wasPending {
+		if action, ok := s.operatorChat.Action(id, actionID); ok && action.Status != chatpkg.ActionPending {
+			if publishErr := s.publishCoordinatorDecision(ctx, action); publishErr != nil {
+				return publishErr
+			}
+		}
+	}
 	if err != nil {
 		return echo.NewHTTPError(http.StatusConflict, "The operator decision could not be applied; refresh the project and preview")
 	}
@@ -153,6 +162,10 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 }
 
 func (s *Service) authorizeOperatorPreview(ctx context.Context, action chatpkg.Action) error {
+	if action.Mutation.Source == "chat" {
+		_, err := s.authorizeCoordinatorAction(ctx, action)
+		return err
+	}
 	definition, ok := operatortool.Lookup(string(action.Kind))
 	if !ok {
 		return operatortool.ErrAccessDenied

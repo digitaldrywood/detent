@@ -35,13 +35,13 @@ const (
 // Write capability is therefore checked per handler by authorizeWrite.
 func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
 	scope := s.requireConversationScope()
-	e.POST(nativeBase+"/conversations", s.createConversation, scope)
+	e.POST(nativeBase+"/conversations", s.createConversation, scope, s.operatorAuthority)
 	e.GET(nativeBase+"/conversations", s.listProjectConversations, scope)
 	e.GET("/api/v2/organizations/:organization/conversations", s.listOrganizationConversations, s.requireConversationOrganization())
 	e.GET(nativeBase+"/conversations/:conversation", s.getConversation, scope)
 	e.GET(nativeBase+"/conversations/:conversation/messages", s.listConversationMessages, scope)
 	e.GET(nativeBase+"/conversations/:conversation/events", s.streamConversationEvents, scope)
-	e.POST(nativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope)
+	e.POST(nativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope, s.operatorAuthority)
 	e.POST(nativeBase+"/conversations/:conversation/link", s.linkConversation, scope)
 	e.PATCH(nativeBase+"/conversations/:conversation", s.patchConversation, scope)
 	e.GET(nativeBase+"/work-items/:item/references", s.listWorkItemReferences, scope)
@@ -689,7 +689,7 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 	pending := linked && !conversationExecutionLive(record.Execution.Status)
 	switch command.Kind {
 	case conversation.CommandMessage:
-		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: command.Text, Actor: actor, CommandKey: command.Key}
+		message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: command.Text, Actor: actor, CommandKey: command.Key, Data: coordinatorConnectionData(ctx)}
 		switch {
 		case !linked:
 			// The hub-side coordinator reads saved messages from the store,
@@ -889,6 +889,7 @@ func (c *conversationService) retryMessage(ctx context.Context, tx *sql.Tx, scop
 	}
 	// The generation that could not serve the control is cleared, so the
 	// next attempt takes it as a fresh delivery.
+	message.Data = coordinatorConnectionData(ctx)
 	message.Delivery = delivery
 	message.AttemptID, message.ThreadID, message.TurnID = "", "", ""
 	if err := c.updateMessage(ctx, tx, message, now); err != nil {
@@ -1024,6 +1025,10 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 			return nil, nativeInvalid(err.Error())
 		}
 	}
+	ctx, err := s.bindCoordinatorConnection(ctx, command.Key)
+	if err != nil {
+		return nil, err
+	}
 	service := s.conversations
 	// Write capability is checked before the mutation so that a read-only
 	// member is refused with the contract's forbidden rather than the
@@ -1098,6 +1103,10 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope, id string, command conversation.Command) (json.RawMessage, error) {
 	if err := conversation.ValidateCommand(command); err != nil {
 		return nil, nativeInvalid(err.Error())
+	}
+	ctx, bindErr := s.bindCoordinatorConnection(ctx, command.Key)
+	if bindErr != nil {
+		return nil, bindErr
 	}
 	service := s.conversations
 	var record conversationRecord

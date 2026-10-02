@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -273,12 +274,14 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 		if err != nil {
 			return nil, err
 		}
-		if request.Body != nil && strings.TrimSpace(*request.Body) == "" && current.Body != "" {
+		metadata, approved := mutation.FromContext(ctx)
+		approved = approved && metadata.Source == "chat" && metadata.Confirmation == "approved"
+		if !approved && request.Body != nil && strings.TrimSpace(*request.Body) == "" && current.Body != "" {
 			return nil, nativeInvalid("operator approval service is unavailable")
 		}
 		if request.Labels != nil {
 			for _, label := range current.Labels {
-				if !slices.Contains(*request.Labels, label) {
+				if !approved && !slices.Contains(*request.Labels, label) {
 					return nil, nativeInvalid("operator approval service is unavailable")
 				}
 			}

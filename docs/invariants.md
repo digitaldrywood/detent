@@ -38,6 +38,18 @@ initial lane. Workflow edits through MCP retain exact material-action approval.
 and the client workflow settings/default-state regressions cover these boundaries.
 No tracker lane writer or recovery mechanism is introduced (INV-3).
 
+Luna project mutations reuse the hosted MCP chat action service and its exact
+browser/session/CSRF approval form. Each message binds the originating browser
+session, current role and project grants; previews stay within the conversation's
+project and approval rechecks that authority and resource revisions. Chat always
+requires explicit approval, including issue edits and comments. Native workflow
+moves delegate to the same application command as the workflow HTTP endpoint;
+workers gain no lane-writing authority. No parallel approval or recovery service
+is added (INV-3). `TestCoordinatorProjectActions` covers authorized changes,
+refusals, rejection and stale authority/revisions. The conversation browser
+journey covers approving GitHub PR mode and retrying a blocked issue.
+
+
 Permission outcome authority (#3758) belongs to the existing completion owners.
 Ordinary tracker runs use fresh canonical Workpad comments, dependencies,
 completion evidence and project gates; final prose or a final-only status block

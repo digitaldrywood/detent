@@ -43,7 +43,7 @@ var errCoordinatorToolArguments = errors.New("invalid tool arguments")
 // conversation's owner has lost read access to its project.
 var errCoordinatorProjectUnreadable = errors.New("the conversation owner can no longer read this project")
 
-// coordinatorToolset executes the read-only coordination tools for one turn.
+// coordinatorToolset executes the coordination tools for one turn.
 // Every query is scoped to the conversation's organization; project access
 // follows the conversation owner's grants.
 type coordinatorToolset struct {
@@ -60,7 +60,7 @@ func coordinatorTool(name, description, schema string) runner.AgentTool {
 }
 
 func (t *coordinatorToolset) tools() []runner.AgentTool {
-	return []runner.AgentTool{
+	return append([]runner.AgentTool{
 		coordinatorTool(coordinatorToolListAttention,
 			"List issues that need attention, grouped as blocked, waiting_for_input, running and review. Scope is this conversation's project or every project the user can read.",
 			`{"type":"object","properties":{"scope":{"type":"string","enum":["project","all_projects"],"description":"project (default) or all_projects"},"limit":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum issues per group, default 20"}},"additionalProperties":false}`),
@@ -70,7 +70,7 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 		coordinatorTool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
-	}
+	}, coordinatorActionTools()...)
 }
 
 // handle runs one tool call. Errors are returned to the model as
@@ -78,6 +78,14 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
 	result, err := t.execute(ctx, call)
 	if err != nil {
+		if call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" {
+			err = coordinatorActionError(err)
+		}
+		if call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" {
+			if postErr := t.postActionRefusal(ctx, call.Name, err); postErr != nil {
+				t.coordinator.logger.Warn("coordinator could not persist refusal", "conversation_id", t.state.conversationID, "error", postErr)
+			}
+		}
 		t.coordinator.logger.Warn("coordinator tool failed", "conversation_id", t.state.conversationID, "tool", call.Name, "error", err)
 		return coordinatorToolError(err), nil
 	}
@@ -112,6 +120,8 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		return nil, errCoordinatorProjectUnreadable
 	}
 	switch call.Name {
+	case "get_project_integration", "update_project_integration", "move_item", "edit_item", "add_comment":
+		return t.projectAction(ctx, record, call)
 	case coordinatorToolListAttention:
 		var args struct {
 			Scope string `json:"scope"`
