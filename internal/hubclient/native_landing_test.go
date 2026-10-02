@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -242,4 +243,104 @@ func (h *nativeChangeHub) candidatesIn(t *testing.T, states ...string) []connect
 		t.Fatal(err)
 	}
 	return candidates
+}
+
+func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
+		{Name: "Human Review", Transitions: []string{"Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
+		{Name: "Done", Terminal: true},
+	}, true)
+	next := h.descriptor
+	next.Gates.GitHubPullRequest = true
+	next = next.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
+		t.Fatal(err)
+	}
+	h.descriptor = next
+	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Operator source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := tracker.NativeWorkItemID(issue.ID)
+	change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Operator source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := strings.Repeat("c", 40)
+	external := &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: nativeChangeRepository + "/pull/7"}
+	version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{
+		Mutation: nativeMutationKey(),
+		ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: strings.Repeat("a", 40), HeadSHA: head, MergeBaseSHA: strings.Repeat("a", 40), Repository: nativeChangeRepository,
+			Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: policy.Digest([]byte(head)), Availability: "unverified"}, PolicyID: h.descriptor.ID, External: external},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version.RunID != "" || version.AttemptID != "" || version.Actor.Kind != "human" {
+		t.Fatalf("operator version = %#v", version)
+	}
+	if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Human Review"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved"}); err != nil {
+		t.Fatal(err)
+	}
+	candidates := h.candidatesIn(t, "Merging")
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %#v", candidates)
+	}
+	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	execution := h.scheduler.RunExecution(issue.ID).(runner.LandingExecution)
+	target, err := execution.LandingTarget(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transported struct {
+		External *tracker.ChangeExternalReference
+	}
+	if err := json.Unmarshal(raw, &transported); err != nil {
+		t.Fatal(err)
+	}
+	if transported.External == nil || *transported.External != *external {
+		t.Fatalf("landing dropped operator external PR: %s", raw)
+	}
+	remote, closeRemote := nativeSSHExecution(t, t.Context(), h.scheduler.RunExecution(issue.ID), t.TempDir())
+	remoteTarget, err := remote.(runner.LandingExecution).LandingTarget(t.Context())
+	closeRemote()
+	if err != nil || remoteTarget.External == nil || *remoteTarget.External != *external || remoteTarget.HeadSHA != head {
+		t.Fatalf("remote landing target = %#v, error = %v", remoteTarget, err)
+	}
+	secondInput := version.ChangeVersionInput
+	secondInput.HeadSHA = strings.Repeat("d", 40)
+	secondInput.Code.URI = nativeChangeRepository + "/commit/" + secondInput.HeadSHA
+	secondInput.Code.SHA256 = policy.Digest([]byte(secondInput.HeadSHA))
+	second, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), ExpectedVersionID: version.ID, ChangeVersionInput: secondInput})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execution.LandingTarget(t.Context()); !errors.Is(err, runner.ErrLandingNotReviewed) {
+		t.Fatalf("unreviewed replacement target error = %v", err)
+	}
+	if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, second.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
+		t.Fatal(err)
+	}
+	h.repolicy(t)
+	if _, err := execution.LandingTarget(t.Context()); !errors.Is(err, runner.ErrLandingNotReviewed) {
+		t.Fatalf("stale policy target error = %v", err)
+	}
 }

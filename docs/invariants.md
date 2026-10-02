@@ -885,6 +885,21 @@ ref rejection and Rework routing without adding a park, timer, or recovery loop.
 
 ## INV-3 — Mechanism moratorium
 
+Externally published native versions (#98) resolve the reviewed current version
+before the existing workspace owner prepares a landing. The target retains its
+External PR reference. The runner verifies its authorized source, clean owned
+worktree and immutable head, hydrates missing commits through authenticated Git,
+and rechecks current-version authority after preparation. An explicit PR is read
+directly and must match repository, branch, head and the authorized base; it is
+never replaced or force-published. Ordinary worker PR publication retains its
+atomic merge head authority below. Existing policy, scope, authentication,
+review/check refusals and actual landing receipts remain authoritative; the Hub
+receives no forge credentials and workers never write lanes. Source bundles and
+occupied worktrees remain intact. `TestNativeExecutionOperatorLandingTarget`,
+`TestLocalGitCreateReviewedLanding`, `TestLocalGitLandChangeViaGitHub`,
+`TestRunnerResolvesLandingBeforeWorkspace` and `TestLandNativeChange` cover these
+consolidated owners without a new mechanism.
+
 Native GitHub landing (#137) consolidates reviewed-head authority on the
 existing atomic merge PUT with `sha` equal to the immutable reviewed head.
 After the runner's lease-protected push, the selected open PR's list head may
