@@ -4,6 +4,21 @@
 - File focused work through the selected project's issue authority using its provided supported MCP/API context, and let Detent dogfood the work (see [Issue authoring](#issue-authoring)).
 - Only make direct code changes when the human explicitly asks for manual implementation, asks to finish an already-started fix, or asks for local review and diagnostics that require edits.
 
+## Implementation
+
+Follow [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue):
+add visible UI only when a human-authored issue names that UI change. This covers
+the Cloud app (`web/conversation`), Hub server-rendered pages, and the local Templ
+dashboard, including rows, lines, banners, badges, chips, columns, panels, pages,
+tooltip text, and status copy. Machine-filed issues, agent-expanded scope, and
+"while I was here" additions never qualify, even for a legitimate issue.
+Removing UI or fixing an existing element in place without adding visible
+content does not need that approval.
+
+Diagnostics, coverage, provenance, and debugging data for agents belong in the
+existing API and MCP reads and logs. Never add UI to make them observable,
+including on the Diagnostics page or behind toggles or debug flags.
+
 ## Issue authoring
 
 Use the selected project's actual tracker and supplied project context.
@@ -29,6 +44,11 @@ If the required supported context is missing or contradictory, record that
 limitation through the existing workflow; do not silently write to another
 tracker. Do not invent endpoints, project IDs, credentials or routing, or
 extract credentials from hidden browser state or raw runtime databases.
+
+Under [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue),
+an agent that believes a visible UI addition is needed describes it in its outcome
+or files a Backlog issue for a human to author or rewrite; it does not build it.
+A machine-filed issue does not authorize the addition.
 
 ## Issue effort selection
 
