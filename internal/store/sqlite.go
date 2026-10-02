@@ -820,9 +820,18 @@ func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWind
 		if strings.TrimSpace(window.Date) == "" || window.From.IsZero() || window.To.IsZero() || !window.From.Before(window.To) {
 			return nil, errors.New("daily digest window must have a date and increasing boundaries")
 		}
+		projectJSON := ""
+		if window.ProjectIDs != nil {
+			encoded, err := json.Marshal(window.ProjectIDs)
+			if err != nil {
+				return nil, err
+			}
+			projectJSON = string(encoded)
+		}
 		params := sqlc.DailyDigestRuntimeParams{
-			FromAt: nullString(window.From.UTC().Format(time.RFC3339Nano)),
-			ToAt:   nullString(window.To.UTC().Format(time.RFC3339Nano)),
+			ProjectIdsJson: projectJSON,
+			FromAt:         nullString(window.From.UTC().Format(time.RFC3339Nano)),
+			ToAt:           nullString(window.To.UTC().Format(time.RFC3339Nano)),
 		}
 		runtime, err := s.queries.DailyDigestRuntime(ctx, params)
 		if err != nil {
@@ -837,8 +846,8 @@ func (s *sqliteStore) DailyDigest(ctx context.Context, windows []DailyDigestWind
 			return nil, fmt.Errorf("reading daily digest failures for %s: %w", window.Date, err)
 		}
 		capacityModes, err := s.queries.DailyDigestCapacityModes(ctx, sqlc.DailyDigestCapacityModesParams{
-			FromAt: params.FromAt,
-			ToAt:   params.ToAt.String,
+			ProjectIdsJson: projectJSON, FromAt: params.FromAt,
+			ToAt: params.ToAt.String,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("reading daily digest capacity modes for %s: %w", window.Date, err)

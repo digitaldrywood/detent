@@ -10,7 +10,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -62,26 +61,11 @@ func reportsDateRange(c echo.Context) (time.Time, time.Time, *apiErrorResponse, 
 }
 
 func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, selectedProjectID string, timezone *time.Location, outcomeWindow reportsOutcomeWindowOption, now time.Time) (templates.ReportsData, error) {
-	day, err := s.usageReportData(ctx, store.UsageReportByDay, from, to)
+	groups, _, err := s.readReportGroups(ctx, nil, from, to, int(^uint(0)>>1), 0)
 	if err != nil {
 		return templates.ReportsData{}, err
 	}
-	project, err := s.usageReportData(ctx, store.UsageReportByProject, from, to)
-	if err != nil {
-		return templates.ReportsData{}, err
-	}
-	issue, err := s.usageReportData(ctx, store.UsageReportByIssue, from, to)
-	if err != nil {
-		return templates.ReportsData{}, err
-	}
-	pr, err := s.usageReportData(ctx, store.UsageReportByPR, from, to)
-	if err != nil {
-		return templates.ReportsData{}, err
-	}
-	model, err := s.usageReportData(ctx, store.UsageReportByModel, from, to)
-	if err != nil {
-		return templates.ReportsData{}, err
-	}
+	day, project, issue, pr, model := usageReportTemplateData(groups[0]), usageReportTemplateData(groups[1]), usageReportTemplateData(groups[2]), usageReportTemplateData(groups[3]), usageReportTemplateData(groups[4])
 
 	instanceName := s.instanceName()
 	snapshot := s.latestSnapshot(ctx)
@@ -92,20 +76,12 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, 
 		return templates.ReportsData{}, err
 	}
 	efficiencyFrom, efficiencyTo := efficiencyReportRange(from, to)
-	efficiencyRollup, err := s.store.EfficiencyRollup(ctx, efficiency.Query{ProjectID: projectID, From: efficiencyFrom, To: efficiencyTo})
-	if err != nil {
-		return templates.ReportsData{}, err
-	}
 	outcomeTo := now.UTC().Truncate(time.Second)
-	costPerOutcome, err := s.store.CostPerOutcome(ctx, efficiency.CostPerOutcomeQuery{
-		ProjectID: projectID,
-		From:      outcomeTo.Add(-outcomeWindow.Duration),
-		To:        outcomeTo,
-		Bucket:    outcomeWindow.Bucket,
-	})
+	efficiencyRollup, costPerOutcome, err := s.readReportOutcomes(ctx, projectID, efficiencyFrom, efficiencyTo, outcomeTo.Add(-outcomeWindow.Duration), outcomeTo, outcomeWindow.Bucket)
 	if err != nil {
 		return templates.ReportsData{}, err
 	}
+
 	return templates.ReportsData{
 		Title:           instancePageTitle(instanceName, "Detent reports"),
 		ApplicationName: applicationName(instanceName),

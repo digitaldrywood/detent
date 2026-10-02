@@ -1341,8 +1341,9 @@ SELECT
   CAST(COALESCE(NULLIF(trim(next_action), ''), NULLIF(trim(wait_reason), ''), 'automatic retry') AS TEXT) AS recovery_mode,
   COUNT(*) AS outages
 FROM work_attempts
-WHERE started_at < ?1
-  AND completed_at > ?2
+WHERE (?1 = '' OR project_id IN (SELECT value FROM json_each(?1)))
+  AND started_at < ?2
+  AND completed_at > ?3
   AND lower(trim(COALESCE(terminal_state, ''))) = 'capacity'
 GROUP BY COALESCE(NULLIF(trim(next_action), ''), NULLIF(trim(wait_reason), ''), 'automatic retry')
 ORDER BY outages DESC, recovery_mode
@@ -1350,8 +1351,9 @@ LIMIT 1
 `
 
 type DailyDigestCapacityModesParams struct {
-	ToAt   string         `json:"to_at"`
-	FromAt sql.NullString `json:"from_at"`
+	ProjectIdsJson interface{}    `json:"project_ids_json"`
+	ToAt           string         `json:"to_at"`
+	FromAt         sql.NullString `json:"from_at"`
 }
 
 type DailyDigestCapacityModesRow struct {
@@ -1360,7 +1362,7 @@ type DailyDigestCapacityModesRow struct {
 }
 
 func (q *Queries) DailyDigestCapacityModes(ctx context.Context, arg DailyDigestCapacityModesParams) ([]DailyDigestCapacityModesRow, error) {
-	rows, err := q.db.QueryContext(ctx, dailyDigestCapacityModes, arg.ToAt, arg.FromAt)
+	rows, err := q.db.QueryContext(ctx, dailyDigestCapacityModes, arg.ProjectIdsJson, arg.ToAt, arg.FromAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1387,8 +1389,9 @@ SELECT
   CAST(COALESCE(NULLIF(trim(error_class), ''), 'unknown') AS TEXT) AS error_class,
   COUNT(*) AS failures
 FROM work_attempts
-WHERE completed_at >= ?1
-  AND completed_at < ?2
+WHERE (?1 = '' OR project_id IN (SELECT value FROM json_each(?1)))
+  AND completed_at >= ?2
+  AND completed_at < ?3
   AND lower(trim(COALESCE(terminal_state, ''))) IN ('failure', 'timed_out', 'no_progress', 'capacity')
   AND COALESCE(json_extract(CASE WHEN json_valid(worker_metadata_json) THEN worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
 GROUP BY COALESCE(NULLIF(trim(error_class), ''), 'unknown')
@@ -1397,8 +1400,9 @@ LIMIT 1
 `
 
 type DailyDigestFailureClassesParams struct {
-	FromAt sql.NullString `json:"from_at"`
-	ToAt   sql.NullString `json:"to_at"`
+	ProjectIdsJson interface{}    `json:"project_ids_json"`
+	FromAt         sql.NullString `json:"from_at"`
+	ToAt           sql.NullString `json:"to_at"`
 }
 
 type DailyDigestFailureClassesRow struct {
@@ -1407,7 +1411,7 @@ type DailyDigestFailureClassesRow struct {
 }
 
 func (q *Queries) DailyDigestFailureClasses(ctx context.Context, arg DailyDigestFailureClassesParams) ([]DailyDigestFailureClassesRow, error) {
-	rows, err := q.db.QueryContext(ctx, dailyDigestFailureClasses, arg.FromAt, arg.ToAt)
+	rows, err := q.db.QueryContext(ctx, dailyDigestFailureClasses, arg.ProjectIdsJson, arg.FromAt, arg.ToAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1439,15 +1443,17 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   COUNT(*) AS sessions
 FROM codex_sessions
-WHERE completed_at >= ?1
-  AND completed_at < ?2
+WHERE (?1 = '' OR project_id IN (SELECT value FROM json_each(?1)))
+  AND completed_at >= ?2
+  AND completed_at < ?3
 GROUP BY COALESCE(NULLIF(trim(model), ''), NULLIF(trim(requested_model), ''), 'unassigned')
 ORDER BY model
 `
 
 type DailyDigestModelsParams struct {
-	FromAt sql.NullString `json:"from_at"`
-	ToAt   sql.NullString `json:"to_at"`
+	ProjectIdsJson interface{}    `json:"project_ids_json"`
+	FromAt         sql.NullString `json:"from_at"`
+	ToAt           sql.NullString `json:"to_at"`
 }
 
 type DailyDigestModelsRow struct {
@@ -1461,7 +1467,7 @@ type DailyDigestModelsRow struct {
 }
 
 func (q *Queries) DailyDigestModels(ctx context.Context, arg DailyDigestModelsParams) ([]DailyDigestModelsRow, error) {
-	rows, err := q.db.QueryContext(ctx, dailyDigestModels, arg.FromAt, arg.ToAt)
+	rows, err := q.db.QueryContext(ctx, dailyDigestModels, arg.ProjectIdsJson, arg.FromAt, arg.ToAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1493,34 +1499,37 @@ func (q *Queries) DailyDigestModels(ctx context.Context, arg DailyDigestModelsPa
 
 const dailyDigestRuntime = `-- name: DailyDigestRuntime :one
 SELECT
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2) AS sessions,
-  (SELECT CAST(COALESCE(SUM(session.input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2) AS input_tokens,
-  (SELECT CAST(COALESCE(SUM(session.cached_input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2) AS cached_input_tokens,
-  (SELECT CAST(COALESCE(SUM(session.output_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2) AS output_tokens,
-  (SELECT CAST(COALESCE(SUM(session.total_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2) AS total_tokens,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE session.completed_at >= ?1 AND session.completed_at < ?2 AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
-  (SELECT COUNT(*) FROM work_attempts AS attempt WHERE attempt.started_at < ?2 AND attempt.completed_at > ?1 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_outages,
-  (SELECT CAST(COALESCE(SUM(MAX(0, CAST(strftime('%s', MIN(attempt.completed_at, ?2)) AS INTEGER) - CAST(strftime('%s', MAX(attempt.started_at, ?1)) AS INTEGER))), 0) AS INTEGER) FROM work_attempts AS attempt WHERE attempt.started_at < ?2 AND attempt.completed_at > ?1 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_seconds,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS sessions,
+  (SELECT CAST(COALESCE(SUM(session.input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS input_tokens,
+  (SELECT CAST(COALESCE(SUM(session.cached_input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS cached_input_tokens,
+  (SELECT CAST(COALESCE(SUM(session.output_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS output_tokens,
+  (SELECT CAST(COALESCE(SUM(session.total_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS total_tokens,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
+  (SELECT COUNT(*) FROM work_attempts AS attempt WHERE (?1 = '' OR attempt.project_id IN (SELECT value FROM json_each(?1))) AND attempt.started_at < ?3 AND attempt.completed_at > ?2 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_outages,
+  (SELECT CAST(COALESCE(SUM(MAX(0, CAST(strftime('%s', MIN(attempt.completed_at, ?3)) AS INTEGER) - CAST(strftime('%s', MAX(attempt.started_at, ?2)) AS INTEGER))), 0) AS INTEGER) FROM work_attempts AS attempt WHERE (?1 = '' OR attempt.project_id IN (SELECT value FROM json_each(?1))) AND attempt.started_at < ?3 AND attempt.completed_at > ?2 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_seconds,
   (SELECT COUNT(DISTINCT trip.identifier) FROM (
     SELECT COALESCE(NULLIF(decision.identifier, ''), printf('decision:%d', decision.id)) AS identifier
     FROM scheduler_decisions AS decision
-    WHERE decision.decision_at >= ?1
-      AND decision.decision_at < ?2
+    WHERE (?1 = '' OR decision.project_id IN (SELECT value FROM json_each(?1)))
+      AND decision.decision_at >= ?2
+      AND decision.decision_at < ?3
       AND (lower(COALESCE(decision.reason, '')) LIKE '%circuit_breaker%' OR lower(COALESCE(decision.wait_reason, '')) LIKE '%circuit_breaker%')
     UNION ALL
     SELECT COALESCE(NULLIF(event.identifier, ''), printf('event:%d', event.id)) AS identifier
     FROM workflow_phase_events AS event
-    WHERE event.started_at >= ?1
-      AND event.started_at < ?2
+    WHERE (?1 = '' OR event.project_id IN (SELECT value FROM json_each(?1)))
+      AND event.started_at >= ?2
+      AND event.started_at < ?3
       AND lower(COALESCE(event.reason, '')) LIKE '%circuit_breaker%'
   ) AS trip) AS breaker_trips
 `
 
 type DailyDigestRuntimeParams struct {
-	FromAt sql.NullString `json:"from_at"`
-	ToAt   sql.NullString `json:"to_at"`
+	ProjectIdsJson interface{}    `json:"project_ids_json"`
+	FromAt         sql.NullString `json:"from_at"`
+	ToAt           sql.NullString `json:"to_at"`
 }
 
 type DailyDigestRuntimeRow struct {
@@ -1538,7 +1547,7 @@ type DailyDigestRuntimeRow struct {
 }
 
 func (q *Queries) DailyDigestRuntime(ctx context.Context, arg DailyDigestRuntimeParams) (DailyDigestRuntimeRow, error) {
-	row := q.db.QueryRowContext(ctx, dailyDigestRuntime, arg.FromAt, arg.ToAt)
+	row := q.db.QueryRowContext(ctx, dailyDigestRuntime, arg.ProjectIdsJson, arg.FromAt, arg.ToAt)
 	var i DailyDigestRuntimeRow
 	err := row.Scan(
 		&i.Sessions,
