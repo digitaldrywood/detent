@@ -273,6 +273,44 @@ func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScop
 	return result, err
 }
 
+func readCurrentChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, change tracker.ChangeRequest, now time.Time) (tracker.ChangeDetail, error) {
+	result := tracker.ChangeDetail{Change: change}
+	var staleApproval bool
+	version, found, err := readNativeChangeVersion(ctx, query, change)
+	if err != nil {
+		return result, err
+	}
+	if found {
+		result.Versions = []tracker.ChangeVersion{version}
+		result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence", change.ID, version.ID)
+		if err != nil {
+			return result, err
+		}
+		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
+AND json_extract(record_json, '$.decision') = 'approved' AND version_id != ?)`, change.ID, version.ID).Scan(&staleApproval)
+		if err != nil {
+			return result, err
+		}
+		result.Checks, err = changeRows[tracker.ChangeCheck](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'check' ORDER BY sequence", change.ID, version.ID)
+		if err != nil {
+			return result, err
+		}
+	}
+	var approvedID string
+	err = query.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", string(scope.organization)+"/"+string(scope.project)).Scan(&approvedID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+	rules, err := readChangePolicy(ctx, query, scope)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+	result.Summary = changerequest.SummarizeCurrentVersion(result, approvedID, rules.ID, now, staleApproval)
+	err = loadChangeExternal(ctx, query, scope, &result)
+	result.Versions, result.Reviews, result.Checks = nil, nil, nil
+	return result, err
+}
+
 func loadChangeExternal(ctx context.Context, query nativeQueryer, scope nativeScope, detail *tracker.ChangeDetail) error {
 	for _, version := range detail.Versions {
 		if version.ID != detail.Change.CurrentVersion || version.External == nil {

@@ -101,20 +101,23 @@ func (s *Service) getNativeRuntime(c echo.Context) error {
 }
 
 func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item, attemptID string) (tracker.NativeRuntimeEvidence, error) {
-	now := s.config.now().UTC()
 	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, err
 	}
 	defer tx.Rollback()
-	issue, id, err := readNativeIssue(ctx, tx, scope, item)
+	return readNativeRuntime(ctx, tx, scope, item, attemptID, s.config.now().UTC())
+}
+
+func readNativeRuntime(ctx context.Context, query nativeQueryer, scope nativeScope, item, attemptID string, now time.Time) (tracker.NativeRuntimeEvidence, error) {
+	issue, id, err := readNativeIssue(ctx, query, scope, item)
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, err
 	}
 	issue = issue.RuntimeReference()
 	e := tracker.NativeRuntimeEvidence{Issue: issue, ObservedAt: now, Selection: "unavailable", Unavailable: []string{"efficiency_receipt"}, Capacity: []tracker.NativeRuntimeCapacity{}}
 	if attemptID == "" {
-		err = tx.QueryRowContext(ctx, "SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 1", scope.organization, scope.project, item).Scan(&attemptID)
+		err = query.QueryRowContext(ctx, "SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 1", scope.organization, scope.project, item).Scan(&attemptID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return e, err
 		}
@@ -124,7 +127,7 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 		if err != nil || local <= 0 {
 			return e, nativeInvalid("Invalid attempt identity")
 		}
-		rows, err := tx.QueryContext(ctx, "SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND json_extract(data_json, '$.runtime.local_attempt_id')=? LIMIT 2", scope.organization, scope.project, item, local)
+		rows, err := query.QueryContext(ctx, "SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND json_extract(data_json, '$.runtime.local_attempt_id')=? LIMIT 2", scope.organization, scope.project, item, local)
 		if err != nil {
 			return e, err
 		}
@@ -153,7 +156,7 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 		e.Selection = "selected"
 	}
 	if attemptID != "" {
-		a, err := readNativeAttempt(ctx, tx, scope, item, attemptID, now)
+		a, err := readNativeAttempt(ctx, query, scope, item, attemptID, now)
 		if err != nil {
 			return e, err
 		}
@@ -179,7 +182,7 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 		e.Unavailable = append(e.Unavailable, "attempt_landing_receipt")
 	}
 	for _, kind := range []string{"workflow.transitioned", "scheduler.decision"} {
-		event, err := latestNativeRuntimeEvent(ctx, tx, scope, item, kind)
+		event, err := latestNativeRuntimeEvent(ctx, query, scope, item, kind)
 		if err != nil {
 			return e, err
 		}
@@ -192,42 +195,12 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 	if e.LatestDecision == nil {
 		e.Unavailable = append(e.Unavailable, "historical_scheduler_decision")
 	}
-	ready, err := nativeLandingCandidateReady(ctx, tx, &scope, id, now)
-	if err != nil {
-		return e, err
-	}
-	e.Scheduling = tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "unknown", At: now, WorkItemRevision: issue.Revision, Reason: "Runner-specific selectors, policy and capacity must also permit this item"}
-	if !ready {
-		e.Scheduling.Outcome = "skipped"
-		e.Scheduling.Reason = "Current Change version is not ready for native landing"
-	}
-	lease, found, err := readUnreleasedLease(ctx, tx, id)
-	if err != nil {
-		return e, err
-	}
-	if found && !now.Before(lease.session.RenewedAt) && now.Before(lease.session.ExpiresAt) {
-		l := lease.session
-		current := tracker.NativeLease{ID: l.ID, WorkItemID: issue.WorkItemID, MachineID: l.Machine.ID, SessionID: l.SessionID, FencingToken: l.FencingToken, AcquiredAt: l.AcquiredAt, RenewedAt: l.RenewedAt, ExpiresAt: l.ExpiresAt, ServerTime: now}
-		if err := tx.QueryRowContext(ctx, "SELECT coalesce((SELECT policy_id FROM lease_policies WHERE lease_id=?), '')", l.ID).Scan(&current.PolicyID); err != nil {
-			return e, err
-		}
-		reservation, reserved, err := readProviderReservation(ctx, tx, l.ID)
-		if err != nil {
-			return e, err
-		}
-		if reserved {
-			current.ProviderReservation = &reservation
-		}
-		e.CurrentLease = &current
-		e.Scheduling.Outcome = "claimed"
-		e.Scheduling.Reason = "A current fenced lease owns this item"
-	}
-	change, found, err := readLatestNativeChangeRequest(ctx, tx, scope, item)
+	change, found, err := readLatestNativeChangeRequest(ctx, query, scope, item)
 	if err != nil {
 		return e, err
 	}
 	if found {
-		detail, err := readChangeDetail(ctx, tx, scope, item, change.ID, now)
+		detail, err := readCurrentChangeDetail(ctx, query, scope, change, now)
 		if err != nil {
 			return e, err
 		}
@@ -241,7 +214,34 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 		detail.Checks = nil
 		e.Change = &detail
 	}
-	approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+	ready := nativeChangeLandingReady(issue.State, e.Change)
+	e.Scheduling = tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "unknown", At: now, WorkItemRevision: issue.Revision, Reason: "Runner-specific selectors, policy and capacity must also permit this item"}
+	if !ready {
+		e.Scheduling.Outcome = "skipped"
+		e.Scheduling.Reason = "Current Change version is not ready for native landing"
+	}
+	lease, found, err := readUnreleasedLease(ctx, query, id)
+	if err != nil {
+		return e, err
+	}
+	if found && !now.Before(lease.session.RenewedAt) && now.Before(lease.session.ExpiresAt) {
+		l := lease.session
+		current := tracker.NativeLease{ID: l.ID, WorkItemID: issue.WorkItemID, MachineID: l.Machine.ID, SessionID: l.SessionID, FencingToken: l.FencingToken, AcquiredAt: l.AcquiredAt, RenewedAt: l.RenewedAt, ExpiresAt: l.ExpiresAt, ServerTime: now}
+		if err := query.QueryRowContext(ctx, "SELECT coalesce((SELECT policy_id FROM lease_policies WHERE lease_id=?), '')", l.ID).Scan(&current.PolicyID); err != nil {
+			return e, err
+		}
+		reservation, reserved, err := readProviderReservation(ctx, query, l.ID)
+		if err != nil {
+			return e, err
+		}
+		if reserved {
+			current.ProviderReservation = &reservation
+		}
+		e.CurrentLease = &current
+		e.Scheduling.Outcome = "claimed"
+		e.Scheduling.Reason = "A current fenced lease owns this item"
+	}
+	approval, err := readProjectPolicy(ctx, query, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		var failure *nativeError
 		if !errors.As(err, &failure) {
@@ -250,33 +250,15 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 		e.Unavailable = append(e.Unavailable, "approved_dispatch_policy")
 		return e, nil
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT r.id FROM runner_identities r JOIN token_grants g ON g.token_id=r.token_id AND g.organization_id=r.organization_id WHERE r.organization_id=? AND g.project_id=? ORDER BY r.id LIMIT 101", scope.organization, scope.project)
+	runners, truncated, err := readRuntimeRunners(ctx, query, scope, now)
 	if err != nil {
 		return e, err
 	}
-	var runners []string
-	for rows.Next() {
-		var runner string
-		if err := rows.Scan(&runner); err != nil {
-			rows.Close()
-			return e, err
-		}
-		runners = append(runners, runner)
-	}
-	err = errors.Join(rows.Err(), rows.Close())
-	if err != nil {
-		return e, err
-	}
-	if len(runners) > 100 {
+	if truncated {
 		e.Unavailable = append(e.Unavailable, "capacity_projection_truncated")
-		runners = runners[:100]
 	}
-	for _, runner := range runners {
-		r, err := readRunner(ctx, tx, scope.organization, runner, now)
-		if err != nil {
-			return e, err
-		}
-		capacity := tracker.NativeRuntimeCapacity{ProviderCapacity: r.ProviderCapacity, RunnerID: runner, ObservedAt: r.LastHeartbeatAt, Health: r.Health, Available: max(0, min(r.HostCapacity-r.HostUsed, min(r.CapacityLimit, r.ReportedCapacity)-r.Used)), Exclusions: []string{}}
+	for _, r := range runners {
+		capacity := tracker.NativeRuntimeCapacity{ProviderCapacity: r.ProviderCapacity, RunnerID: r.RunnerID, ObservedAt: r.LastHeartbeatAt, Health: r.Health, Available: max(0, min(r.HostCapacity-r.HostUsed, min(r.CapacityLimit, r.ReportedCapacity)-r.Used)), Exclusions: []string{}}
 		for _, exclusion := range r.Exclusions(scope.project, approval.Policy.Requirements, false) {
 			capacity.Exclusions = append(capacity.Exclusions, exclusion.Code)
 		}
@@ -285,7 +267,7 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 	if len(e.Capacity) == 0 {
 		e.Unavailable = append(e.Unavailable, "runner_capacity")
 	}
-	if ready && len(e.Capacity) > 0 && len(runners) <= 100 && e.Scheduling.Outcome != "claimed" && !slices.Contains(e.Unavailable, "capacity_projection_truncated") {
+	if ready && len(e.Capacity) > 0 && e.Scheduling.Outcome != "claimed" && !slices.Contains(e.Unavailable, "capacity_projection_truncated") {
 		excluded := true
 		for _, capacity := range e.Capacity {
 			if len(capacity.Exclusions) == 0 {

@@ -407,7 +407,7 @@ func requireUnusedSession(ctx context.Context, tx *sql.Tx, sessionID string) err
 	return fmt.Errorf("%w: session %s already belongs to lease %s", tracker.ErrLeaseConflict, sessionID, leaseID)
 }
 
-func readUnreleasedLease(ctx context.Context, tx *sql.Tx, workItemID tracker.WorkItemID) (leaseRecord, bool, error) {
+func readUnreleasedLease(ctx context.Context, tx nativeQueryer, workItemID tracker.WorkItemID) (leaseRecord, bool, error) {
 	return scanLeaseRecord(tx.QueryRowContext(ctx, `
 SELECT l.issue_id, l.lease_id, l.fencing_token, l.machine_id, m.hostname, m.display_name, l.session_id, l.acquired_at, l.renewed_at, l.expires_at, l.released_at
 FROM leases l

@@ -26,13 +26,7 @@ func runnerHubProblems(r runnerauth.Runner, report isolation.Report, protocol in
 	return problems
 }
 
-func readRunnerProblems(ctx context.Context, db nativeQueryer, r *runnerauth.Runner) error {
-	var raw, isolationRaw string
-	var protocol int
-	var rejected bool
-	if err := db.QueryRowContext(ctx, "SELECT problems_json, backend_isolation_json, reported_protocol_major, settings_rejected FROM runner_identities WHERE id = ?", r.RunnerID).Scan(&raw, &isolationRaw, &protocol, &rejected); err != nil {
-		return err
-	}
+func applyRunnerProblems(r *runnerauth.Runner, raw, isolationRaw string, protocol int, rejected bool) error {
 	var previous []runnerauth.Problem
 	var report isolation.Report
 	if err := json.Unmarshal([]byte(raw), &previous); err != nil {

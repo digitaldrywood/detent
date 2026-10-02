@@ -12,36 +12,43 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readRunner(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time) (runnerauth.Runner, error) {
+const runnerIdentitySelect = `SELECT r.id, r.organization_id, r.machine_id, r.token_id, r.display_name, r.tags_json, r.state, r.capacity_limit,
+r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json, r.routing_settings_json, r.home_dry_since,
+m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expires_at, t.revoked_at,
+(SELECT json_group_array(project_id) FROM (SELECT project_id FROM token_grants WHERE token_id = r.token_id ORDER BY project_id)),
+r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json
+FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id`
+
+func scanRunnerIdentity(row interface{ Scan(...any) error }, now time.Time) (runnerauth.Runner, []providercapacity.Report, error) {
 	var r runnerauth.Runner
 	var tags, operations, heartbeat, created, expires, token, settings string
+	var projects, problems, isolationRaw, capacityRaw, providerRaw string
+	var protocol int
+	var rejected bool
 	var revoked, dry sql.NullString
-	err := db.QueryRowContext(ctx, `SELECT r.id, r.organization_id, r.machine_id, r.token_id, r.display_name, r.tags_json, r.state, r.capacity_limit,
-r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json, r.routing_settings_json, r.home_dry_since,
-m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expires_at, t.revoked_at
-FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id
-WHERE r.organization_id = ? AND r.id = ?`, organization, id).Scan(&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
+	err := row.Scan(&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
 		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings, &dry,
-		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked)
+		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw)
 	if err != nil {
-		return r, err
+		return r, nil, err
 	}
 	if err := json.Unmarshal([]byte(tags), &r.Tags); err != nil {
-		return r, err
+		return r, nil, err
 	}
 	if err := unmarshalRunnerSettings(settings, &r.Routing); err != nil {
-		return r, err
+		return r, nil, err
 	}
 	if err := json.Unmarshal([]byte(operations), &r.Operations); err != nil {
-		return r, err
+		return r, nil, err
 	}
 	r.LastHeartbeatAt, err = parseTimeValue(heartbeat)
 	if err != nil {
-		return r, err
+		return r, nil, err
 	}
 	r.Health = "online"
 	switch {
@@ -53,22 +60,36 @@ WHERE r.organization_id = ? AND r.id = ?`, organization, id).Scan(&r.RunnerID, &
 		r.Health = "offline"
 	}
 	r.ConnectionHealth = r.Health
-	r.ProjectIDs, err = readRunnerProjects(ctx, db, token)
-	if err != nil {
-		return r, err
+	if err := json.Unmarshal([]byte(projects), &r.ProjectIDs); err != nil {
+		return r, nil, err
 	}
 	r.Routing = r.Normalized()
-	if err := readRunnerProblems(ctx, db, &r); err != nil {
-		return r, err
+	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected); err != nil {
+		return r, nil, err
 	}
 	if dry.Valid {
 		since, err := parseTimeValue(dry.String)
 		if err != nil {
-			return r, err
+			return r, nil, err
 		}
 		r.HomeDrySince = &since
 	}
 	r.HomeStatus = r.HomeWorkStatus(now)
+	var reports []providercapacity.Report
+	if err := json.Unmarshal([]byte(capacityRaw), &r.CapacityConfig); err != nil {
+		return r, nil, err
+	}
+	if err := json.Unmarshal([]byte(providerRaw), &reports); err != nil {
+		return r, nil, err
+	}
+	return r, reports, nil
+}
+
+func readRunner(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time) (runnerauth.Runner, error) {
+	r, reports, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), now)
+	if err != nil {
+		return r, err
+	}
 	r.Leases = []runnerauth.RunnerLease{}
 	rows, err := db.QueryContext(ctx, `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, coalesce(i.native_id, ''), i.title, coalesce(i.project_id, ''), coalesce(p.metadata_json, ''), coalesce(pp.policy_id, '')
 FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
@@ -112,10 +133,6 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 	if err := rows.Close(); err != nil {
 		return r, err
 	}
-	reports, err := readProviderReports(ctx, db, id)
-	if err != nil {
-		return r, err
-	}
 	for _, report := range reports {
 		view, err := providerView(ctx, db, organization, report, now)
 		if err != nil {
@@ -131,13 +148,6 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 		if reserved {
 			r.Leases[i].ProviderReservation = &reservation
 		}
-	}
-	var capacityRaw string
-	if err := db.QueryRowContext(ctx, "SELECT capacity_configuration_json FROM runner_identities WHERE organization_id = ? AND id = ?", organization, id).Scan(&capacityRaw); err != nil {
-		return r, err
-	}
-	if err := json.Unmarshal([]byte(capacityRaw), &r.CapacityConfig); err != nil {
-		return r, err
 	}
 	return r, nil
 }

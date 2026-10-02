@@ -85,73 +85,95 @@ func sharedProviderAccount(a, b providercapacity.Report) bool {
 	return a.Provider == b.Provider && (a.SharedAccountAlias == "" || b.SharedAccountAlias == "" || a.SharedAccountAlias == b.SharedAccountAlias)
 }
 
-func providerView(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, report providercapacity.Report, now time.Time) (providercapacity.View, error) {
-	view := providercapacity.View{Report: report, State: report.State(now), Reason: "Bounded concurrency available; quota is an observation, not transferable credit"}
+type providerCapacitySnapshot struct {
+	reports      []providercapacity.Report
+	reservations []providercapacity.Reservation
+}
+
+func readProviderCapacitySnapshot(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, now time.Time) (providerCapacitySnapshot, error) {
+	var snapshot providerCapacitySnapshot
 	rows, err := query.QueryContext(ctx, `SELECT r.provider_reports_json, t.created_at, t.expires_at, t.revoked_at
 FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organization_id = ?`, organization)
 	if err != nil {
-		return view, err
+		return snapshot, err
 	}
 	defer rows.Close()
-	var freshReports []providercapacity.Report
 	for rows.Next() {
 		var raw, created string
 		var expires, revoked sql.NullString
 		var reports []providercapacity.Report
 		if err := rows.Scan(&raw, &created, &expires, &revoked); err != nil {
-			return view, err
+			return snapshot, err
 		}
 		if revoked.Valid || !runnerTimeValid(now, created, expires.String) {
 			continue
 		}
 		if err := json.Unmarshal([]byte(raw), &reports); err != nil {
-			return view, err
+			return snapshot, err
 		}
-		for _, other := range reports {
-			if !now.Before(other.ObservedAt) && now.Before(other.ObservedAt.Add(providercapacity.MaxAge)) {
-				freshReports = append(freshReports, other)
-			}
-			if !sharedProviderAccount(report, other) {
-				continue
-			}
-			view.MaxConcurrent = min(view.MaxConcurrent, other.MaxConcurrent)
-			if other.State(now) == "exhausted" {
-				view.State = "exhausted"
-				if other.ResetAt.After(view.ResetAt) {
-					view.ResetAt = other.ResetAt
-				}
-			} else if other.State(now) == "unknown" && view.State != "exhausted" {
-				view.State = "unknown"
-			}
-		}
+		snapshot.reports = append(snapshot.reports, reports...)
 	}
 	if err := rows.Err(); err != nil {
-		return view, err
+		return snapshot, err
 	}
 	if err := rows.Close(); err != nil {
-		return view, err
+		return snapshot, err
 	}
 	rows, err = query.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at FROM provider_reservations p JOIN leases l ON l.lease_id = p.lease_id WHERE p.organization_id = ? AND l.released_at IS NULL`, organization)
 	if err != nil {
-		return view, err
+		return snapshot, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var raw, expiry string
 		var reservation providercapacity.Reservation
 		if err := rows.Scan(&raw, &expiry); err != nil {
-			return view, err
+			return snapshot, err
 		}
 		end, err := parseTimeValue(expiry)
 		if err != nil {
-			return view, err
+			return snapshot, err
 		}
 		if !end.After(now) {
 			continue
 		}
 		if err := json.Unmarshal([]byte(raw), &reservation); err != nil {
-			return view, err
+			return snapshot, err
 		}
+		snapshot.reservations = append(snapshot.reservations, reservation)
+	}
+	return snapshot, rows.Err()
+}
+
+func providerView(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, report providercapacity.Report, now time.Time) (providercapacity.View, error) {
+	snapshot, err := readProviderCapacitySnapshot(ctx, query, organization, now)
+	if err != nil {
+		return providercapacity.View{}, err
+	}
+	return snapshot.view(report, now), nil
+}
+
+func (snapshot providerCapacitySnapshot) view(report providercapacity.Report, now time.Time) providercapacity.View {
+	view := providercapacity.View{Report: report, State: report.State(now), Reason: "Bounded concurrency available; quota is an observation, not transferable credit"}
+	var freshReports []providercapacity.Report
+	for _, other := range snapshot.reports {
+		if !now.Before(other.ObservedAt) && now.Before(other.ObservedAt.Add(providercapacity.MaxAge)) {
+			freshReports = append(freshReports, other)
+		}
+		if !sharedProviderAccount(report, other) {
+			continue
+		}
+		view.MaxConcurrent = min(view.MaxConcurrent, other.MaxConcurrent)
+		if other.State(now) == "exhausted" {
+			view.State = "exhausted"
+			if other.ResetAt.After(view.ResetAt) {
+				view.ResetAt = other.ResetAt
+			}
+		} else if other.State(now) == "unknown" && view.State != "exhausted" {
+			view.State = "unknown"
+		}
+	}
+	for _, reservation := range snapshot.reservations {
 		if sharedProviderAccount(report, reservation.Report) {
 			view.Used++
 			if !slices.ContainsFunc(freshReports, func(current providercapacity.Report) bool {
@@ -169,7 +191,7 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 	case view.State == "unknown":
 		view.Reason = "Quota is unknown or stale; only the declared concurrency bound is available"
 	}
-	return view, rows.Err()
+	return view
 }
 
 func selectProviderCapacity(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, id tracker.WorkItemID, now time.Time) (providercapacity.Reservation, bool, error) {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -73,6 +74,10 @@ func (f changeFixture) detail(t *testing.T) tracker.ChangeDetail {
 	requireNativeStatus(t, response, http.StatusOK)
 	var detail tracker.ChangeDetail
 	decodeHubResponse(t, response, &detail)
+	current, err := readCurrentChangeDetail(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
+	if err != nil || !reflect.DeepEqual(current.Summary, detail.Summary) {
+		t.Fatalf("current summary = %#v, full summary = %#v, error = %v", current.Summary, detail.Summary, err)
+	}
 	return detail
 }
 
