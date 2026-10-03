@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -59,23 +60,6 @@ func newLandingFixture(t *testing.T) landingFixture {
 	runGit(t, info.Path, "commit", "-am", "feature two")
 	head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 	return landingFixture{source: source, remote: remote, backend: local, issue: issue, info: info, head: head}
-}
-
-// Git for Windows bounds worktree metadata paths. t.TempDir includes the full
-// subtest name, which can consume that budget before Git appends its metadata.
-// Keep the receiver and landing roots short within the test process's scratch.
-func landingTempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp(filepath.Dir(sourceRepoSeedDir), "landing-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(dir); err != nil {
-			t.Error(err)
-		}
-	})
-	return dir
 }
 
 func (f landingFixture) remoteMain(t *testing.T) string {
@@ -127,7 +111,7 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 			fixture := newLandingFixture(t)
 			branch := "detent/external-source"
 			runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+branch, fixture.head+":refs/pull/7/head")
-			receiver := filepath.Join(landingTempDir(t), "receiver")
+			receiver := filepath.Join(testenv.TempDir(t), "receiver")
 			runGit(t, fixture.source, "clone", "--no-local", "--single-branch", "--branch", "main", fixture.remote, receiver)
 			if _, err := runGitAt(t.Context(), receiver, "cat-file", "-e", fixture.head+"^{commit}"); err == nil {
 				t.Fatal("receiver already has the external commit")
@@ -135,7 +119,7 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 			repository := "https://github.com/example/repo"
 			runGit(t, receiver, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
 			runGit(t, receiver, "remote", "set-url", "origin", repository+".git")
-			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(landingTempDir(t), "workspaces"), SourceRoot: receiver, AutoBranch: !test.detached})
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(testenv.TempDir(t), "workspaces"), SourceRoot: receiver, AutoBranch: !test.detached})
 			if err != nil {
 				t.Fatal(err)
 			}

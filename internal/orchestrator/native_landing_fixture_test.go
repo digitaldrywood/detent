@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -50,8 +51,8 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	if mergeStatus == 0 {
 		mergeStatus = http.StatusMethodNotAllowed
 	}
-	source := t.TempDir()
-	remote := filepath.Join(t.TempDir(), "origin.git")
+	source := testenv.TempDir(t)
+	remote := filepath.Join(testenv.TempDir(t), "origin.git")
 	nativeLandingGit(t, t.Context(), source, "init", "-b", "main")
 	nativeLandingGit(t, t.Context(), source, "config", "user.name", "Landing Test")
 	nativeLandingGit(t, t.Context(), source, "config", "user.email", "landing@example.test")
@@ -80,7 +81,7 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	nativeLandingGit(t, t.Context(), source, "remote", "add", "origin", repository+".git")
 	nativeLandingGit(t, t.Context(), source, "push", "-u", "origin", "main")
 	base := nativeLandingGit(t, t.Context(), remote, "rev-parse", "refs/heads/main")
-	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(testenv.TempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
