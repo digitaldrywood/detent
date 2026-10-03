@@ -706,6 +706,13 @@ func browserPreviewConfig(cfg *Config) {
 
 func (f *browserHostedFixture) seedPreview(t *testing.T) {
 	t.Helper()
+	if os.Getenv("DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER") != "" {
+		user := auth.HostedUser{ID: "user_browser_unsigned", Email: "unsigned@example.test", Name: "Unsigned Member"}
+		f.provider.users[user.ID] = user
+		if _, err := f.provider.CreateMembership(t.Context(), user.ID, f.provider.organization.ID, "member"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, project := range []string{f.project, f.privateProject} {
 		f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_owner/grants", map[string]any{
 			"idempotency_key": "preview-owner-runner-" + project, "project_id": project, "write": true, "runner": true,
@@ -832,13 +839,7 @@ func (f *browserHostedFixture) sessionRefreshHandler(t *testing.T, next http.Han
 func TestHostedBrowserPreviewSeed(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
-	if os.Getenv("DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER") != "" {
-		user := auth.HostedUser{ID: "user_browser_unsigned", Email: "unsigned@example.test", Name: "Unsigned Member"}
-		f.provider.users[user.ID] = user
-		if _, err := f.provider.CreateMembership(t.Context(), user.ID, f.provider.organization.ID, "member"); err != nil {
-			t.Fatal(err)
-		}
-	}
+
 	f.seedPreview(t)
 	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
 		f.seedIssueAsk(t)

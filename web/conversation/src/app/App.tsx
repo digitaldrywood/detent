@@ -523,6 +523,9 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
     client.drafts.writeDraft(scope, "");
     commandKey.current = newCommandKey();
     createKey.current = newCommandKey();
+    // Bind the acknowledged project before opening a chat from All projects.
+    // The sidebar list can refresh after the route mounts.
+    shell.setProjectId(result.success.conversation.project_id);
     // The composer moves from centred to docked across this navigation. On a
     // narrow viewport that move is animated; reduced motion and browsers
     // without view transitions fall through to a plain navigation.

@@ -20,14 +20,14 @@ test("runner sheet saves through the fleet and persists routing after reload", a
   const sheet = page.getByRole("dialog", { name: "Settings runner", exact: true });
   await expect(sheet).toBeVisible();
   await sheet.getByRole("radio", { name: "Draining Finishes what it has" }).check();
-  await sheet.getByLabel("Jobs at once").fill("1");
+  await sheet.getByRole("spinbutton", { name: "Jobs at once", exact: true }).fill("1");
   const home = sheet.getByRole("checkbox", { name: /^Home / }).first();
   const homeName = await home.getAttribute("aria-label");
   await home.check();
   await sheet.getByRole("radio", { name: /^Full host access/ }).check();
   await sheet.getByLabel("Host services the sandbox may reach").fill("tcp:127.0.0.1:8080");
   await sheet.getByLabel("Availability", { exact: true }).selectOption("hours");
-  await sheet.getByLabel("Time zone", { exact: true }).selectOption("America/Chicago");
+  await sheet.getByRole("combobox", { name: /^Time zone/ }).selectOption("America/Chicago");
   await sheet.getByLabel("Stop running work after hours end").fill("30m");
   await sheet.getByLabel("Queued work spillover").selectOption("after");
   await sheet.getByLabel("Queued work wait in minutes").fill("5");
@@ -39,7 +39,7 @@ test("runner sheet saves through the fleet and persists routing after reload", a
   const saved = page.getByRole("dialog", { name: "Settings runner", exact: true });
   await expect(saved.getByRole("radio", { name: /^Full host access/ })).toBeChecked();
   await expect(saved.getByLabel(homeName, { exact: true })).toBeChecked();
-  await expect(saved.getByLabel("Jobs at once")).toHaveValue("1");
+  await expect(saved.getByRole("spinbutton", { name: "Jobs at once", exact: true })).toHaveValue("1");
   await expect(saved.getByLabel("Host services the sandbox may reach")).toHaveValue("tcp:127.0.0.1:8080");
   await expect(saved.getByLabel("Day range 1")).toHaveValue("Mon-Fri");
   await expect(saved.getByLabel("From 1")).toHaveValue("09:00");
@@ -74,7 +74,7 @@ test("runner outside hours stays contextual on its row", async ({ page }) => {
   const end = new Date(later.getTime() + 60 * 60 * 1000);
   const clock = (date) => date.toISOString().slice(11, 16);
   await sheet.getByRole("radio", { name: "Active Takes new work" }).check();
-  await sheet.getByLabel("Time zone", { exact: true }).selectOption("UTC");
+  await sheet.getByRole("combobox", { name: /^Time zone/ }).selectOption("UTC");
   await sheet.getByLabel("Day range 1").selectOption("Mon-Sun");
   await sheet.getByLabel("From 1").fill(clock(later));
   await sheet.getByLabel("Until 1").fill(clock(end));
