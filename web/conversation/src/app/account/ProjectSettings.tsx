@@ -2,6 +2,7 @@ import React from "react";
 import * as Schema from "effect/Schema";
 
 import { SpritesCard } from "./SpritesCard.tsx";
+import { SpritePoolCard } from "./SpritePoolCard.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
@@ -638,7 +639,7 @@ export function ProjectSettingsRoute({
       header={header}
       onOpenFleet={() => onNavigate?.("/settings/runners")}
       onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}
-      sprites={<SpritesCard key={projectId} projectId={projectId} canManage={canManage} />}
+      sprites={<><SpritesCard key={projectId} projectId={projectId} canManage={canManage} /><SpritePoolCard key={`pool-${projectId}`} projectId={projectId} canManage={canManage} /></>}
       workflow={<WorkflowSettings integration={integration.value} canManage={canManage && project?.can_write === true} saving={saveWorkflow.pending} error={saveMessage(saveWorkflow.error)} onSave={(states) => void saveWorkflow.call(states)} />}
     />
   );

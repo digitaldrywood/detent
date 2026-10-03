@@ -161,13 +161,17 @@ func (s *Service) revokeRunnerIdentity(c echo.Context) error {
 
 func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope nativeScope, resource string) (any, error) {
 	return s.runnerAdminTransaction(ctx, scope, true, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		result, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ?, updated_at = ? WHERE revoked_at IS NULL AND id IN
-(SELECT token_id FROM runner_identities WHERE id = ? AND organization_id = ?)`, formatHubTime(now), formatHubTime(now), resource, string(scope.organization))
-		if err := requireRunnerUpdate(result, err); err != nil {
-			return nil, err
-		}
-		return struct{}{}, recordRunnerEvent(ctx, tx, resource, scope.credential.ID, "revoked", now)
+		return struct{}{}, revokeRunnerIdentityInTx(ctx, tx, scope, resource, now)
 	})
+}
+
+func revokeRunnerIdentityInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, resource string, now time.Time) error {
+	result, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ?, updated_at = ? WHERE revoked_at IS NULL AND id IN
+(SELECT token_id FROM runner_identities WHERE id = ? AND organization_id = ?)`, formatHubTime(now), formatHubTime(now), resource, string(scope.organization))
+	if err := requireRunnerUpdate(result, err); err != nil {
+		return err
+	}
+	return recordRunnerEvent(ctx, tx, resource, scope.credential.ID, "revoked", now)
 }
 
 func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind string, now time.Time) error {
