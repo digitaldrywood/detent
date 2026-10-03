@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/store/storetest"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -4700,7 +4701,7 @@ func openManagerTestStore(t *testing.T) store.Store {
 	t.Helper()
 	backend, err := store.Open(context.Background(), store.Config{
 		Backend: store.BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "runtime.db"),
+		Path:    storetest.NewDatabasePath(t),
 	})
 	if err != nil {
 		t.Fatalf("store.Open() error = %v", err)

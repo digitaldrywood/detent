@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 const (
@@ -59,6 +60,10 @@ type fakeAccess struct {
 	access  auth.HostedAccess
 	expires time.Time
 }
+
+var hubDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
+	return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, GitHubDisabled: true, Logger: slog.New(slog.DiscardHandler)})
+})
 
 func newFakeProvider() *fakeProvider {
 	return &fakeProvider{users: map[string]string{}, sessions: map[string]auth.HostedIdentity{}, memberships: map[string]auth.Membership{}, invitations: map[string]auth.Invitation{}, access: map[string]fakeAccess{}, refresh: map[string]string{}}
@@ -400,7 +405,7 @@ func originPost(t *testing.T, handler http.Handler, token, target string, form u
 
 func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id, providerID, owner, project string) (tenantFixture, http.Handler) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), id+".db")
+	path := hubDatabasePath(t)
 	hosted := func(shared bool) *hubserver.HostedConfig {
 		plans := pilotPlans()
 		plans.Plans[0].Allowances["projects"] = 10
