@@ -399,9 +399,9 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	runtime.GitHub = &tracker.NativeGitHubScope{Scope: "native_landing", StartedAt: at, ObservedAt: at, WallElapsedNS: &wall,
 		RESTCounts: []tracker.NativeGitHubCount{{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "pull requests", Outcome: "200"}, Count: 2}},
 		Timings: []tracker.NativeGitHubTiming{
-			{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "pull requests", Outcome: "200"}, Protocol: "rest", QueryPurpose: "hydrate_pull_request", Boundary: "http_transport", AttemptCount: 2, TimedCount: 2, ElapsedSumNS: &elapsed, ElapsedMaxNS: &elapsed, FirstObservedAt: at, LastObservedAt: at},
+			{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "pull requests", Outcome: "200"}, Protocol: "rest", Boundary: "http_transport", AttemptCount: 2, TimedCount: 2, ElapsedSumNS: &elapsed, ElapsedMaxNS: &elapsed, FirstObservedAt: at, LastObservedAt: at},
 			{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "prepare", EndpointFamily: "graphql", Outcome: "error"}, Protocol: "graphql", QueryPurpose: "graphql", Boundary: "http_transport", AttemptCount: 1, FirstObservedAt: at, LastObservedAt: at},
-			{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "pull requests", Outcome: "200"}, Protocol: "rest", QueryPurpose: "hydrate_pull_request", Boundary: "token_resolution_inclusive", AttemptCount: 2, TimedCount: 2, ElapsedSumNS: &elapsed, ElapsedMaxNS: &elapsed, FirstObservedAt: at, LastObservedAt: at},
+			{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "pull requests", Outcome: "200"}, Protocol: "rest", Boundary: "token_resolution_inclusive", AttemptCount: 2, TimedCount: 2, ElapsedSumNS: &elapsed, ElapsedMaxNS: &elapsed, FirstObservedAt: at, LastObservedAt: at},
 			{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "app installation tokens", Outcome: "200"}, Protocol: "rest", Boundary: "http_transport", AttemptCount: 1, TimedCount: 1, ElapsedSumNS: &elapsed, ElapsedMaxNS: &elapsed, FirstObservedAt: at, LastObservedAt: at},
 		}}
 	observed.Data.Runtime = &runtime
@@ -424,6 +424,18 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 			scope := *r.GitHub
 			scope.Timings = slices.Clone(scope.Timings)
 			scope.Timings[0].QueryPurpose = "query private token"
+			r.GitHub = &scope
+		}, http.StatusUnprocessableEntity},
+		{"empty GraphQL purpose", func(r *tracker.NativeRuntimeObservation) {
+			scope := *r.GitHub
+			scope.Timings = slices.Clone(scope.Timings)
+			scope.Timings[1].QueryPurpose = ""
+			r.GitHub = &scope
+		}, http.StatusUnprocessableEntity},
+		{"REST GraphQL purpose", func(r *tracker.NativeRuntimeObservation) {
+			scope := *r.GitHub
+			scope.Timings = slices.Clone(scope.Timings)
+			scope.Timings[0].QueryPurpose = "hydrate_pull_request"
 			r.GitHub = &scope
 		}, http.StatusUnprocessableEntity},
 		{"unbounded timing records", func(r *tracker.NativeRuntimeObservation) {
