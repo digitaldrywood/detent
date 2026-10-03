@@ -77,7 +77,13 @@ if git -C "$1" update-ref "$(git -C "$1" symbolic-ref HEAD)" "$target" 2>/dev/nu
 			if err != nil {
 				return AgentTurnResult{}, err
 			}
-			profile := fmt.Sprintf("(version 1)(allow default)(deny file-write*)(deny file-read* (literal %q))(allow file-write* (literal %q) (subpath %q) (subpath %q)", a.signer, os.DevNull, req.Workspace, req.TempDir)
+			// Seatbelt matches resolved paths; macOS temporary directories can use
+			// aliases such as /var for /private/var. Deny the actual key target.
+			signerPath, err := filepath.EvalSymlinks(a.signer)
+			if err != nil {
+				return AgentTurnResult{}, err
+			}
+			profile := fmt.Sprintf("(version 1)(allow default)(deny file-write*)(deny file-read* (literal %q))(allow file-write* (literal %q) (subpath %q) (subpath %q)", signerPath, os.DevNull, req.Workspace, req.TempDir)
 			var allowedRoots strings.Builder
 			for _, root := range roots {
 				allowedRoots.WriteString(fmt.Sprintf(" (subpath %q)", root))
