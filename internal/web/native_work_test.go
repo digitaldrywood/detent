@@ -99,8 +99,14 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 			case "/labels":
 				response = map[string]any{"items": []tracker.NativeLabel{{Name: "bug", Count: 1}}}
 			case "/work-items":
-				fixture.last = map[string]string{"include": r.URL.Query().Get("include")}
+				fixture.last = map[string]string{}
+				for key, values := range r.URL.Query() {
+					fixture.last[key] = strings.Join(values, ",")
+				}
 				response = tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{fixture.issue}}
+				if r.URL.Query().Get("include") == "work" {
+					response = tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{fixture.issue}}, Work: &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{fixture.issue}, Lanes: []tracker.NativeWorkLane{{State: "Todo", Total: 1}}}}
+				}
 			case "/work-items/wi_example":
 				response = fixture.issue
 			case "/work-items/wi_visible":

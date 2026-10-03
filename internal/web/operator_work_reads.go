@@ -113,12 +113,20 @@ func (r dashboardWorkReads) ReadWork(ctx context.Context, name string, request o
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
 	if name == operatortool.WorkList {
-		if request.Cursor != "" {
+		if request.Cursor != "" || request.Archived != "" || request.Assignee != "" || len(request.Assignees) != 0 || request.Priority != nil || len(request.Priorities) != 0 || len(request.Include) != 0 {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
 		issues := scopedWorkIssues(snapshot, request.ProjectID)
+		states := append([]string{}, request.States...)
+		if request.State != "" {
+			states = append(states, request.State)
+		}
+		labels := append([]string{}, request.Labels...)
+		if request.Label != "" {
+			labels = append(labels, request.Label)
+		}
 		issues = slices.DeleteFunc(issues, func(issue telemetry.Issue) bool {
-			return request.State != "" && !strings.EqualFold(issue.State, request.State) || request.Query != "" && !strings.Contains(strings.ToLower(issue.Title+" "+issue.Description+" "+issue.Identifier), strings.ToLower(request.Query)) || request.Label != "" && !slices.Contains(issue.Labels, request.Label)
+			return len(states) != 0 && !slices.ContainsFunc(states, func(state string) bool { return strings.EqualFold(issue.State, state) }) || request.Query != "" && !strings.Contains(strings.ToLower(issue.Title+" "+issue.Description+" "+issue.Identifier), strings.ToLower(request.Query)) || len(labels) != 0 && !slices.ContainsFunc(labels, func(label string) bool { return slices.Contains(issue.Labels, label) })
 		})
 		return snapshotWorkResult(request, snapshot, operatortool.OffsetPage(issues, request.Offset, request.Limit))
 	}
@@ -324,17 +332,7 @@ func (s *Server) readNativeWork(ctx context.Context, client *hubclient.NativeCli
 	}
 
 	if name == operatortool.WorkList {
-		params := url.Values{"limit": {strconv.Itoa(request.Limit)}, "cursor": {request.Cursor}, "include": {"summary"}}
-		if request.State != "" {
-			params.Set("state", request.State)
-		}
-		if request.Label != "" {
-			params.Set("label", request.Label)
-		}
-		if request.Query != "" {
-			params.Set("q", request.Query)
-		}
-		page, err := client.Issues(ctx, params)
+		page, err := client.IssuesPage(ctx, request.NativeWorkQuery())
 		if err == nil {
 			for i := range page.Items {
 				page.Items[i], err = s.projectNativeWork(ctx, client, page.Items[i])
@@ -342,8 +340,16 @@ func (s *Server) readNativeWork(ctx context.Context, client *hubclient.NativeCli
 					break
 				}
 			}
+			if err == nil && page.Work != nil {
+				for i := range page.Work.Items {
+					page.Work.Items[i], err = s.projectNativeWork(ctx, client, page.Work.Items[i])
+					if err != nil {
+						break
+					}
+				}
+			}
 		}
-		return nativeWorkResult(request, operatortool.NativeItemPage(request.ProjectID, page), err)
+		return nativeWorkResult(request, operatortool.NativeWorkPageView(request.ProjectID, page), err)
 	}
 	if name == operatortool.WorkConfig {
 		p, err := client.Project(ctx)

@@ -165,6 +165,19 @@ maintenance cycle. Results contain no storage URL, secret or internal authorizat
 principal. `TestAttachmentRoutesIsolation` additionally covers legacy/modern reads,
 content bounds, reference replay and foreign targets, approval/rejection, revoked
 credentials, stale previews and YOLO. Maintenance callbacks remain service-only.
+Native #26 uploads require a business request ID and share entry's optional API
+`Idempotency-Key` contract. Existing native command transactions bind the current
+principal, organization, project and validated content metadata to one upload ID
+and registration receipt. Replays reauthorize current writes, reject changed
+content and deleted uploads, and return completed metadata before storing bytes.
+Existing conditional object writes and bounded size/SHA-256 verification settle
+lost storage responses without overwriting or duplicating objects. Interrupted
+uploads use the existing attachment maintenance cycle; no retry worker, lease or
+alternate database writer is added. Entry records the actual MCP outcome with
+the trusted originating principal, mode and correlation, omitting payloads and
+credentials. Keyed concurrency, response loss, replay conflicts and revoked/deleted
+replays extend `TestAttachmentMetadataSettlement` and `TestAttachmentRoutesIsolation`.
+
 Worker screenshot capture (#197) selects only changed image paths from the
 existing attempt diff anchored before native Code/Rework execution. Unchanged
 inherited images and deleted paths are not current evidence. Programmatic
@@ -564,14 +577,20 @@ item/byte bounds or return a safe unavailable response. `TestHostedContextMCP` a
 `TestHostedContextKeyProjection` and `TestHostedContextUnavailable` cover dedicated/shared bindings through both
 transports, shared browser content, current and removed authority, direct calls,
 secret omission, bounded/unavailable reads and activity/workspace cursor changes.
-Parent #3259 conformance and unconditional zero-pending acceptance remain pending.
+The parent source inventory diagnostic requires zero pending operator rows;
+deployment availability remains explicit and never confers authority.
 
 MCP transport parity (#3339, native #207) uses one permission-filtered typed
 registry with toolset metadata. Tool discovery returns the complete current
-catalog in one response without a continuation cursor, resolving application
+catalog by default in one response without a continuation cursor, resolving application
 discovery once regardless of catalog size. Existing opaque cursors still validate
 their principal/catalog digest and bounded offset against current authority,
-then return all remaining tools without another cursor. The `2026-07-28` stateless
+then return all remaining tools without another cursor. Optional
+`tools/list` metadata `detent/toolsets` selects existing registry groups after
+current application discovery. It cannot add tools or authorize a direct call;
+cursor digests bind the selected catalog. Results remain bounded at 256 KiB;
+protocol frames allow up to 832 KiB for text and structured copies.
+The `2026-07-28` stateless
 protocol validates per-request metadata and mirrored HTTP headers; older handshakes retain their
 bound sessions. Modern `tools/list` and `server/discover` results carry
 `ttlMs: 0` and `cacheScope: "private"` through the shared result serializer
@@ -590,6 +609,18 @@ writer is introduced. `TestProtocolApplicationParity`,
 `TestModernHTTPMetadataValidation`, `TestCatalogCursorCurrentAuthority`, and
 modern cases in `TestMCPActionApprovalBoundary` cover transport parity, forged
 metadata, direct-call ownership, revoked authority and approval after a POST ends.
+
+Native #26 completes conversation subject create/list through the shared
+`commandCreateConversation` and `readConversationsPage` owners. Subject IDs
+resolve in the current project; private creator audience, no worker link, and
+complete-input mutation receipts remain enforced. Native work-list argument
+variants reuse `readIssues`, including bounded repeated selectors, archive
+selection and workspace/work projections. Both list and operational items use
+compact projections; the daemon additionally filters relations under current
+local grants before serializing either collection. The original five read
+schemas remain unchanged. `TestWorkspaceOperatorConversation`,
+`TestNativeWorkPageOperationalScope`, `TestWorkspaceRequestCreatesSessionAndDispatchItem`
+and `TestOperatorNativeClientReads` cover these adapters and both transports.
 
 Organization, membership/grant and credential administration (#3344) uses the
 same application commands as dashboard handlers. Dedicated bootstrap accounts

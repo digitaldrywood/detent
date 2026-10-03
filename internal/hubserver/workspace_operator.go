@@ -23,27 +23,28 @@ type workspaceOperatorExecutor struct{ server *Service }
 var errWorkspaceOperationUnavailable = errors.New("workspace operation is unavailable")
 
 type workspaceToolRequest struct {
-	Path             string           `json:"path"`
-	ShowIgnored      bool             `json:"show_ignored"`
-	ProjectID        string           `json:"project_id"`
-	RequestID        string           `json:"request_id"`
-	WorkspaceID      string           `json:"workspace_id"`
-	ConversationID   string           `json:"conversation_id"`
-	AttachmentID     string           `json:"attachment_id"`
-	ActionID         string           `json:"action_id"`
-	RunID            string           `json:"run_id"`
-	RecordingID      string           `json:"recording_id"`
-	WorkItemID       string           `json:"work_item_id"`
-	Cursor           string           `json:"cursor"`
-	Query            string           `json:"query"`
-	State            string           `json:"state"`
-	Settled          *bool            `json:"settled"`
-	Before           int64            `json:"before"`
-	Limit            int              `json:"limit"`
-	Offset           int              `json:"offset"`
-	Length           int              `json:"length"`
-	ExpectedRevision tracker.Revision `json:"expected_revision"`
-	Input            json.RawMessage  `json:"input"`
+	Path              string           `json:"path"`
+	ShowIgnored       bool             `json:"show_ignored"`
+	ProjectID         string           `json:"project_id"`
+	RequestID         string           `json:"request_id"`
+	WorkspaceID       string           `json:"workspace_id"`
+	ConversationID    string           `json:"conversation_id"`
+	AttachmentID      string           `json:"attachment_id"`
+	ActionID          string           `json:"action_id"`
+	RunID             string           `json:"run_id"`
+	RecordingID       string           `json:"recording_id"`
+	WorkItemID        string           `json:"work_item_id"`
+	SubjectWorkItemID string           `json:"subject_work_item_id"`
+	Cursor            string           `json:"cursor"`
+	Query             string           `json:"query"`
+	State             string           `json:"state"`
+	Settled           *bool            `json:"settled"`
+	Before            int64            `json:"before"`
+	Limit             int              `json:"limit"`
+	Offset            int              `json:"offset"`
+	Length            int              `json:"length"`
+	ExpectedRevision  tracker.Revision `json:"expected_revision"`
+	Input             json.RawMessage  `json:"input"`
 }
 
 func (e workspaceOperatorExecutor) OpenConnection(ctx context.Context) error {
@@ -92,6 +93,8 @@ func workspaceRequirement(name string, r workspaceToolRequest, write bool) opera
 		requirement.ResourceKind, requirement.ResourceID = "action", r.ActionID
 	case r.WorkItemID != "":
 		requirement.ResourceKind, requirement.ResourceID = "work_item", r.WorkItemID
+	case r.SubjectWorkItemID != "":
+		requirement.ResourceKind, requirement.ResourceID = "work_item", r.SubjectWorkItemID
 	}
 	if name == "create_project_action_run" || name == "workspace_terminal" || name == "workspace_file_read" || name == "workspace_file_list" || name == "create_workspace" || name == "create_project_action" || name == "patch_project_action" {
 		requirement.ResourceKind = "runners:" + requirement.ResourceKind
@@ -474,7 +477,7 @@ func (s *Service) readWorkspaceTool(ctx context.Context, scope nativeScope, name
 		value, err := s.readWorkspace(ctx, scope, r.WorkspaceID)
 		return operatorWorkspaceProjection(value, false, err)
 	case "list_project_conversations", "list_organization_conversations":
-		filter := conversationListQuery{Project: scope.project, Limit: limit, Cursor: r.Cursor, Title: r.Query, Settled: r.Settled}
+		filter := conversationListQuery{Project: scope.project, Limit: limit, Cursor: r.Cursor, Title: r.Query, Settled: r.Settled, SubjectWorkItemID: r.SubjectWorkItemID}
 		if name == "list_organization_conversations" && r.ProjectID == "" {
 			projects, every, err := s.readableConversationProjects(ctx, scope)
 			if err != nil {

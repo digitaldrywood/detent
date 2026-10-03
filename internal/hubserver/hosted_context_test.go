@@ -447,7 +447,12 @@ func TestHostedContextUnavailable(t *testing.T) {
 		t.Run(transport, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			ctx := workspaceOperatorContext(t, f.service, testHubAdminToken, string(f.project.OrganizationID), "hosted-unavailable")
-			ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead})
+			credential, _, err := f.service.authenticateAPIToken(t.Context(), testHubAdminToken, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx = f.service.withOperatorCatalog(ctx, credential, string(f.project.OrganizationID))
+			ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead})
 			if err != nil {
 				t.Fatal(err)
 			}

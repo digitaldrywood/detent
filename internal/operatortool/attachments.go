@@ -86,6 +86,7 @@ func DecodeAttachmentOperation(name string, raw json.RawMessage) (AttachmentOper
 }
 
 type AttachmentArguments struct {
+	RequestID     string `json:"request_id"`
 	ProjectID     string `json:"project_id"`
 	Name          string `json:"name"`
 	ContentType   string `json:"content_type,omitempty"`
@@ -93,7 +94,7 @@ type AttachmentArguments struct {
 }
 
 func uploadAttachmentCatalog() []Definition {
-	return []Definition{{Name: UploadAttachment, Description: "Upload a Cloud issue attachment from base64 content. Returns id and reference; embed reference in file_issue description (create_issue in the API) or add_comment body. Larger files use detent attach or the upload API. Requires project write authority.", InputSchema: json.RawMessage(`{"type":"object","required":["project_id","name","content_base64"],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"name":{"type":"string","minLength":1,"maxLength":256},"content_type":{"type":"string","maxLength":128},"content_base64":{"type":"string","minLength":1,"maxLength":60000}},"additionalProperties":false}`), Annotations: Annotations{OpenWorld: true}, Meta: ToolMetadata{Toolset: "work"}}}
+	return []Definition{{Name: UploadAttachment, Description: "Upload a Cloud issue attachment from base64 content. Reuse request_id only for identical upload retries. Returns id and reference; embed reference in file_issue description (create_issue in the API) or add_comment body. Larger files use detent attach or the upload API. Requires project write authority.", InputSchema: json.RawMessage(`{"type":"object","required":["project_id","name","content_base64","request_id"],"properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"name":{"type":"string","minLength":1,"maxLength":256},"content_type":{"type":"string","maxLength":128},"content_base64":{"type":"string","minLength":1,"maxLength":60000}},"additionalProperties":false}`), Annotations: Annotations{Idempotent: true, OpenWorld: true}, Meta: ToolMetadata{Toolset: "work"}}}
 }
 
 func AttachmentCatalog() []Definition {
@@ -115,7 +116,7 @@ func AttachmentCatalog() []Definition {
 
 func DecodeAttachmentArguments(raw json.RawMessage) (AttachmentArguments, []byte, error) {
 	var input AttachmentArguments
-	if DecodeArguments(raw, &input) != nil || !strings.HasPrefix(input.ProjectID, "prj_") || len(input.ProjectID) > 256 || len(input.Name) > 256 || len(input.ContentType) > 128 || strings.ContainsAny(input.ProjectID+input.ContentType, "\r\n") || len(input.ContentBase64) > 60000 {
+	if DecodeArguments(raw, &input) != nil || strings.TrimSpace(input.RequestID) == "" || len(input.RequestID) > 128 || strings.ContainsAny(input.RequestID, "\r\n") || !strings.HasPrefix(input.ProjectID, "prj_") || len(input.ProjectID) > 256 || len(input.Name) > 256 || len(input.ContentType) > 128 || strings.ContainsAny(input.ProjectID+input.ContentType, "\r\n") || len(input.ContentBase64) > 60000 {
 		return input, nil, ErrInvalidArguments
 	}
 	if _, err := conversation.SanitizeAttachmentName(input.Name); err != nil {

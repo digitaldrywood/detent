@@ -463,6 +463,56 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 			t.Fatalf("%s=%s %v", name, result.Content, err)
 		}
 	}
+	subject := f.nativeFixture.create(t, "question subject")
+	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-subject")
+	hidden := foreign.create(t, "hidden subject")
+	var subjectConversation string
+	for _, transport := range []string{"stdio", "http"} {
+		t.Run("subject/"+transport, func(t *testing.T) {
+			current := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "subject-"+transport)
+			call := hostedContextProtocol(t, f.service, current, transport)
+			create := map[string]any{"project_id": string(f.project.ID), "request_id": "subject-create", "input": map[string]any{"title": "Question", "subject_work_item_id": string(subject.WorkItemID)}}
+			raw := hostedContextData(t, call("tools/call", "create_conversation", create), false)
+			result := operatortool.Result{Content: raw}
+			if workspaceOperatorAction(t, result).Status != chat.ActionSucceeded {
+				t.Fatalf("subject create=%s", raw)
+			}
+			var created conversationCreatedResponse
+			if err := json.Unmarshal(workspaceOperatorData(t, result), &created); err != nil || created.Conversation.SubjectWorkItemID == nil || *created.Conversation.SubjectWorkItemID != string(subject.WorkItemID) || created.Conversation.WorkItemID != nil {
+				t.Fatalf("subject result=%s err=%v", raw, err)
+			}
+			if subjectConversation == "" {
+				subjectConversation = created.Conversation.ID
+			} else if created.Conversation.ID != subjectConversation {
+				t.Fatal("subject replay duplicated the conversation")
+			}
+			for _, test := range []struct {
+				name    string
+				ctx     context.Context
+				visible int
+			}{
+				{"owner", current, 1},
+				{"other owner", workspaceOperatorContext(t, f.service, f.other, string(f.project.OrganizationID), "subject-other-"+transport), 0},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					list := hostedContextProtocol(t, f.service, test.ctx, transport)
+					raw := hostedContextData(t, list("tools/call", "list_project_conversations", map[string]any{"project_id": string(f.project.ID), "subject_work_item_id": string(subject.WorkItemID)}), false)
+					var envelope struct {
+						Data conversationListResponse `json:"data"`
+					}
+					if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Data.Conversations) != test.visible {
+						t.Fatalf("subject listing=%s err=%v", raw, err)
+					}
+					if test.visible == 1 && envelope.Data.Conversations[0].ID != subjectConversation {
+						t.Fatal("subject filter included an ordinary conversation")
+					}
+				})
+			}
+			hostedContextData(t, call("tools/call", "list_project_conversations", map[string]any{"project_id": string(f.project.ID), "subject_work_item_id": string(hidden.WorkItemID)}), true)
+			create["input"].(map[string]any)["subject_work_item_id"] = string(hidden.WorkItemID)
+			hostedContextData(t, call("tools/call", "create_conversation", create), true)
+		})
+	}
 }
 
 // Catches attachment payload escape, duplicated uploads, oversized reads and

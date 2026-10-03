@@ -164,7 +164,11 @@ func newProtocolFixture(t *testing.T, transport, version string) protocolFixture
 			params = map[string]any{}
 		}
 		if modern {
+			additional, _ := params["_meta"].(map[string]any)
 			params["_meta"] = map[string]any{protocolMetaKey: version, capabilitiesMetaKey: map[string]any{}, clientMetaKey: map[string]string{"name": "portable-client", "version": "1"}, "detent/context": map[string]string{"principal_id": "admin", "organization_id": "other"}, "detent/mode": "yolo", "detent/session": "forged"}
+			for key, value := range additional {
+				params["_meta"].(map[string]any)[key] = value
+			}
 		}
 		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 		if err != nil {
@@ -232,6 +236,25 @@ func TestProtocolApplicationParity(t *testing.T) {
 					})
 				}
 				params["arguments"].(map[string]string)["project_id"] = "project"
+				for _, toolset := range []string{operatortool.WorkReadCatalog()[0].Meta.Toolset, "conversations_workspaces"} {
+					var page catalogPage
+					decodeResult(t, request(t, "tools/list", map[string]any{"_meta": map[string]any{"detent/toolsets": []string{toolset}}}), &page)
+					want := []operatortool.Definition{}
+					for _, definition := range operatortool.Registry() {
+						if definition.Meta.Toolset == toolset {
+							want = append(want, definition)
+						}
+					}
+					if len(want) == 0 || !reflect.DeepEqual(page.Tools, want) {
+						t.Fatalf("toolset %s differs from registry: got %d want %d", toolset, len(page.Tools), len(want))
+					}
+				}
+				for _, selector := range []any{nil, "work", []string{"unknown"}, make([]string, 33)} {
+					response := fixture.request("tools/list", map[string]any{"_meta": map[string]any{"detent/toolsets": selector}})
+					if response.Error == nil || response.Error.Code != codeInvalidParams {
+						t.Fatalf("invalid toolset selection accepted: %+v", response)
+					}
+				}
 				response := request(t, "tools/call", params)
 				var result toolCallResult
 				decodeResult(t, response, &result)
@@ -242,6 +265,9 @@ func TestProtocolApplicationParity(t *testing.T) {
 					t.Fatal("structured/text results diverged")
 				}
 				fixture.application.denied.Store(true)
+				if response := fixture.request("tools/list", map[string]any{"_meta": map[string]any{"detent/toolsets": []string{"conversations_workspaces"}}}); response.Error == nil {
+					t.Fatal("grouped discovery reused revoked authority")
+				}
 				decodeResult(t, request(t, "tools/call", params), &denied)
 				if !denied.IsError || denied.Content[0].Text != operatortool.ErrAccessDenied.Error() {
 					t.Fatalf("revoked authority reused: %+v", denied)

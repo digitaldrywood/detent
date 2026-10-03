@@ -22,7 +22,7 @@ import (
 
 const (
 	MaxHTTPRequestBytes  = maxFrameBytes
-	MaxHTTPResponseBytes = operatortool.MaxResultBytes + 64*1024
+	MaxHTTPResponseBytes = 3*operatortool.MaxResultBytes + 64*1024
 
 	defaultMaxHTTPSessions = 1024
 	defaultHTTPSessionIdle = 30 * time.Minute

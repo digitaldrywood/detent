@@ -123,7 +123,13 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			return operatortool.Result{}, err
 		}
 		outcome = "authorized"
-		return operatortool.EncodeResult(map[string]bool{"entry_upload": true})
+		if e.service.operatorChat != nil {
+			metadata.Mode = string(e.service.operatorChat.Conversation(operatortool.CurrentConnection(ctx).ID).Mode)
+		}
+		return operatortool.EncodeResult(struct {
+			EntryUpload bool              `json:"entry_upload"`
+			Mutation    mutation.Metadata `json:"mutation"`
+		}{true, metadata})
 	}
 	var request operatortool.WorkArguments
 	arguments := call.Arguments

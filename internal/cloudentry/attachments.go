@@ -2,7 +2,9 @@ package cloudentry
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/mutation"
 )
 
 var errAttachmentReadAudit = errors.New("attachment read audit unavailable")
@@ -88,6 +91,26 @@ func attachmentCallError(c echo.Context, status int, body []byte, err error, hid
 }
 
 func (s *Service) uploadAttachment(c echo.Context) error {
+	var resource *attachment.Upload
+	if audit, ok := mutation.FromContext(c.Request().Context()); ok && audit.Source == "mcp" {
+		defer func() {
+			audit.RetryIdentity, audit.InputHash = "", ""
+			if resource != nil {
+				audit.ResourceID = resource.ID
+			}
+			outcome := "failed"
+			if c.Response().Status == http.StatusCreated {
+				outcome = "succeeded"
+			}
+			encoded, err := json.Marshal(struct {
+				mutation.Metadata
+				Outcome string `json:"outcome"`
+			}{audit, outcome})
+			if err == nil {
+				s.config.Logger.InfoContext(c.Request().Context(), "operator mutation", "audit", string(encoded))
+			}
+		}()
+	}
 	if s.attachments == nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "attachments_not_configured", "Attachments not configured")
 	}
@@ -130,6 +153,7 @@ func (s *Service) uploadAttachment(c echo.Context) error {
 		if err != nil {
 			return attachmentUploadError(c, err)
 		}
+		resource = upload
 		defer s.closeAttachmentUpload(upload)
 		if _, err := parts.NextPart(); !errors.Is(err, io.EOF) {
 			return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "An upload carries one file part")
@@ -140,6 +164,7 @@ func (s *Service) uploadAttachment(c echo.Context) error {
 	if err != nil {
 		return attachmentUploadError(c, err)
 	}
+	resource = upload
 	defer s.closeAttachmentUpload(upload)
 	return s.storeAttachment(c, organization, authorized.Principal, upload)
 }
@@ -168,6 +193,23 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 	if err != nil || current.Generation != organization.Generation {
 		return attachmentNotFound(c)
 	}
+	requestID := c.Request().Header.Get("Idempotency-Key")
+	if requestID != "" {
+		status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]any{"upload": attachment.UploadRequest{Metadata: upload.Metadata, RequestID: requestID}})
+		if err != nil || status != http.StatusOK {
+			return attachmentCallError(c, status, raw, err, false)
+		}
+		if json.Unmarshal(raw, &upload.Metadata) != nil || upload.Validate() != nil {
+			return attachmentError(c, http.StatusBadGateway, "tenant_unavailable", "Attachment receipt is invalid")
+		}
+		status, raw, err = s.attachmentCall(c, organization, http.MethodGet, "/"+upload.ID, nil)
+		if err == nil && status == http.StatusOK {
+			return attachmentUploadResponse(c, organization.ID, http.StatusCreated, raw)
+		}
+		if err != nil || status != http.StatusNotFound {
+			return attachmentCallError(c, status, raw, err, false)
+		}
+	}
 	status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]int64{"size": upload.Size})
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, false)
@@ -180,10 +222,10 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 	if err := s.auth.audit(ctx, principal, organization.ID, "attachment_uploaded"); err != nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
 	}
-	if err := s.attachments.Put(ctx, key, upload.File, upload.Size, upload.ContentType, upload.SHA256); err != nil {
+	if err := s.attachments.Put(ctx, key, upload.File, upload.Size, upload.ContentType, upload.SHA256); err != nil && (requestID == "" || !s.attachmentUploadStored(ctx, key, upload.Metadata)) {
 		return attachmentError(c, http.StatusBadGateway, "attachment_storage_unavailable", "Attachment storage is unavailable")
 	}
-	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, "", upload.Metadata)
+	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, "", attachment.UploadRequest{Metadata: upload.Metadata, RequestID: requestID})
 	if err == nil && status == http.StatusCreated {
 		return attachmentUploadResponse(c, organization.ID, status, raw)
 	}
@@ -196,6 +238,9 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 			return attachmentCallError(c, status, raw, err, false)
 		}
 	}
+	if requestID != "" {
+		return attachmentCallError(c, status, raw, err, false)
+	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
 	if err := s.auth.audit(cleanup, principal, organization.ID, "attachment_deleted"); err != nil {
@@ -205,6 +250,17 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 		return attachmentError(c, http.StatusBadGateway, "attachment_storage_unavailable", "Attachment cleanup failed")
 	}
 	return attachmentCallError(c, status, raw, err, false)
+}
+
+func (s *Service) attachmentUploadStored(ctx context.Context, key string, record attachment.Metadata) bool {
+	body, err := s.attachments.Open(ctx, key)
+	if err != nil {
+		return false
+	}
+	defer s.closeAttachmentBody(body, record.ID)
+	hash := sha256.New()
+	size, err := io.Copy(hash, io.LimitReader(body, record.Size+1))
+	return err == nil && size == record.Size && hex.EncodeToString(hash.Sum(nil)) == record.SHA256
 }
 
 func (s *Service) attachmentMetadata(c echo.Context) (Organization, attachment.Metadata, int, []byte, error) {

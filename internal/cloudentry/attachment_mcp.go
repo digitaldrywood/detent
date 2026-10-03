@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -61,6 +62,7 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 	}
 	var authorized struct {
 		EntryUpload     bool              `json:"entry_upload"`
+		Mutation        mutation.Metadata `json:"mutation"`
 		EntryAttachment string            `json:"entry_attachment"`
 		Status          chat.ActionStatus `json:"status"`
 		Preview         chat.Action       `json:"preview"`
@@ -75,7 +77,7 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 		if err != nil {
 			return nil
 		}
-		request := c.Request().Clone(c.Request().Context())
+		request := c.Request().Clone(mutation.WithContext(c.Request().Context(), authorized.Mutation))
 		request.URL.Path = "/organizations/" + c.Param("organization") + "/api/v2/projects/" + input.ProjectID + "/attachments"
 		request.URL.RawPath, request.URL.RawQuery = "", ""
 		request.Body = io.NopCloser(bytes.NewReader(content))
@@ -86,6 +88,7 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 		}
 		request.Header.Set("Content-Type", media)
 		request.Header.Set("X-Attachment-Name", input.Name)
+		request.Header.Set("Idempotency-Key", input.RequestID)
 		upload := s.echo.NewContext(request, buffer)
 		upload.SetParamNames("organization", "project")
 		upload.SetParamValues(c.Param("organization"), input.ProjectID)

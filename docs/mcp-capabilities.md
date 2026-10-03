@@ -17,22 +17,36 @@ the fixture retain their provenance. Native #234 delivered credit checkout and
 automatic funding adapters; native #235 delivered invitation grants/edit/resend.
 Their current implemented decisions retain the actual approval, retry and
 deployment restrictions. Those children do not depend on this inventory repair
-or on their acceptance parent. Conversation subject create/list and work-list
-filters stay pending under their existing adapter owners where the current MCP
-schema or executor lacks the application variant.
+or on their acceptance parent. The parent completes typed conversation subject
+create/list and native work-list filters and projections through the same
+application owners, with execution coverage over stdio and HTTP. The source
+inventory check now requires zero pending operator rows on every invocation.
 
 Cloud issue `upload_attachment` is implemented only through shared Cloud entry:
 the tenant checks current operator write authority, then entry stores bytes and
-returns the genuine attachment receipt. Its schema has no `request_id` and its
-idempotent hint is false; retrying may allocate another attachment. Direct Hub
-markers do not establish storage success. Metadata, bounded byte reads, deletion
-and explicit item/comment reference adapters remain pending. Existing content
-saves bind attachment references in the application transaction; conversation
-attachments are a separate resource and cannot satisfy these pending rows.
-The public entry routes have organization-prefixed and canonical API aliases.
-Signed tenant metadata calls retain native scope and project authority;
-service-only retention, existence and object-deletion callbacks remain explicit
-non-model boundaries. This repair adds no adapters or callback tools.
+returns the genuine attachment receipt. Supply a `request_id` of 1–128 bytes;
+reuse it only for identical upload retries. The shared application binds it to
+the current principal, organization, project and validated name, type, dimensions,
+size and SHA-256. Native command receipts retain the attachment ID across connections.
+Changed content conflicts before storage. Conditional object creation and bounded
+SHA-256 verification handle a lost storage response without overwriting bytes;
+metadata registration shares the native command transaction. Completed retries
+return recorded metadata without uploading again. Revoked access and deleted
+attachments cannot be restored through a retry. The idempotent annotation is true.
+
+Native #238 supplies metadata, bounded byte reads, deletion and explicit
+item/comment references. Existing content saves bind attachment references in
+the application transaction; conversation attachments are a separate resource
+with their own tools and authority. API uploads can use the same retry contract
+with an `Idempotency-Key` header; uploads without that header keep their existing
+one-call behavior. The public entry routes have organization-prefixed and
+canonical API aliases. Signed tenant metadata calls retain native scope and
+project authority; service-only retention, existence and object-deletion
+callbacks remain explicit non-model boundaries. The Hub's `entry_upload`
+authorization marker does not establish storage success; entry replaces it with
+the application result and records the correlated mutation outcome without
+credentials or content. Interrupted uploads remain subject to the existing
+attachment maintenance cycle.
 
 Each stable operation ID has exact source-site decisions, deployment and tracker
 availability, current role/scope/grant/ownership restrictions, preconditions,
@@ -105,6 +119,23 @@ their own read time. Artifact references include availability and expiration;
 PR references retain the projection observation time. Results over 256 KiB
 return a safe unavailable error rather than an unbounded payload.
 
+`work_list` accepts singular `state`/`label` selectors and OR lists `states` and
+`labels`. Native projects also accept `assignee`/`assignees`, integer
+`priority`/`priorities` (0–3), `archived` (`"true"`, `"false"`, `"all"`), and
+`include` (`["summary"]`, `["workspace"]`, `["work"]`, or workspace combined
+with summary or work). Arrays are bounded at 32 selectors per dimension.
+Native cursors bind all filters. The default is the compact summary projection;
+`work` adds scoped lane totals and bounded compact operational items, while
+`workspace` includes reserved workspace dispatch items. Detail bodies remain in
+`work_item`. GitHub snapshots support state/label/query and offset pagination;
+native-only selectors return invalid arguments for those snapshots.
+
+`create_conversation.input.subject_work_item_id` creates a private issue Q&A
+conversation through the shared command. `list_project_conversations` accepts
+the same subject selector and preserves the creator-only audience. Subjects
+must belong to the selected organization and project; these conversations do
+not dispatch a worker, link to a work item, or publish an issue comment.
+
 `work_history` is separate from `recent_activity`: GitHub's dashboard history
 uses persisted workflow records when its connector has no durable event reader,
 and identifies that source as `workflow`; native history uses collaboration
@@ -113,7 +144,7 @@ revision reads and native exports require a native service. Hosted hubs without
 daemon receipt/session services omit those tools from discovery and direct calls
 return opaque unavailable errors. #3347 owns PR/review/change/diff/artifact
 content details and reuses the extracted application reads; this child supplies
-references, not another detail implementation. Parent #3259 remains pending.
+references through the shared detail owners.
 
 ## Managed local project configuration (native #94)
 
@@ -245,7 +276,7 @@ receives a safe sign-out outcome, including whether provider sign-out was
 confirmed. Provider failure leaves local access ended. Later tool reads, action
 results and retries are denied, so response loss never repeats the effect; sign
 in and open a fresh connection to continue. Shared tenant hubs leave account
-sign-out to `/api/cloud/mcp`. These implementations do not complete parent #3259.
+sign-out to `/api/cloud/mcp`.
 
 Meaningful forms and redirects produce structured application data, command
 receipts or destination URLs. Provider login/callback exchanges are connection
@@ -254,8 +285,8 @@ excluded redirects. Organization administration uses the shared commands above; 
 remains separate application work.
 Workspace relay frames are transport; bounded file reads and predefined project
 actions belong to the shared application surface, never an arbitrary shell or
-relay proxy. The frontend PR-action request currently has no registered hub
-route; it remains a pending #3347 operation with that service gap recorded.
+relay proxy. Stored change reviews and diffs use the change/artifact application
+tools; their deployment availability is recorded in the matrix.
 
 ## Updating a decision
 
@@ -304,14 +335,13 @@ Focused diagnostics:
 go test ./internal/operatortool/...
 ```
 
-The parent native #26 (imported #3259) uses the same coverage test with strict
-parity enabled, after all children implement their rows:
+The source inventory diagnostic always enforces full operator parity:
 
 ```sh
-DETENT_MCP_REQUIRE_PARITY=1 go test ./internal/operatortool/capability -run '^TestDashboardCapabilityCoverage$'
+go test -timeout=60s ./internal/operatortool/capability -run '^TestDashboardCapabilityCoverage$'
 ```
 
-Strict mode rejects every pending or excluded operator operation. It supplements
+The test rejects every pending or excluded operator operation. It supplements
 the parent's execution, authorization, approval, replay, client-conformance and
 service-absence regressions; inventory coverage does not substitute for them.
 The repository's configured gate remains `true`; this focused diagnostic is not
@@ -343,8 +373,7 @@ linked PR discussion using `project_id`, `reference`, `offset`, and `limit`
 select an arbitrary forge resource. Only deployments with the existing PR comment
 reader advertise it. Direct calls recheck current authority and ownership, and
 missing services or provider failures return opaque unavailable errors. Both
-transports use the same application adapter. These two completed decisions do
-not complete parent #3259 or its remaining acceptance.
+transports use the same application adapter.
 
 `move_item`, `set_priority`, `stop_run`, and `file_issue` use the same application
 validation and commands as dashboard chat. Arguments are typed and bounded; a
@@ -378,11 +407,9 @@ current credential validity, rate limits and workflow policy still apply. Audit
 metadata records the connection mode, client, organization, action and retry ID.
 Connections start in confirmation mode again after a new setup or server restart.
 
-Hosted hubs with no dashboard command service continue to return opaque
-unavailable results; this child does not install missing hosted conversation,
-access or billing operations. Their owner children must use this same human
-approval/connection authority boundary when extracting their application commands.
-Parent #3259 remains pending.
+Hosted hubs with no dashboard command service return opaque unavailable results.
+Conversation, access and billing commands use the same human approval and
+connection authority boundary.
 
 
 ## Shared mutation audit and retries (#3338)
@@ -427,8 +454,8 @@ prove a negative outcome or accept a business retry key, so there is no automati
 repeat. Inspect the resource/provider records before choosing a new key. Checkout
 may resume a pending receipt only through the existing serialized billing intent
 and provider idempotency semantics. Response persistence uses a bounded context
-that survives a client disconnect. These guarantees do not install the pending
-hosted/issue/comment tools or complete parent #3259.
+that survives a client disconnect. These guarantees apply through shared
+application commands; protocol request IDs are never business retry keys.
 
 Native revision-based edits must replay the exact originally submitted tracker
 request, including its expected revision. Connector operations that recompute a
@@ -489,13 +516,16 @@ and [HTTP binding](https://modelcontextprotocol.io/specification/2026-07-28/basi
    format. Unknown revisions, malformed metadata and mismatched headers produce
    bounded protocol errors. Older revisions use their original initialize/ready
    handshake and legacy HTTP sessions. No modern MCP session is created.
-3. Load `tools/list` pages by following the returned opaque `nextCursor` until
-   absent. Each page contains at most five tools; group definitions with
-   `_meta["detent/toolset"]` (`board`, `fleet`, `telemetry`, `actions`, `connection`).
-   A changed catalog/identity invalidates its cursor: restart discovery. Permissions
-   are resolved on every page and invocation. Loading a page is not required for
-   a direct call, and loading one never authorizes that call. Only available typed
-   application tools are advertised; parent #3259's pending operations stay pending.
+3. Load the authorized `tools/list` catalog; the default response includes all
+   available definitions. Group definitions with
+   each definition's `_meta["detent/toolset"]`. To load only selected groups, send
+   `params._meta["detent/toolsets"]` as an array, for example
+   `["board", "connection"]` or `["conversations_workspaces"]`. Omission or an
+   empty array returns the complete catalog; unknown groups and invalid selectors
+   are rejected. A changed catalog, selected group or identity invalidates an old
+   cursor: restart discovery. Permissions are resolved on every discovery and
+   invocation. Discovery is optional before a direct call and grants no authority.
+   Only available typed application tools are advertised.
 4. Call `connection_info` when available to get the application connection ID,
    current mode and dashboard setup URL. Stdio uses the authenticated bridge's
    server-issued handle; legacy HTTP uses its bound connection; modern HTTP binds
@@ -520,6 +550,27 @@ and [HTTP binding](https://modelcontextprotocol.io/specification/2026-07-28/basi
    The shared application command returns the receipt or a safe conflict/uncertain
    result; the MCP transport neither writes persistence nor decides business replay.
 
+For example, a generic `2026-07-28` client can request only board and connection
+tools with this JSON-RPC body over stdio or HTTP:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"detent/toolsets":["board","connection"]}}}
+```
+
+Then invoke an authorized native list, using the actual project identifier:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"work_list","arguments":{"project_id":"YOUR_GRANTED_PROJECT_ID","archived":"false","states":["Todo","In Progress"],"limit":20,"include":["work"]},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+```
+
+HTTP adds the existing bearer credential, `Content-Type: application/json`,
+`Accept: application/json, text/event-stream`, and `MCP-Protocol-Version: 2026-07-28`.
+Use `Mcp-Method: tools/list` for the first body and `Mcp-Method: tools/call` plus
+`Mcp-Name: work_list` for the second. Older clients send these same methods after
+their negotiated handshake, omitting the modern protocol metadata and retaining
+the legacy HTTP session/version headers. Toolset selection remains optional in
+either lifecycle.
+
 Remote connections require a trusted HTTPS endpoint and existing application
 credentials. Terminate TLS at Detent or a trusted proxy configured with the public
 application URL, preserve the intended origin, and redact credentials in logs.
@@ -528,7 +579,8 @@ listener and authorization policy. Untrusted forwarding headers cannot select a
 public origin or principal. Cancellation is per-request: stdio supports
 `notifications/cancelled`, and an HTTP disconnect cancels that request. Requests
 and arguments are bounded, result objects are capped at 256 KiB, and encoded
-response frames at 320 KiB on both transports. Supported optional capabilities
+response frames at 832 KiB on both transports, allowing the serialized text and
+structured copies of a bounded result. Supported optional capabilities
 are advertised accurately: this server exposes tools, not subscriptions, sampling,
 roots, tasks, logging, caching or MRTR elicitation. Operator approval uses the
 existing dashboard flow; no new revocation/recovery mechanism or lane writer is
@@ -570,9 +622,8 @@ results, approvals and audit records never carry provider secrets. Secret
 metadata is available through its existing safe read; removal uses its existing
 command. Local project editing/tracker binding is part of interactive onboarding;
 settings/library/reports have no configuration mutation in that dashboard.
-Their read/filter parity remains with the corresponding inventory owners. This
-child implements its matrix rows and shared settings/budget/review-policy
-prerequisites, and does not complete parent #3259 or those other children.
+Their read/filter parity uses the corresponding inventory application owners;
+shared settings, budget and review-policy prerequisites remain enforced.
 
 ## Workspace, conversation and project actions
 

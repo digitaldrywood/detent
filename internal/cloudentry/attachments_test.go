@@ -30,13 +30,14 @@ type spacesObject struct {
 	created time.Time
 }
 type spacesFixture struct {
-	mu         sync.Mutex
-	objects    map[string]spacesObject
-	keys       []string
-	public     bool
-	versioned  bool
-	failDelete bool
-	transport  http.RoundTripper
+	mu              sync.Mutex
+	objects         map[string]spacesObject
+	keys            []string
+	public          bool
+	versioned       bool
+	failDelete      bool
+	failPutResponse bool
+	transport       http.RoundTripper
 }
 
 func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
@@ -98,6 +99,10 @@ func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
 				return
 			}
 			f.objects[key] = spacesObject{content: content, created: time.Now()}
+			if f.failPutResponse {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			w.Header().Set("ETag", `"test"`)
 		case http.MethodGet:
 			object, ok := f.objects[key]
@@ -488,10 +493,13 @@ func (t attachmentTenantTransport) RoundTrip(request *http.Request) (*http.Respo
 func TestAttachmentMetadataSettlement(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name   string
-		quota  bool
-		status int
-	}{{name: "lost committed response", status: http.StatusCreated}, {name: "quota race", quota: true, status: http.StatusTooManyRequests}} {
+		name        string
+		quota       bool
+		keyed       bool
+		concurrent  bool
+		storageLoss bool
+		status      int
+	}{{name: "lost committed response", status: http.StatusCreated}, {name: "quota race", quota: true, status: http.StatusTooManyRequests}, {name: "keyed lost committed response", keyed: true, status: http.StatusCreated}, {name: "concurrent keyed uploads", keyed: true, concurrent: true, status: http.StatusCreated}, {name: "stored object response loss", keyed: true, storageLoss: true, status: http.StatusCreated}} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newEntryFixture(t)
 			store := newSpacesFixture(t, false)
@@ -499,6 +507,7 @@ func TestAttachmentMetadataSettlement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			store.failPutResponse = test.storageLoss
 			f.service.attachments = storage
 			baseTransport := f.service.config.transport
 			f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
@@ -532,7 +541,31 @@ func TestAttachmentMetadataSettlement(t *testing.T) {
 			csrf := csrfFrom(t, body)
 			project := attachmentProject(t, alice, "org_alpha")
 			path := "/organizations/org_alpha/api/v2/projects/" + project + "/attachments"
-			response := attachmentRequest(t, alice, http.MethodPost, path, strings.NewReader("settlement data"), map[string]string{"Content-Type": "text/plain", "X-Attachment-Name": "file.txt", "X-CSRF-Token": csrf})
+			headers := map[string]string{"Content-Type": "text/plain", "X-Attachment-Name": "file.txt", "X-CSRF-Token": csrf}
+			if test.keyed {
+				headers["Idempotency-Key"] = "settlement"
+			}
+			var concurrent <-chan *httptest.ResponseRecorder
+			if test.concurrent {
+				responses := make(chan *httptest.ResponseRecorder, 1)
+				concurrent = responses
+				go func() {
+					responses <- attachmentRequest(t, alice, http.MethodPost, path, strings.NewReader("settlement data"), headers)
+				}()
+			}
+			response := attachmentRequest(t, alice, http.MethodPost, path, strings.NewReader("settlement data"), headers)
+			if concurrent != nil {
+				other := <-concurrent
+				if other.Code != http.StatusCreated || other.Body.String() != response.Body.String() {
+					t.Fatalf("concurrent upload=%d %s original=%s", other.Code, other.Body.String(), response.Body.String())
+				}
+			}
+			if test.keyed {
+				replay := attachmentRequest(t, alice, http.MethodPost, path, strings.NewReader("settlement data"), headers)
+				if replay.Code != http.StatusCreated || replay.Body.String() != response.Body.String() {
+					t.Fatalf("replay=%d %s original=%s", replay.Code, replay.Body.String(), response.Body.String())
+				}
+			}
 			if response.Code != test.status {
 				t.Fatalf("settlement=%d %s", response.Code, response.Body.String())
 			}
@@ -595,7 +628,7 @@ func exerciseAttachmentClients(t *testing.T, f entryFixture, browser, anonymous 
 				}
 				headers["Mcp-Session-Id"] = initialized.Header().Get("Mcp-Session-Id")
 				attachmentRequest(t, anonymous, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers)
-				arguments := map[string]string{"project_id": project, "name": "test.png", "content_type": "image/png", "content_base64": base64.StdEncoding.EncodeToString(pixels.Bytes())}
+				arguments := map[string]string{"request_id": "upload-" + mode, "project_id": project, "name": "test.png", "content_type": "image/png", "content_base64": base64.StdEncoding.EncodeToString(pixels.Bytes())}
 				call, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": "upload_attachment", "arguments": arguments}})
 				if err != nil {
 					t.Fatal(err)

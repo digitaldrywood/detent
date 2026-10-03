@@ -1,14 +1,17 @@
 package hubserver
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -51,12 +54,63 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	}
 	otherProject := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-project")
 	otherProject.create(t, "Historical needle")
+	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	transports := map[string]func(string, string, any) hostedContextReply{}
+	for _, name := range []string{"stdio", "http"} {
+		transports[name] = hostedContextProtocol(t, f.service, ctx, name)
+	}
 	read := func(query string) tracker.NativeIssuePage {
 		t.Helper()
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work&limit=100"+query, f.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		var page tracker.NativeIssuePage
 		decodeHubResponse(t, response, &page)
+		params, err := url.ParseQuery("include=work&limit=100" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := map[string]any{"project_id": string(f.project.ID), "include": []string{"work"}, "limit": 100}
+		for _, field := range []string{"state", "label", "assignee"} {
+			if values := params[field]; len(values) != 0 {
+				args[field+"s"] = values
+			}
+		}
+		for _, field := range []string{"cursor", "archived"} {
+			if value := params.Get(field); value != "" {
+				args[field] = value
+			}
+		}
+		if value := params.Get("q"); value != "" {
+			args["query"] = value
+		}
+		if values := params["priority"]; len(values) != 0 {
+			priorities := []int{}
+			for _, value := range values {
+				priority, err := strconv.Atoi(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				priorities = append(priorities, priority)
+			}
+			args["priorities"] = priorities
+		}
+		for transport, call := range transports {
+			raw := hostedContextData(t, call("tools/call", operatortool.WorkList, args), false)
+			var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+			if err := json.Unmarshal(raw, &result); err != nil || result.Data.Work == nil || !reflect.DeepEqual(result.Data.Work.Lanes, page.Work.Lanes) || len(result.Data.Work.Items) != len(page.Work.Items) || len(result.Data.Items) != len(page.Items) {
+				t.Fatalf("%s query=%s result=%s err=%v", transport, query, raw, err)
+			}
+			for index, issue := range page.Items {
+				if result.Data.Items[index].WorkItemID != issue.WorkItemID {
+					t.Fatalf("%s dropped filter for %s", transport, query)
+				}
+			}
+			for index, issue := range page.Work.Items {
+				if result.Data.Work.Items[index].WorkItemID != issue.WorkItemID {
+					t.Fatalf("%s lost operational selection for %s", transport, query)
+				}
+			}
+		}
 		return page
 	}
 	first := read("")
