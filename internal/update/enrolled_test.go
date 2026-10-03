@@ -146,7 +146,7 @@ func TestSchedulerEnrolledInterruptedReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := scheduler.EnrolledUpdate(t.Context(), running, &request)
-	if report.Receipt.Status != "uncertain" || updater.applyCalls != 0 {
+	if report == nil || report.Receipt.Status != "uncertain" || updater.applyCalls != 0 {
 		t.Fatalf("interrupted receipt=%+v", report)
 	}
 	if err := os.WriteFile(path, []byte("invalid"), 0600); err != nil {
@@ -156,7 +156,8 @@ func TestSchedulerEnrolledInterruptedReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if scheduler.EnrolledUpdate(t.Context(), running, nil).Supported {
+	report = scheduler.EnrolledUpdate(t.Context(), running, nil)
+	if report == nil || report.Supported {
 		t.Fatal("invalid receipt state advertised effect support")
 	}
 }

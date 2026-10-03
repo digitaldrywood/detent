@@ -136,7 +136,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	var request operatortool.WorkArguments
 	arguments := call.Arguments
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(arguments, &fields) != nil {
+	if json.Unmarshal(arguments, &fields) != nil || fields == nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	if !definition.Annotations.ReadOnly {

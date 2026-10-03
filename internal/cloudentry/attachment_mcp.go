@@ -57,7 +57,7 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 			Text string `json:"text"`
 		} `json:"content"`
 	}
-	if json.Unmarshal(raw, &frame) != nil || json.Unmarshal(frame["result"], &result) != nil || result.IsError || len(result.Content) != 1 {
+	if json.Unmarshal(raw, &frame) != nil || frame == nil || json.Unmarshal(frame["result"], &result) != nil || result.IsError || len(result.Content) != 1 {
 		return nil
 	}
 	var authorized struct {
@@ -117,7 +117,7 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 		deletion := s.attachmentMCPContext(c, buffer, input)
 		confirmed := s.finishAttachmentMCPDeletion(deletion, input)
 		var receipt map[string]any
-		if json.Unmarshal([]byte(result.Content[0].Text), &receipt) != nil {
+		if json.Unmarshal([]byte(result.Content[0].Text), &receipt) != nil || receipt == nil {
 			return nil
 		}
 		if confirmed {
