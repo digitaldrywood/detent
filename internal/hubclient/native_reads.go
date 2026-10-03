@@ -98,7 +98,15 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 	var tools []runner.AgentTool
 	for _, definition := range append(operatortool.WorkReadCatalog(), operatortool.ChangeCatalog()...) {
 		switch definition.Name {
-		case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory:
+		case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkRuns, operatortool.BoardActivity, operatortool.WorkAttemptReceipt:
+			switch definition.Name {
+			case operatortool.WorkRuns:
+				definition.Description = "Read a bounded page of native work-item attempts, including their recorded attempt IDs and runtime observations."
+			case operatortool.BoardActivity:
+				definition.Description = "Read a bounded page of durable native work-item activity from the existing history owner."
+			case operatortool.WorkAttemptReceipt:
+				definition.Description += " Returns recorded native runtime evidence with freshness and unavailable fields; no provider conversation transcript is supplied."
+			}
 			definition.Description += " reference must be a canonical native work-item ID beginning with wi_; numbers, titles and URLs are not supported. Use cursor, not offset, for paging."
 			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
 		case operatortool.ListChanges, operatortool.GetChange:
@@ -121,7 +129,7 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 	var value any
 	var err error
 	switch call.Name {
-	case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory:
+	case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkRuns, operatortool.BoardActivity, operatortool.WorkAttemptReceipt:
 		request, decodeErr := operatortool.DecodeWorkRead(call.Name, call.Arguments)
 		if decodeErr != nil {
 			return operatortool.Result{}, decodeErr
@@ -146,8 +154,26 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 			value = operatortool.NativeItemView(request.ProjectID, issue)
 		case operatortool.WorkComments:
 			value, err = c.CommentsPage(ctx, id, request.Cursor, request.Limit)
-		case operatortool.WorkHistory:
+		case operatortool.WorkHistory, operatortool.BoardActivity:
 			value, err = c.HistoryPage(ctx, id, request.Cursor, request.Limit)
+		case operatortool.WorkRuns:
+			value, err = c.AttemptsPage(ctx, id, request.Cursor, request.Limit)
+		case operatortool.WorkAttemptReceipt:
+			if request.Cursor != "" {
+				return operatortool.Result{}, operatortool.ErrInvalidArguments
+			}
+			selector := request.NativeAttemptID
+			if request.AttemptID > 0 {
+				selector = strconv.FormatInt(request.AttemptID, 10)
+			}
+			var evidence tracker.NativeRuntimeEvidence
+			evidence, err = c.RuntimeEvidence(ctx, id, selector)
+			if err == nil {
+				if evidence.Issue.OrganizationID != c.organization || evidence.Issue.ProjectID != c.project || evidence.Issue.WorkItemID != id {
+					return operatortool.Result{}, operatortool.ErrAccessDenied
+				}
+				return operatortool.NativeRuntimeResult(call.Name, request, evidence)
+			}
 		}
 		value = operatortool.WorkReadResult[any]{ProjectID: request.ProjectID, Reference: request.Reference, GeneratedAt: now, Freshness: explain.SourceAvailable, Data: value}
 	case operatortool.ListChanges, operatortool.GetChange:
