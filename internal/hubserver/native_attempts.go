@@ -247,6 +247,7 @@ func nativeRuntimeHistoryChanged(previous, observation *tracker.NativeRuntimeObs
 	left, right := *previous, *observation
 	left.Activity, right.Activity = nil, nil
 	left.REST, right.REST = nil, nil
+	left.GitHub, right.GitHub = nil, nil
 	left.HeartbeatAt, right.HeartbeatAt = time.Time{}, time.Time{}
 	if left.Landing != nil {
 		landing := *left.Landing

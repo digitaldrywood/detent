@@ -286,6 +286,26 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			if external && strings.Join(operations, ",") != "GET,GET,PUT" || !external && publishedBranch == code.Branch {
 				t.Fatalf("landing used wrong publication owner: %s, %v", publishedBranch, operations)
 			}
+			if result.GitHubScope == nil || len(execution.observations) == 0 || execution.observations[0].GitHub == nil || result.GitHubScope.WallElapsedNS == nil || result.GitHubScope.SubStepElapsedNS != nil || result.GitHubScope.ObservedAt.Before(result.GitHubScope.StartedAt) {
+				t.Fatalf("landing lost recorded GitHub scope: %#v", result.GitHubScope)
+			}
+			var restHTTP, restToken int64
+			for _, timing := range result.GitHubScope.Timings {
+				if timing.TimedCount != timing.AttemptCount || timing.ElapsedSumNS == nil || timing.ElapsedMaxNS == nil || timing.FirstObservedAt.IsZero() || timing.LastObservedAt.Before(timing.FirstObservedAt) {
+					t.Fatalf("landing lost actual timing: %#v", timing)
+				}
+				if timing.Protocol == "rest" {
+					switch timing.Boundary {
+					case "http_transport":
+						restHTTP += timing.AttemptCount
+					case "token_resolution_inclusive":
+						restToken += timing.AttemptCount
+					}
+				}
+			}
+			if restHTTP != int64(len(operations)) || restToken != restHTTP {
+				t.Fatalf("timing changed upstream request population: %d HTTP, %d token, operations %v", restHTTP, restToken, operations)
+			}
 			for file, expected := range files {
 				actual, err := os.ReadFile(file)
 				if err != nil || !bytes.Equal(actual, expected) {

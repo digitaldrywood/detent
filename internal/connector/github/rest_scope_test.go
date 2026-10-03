@@ -372,7 +372,7 @@ func assertScopeTiming(t *testing.T, scope *connector.RESTScope, boundary, famil
 	t.Helper()
 	for _, item := range scope.Timings() {
 		if item.Boundary == boundary && item.EndpointFamily == family && item.Outcome == outcome {
-			if item.AttemptCount != count || item.TimedCount != count || item.ElapsedSumNS < 0 || item.ElapsedMaxNS < 0 || item.ElapsedMaxNS > item.ElapsedSumNS {
+			if item.AttemptCount != count || item.TimedCount != count || item.ElapsedSumNS < 0 || item.ElapsedMaxNS < 0 || item.ElapsedMaxNS > item.ElapsedSumNS || item.FirstObservedAt.IsZero() || item.LastObservedAt.Before(item.FirstObservedAt) {
 				t.Fatalf("invalid timing: %#v, want %d timed attempts", item, count)
 			}
 			return item

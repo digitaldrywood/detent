@@ -278,6 +278,21 @@ account consumer. The runtime projection omits private bodies, raw commands,
 instruction contents, paths and credentials. Focused owner, grant, stale,
 pagination, redaction and refusal regressions cover these boundaries.
 
+Scoped runner GitHub timing reads (native #247) extend that same runtime owner.
+`github_scope_timings` and the native runtime GitHub timing API require the exact
+work item, native attempt and enrolled runner under current project read grants.
+Runner credentials cannot select another runner. The bounded fixed-key snapshot
+contains ordinary REST/GraphQL HTTP and inclusive token attempt/timed counts,
+elapsed sums/maxima and actual observation times, with native landing identity.
+Absent observations, build identity and sub-step wall measurements remain
+explicitly unavailable; durations with no timed attempts are null. HTTP sums may
+exceed enclosing wall time, and inclusive token time can contain installation
+HTTP. They are never disjoint durations or inferred critical-path/busy-wall data.
+The timing projection excludes credential attribution hashes and raw request or
+operator content. Reads only inspect recorded evidence, make no GitHub/provider
+requests and never restart the retired tracker refresh. Existing native runtime,
+landing and transport permission fixtures preserve these boundaries.
+
 Runtime activity checkpoints update the existing mutable attempt observation;
 they do not append cumulative profiles to immutable history. Idle and unchanged
 observations perform no checkpoint writes. Genuine phase/identity/landing changes,

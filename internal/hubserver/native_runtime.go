@@ -78,7 +78,7 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 			}
 		}
 	}
-	return nil
+	return validateNativeGitHubScope(r.GitHub)
 }
 
 func (s *Service) getNativeRuntime(c echo.Context) error {
@@ -179,6 +179,9 @@ func readNativeRuntime(ctx context.Context, query nativeQueryer, scope nativeSco
 	}
 	if e.Attempt == nil || e.Attempt.Runtime == nil || e.Attempt.Runtime.REST == nil {
 		e.Unavailable = append(e.Unavailable, "rest_accounting")
+	}
+	if e.Attempt == nil || e.Attempt.Runtime == nil || e.Attempt.Runtime.GitHub == nil {
+		e.Unavailable = append(e.Unavailable, "github_scope_timings")
 	}
 	if e.Attempt == nil || e.Attempt.Runtime == nil || e.Attempt.Runtime.Landing == nil {
 		e.Unavailable = append(e.Unavailable, "attempt_landing_receipt")

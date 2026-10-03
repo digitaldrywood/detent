@@ -10,6 +10,13 @@ func NativeRuntimeResult(name string, request WorkReadRequest, evidence tracker.
 	if string(evidence.Issue.WorkItemID) != request.Reference {
 		return Result{}, ErrAccessDenied
 	}
+	if name == GitHubScopeTimings {
+		data, ok := evidence.GitHubTimings(request.NativeAttemptID, request.RunnerID)
+		if !ok {
+			return Result{}, explain.ErrNotFound
+		}
+		return nativeRuntimeEnvelope(request, evidence, data)
+	}
 	if name == WorkAttemptReceipt && (evidence.Attempt == nil || request.NativeAttemptID != "" && evidence.Attempt.AttemptID != request.NativeAttemptID || request.AttemptID != 0 && (evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.LocalAttemptID != request.AttemptID)) {
 		return Result{}, explain.ErrNotFound
 	}

@@ -33,6 +33,7 @@ const (
 	BoardSession        = "board_session"
 	BoardSessionHistory = "board_session_history"
 	WorkAttemptReceipt  = "work_attempt_receipt"
+	GitHubScopeTimings  = "github_scope_timings"
 )
 
 var ErrReadUnavailable = errors.New("work read service is unavailable")
@@ -62,6 +63,7 @@ type WorkReadRequest struct {
 	Revision        int64    `json:"revision,omitempty"`
 	AttemptID       int64    `json:"attempt_id,omitempty"`
 	NativeAttemptID string   `json:"native_attempt_id,omitempty"`
+	RunnerID        string   `json:"runner_id,omitempty"`
 }
 
 // WorkReader is implemented by dashboard application adapters, not transports.
@@ -103,6 +105,7 @@ func WorkReadCatalog() []Definition {
 		{BoardSession, "Read the current or latest work-item session.", "reference"},
 		{BoardSessionHistory, "Read a bounded page of the work item's persisted session rollout or native instruction activity, including coverage limits.", "reference attempt_id native_attempt_id offset limit"},
 		{WorkAttemptReceipt, "Read an attempt receipt owned by this work item; select a local attempt_id or a native_attempt_id.", "reference attempt_id native_attempt_id"},
+		{GitHubScopeTimings, "Read bounded recorded GitHub HTTP and inclusive token timings for one native runner attempt. Reads make no upstream requests; HTTP sums may exceed wall and token time can contain installation HTTP. Unknown boundaries remain unavailable.", "reference native_attempt_id runner_id"},
 	} {
 		properties := map[string]any{"project_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}}
 		required := []string{"project_id"}
@@ -134,7 +137,7 @@ func WorkReadCatalog() []Definition {
 				}
 				property := map[string]any{"type": "string", "maxLength": bound}
 				properties[field] = property
-				if field == "reference" {
+				if field == "reference" || spec.name == GitHubScopeTimings && (field == "native_attempt_id" || field == "runner_id") {
 					required = append(required, field)
 					property["minLength"] = 1
 				}
@@ -236,6 +239,9 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 		return request, ErrInvalidArguments
 	}
 	request.Limit = itemLimit(request.Limit)
+	if name == GitHubScopeTimings && (request.NativeAttemptID == "" || request.RunnerID == "") {
+		return request, ErrInvalidArguments
+	}
 	if len(request.NativeAttemptID) > 128 || request.NativeAttemptID != "" && !strings.HasPrefix(request.NativeAttemptID, "attempt_") || request.AttemptID != 0 && request.NativeAttemptID != "" || name == WorkAttemptReceipt && request.AttemptID <= 0 && request.NativeAttemptID == "" {
 		return request, ErrInvalidArguments
 	}

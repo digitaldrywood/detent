@@ -41,10 +41,12 @@ type GitHubTimingKey struct {
 
 type GitHubTiming struct {
 	GitHubTimingKey
-	AttemptCount int64
-	TimedCount   int64
-	ElapsedSumNS int64
-	ElapsedMaxNS int64
+	AttemptCount    int64
+	TimedCount      int64
+	ElapsedSumNS    int64
+	ElapsedMaxNS    int64
+	FirstObservedAt time.Time
+	LastObservedAt  time.Time
 }
 
 type RESTScopeAttribution struct {
@@ -89,6 +91,11 @@ func (a RESTScopeAttribution) Observe(boundary, outcome string, elapsed time.Dur
 	}
 	item := a.scope.timings[key]
 	item.GitHubTimingKey = key
+	observedAt := time.Now().UTC()
+	if item.FirstObservedAt.IsZero() {
+		item.FirstObservedAt = observedAt
+	}
+	item.LastObservedAt = observedAt
 	item.AttemptCount++
 	if elapsed >= 0 {
 		item.TimedCount++

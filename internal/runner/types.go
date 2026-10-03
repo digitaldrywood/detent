@@ -771,6 +771,7 @@ type SecurityAuditExecution struct {
 }
 
 type RunResult struct {
+	GitHubScope             *tracker.NativeGitHubScope
 	GitHubRESTUsage         *connector.RESTRateLimitUsage
 	GitHubRESTConsumer      string
 	Compute                 *compute.Usage

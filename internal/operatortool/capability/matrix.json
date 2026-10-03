@@ -35756,6 +35756,90 @@
       "decision": "Implemented board_receipt shares the native HTTP runtime read, checking organization/project/work-item and selected attempt ownership. Efficiency receipts and missing historical/runtime facts remain explicitly unavailable; imported Done is not landing evidence. Activity history is exposed only when recorded and authorized."
     },
     {
+      "id": "hubserver.get_native_github_timings",
+      "summary": "Read recorded fixed-key GitHub timings for one native runner attempt",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/native_api.go",
+          "kind": "route",
+          "definition": "e.GET(nativeBase+\"/work-items/:item/runtime/github-timings\", s.getNativeGitHubTimings, read) [route=\"/api/v2/organizations/:organization/projects/:project/work-items/:item/runtime/github-timings\"]",
+          "occurrence": 1,
+          "line": 142,
+          "method": "GET",
+          "path": "nativeBase + \"/work-items/:item/runtime/github-timings\"",
+          "handler": "s.getNativeGitHubTimings",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/work-items/:item/runtime/github-timings"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "Current organization member/viewer or native credential with project read authority",
+        "credential_scope": "Current native read scope or hosted session; current project read grant and exact work-item, attempt and runner ownership. Runner credentials cannot select another runner.",
+        "project_grant": "native project read grant; writes need write grant; runner/terminal access additionally needs runner grant",
+        "ownership": "resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+      ],
+      "confirmation": [
+        {
+          "when": "read or ordinary non-destructive write",
+          "class": "none"
+        }
+      ],
+      "application": "s.readNativeRuntime; tracker.NativeRuntimeEvidence.GitHubTimings; operatorWorkReads.ReadWork",
+      "extraction": "The API, Cloud MCP and daemon bridge reuse scoped native runtime evidence with an exact runner/attempt projection.",
+      "tool": {
+        "set": "board",
+        "name": "github_scope_timings",
+        "arguments": "Required bounded project_id, reference, native_attempt_id and runner_id. Organization, principal and current read scope/grants are connection authority.",
+        "result": "Bounded fixed-key REST/GraphQL HTTP and inclusive token timing aggregates, actual observation timestamps and native landing identity. Missing boundaries have null durations or explicit unavailable coverage. No raw request data, commands, prompts or credential hashes.",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3340",
+      "status": "implemented",
+      "coverage": "TestOperatorNativeWorkReads; TestRunnerLandingPreservesCodeAndOperatorOwners; TestNativeRuntimeCheckpointsDoNotGrowHistory.",
+      "decision": "Recorded timing reads make no upstream GitHub/provider requests. Current project grants, attempt and runner ownership and revocation apply across API, stdio and HTTP MCP. HTTP sums may exceed wall; token resolution is inclusive of observed installation HTTP. Build/sub-step coverage is explicitly unavailable."
+    },
+    {
       "id": "hubserver.resend_hosted_invitation_json",
       "summary": "Resend a pending hosted invitation",
       "audience": "operator",
