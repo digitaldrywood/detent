@@ -15,6 +15,7 @@ import (
 type sshNativeProbe struct {
 	mu                     sync.Mutex
 	guarded, finished      int
+	observations           int
 	journalRoot, base, log string
 	capture                func(context.Context, string, string) (artifact.GitCapture, error)
 	diff                   runner.AttemptDiffSource
@@ -30,6 +31,12 @@ func (e *sshNativeProbe) Guard(ctx context.Context) (context.Context, func(), er
 }
 func (*sshNativeProbe) Validate(ctx context.Context) error                           { return ctx.Err() }
 func (*sshNativeProbe) Start(context.Context, tracker.NativeExecutionIdentity) error { return nil }
+func (e *sshNativeProbe) ObserveRuntime(ctx context.Context, _ tracker.NativeRuntimeObservation) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.observations++
+	return ctx.Err()
+}
 func (e *sshNativeProbe) Checkpoint(ctx context.Context, _ tracker.NativeCheckpoint) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
