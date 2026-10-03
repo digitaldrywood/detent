@@ -524,7 +524,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 					Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: "dirty", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"},
 				}}}
 				test.edit(&recovery, &local, &available)
-				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode)
+				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh)
 				wantAction, wantReason := test.action, test.reason
 				if mode == RetryModeFresh && wantAction == "resume_session" {
 					wantAction, wantReason = "fresh_checkout", "session_restart_required"
@@ -631,6 +631,7 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 		interrupted bool
 		fresh       bool
 		ambiguous   bool
+		automatic   bool
 	}{
 		{name: "first run without worker GitHub access"},
 		{name: "lost checkpoint", blocked: true},
@@ -638,6 +639,7 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 		{name: "explicit worker GitHub access", workerAuth: true},
 		{name: "interrupted planner requires resume evidence", local: true, interrupted: true, blocked: true},
 		{name: "explicit fresh implementation preserves planner workspace", local: true, interrupted: true, fresh: true},
+		{name: "automatic fresh cannot restart interrupted planner", local: true, interrupted: true, fresh: true, blocked: true, automatic: true},
 		{name: "explicit fresh cannot discard missing dirty checkpoint", interrupted: true, fresh: true, blocked: true},
 		{name: "explicit fresh cannot replay ambiguous push", local: true, interrupted: true, fresh: true, ambiguous: true, blocked: true},
 	} {
@@ -721,6 +723,9 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 			request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan}
 			if test.fresh {
 				request.Mode, request.RetryMode = RunModeImplement, RetryModeFresh
+				if !test.automatic {
+					request.RecoveryAttemptID = 1
+				}
 			}
 			result, err := r.Run(t.Context(), request)
 			if test.workerAuth {

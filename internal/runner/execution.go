@@ -372,7 +372,11 @@ func (r *Runner) nativeInterruptedResumeState(ctx context.Context, req RunReques
 	return state, nil
 }
 
-func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.RecoveryState, sessionAvailable bool, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, retryMode RetryMode) (string, string) {
+func (req RunRequest) operatorFreshRetry() bool {
+	return req.RetryMode == RetryModeFresh && req.RecoveryAttemptID > 0
+}
+
+func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.RecoveryState, sessionAvailable bool, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, operatorFresh bool) (string, string) {
 	if len(recovery.Attempts) == 0 {
 		return "fresh_checkout", "no_prior_attempt"
 	}
@@ -405,7 +409,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		return "fresh_checkout", "checkpoint_unavailable"
 	}
 	interrupted := nativeInterruptedResumeAttempt(recovery) != nil
-	if retryMode != RetryModeFresh && localAvailable && checkpoint.Resume == "resume_session" && previous.PolicyID == recovery.Lease.PolicyID && previous.Identity != nil && *previous.Identity == identity && checkpoint.HeadSHA == local.HeadSHA && checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest == local.WorkspaceFingerprint {
+	if !operatorFresh && localAvailable && checkpoint.Resume == "resume_session" && previous.PolicyID == recovery.Lease.PolicyID && previous.Identity != nil && *previous.Identity == identity && checkpoint.HeadSHA == local.HeadSHA && checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest == local.WorkspaceFingerprint {
 		if sessionAvailable {
 			return "resume_session", "verified_local_session"
 		}
@@ -413,7 +417,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 			interrupted = false
 		}
 	}
-	if interrupted && retryMode != RetryModeFresh {
+	if interrupted && !operatorFresh {
 		return "manual_recovery", "session_restart_required"
 	}
 	return "fresh_checkout", "session_restart_required"
@@ -427,7 +431,7 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 		state = req.ResumeState
 	}
 	sessionAvailable := !agentResumeStateEmpty(state) && verifyAgentResume(ctx, backend, process, agentResumeFromState(state)) == nil
-	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.RetryMode)
+	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry())
 	r.logWorkerEvent(req.Issue, "worker_native_recovery", "action", action, "reason", reason)
 	if action == "manual_recovery" {
 		return store.AgentResumeState{}, fmt.Errorf("%w: %s", ErrNativeRecoveryRequired, reason)

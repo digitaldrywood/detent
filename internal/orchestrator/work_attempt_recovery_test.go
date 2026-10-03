@@ -187,7 +187,7 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 		t.Fatalf("persisted resume intent did not dispatch: retry=%v blocked=%v decisions=%v", state.Retry, state.Blocked, state.SchedulerDecisions)
 	}
 	request := receiveWorkerHostRunRequest(t, runner.started)
-	if request.Attempt != 2 || request.RetryMode != runpkg.RetryModeResume || request.ResumeState.DetentSessionID != sessionID || request.ResumeState.ProviderSessionID != "session-979" {
+	if request.Attempt != 2 || request.RecoveryAttemptID != attemptID || request.RetryMode != runpkg.RetryModeResume || request.ResumeState.DetentSessionID != sessionID || request.ResumeState.ProviderSessionID != "session-979" {
 		t.Fatalf("fresh refill lost persisted resume intent: %#v", request)
 	}
 }

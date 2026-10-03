@@ -1240,6 +1240,8 @@ prevent planner dispatch. P1 plan rework retains planner provenance. Abandoned
 plan attempts cannot undo an operator's implementation handoff just because
 they have no PR. An explicit existing retry-fresh choice starts a new provider
 session after interrupted planning while preserving the verified local workspace.
+The request carries the existing operator recovery attempt identity; automatic
+host spillover's generic fresh mode does not establish that intent.
 It does not require the old provider session or override missing or changed dirty
 checkpoints, manual recovery, or uncertain external effects. Deferred completion
 metadata retains the attempt's policy identity so operator recovery can verify

@@ -1491,7 +1491,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	if req.Execution != nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
-		if req.RetryMode != RetryModeFresh {
+		if !req.operatorFreshRetry() {
 			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
 			if err != nil {
 				return RunResult{}, err
