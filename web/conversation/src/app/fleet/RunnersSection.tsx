@@ -1,5 +1,6 @@
 import { AlertTriangleIcon, BotIcon, ServerIcon } from "lucide-react";
 import React from "react";
+import { SpritePoolCard } from "../account/SpritePoolCard.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import type { FleetResponse, FleetRunner, ProviderCapacity, RunnerRouting } from "../../contracts/account.ts";
@@ -326,6 +327,7 @@ export function RunnersSettings(): React.ReactElement {
           } } : {})}
         />
       )}
+      {bootstrap?.projects.map((project) => <SpritePoolCard key={project.id} projectId={project.id} projectName={project.name} canManage={bootstrap.actor.can_manage && project.can_write} />)}
       {canEnroll ? (
         <EnrollRunnerDialog
           open={open}

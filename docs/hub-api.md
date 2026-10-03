@@ -10,6 +10,62 @@ Cloud members get one expiring scoped key for direct API and MCP access from
 private credential handling, agent prompts and the browser approval contract.
 Cloud keys do not authorize compatibility, worker, runner or instance-admin routes.
 
+## Project Sprite pools
+
+Hosted projects expose `GET` and `PUT`
+`/api/v2/organizations/{organization}/projects/{project}/sprite-pool`.
+Reads follow project grants; writes require owner/admin authority and the current
+`revision` (zero for initial configuration). Settings are `min_runners` (default
+zero), `max_runners` (default zero, disabled; maximum 100), `idle_seconds` (default
+300; range 30–86400), and `bootstrap`. Enabling requires nonempty customer
+bootstrap steps, hosted configuration and the existing project secret store.
+The response includes current settings, every active member and the most recent
+20 deleted members, with lifecycle state, ordinary runner ID and last safe
+bootstrap progress log. The project and runner settings pages expose these reads.
+
+Store the customer's Sprites organization token through the existing write-only
+secret endpoint. Pool calls use only `api.sprites.dev`, refuse redirects, audit
+each secret use, and bind each member to the organization used to create it.
+Replacing a token with one for a different organization cannot delete old
+members; restore authorized access to their original organization to finish
+cleanup. Removing the configuring principal's authority stops provider work.
+
+Customer bootstrap runs before enrollment, with `DETENT_PROJECT_ID` and
+`DETENT_HUB_URL` set. It must configure legitimate provider authentication, Git
+credentials, repository checkout and dependencies in the runner's expected
+workspace. Deliver secrets through the customer's existing authorized secret
+service; do not store credential values in this readable script. The Hub then
+runs the pinned public bootstrap script with a fresh single-project enrollment,
+pins the runner binary to its own released version, starts the ordinary runner
+Service and creates a post-setup checkpoint. Development builds cannot provision
+members and are refused before enrollment or provider side effects. Arbitrary
+command output is suppressed; logs retain stage progress and
+failure status without provider or enrollment credentials. Enrollment does not
+prove provider authentication, checkout readiness or approved repository policy.
+
+Dispatchable native mutations size the pool from queued depth and free capacity,
+including pending bootstrap and successful wakes. Paused members are woken before
+creation. Demand shares the existing native candidate exclusions, rather than counting
+intake-pending, answered, workspace-only, leased or nondispatchable issues.
+Both demand and the configured floor apply only when a new Sprite's authorized
+`sprite` tag and fresh identity satisfy the approved project requirements.
+Runner or machine pins and other required tags do not enroll matching authority.
+Free capacity follows those same requirements and host/shared-provider bounds;
+claims still use the existing admission, policy, routing and lease owners. Idle
+deletion drains members only after active host leases finish and preserves the
+current floor. Heartbeats, finish/release and the existing Hub maintenance cycle
+provide lifecycle triggers; no separate scaler or provider retry loop runs.
+Failed or interrupted bootstrap leaves a member for deletion; a later native
+scale-up may provision its replacement. PR publication and landing remain on
+the local runner.
+
+Live acceptance requires an authorized customer token and bootstrap, provider
+and Git authentication, policy approval, and permission for paid provisioning
+and deletion. Verify two Todo issues with `max_runners: 2` produce two connected,
+work-ready members and pushed branches, then verify both provider resources are
+deleted after the idle threshold with `min_runners: 0`. Isolated lifecycle fixtures
+are source verification only and do not substitute for this live acceptance.
+
 ## Approved repository policy
 
 Every API claim requires an approved `policy_id`. Compatibility claims also

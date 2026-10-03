@@ -1770,10 +1770,42 @@ external PR responses, exact identity and missing/non-ancestor commit refusals.
 
 ## INV-3 — Mechanism moratorium
 
+The human-authored Sprite pool scope (native #29) extends that same project
+lifecycle owner. Native mutations and lease finish/release trigger scale-up;
+heartbeats and the existing Hub maintenance cycle trigger idle deletion only.
+One active project pass retains a coalesced native mutation that arrives during
+provider work. It starts a subsequent pass only for that mutation, never as a
+provider retry or periodic scale-up. The pool reuses runner enrollment, grants,
+leases, routing, service wake and identity revocation; it adds no dispatch owner,
+brake, recovery reason or independent reconciliation loop. Configured floor,
+ceiling and customer bootstrap are the issue's explicitly approved settings.
+Demand uses the existing native candidate owner, including intake, workspace,
+answered-attempt, dependency, dispatchability and active-lease exclusions. Ready
+capacity uses the approved policy's actual runner requirements. Both demand and
+the floor apply only when a fresh Sprite identity with its authorized `sprite`
+tag can satisfy that policy; selectors never create or grant matching identities.
+Unsupported Hub builds are refused before enrollment, member or provider side
+effects. A pinned compatible release remains required for live provisioning.
+Provider calls recheck the configuring principal and current project secret;
+members retain their original provider organization across token replacement.
+Bootstrap sends fresh enrollment through stdin and retains only known progress
+lines. Enrolled members without provider reports contribute no ready capacity.
+`TestSpriteScaleDecision`, `TestSpritePoolLifecycle`, `TestSpritePoolCapacity`,
+`TestSpritePoolFreshAuthority`, `TestSpritePoolClaimableDemand`,
+`TestSpritePoolTargeting`, `TestSpritePoolUnsupportedVersionHasNoSideEffects`,
+`TestSpritePoolCancelledBootstrap` and the existing
+Sprites permissions and wake fixtures preserve these boundaries. Actual paid
+two-member work and deletion remain acceptance for the authorized live owner.
+`TestSpritePoolDeletionBoundaries` checks active leases, idle time, the floor,
+expired bootstrap and provider organization changes; `TestSpritePoolMutationDuringDeletion`
+checks the retained native mutation. Forward migration 70 stores only pool
+configuration and provider membership alongside the existing runner ledger;
+after it applies, rollback requires a binary that supports schema 70.
+
 Sprite runner wake work (native #212) consolidates overlapping qualifying
 mutations into one active wake pass per organization/project. The existing
-postmutation owner retains one candidate and at most one sequential provider
-request per pass, releases the pass on every exit, and joins canceled work
+postmutation owner retains one candidate and at most one in-flight provider
+request per project, releases the pass on every exit, and joins canceled work
 through Hub shutdown. Mutations never wait for provider availability. Later
 mutations resolve fresh authority rather than replaying retained candidates.
 This adds no queue, retry/reconciliation loop, lease, configuration or dispatch

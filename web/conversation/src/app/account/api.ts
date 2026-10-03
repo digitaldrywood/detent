@@ -26,6 +26,7 @@ import {
   PolicyApproval,
   ProjectIntegration,
   ProjectSecretStatus,
+  SpritePool,
   ProjectsResponse,
   type ProjectGrant,
   RunnerEnrollment,
@@ -257,6 +258,10 @@ export function makeAccountApi(options: AccountApiOptions) {
     // --- Project settings ---------------------------------------------------
     spritesSecret: (projectId: string) =>
       send(ProjectSecretStatus, "GET", `${project(projectId)}/secrets/fly_sprites_token`),
+    spritePool: (projectId: string) =>
+      send(SpritePool, "GET", `${project(projectId)}/sprite-pool`),
+    setSpritePool: (projectId: string, settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; revision: number }) =>
+      send(SpritePool, "PUT", `${project(projectId)}/sprite-pool`, settings),
     setSpritesSecret: (projectId: string, token: string) =>
       send(ProjectSecretStatus, "PUT", `${project(projectId)}/secrets/fly_sprites_token`, { token }),
     removeSpritesSecret: (projectId: string) =>
