@@ -44,6 +44,8 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
+		case "/api/v2/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeDispatchWaitCapability}})
 		case "/api/v2/organizations/org_test/projects/prj_test/claims/preview":
 			_, _ = w.Write([]byte(`{"items":[]}`))
 		case "/api/v2/organizations/org_test/projects/prj_test/claims":
@@ -422,8 +424,12 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	client.httpClient.Transport = transport
 	t.Cleanup(func() { client.httpClient.Transport = transport.next })
 	transport.drop.Store(true)
-	if err := execution.Start(t.Context(), identity); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-		t.Fatalf("lost start acknowledgment = %v", err)
+	if err := execution.Start(t.Context(), identity); !errors.Is(err, ErrUnavailable) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("lost start acknowledgment must retain transient transport identity: %v", err)
+	}
+	pending := execution.(*nativeExecution).pending
+	if pending == nil || pending.Type != "run.started" || pending.Data.Sequence != 1 || pending.Data.Identity == nil || *pending.Data.Identity != identity {
+		t.Fatalf("lost start acknowledgment lost pending execution identity: %#v", pending)
 	}
 	report.Availability = "exhausted"
 	if err := execution.Start(t.Context(), identity); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
@@ -437,8 +443,15 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err := execution.Start(t.Context(), identity); err != nil {
 		t.Fatalf("active identity changed: %v", err)
 	}
-	if _, err := scheduler.FetchCandidateIssues(t.Context(), request); !errors.Is(err, orchestrator.ErrSchedulingUnavailable) {
-		t.Fatalf("incompatible capacity should defer scheduling: %v", err)
+	recovery, err := native.Recovery(t.Context(), tracker.NativeWorkItemID(candidates[0].ID))
+	if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Sequence != 1 {
+		t.Fatalf("start retries duplicated or lost the durable attempt: attempts=%#v error=%v", recovery.Attempts, err)
+	}
+	// This attempt already occupies the provider's only slot. An ordinary
+	// empty claim result keeps admission idle without inventing an outage.
+	next, err := scheduler.FetchCandidateIssues(t.Context(), request)
+	if err != nil || len(next) != 0 {
+		t.Fatalf("exhausted occupied capacity admitted another attempt: candidates=%#v error=%v", next, err)
 	}
 	if err := scheduler.ReleaseClaim(t.Context(), candidates[0].ID, "completed"); err != nil {
 		t.Fatal(err)
