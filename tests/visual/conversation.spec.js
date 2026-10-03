@@ -36,6 +36,8 @@ const UNSERVED_PROJECT_ACTIONS = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/
 // 404 to one who cannot manage runners, which the client reads as nothing to
 // report.
 const UNREPORTED_UPDATES = /\/app\/updates$/;
+// IssuePage treats a missing linked worker conversation as an optional read.
+const UNLINKED_CONVERSATION = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/work-items\/[^/]+\/conversation$/;
 const NOT_FOUND = /status of 404\b/;
 
 /** Collects everything the page logs as an error, for a per-test assertion. */
@@ -46,7 +48,8 @@ function watchConsole(page) {
     const url = message.location().url ?? "";
     const expected404 =
       NOT_FOUND.test(message.text()) &&
-      (UNSERVED_PROJECT_ACTIONS.test(url) || UNREPORTED_UPDATES.test(url));
+      (UNSERVED_PROJECT_ACTIONS.test(url) || UNREPORTED_UPDATES.test(url) ||
+        UNLINKED_CONVERSATION.test(url));
     if (expected404) return;
     errors.push(message.text());
   });
@@ -1509,19 +1512,14 @@ test.describe("the ported shell's interactions", () => {
     // never quietly removed (§16).
     expect(byLabel.Browser.openable, "Browser is inert").toBe(false);
     expect(byLabel.Browser.reason, "Browser says why").toBe("Not available on Detent Cloud yet.");
-    // The Terminal is real since §18.3, and what disables it here is the same
-    // thing that disables Files: a draft chat names no issue, so there is no
-    // worktree for a shell to run in. The sentence is the structural reason
-    // rather than a product absence, which is the §16 distinction this test
-    // and the Browser line above draw.
+    // The Terminal needs an issue-linked worktree. The draft has no issue,
+    // so the launcher reports that prerequisite instead of a product absence.
     expect(byLabel.Terminal.openable, "Terminal is inert on a draft chat").toBe(false);
     expect(byLabel.Terminal.reason, "Terminal says why").toBe("Link an issue to get a worktree.");
-    // Files is real since §18.11 step 2, but it needs a worktree, and a draft
-    // chat names no issue for a runner to open one on. So it is inert here for
-    // a Detent reason rather than an absence of product — which is the §16
-    // distinction the two strings above and this one draw.
+    // The fixture organization has workspace sessions disabled. Files stays
+    // inert and reports that service policy before worktree availability.
     expect(byLabel.Files.openable, "Files is inert on a draft chat").toBe(false);
-    expect(byLabel.Files.reason, "Files says why").toBe("Available from an issue with a runner.");
+    expect(byLabel.Files.reason, "Files says why").toBe("Workspace sessions are not enabled for this organization.");
     // Diff always has a card — Detent either has a change request or says why
     // it has none — and opening it swaps the launcher for the surface.
     expect(byLabel.Diff.openable, "Diff is openable").toBe(true);
@@ -2448,7 +2446,7 @@ test.describe("the footer's update check", () => {
   /** The control, whatever state it is currently in. */
   function updateControl(page) {
     return page.getByRole("button", {
-      name: /Check for updates|All runners up to date|Couldn't check for updates|behind . Update/,
+      name: /Check for updates|All runners up to date|Couldn't check for updates|runners? too old to take work/,
     });
   }
 
@@ -2495,7 +2493,7 @@ test.describe("the footer's update check", () => {
     });
     await openChat(page);
 
-    const behind = page.getByRole("button", { name: "1 runner behind · Update" });
+    const behind = page.getByRole("button", { name: "1 runner too old to take work, needs v9.9.9" });
     await expect(behind).toBeVisible({ timeout: 20_000 });
     await behind.click();
 
