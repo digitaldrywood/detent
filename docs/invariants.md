@@ -161,6 +161,17 @@ request creates no Run, Attempt, lease, approval, completion or landing evidence
 `TestNativeMoveItemArguments` and `TestActionConfirmationClassification` cover
 the transport, owner, CAS, replay and approval boundaries.
 
+Native MCP workflow previews (#254) share the application command's configured
+edge and operator-only validation before creating a pending action. Existing
+authorized action and command receipts replay before preview validation against
+the changed board. Execution still checks fresh authority, graph, revision and
+lease/fence through the existing owners; preview grants no execution authority.
+Failed workflow action receipts retain fixed safe graph or revision refusal text
+through result reads, persistence and replay, excluding underlying messages and
+private details. `TestMCPConfiguredWorkflowTransitions` and
+`TestWorkflowExecutionFailureProjection` cover these boundaries without adding
+a transition, lane writer, approval bypass or mechanism.
+
 Native work and conversation MCP adapters (native #250) preserve the existing
 authorized `revision_conflict` and `stale_execution` results. Their bounded
 projection carries only current revision and expected/current attempt IDs;
@@ -1968,6 +1979,8 @@ an I/O hold). The dispatch stage keeps its own hold check; nothing is added.
 Native workflow MCP parity (#219) consolidates hosted requests under the existing
 workflow application command and connection approval service. It adds no lane
 writer, transition graph, lease, guard, recovery loop, configuration or UI.
+Preview and execution share that command's configured edge validation (#254);
+safe refusals use the existing failed action receipt and result projection.
 Project-specific review and validation policy and native fencing remain with
 their existing owners; exposing a requested transition supplies no worker or
 landing evidence.

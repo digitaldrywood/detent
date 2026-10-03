@@ -475,17 +475,8 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		if err != nil {
 			return nil, err
 		}
-		allowed := false
-		for _, state := range project.States {
-			if state.Name == request.State && state.OperatorOnly && scope.credential.Scope == apiScopeWorker {
-				return nil, nativeInvalid("Workflow target requires an operator")
-			}
-			if state.Name == issue.State && slices.Contains(state.Transitions, request.State) {
-				allowed = true
-			}
-		}
-		if !allowed {
-			return nil, &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity}
+		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.credential.Scope); err != nil {
+			return nil, err
 		}
 		from := issue.State
 		issue.State = request.State
@@ -495,6 +486,22 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		s.wakeSpriteRunnersAfter(scope, result)
 	}
 	return result, err
+}
+
+func validateNativeWorkflowTransition(states []tracker.NativeState, current, target string, scope apiScope) error {
+	allowed := false
+	for _, state := range states {
+		if state.Name == target && state.OperatorOnly && scope == apiScopeWorker {
+			return nativeInvalid("Workflow target requires an operator")
+		}
+		if state.Name == current && slices.Contains(state.Transitions, target) {
+			allowed = true
+		}
+	}
+	if !allowed {
+		return &nativeError{Code: "transition_not_allowed", Message: "Workflow transition is not allowed", status: http.StatusUnprocessableEntity}
+	}
+	return nil
 }
 
 func (s *Service) changeNativeDependency(c echo.Context) error {

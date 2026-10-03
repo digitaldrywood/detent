@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"errors"
 	"html"
 	"net/http"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -100,6 +102,25 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 					}
 					return issue
 				}
+				counts := func() []int {
+					t.Helper()
+					var counts []int
+					for _, table := range []string{"native_commands", "collaboration_events", "native_attempts", "leases", "work_events"} {
+						var count int
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+							t.Fatal(err)
+						}
+						counts = append(counts, count)
+					}
+					return counts
+				}
+				before := counts()
+				connectionID := operatortool.CurrentConnection(mcpCtx).ID
+				actionsBefore := len(f.service.operatorChat.Conversation(connectionID).Actions)
+				call("forbidden terminal", "Retired", 1, true)
+				if after := counts(); !slices.Equal(before, after) || len(f.service.operatorChat.Conversation(connectionID).Actions) != actionsBefore || read().State != "Intake" || read().Revision != 1 {
+					t.Fatalf("forbidden preview created approval or mutation: before=%v after=%v issue=%+v", before, after, read())
+				}
 				admission := call("admit", "Ready", 1, false)
 				if admission.Status != chat.ActionSucceeded || read().State != "Ready" || read().Revision != 2 {
 					t.Fatalf("admission=%+v issue=%+v", admission, read())
@@ -140,7 +161,7 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				if pending.Status != chat.ActionPending || read().State != "Ship" || read().Revision != 4 {
 					t.Fatalf("terminal approval=%+v issue=%+v", pending, read())
 				}
-				decision := func(actionID, kind, mode string) {
+				decision := func(actionID, kind, mode string, expectedStatus ...int) {
 					t.Helper()
 					page := f.browser(http.MethodGet, "/chat/approval?connection_id="+pending.ConnectionID, nil)
 					requireNativeStatus(t, page, http.StatusOK)
@@ -161,7 +182,11 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 						}
 						form.Set(name, html.UnescapeString(value[1]))
 					}
-					requireNativeStatus(t, f.browser(http.MethodPost, "/chat/approval", form), http.StatusSeeOther)
+					status := http.StatusSeeOther
+					if len(expectedStatus) > 0 {
+						status = expectedStatus[0]
+					}
+					requireNativeStatus(t, f.browser(http.MethodPost, "/chat/approval", form), status)
 				}
 				decodeAction(hostedContextData(t, send("tools/call", operatortool.ActionResult, map[string]any{"action_id": pending.ID}), false))
 				decision(pending.ID, "confirm", "")
@@ -226,6 +251,58 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				if read().Revision != 6 {
 					t.Fatal("reconnect duplicated transition")
 				}
+				decision("", "mode", "confirmation")
+				for _, test := range []struct {
+					name, message string
+				}{
+					{"graph", "Workflow transition is not allowed"},
+					{"revision", "Resource has changed"},
+				} {
+					created := hostedContextData(t, send("tools/call", operatortool.FileIssue, map[string]any{"project_id": f.project, "request_id": "create-" + test.name, "title": "Approval refusal", "state": "Ship"}), false)
+					if err := json.Unmarshal(created, &content); err != nil {
+						t.Fatal(err)
+					}
+					args := map[string]any{"project_id": f.project, "request_id": "refusal-" + test.name, "identifier": content.Data.WorkItemID, "expected_revision": 1, "target_state": "Retired"}
+					proposed := decodeAction(hostedContextData(t, send("tools/call", operatortool.MoveItem, args), false))
+					if proposed.Status != chat.ActionPending {
+						t.Fatalf("%s preview=%+v", test.name, proposed)
+					}
+					if test.name == "graph" {
+						changed := slices.Clone(states)
+						changed[3].Transitions = nil
+						graph, err := json.Marshal(changed)
+						if err != nil {
+							t.Fatal(err)
+						}
+						operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET states_json=? WHERE id=?", string(graph), f.project)
+					} else {
+						hostedContextData(t, send("tools/call", operatortool.EditItem, map[string]any{"project_id": f.project, "request_id": "edit-refusal", "identifier": content.Data.WorkItemID, "expected_revision": 1, "title": "Changed after preview"}), false)
+					}
+					before := counts()
+					decision(proposed.ID, "confirm", "", http.StatusConflict)
+					failed := decodeAction(hostedContextData(t, send("tools/call", operatortool.ActionResult, map[string]any{"action_id": proposed.ID}), false))
+					if failed.Status != chat.ActionFailed || failed.Result != test.message || failed.ResolvedAt == nil || !slices.Equal(before, counts()) {
+						t.Fatalf("%s failed receipt=%+v", test.name, failed)
+					}
+					issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(content.Data.WorkItemID))
+					wantRevision := tracker.Revision(1)
+					if test.name == "revision" {
+						wantRevision = 2
+					}
+					if err != nil || issue.State != "Ship" || issue.Revision != wantRevision {
+						t.Fatalf("%s refusal changed issue=%+v error=%v", test.name, issue, err)
+					}
+					if replay := decodeAction(hostedContextData(t, send("tools/call", operatortool.MoveItem, args), false)); replay.ID != failed.ID || replay.Status != chat.ActionFailed || replay.Result != failed.Result {
+						t.Fatalf("%s failed replay=%+v", test.name, replay)
+					}
+					persisted, found, err := (operatorChatStore{f.service.database}).Load(t.Context(), proposed.ConnectionID, f.service.config.now(), 24*time.Hour)
+					if err != nil || !found || !slices.ContainsFunc(persisted.Actions, func(a chat.Action) bool {
+						return a.ID == failed.ID && a.Status == chat.ActionFailed && a.Result == failed.Result && a.NativeWorkflow
+					}) {
+						t.Fatalf("%s persisted failure=%+v found=%v error=%v", test.name, persisted.Actions, found, err)
+					}
+					operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET states_json=? WHERE id=?", string(raw), f.project)
+				}
 				decodeAction(hostedContextData(t, send("tools/call", operatortool.ActionResult, map[string]any{"action_id": admission.ID}), false))
 				f.grant(t, f.user, false, false)
 				call("admit", "Ready", 1, true)
@@ -236,5 +313,26 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestWorkflowExecutionFailureProjection(t *testing.T) {
+	for _, test := range []struct {
+		name, message string
+		err, safe     error
+	}{
+		{"graph", "Workflow transition is not allowed", &nativeError{Code: "transition_not_allowed", Message: "credential-secret", Details: map[string]any{"private": "credential-secret"}, status: http.StatusUnprocessableEntity}, operatortool.ErrServiceUnavailable},
+		{"revision", "Resource has changed", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 9, status: http.StatusConflict}, mutation.ErrConflict},
+		{"foreign graph", operatortool.ErrAccessDenied.Error(), &nativeError{Code: "transition_not_allowed", Message: "credential-secret", status: http.StatusForbidden}, operatortool.ErrAccessDenied},
+		{"missing", operatortool.ErrAccessDenied.Error(), nativeNotFound(), operatortool.ErrAccessDenied},
+		{"revoked", operatortool.ErrAccessDenied.Error(), operatortool.ErrAccessDenied, operatortool.ErrAccessDenied},
+		{"underlying", operatortool.ErrServiceUnavailable.Error(), errors.New("SQL credential-secret"), operatortool.ErrServiceUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			execution, err := workflowExecutionFailure(test.err)
+			if !errors.Is(err, test.safe) || execution.Message != test.message || execution.ResourceID != "" || len(execution.Data) != 0 {
+				t.Fatalf("execution=%+v error=%v", execution, err)
+			}
+		})
 	}
 }
