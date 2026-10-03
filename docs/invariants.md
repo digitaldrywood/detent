@@ -2009,9 +2009,14 @@ never counts as a landing. `TestConnectorMergePullRequestClassifiesBaseRefusal`,
 cover the shared classification and completion boundaries.
 
 Native runtime evidence (#92) records observations in the existing fenced
-attempt event stream and records evaluated Merging eligibility, routing,
-host/provider refusal and claim decisions in the existing scheduler
-transactions. Ordinary usage and activity checkpoints and lease renewals publish
+attempt event stream and records actual evaluated eligibility, routing,
+host/provider refusal and claim decisions across configured workflow lanes in
+existing scheduler transactions (#246). The scoped issue query binds current
+project and revision without requiring a Change or a literal lane name. Changed
+evaluations retain the existing runner/source/revision/Change deduplication;
+unchanged non-claimed evaluations do not append history. Candidate previews and
+absent candidates still create no scheduling history. Ordinary usage and activity
+checkpoints and lease renewals publish
 the bounded observation; no observer or polling loop is added. Reads take one
 snapshot through existing application services and never dispatch, write lanes
 or call the forge to manufacture history. Historical gaps stay unavailable.
