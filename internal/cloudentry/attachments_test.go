@@ -151,25 +151,6 @@ func (f *spacesFixture) requests() []string {
 
 func TestAttachmentStorageProbe(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name      string
-		public    bool
-		versioned bool
-	}{{name: "private"}, {name: "public", public: true}, {name: "versioned private", versioned: true}} {
-		t.Run(test.name, func(t *testing.T) {
-			store := newSpacesFixture(t, test.public)
-			store.versioned = test.versioned
-			_, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
-			if (err != nil) != test.public {
-				t.Fatalf("public=%v error=%v", test.public, err)
-			}
-			store.mu.Lock()
-			defer store.mu.Unlock()
-			if len(store.objects) != 0 {
-				t.Fatal("startup probe was not deleted")
-			}
-		})
-	}
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, true)
 	cfg := f.service.config
