@@ -1491,13 +1491,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	if req.Execution != nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
-		resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
-		if err != nil {
-			return RunResult{}, err
-		}
-		req.ResumeState = resume
-		if !agentResumeStateEmpty(resume) {
-			req.RetryMode = RetryModeResume
+		if req.RetryMode != RetryModeFresh {
+			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
+			if err != nil {
+				return RunResult{}, err
+			}
+			req.ResumeState = resume
+			if !agentResumeStateEmpty(resume) {
+				req.RetryMode = RetryModeResume
+			}
 		}
 		req.retainCheckpoint = true
 	}

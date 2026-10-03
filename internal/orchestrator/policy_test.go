@@ -85,11 +85,23 @@ func TestAttemptMetadataRetainsApprovedPolicy(t *testing.T) {
 	t.Parallel()
 	descriptor := orchestratorTestPolicy()
 	o := &Orchestrator{cfg: Config{Policy: descriptor}}
+	deferredMetadata, err := deferredCompletionMetadataJSON(deferredCompletion{Running: Running{Policy: descriptor}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := descriptor
+	stale.Gates.AutoPromote = true
+	staleMetadata, err := deferredCompletionMetadataJSON(deferredCompletion{Running: Running{Policy: stale.WithID()}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name, raw string
 		valid     bool
 	}{
 		{"active", runningWorkAttemptMetadataJSON(Running{Policy: descriptor}, nil), true},
+		{"deferred", deferredMetadata, true},
+		{"stale deferred policy", staleMetadata, false},
 		{"forged completion metadata", runningWorkAttemptMetadataJSON(Running{Policy: descriptor}, map[string]any{"policy": policy.Descriptor{}}), true},
 		{"missing", "{}", false}, {"invalid", "{", false},
 	} {

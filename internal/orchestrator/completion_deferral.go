@@ -360,6 +360,9 @@ func deferredCompletionMetadataJSON(record deferredCompletion) (string, error) {
 		"work_product_pushed":         record.Running.WorkProductPushed,
 		deferredCompletionMetadataKey: record,
 	}
+	if record.Running.Policy.ID != "" {
+		metadata["policy"] = record.Running.Policy
+	}
 	payload, err := json.Marshal(metadata)
 	if err != nil {
 		return "", fmt.Errorf("marshal deferred completion: %w", err)
