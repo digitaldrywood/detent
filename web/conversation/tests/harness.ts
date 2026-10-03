@@ -10,7 +10,7 @@ import {
 } from "../dev/mock-hub.ts";
 import { loadBootstrap, makeClient, type ConversationClient } from "../src/runtime/bootstrap.ts";
 import { HUB_ENVIRONMENT_ID, type Bootstrap } from "../src/contracts/index.ts";
-import { fetchEventStreamTransport } from "../src/runtime/rpc/sse.ts";
+import { fetchEventStreamTransport, type SseTransport } from "../src/runtime/rpc/sse.ts";
 
 export interface Harness {
   readonly hub: MockHub;
@@ -45,6 +45,8 @@ export interface HarnessOptions {
    * delay or fail a command without touching the stream that races it.
    */
   readonly fetch?: typeof globalThis.fetch;
+  /** Splits stream delivery phases without timing sleeps or changing the hub. */
+  readonly transport?: SseTransport;
   /** Rewrites the loaded bootstrap before the client is built. */
   readonly bootstrap?: (bootstrap: Bootstrap) => Bootstrap;
 }
@@ -64,7 +66,7 @@ export async function makeHarness(options: HarnessOptions = {}): Promise<Harness
   const client = makeClient({
     origin: hub.url,
     bootstrap,
-    transport: fetchEventStreamTransport(),
+    transport: options.transport ?? fetchEventStreamTransport(),
     heartbeatTimeoutMs: 20_000,
     ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
   });
