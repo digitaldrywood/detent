@@ -4185,7 +4185,11 @@ PR CI, merge-group CI, and required status checks remain supported.
 check. The sole exception is `.github/workflows/cla.yml`: its single job runs
 only `contributor-assistant/github-action` to collect contributor license
 agreements on `pull_request_target` and `issue_comment`. It never checks out or
-executes pull-request code and does not run validation. Pull requests do
+executes pull-request code and does not run validation. Signature records live
+in `.github/cla-signatures.json` on the dedicated, unprotected `cla-signatures`
+branch so the action can persist contributors' signing comments without direct
+writes to protected `develop`. The action owns the signature file; contributors
+sign through their own pull-request comments. Pull requests do
 not wait for CI or local validation gates before push or merge. The self-hosted
 project uses the existing no-op command `true` and publishes no local status.
 It explicitly sets `gate.required_status_checks: []`, so pending optional or absent
