@@ -113,7 +113,8 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	}
 	proposal, err := e.workflowProposal(ctx, scope, request)
 	if err != nil {
-		return operatortool.Result{}, hubSafeChangeError(err)
+		_, err = workflowExecutionFailure(err)
+		return operatortool.Result{}, err
 	}
 	proposal.RequestID, proposal.Arguments, proposal.Mutation = action.RequestID, action.Arguments, action.Mutation
 	action = proposal
@@ -187,6 +188,7 @@ func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
 		switch {
 		case failure.status == http.StatusUnprocessableEntity && failure.Code == "transition_not_allowed":
 			message = "Workflow transition is not allowed"
+			safe = operatortool.ErrInvalidArguments
 		case failure.status == http.StatusConflict && failure.Code == "revision_conflict":
 			message = "Resource has changed"
 		}
