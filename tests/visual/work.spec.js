@@ -492,16 +492,13 @@ test.describe("the issue page", () => {
 
     const composer = page.getByRole("textbox", { name: "Comment" });
     await expect(composer).toHaveCount(1);
-    // This card posts comments and nothing else (§19.5, Michael's review of
-    // September 12): a prompt and a send. No mode toggle, because the runner
-    // is steered from the conversation surface the Activity feed opens; no
-    // pickers, because a comment configures no turn; no paperclip, because the
-    // hub's comment endpoint takes no files; no strip under the card and no
-    // shortcut line.
+    // This card posts comments with optional attachments. Runner steering
+    // stays on the conversation surface opened from Activity, so comments
+    // offer neither a mode toggle nor turn configuration pickers.
     await expect(composer).toHaveAttribute("aria-placeholder", "Leave a comment…");
     await expect(page.getByTestId("issue-composer-mode")).toHaveCount(0);
     await expect(page.getByTestId("issue-composer-scope")).toHaveCount(0);
-    await expect(page.getByTestId("composer-attach")).toHaveCount(0);
+    await expect(page.getByTestId("composer-attach")).toBeVisible();
 
     for (const label of ["Model", "Reasoning effort", "Runtime access"]) {
       await expect(page.getByLabel(label, { exact: true })).toHaveCount(0);
