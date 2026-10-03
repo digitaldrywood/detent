@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/pprof"
 	"testing"
 	"time"
@@ -81,7 +82,9 @@ func TestWriteBundle(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if info.Mode().Perm() != 0o600 {
+				// Windows exposes the read-only attribute rather than Unix owner
+				// permissions. Profile creation/content remain tested on every OS.
+				if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 					t.Fatalf("profile permissions: %v", info.Mode())
 				}
 				reader, err := gzip.NewReader(file)

@@ -45,16 +45,19 @@ func TestParseProblems(t *testing.T) {
 		{"unrelated absolute diagnostic", "/runner/cache/tool/main.go:12:3: error", nil},
 		{"successful output", "ok\towner/repo/pkg\t0.1s", nil},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			var keys []string
-			for _, p := range parseProblems(tt.log, "/home/runner/work/detent/detent") {
-				keys = append(keys, p.Key)
-			}
-			if !reflect.DeepEqual(keys, tt.want) {
-				t.Fatalf("problems = %v; want %v", keys, tt.want)
-			}
-		})
+		for _, ending := range []struct{ name, value string }{{"LF", "\n"}, {"CRLF", "\r\n"}} {
+			t.Run(tt.name+"/"+ending.name, func(t *testing.T) {
+				t.Parallel()
+				log := strings.ReplaceAll(strings.ReplaceAll(tt.log, "\r\n", "\n"), "\n", ending.value)
+				var keys []string
+				for _, p := range parseProblems(log, "/home/runner/work/detent/detent") {
+					keys = append(keys, p.Key)
+				}
+				if !reflect.DeepEqual(keys, tt.want) {
+					t.Fatalf("problems = %v; want %v", keys, tt.want)
+				}
+			})
+		}
 	}
 }
 
