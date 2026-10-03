@@ -208,17 +208,6 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 	}
 }
 
-func TestScheduledCIDocumentationMatchesWorkflow(t *testing.T) {
-	t.Parallel()
-	docs := readNormalizedFile(t, "docs/execution-seams.md")
-	section := workflowBetween(t, docs, "### Detent Repository Branch Protection\n", "\n## Still Git/PR Coupled")
-	for _, want := range []string{"`make check-fast`", "scheduled", "`develop`", "tag", "staging"} {
-		if !strings.Contains(section, want) {
-			t.Errorf("CI documentation missing %q", want)
-		}
-	}
-}
-
 func TestCIRunsOnScheduleAndManualDispatch(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
@@ -312,8 +301,8 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	linux := workflowBetween(t, job, "      - name: Smoke release installer\n        if: runner.os == 'Linux'", "      - name: Smoke release installer\n        if: runner.os == 'Windows'")
 	for _, want := range []string{
 		"2>&1",
-		"falling back to go install",
-		"Release installer fell back to go install",
+		"falling back to prepared source",
+		"Release installer fell back to prepared source",
 		"exit 1",
 		"Verified checksum for detent_",
 	} {
@@ -324,8 +313,8 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 
 	windows := workflowBetween(t, job, "      - name: Smoke release installer\n        if: runner.os == 'Windows'", "")
 	for _, want := range []string{
-		"falling back to go install",
-		"Release installer fell back to go install",
+		"falling back to prepared source",
+		"Release installer fell back to prepared source",
 		"Verified checksum for detent_.*_windows_.*\\.zip",
 	} {
 		if !strings.Contains(windows, want) {

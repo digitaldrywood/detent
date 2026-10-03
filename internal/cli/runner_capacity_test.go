@@ -4,11 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -205,7 +206,7 @@ func TestRunnerCapacityOwner(t *testing.T) {
 					}
 					beforeRetry.Global.MaxConcurrentAgents, beforeRetry.Client.Capacity = 6, 6
 					afterRetry, err := globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
-					if err != nil || !reflect.DeepEqual(afterRetry, beforeRetry) {
+					if err != nil || capacityConfigContent(t, afterRetry) != capacityConfigContent(t, beforeRetry) {
 						t.Fatal("corrected capacity request changed unrelated settings")
 					}
 				}
@@ -226,7 +227,7 @@ func TestRunnerCapacityOwner(t *testing.T) {
 				t.Fatalf("saved evidence=%+v observed=%+v", result, observed)
 			}
 			saved.Global.MaxConcurrentAgents, saved.Client.Capacity = 2, 2
-			if !reflect.DeepEqual(saved, cfg) {
+			if capacityConfigContent(t, saved) != capacityConfigContent(t, cfg) {
 				t.Fatal("capacity edit changed unrelated settings")
 			}
 			providerAfter, err := os.ReadFile(providerPath)
@@ -314,4 +315,15 @@ func (c *capacityMutationContext) Done() <-chan struct{} {
 
 func (c *capacityMutationContext) Value(key any) any {
 	return c.value(key)
+}
+
+// Compare all persisted settings; the parser also records whether implicit
+// update defaults were made explicit by a write, which is not a setting change.
+func capacityConfigContent(t *testing.T, cfg globalconfig.Config) string {
+	t.Helper()
+	raw, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }

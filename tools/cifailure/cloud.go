@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -95,6 +96,14 @@ func (c *cloudDestination) load(ctx context.Context) error {
 			if item.Terminal || item.Archived {
 				continue
 			}
+			var detail operatortool.WorkReadResult[tracker.NativeIssue]
+			if err := c.command(ctx, "work_item", map[string]any{"project_id": c.project, "reference": string(item.WorkItemID)}, &detail); err != nil {
+				return err
+			}
+			if detail.ProjectID != c.project || detail.Reference != string(item.WorkItemID) || detail.Data.ProjectID != item.ProjectID || detail.Data.OrganizationID != item.OrganizationID || detail.Data.WorkItemID != item.WorkItemID || slices.Contains(detail.Data.OmittedFields, "body") {
+				return errors.New("scheduled work item detail is incomplete or belongs to another destination")
+			}
+			item = detail.Data
 			issue := &cloudIssue{item: item, bodies: []string{item.Body}}
 			if err := c.comments(ctx, issue); err != nil {
 				return err

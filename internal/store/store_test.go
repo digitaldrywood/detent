@@ -4182,6 +4182,18 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 			}
 		})
 	}
+	if err := goose.DownToContext(ctx, db, "migrations", 54); err != nil {
+		t.Fatal(err)
+	}
+	for i, tc := range cases {
+		var metadata string
+		if err := db.QueryRowContext(ctx, "SELECT worker_metadata_json FROM work_attempts WHERE id = ?", i+1).Scan(&metadata); err != nil {
+			t.Fatal(err)
+		}
+		if metadata != tc.metadata {
+			t.Fatalf("restored metadata = %s, want %s", metadata, tc.metadata)
+		}
+	}
 	// Current readers require the current schema; migration 55 was checked above.
 	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
 		t.Fatal(err)
@@ -4218,18 +4230,7 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 	if got := queryInt(t, db, "SELECT COUNT(*) FROM codex_sessions WHERE final_state = 'completed'"); got != int64(len(cases)) {
 		t.Fatal("migration rewrote session history")
 	}
-	if err := goose.DownToContext(ctx, db, "migrations", 54); err != nil {
-		t.Fatal(err)
-	}
-	for i, tc := range cases {
-		var metadata string
-		if err := db.QueryRowContext(ctx, "SELECT worker_metadata_json FROM work_attempts WHERE id = ?", i+1).Scan(&metadata); err != nil {
-			t.Fatal(err)
-		}
-		if metadata != tc.metadata {
-			t.Fatalf("restored metadata = %s, want %s", metadata, tc.metadata)
-		}
-	}
+
 }
 
 func TestPendingCredentialWaitRequiresWriteProof(t *testing.T) {
