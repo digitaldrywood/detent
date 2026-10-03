@@ -157,6 +157,11 @@ func TestHostedContextMCP(t *testing.T) {
 					}
 					f, mcpCtx := newHostedKeyMCPFixture(t, deployment, role)
 					f.grant(t, f.user, true, true)
+					authority, err := operatorCatalog(mcpCtx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					mcpCtx = f.service.withOperatorCatalog(mcpCtx, authority.credential, authority.identity.OrganizationID)
 					f.service.config.Version = "v1.2.4"
 					f.service.clientBuild = appClientBuild{Build: "client-build-sentinel"}
 					send := hostedContextProtocol(t, f.service, mcpCtx, transport)
