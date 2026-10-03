@@ -183,6 +183,11 @@ idempotent replay. `TestHubMCPWorkCommands`, `TestWorkspaceOperatorConversation`
 and `TestToolExecutionErrorIsDistinctFromEmptyResult` cover transport projection,
 denied authority, completed-turn rejection without dispatch and completed replay.
 
+MCP work adapters and entry attachment response rewrites require JSON objects
+before updating envelope fields. A null work-argument object is invalid; a null
+entry result or receipt is left untouched. Native lease bookkeeping uses each
+existing claim's own recovery identity and lease together, preserving fencing.
+
 Analytics parity (native #33, imported #3665) uses the same application adapters
 for stdio, HTTP MCP and the daemon bridge. Each direct read resolves current
 read authority and project grants before selecting projects or aggregating

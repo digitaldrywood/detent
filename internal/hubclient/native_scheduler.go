@@ -309,10 +309,11 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		claims = append(claims, nativeClaim{availabilityDeadline: availabilityDeadline, source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)})
 	}
 	s.mu.Lock()
-	for i, issue := range issues {
-		s.claims[issue.ID] = nativeTrackerLease(leases[i])
-		s.nativeClaims[issue.ID] = claims[i]
-		s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
+	for _, claim := range claims {
+		issueID := string(claim.recovery.Issue.WorkItemID)
+		s.claims[issueID] = nativeTrackerLease(claim.lease)
+		s.nativeClaims[issueID] = claim
+		s.claimPolicies[issueID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
 	}
 	s.mu.Unlock()
 	s.syncLeaseHold(ctx)
@@ -433,6 +434,6 @@ func nativeTransportUnavailable(err error) bool {
 
 func nativeAuthorityLost(err error) bool {
 	var apiErr *APIError
-	return nativeLeaseLost(err) || errors.As(err, &apiErr) &&
+	return nativeLeaseLost(err) || errors.As(err, &apiErr) && apiErr != nil &&
 		(apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusNotFound)
 }

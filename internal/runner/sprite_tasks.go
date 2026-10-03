@@ -27,7 +27,10 @@ var spriteTaskSequence atomic.Uint64
 
 func spriteSocketPresent() bool {
 	info, err := os.Stat(spriteAPISocket)
-	return err == nil && info.Mode()&os.ModeSocket != 0
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeSocket != 0
 }
 
 func holdSpriteTask(ctx context.Context, failed func()) (func(), error) {

@@ -1,5 +1,19 @@
 [
   {
+    "file": "internal/hubclient/native_intake_test.go",
+    "line": 63,
+    "column": 20,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "812f348834089efedc6d569a931df31792ab19f27ef54b4999e00fa537f90990"
+  },
+  {
+    "file": "internal/hubclient/native_runtime_test.go",
+    "line": 147,
+    "column": 2,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "eb3df99d566c8cd678f5238d500cfd7e25d9cf3932cd66ebec875e68eb2b8248"
+  },
+  {
     "file": "internal/hubserver/onboarding_test.go",
     "line": 171,
     "column": 18,
@@ -7,11 +21,32 @@
     "source_sha256": "a54216f84acf4a18b69905dc75f0151a103542ab5ff513d9d731c439dcf822e0"
   },
   {
+    "file": "internal/hubserver/operator_work_reads_test.go",
+    "line": 52,
+    "column": 95,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "f58401129161c171bb9130a01408465390cbb180f0ae6e378a9e0343c033c52b"
+  },
+  {
+    "file": "internal/operatortool/work_reads.go",
+    "line": 373,
+    "column": 43,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "8ff0e1dab9b808d88c899a0c9075357c6a681456fcd7a7e90d459433bb2e6e69"
+  },
+  {
     "file": "internal/orchestrator/pre_turn_failure.go",
     "line": 32,
     "column": 70,
     "rule": "Potential nil panic detected",
     "source_sha256": "50d2c510d0242e4fa3007ac689aa08e03882af2d95e62c97db3b0ef4eacbe346"
+  },
+  {
+    "file": "internal/workspace/workspace.go",
+    "line": 2324,
+    "column": 42,
+    "rule": "Potential nil panic detected",
+    "source_sha256": "ec85873af0cadb331af08f339ac2fce8de88e987c6dae4ea9207858f47f5279a"
   },
   {
     "file": "internal/workspacerunner/actions.go",
