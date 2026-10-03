@@ -14,11 +14,21 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
-	t.Parallel()
-	h := newNativeChangeHub(t)
+	h := newNativeChangeHub(t, true)
+	h.admin.client.baseURL.Scheme = "https"
+	transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host != h.admin.client.baseURL.Host {
+			return nil, errors.New("unexpected native read destination")
+		}
+		return h.admin.client.httpClient.Transport.RoundTrip(request)
+	})
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
 	issue := h.createInProgress(t, "Read current native evidence")
 	identityPath := filepath.Join(t.TempDir(), "private", "identity.json")
 	file, err := runnerauth.Initialize(identityPath, h.admin.client.baseURL.String())
@@ -33,7 +43,7 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if _, err := EnrollRunner(t.Context(), identityPath, h.organization, enrollment.Token, machine); err != nil {
 		t.Fatal(err)
 	}
-	client, err := New(Config{URL: file.HubURL, IdentityFile: identityPath})
+	client, err := New(Config{URL: file.HubURL, IdentityFile: identityPath, HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,13 +84,40 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	execution := h.scheduler.RunExecution(issue.ID)
+	owner := execution.(*nativeExecution)
+	if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}); err != nil {
+		t.Fatal(err)
+	}
 	source, ok := execution.(runner.ToolExecution)
 	if !ok {
 		t.Fatal("native execution omitted its read tools")
 	}
 	tools, handler := source.AgentTools()
-	if len(tools) != 5 {
-		t.Fatalf("read tools = %d, want 5", len(tools))
+	if len(tools) != 8 {
+		t.Fatalf("read tools = %d, want 8", len(tools))
+	}
+	receiptArgs, err := json.Marshal(map[string]any{"project_id": h.project, "reference": issue.ID, "native_attempt_id": owner.data.AttemptID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkAttemptReceipt, Arguments: receiptArgs})
+	var receipt operatortool.WorkReadResult[tracker.NativeRuntimeEvidence]
+	if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &receipt) != nil || receipt.Data.Attempt == nil || receipt.Data.Attempt.Runtime != nil || !strings.Contains(result.Content, "runtime_phase_heartbeat") || !strings.Contains(result.Content, "instruction_activity") {
+		t.Fatalf("git-only receipt fabricated runtime: %s, err=%v", result.Content, err)
+	}
+	at := time.Now().UTC().Add(-2 * time.Second)
+	observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "merging", HeartbeatAt: at, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 2, Stage: "merge", Status: "running", Coverage: "partial", StartedAt: at, AsOf: at, Spans: []workflowmetrics.ActivitySpan{{ID: "git", Kind: "implementation", Outcome: "running", StartedAt: at}}}}
+	if err := owner.ObserveRuntime(t.Context(), observation); err != nil {
+		t.Fatal(err)
+	}
+	observation.Phase = "validation"
+	observation.HeartbeatAt = at.Add(time.Second)
+	if err := owner.ObserveRuntime(t.Context(), observation); err != nil {
+		t.Fatal(err)
+	}
+	other, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Another item", State: "Todo"})
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, tool := range tools {
 		if tool.Name == operatortool.WorkItem && !strings.Contains(tool.Description, "canonical native work-item ID") {
@@ -97,6 +134,10 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		{operatortool.WorkHistory, map[string]any{"reference": issue.ID, "limit": 1}, "next_cursor"},
 		{operatortool.ListChanges, map[string]any{"work_item_id": issue.ID, "limit": 1}, change.ID},
 		{operatortool.GetChange, map[string]any{"work_item_id": issue.ID, "change_id": change.ID}, version.HeadSHA},
+		{operatortool.WorkRuns, map[string]any{"reference": issue.ID, "limit": 1}, owner.data.AttemptID},
+		{operatortool.BoardActivity, map[string]any{"reference": issue.ID, "limit": 1}, "next_cursor"},
+		{operatortool.WorkAttemptReceipt, map[string]any{"reference": issue.ID, "native_attempt_id": owner.data.AttemptID}, "validation"},
+		{operatortool.WorkAttemptReceipt, map[string]any{"reference": issue.ID, "attempt_id": 42}, "validation"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			test.extra["project_id"] = string(h.project)
@@ -110,6 +151,16 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 			}
 			if strings.Contains(result.Content, nativeChangeAdminToken) || strings.Contains(result.Content, file.Credential) || strings.Contains(result.Content, "Bearer ") {
 				t.Fatal("read exposed a host credential")
+			}
+			if test.name == operatortool.WorkAttemptReceipt {
+				var receipt operatortool.WorkReadResult[tracker.NativeRuntimeEvidence]
+				if err := json.Unmarshal([]byte(result.Content), &receipt); err != nil {
+					t.Fatal(err)
+				}
+				attempt := receipt.Data.Attempt
+				if receipt.GeneratedAt.IsZero() || receipt.GeneratedAt != receipt.Data.ObservedAt || attempt == nil || attempt.AttemptID != owner.data.AttemptID || attempt.RuntimeFreshness != "available" || attempt.Runtime == nil || len(attempt.Runtime.Phases) != 2 || attempt.Runtime.Phases[0].FinishedAt.IsZero() || attempt.Runtime.Activity == nil || len(attempt.Runtime.Activity.Spans) != 0 {
+					t.Fatalf("receipt lost bounded phase/freshness evidence: %s", result.Content)
+				}
 			}
 		})
 	}
@@ -126,6 +177,13 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": issue.ID, "url": "https://foreign.invalid"}, operatortool.ErrInvalidArguments},
 		{operatortool.WorkComments, map[string]any{"project_id": h.project, "reference": issue.ID, "limit": 201}, operatortool.ErrInvalidArguments},
 		{operatortool.CreateChange, map[string]any{"project_id": h.project, "work_item_id": issue.ID}, operatortool.ErrUnknownTool},
+		{operatortool.AppUpdates, map[string]any{}, operatortool.ErrUnknownTool},
+		{operatortool.WorkAttemptReceipt, map[string]any{"project_id": foreignProject.ID, "reference": foreignIssue.WorkItemID, "native_attempt_id": owner.data.AttemptID}, operatortool.ErrAccessDenied},
+		{operatortool.WorkAttemptReceipt, map[string]any{"project_id": h.project, "reference": foreignIssue.WorkItemID, "native_attempt_id": owner.data.AttemptID}, operatortool.ErrAccessDenied},
+		{operatortool.WorkAttemptReceipt, map[string]any{"project_id": h.project, "reference": other.WorkItemID, "native_attempt_id": owner.data.AttemptID}, operatortool.ErrAccessDenied},
+		{operatortool.WorkAttemptReceipt, map[string]any{"project_id": h.project, "reference": other.WorkItemID, "attempt_id": 42}, operatortool.ErrAccessDenied},
+		{operatortool.WorkAttemptReceipt, map[string]any{"project_id": h.project, "reference": issue.ID}, operatortool.ErrInvalidArguments},
+		{operatortool.BoardActivity, map[string]any{"project_id": h.project, "reference": issue.ID, "limit": 201}, operatortool.ErrInvalidArguments},
 	} {
 		arguments, err := json.Marshal(test.args)
 		if err != nil {
@@ -136,14 +194,10 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 			t.Fatalf("refusal %s: success=%t error=%v, want %v", test.name, result.Success, err, test.want)
 		}
 	}
-	h.scheduler.mu.Lock()
-	delete(h.scheduler.nativeClaims, issue.ID)
-	h.scheduler.mu.Unlock()
-	arguments, err := json.Marshal(map[string]any{"project_id": h.project, "reference": issue.ID})
-	if err != nil {
+	if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
 		t.Fatal(err)
 	}
-	result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkItem, Arguments: arguments})
+	result, err = handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkAttemptReceipt, Arguments: receiptArgs})
 	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || result.Success {
 		t.Fatalf("lost execution authority: success=%t error=%v", result.Success, err)
 	}
