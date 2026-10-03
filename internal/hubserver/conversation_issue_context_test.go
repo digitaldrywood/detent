@@ -126,8 +126,12 @@ func (f *browserHostedFixture) seedIssueAsk(t *testing.T) {
 	base := browserHostedOrganizationBase + "/projects/" + f.project + "/work-items/" + f.workItem
 	var issue tracker.NativeIssue
 	browserHostedDecode(t, f.api(t, "owner", http.MethodGet, base, nil, http.StatusOK), &issue)
+	// Linking starts in Todo; use the configured path to the Blocked lane.
+	if issue.State == "Todo" {
+		browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "ask-in-progress"}, ExpectedRevision: issue.Revision, State: "In Progress", Reason: "user_requested"}, http.StatusOK), &issue)
+	}
 	if issue.State != "Blocked" {
-		browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/transitions", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "ask-blocked"}, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "user_requested"}, http.StatusOK), &issue)
+		browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "ask-blocked"}, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "user_requested"}, http.StatusOK), &issue)
 	}
 	backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
 	backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {

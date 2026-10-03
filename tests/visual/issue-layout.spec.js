@@ -172,9 +172,8 @@ test("selected Surface Diff yields the aside and keeps Properties reachable", as
   const fixture = changeFixture("surface", "src/surface.ts");
   await openIssue(page, [fixture], { latest: fixture.diff });
   await page.getByRole("button", { name: /^Toggle right panel/ }).click();
-  await page.locator("[aria-label='Open a surface']")
-    .locator("[class*='grid-cols-2'] > *").filter({ hasText: "Diff" })
-    .getByRole("button").click();
+  await page.getByRole("button", { name: "Add panel surface", exact: true }).click();
+  await page.getByRole("menuitem", { name: /^Diff/ }).click();
   await expect(page.getByTestId("diff-file-section")).toHaveAttribute("data-diff-path", "src/surface.ts");
   await expect(page.getByTestId("diff-round")).toContainText(fixture.diff.head_sha.slice(0, 7));
   await expect(page.getByRole("complementary", { name: "Properties", exact: true })).toHaveCount(0);
@@ -201,7 +200,7 @@ for (const source of ["available", "unavailable", "wrong head", "empty files"]) 
       latest: fixture.diff,
     });
     await page.getByTestId("issue-resources").getByRole("button", { name: /Change fallback/ }).click();
-    await expect(page).toHaveURL(new RegExp(`/changes/${fixture.change.change_id}$`));
+    await expect.poll(() => new URL(page.url()).pathname).toBe(`/work/i/${hub.fixture.work_item}/changes/${fixture.change.change_id}`);
     await expect(page.getByTestId("diff-file-section")).toHaveAttribute(
       "data-diff-path",
       "src/fallback.ts",

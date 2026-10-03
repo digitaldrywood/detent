@@ -103,7 +103,7 @@ for (const gesture of ["drop", "attach"]) {
     await expect(body).toHaveValue(/attachment:att_/);
     await dialog.getByRole("button", { name: "Create issue", exact: true }).click();
     await expect(dialog).toHaveCount(0);
-    await page.getByText(`Attachment ${gesture} issue`, { exact: true }).click();
+    await page.getByTestId("issue-card").filter({ hasText: `Attachment ${gesture} issue` }).getByTestId("issue-card-open").click();
     await expect(page.getByTestId("issue-body").getByTestId(gesture === "drop" ? "issue-attachment-image" : "issue-attachment-file")).toBeVisible();
     if (gesture === "attach") {
       const chip = page.getByTestId("issue-attachment-file");
