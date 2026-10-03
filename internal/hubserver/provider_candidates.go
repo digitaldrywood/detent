@@ -54,7 +54,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 			if found && lease.session.ExpiresAt.After(now) {
 				continue
 			}
-			ready, err := nativeLandingCandidateReady(ctx, tx, &scope, id, now)
+			ready, _, err := nativeLandingCandidateReady(ctx, tx, &scope, id, now)
 			if err != nil {
 				return nil, err
 			}
