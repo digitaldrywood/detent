@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"syscall"
@@ -71,15 +72,21 @@ func startPTY(cmd *exec.Cmd, cols, rows int, isolation, worktree string) (*os.Fi
 	if isolation == workspacesession.IsolationSandbox {
 		confirmation, ready, err = os.Pipe()
 		if err != nil {
-			file.Close()
-			return nil, err
+			return nil, errors.Join(err, file.Close())
 		}
-		defer confirmation.Close()
-		defer ready.Close()
+		defer func() {
+			if err := confirmation.Close(); err != nil {
+				slog.Debug("terminal confirmation descriptor close", "error", err)
+			}
+		}()
+		defer func() {
+			if err := ready.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+				slog.Debug("terminal readiness descriptor close", "error", err)
+			}
+		}()
 		cmd.ExtraFiles = []*os.File{ready}
 		if err := sandboxCommand(cmd, worktree, tty.Name()); err != nil {
-			file.Close()
-			return nil, err
+			return nil, errors.Join(err, file.Close())
 		}
 	}
 	if err := cmd.Start(); err != nil {
@@ -87,30 +94,31 @@ func startPTY(cmd *exec.Cmd, cols, rows int, isolation, worktree string) (*os.Fi
 		return nil, err
 	}
 	if confirmation != nil {
-		ready.Close()
-		err := confirmation.SetReadDeadline(time.Now().Add(5 * time.Second))
+		err := errors.Join(ready.Close(), confirmation.SetReadDeadline(time.Now().Add(5*time.Second)))
 		var marker [1]byte
 		if err == nil {
 			_, err = io.ReadFull(confirmation, marker[:])
 		}
 		if err != nil || marker[0] != 1 {
-			file.Close()
+			closeErr := file.Close()
 			groupErr := kill(cmd)
 			processErr := cmd.Process.Kill()
 			waited := make(chan struct{})
 			go func() {
-				cmd.Wait()
+				if err := cmd.Wait(); err != nil {
+					slog.Debug("terminal launch cleanup wait", "error", err)
+				}
 				close(waited)
 			}()
 			if groupErr != nil && processErr != nil && !errors.Is(processErr, os.ErrProcessDone) {
-				return nil, fmt.Errorf("%w: launch cleanup: %v", ErrSandboxIsolation, errors.Join(groupErr, processErr))
+				return nil, fmt.Errorf("%w: launch cleanup: %w", ErrSandboxIsolation, errors.Join(groupErr, processErr, closeErr))
 			}
 			select {
 			case <-waited:
 			case <-time.After(KillGrace):
 				return nil, fmt.Errorf("%w: launch cleanup did not finish", ErrSandboxIsolation)
 			}
-			return nil, fmt.Errorf("%w: launch was not confirmed", ErrSandboxIsolation)
+			return nil, fmt.Errorf("%w: launch was not confirmed", errors.Join(ErrSandboxIsolation, closeErr))
 		}
 	}
 	return file, nil

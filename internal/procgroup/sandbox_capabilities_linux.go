@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"os/exec"
 
-	"github.com/digitaldrywood/detent/internal/isolation"
 	"golang.org/x/sys/unix"
+
+	"github.com/digitaldrywood/detent/internal/isolation"
 )
 
 func configureSandboxCapabilities(ctx context.Context, cmd *exec.Cmd) error {

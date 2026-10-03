@@ -117,7 +117,7 @@ func (s *Service) administrationCatalog(ctx context.Context) ([]operatortool.Def
 		if _, err := s.authorizeCatalog(ctx, operatortool.AdministrationRequirement(d.Name)); err != nil {
 			continue
 		}
-		allowed := false
+		var allowed bool
 		switch d.Name {
 		case operatortool.OrganizationSession:
 			allowed = true

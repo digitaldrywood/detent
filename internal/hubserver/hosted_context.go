@@ -97,15 +97,16 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 		}
 	}()
 	var request hostedEventRequest
-	if call.Name == operatortool.HostedEvents {
+	switch call.Name {
+	case operatortool.HostedEvents:
 		if err := operatortool.DecodeArguments(call.Arguments, &request); err != nil || request.ProjectID == "" || len(request.ProjectID) > 256 || len(request.WorkspaceID) > 256 || len(request.Cursor) > 2048 {
 			return result, operatortool.ErrInvalidArguments
 		}
-	} else if call.Name == operatortool.AppBootstrapPayload || call.Name == operatortool.AppUpdates {
+	case operatortool.AppBootstrapPayload, operatortool.AppUpdates:
 		if err := operatortool.DecodeArguments(call.Arguments, &struct{}{}); err != nil {
 			return result, err
 		}
-	} else {
+	default:
 		return result, operatortool.ErrUnknownTool
 	}
 	ctx, credential, err := e.credential(ctx, call.Name, request.ProjectID)

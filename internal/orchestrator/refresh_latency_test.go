@@ -162,11 +162,11 @@ func TestTickDispatchPrecedesBlockedMaintenance(t *testing.T) {
 			orch := &Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 2)}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			orch.publishState(&state)
+			orch.publishState(ctx, &state)
 			orch.startTick(&state, time.Now())
 			go func() {
 				defer close(finished)
-				defer orch.finishTick(&state)
+				defer orch.finishTick(ctx, &state)
 				orch.tick(ctx, &state, time.Now())
 			}()
 			defer func() {

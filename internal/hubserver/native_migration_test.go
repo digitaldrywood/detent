@@ -12,8 +12,9 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/pressly/goose/v3"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {

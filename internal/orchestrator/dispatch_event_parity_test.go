@@ -45,9 +45,9 @@ func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
 					o.pendingStops[issue.ID] = &pendingStopRun{reapDone: true, result: StopRunResult{ProjectID: cfg.Project.ID, IssueID: issue.ID, Destination: "Todo"}}
 				}
 			}
-			o.publishState(&state)
+			o.publishState(t.Context(), &state)
 			if tt.fenced {
-				o.startCompletion(&state)
+				o.startCompletion(t.Context(), &state)
 			}
 			entered := make(chan struct{})
 			unblock := make(chan struct{})

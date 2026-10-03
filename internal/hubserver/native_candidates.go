@@ -15,21 +15,37 @@ func nativeCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQue
 		args = append(args, value)
 		return "?"
 	}
+	var encodingErr error
 	jsonList := func(value any) string {
-		raw, _ := marshalNative(value)
+		raw, err := marshalNative(value)
+		if err != nil {
+			encodingErr = err
+		}
 		return bind(raw)
 	}
 	stateRanks := normalizedQueryStrings(query.DispatchPriorityByState)
 	labelRanks := normalizedQueryStrings(query.DispatchPriorityByLabel)
 	merging := len(query.DispatchPriorityByState) > 0 && strings.EqualFold(strings.TrimSpace(query.DispatchPriorityByState[0]), "merging")
-	statement := `WITH candidates AS NOT MATERIALIZED (
+	statement := strings.Join([]string{`WITH candidates AS NOT MATERIALIZED (
 SELECT i.id,
- CASE WHEN ` + bind(merging) + ` AND lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END AS merging,
+ CASE WHEN `,
+		bind(merging),
+		` AND lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END AS merging,
  CASE WHEN q.priority_override BETWEEN 0 AND 3 THEN q.priority_override + 1 ELSE 5 END AS priority,
- COALESCE((SELECT min(CAST(pref.key AS INTEGER)) FROM json_each(` + jsonList(labelRanks) + `) pref
-  WHERE EXISTS (SELECT 1 FROM json_each(i.labels_json) label WHERE lower(trim(label.value)) = pref.value)), ` + bind(len(labelRanks)) + `) AS label_rank,
- COALESCE((SELECT CAST(pref.key AS INTEGER) FROM json_each(` + jsonList(stateRanks) + `) pref WHERE pref.value = lower(trim(ws.detent_state))), ` + bind(len(stateRanks)) + `) AS state_rank,
- CASE WHEN ` + bind(query.PrioritizeUnblockers) + ` THEN -(SELECT count(DISTINCT d.dependent_issue_id) FROM issue_dependencies d
+ COALESCE((SELECT min(CAST(pref.key AS INTEGER)) FROM json_each(`,
+		jsonList(labelRanks),
+		`) pref
+  WHERE EXISTS (SELECT 1 FROM json_each(i.labels_json) label WHERE lower(trim(label.value)) = pref.value)), `,
+		bind(len(labelRanks)),
+		`) AS label_rank,
+ COALESCE((SELECT CAST(pref.key AS INTEGER) FROM json_each(`,
+		jsonList(stateRanks),
+		`) pref WHERE pref.value = lower(trim(ws.detent_state))), `,
+		bind(len(stateRanks)),
+		`) AS state_rank,
+ CASE WHEN `,
+		bind(query.PrioritizeUnblockers),
+		` THEN -(SELECT count(DISTINCT d.dependent_issue_id) FROM issue_dependencies d
   JOIN issues dependent ON dependent.id = d.dependent_issue_id
   JOIN projects dp ON dp.id = dependent.project_id AND dp.require_dependencies = 1
   LEFT JOIN workflow_states ds ON ds.id = dependent.workflow_state_id
@@ -47,17 +63,31 @@ JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN queue_entries q ON q.id = (
  SELECT candidate.id FROM queue_entries candidate WHERE candidate.issue_id = i.id
- AND (` + bind(query.Scope) + ` = '' OR candidate.scope = ` + bind(query.Scope) + `)
- ORDER BY CASE WHEN candidate.scope = ` + bind(query.Scope) + ` THEN 0 ELSE 1 END, candidate.scope, candidate.id LIMIT 1)
-WHERE i.organization_id = ` + bind(query.NativeScope.organization) + ` AND p.profile = 'native'
+ AND (`,
+		bind(query.Scope),
+		` = '' OR candidate.scope = `,
+		bind(query.Scope),
+		`)
+ ORDER BY CASE WHEN candidate.scope = `,
+		bind(query.Scope),
+		` THEN 0 ELSE 1 END, candidate.scope, candidate.id LIMIT 1)
+WHERE i.organization_id = `,
+		bind(query.NativeScope.organization),
+		` AND p.profile = 'native'
  AND i.archived = 0 AND ws.terminal = 0 AND ws.dispatchable = 1 AND lower(trim(ws.detent_state)) <> 'cancelled'
  AND NOT EXISTS (SELECT 1 FROM github_imports g WHERE g.work_item_id = i.native_id AND g.intake_pending = 1)
- AND (` + bind(query.WorkspaceLane) + ` = 1 OR ` + notWorkspaceItemClause + `)
- AND ` + notAlreadyAnsweredClause + `
+ AND (`,
+		bind(query.WorkspaceLane),
+		` = 1 OR `,
+		notWorkspaceItemClause,
+		`)
+ AND `,
+		notAlreadyAnsweredClause,
+		`
  AND (p.require_dependencies = 0 OR NOT EXISTS (
  SELECT 1 FROM issue_dependencies dependency JOIN issues blocker ON blocker.id = dependency.blocker_issue_id
  LEFT JOIN workflow_states blocker_state ON blocker_state.id = blocker.workflow_state_id
- WHERE dependency.dependent_issue_id = i.id AND (blocker_state.id IS NULL OR blocker_state.terminal = 0)))`
+ WHERE dependency.dependent_issue_id = i.id AND (blocker_state.id IS NULL OR blocker_state.terminal = 0)))`}, "")
 	if len(query.HomeProjects) > 0 {
 		statement += ` AND i.project_id IN (SELECT value FROM json_each(` + jsonList(query.HomeProjects) + `))`
 	} else {
@@ -79,6 +109,7 @@ WHERE i.organization_id = ` + bind(query.NativeScope.organization) + ` AND p.pro
 		}
 		statement += ` AND i.native_id IN (SELECT value FROM json_each(` + jsonList(ids) + `))`
 	}
+	var filters strings.Builder
 	for _, filter := range []struct {
 		expression string
 		values     []string
@@ -87,9 +118,10 @@ WHERE i.organization_id = ` + bind(query.NativeScope.organization) + ` AND p.pro
 		{"lower(trim(r.github_owner)) || '/' || lower(trim(r.github_name))", repositories},
 	} {
 		if len(filter.values) > 0 {
-			statement += ` AND ` + filter.expression + ` IN (SELECT value FROM json_each(` + jsonList(filter.values) + `))`
+			filters.WriteString(` AND ` + filter.expression + ` IN (SELECT value FROM json_each(` + jsonList(filter.values) + `))`)
 		}
 	}
+	statement += filters.String()
 	if len(repositoryIDs) > 0 {
 		statement += ` AND i.repository_id IN (SELECT value FROM json_each(` + jsonList(repositoryIDs) + `))`
 	}
@@ -119,6 +151,9 @@ WHERE i.organization_id = ` + bind(query.NativeScope.organization) + ` AND p.pro
 	if query.After > 0 {
 		statement = strings.Replace(statement, ` SELECT id FROM ranked WHERE 1 = 1`, `, page AS (SELECT id FROM ranked WHERE 1 = 1`, 1)
 		statement += `) SELECT id FROM page UNION ALL SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM ranked WHERE id = ` + bind(query.After) + `)`
+	}
+	if encodingErr != nil {
+		return nil, encodingErr
 	}
 	rows, err := tx.QueryContext(ctx, statement, args...)
 	if err != nil {

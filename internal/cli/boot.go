@@ -487,12 +487,12 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if cfg.Global.Client.Configured() {
 		process = "runner"
 	}
-	profileService := profiling.New(runCtx, filepath.Join(filepath.Dir(runtimeBoardSnapshotPath(cfg)), "profiles", process), logger)
-	profileService.Apply(cfg.Global.Profiling)
+	profileService := profiling.New(filepath.Join(filepath.Dir(runtimeBoardSnapshotPath(cfg)), "profiles", process), logger)
+	profileService.Apply(runCtx, cfg.Global.Profiling)
 	defer profileService.Close()
 
 	onGlobalReload := func(reloaded globalconfig.Config) {
-		profileService.Apply(reloaded.Profiling)
+		profileService.Apply(runCtx, reloaded.Profiling)
 		syncGlobalDispatchProjects(globalDispatchGate, reloaded.Projects, manager.Registry())
 		globalConfigState.set(reloaded)
 		republishLatestSnapshot(snapshotHub, logger)
@@ -523,7 +523,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				return err
 			}
 		}
-		if err := backfillRuntimeSessionProjects(ctx, cfg.Global.Projects, runtimeStore, project.LoadWorkflow); err != nil {
+		if err := backfillRuntimeSessionProjects(ctx, cfg.Global.Projects, runtimeStore, func(cfg globalconfig.Project) (workflowconfig.Workflow, error) {
+			return project.LoadWorkflowContext(ctx, cfg)
+		}); err != nil {
 			return err
 		}
 		observationsStarted := time.Now()
@@ -547,7 +549,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			}
 		}
 		logger.Info("runner setup observations completed", "duration", time.Since(observationsStarted))
-		projectFactory = withRunnerFactoryWithIsolation(project.Dependencies{
+		projectFactory = withRunnerFactoryWithIsolation(ctx, project.Dependencies{
 			Events:             events,
 			Scheduling:         hubScheduling,
 			Logger:             logger,
@@ -745,7 +747,7 @@ func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config,
 	logger := slog.Default()
 	retentionHomes := map[string]bool{}
 	for _, projectConfig := range cfg.Projects {
-		workflow, err := project.LoadWorkflow(projectConfig)
+		workflow, err := project.LoadWorkflowContext(ctx, projectConfig)
 		if err != nil {
 			continue
 		}

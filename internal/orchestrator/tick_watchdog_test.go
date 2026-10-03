@@ -145,7 +145,7 @@ func TestTickWatchdogCompletedSlowRefresh(t *testing.T) {
 				if active.Status != wantActive {
 					t.Fatalf("active refresh status = %s", active.Status)
 				}
-				orch.finishTick(&state)
+				orch.finishTick(t.Context(), &state)
 				completed := time.Now()
 				wantNext := completed.Add(interval)
 				if !state.NextRefreshAt.Equal(wantNext) {

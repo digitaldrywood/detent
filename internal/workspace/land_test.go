@@ -206,13 +206,14 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if test.change == "landing-dirty" {
+				switch test.change {
+				case "landing-dirty":
 					if err := os.WriteFile(filepath.Join(before.Path, "uncommitted"), []byte("keep me"), 0o600); err != nil {
 						t.Fatal(err)
 					}
-				} else if test.change == "version" {
+				case "version":
 					options.HeadSHA = fixture.remoteMain(t)
-				} else {
+				default:
 					runGit(t, before.Path, "reset", "--hard", "main")
 				}
 			case "landing-repository":

@@ -80,15 +80,15 @@ func (s *Service) WebSession(ctx context.Context, hash string, now time.Time) (a
 	return session, nil
 }
 
-func (s *Service) hostedSession(c echo.Context) (auth.Session, string, error) {
+func (s *Service) hostedSession(ctx context.Context, c echo.Context) (auth.Session, string, error) {
 	if s.hostedShared() {
-		return s.sharedHostedSession(c)
+		return s.sharedHostedSession(ctx, c)
 	}
 	cookie, err := c.Cookie(hostedCookie)
 	if err != nil || s.hostedSessions == nil {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
-	session, err := s.hostedSessions.Authenticate(c.Request().Context(), cookie.Value)
+	session, err := s.hostedSessions.Authenticate(ctx, cookie.Value)
 	if err == nil {
 		c.Set("hosted_session", session)
 	}
@@ -111,15 +111,15 @@ func (s *Service) hostedMembership(ctx context.Context, identity *auth.HostedIde
 	return auth.Membership{}, auth.ErrHostedIdentity
 }
 
-func (s *Service) hostedCredential(c echo.Context) (apiCredential, int, error) {
-	session, hash, err := s.hostedSession(c)
+func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCredential, int, error) {
+	session, hash, err := s.hostedSession(ctx, c)
 	if err != nil {
 		return apiCredential{}, http.StatusUnauthorized, auth.ErrInvalidSession
 	}
 	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindBrowser {
-		return s.hostedSharedCredential(c.Request().Context(), session, hash, claims.Role)
+		return s.hostedSharedCredential(ctx, session, hash, claims.Role)
 	}
-	return s.hostedSessionCredential(c.Request().Context(), session, hash)
+	return s.hostedSessionCredential(ctx, session, hash)
 }
 
 // hostedSharedCredential builds a browser credential from the shared entry's

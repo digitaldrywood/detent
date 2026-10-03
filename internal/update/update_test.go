@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -638,7 +639,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		t.Fatal("UpdateAvailable = false, want true")
 	}
 	expectedBinarySum := sha256.Sum256([]byte("updated"))
-	if status.BinarySHA256 != fmt.Sprintf("%x", expectedBinarySum) || !status.VerifiedRelease || status.LatestCommit != testUpdatedCommit {
+	if status.BinarySHA256 != hex.EncodeToString(expectedBinarySum[:]) || !status.VerifiedRelease || status.LatestCommit != testUpdatedCommit {
 		t.Fatalf("applied provenance = %+v", status)
 	}
 	raw, err := os.ReadFile(binary)

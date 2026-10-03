@@ -50,9 +50,9 @@ func TestHostedInvitationMCP(t *testing.T) {
 						continue
 					}
 					t.Run(deployment+"/"+transport+"/"+operation+"/"+scenario, func(t *testing.T) {
-						f := newHostedKeyMCPFixture(t, deployment, "owner")
+						f, mcpCtx := newHostedKeyMCPFixture(t, deployment, "owner")
 						f.grant(t, f.user, true, true)
-						credential, err := (hubAdministration{f.service}).credential(f.ctx)
+						credential, err := (hubAdministration{f.service}).credential(mcpCtx)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -63,7 +63,7 @@ func TestHostedInvitationMCP(t *testing.T) {
 							if scenario == "owner invitation denied" {
 								role = "owner"
 							}
-							view, err := f.service.inviteHostedMemberFor(f.ctx, credential, "invitee@example.test", role, "seed", grants)
+							view, err := f.service.inviteHostedMemberFor(mcpCtx, credential, "invitee@example.test", role, "seed", grants)
 							if err != nil {
 								t.Fatal(err)
 							}
@@ -97,13 +97,13 @@ func TestHostedInvitationMCP(t *testing.T) {
 							other := f.hostedSecurityFixture
 							other.project = "prj_other"
 							other.grant(t, f.user, true, true)
-							key, err := f.service.createHostedAPIKeyFor(f.ctx, credential, hostedKeyRequest{Name: "limited", Scope: apikey.ScopeAdmin, Days: 30, ProjectAccess: hostedProjectsSelected, Projects: []string{"prj_other"}})
+							key, err := f.service.createHostedAPIKeyFor(mcpCtx, credential, hostedKeyRequest{Name: "limited", Scope: apikey.ScopeAdmin, Days: 30, ProjectAccess: hostedProjectsSelected, Projects: []string{"prj_other"}})
 							if err != nil {
 								t.Fatal(err)
 							}
-							f.ctx = workspaceOperatorContext(t, f.service, key.Token, "org_security", "limited-key")
+							mcpCtx = workspaceOperatorContext(t, f.service, key.Token, "org_security", "limited-key")
 						}
-						protocol := hostedContextProtocol(t, f.service, f.ctx, transport)
+						protocol := hostedContextProtocol(t, f.service, mcpCtx, transport)
 						input := operatoradmin.Input{RequestID: "invitation-once"}
 						if operation == operatortool.InvitationSend {
 							input.Email, input.Role, input.Grants = "invitee@example.test", "member", grants
@@ -243,7 +243,7 @@ func TestHostedInvitationMCP(t *testing.T) {
 								t.Fatalf("grants=%s want=%+v", stored, grants)
 							}
 							if scenario == "success" {
-								next := operatortool.BindConnection(f.ctx, "invitation-reconnect", "test")
+								next := operatortool.BindConnection(mcpCtx, "invitation-reconnect", "test")
 								if err := (hostedOperatorExecutor{f.service}).OpenConnection(next); err != nil {
 									t.Fatal(err)
 								}

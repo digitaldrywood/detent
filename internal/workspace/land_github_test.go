@@ -90,6 +90,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "real merge server failure retains outage ownership", method: "merge", failureMethod: "PUT", status: 503, message: "Service Unavailable", wantOutage: true},
 		{name: "conflict refresh server failure retains outage ownership", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", refreshStatus: 503, wantOutage: true},
 		{name: "conflict refresh protection retains refusal ownership", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", refreshStatus: 403, wantRefusal: LandRefusalProtected},
+		{name: "missing conflict projection retains verification failure", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", refreshStatus: 404},
 		{name: "Git refresh transport failure retains outage ownership", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", gitReadFailure: "Connection reset by peer", gitReadClass: forgeavailability.ClassTransport},
 		{name: "Git refresh timeout retains outage ownership", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", gitReadFailure: "operation timed out", gitReadClass: forgeavailability.ClassTimeout},
 		{name: "Git refresh authentication remains instance owned", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", gitReadFailure: "Authentication failed", gitReadClass: forgeavailability.ClassTransport},
@@ -339,6 +340,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				}
 				return
 			}
+			if test.refreshStatus == http.StatusNotFound {
+				var status *github.StatusError
+				var refusal *LandRefusal
+				if !errors.As(err, &status) || status.StatusCode != http.StatusNotFound || errors.As(err, &refusal) || !strings.Contains(err.Error(), test.message) || result.MergeSHA != "" || fixture.remoteMain(t) != base {
+					t.Fatalf("missing projection changed error ownership: %#v, %v", result, err)
+				}
+				return
+			}
 			if test.wantDeferred {
 				var status *github.StatusError
 				var refusal *LandRefusal
@@ -408,7 +417,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if result.MergeSHA != fixture.head || result.BaseRef != "main" || result.BaseBefore != base || result.Method != test.method || result.AttemptBranchPushed != !test.external || fixture.remoteMain(t) != fixture.head {
 				t.Fatalf("landing = %#v", result)
 			}
-			wantCreate := !test.external && test.pullState != "open" && test.pullState != "stale" && test.pullState != "merged" && !(test.rate && test.failureMethod == "PUT")
+			wantCreate := !test.external && test.pullState != "open" && test.pullState != "stale" && test.pullState != "merged" && (!test.rate || test.failureMethod != "PUT")
 			wantMerge := test.pullState != "merged"
 			calls := strings.Join(methods, ",")
 			if strings.Contains(calls, "POST") != wantCreate || strings.Contains(calls, "PUT") != wantMerge {

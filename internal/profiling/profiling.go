@@ -14,7 +14,6 @@ import (
 
 type Service struct {
 	mu            sync.Mutex
-	ctx           context.Context
 	logger        *slog.Logger
 	defaultDir    string
 	config        Config
@@ -28,14 +27,14 @@ type Service struct {
 	closed        bool
 }
 
-func New(ctx context.Context, defaultDir string, logger *slog.Logger) *Service {
+func New(defaultDir string, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{ctx: ctx, defaultDir: defaultDir, logger: logger}
+	return &Service{defaultDir: defaultDir, logger: logger}
 }
 
-func (s *Service) Apply(config Config) {
+func (s *Service) Apply(ctx context.Context, config Config) {
 	if config == (Config{}) {
 		config = Default()
 	}
@@ -48,7 +47,7 @@ func (s *Service) Apply(config Config) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || s.ctx.Err() != nil {
+	if s.closed || ctx.Err() != nil {
 		return
 	}
 	if s.startupDone != nil {
@@ -69,7 +68,7 @@ func (s *Service) Apply(config Config) {
 	if config.ListenAddr != s.config.ListenAddr || (config.ListenAddr != "" && s.server == nil) {
 		s.stopListener()
 		if config.ListenAddr != "" {
-			s.startListener(config.ListenAddr)
+			s.startListener(ctx, config.ListenAddr)
 		}
 	}
 	if config.Capture != s.config.Capture {
@@ -77,7 +76,7 @@ func (s *Service) Apply(config Config) {
 		if config.Capture.Enabled {
 			runtime.SetMutexProfileFraction(5)
 			runtime.SetBlockProfileRate(1_000_000)
-			ctx, cancel := context.WithCancel(s.ctx)
+			ctx, cancel := context.WithCancel(ctx)
 			s.cancelCapture = cancel
 			s.captureDone = make(chan struct{})
 			go s.captureLoop(ctx, config.Capture, s.captureDone)
@@ -98,13 +97,13 @@ func (s *Service) Close() {
 	}
 }
 
-func (s *Service) startListener(address string) {
+func (s *Service) startListener(ctx context.Context, address string) {
 	address, err := loopbackAddress(address)
 	if err != nil {
 		s.logger.Warn("profiling listener failed", "error", err)
 		return
 	}
-	listener, err := net.Listen("tcp", address)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", address)
 	if err != nil {
 		s.logger.Warn("profiling listener failed", "address", address, "error", err)
 		return
@@ -116,7 +115,7 @@ func (s *Service) startListener(address string) {
 	mux.HandleFunc("GET /debug/pprof/symbol", httppprof.Symbol)
 	mux.HandleFunc("POST /debug/pprof/symbol", httppprof.Symbol)
 	mux.HandleFunc("GET /debug/pprof/trace", httppprof.Trace)
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, BaseContext: func(net.Listener) context.Context { return s.ctx }}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	s.server, s.listener = server, listener
 	done := make(chan struct{})
 	s.listenerDone = done

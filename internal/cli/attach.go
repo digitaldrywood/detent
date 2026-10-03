@@ -5,10 +5,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/spf13/cobra"
 )
 
 func newAttachCommand(lookup func(string) string, httpClient *http.Client) *cobra.Command {

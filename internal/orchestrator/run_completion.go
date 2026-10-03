@@ -371,7 +371,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt)
 		return
 	}
-	if !(nativeCompletion && errors.Is(event.Err, runpkg.ErrWorkerProcessReap)) && o.handlePreTurnFailure(ctx, state, event, running) {
+	if (!nativeCompletion || !errors.Is(event.Err, runpkg.ErrWorkerProcessReap)) && o.handlePreTurnFailure(ctx, state, event, running) {
 		return
 	}
 	if running.Mode == runpkg.RunModeTriage {

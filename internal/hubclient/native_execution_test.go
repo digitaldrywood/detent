@@ -587,7 +587,7 @@ func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
 			if err := execution.ObserveRuntime(guarded, observation); err != nil {
 				t.Fatal(err)
 			}
-			if execution.pending.Mutation.IdempotencyKey != pending.Mutation.IdempotencyKey || guarded.Err() != nil {
+			if execution.pending.IdempotencyKey != pending.IdempotencyKey || guarded.Err() != nil {
 				t.Fatal("outage replaced worker or pending event")
 			}
 			h.native.client.httpClient.Transport = original

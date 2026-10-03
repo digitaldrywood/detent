@@ -419,9 +419,7 @@ func (e *nativeExecution) captureDiff(ctx context.Context) error {
 	case ok:
 		last := request
 		e.lastDiff = &last
-	case e.lastDiff != nil:
-		request = *e.lastDiff
-	default:
+	case e.lastDiff == nil:
 		return errors.New("the run's final attempt diff is unavailable")
 	}
 	return nil
@@ -443,8 +441,6 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) error {
 	}
 	request.Generation = tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: sequence}
 	if _, err := e.claim.source.client.PostAttemptDiff(ctx, e.data.AttemptID, request); err != nil {
-		slog.Default().Warn("attempt diff not stored",
-			"work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", sequence, "error", err)
 		return err
 	}
 	e.storedSeq = sequence
@@ -459,7 +455,9 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	data.Sequence++
 	data.Outcome = outcome
 	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence {
-		e.postDiff(ctx, data.Sequence)
+		if err := e.postDiff(ctx, data.Sequence); err != nil {
+			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", data.Sequence, "error", err)
+		}
 	}
 	data.Handoff = checkpoint
 	e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}

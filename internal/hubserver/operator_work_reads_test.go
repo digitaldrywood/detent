@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 		t.Run(transport, func(t *testing.T) {
 			call := hostedContextProtocol(t, f.service, ctx, transport)
 			for _, limit := range []int{1, 100, 200} {
-				t.Run(fmt.Sprint(limit), func(t *testing.T) {
+				t.Run(strconv.Itoa(limit), func(t *testing.T) {
 					args := map[string]any{"project_id": string(f.project.ID), "query": needle, "state": "Todo", "label": "bounded", "limit": limit}
 					seen, pages := 0, 0
 					for {

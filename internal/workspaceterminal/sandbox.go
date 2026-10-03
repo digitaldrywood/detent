@@ -28,7 +28,7 @@ var measuredIsolation = sync.OnceValue(func() string {
 
 func AvailableIsolation() string { return measuredIsolation() }
 
-func ProbeSandbox(ctx context.Context) error {
+func ProbeSandbox(ctx context.Context) (result error) {
 	if !sandboxSupported {
 		return ErrSandboxIsolation
 	}
@@ -44,9 +44,9 @@ func ProbeSandbox(ctx context.Context) error {
 	}
 	base, err := os.MkdirTemp(scratch, "terminal-isolation-")
 	if err != nil {
-		return fmt.Errorf("%w: prepare probe: %v", ErrSandboxIsolation, err)
+		return fmt.Errorf("%w: prepare probe: %w", ErrSandboxIsolation, err)
 	}
-	defer os.RemoveAll(base)
+	defer func() { result = errors.Join(result, os.RemoveAll(base)) }()
 	root := filepath.Join(base, "worktree")
 	if err := os.Mkdir(root, 0o700); err != nil {
 		return err

@@ -21,7 +21,7 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 	if err != nil {
 		return runner.NativeLandingTarget{}, err
 	}
-	if detail == nil {
+	if detail.Change.ID == "" {
 		return runner.NativeLandingTarget{}, fmt.Errorf("%w: the item has no Change Request", runner.ErrLandingNotReviewed)
 	}
 	target := runner.NativeLandingTarget{ChangeID: detail.Change.ID, VersionID: detail.Change.CurrentVersion, Title: detail.Change.Title, Method: "squash"}

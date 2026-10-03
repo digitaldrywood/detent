@@ -137,7 +137,10 @@ func (e *AuthorizedExecutor) ListTools(ctx context.Context) ([]Definition, error
 	if e.executor == nil {
 		return definitions, nil
 	}
-	authority, _ := authorized.Value(authorityKey{}).(Authority)
+	authority, present := authorized.Value(authorityKey{}).(Authority)
+	if !present {
+		authority = Authority{}
+	}
 	for _, definition := range Catalog() {
 		if definition.Name == ExplainItem && (e.executor.explainer != nil || authority.Explainer != nil) || definition.Name != ExplainItem && e.executor.snapshots != nil {
 			definitions = append(definitions, definition)

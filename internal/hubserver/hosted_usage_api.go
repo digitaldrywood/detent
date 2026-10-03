@@ -230,7 +230,7 @@ func (r usageRow) tokens() int64 { return r.Input + r.Output }
 
 // hostedUsageReport implements GET /api/v2/organizations/:organization/usage.
 func (s *Service) hostedUsageReport(c echo.Context) error {
-	credential, _, err := s.hostedCredential(c)
+	credential, _, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		return s.usageCredentialError(c, err)
 	}

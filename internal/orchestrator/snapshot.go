@@ -253,7 +253,7 @@ func forgeUnavailableSnapshots(conditions map[string]ForgeCondition) []telemetry
 	return result
 }
 
-func (o *Orchestrator) snapshotDispatchModes(state *State) {
+func (o *Orchestrator) snapshotDispatchModes(ctx context.Context, state *State) {
 	state.dispatchModes = make(map[string]string)
 	for _, issue := range stateLaneEntryIssues(state) {
 		key := workflowLaneEntryKey(issue)
@@ -261,7 +261,7 @@ func (o *Orchestrator) snapshotDispatchModes(state *State) {
 			continue
 		}
 		if _, exists := state.dispatchModes[key]; !exists {
-			state.dispatchModes[key] = o.dispatchMode(context.Background(), state, issue)
+			state.dispatchModes[key] = o.dispatchMode(ctx, state, issue)
 		}
 	}
 }

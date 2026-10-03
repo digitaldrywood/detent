@@ -38,11 +38,11 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			if err := json.Unmarshal(raw, &record); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.Exec(`INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) SELECT 'prj_foreign',organization_id,'foreign',profile,states_json,created_at,0 FROM projects WHERE id=?`, f.project); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) SELECT 'prj_foreign',organization_id,'foreign',profile,states_json,created_at,0 FROM projects WHERE id=?`, f.project); err != nil {
 				t.Fatal(err)
 			}
 			foreign := conversation.NewAttachmentID()
-			if _, err := f.service.database.db.Exec(`INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES(?,'org_security','prj_foreign',?,'file.txt','text/plain',10,?,?)`, foreign, record.Uploader, record.SHA256, formatHubTime(time.Now())); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES(?,'org_security','prj_foreign',?,'file.txt','text/plain',10,?,?)`, foreign, record.Uploader, record.SHA256, formatHubTime(time.Now())); err != nil {
 				t.Fatal(err)
 			}
 			body := "![image](attachment:" + record.ID + ")\n[file](attachment:" + record.ID + ")\n![foreign](attachment:" + foreign + ")"
@@ -67,7 +67,7 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			assertReference := func(id, item, comment string) {
 				t.Helper()
 				var gotItem, gotComment string
-				if err := f.service.database.db.QueryRow("SELECT coalesce(work_item_id,''),coalesce(comment_id,'') FROM attachments WHERE id=?", id).Scan(&gotItem, &gotComment); err != nil {
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT coalesce(work_item_id,''),coalesce(comment_id,'') FROM attachments WHERE id=?", id).Scan(&gotItem, &gotComment); err != nil {
 					t.Fatal(err)
 				}
 				if gotItem != item || gotComment != comment {
@@ -77,10 +77,10 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			assertReference(record.ID, string(issue.WorkItemID), comment.ID)
 			assertReference(foreign, "", "")
 			var count int
-			if err := f.service.database.db.QueryRow("SELECT count(*) FROM attachment_references WHERE attachment_id=?", record.ID).Scan(&count); err != nil || count != 1 {
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_references WHERE attachment_id=?", record.ID).Scan(&count); err != nil || count != 1 {
 				t.Fatalf("references=%d err=%v", count, err)
 			}
-			if _, err := f.service.database.db.Exec("UPDATE attachments SET created_at=? WHERE id=?", formatHubTime(time.Now().Add(-attachment.OrphanTTL-time.Hour)), record.ID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE attachments SET created_at=? WHERE id=?", formatHubTime(time.Now().Add(-attachment.OrphanTTL-time.Hour)), record.ID); err != nil {
 				t.Fatal(err)
 			}
 			sweep := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/attachments/expired", body: "{}"})
@@ -115,7 +115,7 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			if err := json.Unmarshal(raw, &last); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.Exec("DELETE FROM native_comments WHERE id=?", other.ID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_comments WHERE id=?", other.ID); err != nil {
 				t.Fatal(err)
 			}
 			response = f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + record.ID})
@@ -129,7 +129,7 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			if err := json.Unmarshal(raw, &last); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.Exec("DELETE FROM native_comments WHERE id=?", last.ID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_comments WHERE id=?", last.ID); err != nil {
 				t.Fatal(err)
 			}
 			response = f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + record.ID})
@@ -162,7 +162,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 				t.Fatalf("upload=%d %s", response.Code, response.Body.String())
 			}
 			var count int
-			if err := f.service.database.db.QueryRow("SELECT count(*) FROM attachments WHERE id=?", record.ID).Scan(&count); err != nil {
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments WHERE id=?", record.ID).Scan(&count); err != nil {
 				t.Fatal(err)
 			}
 			if test.status == http.StatusTooManyRequests {
@@ -187,7 +187,7 @@ func TestCloudAttachmentRetention(t *testing.T) {
 	f := newHostedSharedFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	var principal string
-	if err := f.service.database.db.QueryRow("SELECT principal_id FROM hosted_members WHERE user_id=?", owner.identity.Subject).Scan(&principal); err != nil {
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", owner.identity.Subject).Scan(&principal); err != nil {
 		t.Fatal(err)
 	}
 	item := f.seedIssue(t, 1)
@@ -211,12 +211,12 @@ func TestCloudAttachmentRetention(t *testing.T) {
 			if test.deleted {
 				deleted = formatHubTime(now)
 			}
-			_, err := f.service.database.db.Exec(`INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,work_item_id,deleted_at) VALUES(?,'org_security',?,?,'file.txt','text/plain',10,?,?,?,?)`, id, f.project, principal, artifact.Digest([]byte("hello")), formatHubTime(now.Add(-test.age)), reference, deleted)
+			_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at,work_item_id,deleted_at) VALUES(?,'org_security',?,?,'file.txt','text/plain',10,?,?,?,?)`, id, f.project, principal, artifact.Digest([]byte("hello")), formatHubTime(now.Add(-test.age)), reference, deleted)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if test.referenced && !test.deleted {
-				if _, err := f.service.database.db.Exec("UPDATE issues SET archived=1 WHERE native_id=?", item); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", item); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -258,18 +258,18 @@ func TestCloudAttachmentReferenceDeletion(t *testing.T) {
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			item := f.seedIssue(t, 1)
 			var principal string
-			if err := f.service.database.db.QueryRow("SELECT principal_id FROM hosted_members WHERE user_id=?", owner.identity.Subject).Scan(&principal); err != nil {
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", owner.identity.Subject).Scan(&principal); err != nil {
 				t.Fatal(err)
 			}
 			id := conversation.NewAttachmentID()
-			_, err := f.service.database.db.Exec(`INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES(?,'org_security',?,?,'file.txt','text/plain',10,?,?)`, id, f.project, principal, artifact.Digest([]byte("hello")), formatHubTime(time.Now()))
+			_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,created_at) VALUES(?,'org_security',?,?,'file.txt','text/plain',10,?,?)`, id, f.project, principal, artifact.Digest([]byte("hello")), formatHubTime(time.Now()))
 			if err != nil {
 				t.Fatal(err)
 			}
 			var comment string
 			if test.comment {
 				comment = "comment_test"
-				_, err := f.service.database.db.Exec(`INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,'org_security',?,?,1,1,'body','{}',?,?)`, comment, f.project, item, formatHubTime(time.Now()), formatHubTime(time.Now()))
+				_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,'org_security',?,?,1,1,'body','{}',?,?)`, comment, f.project, item, formatHubTime(time.Now()), formatHubTime(time.Now()))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -286,7 +286,7 @@ func TestCloudAttachmentReferenceDeletion(t *testing.T) {
 			if test.comment {
 				statement, args = "DELETE FROM native_comments WHERE id=?", []any{comment}
 			}
-			if _, err := f.service.database.db.Exec(statement, args...); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), statement, args...); err != nil {
 				t.Fatal(err)
 			}
 			response = f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + id})

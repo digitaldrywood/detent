@@ -35,7 +35,7 @@ func (s *Service) hostedEntryOwned(c echo.Context) (bool, error) {
 }
 
 func (s *Service) hostedPlanJSON(c echo.Context) error {
-	if _, _, err := s.hostedCredential(c); err != nil {
+	if _, _, err := s.hostedCredential(c.Request().Context(), c); err != nil {
 		return s.hostedAPIError(c, err)
 	}
 	if _, err := s.hostedAdministrator(c); err != nil {
@@ -62,7 +62,7 @@ func (s *Service) switchHostedOrganizationJSON(c echo.Context) error {
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if _, _, err := s.hostedSession(c); err != nil {
+	if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
 		return s.hostedAPIError(c, err)
 	}
 	next, message := s.hostedSwitchDestination(c, strings.TrimSpace(request.Organization))
@@ -86,7 +86,7 @@ func (s *Service) acceptHostedInvitationJSON(c echo.Context) error {
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if _, _, err := s.hostedSession(c); err != nil {
+	if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
 		return s.hostedAPIError(c, err)
 	}
 	if message, denial := s.acceptHostedInvitationToken(c, request.Token); message != "" && !s.hostedInvitationAcceptedBySession(c, request.Token) {
@@ -110,7 +110,7 @@ func (s *Service) startHostedSupportJSON(c echo.Context) error {
 	if err := request.validate(false); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if _, _, err := s.hostedSession(c); err != nil {
+	if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
 		return s.hostedAPIError(c, err)
 	}
 	session, transaction, status, message, reason := s.beginHostedSupport(c)
@@ -125,7 +125,7 @@ func (s *Service) startHostedSupportJSON(c echo.Context) error {
 // token was already accepted by the signed-in account, so a retry after a lost
 // response receives the same destination instead of a refusal.
 func (s *Service) hostedInvitationAcceptedBySession(c echo.Context, token string) bool {
-	session, _, err := s.hostedSession(c)
+	session, _, err := s.hostedSession(c.Request().Context(), c)
 	if err != nil || session.Identity.SupportActor != "" || token == "" || len(token) > 512 {
 		return false
 	}

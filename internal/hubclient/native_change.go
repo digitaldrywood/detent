@@ -64,7 +64,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 			change.Error = err.Error()
 			return err
 		}
-		if detail == nil {
+		if detail.Change.ID == "" {
 			e.settled = true
 			return nil
 		}

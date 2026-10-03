@@ -131,7 +131,7 @@ type spriteWakeKey struct {
 	project      tracker.ProjectID
 }
 
-func (s *Service) wakeSpriteRunnersAfter(scope nativeScope, result json.RawMessage) {
+func (s *Service) scheduleSpriteWake(ctx context.Context, scope nativeScope, result json.RawMessage) {
 	if s.config.SecretKeys == nil {
 		return
 	}
@@ -141,14 +141,14 @@ func (s *Service) wakeSpriteRunnersAfter(scope nativeScope, result json.RawMessa
 	if json.Unmarshal(result, &issue) != nil || issue.State == "" {
 		return
 	}
-	dispatchable, err := s.spriteWakeDispatchable(s.workerContext, scope, issue.State)
+	dispatchable, err := s.spriteWakeDispatchable(ctx, scope, issue.State)
 	if err != nil || !dispatchable {
 		return
 	}
 	key := spriteWakeKey{organization: scope.organization, project: scope.project}
 	s.spriteWakeMu.Lock()
 	defer s.spriteWakeMu.Unlock()
-	if s.workerContext.Err() != nil || s.spriteWakes[key] != nil {
+	if ctx.Err() != nil || s.spriteWakes[key] != nil {
 		return
 	}
 	done := make(chan struct{})
@@ -162,9 +162,11 @@ func (s *Service) wakeSpriteRunnersAfter(scope nativeScope, result json.RawMessa
 			close(done)
 			s.spriteWakeMu.Unlock()
 		}()
-		ctx, cancel := context.WithTimeout(s.workerContext, time.Minute)
+		wakeContext, cancel := context.WithTimeout(ctx, time.Minute)
 		defer cancel()
-		_, _ = s.wakeSpriteRunners(ctx, scope, issue.State)
+		if _, err := s.wakeSpriteRunners(wakeContext, scope, issue.State); err != nil && wakeContext.Err() == nil {
+			s.config.Logger.Warn("sprite runners could not be woken", "error", err)
+		}
 	}()
 }
 
@@ -261,7 +263,7 @@ func (s *Service) wakeSpriteRunner(ctx context.Context, scope nativeScope, clien
 	if err != nil {
 		return false, nil
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+	_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
 	_ = response.Body.Close()
-	return response.StatusCode >= 200 && response.StatusCode <= 299, nil
+	return readErr == nil && response.StatusCode >= 200 && response.StatusCode <= 299, nil
 }

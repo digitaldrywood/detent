@@ -60,8 +60,8 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 			{"viewer browser", "", "viewer", false},
 		} {
 			t.Run(deployment+"/"+test.name, func(t *testing.T) {
-				f := newHostedKeyMCPFixture(t, deployment, test.role)
-				ctx := f.ctx
+				f, mcpCtx := newHostedKeyMCPFixture(t, deployment, test.role)
+				ctx := mcpCtx
 				credential, err := currentHubOperator(ctx)
 				if err != nil {
 					t.Fatal(err)

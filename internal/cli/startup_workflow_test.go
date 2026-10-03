@@ -63,7 +63,7 @@ func TestStartupIsolatesWorkflowLoadFailure(t *testing.T) {
 				run := &workflowStartupRunner{started: make(chan struct{}, 1)}
 				tracker := memory.New(memory.Config{Issues: []connector.Issue{{ID: "1", Identifier: "TEST-1", Title: "Healthy work", State: "Todo", AssignedToWorker: true}}})
 				manager, err := project.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{
-					ProjectFactory: withRunnerFactory(project.Dependencies{Runner: run, Connector: tracker, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
+					ProjectFactory: withRunnerFactory(t.Context(), project.Dependencies{Runner: run, Connector: tracker, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -199,7 +199,7 @@ func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
 				{ID: "healthy", Workflow: healthyPath, Workdir: filepath.Dir(healthyPath), Weight: 1},
 			}
 			manager, err := project.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{
-				ProjectFactory: withRunnerFactory(project.Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
+				ProjectFactory: withRunnerFactory(t.Context(), project.Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -308,7 +308,7 @@ func TestStartupInfrastructureFailureRemainsFatal(t *testing.T) {
 			if backfiller.calls != 0 {
 				t.Fatal("incomplete attribution was written")
 			}
-			manager, err := project.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{ProjectFactory: withRunnerFactory(project.Dependencies{}, nil, nil, serviceapi.Connection{}, nil)})
+			manager, err := project.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{ProjectFactory: withRunnerFactory(t.Context(), project.Dependencies{}, nil, nil, serviceapi.Connection{}, nil)})
 			if err != nil {
 				t.Fatal(err)
 			}

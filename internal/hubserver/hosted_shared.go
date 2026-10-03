@@ -129,7 +129,7 @@ func hostedSharedClaims(c echo.Context) (cloudassert.Claims, bool) {
 	return claims, ok
 }
 
-func (s *Service) sharedHostedSession(c echo.Context) (auth.Session, string, error) {
+func (s *Service) sharedHostedSession(ctx context.Context, c echo.Context) (auth.Session, string, error) {
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindBrowser {
 		return auth.Session{}, "", auth.ErrInvalidSession
@@ -142,7 +142,6 @@ func (s *Service) sharedHostedSession(c echo.Context) (auth.Session, string, err
 	if err != nil {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
-	ctx := c.Request().Context()
 	now := s.config.now()
 	if !claims.AccessExpiresAt.After(now) || !auth.ValidOrganizationRole(claims.Role) {
 		return auth.Session{}, "", auth.ErrInvalidSession

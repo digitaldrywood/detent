@@ -82,7 +82,7 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 }
 
 func (s *Service) hostedBillingExport(c echo.Context) error {
-	credential, err := s.hostedBillingOwner(c)
+	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -97,7 +97,7 @@ func (s *Service) hostedBillingExport(c echo.Context) error {
 }
 
 func (s *Service) hostedBillingPage(c echo.Context) error {
-	credential, err := s.hostedBillingOwner(c)
+	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "Billing requires an organization owner without support impersonation")
 	}
@@ -206,7 +206,7 @@ type hostedBillingView struct {
 }
 
 func (s *Service) hostedBillingJSON(c echo.Context) error {
-	credential, err := s.hostedBillingOwner(c)
+	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
 	if err != nil {
 		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "Billing requires an organization owner without support impersonation"})
 	}

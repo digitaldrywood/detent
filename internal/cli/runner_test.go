@@ -743,7 +743,7 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 
 	var captured projectpkg.Dependencies
 	base := projectpkg.Dependencies{Logger: nil}
-	factory := withRunnerFactory(base, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
+	factory := withRunnerFactory(t.Context(), base, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
 		captured = d
 		return nil, errProjectFactoryStub
 	}, serviceapi.Connection{}, nil)
@@ -789,7 +789,7 @@ func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
 			t.Parallel()
 			var captured projectpkg.Dependencies
 			token := "first-token"
-			factory := withRunnerFactory(projectpkg.Dependencies{}, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
+			factory := withRunnerFactory(t.Context(), projectpkg.Dependencies{}, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
 				captured = d
 				return nil, errProjectFactoryStub
 			}, serviceapi.Connection{}, nil, func() string { return token })

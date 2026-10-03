@@ -34,9 +34,9 @@ type nativeLandingJourney struct {
 	info      workspace.Info
 }
 
-func nativeLandingGit(t *testing.T, dir string, args ...string) string {
+func nativeLandingGit(t *testing.T, ctx context.Context, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -52,11 +52,11 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	}
 	source := t.TempDir()
 	remote := filepath.Join(t.TempDir(), "origin.git")
-	nativeLandingGit(t, source, "init", "-b", "main")
-	nativeLandingGit(t, source, "config", "user.name", "Landing Test")
-	nativeLandingGit(t, source, "config", "user.email", "landing@example.test")
-	nativeLandingGit(t, source, "config", "commit.gpgsign", "false")
-	nativeLandingGit(t, source, "config", "core.hooksPath", os.DevNull)
+	nativeLandingGit(t, t.Context(), source, "init", "-b", "main")
+	nativeLandingGit(t, t.Context(), source, "config", "user.name", "Landing Test")
+	nativeLandingGit(t, t.Context(), source, "config", "user.email", "landing@example.test")
+	nativeLandingGit(t, t.Context(), source, "config", "commit.gpgsign", "false")
+	nativeLandingGit(t, t.Context(), source, "config", "core.hooksPath", os.DevNull)
 	if err := os.WriteFile(filepath.Join(source, "base.txt"), []byte("base\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -72,14 +72,14 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 			}
 		}
 	}
-	nativeLandingGit(t, source, "add", ".")
-	nativeLandingGit(t, source, "commit", "-m", "initial")
-	nativeLandingGit(t, source, "init", "--bare", "-b", "main", remote)
+	nativeLandingGit(t, t.Context(), source, "add", ".")
+	nativeLandingGit(t, t.Context(), source, "commit", "-m", "initial")
+	nativeLandingGit(t, t.Context(), source, "init", "--bare", "-b", "main", remote)
 	repository := "https://github.com/example/repo"
-	nativeLandingGit(t, source, "config", "url.file://"+remote+".insteadOf", repository+".git")
-	nativeLandingGit(t, source, "remote", "add", "origin", repository+".git")
-	nativeLandingGit(t, source, "push", "-u", "origin", "main")
-	base := nativeLandingGit(t, remote, "rev-parse", "refs/heads/main")
+	nativeLandingGit(t, t.Context(), source, "config", "url.file://"+remote+".insteadOf", repository+".git")
+	nativeLandingGit(t, t.Context(), source, "remote", "add", "origin", repository+".git")
+	nativeLandingGit(t, t.Context(), source, "push", "-u", "origin", "main")
+	base := nativeLandingGit(t, t.Context(), remote, "rev-parse", "refs/heads/main")
 	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
@@ -102,15 +102,15 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 			}
 		}
 	}
-	nativeLandingGit(t, info.Path, "add", ".")
-	nativeLandingGit(t, info.Path, "commit", "-m", "reviewed feature")
-	head := nativeLandingGit(t, info.Path, "rev-parse", "HEAD")
+	nativeLandingGit(t, t.Context(), info.Path, "add", ".")
+	nativeLandingGit(t, t.Context(), info.Path, "commit", "-m", "reviewed feature")
+	head := nativeLandingGit(t, t.Context(), info.Path, "rev-parse", "HEAD")
 	if err := os.WriteFile(filepath.Join(source, "parallel.txt"), []byte("parallel landing\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	nativeLandingGit(t, source, "add", ".")
-	nativeLandingGit(t, source, "commit", "-m", "parallel landing")
-	freshBase := nativeLandingGit(t, source, "rev-parse", "HEAD")
+	nativeLandingGit(t, t.Context(), source, "add", ".")
+	nativeLandingGit(t, t.Context(), source, "commit", "-m", "parallel landing")
+	freshBase := nativeLandingGit(t, t.Context(), source, "rev-parse", "HEAD")
 	var merge string
 	if sourceConflict {
 		cmd := exec.CommandContext(t.Context(), "git", "-C", source, "merge-tree", "--write-tree", "--name-only", freshBase, head)
@@ -126,8 +126,8 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 			}
 		}
 	} else {
-		tree := nativeLandingGit(t, source, "merge-tree", "--write-tree", freshBase, head)
-		merge = nativeLandingGit(t, source, "commit-tree", tree, "-p", freshBase, "-m", "land reviewed feature")
+		tree := nativeLandingGit(t, t.Context(), source, "merge-tree", "--write-tree", freshBase, head)
+		merge = nativeLandingGit(t, t.Context(), source, "commit-tree", tree, "-p", freshBase, "-m", "land reviewed feature")
 	}
 	var puts atomic.Int64
 	publishedBranch := info.Branch
@@ -138,7 +138,7 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 			fmt.Fprint(w, `{"data":{"viewer":{"databaseId":42,"login":"detent-worker[bot]","__typename":"Bot"}}}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/repos/example/repo/pulls":
 			publishedBranch = strings.TrimPrefix(request.URL.Query().Get("head"), "example:")
-			fmt.Fprintf(w, `[{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}]`, head, publishedBranch, nativeLandingGit(t, remote, "rev-parse", "refs/heads/main"))
+			fmt.Fprintf(w, `[{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}]`, head, publishedBranch, nativeLandingGit(t, request.Context(), remote, "rev-parse", "refs/heads/main"))
 		case request.Method == http.MethodGet && request.URL.Path == "/repos/example/repo/pulls/7":
 			fmt.Fprintf(w, `{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}`, head, publishedBranch, base)
 		case request.Method == http.MethodPut && request.URL.Path == "/repos/example/repo/pulls/7/merge":
@@ -149,15 +149,15 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 				return
 			}
 			if puts.Add(1) == 1 || sourceConflict || mergeStatus == http.StatusMethodNotAllowed && !strings.HasPrefix(mergeMessage, "Base branch was modified") && mergeMessage != "Pull Request has merge conflicts" {
-				nativeLandingGit(t, source, "push", "origin", freshBase+":refs/heads/main")
+				nativeLandingGit(t, request.Context(), source, "push", "origin", freshBase+":refs/heads/main")
 				w.WriteHeader(mergeStatus)
 				fmt.Fprintf(w, `{"message":%q}`, mergeMessage)
 				return
 			}
-			if fetched := nativeLandingGit(t, info.Path, "rev-parse", "refs/remotes/origin/main"); fetched != freshBase {
+			if fetched := nativeLandingGit(t, request.Context(), info.Path, "rev-parse", "refs/remotes/origin/main"); fetched != freshBase {
 				t.Errorf("retry used stale base %s, want %s", fetched, freshBase)
 			}
-			nativeLandingGit(t, source, "push", "origin", merge+":refs/heads/main")
+			nativeLandingGit(t, request.Context(), source, "push", "origin", merge+":refs/heads/main")
 			fmt.Fprintf(w, `{"merged":true,"sha":%q}`, merge)
 		default:
 			t.Errorf("unexpected forge operation %s %s", request.Method, request.URL)
@@ -197,10 +197,10 @@ func (f nativeLandingTransport) RoundTrip(request *http.Request) (*http.Response
 func (j *nativeLandingJourney) run(t *testing.T) (runpkg.RunResult, error) {
 	t.Helper()
 	result, err := j.runner.Run(t.Context(), runpkg.RunRequest{Mode: runpkg.RunModeMerge, Issue: j.issue, Execution: j.execution})
-	if result.NativeLanding == nil || result.NativeLanding.ChangeID != j.target.ChangeID || result.NativeLanding.VersionID != j.target.VersionID || result.NativeLanding.HeadSHA != j.target.HeadSHA || nativeLandingGit(t, j.info.Path, "rev-parse", "HEAD") != j.target.HeadSHA {
+	if result.NativeLanding == nil || result.NativeLanding.ChangeID != j.target.ChangeID || result.NativeLanding.VersionID != j.target.VersionID || result.NativeLanding.HeadSHA != j.target.HeadSHA || nativeLandingGit(t, t.Context(), j.info.Path, "rev-parse", "HEAD") != j.target.HeadSHA {
 		t.Fatalf("landing lost immutable identity: result %#v, error %v", result, err)
 	}
-	if result.NativeLanding.Landed && (result.NativeLanding.MergeSHA != j.merge || nativeLandingGit(t, j.remote, "rev-parse", "refs/heads/main") != j.merge) {
+	if result.NativeLanding.Landed && (result.NativeLanding.MergeSHA != j.merge || nativeLandingGit(t, t.Context(), j.remote, "rev-parse", "refs/heads/main") != j.merge) {
 		t.Fatalf("landing receipt differs from actual base: %#v", result.NativeLanding)
 	}
 	return result, err

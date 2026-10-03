@@ -78,9 +78,11 @@ if git -C "$1" update-ref "$(git -C "$1" symbolic-ref HEAD)" "$target" 2>/dev/nu
 				return AgentTurnResult{}, err
 			}
 			profile := fmt.Sprintf("(version 1)(allow default)(deny file-write*)(deny file-read* (literal %q))(allow file-write* (literal %q) (subpath %q) (subpath %q)", a.signer, os.DevNull, req.Workspace, req.TempDir)
+			var allowedRoots strings.Builder
 			for _, root := range roots {
-				profile += fmt.Sprintf(" (subpath %q)", root)
+				allowedRoots.WriteString(fmt.Sprintf(" (subpath %q)", root))
 			}
+			profile += allowedRoots.String()
 			profile += ")"
 			cmd := exec.CommandContext(ctx, "sandbox-exec", "-p", profile, "/bin/sh", "-c", `
 git -C "$1" add repair.md || exit 1
@@ -208,7 +210,8 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
 				runRunnerGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-personal-signer"))
 			}
-			signer, allowed := "", ""
+			signer := ""
+			var allowed string
 			var signerBefore []byte
 			if test.signed {
 				signer = filepath.Join(t.TempDir(), "signing-key")

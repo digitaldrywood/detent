@@ -241,7 +241,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, err
 		}
 	}
-	return map[string]any{"action_id": action.ID, "status": action.Status, "preview": json.RawMessage(action.Arguments), "approval": "The approval form is shown in chat. Wait for the user's decision; never claim the change has run before approval."}, nil
+	return map[string]any{"action_id": action.ID, "status": action.Status, "preview": action.Arguments, "approval": "The approval form is shown in chat. Wait for the user's decision; never claim the change has run before approval."}, nil
 }
 
 func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
@@ -329,7 +329,7 @@ func coordinatorActionError(err error) error {
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.Is(err, mutation.ErrConflict) || errors.Is(err, errCoordinatorToolArguments) || errors.Is(err, errCoordinatorProjectUnreadable) {
 		return err
 	}
-	return errors.New("Project change is unavailable")
+	return errors.New("project change is unavailable")
 }
 
 func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Action) error {

@@ -41,7 +41,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		credential, status, err := s.authenticateAPIRequest(c)
 		if err != nil && s.config.Hosted != nil && !s.hostedShared() && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
-			if _, hash, sessionErr := s.hostedSession(c); sessionErr == nil {
+			if _, hash, sessionErr := s.hostedSession(c.Request().Context(), c); sessionErr == nil {
 				credential, err = s.hostedAccountCredential(c.Request().Context(), hash)
 			}
 		}

@@ -14,7 +14,7 @@ import (
 )
 
 func (s *Service) hostedAdministrator(c echo.Context) (apiCredential, error) {
-	credential, _, err := s.hostedCredential(c)
+	credential, _, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}

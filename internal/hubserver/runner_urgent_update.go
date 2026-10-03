@@ -9,10 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
-	"github.com/labstack/echo/v4"
 )
 
 const urgentRunnerUpdatePath = "/api/v2/organizations/:organization/runner-update/urgent"
@@ -94,7 +95,11 @@ func runnerUpdateReceiptMatches(ctx context.Context, tx *sql.Tx, scope nativeSco
 }
 
 func (s *Service) getUrgentRunnerUpdate(c echo.Context) error {
-	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: c.Get("hub_api_credential").(apiCredential)}
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if !ok {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
 	value, err := s.readUrgentRunnerUpdateCommand(c.Request().Context(), scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -114,7 +119,11 @@ func (s *Service) markUrgentRunnerUpdate(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
-	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: c.Get("hub_api_credential").(apiCredential)}
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if !ok {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}
 	value, err := s.markUrgentRunnerUpdateCommand(c.Request().Context(), scope, request)
 	if err != nil {
 		return s.nativeAPIError(c, err)

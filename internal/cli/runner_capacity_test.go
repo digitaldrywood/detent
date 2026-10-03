@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -117,7 +116,7 @@ func TestRunnerCapacityOwner(t *testing.T) {
 					release()
 					<-done
 				}()
-				ctx := &capacityMutationContext{Context: t.Context(), beforeErr: func() {
+				ctx := &capacityMutationContext{deadline: t.Context().Deadline, done: t.Context().Done, err: t.Context().Err, value: t.Context().Value, beforeErr: func() {
 					close(observed)
 					<-resume
 				}}
@@ -292,12 +291,27 @@ func TestRunnerCapacityOwner(t *testing.T) {
 }
 
 type capacityMutationContext struct {
-	context.Context
+	deadline  func() (time.Time, bool)
+	done      func() <-chan struct{}
+	err       func() error
+	value     func(any) any
 	once      sync.Once
 	beforeErr func()
 }
 
 func (c *capacityMutationContext) Err() error {
 	c.once.Do(c.beforeErr)
-	return c.Context.Err()
+	return c.err()
+}
+
+func (c *capacityMutationContext) Deadline() (time.Time, bool) {
+	return c.deadline()
+}
+
+func (c *capacityMutationContext) Done() <-chan struct{} {
+	return c.done()
+}
+
+func (c *capacityMutationContext) Value(key any) any {
+	return c.value(key)
 }

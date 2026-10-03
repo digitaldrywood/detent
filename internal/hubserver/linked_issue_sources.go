@@ -14,10 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readLinkedIssueSource(ctx context.Context, query nativeQueryer, id string) (*tracker.LinkedIssueSource, error) {
-	return readLinkedIssueSourceProjection(ctx, query, id, false)
-}
-
 func readLinkedIssueSourceProjection(ctx context.Context, query nativeQueryer, id string, compact bool) (*tracker.LinkedIssueSource, error) {
 	var source tracker.LinkedIssueSource
 	var raw sql.NullString

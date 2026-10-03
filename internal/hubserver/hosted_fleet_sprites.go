@@ -55,8 +55,8 @@ WHERE ps.organization_id=? AND ps.project_id=? AND ps.kind=? AND r.id=?`, scope.
 			break
 		}
 	}
-	failedAt, _ := parseTimeValue(failed)
-	view.Sprite.WakeFailed = !failedAt.IsZero() && !failedAt.Before(runner.LastHeartbeatAt)
+	failedAt, parseErr := parseTimeValue(failed)
+	view.Sprite.WakeFailed = parseErr == nil && !failedAt.IsZero() && !failedAt.Before(runner.LastHeartbeatAt)
 	if runner.ConnectionHealth == "offline" && runner.State == "active" {
 		view.Health = "needs_attention"
 		if view.Sprite.CanWake && !view.Sprite.WakeFailed && (view.Sprite.Status == "warm" || view.Sprite.Status == "cold") && len(runner.Problems) == 0 && len(runner.Leases) == 0 && view.ClaimRefusalReason == "" {

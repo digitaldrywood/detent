@@ -118,8 +118,8 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 					}
 					if test.mergeMessage == "Pull Request has merge conflicts" {
 						wantError = forgeavailability.ErrUnavailable
-						base = nativeLandingGit(t, journey.info.Path, "rev-parse", "refs/remotes/origin/main")
-						if base == journey.base || base != nativeLandingGit(t, journey.remote, "rev-parse", "refs/heads/main") {
+						base = nativeLandingGit(t, t.Context(), journey.info.Path, "rev-parse", "refs/remotes/origin/main")
+						if base == journey.base || base != nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") {
 							t.Fatal("conflict verification did not refresh the advanced base")
 						}
 					}
@@ -130,7 +130,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 					wantRefusal := workspace.LandRefusalProtected
 					if test.wantLandingWait {
 						wantRefusal = workspace.LandRefusalBaseMoved
-						base := nativeLandingGit(t, journey.remote, "rev-parse", "refs/heads/main")
+						base := nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main")
 						recordedBase := base
 						if strings.HasPrefix(test.mergeMessage, "Base branch was modified") {
 							recordedBase = journey.base
@@ -141,7 +141,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 					}
 					if test.sourceConflict {
 						wantRefusal = workspace.LandRefusalConflict
-						base := nativeLandingGit(t, journey.remote, "rev-parse", "refs/heads/main")
+						base := nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main")
 						if base == journey.base || !strings.Contains(result.NativeLanding.Refusal, base) || !strings.Contains(result.NativeLanding.Refusal, landingHead) {
 							t.Fatalf("conflict lost current Git base or reviewed head: %#v, %v", result.NativeLanding, runErr)
 						}
@@ -179,10 +179,11 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			if test.priorOutage != "" {
 				class := test.priorOutage
 				cause := errors.New("connection reset by peer")
-				if class == "projection" {
+				switch class {
+				case "projection":
 					class = forgeavailability.ClassServer
 					cause = fmt.Errorf("GitHub refused PUT repos/example/repo/pulls/7/merge: %w", &github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: 405, Body: `{"message":"Pull Request has merge conflicts"}`})
-				} else if class == forgeavailability.ClassServer {
+				case forgeavailability.ClassServer:
 					cause = &github.StatusError{Err: github.ErrUnexpectedStatus, StatusCode: 503, Body: `{"message":"Service Unavailable"}`}
 				}
 				priorCondition = orch.registerForgeUnavailable(&state, forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: "github.update_pull_request repos/example/repo/pulls/7/merge"}, class, cause), state.Running[issue.ID], now.Add(-time.Minute))
@@ -323,7 +324,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				}
 				return
 			}
-			if journey != nil && (retried || len(state.ForgeUnavailable) != 0 || nativeLandingGit(t, journey.remote, "rev-parse", "refs/heads/main") == journey.merge) {
+			if journey != nil && (retried || len(state.ForgeUnavailable) != 0 || nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") == journey.merge) {
 				t.Fatalf("strict protection retained a base wait or landed without a receipt: retry %#v, state %#v", retry, state)
 			}
 			if len(tick.updates) != test.wantMoves || test.wantMoves == 1 && tick.updates[0].state != test.wantState {

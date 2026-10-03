@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -30,36 +31,36 @@ const (
 )
 
 type Service struct {
-	mcpHTTP           *mcp.HTTPHandler
-	operatorChat      *chat.Service
-	administration    *operatoradmin.Executor
-	billing           *hostedBillingWorker
-	hostedMutationMu  sync.Mutex
-	hostedAuthLogger  *slog.Logger
-	hostedSessions    *auth.Service
-	echo              *echo.Echo
-	database          *database
-	tracker           tracker.Tracker
-	config            Config
-	outbox            *outboxWorker
-	ready             atomic.Bool
-	workerContext     context.Context
-	spriteWakeMu      sync.Mutex
-	spriteWakes       map[spriteWakeKey]chan struct{}
-	spriteWakeWork    sync.WaitGroup
-	workerCancel      context.CancelFunc
-	workerDone        chan struct{}
-	workerStopOnce    sync.Once
-	reconcileCancel   context.CancelFunc
-	reconcileDone     chan struct{}
-	reconcileStopOnce sync.Once
-	pullRequests      *pullRequestCache
-	notifications     *notificationBroker
-	conversations     *conversationService
-	closeOnce         sync.Once
-	closeErr          error
-	clientBuild       appClientBuild
-	workspaces        *workspaceService
+	mcpHTTP                *mcp.HTTPHandler
+	operatorChat           *chat.Service
+	administration         *operatoradmin.Executor
+	billing                *hostedBillingWorker
+	hostedMutationMu       sync.Mutex
+	hostedAuthLogger       *slog.Logger
+	hostedSessions         *auth.Service
+	echo                   *echo.Echo
+	database               *database
+	tracker                tracker.Tracker
+	config                 Config
+	outbox                 *outboxWorker
+	ready                  atomic.Bool
+	wakeSpriteRunnersAfter func(nativeScope, json.RawMessage)
+	spriteWakeMu           sync.Mutex
+	spriteWakes            map[spriteWakeKey]chan struct{}
+	spriteWakeWork         sync.WaitGroup
+	workerCancel           context.CancelFunc
+	workerDone             chan struct{}
+	workerStopOnce         sync.Once
+	reconcileCancel        context.CancelFunc
+	reconcileDone          chan struct{}
+	reconcileStopOnce      sync.Once
+	pullRequests           *pullRequestCache
+	notifications          *notificationBroker
+	conversations          *conversationService
+	closeOnce              sync.Once
+	closeErr               error
+	clientBuild            appClientBuild
+	workspaces             *workspaceService
 }
 
 type healthResponse struct {
@@ -117,7 +118,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		database:         database,
 		tracker:          workTracker,
 		config:           cfg,
-		workerContext:    workerContext,
 		spriteWakes:      make(map[spriteWakeKey]chan struct{}),
 		workerCancel:     workerCancel,
 		workerDone:       make(chan struct{}),
@@ -125,6 +125,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		reconcileDone:    make(chan struct{}),
 		clientBuild:      conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
 		pullRequests:     newPullRequestCache(),
+	}
+	service.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) {
+		service.scheduleSpriteWake(workerContext, scope, result)
 	}
 	if cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)

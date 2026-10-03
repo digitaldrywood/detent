@@ -60,14 +60,14 @@ func startHubProfiling(cmd *cobra.Command, lookupEnv func(string) string, hosted
 		return func() {}
 	}
 	ctx, cancel := context.WithCancel(cmd.Context())
-	service := profiling.New(ctx, filepath.Join(filepath.Dir(databasePath), "profiles", "hub"), logger)
+	service := profiling.New(filepath.Join(filepath.Dir(databasePath), "profiles", "hub"), logger)
 	apply := func() {
 		config, err := readProfilingConfig(path)
 		if err != nil {
 			logger.Warn("profiling configuration read failed", "path", path, "error", err)
 			return
 		}
-		service.Apply(config)
+		service.Apply(ctx, config)
 	}
 	watcher, err := configwatcher.NewFile(path, readProfilingConfig, configwatcher.WithFileLogger(logger))
 	var updates <-chan configwatcher.FileUpdate[profiling.Config]
@@ -95,7 +95,7 @@ func startHubProfiling(cmd *cobra.Command, lookupEnv func(string) string, hosted
 					}
 					continue
 				}
-				service.Apply(update.Value)
+				service.Apply(ctx, update.Value)
 			}
 		}
 	}()

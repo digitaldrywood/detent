@@ -84,7 +84,7 @@ func (s *Service) appShell(c echo.Context) error {
 		// The shell itself carries no customer data; every screen reads the
 		// JSON API, which enforces membership. A session is enough here, so
 		// a staff account can still reach the support screen.
-		if _, _, err := s.hostedSession(c); err != nil {
+		if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
 			return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 		}
 	}
@@ -217,7 +217,7 @@ func runnerBehind(current string, reported string) bool {
 // reads one row per runner. A revoked enrolment is not in the answer: it is
 // not a runner anybody is going to upgrade.
 func (s *Service) appUpdates(c echo.Context) error {
-	credential, status, err := s.hostedCredential(c)
+	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status == http.StatusForbidden {
 			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
@@ -398,7 +398,7 @@ type appBootstrapRefusalDetails struct {
 }
 
 func (s *Service) appBootstrapPayload(c echo.Context) error {
-	credential, status, err := s.hostedCredential(c)
+	credential, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		if status == http.StatusForbidden {
 			return c.JSON(http.StatusForbidden, appBootstrapRefusal{Code: "forbidden", Message: "This account has no access to this organization", Details: appBootstrapRefusalDetails{Organization: s.config.Hosted.OrganizationID, CSRFToken: s.hostedPageCSRF(c)}})
@@ -643,6 +643,7 @@ WHERE r.organization_id = ? AND g.project_id = ?`, s.config.Hosted.OrganizationI
 	if err != nil {
 		return result, fmt.Errorf("list workspace runners: %w", err)
 	}
+	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string

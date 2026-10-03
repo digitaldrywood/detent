@@ -11,10 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func TestHostedAnalyticsReads(t *testing.T) {
@@ -93,16 +94,17 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
 				c := f.service.echo.NewContext(request, httptest.NewRecorder())
 				c.SetPath("/mcp")
-				var authorityContext context.Context
+				authorityContexts := make(chan context.Context, 1)
 				if err := f.service.operatorAuthority(func(c echo.Context) error {
-					authorityContext = context.WithoutCancel(c.Request().Context())
+					authorityContexts <- c.Request().Context()
 					return nil
 				})(c); err != nil {
 					t.Fatal(err)
 				}
-				if authorityContext == nil {
+				if len(authorityContexts) == 0 {
 					t.Fatal("current application authority unavailable")
 				}
+				authorityContext := context.WithoutCancel(<-authorityContexts)
 				authorityContext = operatortool.BindConnection(authorityContext, "analytics-"+grant+"-"+name, "analytics-test")
 				stdio := nativeAnalyticsStdioCall(t, authorityContext, hostedOperatorExecutor{f.service}, name)
 				if string(stdio) != string(raw) {
@@ -221,7 +223,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	for i := 0; i < maxAnalyticsPopulation+1; i++ {
+	for range maxAnalyticsPopulation + 1 {
 		data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "recorded", Outcome: "skipped", Reason: "capacity", At: now}}
 		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", data, now); err != nil {
 			t.Fatal(err)

@@ -14,9 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"modernc.org/sqlite"
+
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"modernc.org/sqlite"
 )
 
 type dispatchQueryProbe struct {
@@ -381,6 +382,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer plan.Close()
 			for plan.Next() {
 				var id, parent, unused int
 				var detail string

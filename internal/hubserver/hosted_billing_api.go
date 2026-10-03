@@ -23,8 +23,8 @@ type hostedCheckout struct {
 	Session   billing.Session `json:"session"`
 }
 
-func (s *Service) hostedBillingOwner(c echo.Context) (apiCredential, error) {
-	credential, _, err := s.hostedCredential(c)
+func (s *Service) hostedBillingOwner(ctx context.Context, c echo.Context) (apiCredential, error) {
+	credential, _, err := s.hostedCredential(ctx, c)
 	if err != nil || credential.Hosted == nil || credential.HostedRole != "owner" || credential.Hosted.SupportActor != "" {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
@@ -48,8 +48,8 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 	if !api {
 		request.Price = c.FormValue("price")
 	}
-	authorize := func(context.Context) (apiCredential, error) {
-		return s.hostedBillingOwner(c) //nolint:contextcheck // Browser authorization resolves the original Echo request, including cookies and shared-entry claims.
+	authorize := func(ctx context.Context) (apiCredential, error) {
+		return s.hostedBillingOwner(ctx, c)
 	}
 	result, err := s.checkoutBilling(c.Request().Context(), authorize, request.Price, request.IdempotencyKey)
 	if err != nil {
@@ -131,8 +131,8 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 		}
 	}
 
-	authorize := func(context.Context) (apiCredential, error) {
-		return s.hostedBillingOwner(c) //nolint:contextcheck // Browser authorization resolves the original Echo request, including cookies and shared-entry claims.
+	authorize := func(ctx context.Context) (apiCredential, error) {
+		return s.hostedBillingOwner(ctx, c)
 	}
 	result, err := s.portalBilling(c.Request().Context(), authorize, request.IdempotencyKey)
 	if err != nil {

@@ -137,7 +137,7 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 		}
 	} else {
 		denial.Flow = "support_callback"
-		staff, _, staffErr := s.hostedSession(c)
+		staff, _, staffErr := s.hostedSession(c.Request().Context(), c)
 		if staffErr != nil || staff.Identity.SupportActor != "" || staff.Identity.SessionID != transaction.SupportSession || !strings.EqualFold(staff.Email, transaction.SupportActor) || !hostedEmailListed(s.config.Hosted.SupportActors, staff.Email) {
 			denial.Reason, denial.Email = "support_session_mismatch", staff.Email
 			return s.hostedDenied(c, http.StatusForbidden, "Start support access from your authorized staff session", denial)
@@ -241,7 +241,7 @@ func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Ident
 }
 
 func (s *Service) beginHostedSupport(c echo.Context) (auth.Session, hostedTransaction, int, string, string) {
-	session, _, err := s.hostedSession(c)
+	session, _, err := s.hostedSession(c.Request().Context(), c)
 	if err != nil {
 		return session, hostedTransaction{}, http.StatusForbidden, "This account cannot start support access", auth.HostedReasonSessionNotFound
 	}
@@ -268,7 +268,7 @@ func (s *Service) startHostedSupport(c echo.Context) error {
 }
 
 func (s *Service) logoutHosted(c echo.Context) error {
-	session, hash, sessionErr := s.hostedSession(c)
+	session, hash, sessionErr := s.hostedSession(c.Request().Context(), c)
 	if cookie, err := c.Cookie(hostedCookie); err == nil && hash == "" {
 		hash = apikey.HashToken(cookie.Value)
 	}
@@ -299,7 +299,7 @@ func (s *Service) logoutHosted(c echo.Context) error {
 }
 
 func (s *Service) createHostedOrganization(c echo.Context) error {
-	session, hash, err := s.hostedSession(c)
+	session, hash, err := s.hostedSession(c.Request().Context(), c)
 	if err != nil {
 		return s.hostedError(c, http.StatusForbidden, "This account cannot create the organization")
 	}
@@ -317,7 +317,7 @@ func (s *Service) createHostedOrganization(c echo.Context) error {
 }
 
 func (s *Service) hostedSwitchDestination(c echo.Context, organization string) (string, string) {
-	session, _, err := s.hostedSession(c)
+	session, _, err := s.hostedSession(c.Request().Context(), c)
 	if err != nil {
 		return "", "The selected organization is unavailable to this account"
 	}
@@ -338,7 +338,7 @@ func (s *Service) switchHostedOrganization(c echo.Context) error {
 
 func (s *Service) acceptHostedInvitationToken(c echo.Context, token string) (string, auth.HostedDenial) {
 	denial := auth.HostedDenial{Flow: "invitation_join"}
-	session, _, err := s.hostedSession(c)
+	session, _, err := s.hostedSession(c.Request().Context(), c)
 	if err != nil {
 		denial.Reason = auth.HostedReasonSessionNotFound
 		return "Sign in with the invited account to join this organization", denial
@@ -496,7 +496,7 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 }
 
 func (s *Service) hostedSupportPage(c echo.Context) error {
-	session, _, err := s.hostedSession(c)
+	session, _, err := s.hostedSession(c.Request().Context(), c)
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?staff=1")
 	}

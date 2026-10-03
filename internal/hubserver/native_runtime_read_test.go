@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"net/http"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +44,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	db := f.service.database.db
 	previous, count := 0, 0
 	for _, history := range []int{1, 64, 256} {
-		t.Run(fmt.Sprint(history), func(t *testing.T) {
+		t.Run(strconv.Itoa(history), func(t *testing.T) {
 			for i := previous; i < history; i++ {
 				old := version
 				old.ID, old.Number = newNativeID("version"), int64(i+1000)
@@ -95,6 +95,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				defer rows.Close()
 				var plans []string
 				for rows.Next() {
 					var id, parent, unused int
@@ -140,7 +141,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	previous := 1
 	for _, total := range []int{1, 8, 100, 101} {
-		t.Run(fmt.Sprint(total), func(t *testing.T) {
+		t.Run(strconv.Itoa(total), func(t *testing.T) {
 			for i := previous; i < total; i++ {
 				sharedRunner(t, first)
 			}

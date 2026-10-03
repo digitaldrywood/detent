@@ -354,7 +354,10 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		if err != nil {
 			return a, safeHubOperatorError(err)
 		}
-		urgent := current.(urgentRunnerUpdate)
+		urgent, ok := current.(urgentRunnerUpdate)
+		if !ok {
+			return a, errHubOperatorUnavailable
+		}
 		if change.ExpectedRevision != urgent.Revision {
 			return a, errHubOperatorUnavailable
 		}

@@ -469,7 +469,7 @@ func projectAttemptFailureClass(
 	case workAttemptErrorWorkspace:
 		return class
 	}
-	if _, ok := backendcapacity.As(err); ok {
+	if capacity, ok := backendcapacity.As(err); ok && capacity != nil {
 		return ""
 	}
 	var deliverableErr *runpkg.DeliverableCommandError

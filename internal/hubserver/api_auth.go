@@ -151,7 +151,7 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 
 func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, error) {
 	if s.config.Hosted != nil && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
-		return s.hostedCredential(c)
+		return s.hostedCredential(c.Request().Context(), c)
 	}
 	token, err := apiBearerToken(c)
 	if err != nil {

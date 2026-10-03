@@ -30,7 +30,7 @@ func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope nativeScope,
 			WorkspaceID string `json:"workspace_id"`
 			State       string `json:"state"`
 			Result      any    `json:"result,omitempty"`
-		}{status, code, record.ID, string(record.State), value})
+		}{status, code, record.ID, record.State, value})
 	}
 	if !workspacesession.Bound(record.State) {
 		return result("unavailable", workspacesession.CodeWorkspaceClosed, nil)

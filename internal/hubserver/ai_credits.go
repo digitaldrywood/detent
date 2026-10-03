@@ -75,7 +75,7 @@ func (s *Service) creditPack(id string) (HostedCreditPack, bool) {
 
 func (s *Service) hostedCreditCheckout(c echo.Context) error {
 	api := hostedBillingAPI(c)
-	if _, err := s.hostedBillingOwner(c); err != nil {
+	if _, err := s.hostedBillingOwner(c.Request().Context(), c); err != nil {
 		return s.creditCommandFailure(c, api, err)
 	}
 	var request struct {
@@ -92,7 +92,7 @@ func (s *Service) hostedCreditCheckout(c echo.Context) error {
 	} else {
 		request.Price = c.FormValue("price")
 	}
-	authorize := func(context.Context) (apiCredential, error) { return s.hostedBillingOwner(c) }
+	authorize := func(ctx context.Context) (apiCredential, error) { return s.hostedBillingOwner(ctx, c) }
 	result, err := s.checkoutCredits(c.Request().Context(), authorize, request.Price, request.IdempotencyKey)
 	if err != nil {
 		return s.creditCommandFailure(c, api, err)
@@ -102,7 +102,7 @@ func (s *Service) hostedCreditCheckout(c echo.Context) error {
 
 func (s *Service) hostedCreditAutoFund(c echo.Context) error {
 	api := hostedBillingAPI(c)
-	if _, err := s.hostedBillingOwner(c); err != nil {
+	if _, err := s.hostedBillingOwner(c.Request().Context(), c); err != nil {
 		return s.creditCommandFailure(c, api, err)
 	}
 	var request creditFundingInput
@@ -119,7 +119,7 @@ func (s *Service) hostedCreditAutoFund(c echo.Context) error {
 		}
 		request.Threshold = threshold
 	}
-	authorize := func(context.Context) (apiCredential, error) { return s.hostedBillingOwner(c) }
+	authorize := func(ctx context.Context) (apiCredential, error) { return s.hostedBillingOwner(ctx, c) }
 	if _, err := s.configureCreditFunding(c.Request().Context(), authorize, request, ""); err != nil {
 		return s.creditCommandFailure(c, api, err)
 	}

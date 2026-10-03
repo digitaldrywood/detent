@@ -192,7 +192,7 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 			if err := pprof.Lookup("goroutine").WriteTo(&profile, 2); err != nil {
 				t.Fatal(err)
 			}
-			retained := strings.Count(profile.String(), "hubserver.(*Service).wakeSpriteRunnersAfter.func")
+			retained := strings.Count(profile.String(), "hubserver.(*Service).scheduleSpriteWake.func")
 			f.service.spriteWakeMu.Lock()
 			active := len(f.service.spriteWakes)
 			f.service.spriteWakeMu.Unlock()

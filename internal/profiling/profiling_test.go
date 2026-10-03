@@ -1,6 +1,7 @@
 package profiling
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -22,14 +23,16 @@ func TestServiceReload(t *testing.T) {
 }
 
 func testServiceReload(t *testing.T, withListener bool) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	dir := t.TempDir()
-	service := New(t.Context(), dir, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	service := New(dir, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	t.Cleanup(service.Close)
 	old := filepath.Join(dir, time.Now().Add(-200*time.Hour).UTC().Format(bundleTimeFormat))
 	if err := os.Mkdir(old, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	service.Apply(Config{})
+	service.Apply(ctx, Config{})
 	if service.listener != nil || service.cancelCapture != nil {
 		t.Fatal("profiling enabled by default")
 	}
@@ -44,7 +47,7 @@ func testServiceReload(t *testing.T, withListener bool) {
 	if err := os.Mkdir(old, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	service.Apply(config)
+	service.Apply(ctx, config)
 	if withListener && service.listener == nil {
 		t.Fatal("profiling listener did not start")
 	}
@@ -60,7 +63,7 @@ func testServiceReload(t *testing.T, withListener bool) {
 		return len(matches) > 0
 	})
 	listenerDone, captureDone := service.listenerDone, service.captureDone
-	service.Apply(config)
+	service.Apply(ctx, config)
 	if service.listenerDone != listenerDone || service.captureDone != captureDone {
 		t.Fatal("unchanged config restarted profiling")
 	}
@@ -69,7 +72,7 @@ func testServiceReload(t *testing.T, withListener bool) {
 	}
 	config.Capture.Dir = t.TempDir()
 	config.Capture.Interval = 400 * time.Millisecond
-	service.Apply(config)
+	service.Apply(ctx, config)
 	if withListener {
 		select {
 		case <-listenerDone:
@@ -95,18 +98,27 @@ func testServiceReload(t *testing.T, withListener bool) {
 	invalid := config
 	invalid.ListenAddr = "0.0.0.0:0"
 	listener := service.listener
-	service.Apply(invalid)
+	service.Apply(ctx, invalid)
 	if service.listener != listener {
 		t.Fatal("invalid reload replaced working listener")
 	}
-	service.Apply(Config{})
+	service.Apply(ctx, Config{})
 	if service.listener != nil || service.cancelCapture != nil {
 		t.Fatal("disable left profiling running")
 	}
 	if runtime.SetMutexProfileFraction(-1) != 0 {
 		t.Fatal("disable left mutex sampling enabled")
 	}
-	service.Apply(config)
+	service.Apply(ctx, config)
+	cancel()
+	eventually(t, func() bool {
+		select {
+		case <-service.captureDone:
+			return true
+		default:
+			return false
+		}
+	})
 	service.Close()
 	if runtime.SetMutexProfileFraction(-1) != 0 {
 		t.Fatal("shutdown left sampling enabled")
@@ -116,7 +128,11 @@ func testServiceReload(t *testing.T, withListener bool) {
 func assertEndpoint(t *testing.T, address string) {
 	t.Helper()
 	client := &http.Client{Timeout: 2 * time.Second}
-	response, err := client.Get("http://" + address + "/debug/pprof/heap")
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+address+"/debug/pprof/heap", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}

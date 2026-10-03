@@ -257,7 +257,7 @@ func TestHostedCreditMCP(t *testing.T) {
 							t.Fatal("missing action authority")
 						}
 						f.service.echo.GET("/credit-replay-fixture", func(c echo.Context) error {
-							authorize := func(context.Context) (apiCredential, error) { return f.service.hostedBillingOwner(c) }
+							authorize := func(ctx context.Context) (apiCredential, error) { return f.service.hostedBillingOwner(ctx, c) }
 							ctx := mutation.WithContext(c.Request().Context(), stored.Mutation)
 							settings, err := f.service.configureCreditFunding(ctx, authorize, creditFundingInput{Enabled: true, Threshold: 100, Price: "price_credit"}, "credits")
 							if err != nil {
