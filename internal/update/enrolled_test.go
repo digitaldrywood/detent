@@ -160,3 +160,49 @@ func TestSchedulerEnrolledInterruptedReceipt(t *testing.T) {
 		t.Fatal("invalid receipt state advertised effect support")
 	}
 }
+
+func TestSchedulerDevelopmentBuildSkipsDiscovery(t *testing.T) {
+	for _, version := range []string{"operator-landed-ec4a9d45ff54", "develop", "dev"} {
+		t.Run(version, func(t *testing.T) {
+			now := time.Now().UTC()
+			running := runnerauth.BuildEvidence{Version: version, Commit: strings.Repeat("a", 40), Source: "unknown", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+			updater := &schedulerUpdaterStub{checkErr: ErrRefused, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}}
+			statePath := filepath.Join(t.TempDir(), "scheduler.json")
+			drains, restarts, waits := 0, 0, 0
+			scheduler, err := NewScheduler(SchedulerConfig{Enabled: true, AutoApplyEnabled: true, CheckInterval: 15 * time.Second, RunningBuild: running, StatePath: statePath, Updater: updater,
+				ReserveIdle:    func(context.Context) (func(), bool) { return func() {}, true },
+				ReserveDrain:   func(context.Context) (func(), error) { drains++; return func() {}, nil },
+				RequestRestart: func(string) bool { restarts++; return true },
+				Wait:           func(context.Context, time.Duration) bool { waits++; return false },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status := scheduler.Status(); status.Enabled || status.State != "disabled" {
+				t.Fatalf("unsupported build scheduled discovery: %+v", status)
+			}
+			scheduler.Run(t.Context())
+			if _, err := scheduler.CheckNow(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				observed := scheduler.EnrolledUpdate(t.Context(), running, nil)
+				if observed == nil || !observed.Supported || observed.Discovery != "unknown" || observed.Validate() != nil {
+					t.Fatalf("explicit enrolled owner lost: %+v", observed)
+				}
+			}
+			if status := scheduler.Status(); updater.checkCalls != 0 || waits != 0 || status.LastError != "" || status.LastCheckAt != nil {
+				t.Fatalf("unsupported discovery calls=%d waits=%d status=%+v", updater.checkCalls, waits, status)
+			}
+			if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unsupported discovery persisted state: %v", err)
+			}
+			if _, err := scheduler.ApplyRelease(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			if updater.applyCalls != 1 || drains != 1 || restarts != 1 || !updater.applyOptions[0].FromRelease {
+				t.Fatalf("explicit release owner changed: applies=%d drains=%d restarts=%d options=%+v", updater.applyCalls, drains, restarts, updater.applyOptions)
+			}
+		})
+	}
+}

@@ -74,6 +74,11 @@ type Scheduler struct {
 }
 
 func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
+	discovery := ""
+	if strings.TrimSpace(cfg.RunningBuild.Version) != "" && IsDevelopmentVersion(cfg.RunningBuild.Version) {
+		cfg.Enabled = false
+		discovery = "unknown"
+	}
 	if cfg.CheckInterval <= 0 {
 		return nil, errors.New("update check interval must be positive")
 	}
@@ -130,7 +135,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	}
 	return &Scheduler{
 		cfg:             cfg,
-		enrolledReceipt: loadedState.EnrolledReceipt, enrolledStateValid: err == nil,
+		enrolledReceipt: loadedState.EnrolledReceipt, enrolledStateValid: err == nil, enrolledDiscovery: discovery,
 		status: AutoStatus{
 			Enabled:            cfg.Enabled,
 			AutoApplyEnabled:   cfg.AutoApplyEnabled,
