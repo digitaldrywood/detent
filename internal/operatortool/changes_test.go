@@ -82,6 +82,28 @@ func TestChangeResultBound(t *testing.T) {
 	}
 }
 
+func TestChangePageEmptyInput(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		items []tracker.PullRequestView
+		args  ChangeArguments
+	}{
+		{"nil default page", nil, ChangeArguments{}},
+		{"nil later page", nil, ChangeArguments{Offset: 10, Limit: 1}},
+		{"empty default page", []tracker.PullRequestView{}, ChangeArguments{}},
+		{"empty later page", []tracker.PullRequestView{}, ChangeArguments{Offset: 10, Limit: 1}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			page, next := ChangePage(test.items, test.args)
+			if page == nil || len(page) != 0 || next != nil {
+				t.Fatalf("page=%#v next=%v, want non-nil empty page and no next offset", page, next)
+			}
+		})
+	}
+}
+
 // Catches JSON escaping and long filenames defeating diff page bounds, and
 // truncation modifying the cached application source used by other readers.
 func TestChangeDiffPages(t *testing.T) {
