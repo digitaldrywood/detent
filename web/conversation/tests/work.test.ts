@@ -103,7 +103,7 @@ describe("listing work items", () => {
 });
 
 describe("the derived board", () => {
-  it("counts every issue exactly once", async () => {
+  it("counts every open and terminal issue without claiming queue eligibility", async () => {
     const project = await http.getProject(PROJECT);
     const page = await http.listWorkItems({ projectId: PROJECT, limit: 200 });
     const items = page.items.map((issue) => toWorkItemView(issue, project.name));
@@ -115,9 +115,9 @@ describe("the derived board", () => {
     }));
     const stats = boardStats(items, lanes);
     expect(stats.total).toBe(items.length);
-    expect(stats.running + stats.ready + stats.waiting + stats.blocked + stats.completed).toBe(
-      items.length,
-    );
+    expect(stats.open + stats.completed).toBe(items.length);
+    expect(stats.open).toBe(28);
+    expect(stats.queued).toBe(5);
   });
 
   it("gives the board and the list the same order", async () => {

@@ -21,8 +21,8 @@ export function StatsRow({
 }): React.ReactElement {
   const counters = [
     { key: "running", value: totals?.running ?? stats.running, label: "running" },
-    { key: "ready", value: totals?.ready ?? stats.ready, label: "ready" },
-    { key: "waiting", value: totals?.waiting ?? stats.waiting + stats.blocked, label: "open" },
+    { key: "queued", value: totals?.queued ?? stats.queued, label: "queued" },
+    { key: "open", value: totals?.open ?? stats.open, label: "open" },
     { key: "completed", value: totals?.completed ?? stats.completed, label: "closed inventory" },
   ];
   const remaining = totals === null ? null : Math.max(0, totals.total - loadedCount);

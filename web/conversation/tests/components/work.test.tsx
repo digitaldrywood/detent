@@ -510,7 +510,7 @@ describe("the list view", () => {
 });
 
 describe("the stats row", () => {
-  it("counts loaded work in four categories when scoped totals are absent", () => {
+  it("counts queued and open loaded inventory without claiming eligibility", () => {
     const items = [
       item({ id: "a", state: "Todo", blockedBy: [] }),
       item({ id: "b", state: "In Progress", blockedBy: [], attempt: toAttemptView(ATTEMPTS) }),
@@ -520,39 +520,44 @@ describe("the stats row", () => {
       item({ id: "f", state: "Retired", sourceProvider: "github" }),
       item({ id: "g", state: "Cancelled" }),
       item({ id: "h", state: "Todo", sourceProvider: "github", blockedBy: [] }),
+      item({ id: "i", state: "Backlog", blockedBy: [] }),
+      item({ id: "j", state: "Todo", blockedBy: ["dependency"] }),
+      item({ id: "k", state: "Repair", blockedBy: [] }),
+      item({ id: "l", state: "Repair", blockedBy: [], attempt: toAttemptView(ATTEMPTS) }),
     ];
-    const lanes = [...LANES, { id: "Retired", name: "Retired", terminal: true, category: "completed" }, { id: "Cancelled", name: "Cancelled", terminal: true, category: "cancelled" }];
+    const lanes = [...LANES, { id: "Repair", name: "Repair", terminal: false, category: "unstarted" }, { id: "Retired", name: "Retired", terminal: true, category: "completed" }, { id: "Cancelled", name: "Cancelled", terminal: true, category: "cancelled" }];
     const stats = boardStats(items, lanes);
     expect(stats.completed).toBe(4);
     expect(stats.importedClosed).toBe(2);
-    render(<StatsRow stats={stats} hasMore={false} loadedCount={8} loading={false} onLoadMore={vi.fn()} />);
-    expect(screen.getByTestId("stat-running").textContent).toBe("1 running");
-    expect(screen.getByTestId("stat-ready").textContent).toBe("2 ready");
-    expect(screen.getByTestId("stat-waiting").textContent).toBe("1 open");
+    render(<StatsRow stats={stats} hasMore={false} loadedCount={12} loading={false} onLoadMore={vi.fn()} />);
+    expect(screen.getByTestId("stat-running").textContent).toBe("2 running");
+    expect(screen.getByTestId("stat-queued").textContent).toBe("4 queued");
+    expect(screen.getByTestId("stat-open").textContent).toBe("8 open");
+    expect(screen.queryByTestId("stat-ready")).toBeNull();
     expect(screen.getByTestId("stat-completed").textContent).toBe("4 closed inventory (2 imported history loaded)");
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("including cancelled and custom terminal states");
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
 
   it("keeps scoped counts while refreshing and offers continuation only for incomplete results", () => {
-    const totals = { lanes: {}, running: 0, ready: 9, waiting: 70, completed: 126, total: 205, asOf: "2026-10-02T17:17:00Z", truncated: true };
+    const totals = { lanes: {}, running: 2, queued: 3, open: 17, completed: 126, total: 143, asOf: "2026-10-02T17:17:00Z", truncated: true };
     const onLoadMore = vi.fn();
     const stats = boardStats([item({ state: "Done", sourceProvider: "github" })], LANES);
-    const props = { stats, totals, hasMore: true, loadedCount: 145, loading: false, onLoadMore };
+    const props = { stats, totals, hasMore: true, loadedCount: 100, loading: false, onLoadMore };
     const mounted = render(<StatsRow {...props} />);
     const counts = screen.getByTestId("work-stats");
-    expect(counts.textContent).toContain("0 running·9 ready·70 open·126 closed inventory (1 imported history loaded)");
+    expect(counts.textContent).toContain("2 running·3 queued·17 open·126 closed inventory (1 imported history loaded)");
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 1 of 1 loaded closed items");
-    const more = screen.getByRole("button", { name: "Load 60 more · 145 of 205" });
+    const more = screen.getByRole("button", { name: "Load 43 more · 100 of 143" });
     expect(counts.contains(more)).toBe(true);
     fireEvent.click(more);
     expect(onLoadMore).toHaveBeenCalledTimes(1);
     mounted.rerender(<StatsRow {...props} loading />);
     expect(counts.getAttribute("aria-busy")).toBe("true");
-    expect(screen.getByTestId("stat-ready").parentElement!.className).toContain("opacity-50");
-    expect(screen.getByTestId("stat-ready").textContent).toBe("9 ready");
+    expect(screen.getByTestId("stat-queued").parentElement!.className).toContain("opacity-50");
+    expect(screen.getByTestId("stat-queued").textContent).toBe("3 queued");
     expect((more as HTMLButtonElement).disabled).toBe(true);
-    mounted.rerender(<StatsRow {...props} hasMore={false} loadedCount={205} />);
+    mounted.rerender(<StatsRow {...props} hasMore={false} loadedCount={143} />);
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
 });
@@ -838,6 +843,7 @@ describe("the live Work continuation intent", () => {
     }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.loading).toBe(false));
+    expect(current.totals).toMatchObject({ running: 1, queued: 8, open: 10, completed: 131, total: 141 });
     const deferred = fixture.deferPage();
     act(() => current.loadMore());
     await deferred.waiting;
