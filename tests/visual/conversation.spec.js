@@ -1209,7 +1209,7 @@ test.describe("decisions.md §10 corrections", () => {
   });
 
   // §19.5. The issue page's composer offers the commands that page has, and
-  // only those: a comment has no model, no effort, no access and no files, and
+  // only those: a comment has no model, no effort or access, and
   // there is no runner working on this issue to send to.
   test("offers the issue page's own slash commands", async ({ page }) => {
     const errors = watchConsole(page);
@@ -1222,10 +1222,10 @@ test.describe("decisions.md §10 corrections", () => {
     await expect(menu).toBeVisible();
     await expect(menu.getByTestId("slash-command-shortcuts")).toBeVisible();
     await expect(menu.getByTestId("slash-command-clear")).toBeVisible();
-    // This card posts comments and nothing else, so there is no mode to
-    // switch, no turn to configure, no file to attach and no turn to stop
-    // (§19.5, Michael's review of September 12).
-    for (const name of ["model", "effort", "access", "attach", "stop", "comment", "runner"]) {
+    // Comments support project attachments, but have no mode to switch,
+    // turn preferences or running turn to stop.
+    await expect(menu.getByTestId("slash-command-attach")).toBeVisible();
+    for (const name of ["model", "effort", "access", "stop", "comment", "runner"]) {
       await expect(menu.getByTestId(`slash-command-${name}`)).toHaveCount(0);
     }
     await expectNoSeriousAxeViolations(page, "the issue composer's slash menu");

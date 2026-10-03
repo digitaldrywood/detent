@@ -299,7 +299,9 @@ test("pending invitations can be resent and revoked from their row", async ({ pa
   await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByRole("button", { name: "Send invitation", exact: true }).click();
   const row = page.locator('[data-slot="settings-row"]').filter({
-    has: page.getByRole("heading", { name: email, exact: true }),
+    // The confirmation dialog makes its background inert; the pending row
+    // must remain present through a failed revoke.
+    has: page.getByRole("heading", { name: email, exact: true, includeHidden: true }),
   });
   await expect(row).toBeVisible();
   const providerInvitations = async () => {
