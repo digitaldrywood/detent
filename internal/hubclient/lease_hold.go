@@ -8,11 +8,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
-// defaultLeaseHold keeps a Sprite awake while this runner holds a native
-// lease. A Sprite pauses about 30 seconds after its last session, and an
-// outbound Hub connection does not count, so a lease held across a job's
-// completion and the next dispatch would otherwise sleep until something
-// external wakes the Sprite. Off a Sprite there is nothing to hold.
+// defaultLeaseHold keeps a Sprite awake from this runner's first native lease
+// until a candidate fetch finds nothing left to claim. A Sprite pauses the
+// moment its last task is deleted (sessions get a grace period, tasks do not),
+// and an outbound Hub connection does not count, so a hold dropped with the
+// lease at completion paused the staging Sprite before the next tick could
+// claim the landing the completion had just made ready. Off a Sprite there is
+// nothing to hold.
 func defaultLeaseHold() func(context.Context) (func(), error) {
 	if runtime.GOOS != "linux" || !runner.SpriteSocketPresent() {
 		return nil
@@ -24,9 +26,12 @@ func defaultLeaseHold() func(context.Context) (func(), error) {
 	}
 }
 
-// syncLeaseHold acquires the hold when the first native lease is recorded and
-// releases it when the last one is removed. Callers invoke it after mutating
-// nativeClaims and after releasing s.mu.
+// syncLeaseHold acquires the hold when a candidate fetch records the first
+// native lease and releases it when a fetch completes with none recorded.
+// Releasing a lease never drops the hold on its own: the fetch that follows a
+// completion either takes the next lease under the same hold or confirms the
+// runner is idle. Callers invoke it after mutating nativeClaims and after
+// releasing s.mu.
 func (s *Scheduler) syncLeaseHold(ctx context.Context) {
 	if s == nil || s.leaseHold == nil {
 		return

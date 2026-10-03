@@ -2,9 +2,15 @@ package hubclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -67,5 +73,88 @@ func TestSchedulerLeaseHoldReleasesWhenClaimsVanishDuringAcquire(t *testing.T) {
 	s.syncLeaseHold(t.Context())
 	if released != 1 || s.leaseHoldRelease != nil {
 		t.Fatalf("released=%d held=%t, want 1 false", released, s.leaseHoldRelease != nil)
+	}
+}
+
+func TestSchedulerLeaseHoldOutlivesReleasedLease(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name         string
+		operation    string
+		wantReleased int
+	}{
+		{name: "released lease keeps the hold until the next empty fetch", operation: "release", wantReleased: 1},
+		{name: "lost lease keeps the hold until the next empty fetch", operation: "lost", wantReleased: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			descriptor := clientTestPolicy()
+			id := "wi_" + strings.Repeat("b", 32)
+			lease := tracker.NativeLease{ID: "lease", WorkItemID: tracker.NativeWorkItemID(id), FencingToken: 1, PolicyID: descriptor.ID, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+			transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				status, body := http.StatusOK, `{}`
+				switch {
+				case strings.HasSuffix(request.URL.Path, "/claims"):
+					status, body = http.StatusConflict, `{"code":"no_claimable_work","message":"No work"}`
+				case strings.HasSuffix(request.URL.Path, "/release"):
+					encoded, err := json.Marshal(lease)
+					if err != nil {
+						return nil, err
+					}
+					body = string(encoded)
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+			})
+			client, err := New(Config{URL: "http://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: transport}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			acquired, released := 0, 0
+			scheduler, err := NewScheduler(client, SchedulerConfig{
+				Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute,
+				LeaseHold: func(context.Context) (func(), error) {
+					acquired++
+					return func() { released++ }, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := &NativeConnector{client: native}
+			scheduler.nativeProjects["project"] = source
+			scheduler.nativeHeartbeats[native.project] = time.Now()
+			scheduler.nativeClaims[id] = nativeClaim{source: source, lease: lease}
+			scheduler.claims[id] = nativeTrackerLease(lease)
+			scheduler.claimPolicies[id] = claimPolicy{project: "project", descriptor: descriptor}
+			scheduler.syncLeaseHold(t.Context())
+			if acquired != 1 || released != 0 {
+				t.Fatalf("after claim: acquired=%d released=%d", acquired, released)
+			}
+			switch tt.operation {
+			case "release":
+				if err := scheduler.ReleaseClaim(t.Context(), id, "completed"); err != nil {
+					t.Fatal(err)
+				}
+			case "lost":
+				err := scheduler.nativeClaimError(id, lease.FencingToken, &APIError{Status: http.StatusConflict, Code: "stale_fencing_token"})
+				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					t.Fatalf("claim loss = %v", err)
+				}
+			}
+			if len(scheduler.nativeClaims) != 0 || released != 0 || scheduler.leaseHoldRelease == nil {
+				t.Fatalf("after %s: claims=%d released=%d held=%t, want the hold kept with no lease", tt.operation, len(scheduler.nativeClaims), released, scheduler.leaseHoldRelease != nil)
+			}
+			issues, err := scheduler.fetchNativeCandidate(t.Context(), orchestrator.SchedulingRequest{ProjectID: "project", Policy: descriptor, AdmissionLimit: 1}, source)
+			if err != nil || len(issues) != 0 {
+				t.Fatalf("fetchNativeCandidate() = %#v, %v", issues, err)
+			}
+			if acquired != 1 || released != tt.wantReleased || scheduler.leaseHoldRelease != nil {
+				t.Fatalf("after empty fetch: acquired=%d released=%d held=%t", acquired, released, scheduler.leaseHoldRelease != nil)
+			}
+		})
 	}
 }

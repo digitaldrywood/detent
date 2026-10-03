@@ -273,7 +273,6 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	delete(s.nativeClaims, issueID)
 	delete(s.claimPolicies, issueID)
 	s.mu.Unlock()
-	s.syncLeaseHold(ctx)
 	return nil
 }
 
