@@ -21,6 +21,8 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 		wantStatus  doctorStatus
 		wantDetail  string
 		wantFailure bool
+		selected    string
+		unrelated   bool
 	}{
 		{
 			name:       "valid project is startup compatible",
@@ -34,6 +36,21 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 			wantDetail:  "isolate this project as degraded",
 			wantFailure: false,
 		},
+		{
+			name:       "selected project excludes unrelated invalid startup",
+			selected:   "alpha",
+			unrelated:  true,
+			wantStatus: doctorOK,
+			wantDetail: "loaded and validated",
+		},
+		{
+			name:        "selected invalid project fails readiness",
+			selected:    "alpha",
+			loadErr:     errors.New("schedule ownership is invalid"),
+			wantStatus:  doctorFail,
+			wantDetail:  "cannot start",
+			wantFailure: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -42,16 +59,23 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 
 			configPath := t.TempDir() + "/global.yaml"
 			global := validDoctorGlobalWithProjects(configPath, "alpha")
+			if tt.unrelated {
+				global.Projects = append(global.Projects, globalconfig.Project{ID: "beta", Workflow: "beta/WORKFLOW.md", Workdir: "/beta", Weight: 1})
+			}
 			deps := successfulDoctorDeps()
-			deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+			deps.loadWorkflow = func(path string) (workflowconfig.Workflow, error) {
+				if path == "beta/WORKFLOW.md" {
+					t.Fatal("selected startup readiness loaded unrelated project")
+				}
 				if tt.loadErr != nil {
 					return workflowconfig.Workflow{}, tt.loadErr
 				}
 				return workflowconfig.Workflow{Config: validDoctorWorkflow("/alpha")}, nil
 			}
 
-			report := runDoctorStartupPreflight(context.Background(), doctorConfig{
+			report := runDoctorStartupPreflight(t.Context(), doctorConfig{
 				ConfigPath: configPath,
+				ProjectID:  tt.selected,
 				Flags: runtimeFlags{
 					Port: runtimeIntFlag{Value: 0, Set: true},
 				},
@@ -71,10 +95,12 @@ func TestRunDoctorStartupPreflightExplainsMappedNativeMigration(t *testing.T) {
 	for _, test := range []struct {
 		name, feature, want string
 		globalIntake        bool
+		selected            bool
 	}{
 		{name: "intake", feature: "intake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n", want: "intake.sources"},
 		{name: "routines", feature: "schedule_ownership:\n  enabled: true\n  key: acme/alpha\n  repository: acme/alpha\nroutines:\n  - name: audit\n    schedule: '0 * * * *'\n    prompt: Inspect.\n", want: "routines"},
 		{name: "global intake override", globalIntake: true, want: "intake.sources"},
+		{name: "selected mapped intake", selected: true, globalIntake: true, want: "intake.sources"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -90,7 +116,11 @@ func TestRunDoctorStartupPreflightExplainsMappedNativeMigration(t *testing.T) {
 			}
 			deps := successfulDoctorDeps()
 			deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) { return workflow, nil }
-			report := runDoctorStartupPreflight(t.Context(), doctorConfig{ConfigPath: configPath}, successfulDoctorOptionsWithConfig(configPath, global), deps)
+			cfg := doctorConfig{ConfigPath: configPath}
+			if test.selected {
+				cfg.ProjectID = "alpha"
+			}
+			report := runDoctorStartupPreflight(t.Context(), cfg, successfulDoctorOptionsWithConfig(configPath, global), deps)
 			assertDoctorCheck(t, report, "Candidate startup", doctorOK, "candidate resolved")
 			assertDoctorCheck(t, report, "Project alpha startup", doctorFail, test.want)
 			assertDoctorCheck(t, report, "Project alpha startup", doctorFail, "migrate")

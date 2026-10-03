@@ -2567,6 +2567,17 @@ encoder. `TestNativeOptionalReportsNegotiateHubSupport`,
 `TestRunnerSetupHeartbeatOwnership`, and `TestOnboardingRunnerLocalChecks` cover
 strict older/current schemas, failed/missing evidence, routing identity, and the
 single startup heartbeat owner. No compatibility retry loop or gate is added.
+Onboarding doctor evidence (native #244) uses the existing startup compatibility
+owner for the selected project, preserving checkout, effective native policy,
+workflow admission and separate provider authentication checks. Selected project
+errors fail readiness; unrelated project degradation remains a host-wide warning
+only when no project is selected. Full operational Doctor remains available for
+runtime, instruction estimates, fleet and historical diagnostics; its ephemeral
+probe address and diagnostic timeout are not project setup evidence.
+`TestRunDoctorStartupPreflight`,
+`TestRunDoctorStartupPreflightExplainsMappedNativeMigration` and
+`TestCollectRunnerLocalChecks` cover selected scope, invalid setup, native feature
+migration and a valid checkout with operational instruction-estimate findings.
 
 Runner checkout readiness checks the source checkout's `.git` and shares the
 project owner's configured workflow loader with repository reporting. Readiness
