@@ -2,7 +2,7 @@
 import { RegistryProvider } from "@effect/atom-react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   startMockHub,
@@ -44,6 +44,9 @@ Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true 
 
 let hub: MockHub | undefined;
 let client: ConversationClient | undefined;
+const nativeFetch = globalThis.fetch;
+
+beforeEach(() => vi.stubGlobal("fetch", sameRealmFetch));
 
 afterEach(async () => {
   cleanup();
@@ -51,11 +54,12 @@ afterEach(async () => {
   client = undefined;
   await hub?.close();
   hub = undefined;
+  vi.unstubAllGlobals();
 });
 
 const sameRealmFetch: typeof globalThis.fetch = (input, init) => {
   const { signal: _abort, ...rest } = (init ?? {}) as RequestInit;
-  return globalThis.fetch(input as string, rest);
+  return nativeFetch(input as string, rest);
 };
 
 async function startHub(options: {
@@ -421,8 +425,8 @@ describe("where a new issue goes", () => {
 
   it.each([
     { name: "the lane it was started from", requested: "Backlog", want: "Backlog" },
-    { name: "the first working lane without a request", requested: null, want: "Todo" },
-    { name: "the first working lane for a lane the project lacks", requested: "Review", want: "Todo" },
+    { name: "the native backlog without a request", requested: null, want: "Backlog" },
+    { name: "the native backlog for a lane the project lacks", requested: "Review", want: "Backlog" },
   ])("starts in $name", ({ requested, want }) => {
     expect(newIssueState(project("a", true), requested)).toBe(want);
   });

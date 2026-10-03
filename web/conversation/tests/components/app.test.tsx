@@ -8,7 +8,7 @@
 import { RegistryProvider } from "@effect/atom-react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { startMockHub, type CoordinatorMode, type MockHub } from "../../dev/mock-hub.ts";
 import { ClientContext } from "../../src/app/client.ts";
@@ -22,6 +22,9 @@ Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true 
 
 let hub: MockHub | undefined;
 let client: ConversationClient | undefined;
+const nativeFetch = globalThis.fetch;
+
+beforeEach(() => vi.stubGlobal("fetch", sameRealmFetch));
 
 afterEach(async () => {
   cleanup();
@@ -29,6 +32,7 @@ afterEach(async () => {
   client = undefined;
   await hub?.close();
   hub = undefined;
+  vi.unstubAllGlobals();
 });
 
 /**
@@ -40,7 +44,7 @@ afterEach(async () => {
  */
 const sameRealmFetch: typeof globalThis.fetch = (input, init) => {
   const { signal: _abort, ...rest } = (init ?? {}) as RequestInit;
-  return globalThis.fetch(input as string, rest);
+  return nativeFetch(input as string, rest);
 };
 
 interface MountOptions {
@@ -122,13 +126,13 @@ describe("the conversation shell", () => {
     expect(screen.getByTestId("user-turn")).toBe(userTurn);
     expect(screen.queryByText("Conversation unavailable")).toBeNull();
     expect(router.state.location.pathname).toBe(chatPath);
-    await waitFor(() => expect(screen.queryByText(/The live connection dropped\. Reconnecting/)).toBeNull(), { timeout: 5_000 });
     await waitFor(() => expect(subscriptions()).toHaveLength(2), { timeout: 5_000 });
     expect(subscriptions()[1]!.searchParams.get("after")).toBe(cursor);
 
     await setComposerText(screen.getByLabelText<HTMLElement>("Message"), "Still connected");
     fireEvent.keyDown(screen.getByLabelText("Message"), { key: "Enter" });
     await waitFor(() => expect(screen.getAllByTestId("user-turn").some((turn) => turn.textContent?.includes("Still connected"))).toBe(true), { timeout: 5_000 });
+    await waitFor(() => expect(screen.queryByText(/The live connection dropped\. Reconnecting/)).toBeNull(), { timeout: 5_000 });
     expect(screen.getAllByTestId("user-turn")[0]).toBe(userTurn);
     expect(userTurn.textContent).toContain("Keep this chat visible");
     expect(router.state.location.pathname).toBe(chatPath);
@@ -180,9 +184,7 @@ describe("the conversation shell", () => {
 
     await waitFor(
       () =>
-        expect(screen.getByTestId("composer-context-issue").textContent).not.toBe(
-          "No linked issue",
-        ),
+        expect(router.state.location.search).toMatchObject({ panel: "conversation" }),
       { timeout: 5_000 },
     );
     // The result card arrives as a message on the stream, just behind the

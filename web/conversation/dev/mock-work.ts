@@ -124,6 +124,7 @@ function pad(index: number): string {
 }
 
 export interface WorkMock {
+  addIssue: (issue: Pick<MockIssue, "work_item_id" | "project_id" | "number" | "title" | "body" | "state" | "labels">) => void;
   /**
    * Returns true when it answered the request.
    *
@@ -519,6 +520,24 @@ export function createWorkMock(options: {
 
   return {
     projects: options.projects.map((entry) => entry.id),
+    addIssue(issue) {
+      const timestamp = new Date().toISOString();
+      issues.push({
+        ...issue,
+        organization_id: options.organizationId,
+        web_url: `http://mock.local/work/i/${issue.work_item_id}`,
+        revision: "1",
+        profile: "native",
+        terminal: issue.state === "Done",
+        assignees: [],
+        actor: { kind: "human", principal_id: "tok_mock" },
+        created_at: timestamp,
+        updated_at: timestamp,
+        dependencies: [],
+        blockers: [],
+        external_references: [],
+      });
+    },
     reset() {
       build();
       conflictOn = null;
