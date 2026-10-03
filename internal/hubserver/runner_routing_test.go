@@ -105,6 +105,10 @@ func TestRunnerRoutingClaims(t *testing.T) {
 				if decision.Data.Decision.Outcome != "claimed" || decision.Data.Decision.Source != "native_claim" {
 					t.Fatalf("claim evidence = %#v", decision)
 				}
+				var evaluatedLanding int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision' AND json_extract(data_json, '$.decision.source')='native_claim_eligibility'", issue.WorkItemID).Scan(&evaluatedLanding); err != nil || evaluatedLanding != 0 {
+					t.Fatalf("ordinary claim manufactured Change readiness: count=%d error=%v", evaluatedLanding, err)
+				}
 				if test.name == "empty selector" {
 					foreign := newNativeFixture(t, f.service, "", "foreign-routing")
 					claim.WorkItemID = foreign.create(t, "foreign").WorkItemID

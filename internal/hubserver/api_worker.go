@@ -452,12 +452,14 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 			continue
 		}
-		ready, err := nativeLandingCandidateReady(ctx, tx, query.NativeScope, id, now)
+		ready, evaluated, err := nativeLandingCandidateReady(ctx, tx, query.NativeScope, id, now)
 		if err != nil {
 			return tracker.Lease{}, err
 		}
-		if err := recordNativeSchedulingDecision(ctx, tx, query.NativeScope, id, ready, now); err != nil {
-			return tracker.Lease{}, err
+		if evaluated {
+			if err := recordNativeSchedulingDecision(ctx, tx, query.NativeScope, id, ready, now); err != nil {
+				return tracker.Lease{}, err
+			}
 		}
 		if !ready {
 			continue

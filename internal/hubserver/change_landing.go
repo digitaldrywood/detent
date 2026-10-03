@@ -273,29 +273,29 @@ func (s *Service) landChange(c echo.Context) error {
 	})
 }
 
-func nativeLandingCandidateReady(ctx context.Context, query nativeQueryer, scope *nativeScope, id tracker.WorkItemID, now time.Time) (bool, error) {
+func nativeLandingCandidateReady(ctx context.Context, query nativeQueryer, scope *nativeScope, id tracker.WorkItemID, now time.Time) (ready, evaluated bool, err error) {
 	if scope == nil {
-		return true, nil
+		return true, false, nil
 	}
 	var item, state string
 	if err := query.QueryRowContext(ctx, "SELECT i.native_id, ws.detent_state FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.id = ?", id).Scan(&item, &state); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if !strings.EqualFold(strings.TrimSpace(state), "Merging") {
-		return true, nil
+		return true, false, nil
 	}
 	change, found, err := readLatestNativeChangeRequest(ctx, query, *scope, item)
 	if err != nil || !found {
-		return false, err
+		return false, true, err
 	}
 	if change.Landed != nil || change.CurrentVersion == "" {
-		return false, nil
+		return false, true, nil
 	}
 	detail, err := readCurrentChangeDetail(ctx, query, *scope, change, now)
 	if err != nil {
-		return false, err
+		return false, true, err
 	}
-	return nativeChangeLandingReady(state, &detail), nil
+	return nativeChangeLandingReady(state, &detail), true, nil
 }
 
 func nativeChangeLandingReady(state string, detail *tracker.ChangeDetail) bool {

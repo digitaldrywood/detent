@@ -571,6 +571,15 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 				if evidence.LatestDecision.ID == previousDecision || evidence.LatestDecision.Data.Decision.WorkItemRevision != issue.Revision+1 {
 					t.Fatalf("changed revision lost decision=%#v", evidence.LatestDecision)
 				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=2 WHERE id=?", r.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 2, "display_name": "Landing runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusOK)
+				var evaluatedReady int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision' AND json_extract(data_json, '$.decision.source')='native_claim_eligibility' AND json_extract(data_json, '$.decision.outcome')='ready' AND json_extract(data_json, '$.change.version_id')=?", issue.WorkItemID, version.ID).Scan(&evaluatedReady); err != nil || evaluatedReady != 1 {
+					t.Fatalf("actual reviewed Change evaluation missing: count=%d error=%v", evaluatedReady, err)
+				}
 			}
 		})
 	}
