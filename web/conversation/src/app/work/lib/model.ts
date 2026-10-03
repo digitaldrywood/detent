@@ -189,9 +189,8 @@ export interface BoardStats {
     readonly change: Readonly<Record<Observation, number>>;
   };
   readonly running: number;
-  readonly ready: number;
-  readonly waiting: number;
-  readonly blocked: number;
+  readonly queued: number;
+  readonly open: number;
   readonly completed: number;
   readonly importedClosed: number;
   readonly total: number;
@@ -200,8 +199,8 @@ export interface BoardStats {
 export interface ScopedWorkStats {
   readonly lanes: Readonly<Record<string, number>>;
   readonly running: number;
-  readonly ready: number;
-  readonly waiting: number;
+  readonly queued: number;
+  readonly open: number;
   readonly completed: number;
   readonly total: number;
   readonly asOf: string;
@@ -213,13 +212,11 @@ export function boardStats(
   lanes: readonly Lane[],
 ): BoardStats {
   const terminal = new Set(lanes.filter((lane) => lane.terminal).map((lane) => lane.name));
-  const started = new Set(
-    lanes.filter((lane) => lane.category === "started").map((lane) => lane.name),
+  const dispatchable = new Set(
+    lanes.filter((lane) => lane.category === "unstarted").map((lane) => lane.name),
   );
   let running = 0;
-  let ready = 0;
-  let waiting = 0;
-  let blocked = 0;
+  let queued = 0;
   let completed = 0;
   let importedClosed = 0;
   const observations = {
@@ -238,12 +235,7 @@ export function boardStats(
       running += 1;
       continue;
     }
-    if (isBlocked(item)) {
-      blocked += 1;
-      continue;
-    }
-    if (started.has(item.state)) waiting += 1;
-    else ready += 1;
+    if (dispatchable.has(item.state)) queued += 1;
   }
-  return { running, ready, waiting, blocked, completed, importedClosed, total: items.length, observations };
+  return { running, queued, open: items.length - completed, completed, importedClosed, total: items.length, observations };
 }

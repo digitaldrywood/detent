@@ -274,7 +274,7 @@ export function useBoard(
         let totals: ScopedWorkStats | null = null;
         if (loaded.every((entry) => entry.work !== undefined)) {
           const counts = Object.create(null) as Record<string, number>;
-          let running = 0, ready = 0, waiting = 0, completed = 0, total = 0;
+          let running = 0, queued = 0, completed = 0, total = 0;
           for (const entry of loaded) {
             for (const lane of entry.work!.lanes) {
               const state = entry.project.states.find((state) => state.name === lane.state);
@@ -282,11 +282,10 @@ export function useBoard(
               total += lane.total;
               running += lane.running;
               if (state?.terminal) completed += lane.total;
-              else if (state?.dispatchable) ready += lane.total;
-              else waiting += lane.total;
+              else if (state?.dispatchable) queued += lane.total - lane.running;
             }
           }
-          totals = { lanes: counts, running, ready, waiting, completed, total,
+          totals = { lanes: counts, running, queued, open: total - completed, completed, total,
             asOf: loaded.map((entry) => entry.work!.as_of).toSorted()[0]!,
             truncated: loaded.some((entry) => entry.work!.truncated) };
         }

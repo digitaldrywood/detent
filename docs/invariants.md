@@ -497,7 +497,9 @@ The existing shared UI clock updates age and elapsed labels without rerendering
 the board controls, unchanged card bodies, or list rows. Its timer stops when
 no subscribers remain; source updates retain their existing render ownership.
 Sorting and filter-choice discovery remain local to loaded items; terminal counts
-describe inventory, not shipment.
+describe inventory, not shipment. Queue counts describe non-running inventory
+in configured dispatchable lanes, not scheduler eligibility; open counts include
+all nonterminal states.
 `TestNativeWorkPageOperationalScope` and the conversation Work pagination fixture
 cover scoped totals, expired leases, bounded reads and persistent operational
 visibility across inventory pages, including refused and stale reads.
