@@ -3561,8 +3561,9 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         }
         const issueBody = (body.issue ?? {}) as {
           title?: string;
+          description?: string;
           labels?: string[];
-          priority?: string;
+          priority?: number;
           state?: string;
         };
         // The next step (decisions.md §13.8, §14): the lane the issue lands
@@ -3574,6 +3575,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           dispatch?: string;
         };
         const lane = nextStep.state ?? issueBody.state ?? "Todo";
+        const priority = nextStep.priority ?? issueBody.priority;
         const number = issues.size + 1000;
         const id = `wi_${number}`;
         const issue = {
@@ -3583,6 +3585,16 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           state: lane,
         };
         issues.set(id, issue);
+        work.addIssue({
+          work_item_id: id,
+          project_id: entry.conversation.project_id,
+          number,
+          title: issue.title,
+          body: issueBody.description ?? "",
+          state: lane,
+          labels: issueBody.labels ?? [],
+          ...(priority === undefined ? {} : { priority }),
+        });
         entry.issue = issue;
         entry.receipts.set(linkKey, {
           payload: JSON.stringify(body),
