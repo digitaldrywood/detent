@@ -1516,12 +1516,10 @@ test.describe("the ported shell's interactions", () => {
     // and the Browser line above draw.
     expect(byLabel.Terminal.openable, "Terminal is inert on a draft chat").toBe(false);
     expect(byLabel.Terminal.reason, "Terminal says why").toBe("Link an issue to get a worktree.");
-    // Files is real since §18.11 step 2, but it needs a worktree, and a draft
-    // chat names no issue for a runner to open one on. So it is inert here for
-    // a Detent reason rather than an absence of product — which is the §16
-    // distinction the two strings above and this one draw.
+    // The fixture organization has workspace sessions disabled. Files stays
+    // inert and reports that service policy before worktree availability.
     expect(byLabel.Files.openable, "Files is inert on a draft chat").toBe(false);
-    expect(byLabel.Files.reason, "Files says why").toBe("Available from an issue with a runner.");
+    expect(byLabel.Files.reason, "Files says why").toBe("Workspace sessions are not enabled for this organization.");
     // Diff always has a card — Detent either has a change request or says why
     // it has none — and opening it swaps the launcher for the surface.
     expect(byLabel.Diff.openable, "Diff is openable").toBe(true);
