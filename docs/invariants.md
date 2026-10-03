@@ -425,6 +425,11 @@ initial lane. Workflow edits through MCP retain exact material-action approval.
 and the client workflow settings/default-state regressions cover these boundaries.
 No tracker lane writer or recovery mechanism is introduced (INV-3).
 
+After chat creation from All projects succeeds, the client shell selects the
+acknowledged conversation project before hydrating the conversation route. A
+sidebar list that has not refreshed cannot cause an unscoped conversation read.
+The existing All projects new-chat browser scenarios cover this handoff.
+
 Luna project mutations reuse the hosted MCP chat action service and its exact
 browser/session/CSRF approval form. Each message binds the originating browser
 session, current role and project grants; previews stay within the conversation's

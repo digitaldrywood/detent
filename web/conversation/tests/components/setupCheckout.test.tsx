@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
 
 import { startMockHub, type MockHub } from "../../dev/mock-hub.ts";
 import { ClientContext } from "../../src/app/client.ts";
@@ -28,14 +29,15 @@ it("shows the hosted checkout action and its verified private repository", async
       <SetupRoute projectId="proj_beta" />
     </ClientContext.Provider>,
   );
-  fireEvent.click(await screen.findByRole("button", { name: /Repository configuration/ }));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
   const field = await screen.findByLabelText("Associate the runner checkout");
   expect(screen.getByText(/GitHub API integration is optional/)).toBeTruthy();
   fireEvent.change(field, { target: { value: "https://github.com/mockorg/private" } });
-  fireEvent.click(screen.getByRole("button", { name: "Associate" }));
+  await user.click(screen.getByRole("button", { name: "Associate" }));
   expect(await screen.findByText("Enter the repository as owner/name, then retry.")).toBeTruthy();
   fireEvent.change(field, { target: { value: "mockorg/private" } });
-  fireEvent.click(screen.getByRole("button", { name: "Associate" }));
+  await user.click(screen.getByRole("button", { name: "Associate" }));
   await waitFor(() => expect(screen.getByText(/Verified runner checkout:/).textContent).toContain("mockorg/private"));
   await waitFor(() => expect(screen.getByRole("button", { name: "Associate" }).hasAttribute("disabled")).toBe(true));
 });

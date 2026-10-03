@@ -8,9 +8,9 @@ const problem = { code: "tier_unavailable", message: "Sandbox tooling is unavail
 const fleet = {
   ...fleetFixture,
   runners: [
-    { ...fleetFixture.runners[0], claim_refusal_reason: "", problems: [problem] },
+    { ...fleetFixture.runners[0], state: "active", health: "online", claim_refusal_reason: "", problems: [problem] },
     { ...fleetFixture.runners[1], display_name: "Build runner", health: "needs_attention", host_capacity: 4, claim_refusal_reason: "", problems: [problem] },
-    { ...fleetFixture.runners[1], id: "runner_outside", display_name: "Night runner", health: "outside_hours", host_capacity: 1, claim_refusal_reason: "", problems: [problem] },
+    { ...fleetFixture.runners[1], id: "runner_outside", machine_id: "machine_outside", display_name: "Night runner", health: "outside_hours", host_capacity: 1, claim_refusal_reason: "", problems: [problem] },
   ],
 };
 
@@ -102,7 +102,7 @@ for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1100 });
     await openFleet(page);
     await expect(page.getByText("1 of 7 slots running work")).toBeVisible();
-    await expect(page.getByText("4 slots can't take work")).toBeVisible();
+    await expect(page.getByText("5 slots can't take work")).toBeVisible();
     const groups = page.getByTestId("runner-capacity");
     await expect(groups).toHaveCount(fleet.runners.length);
     for (const [index, runner] of fleet.runners.entries()) {
@@ -214,7 +214,7 @@ for (const width of [1440, 390]) {
     expect(box.x + box.width).toBe(width);
     if (width === 390) expect(box.width).toBe(width);
     await sheet.getByRole("radio", { name: "Draining Finishes what it has" }).check();
-    await sheet.getByLabel("Jobs at once").fill("2");
+    await sheet.getByRole("spinbutton", { name: "Jobs at once", exact: true }).fill("2");
     await sheet.getByRole("button", { name: "Save runner" }).click();
     await expect(sheet).toHaveCount(0);
     await expect(row).toContainText("draining · Limit 2");
@@ -226,7 +226,7 @@ for (const width of [1440, 390]) {
     await expect(sheet.getByRole("checkbox", { name: "Preview project", exact: true })).toBeChecked();
     await expect(sheet.getByRole("checkbox", { name: "prj_unknown", exact: true })).toBeChecked();
     await sheet.getByRole("radio", { name: "Disabled Takes nothing" }).check();
-    await sheet.getByLabel("Jobs at once").fill("0");
+    await sheet.getByRole("spinbutton", { name: "Jobs at once", exact: true }).fill("0");
     await sheet.getByRole("button", { name: "Save runner" }).click();
     await expect(sheet).toHaveCount(0);
     await expect(row).toContainText("disabled · Limit 0");
