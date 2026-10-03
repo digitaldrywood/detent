@@ -25,9 +25,10 @@ test.afterAll(async () => {
   hub = undefined;
 });
 
-// The client lists project actions on every issue and chat page, and main's
-// hub does not serve that endpoint yet, so its 404 is the one error allowed.
+// A project may have no actions and an issue may have no linked worker
+// conversation. Both optional reads report not_found, which the UI handles.
 const UNSERVED_PROJECT_ACTIONS = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/actions$/;
+const UNLINKED_CONVERSATION = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\/work-items\/[^/]+\/conversation$/;
 const NOT_FOUND = /status of 404\b/;
 
 function watchConsole(page) {
@@ -35,7 +36,9 @@ function watchConsole(page) {
   page.on("console", (message) => {
     if (message.type() !== "error") return;
     const expected404 =
-      NOT_FOUND.test(message.text()) && UNSERVED_PROJECT_ACTIONS.test(message.location().url ?? "");
+      NOT_FOUND.test(message.text()) &&
+      (UNSERVED_PROJECT_ACTIONS.test(message.location().url ?? "") ||
+        UNLINKED_CONVERSATION.test(message.location().url ?? ""));
     if (expected404) return;
     errors.push(message.text());
   });
