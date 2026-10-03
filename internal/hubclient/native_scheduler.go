@@ -351,7 +351,6 @@ func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken,
 			delete(s.claimPolicies, issueID)
 		}
 		s.mu.Unlock()
-		s.syncLeaseHold(context.Background())
 		return errors.Join(orchestrator.ErrSchedulingClaimLost, err)
 	}
 	return err
