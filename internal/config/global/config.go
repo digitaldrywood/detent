@@ -481,6 +481,7 @@ func write(path string, cfg Config, opts ...Option) error {
 	if err := os.MkdirAll(filepath.Dir(expandedPath), 0o755); err != nil {
 		return fmt.Errorf("create global config directory %s: %w", filepath.Dir(expandedPath), err)
 	}
+	// #nosec G703 -- writes the operator-selected global config path after expansion and config validation.
 	if err := os.WriteFile(expandedPath, raw, configFileMode); err != nil {
 		return fmt.Errorf("write global config %s: %w", expandedPath, err)
 	}

@@ -46,12 +46,15 @@ func ProbeSandbox(ctx context.Context) (result error) {
 	if err != nil {
 		return fmt.Errorf("%w: prepare probe: %w", ErrSandboxIsolation, err)
 	}
+	// #nosec G703 -- base is the fresh directory returned by MkdirTemp, not a request path.
 	defer func() { result = errors.Join(result, os.RemoveAll(base)) }()
 	root := filepath.Join(base, "worktree")
+	// #nosec G703 -- the fixed worktree child is inside the fresh probe directory.
 	if err := os.Mkdir(root, 0o700); err != nil {
 		return err
 	}
 	outside := filepath.Join(base, "outside")
+	// #nosec G703 -- the fixed outside child is inside the fresh probe directory.
 	if err := os.WriteFile(outside, []byte("private"), 0o600); err != nil {
 		return err
 	}
@@ -76,10 +79,12 @@ func ProbeSandbox(ctx context.Context) (result error) {
 	case <-ctx.Done():
 		return fmt.Errorf("%w: probe did not finish", ErrSandboxIsolation)
 	}
+	// #nosec G703 -- reads the fixed marker inside the fresh probe worktree.
 	confirmed, err := os.ReadFile(filepath.Join(root, "confirmed"))
 	if err != nil || string(confirmed) != "confirmed" {
 		return fmt.Errorf("%w: enforcement was not confirmed", ErrSandboxIsolation)
 	}
+	// #nosec G703 -- reads the fixed sibling created by this probe, not a caller path.
 	private, err := os.ReadFile(outside)
 	if err != nil || string(private) != "private" {
 		return fmt.Errorf("%w: probe escaped the worktree", ErrSandboxIsolation)
