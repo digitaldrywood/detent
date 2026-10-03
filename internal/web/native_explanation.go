@@ -39,7 +39,16 @@ func (r nativeIssueExplainer) Explain(ctx context.Context, query explain.Query) 
 					}
 					id = tracker.NativeWorkItemID(selected.Issue.ID)
 				}
-				evidence, err := client.RuntimeEvidence(ctx, id, "")
+				var admission []tracker.NativeAdmissionContext
+				if client.HasRegisteredRunner() {
+					if orch := tracked.Orchestrator(); orch != nil {
+						current, observed := orch.NativeAdmissionContext()
+						if observed && current.PolicyID != "" {
+							admission = append(admission, current)
+						}
+					}
+				}
+				evidence, err := client.RuntimeEvidence(ctx, id, "", admission...)
 				if err != nil {
 					return explain.IssueExplanation{}, nativeWorkReadError(err)
 				}

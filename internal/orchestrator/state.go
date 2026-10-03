@@ -24,11 +24,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type State struct {
+	nativeAdmission          *tracker.NativeAdmissionContext
 	RuntimeObservation       telemetry.SnapshotSection
 	PollInterval             time.Duration
 	RefreshFailureThreshold  int

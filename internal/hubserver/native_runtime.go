@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"reflect"
 	"slices"
@@ -83,7 +84,7 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 
 func (s *Service) getNativeRuntime(c echo.Context) error {
 	for key, values := range c.QueryParams() {
-		if key != "native_attempt_id" && key != "attempt_id" || len(values) != 1 {
+		if key != "native_attempt_id" && key != "attempt_id" && key != "admission" || len(values) != 1 {
 			return s.nativeAPIError(c, nativeInvalid("Unsupported runtime selector"))
 		}
 	}
@@ -94,23 +95,49 @@ func (s *Service) getNativeRuntime(c echo.Context) error {
 		}
 		selector = c.QueryParam("attempt_id")
 	}
-	result, err := s.readNativeRuntime(c.Request().Context(), nativeRequestScope(c), c.Param("item"), selector)
+	var admission []tracker.NativeAdmissionContext
+	if raw := c.QueryParam("admission"); raw != "" {
+		var current tracker.NativeAdmissionContext
+		if len(raw) > 8192 {
+			return s.nativeAPIError(c, nativeInvalid("Admission context exceeds its bound"))
+		}
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&current); err != nil {
+			return s.nativeAPIError(c, nativeInvalid("Invalid admission context"))
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			return s.nativeAPIError(c, nativeInvalid("Invalid admission context"))
+		}
+		if err := validateNativeAdmissionContext(current); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if nativeRequestScope(c).credential.Runner.RunnerID == "" {
+			return s.nativeAPIError(c, nativeInvalid("Admission context requires the current registered runner"))
+		}
+		admission = append(admission, current)
+	}
+	result, err := s.readNativeRuntime(c.Request().Context(), nativeRequestScope(c), c.Param("item"), selector, admission...)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
 }
 
-func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item, attemptID string) (tracker.NativeRuntimeEvidence, error) {
+func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
 	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, err
 	}
 	defer tx.Rollback()
-	return readNativeRuntime(ctx, tx, scope, item, attemptID, s.config.now().UTC())
+	return readNativeRuntimeWithAdmission(ctx, tx, scope, item, attemptID, s.config.now().UTC(), minimumRunnerVersion(s.config.Version), admission...)
 }
 
-func readNativeRuntime(ctx context.Context, query nativeQueryer, scope nativeScope, item, attemptID string, now time.Time) (tracker.NativeRuntimeEvidence, error) {
+func readNativeRuntime(ctx context.Context, query nativeQueryer, scope nativeScope, item, attemptID string, now time.Time, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+	return readNativeRuntimeWithAdmission(ctx, query, scope, item, attemptID, now, "", admission...)
+}
+
+func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, scope nativeScope, item, attemptID string, now time.Time, minimumVersion string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
 	issue, id, err := readNativeIssue(ctx, query, scope, item)
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, err
@@ -275,19 +302,11 @@ func readNativeRuntime(ctx context.Context, query nativeQueryer, scope nativeSco
 	if len(e.Capacity) == 0 {
 		e.Unavailable = append(e.Unavailable, "runner_capacity")
 	}
-	if ready && len(e.Capacity) > 0 && e.Scheduling.Outcome != "claimed" && !slices.Contains(e.Unavailable, "capacity_projection_truncated") {
-		excluded := true
-		for _, capacity := range e.Capacity {
-			if len(capacity.Exclusions) == 0 {
-				excluded = false
-			}
-		}
-		if excluded {
-			e.Scheduling.Outcome = "skipped"
-			e.Scheduling.Reason = "Current enrolled runners are excluded by recorded routing or capacity authority"
+	if e.CurrentLease == nil {
+		if err := readNativeAdmission(ctx, query, scope, id, approval.Policy.ID, approval.Policy.Requirements, runners, truncated, ready, &e, admission, minimumVersion); err != nil {
+			return e, err
 		}
 	}
-	e.Unavailable = append(e.Unavailable, "runner_specific_candidate_selection")
 	return e, nil
 }
 

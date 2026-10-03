@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const githubRateLimitResetSkew = 5 * time.Second
@@ -755,6 +757,36 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 		return fetcher.FetchCandidateIssuesByStates(ctx, states)
 	}
 	return o.connector.FetchCandidateIssues(ctx)
+}
+
+func (o *Orchestrator) NativeAdmissionContext() (tracker.NativeAdmissionContext, bool) {
+	if o == nil {
+		return tracker.NativeAdmissionContext{}, false
+	}
+	state := o.latestState.Load()
+	if state == nil || state.nativeAdmission == nil {
+		return tracker.NativeAdmissionContext{}, false
+	}
+	current := *state.nativeAdmission
+	current.WorkflowStates = slices.Clone(current.WorkflowStates)
+	current.Authors = slices.Clone(current.Authors)
+	current.Assignees = slices.Clone(current.Assignees)
+	current.LabelInclude = slices.Clone(current.LabelInclude)
+	current.LabelExclude = slices.Clone(current.LabelExclude)
+	return current, true
+}
+
+func (o *Orchestrator) snapshotNativeAdmission(state *State) {
+	filter := o.authorizationFilterHint()
+	now := time.Now()
+	if o.now != nil {
+		now = o.now()
+	}
+	state.nativeAdmission = &tracker.NativeAdmissionContext{
+		ObservedAt: now.UTC(), PolicyID: o.cfg.Policy.ID, WorkflowStates: o.candidateFetchStatesForTick(state),
+		Authors: filter.Authors, Assignees: filter.Assignees,
+		LabelInclude: filter.LabelInclude, LabelExclude: filter.LabelExclude,
+	}
 }
 
 func (o *Orchestrator) authorizationFilterHint() connector.IssueFilterHint {

@@ -180,6 +180,7 @@ type Eligibility struct {
 }
 
 type EligibilityDecision struct {
+	RunnerID            string           `json:"runner_id,omitempty"`
 	Historical          bool             `json:"historical,omitempty"`
 	EvidenceID          string           `json:"evidence_id"`
 	Source              string           `json:"source"`

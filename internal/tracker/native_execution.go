@@ -12,6 +12,7 @@ import (
 const NativeExecutionCapability = "fenced_run_history"
 
 const NativeRuntimeEvidenceCapability = "native_runtime_evidence"
+const NativeAdmissionEvidenceCapability = "native_admission_evidence"
 
 type NativeExecutionIdentity struct {
 	Role    string `json:"role"`
@@ -153,18 +154,43 @@ type NativeSchedulerDecision struct {
 	WorkItemRevision Revision  `json:"work_item_revision,string"`
 }
 
+type NativeAdmissionContext struct {
+	ObservedAt     time.Time `json:"observed_at"`
+	PolicyID       string    `json:"policy_id"`
+	WorkflowStates []string  `json:"workflow_states,omitempty"`
+	Authors        []string  `json:"authors,omitempty"`
+	Assignees      []string  `json:"assignees,omitempty"`
+	LabelInclude   []string  `json:"label_include,omitempty"`
+	LabelExclude   []string  `json:"label_exclude,omitempty"`
+}
+
+type NativeRuntimeAdmission struct {
+	SelectorSource     string     `json:"selector_source,omitempty"`
+	SelectorObservedAt *time.Time `json:"selector_observed_at,omitempty"`
+	RunnerID           string     `json:"runner_id"`
+	RunnerRevision     int64      `json:"runner_revision"`
+	PolicyID           string     `json:"policy_id"`
+	Source             string     `json:"source"`
+	ObservedAt         time.Time  `json:"observed_at"`
+	Outcome            string     `json:"outcome"`
+	ReasonCode         string     `json:"reason_code,omitempty"`
+	Reason             string     `json:"reason"`
+	Unavailable        []string   `json:"unavailable"`
+}
+
 type NativeRuntimeEvidence struct {
-	CurrentLease     *NativeLease            `json:"current_lease,omitempty"`
-	Issue            NativeIssue             `json:"issue"`
-	Attempt          *NativeAttempt          `json:"attempt,omitempty"`
-	Selection        string                  `json:"selection"`
-	LatestTransition *CollaborationEvent     `json:"latest_transition,omitempty"`
-	LatestDecision   *CollaborationEvent     `json:"latest_decision,omitempty"`
-	Scheduling       NativeSchedulerDecision `json:"scheduling"`
-	Capacity         []NativeRuntimeCapacity `json:"capacity"`
-	Change           *ChangeDetail           `json:"change,omitempty"`
-	ObservedAt       time.Time               `json:"observed_at"`
-	Unavailable      []string                `json:"unavailable"`
+	Admission        []NativeRuntimeAdmission `json:"admission,omitempty"`
+	CurrentLease     *NativeLease             `json:"current_lease,omitempty"`
+	Issue            NativeIssue              `json:"issue"`
+	Attempt          *NativeAttempt           `json:"attempt,omitempty"`
+	Selection        string                   `json:"selection"`
+	LatestTransition *CollaborationEvent      `json:"latest_transition,omitempty"`
+	LatestDecision   *CollaborationEvent      `json:"latest_decision,omitempty"`
+	Scheduling       NativeSchedulerDecision  `json:"scheduling"`
+	Capacity         []NativeRuntimeCapacity  `json:"capacity"`
+	Change           *ChangeDetail            `json:"change,omitempty"`
+	ObservedAt       time.Time                `json:"observed_at"`
+	Unavailable      []string                 `json:"unavailable"`
 }
 
 func (i NativeIssue) RuntimeReference() NativeIssue {

@@ -24,7 +24,7 @@ func updateRunnerIsolationReport(ctx context.Context, tx *sql.Tx, scope nativeSc
 	return requireRunnerUpdate(result, err)
 }
 
-func validateRunnerIsolation(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
+func validateRunnerIsolation(ctx context.Context, tx nativeQueryer, scope nativeScope, now time.Time) error {
 	runner, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
 	if err != nil {
 		return err

@@ -1310,6 +1310,7 @@ func (o *Orchestrator) publishState(ctx context.Context, state *State) {
 	}
 	cloned := state.clone()
 	o.snapshotDispatchModes(ctx, &cloned)
+	o.snapshotNativeAdmission(&cloned)
 	o.latestRuntimeState.Store(&runtimeState{
 		WorkAttempts: cloned.WorkAttempts,
 		Running:      cloned.Running,

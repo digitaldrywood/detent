@@ -373,7 +373,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	selectArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(second.WorkItemID)}
 	result, err = call(operatortool.ExplainItem, selectArgs)
 	var explanation explain.IssueExplanation
-	if err != nil || json.Unmarshal(result.Content, &explanation) != nil || explanation.Eligibility.Latest != nil || explanation.Eligibility.Source != explain.SourceUnavailable {
+	if err != nil || json.Unmarshal(result.Content, &explanation) != nil || explanation.Eligibility.Latest != nil || explanation.Eligibility.Source != explain.SourceAvailable || explanation.NativeRuntime == nil || len(explanation.NativeRuntime.Admission) == 0 {
 		t.Fatalf("missing scheduler history was fabricated: %s %v", result.Content, err)
 	}
 	publishCapacity(t, f, registered, capacityReport(f.service.config.now()))
