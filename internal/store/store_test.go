@@ -4278,16 +4278,29 @@ func TestPendingCredentialWaitRequiresWriteProof(t *testing.T) {
 func TestLatestAgentResumeStateSeparatesStartupFromContinuation(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name       string
-		state      string
-		turns      int64
-		tokens     int64
-		provider   string
-		incomplete bool
-		found      bool
+		name            string
+		state           string
+		turns           int64
+		tokens          int64
+		provider        string
+		incomplete      bool
+		found           bool
+		defaultModel    bool
+		cachedTokens    int64
+		reasoningTokens int64
+		metrics         string
 	}{
 		{name: "failed startup", state: "failed", found: true},
-		{name: "missing identity after turn", state: "failed", turns: 1},
+		{name: "historical synthetic turn", state: "failed", turns: 1, metrics: `{"turns":0}`, found: true},
+		{name: "one real observed turn", state: "failed", turns: 1, metrics: `{"turns":1}`},
+		{name: "one turn without metrics", state: "failed", turns: 1},
+		{name: "one turn malformed metrics", state: "failed", turns: 1, metrics: `{"turns":0`},
+		{name: "one turn missing turns", state: "failed", turns: 1, metrics: `{}`},
+		{name: "one turn string turns", state: "failed", turns: 1, metrics: `{"turns":"0"}`},
+		{name: "historical default model", state: "failed", turns: 1, metrics: `{"turns":0}`, defaultModel: true, found: true},
+		{name: "missing identity after real turns", state: "failed", turns: 2},
+		{name: "cached usage without total", state: "failed", cachedTokens: 1},
+		{name: "reasoning usage without total", state: "failed", reasoningTokens: 1},
 		{name: "missing identity after tokens", state: "failed", tokens: 1},
 		{name: "completed without identity", state: "completed"},
 		{name: "attempt still active", state: "failed", incomplete: true},
@@ -4297,23 +4310,27 @@ func TestLatestAgentResumeStateSeparatesStartupFromContinuation(t *testing.T) {
 			ctx := t.Context()
 			backend := openTestStore(t, ctx)
 			started := time.Date(2026, 10, 2, 23, 0, 0, 0, time.UTC)
+			model := "original-model"
+			if test.defaultModel {
+				model = ""
+			}
 			attempt, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{ProjectID: "native", IssueID: "work", WorkerType: "agent", StartedAt: started})
 			if err != nil {
 				t.Fatal(err)
 			}
-			session, err := backend.StartSession(ctx, SessionStart{ProjectID: "native", IssueID: "work", WorkAttemptID: attempt, StartedAt: started, RequestedModel: "original-model", Model: "original-model", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"})
+			session, err := backend.StartSession(ctx, SessionStart{ProjectID: "native", IssueID: "work", WorkAttemptID: attempt, StartedAt: started, RequestedModel: model, Model: model, AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := backend.FinishSession(ctx, session, SessionFinish{CompletedAt: started.Add(time.Second), FinalState: test.state, Turns: test.turns, InputTokens: test.tokens, TotalTokens: test.tokens, ProviderThreadID: test.provider}); err != nil {
+			if err := backend.FinishSession(ctx, session, SessionFinish{CompletedAt: started.Add(time.Second), FinalState: test.state, Turns: test.turns, InputTokens: test.tokens, TotalTokens: test.tokens, CachedInputTokens: test.cachedTokens, ReasoningOutputTokens: test.reasoningTokens, ProviderThreadID: test.provider}); err != nil {
 				t.Fatal(err)
 			}
 			if !test.incomplete {
-				if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: attempt, CompletedAt: started.Add(time.Second), Status: WorkAttemptStatusTerminal, TerminalState: WorkAttemptTerminalFailure}); err != nil {
+				if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: attempt, CompletedAt: started.Add(time.Second), Status: WorkAttemptStatusTerminal, TerminalState: WorkAttemptTerminalFailure, MetricsJSON: test.metrics}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			lookup := AgentResumeLookup{WorkAttemptID: attempt, ProjectID: "native", IssueID: "work", RequestedModel: "original-model", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
+			lookup := AgentResumeLookup{WorkAttemptID: attempt, ProjectID: "native", IssueID: "work", RequestedModel: model, AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
 			got, err := backend.LatestAgentResumeState(ctx, lookup)
 			if test.found {
 				if err != nil || got.DetentSessionID != session || got.ProviderThreadID != test.provider || got.ProviderSessionID != "" {

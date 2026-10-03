@@ -239,7 +239,7 @@ func executionCheckpoint(state *workspace.RecoveryState) tracker.NativeCheckpoin
 	return checkpoint
 }
 
-func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume) error {
+func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) error {
 	if req.Execution == nil {
 		if req.retainCheckpoint {
 			return nil
@@ -279,6 +279,8 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	checkpoint := executionCheckpoint(state)
 	if state != nil && !agentResumeEmpty(resume) {
 		checkpoint.Resume = "resume_session"
+	} else if turnStarted {
+		checkpoint.Resume = "manual_recovery"
 	}
 	var artifactErr error
 	if publisher, ok := req.Execution.(ValidationEvidenceExecution); ok && ctx.Err() == nil && req.validationEvidenceSource != nil {
@@ -353,7 +355,7 @@ func (r *Runner) nativeInterruptedResumeState(ctx context.Context, req RunReques
 		WorkAttemptID:    previous.Runtime.LocalAttemptID,
 		ProjectID:        r.projectID,
 		IssueID:          req.Issue.ID,
-		RequestedModel:   identity.Model,
+		RequestedModel:   effectiveModel("", previous.Runtime.Identity.RequestedModel.Value, previous.Runtime.Identity.ResolvedModel.Value),
 		AgentBackendID:   identity.Backend,
 		AgentBackendKind: runtime.backendConfigs[identity.Backend].Kind,
 		AgentRole:        identity.Role,

@@ -1852,14 +1852,23 @@ and workspace digest before continuing. A worktree does not establish a provider
 session. Checkpoints select continuation only after a real provider identity is
 returned or observed, including an established identity supplied by the existing
 authenticated conversation binding. The exact persisted attempt lookup can
-identify a failed startup with no provider identity, turns or tokens; only its unchanged,
-available clean local workspace with no external effects can use the existing
-fresh-session decision. Missing persisted records, actual provider activity,
-dirty work and unverifiable real sessions retain recovery-required ownership.
-History-based lookup still requires a provider identity. Native continuation no
-longer shares the generic fresh-session fallback; unavailable or changed continuation remains
-with the existing recovery-required outcome. Failed native turns retain their
-checkpoint workspace. No retry loop, recovery path or reservation is added.
+identify a failed startup with no provider identity or tokens. Exact attempt
+lookup accepts an intentionally unspecified model and the historical synthetic
+minimum-one turn count only when the completed attempt independently records
+zero observed turns. Missing or positive attempt metrics cannot establish that
+legacy count as startup-only. New sessions persist observed turns without that
+minimum; a started turn without a provider identity selects the existing
+manual-recovery checkpoint. The lookup uses persisted runtime model
+provenance, not the native `provider_default` display identity. History lookup
+still requires an explicit model. Only the unchanged, available clean local
+workspace with no external effects can use the existing fresh-session
+decision. Missing persisted records, actual provider activity, dirty work and
+unverifiable real sessions retain recovery-required ownership. History-based
+lookup still requires a provider identity. Native continuation no longer
+shares the generic fresh-session fallback; unavailable or changed continuation
+remains with the existing recovery-required outcome. Failed native turns
+retain their checkpoint workspace. No retry loop, recovery path or reservation
+is added.
 `TestHubSchedulingPreservesOverloadRetryAcrossAdmissions` covers bounded omission
 and authentic invalidation; `TestNativeInterruptedCodeRecoversPersistedSession`
 covers already-lost local retry ownership with clean and dirty workspaces.

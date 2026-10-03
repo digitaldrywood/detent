@@ -473,7 +473,7 @@ func TestCheckpointRetentionSkipsAfterRun(t *testing.T) {
 				if native {
 					req.Execution = execution
 				}
-				if err := r.afterExecution(t.Context(), req, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}); err != nil {
+				if err := r.afterExecution(t.Context(), req, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, false); err != nil {
 					t.Fatal(err)
 				}
 				if backend.afterRun == retain {

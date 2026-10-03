@@ -105,7 +105,7 @@ func TestRunnerEnforcesConfiguredDurationLimits(t *testing.T) {
 					t.Fatalf("backend deadlines = %v, want activity not to extend total duration", agentBackend.deadlines)
 				}
 			}
-			if result.TurnCount != tt.wantTurns || sessionStore.finished.Turns != int64(max(1, tt.wantTurns)) {
+			if result.TurnCount != tt.wantTurns || sessionStore.finished.Turns != int64(tt.wantTurns) {
 				t.Fatalf("result turn count = %d, session turns = %d", result.TurnCount, sessionStore.finished.Turns)
 			}
 			if sessionStore.finishCalls != 1 {

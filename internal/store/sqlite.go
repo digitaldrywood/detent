@@ -445,7 +445,7 @@ func (s *sqliteStore) LatestAgentResumeState(ctx context.Context, attrs AgentRes
 	if attrs.ProjectID == "" || attrs.WorkAttemptID < 0 || attrs.WorkAttemptID == 0 && (attrs.PRNumber <= 0 || attrs.PRHeadSHA == "" || attrs.PRBaseSHA == "") {
 		return AgentResumeState{}, ErrNotFound
 	}
-	if attrs.RequestedModel == "" || attrs.AgentBackendID == "" || attrs.AgentBackendKind == "" || attrs.AgentRole == "" {
+	if attrs.WorkAttemptID == 0 && attrs.RequestedModel == "" || attrs.AgentBackendID == "" || attrs.AgentBackendKind == "" || attrs.AgentRole == "" {
 		return AgentResumeState{}, ErrNotFound
 	}
 	if attrs.IssueID == "" && attrs.Identifier == "" && attrs.IssueURL == "" {
@@ -461,7 +461,7 @@ func (s *sqliteStore) LatestAgentResumeState(ctx context.Context, attrs AgentRes
 		AgentBackendID:   nullString(attrs.AgentBackendID),
 		AgentBackendKind: nullString(attrs.AgentBackendKind),
 		AgentRole:        nullString(attrs.AgentRole),
-		RequestedModel:   nullString(attrs.RequestedModel),
+		RequestedModel:   sql.NullString{String: attrs.RequestedModel, Valid: true},
 		IssueID:          attrs.IssueID,
 		Identifier:       attrs.Identifier,
 		IssueURL:         attrs.IssueURL,

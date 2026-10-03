@@ -1856,7 +1856,11 @@ WHERE s.completed_at IS NOT NULL
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != ''
     OR (CAST(?1 AS INTEGER) > 0
       AND lower(trim(COALESCE(s.final_state, ''))) = 'failed'
-      AND s.turns = 0 AND s.input_tokens = 0 AND s.output_tokens = 0 AND s.total_tokens = 0))
+      AND (s.turns = 0 OR (s.turns = 1 AND CASE WHEN json_valid(w.metrics_json)
+        THEN json_type(w.metrics_json, '$.turns') = 'integer' AND json_extract(w.metrics_json, '$.turns') = 0
+        ELSE 0 END))
+      AND s.input_tokens = 0 AND s.cached_input_tokens = 0
+      AND s.output_tokens = 0 AND s.reasoning_output_tokens = 0 AND s.total_tokens = 0))
   AND s.project_id = ?2
   AND w.project_id = ?2
   AND (CAST(?1 AS INTEGER) > 0 OR (COALESCE(
