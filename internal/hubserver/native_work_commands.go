@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,12 +21,59 @@ import (
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		if origin, machine := issueorigin.Parse(request.Body); machine && origin.Kind == "worker" && request.GitHubIssueURL == "" && request.State == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != "" {
+			if _, err := validateRunnerLeaseTx(ctx, tx, scope, request.LeaseID, request.FencingToken, now); err != nil {
+				return nil, err
+			}
+			return createNativeMachineIntakeTx(ctx, tx, scope, request, origin.Fingerprint, now)
+		}
 		return createNativeIssueTx(ctx, tx, scope, request, now)
 	})
 	if err == nil {
 		s.wakeSpriteRunnersAfter(scope, result)
 	}
 	return result, err
+}
+
+func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, fingerprint string, now time.Time) (tracker.NativeIssue, error) {
+	if _, err := validateNativeIssueDraft(ctx, tx, scope, request); err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.body FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id
+WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 AND ws.terminal = 0 ORDER BY i.number`, scope.organization, scope.project)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	var existing string
+	for rows.Next() {
+		var id, body string
+		if err := rows.Scan(&id, &body); err != nil {
+			return tracker.NativeIssue{}, errors.Join(err, rows.Close())
+		}
+		if origin, machine := issueorigin.Parse(body); machine && origin.Fingerprint == fingerprint {
+			existing = id
+			break
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	if existing != "" {
+		occurrence := issueorigin.Occurrence(request.Body)
+		if len(occurrence) > 64<<10 {
+			return tracker.NativeIssue{}, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
+		}
+		issue, _, err := readNativeIssue(ctx, tx, scope, existing)
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		if _, err := insertNativeComment(ctx, tx, scope, issue, occurrence, nil, now); err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		issue.PublicationReused = true
+		return issue, nil
+	}
+	return createNativeIssue(ctx, tx, scope, request, now, true)
 }
 
 func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.UpdateIssue) (json.RawMessage, error) {

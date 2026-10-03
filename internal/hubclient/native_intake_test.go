@@ -22,7 +22,7 @@ import (
 
 func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	t.Parallel()
-	states := append(hubserver.HostedProjectStates(), tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo", "Done"}})
+	states := append(hubserver.HostedProjectStates(), tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo", "Done"}})
 	h := newNativeChangeHubWithStates(t, "Human Review", states)
 	identityPath := filepath.Join(t.TempDir(), "private", "identity.json")
 	file, err := runnerauth.Initialize(identityPath, h.admin.client.baseURL.String())
@@ -33,7 +33,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := Machine{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "native-intake", Capacity: 1, Version: "test"}
+	machine := Machine{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "native-intake", DisplayName: "Native intake runner", Capacity: 1, Version: "test"}
 	if _, err := EnrollRunner(t.Context(), identityPath, h.organization, enrollment.Token, machine); err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +53,18 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if !ok {
 		t.Fatal("native worker has no existing machine intake owner")
 	}
+	h.native = native
+	h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := h.createInProgress(t, "Complete implementation before delegated acceptance")
+	h.claim(t, source.ID)
+	ctx, stop, err := h.scheduler.RunExecution(source.ID).Guard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
 	for range 22 {
 		if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Earlier work", State: "Backlog"}); err != nil {
 			t.Fatal(err)
@@ -60,7 +72,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	}
 	origin := issueorigin.Origin{Kind: "worker", Source: "attempt-1", Fingerprint: "pool-live-acceptance"}
 	draft := intake.IssueDraft{Title: "Verify integrated pool", Body: issueorigin.Stamp("Pending real two-Sprite acceptance.\n<!-- acceptance-owner -->", origin), Labels: []string{"acceptance"}}
-	created, err := store.CreateIntakeIssue(t.Context(), draft)
+	created, err := store.CreateIntakeIssue(ctx, draft)
 	if err != nil || created.ID == "" || created.Reused {
 		t.Fatalf("create = %#v, error = %v", created, err)
 	}
@@ -74,7 +86,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	}
 	origin.Source = "attempt-2"
 	draft.Body = issueorigin.Stamp("Second occurrence", origin)
-	reused, err := store.CreateIntakeIssue(t.Context(), draft)
+	reused, err := store.CreateIntakeIssue(ctx, draft)
 	if err != nil || !reused.Reused || reused.ID != created.ID {
 		t.Fatalf("same fingerprint = %#v, %v", reused, err)
 	}
@@ -82,7 +94,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil || len(comments.Items) != 1 || !strings.Contains(comments.Items[0].Body, "## New machine occurrence") {
 		t.Fatalf("occurrence = %#v, %v", comments, err)
 	}
-	updated, err := store.UpdateIntakeIssue(t.Context(), created.ID, intake.IssueDraft{Title: "Verify deployed pool", Body: "Updated criteria", Labels: []string{"deployment"}})
+	updated, err := store.UpdateIntakeIssue(ctx, created.ID, intake.IssueDraft{Title: "Verify deployed pool", Body: "Updated criteria", Labels: []string{"deployment"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +106,42 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil || !slices.Equal(current.Labels, []string{"acceptance", "deployment"}) {
 		t.Fatalf("metadata = %#v, %v", current.Labels, err)
 	}
-	if err := store.SetIntakeIssueState(t.Context(), created.ID, "Backlog"); err != nil {
+	if err := store.SetIntakeIssueState(ctx, created.ID, "Backlog"); err != nil {
 		t.Fatal(err)
+	}
+	for _, request := range []tracker.CreateIssue{
+		{Mutation: nativeMutationKey(), Title: "Unfenced host creation", Body: draft.Body, State: "Backlog"},
+		{Mutation: nativeMutationKey(), Title: "Unstamped host creation", State: "Backlog"},
+	} {
+		if _, err := native.CreateIssue(t.Context(), request); err == nil {
+			t.Fatal("generic worker creation bypassed operator-only Backlog")
+		}
+	}
+	claim := h.scheduler.nativeClaims[source.ID]
+	for _, mutation := range []tracker.Mutation{
+		{IdempotencyKey: "wrong-fence", LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken + 1},
+		{IdempotencyKey: "unknown-lease", LeaseID: "lease_unknown", FencingToken: claim.lease.FencingToken},
+	} {
+		if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: mutation, Title: draft.Title, Body: draft.Body, State: "Backlog"}); err == nil {
+			t.Fatal("invalid source claim reused machine intake")
+		}
+	}
+	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "same-intake-occurrence", LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken}, Title: draft.Title, Body: draft.Body, State: "Backlog"}
+	imported := request
+	imported.IdempotencyKey = "forbidden-intake-import"
+	imported.Provenance = &tracker.Provenance{Provider: "github", ExternalID: "private-source", AuthorID: "source-author", CreatedAt: time.Now(), UpdatedAt: time.Now(), ObservedAt: time.Now()}
+	if _, err := native.CreateIssue(t.Context(), imported); err == nil {
+		t.Fatal("fingerprint reuse bypassed imported provenance authority")
+	}
+	for range 2 {
+		replayed, err := native.CreateIssue(t.Context(), request)
+		if err != nil || string(replayed.WorkItemID) != created.ID {
+			t.Fatalf("intake replay = %#v, %v", replayed, err)
+		}
+	}
+	comments, err = native.Comments(t.Context(), tracker.NativeWorkItemID(created.ID), "")
+	if err != nil || len(comments.Items) != 2 {
+		t.Fatalf("intake replay repeated occurrence: %#v, %v", comments, err)
 	}
 	var foreignProject tracker.NativeProject
 	if err := h.admin.client.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "foreign", "idempotency_key": "foreign-intake", "states": states}, &foreignProject); err != nil {
@@ -152,6 +198,23 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	_, err = readOnlyStore.CreateIntakeIssue(t.Context(), draft)
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
 		t.Fatalf("read-only runner published follow-up: %v", err)
+	}
+	if err := native.Release(t.Context(), claim.lease, "released"); err != nil {
+		t.Fatal(err)
+	}
+	origin.Fingerprint = "pool-live-acceptance"
+	draft.Body = issueorigin.Stamp("Released source must not add an occurrence", origin)
+	if _, err := store.CreateIntakeIssue(ctx, draft); err == nil {
+		t.Fatal("released source claim reused machine intake")
+	}
+	comments, err = native.Comments(t.Context(), tracker.NativeWorkItemID(created.ID), "")
+	if err != nil || len(comments.Items) != 2 {
+		t.Fatalf("refused intake wrote occurrence: %#v, %v", comments, err)
+	}
+	origin.Fingerprint = "released-new-follow-up"
+	draft.Body = issueorigin.Stamp("Released source must not create follow-up", origin)
+	if _, err := store.CreateIntakeIssue(ctx, draft); err == nil {
+		t.Fatal("released source claim created machine intake")
 	}
 }
 

@@ -494,41 +494,43 @@ func (s *Service) validateRunnerLease(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	return s.runnerTransaction(c, http.StatusOK, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		scope := nativeRequestScope(c)
-		id := tracker.LeaseID(c.Param("lease"))
-		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-			return nil, err
-		}
-		if err := requireLeaseRunner(ctx, tx, id, scope); err != nil {
-			return nil, err
-		}
-		lease, found, err := readLeaseByID(ctx, tx, id)
-		if err != nil {
-			return nil, err
-		}
-		if !found {
-			return nil, nativeNotFound()
-		}
-		if err := requireCurrentLease(lease, request.FencingToken, now); err != nil {
-			return nil, err
-		}
-		if err := requireApprovedLeasePolicy(ctx, tx, id, true); err != nil {
-			return nil, err
-		}
-		if scope.credential.Runner.RunnerID == "" {
-			return runnerauth.Runner{Binding: runnerauth.Binding{MachineID: lease.session.Machine.ID}}, nil
-		}
-		approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
-		if err != nil {
-			return nil, err
-		}
-		r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
-		if err != nil {
-			return nil, err
-		}
-		if err := runnerExcluded(r.Exclusions(scope.project, approval.Policy.Requirements, true)); err != nil {
-			return nil, err
-		}
-		return r, nil
+		return validateRunnerLeaseTx(ctx, tx, nativeRequestScope(c), tracker.LeaseID(c.Param("lease")), request.FencingToken, now)
 	})
+}
+
+func validateRunnerLeaseTx(ctx context.Context, tx *sql.Tx, scope nativeScope, id tracker.LeaseID, fencing tracker.FencingToken, now time.Time) (runnerauth.Runner, error) {
+	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
+		return runnerauth.Runner{}, err
+	}
+	if err := requireLeaseRunner(ctx, tx, id, scope); err != nil {
+		return runnerauth.Runner{}, err
+	}
+	lease, found, err := readLeaseByID(ctx, tx, id)
+	if err != nil {
+		return runnerauth.Runner{}, err
+	}
+	if !found {
+		return runnerauth.Runner{}, nativeNotFound()
+	}
+	if err := requireCurrentLease(lease, fencing, now); err != nil {
+		return runnerauth.Runner{}, err
+	}
+	if err := requireApprovedLeasePolicy(ctx, tx, id, true); err != nil {
+		return runnerauth.Runner{}, err
+	}
+	if scope.credential.Runner.RunnerID == "" {
+		return runnerauth.Runner{Binding: runnerauth.Binding{MachineID: lease.session.Machine.ID}}, nil
+	}
+	approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+	if err != nil {
+		return runnerauth.Runner{}, err
+	}
+	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+	if err != nil {
+		return runnerauth.Runner{}, err
+	}
+	if err := runnerExcluded(r.Exclusions(scope.project, approval.Policy.Requirements, true)); err != nil {
+		return runnerauth.Runner{}, err
+	}
+	return r, nil
 }
