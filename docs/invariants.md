@@ -3329,6 +3329,10 @@ Hub's running version through authenticated native capabilities and fetch that
 exact published release; an older Hub never downgrades a runner, and unavailable
 or invalid Hub targets never fall back to GitHub latest. Candidate signatures,
 provenance and startup crash-loop rollback remain required.
+Known non-release development versions do not schedule unsupported release
+discovery or retry local version refusals. The scheduler retains its explicit
+enrolled/manual update owner and existing pinned-release verification; release
+builds and callers without build metadata keep their discovery behavior.
 `TestServiceChoosesHubUpdateTarget`, `TestHubRunnerUpdateDefaultsAndOptOut` and
 `TestRunnerClientEnrollmentSchedulingAndRotationRecovery` cover target selection,
 persisted opt-outs and enrolled version reads.
