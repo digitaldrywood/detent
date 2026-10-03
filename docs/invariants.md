@@ -3631,6 +3631,11 @@ behavioral enforcement without restoring the retired mechanism.
 `TestAttemptAllowanceTriagePublication`, `TestAttemptAllowanceNoteFormat`,
 `TestAttemptAllowancePreservesOperatorCompletionLane`, and
 `TestAttemptAllowanceTriageFallbackCompletion` preserve in-flight compatibility.
+`TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss` preserves restoration
+of accepted operational completion after runtime state loss, including merged
+completion with older failed attempts. Historical failures do not recreate the
+retired ceiling; missing, outdated or unmarked successful attempts remain
+insufficient for completion.
 
 Non-PR artifact and explicit operational completion workflows retain their own
 deliverable rules. Already-merged completion does not require pre-dispatch
