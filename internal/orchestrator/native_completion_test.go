@@ -67,6 +67,16 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	blockedLanding := append([]connector.WorkflowState(nil), landing...)
 	blockedLanding[1].Transitions = append([]string{"Blocked"}, blockedLanding[1].Transitions...)
 	blockedLanding = append(blockedLanding, connector.WorkflowState{Name: "Blocked", Transitions: []string{"In Progress"}})
+	unfinishedWorkflow := append(append([]connector.WorkflowState(nil), blockedLanding...), connector.WorkflowState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Review", "Merging", "Blocked"}})
+	unfinishedWorkflow[1].Transitions = append([]string{"Rework"}, unfinishedWorkflow[1].Transitions...)
+	noDispatchRework := append([]connector.WorkflowState(nil), unfinishedWorkflow...)
+	noDispatchRework[len(noDispatchRework)-1].Dispatchable = false
+	operatorRework := append([]connector.WorkflowState(nil), unfinishedWorkflow...)
+	operatorRework[len(operatorRework)-1].OperatorOnly = true
+	customRework := append([]connector.WorkflowState(nil), unfinishedWorkflow...)
+	customRework[1].Transitions = append([]string{"Fixing"}, customRework[1].Transitions...)
+	customRework[len(customRework)-1].Name = "Fixing"
+	unfinishedReport := "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
 	yes, no := true, false
 	head := strings.Repeat("c", 40)
 	opened := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}
@@ -90,6 +100,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		quotaWait     bool
 		draining      bool
 		sourceState   string
+		reworkState   string
+		wantSameState bool
 		diffStats     DiffStats
 		wantOrdinary  bool
 		humanReview   *bool
@@ -149,6 +161,18 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "malformed status report cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "```detent-status\nschema: 99\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "no valid complete detent-status disposition"},
 		{name: "ordinary code fence cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "```text\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "no valid complete detent-status disposition"},
 		{name: "past incident prose cannot override current typed acceptance", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "The previous run was blocked; inspection now verifies all acceptance.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Done", wantComment: "nothing to review"},
+		{name: "native26 unfinished reviewed source continues implementation", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "implementation remains unfinished", roundTrip: true},
+		{name: "unfinished source continues before native review", change: waiting, states: unfinishedWorkflow, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "issue acceptance is not recorded"},
+		{name: "unfinished unchanged turn uses allowed implementation lane", change: &runpkg.NativeChange{BaseSHA: head}, states: unfinishedWorkflow, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "further work"},
+		{name: "unfinished Rework stays runnable without a self transition", change: accepted, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework", wantSameState: true, wantComment: "implementation remains unfinished"},
+		{name: "unfinished source respects configured rework name", change: accepted, states: customRework, reworkState: "Fixing", humanReview: &no, finalMessage: unfinishedReport, wantState: "Fixing", wantComment: "implementation remains unfinished"},
+		{name: "disabled Rework keeps configured review", change: accepted, states: noDispatchRework, humanReview: &no, finalMessage: unfinishedReport, wantState: "Blocked", wantComment: "for review"},
+		{name: "operator only Rework keeps configured review", change: accepted, states: operatorRework, humanReview: &no, finalMessage: unfinishedReport, wantState: "Blocked", wantComment: "for review"},
+		{name: "disallowed Rework keeps configured review", change: accepted, states: rework, finalMessage: unfinishedReport, wantState: "In Review", wantComment: "for review"},
+		{name: "in progress external blocker cannot dispatch Rework", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "blockers: []", "blockers:\n  - ref: '#42'\n    reason: Await the dependent project"), wantState: "Blocked", wantComment: "for review"},
+		{name: "explicit blocked report cannot dispatch Rework", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "status: in_progress\nblockers: []", "status: blocked\nblockers:\n  - ref: instance:acceptance\n    reason: Await external acceptance"), wantState: "Blocked", wantComment: "detent-status blocked"},
+		{name: "in progress human action remains held", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "for review"},
+		{name: "unfinished policy refusal cannot enter Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, VersionError: "policy mismatch", VersionCode: "policy_mismatch"}, states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Blocked", wantComment: "for review"},
 		{name: "typed unfinished published source cannot auto land", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "detent-status in_progress"},
 		{name: "malformed published report cannot auto land", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 99\nstatus: complete\n```", wantState: "In Review", wantComment: "no valid complete detent-status disposition"},
 		{name: "typed accepted current version lands normally", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Merging", wantComment: "runner lands it next"},
@@ -178,6 +202,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}})
 			cfg.AutoPromote.SourceState = "In Review"
 			cfg.AutoPromote.HumanReview = test.humanReview
+			if test.reworkState != "" {
+				cfg.AutoPromote.ReworkState = test.reworkState
+			}
 			attempts := &recordingWorkAttemptStore{}
 			scheduling := &nativeCompletionScheduling{hubSchedulingSource: &hubSchedulingSource{}}
 			publisher := &nativeCompletionPublisher{nativeLandingJourneyExecution: nativeLandingJourneyExecution{}, change: accepted}
@@ -185,7 +212,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				scheduling.execution = publisher
 			}
 			scheduling.release = func() {
-				if test.wantState != "" && (len(tick.updates) != 1 || tick.updates[0].state != test.wantState) {
+				if test.wantState != "" && !test.wantSameState && (len(tick.updates) != 1 || tick.updates[0].state != test.wantState) {
 					t.Fatalf("claim released before lane settlement: updates=%v, want=%s", tick.updates, test.wantState)
 				}
 			}
@@ -382,7 +409,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				return
 			}
-			if len(tick.updates) != 1 || tick.updates[0].state != test.wantState {
+			if test.wantSameState {
+				if len(tick.updates) != 0 {
+					t.Fatalf("same-state continuation wrote a lane: %#v", tick.updates)
+				}
+			} else if len(tick.updates) != 1 || tick.updates[0].state != test.wantState {
 				t.Fatalf("lane updates = %#v, want one to %s", tick.updates, test.wantState)
 			}
 			if len(tick.comments) != 1 || !strings.Contains(strings.ToLower(tick.comments[0].body), strings.ToLower(test.wantComment)) {
@@ -392,7 +423,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Fatalf("claim retained = %t, releases = %d", claimed, scheduling.releases)
 			}
 			completed, ok := state.Completed[issue.ID]
-			if !ok || completed.Issue.State != test.wantState {
+			if !test.wantSameState && (!ok || completed.Issue.State != test.wantState) || test.wantSameState && ok {
 				t.Fatalf("completed = %#v, present = %t", completed, ok)
 			}
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
@@ -469,7 +500,7 @@ type nativeCompletionPublisher struct {
 	prepared int
 }
 
-func (p *nativeCompletionPublisher) PrepareFinish(context.Context, string) error {
+func (p *nativeCompletionPublisher) PrepareFinish(context.Context, string, string) error {
 	p.prepared++
 	return nil
 }

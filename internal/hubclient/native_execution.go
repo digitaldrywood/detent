@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 type nativeExecution struct {
@@ -45,6 +46,7 @@ type nativeExecution struct {
 	settled                  bool
 	change                   *runner.NativeChange
 	preparedOutcome          string
+	preparedDisposition      *tracker.NativeDisposition
 	runtimeDirty             bool
 	runtimeSupported         *bool
 	// repository is the https URL of the checkout's origin, which a published
@@ -300,10 +302,14 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	return nil
 }
 
-func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome string) error {
+func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.preparedOutcome = outcome
+	e.preparedDisposition = nil
+	if signal, reported := workpad.SignalFromComment(finalMessage, "", ""); e.ownsChangeCompletion() && reported && signal != nil && signal.Invalid == nil {
+		e.preparedDisposition = &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != ""}
+	}
 	if err := e.prepareFinish(ctx, outcome); err != nil {
 		err = e.executionError(err)
 		if outcome == "succeeded" && e.ownsChangeCompletion() && nativeTransportUnavailable(err) {
@@ -375,6 +381,7 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	if e.data.Identity == nil || e.data.Outcome != "" {
 		return preparationErr
 	}
+	e.data.Disposition = e.preparedDisposition
 	return errors.Join(preparationErr, e.append(ctx, "run.finished", outcome, nil))
 }
 

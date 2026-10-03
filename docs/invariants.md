@@ -34,6 +34,21 @@ unfinished or blocked acceptance cannot auto-land or end an item merely because
 the turn succeeded or changed no files. A missing or invalid unchanged report
 uses the existing configured review handoff with successful-turn cost and claim
 settlement preserved; it is not a coding failure or a fabricated human request.
+A valid `in_progress` report with no blocker or human action retains unfinished
+implementation in the existing configured Rework lane when that lane dispatches
+and the workflow permits it. A turn already in that lane remains there without
+a self-transition. Explicit blockers, human action, publication refusals and
+missing or invalid reports retain review; a missing, operator-only, terminal,
+non-dispatching or disallowed Rework lane does not override project workflow.
+Successful-turn settlement preserves source identity and cost without accepting
+unfinished work, consuming a failure allowance or introducing a new retry owner.
+The existing fenced terminal run receipt retains normalized typed disposition
+status and blocker/human-action presence. Candidate admission no longer treats
+a valid unblocked unfinished disposition as an answered item solely because the
+provider succeeded. Old receipts without disposition retain their existing
+exclusion, as do explicit interactive conversation turns. The existing
+PrepareFinish and deferred-finalization owners preserve this bounded outcome
+data; no synthetic Continue, self-transition or dispatch request is created.
 Valid unchanged inspection acceptance and authoritative already-landed receipts
 remain valid completion. Legacy missing reports with genuine published versions
 retain their existing policy, exact-head and current-review landing authority.

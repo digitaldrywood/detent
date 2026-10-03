@@ -52,7 +52,7 @@ func (f dispatchGuardFixture) candidate(t *testing.T) bool {
 // succeed finishes the running attempt and releases its lease, which is
 // everything the hub itself does when an attempt completes: nothing moves the
 // item.
-func (f dispatchGuardFixture) succeed(t *testing.T) {
+func (f dispatchGuardFixture) succeed(t *testing.T, disposition ...*tracker.NativeDisposition) {
 	t.Helper()
 	event := tracker.NativeRunEvent{
 		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
@@ -60,6 +60,9 @@ func (f dispatchGuardFixture) succeed(t *testing.T) {
 			Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"},
 			LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "succeeded",
 		},
+	}
+	if len(disposition) > 0 {
+		event.Data.Disposition = disposition[0]
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 	f.release(t)
@@ -109,6 +112,42 @@ func (f dispatchGuardFixture) continueConversation(t *testing.T, key string) {
 // it again" brings it back.
 func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		disposition   *tracker.NativeDisposition
+		wantCandidate bool
+	}{
+		{name: "unfinished custom Rework remains runnable", disposition: &tracker.NativeDisposition{Status: "in_progress"}, wantCandidate: true},
+		{name: "completed custom Rework is answered", disposition: &tracker.NativeDisposition{Status: "complete"}},
+		{name: "explicit blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}},
+		{name: "unfinished external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", Blockers: true}},
+		{name: "unfinished human action keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}},
+		{name: "missing legacy disposition keeps the answer"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newDispatchGuardFixture(t)
+			_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,0,1,?,?)`, f.project.ID, "Fixing", "Fixing", formatHubTime(f.now), formatHubTime(f.now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Fixing') WHERE native_id=?`, f.project.ID, f.issue.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			revision := f.reload(t).Revision
+			f.succeed(t, test.disposition)
+			if f.reload(t).Revision != revision {
+				t.Fatal("completion fabricated an item edit")
+			}
+			if got := f.candidate(t); got != test.wantCandidate {
+				t.Fatalf("candidate=%t, want %t", got, test.wantCandidate)
+			}
+			if test.wantCandidate {
+				f.claim(t)
+			}
+		})
+	}
 	f := newDispatchGuardFixture(t)
 
 	if !f.candidate(t) {
