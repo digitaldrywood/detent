@@ -126,7 +126,7 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 			if !test.unresolved && !test.clean {
 				sandboxed := false
 				if runtime.GOOS == "darwin" {
-					profile := fmt.Sprintf("(version 1)(allow default)(deny file-write*)(allow file-write* (subpath %q)", mustCanonicalExistingPath(t, info.Path))
+					profile := fmt.Sprintf("(version 1)(allow default)(deny file-write*)(allow file-write* (literal \"/dev/null\") (subpath %q)", mustCanonicalExistingPath(t, info.Path))
 					var allowedRoots strings.Builder
 					for _, root := range roots {
 						allowedRoots.WriteString(fmt.Sprintf(" (subpath %q)", root))

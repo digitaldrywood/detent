@@ -61,6 +61,23 @@ func newLandingFixture(t *testing.T) landingFixture {
 	return landingFixture{source: source, remote: remote, backend: local, issue: issue, info: info, head: head}
 }
 
+// Git for Windows bounds worktree metadata paths. t.TempDir includes the full
+// subtest name, which can consume that budget before Git appends its metadata.
+// Keep the receiver and landing roots short within the test process's scratch.
+func landingTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(filepath.Dir(sourceRepoSeedDir), "landing-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
+	return dir
+}
+
 func (f landingFixture) remoteMain(t *testing.T) string {
 	t.Helper()
 	return strings.TrimSpace(runGit(t, f.remote, "rev-parse", "refs/heads/main"))
@@ -110,7 +127,7 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 			fixture := newLandingFixture(t)
 			branch := "detent/external-source"
 			runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+branch, fixture.head+":refs/pull/7/head")
-			receiver := filepath.Join(t.TempDir(), "receiver")
+			receiver := filepath.Join(landingTempDir(t), "receiver")
 			runGit(t, fixture.source, "clone", "--no-local", "--single-branch", "--branch", "main", fixture.remote, receiver)
 			if _, err := runGitAt(t.Context(), receiver, "cat-file", "-e", fixture.head+"^{commit}"); err == nil {
 				t.Fatal("receiver already has the external commit")
@@ -118,7 +135,7 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 			repository := "https://github.com/example/repo"
 			runGit(t, receiver, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
 			runGit(t, receiver, "remote", "set-url", "origin", repository+".git")
-			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: !test.detached})
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(landingTempDir(t), "workspaces"), SourceRoot: receiver, AutoBranch: !test.detached})
 			if err != nil {
 				t.Fatal(err)
 			}
