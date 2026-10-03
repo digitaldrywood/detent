@@ -725,8 +725,13 @@ func TestWorkspaceOperatorActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := workspaceOperatorAction(t, result)
-	if _, err := f.service.operatorChat.Confirm(human, "actions", run.ID); !errors.Is(err, errWorkspaceOperationUnavailable) {
-		t.Fatalf("unbound run=%v", err)
+	if _, err := f.service.operatorChat.Confirm(human, "actions", run.ID); err != nil {
+		var conflict *operatortool.ConflictError
+		if !errors.As(err, &conflict) || conflict.Code != "stale_execution" {
+			t.Fatalf("unbound run=%v", err)
+		}
+	} else {
+		t.Fatal("unbound workspace accepted an action run")
 	}
 	// Bind only the existing fixture workspace to exercise queue semantics without
 	// starting a process or touching the live instance.
@@ -802,8 +807,13 @@ func TestWorkspaceOperatorActions(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE project_actions SET command='echo changed',revision=3 WHERE id=?", configured.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.operatorChat.Confirm(human, "actions", stale.ID); !errors.Is(err, errWorkspaceOperationUnavailable) {
-		t.Fatalf("changed approved command=%v", err)
+	if _, err := f.service.operatorChat.Confirm(human, "actions", stale.ID); err != nil {
+		var conflict *operatortool.ConflictError
+		if !errors.As(err, &conflict) || conflict.Code != "revision_conflict" || conflict.CurrentRevision != 3 {
+			t.Fatalf("changed approved command=%v", err)
+		}
+	} else {
+		t.Fatal("approved run accepted a changed command")
 	}
 	result, err = workspaceOperatorCall(t, f.service, reconnect, "create_project_action_run", args)
 	if err != nil || workspaceOperatorAction(t, result).Status != chat.ActionSucceeded {

@@ -55,7 +55,7 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Runner admission context", Body: "private-admission-body", State: "Todo", Labels: []string{"human-owned"}})
+	selected, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Runner admission context", Body: "private-admission-body", State: "Todo", Labels: []string{"selected-label"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	}{
 		{name: "large legitimate selector list keeps heartbeat and unknown evidence", exclude: largeSelectors, outcome: "unknown"},
 		{name: "long legitimate selector keeps heartbeat and unknown evidence", exclude: []string{strings.Repeat("a", 129)}, outcome: "unknown"},
-		{name: "registered runner selectors refuse", exclude: []string{"human-owned"}, outcome: "skipped"},
+		{name: "registered runner selectors refuse", exclude: []string{"selected-label"}, outcome: "skipped"},
 		{name: "registered runner selectors admit", outcome: "ready"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

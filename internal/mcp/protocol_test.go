@@ -530,6 +530,10 @@ func TestProtocolWorkReadParity(t *testing.T) {
 					if definition.Name == operatortool.WorkVersion {
 						arguments["revision"] = 1
 					}
+					if definition.Name == operatortool.GitHubScopeTimings {
+						arguments["native_attempt_id"] = "attempt_1"
+						arguments["runner_id"] = "runner-1"
+					}
 					if definition.Name == operatortool.WorkAttemptReceipt {
 						arguments["attempt_id"] = 1
 					}
