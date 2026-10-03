@@ -28,12 +28,13 @@ func TestOperatorApprovalSurvivesHubReopen(t *testing.T) {
 			f.grant(t, user, true, true)
 			bind := func() context.Context {
 				t.Helper()
-				var bound context.Context
+				var request *http.Request
 				f.service.echo.POST("/approval-restart-test", func(c echo.Context) error {
-					bound = operatortool.BindConnection(c.Request().Context(), "durable-connection", "restart-test")
+					request = c.Request()
 					return c.NoContent(http.StatusOK)
 				}, f.service.operatorAuthority)
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, "/approval-restart-test", nil), http.StatusOK)
+				bound := operatortool.BindConnection(request.Context(), "durable-connection", "restart-test")
 				if err := (hostedOperatorExecutor{f.service}).OpenConnection(bound); err != nil {
 					t.Fatal(err)
 				}
@@ -128,9 +129,10 @@ func TestOperatorApprovalSurvivesHubReopen(t *testing.T) {
 					t.Fatalf("new connection inherited mode=%s", mode)
 				}
 			}
-			if scenario == "revoked grant" {
+			switch scenario {
+			case "revoked grant":
 				operatorSQL(t, f, "UPDATE hosted_project_grants SET can_write=0 WHERE user_id=?", user.identity.Subject)
-			} else if scenario == "stale revision" {
+			case "stale revision":
 				operatorSQL(t, f, "UPDATE issues SET revision=revision+1 WHERE native_id=?", creation.Data.WorkItemID)
 			}
 			if scenario == "revoked grant" {
@@ -194,12 +196,13 @@ func TestOperatorApprovalReopenOriginalTokenAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var ctx context.Context
+			var request *http.Request
 			f.service.echo.POST("/api/v2/approval-token-test", func(c echo.Context) error {
-				ctx = operatortool.BindConnection(c.Request().Context(), "durable-token", "token-test")
+				request = c.Request()
 				return c.NoContent(http.StatusOK)
 			}, f.service.operatorAuthority)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/approval-token-test", key.Token, nil), http.StatusOK)
+			ctx := operatortool.BindConnection(request.Context(), "durable-token", "token-test")
 			if err := (hostedOperatorExecutor{f.service}).OpenConnection(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -231,9 +234,10 @@ func TestOperatorApprovalReopenOriginalTokenAuthority(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			if scenario == "revoked token" {
+			switch scenario {
+			case "revoked token":
 				operatorSQL(t, f, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(f.service.config.now()), key.ID)
-			} else if scenario == "revoked token grant" {
+			case "revoked token grant":
 				operatorSQL(t, f, "DELETE FROM token_grants WHERE token_id=?", key.ID)
 			}
 			page := f.request(t, user, http.MethodGet, "/chat/approval?connection_id=durable-token", nil)
