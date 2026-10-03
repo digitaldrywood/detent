@@ -408,15 +408,16 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 }
 
 type hubSchedulingSource struct {
-	admission  tracker.NativeAdmissionContext
-	execution  runpkg.Execution
-	issues     []connector.Issue
-	request    SchedulingRequest
-	issue      connector.Issue
-	fetchError error
-	fetches    int
-	adoptions  int
-	releases   int
+	admission    tracker.NativeAdmissionContext
+	execution    runpkg.Execution
+	issues       []connector.Issue
+	request      SchedulingRequest
+	issue        connector.Issue
+	fetchError   error
+	releaseError error
+	fetches      int
+	adoptions    int
+	releases     int
 }
 
 func (s *hubSchedulingSource) ObserveNativeAdmission(_ string, current tracker.NativeAdmissionContext) {
@@ -469,7 +470,7 @@ func (s *hubSchedulingSource) RenewClaim(_ context.Context, _ string, _ time.Tim
 
 func (s *hubSchedulingSource) ReleaseClaim(_ context.Context, _ string, _ string) error {
 	s.releases++
-	return nil
+	return s.releaseError
 }
 
 type hubSchedulingConnector struct {

@@ -437,7 +437,7 @@ func TestHandleRunResultTracksStartupTimeoutAsCapacityAndBreakerSignal(t *testin
 		t.Fatalf("work attempt completions = %#v, want one", attempts.completions)
 	}
 	completion := attempts.completions[0]
-	if completion.TerminalState != store.WorkAttemptTerminalTimedOut || completion.ErrorClass != backendcapacity.StartupTimeoutErrorClass || completion.StatusMessage != "instance failed before first turn" {
+	if completion.TerminalState != store.WorkAttemptTerminalTimedOut || completion.ErrorClass != backendcapacity.StartupTimeoutErrorClass || completion.StatusMessage != "instance workspace or startup failure" {
 		t.Fatalf("completion = %#v, want startup timeout telemetry", completion)
 	}
 	var metadata struct {

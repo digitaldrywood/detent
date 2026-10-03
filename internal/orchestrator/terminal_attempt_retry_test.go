@@ -302,12 +302,10 @@ func TestHandleRunResultPersistsPublishedPushCommandEvidence(t *testing.T) {
 	if persisted.Command != command || persisted.ExitCode == nil || *persisted.ExitCode != exitCode || persisted.TargetRef == nil || !persisted.TargetRef.AdvancedToLocalHead {
 		t.Fatalf("persisted command evidence = %#v", persisted)
 	}
-	wantBreakerClass := projectFailureClassDeliverableCommand + ":post-push command"
-	if len(state.FailureBreaker.Failures[wantBreakerClass]) != 1 {
-		t.Fatalf("failure breaker classes = %#v, want %q", state.FailureBreaker.Failures, wantBreakerClass)
-	}
-	if len(state.FailureBreaker.Failures[projectFailureClassDeliverableCommand+":git push"]) != 0 {
-		t.Fatalf("published work charged to git push breaker: %#v", state.FailureBreaker.Failures)
+	// Post-push command evidence belongs to the deliverable owner; it must
+	// not become a project-wide outage that stops unrelated work.
+	if len(state.FailureBreaker.Failures) != 0 || state.FailureBreaker.Active() {
+		t.Fatalf("published command failure paused unrelated work: %#v", state.FailureBreaker)
 	}
 }
 
@@ -463,30 +461,31 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 		headSHA = "current-head"
 	)
 	tests := []struct {
-		name             string
-		cached           *connector.PullRequest
-		lookup           *connector.PullRequest
-		created          *connector.PullRequest
-		createErr        error
-		lookupErrors     []error
-		lookupFoundAfter int
-		wantBlocked      bool
-		wantReason       string
-		wantLookupCalls  int
-		wantCreateCalls  int
-		wantPRNumber     int
-		wantTransitions  []string
-		wantRetry        bool
-		wantActive       bool
-		wantMergedReason bool
-		wantReasonCode   string
-		wantForgeWait    bool
-		wantDeferred     bool
-		withoutCreator   bool
-		errorMessage     string
-		commitsAhead     int
-		remoteBranch     bool
-		joinedErr        error
+		name                string
+		cached              *connector.PullRequest
+		lookup              *connector.PullRequest
+		created             *connector.PullRequest
+		createErr           error
+		lookupErrors        []error
+		lookupFoundAfter    int
+		wantBlocked         bool
+		wantReason          string
+		wantLookupCalls     int
+		wantCreateCalls     int
+		wantPRNumber        int
+		wantTransitions     []string
+		wantRetry           bool
+		wantActive          bool
+		wantMergedReason    bool
+		wantReasonCode      string
+		wantForgeWait       bool
+		wantDeferred        bool
+		wantInstanceFailure bool
+		withoutCreator      bool
+		errorMessage        string
+		commitsAhead        int
+		remoteBranch        bool
+		joinedErr           error
 	}{
 		{
 			name: "open pull request on exact current head reconciles",
@@ -499,10 +498,10 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			remoteBranch:    true,
 		},
 		{
-			name:      "recovery preserves joined workspace failure",
-			lookup:    &connector.PullRequest{Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA},
-			joinedErr: runpkg.ErrWorkspacePreparation,
-			wantRetry: true, commitsAhead: 1, remoteBranch: true,
+			name:                "recovery preserves joined workspace failure",
+			lookup:              &connector.PullRequest{Number: 18, BranchName: branch, State: "OPEN", HeadSHA: headSHA},
+			joinedErr:           runpkg.ErrWorkspacePreparation,
+			wantInstanceFailure: true, commitsAhead: 1, remoteBranch: true,
 		},
 		{
 			name:      "recovery preserves joined checkpoint failure",
@@ -824,6 +823,22 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalFailure || !strings.Contains(attempts.completions[0].ErrorMessage, tt.joinedErr.Error()) || attempts.completions[0].ErrorClass == permissionWaitReason {
 					t.Fatalf("joined failure outcome = %#v", attempts.completions)
 				}
+			}
+			if tt.wantInstanceFailure {
+				completion := attempts.completions[0]
+				if completion.ErrorClass != workAttemptErrorWorkspace || !state.FailureBreaker.PreTurn || len(state.FailureBreaker.Failures[workAttemptErrorWorkspace]) != 1 {
+					t.Fatalf("workspace failure lost its instance owner: completion=%#v breaker=%#v", completion, state.FailureBreaker)
+				}
+				var metadata struct {
+					WorkProductPushed bool `json:"work_product_pushed"`
+				}
+				if err := json.Unmarshal([]byte(completion.WorkerMetadataJSON), &metadata); err != nil || !metadata.WorkProductPushed {
+					t.Fatalf("workspace failure lost pushed work evidence: metadata=%s error=%v", completion.WorkerMetadataJSON, err)
+				}
+				if len(state.Retry) != 0 || len(state.PriorAttempts) != 0 || len(state.Claimed) != 0 || len(state.Completed) != 0 || len(state.RepeatedFailures) != 0 || len(tracker.transitionStates()) != 0 {
+					t.Fatalf("instance failure charged or moved the issue: retries=%d prior=%d claims=%d completed=%d failures=%d moves=%v", len(state.Retry), len(state.PriorAttempts), len(state.Claimed), len(state.Completed), len(state.RepeatedFailures), tracker.transitionStates())
+				}
+				return
 			}
 			if tt.wantRetry {
 				if _, retrying := state.Retry[issue.ID]; !retrying {

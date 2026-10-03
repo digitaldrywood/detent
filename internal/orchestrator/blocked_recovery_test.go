@@ -702,7 +702,7 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 				}
 			},
 			prepare: func(orch *Orchestrator, issue connector.Issue) {
-				identity := validatorStageIdentityForIssue(issue)
+				identity := validatorStageIdentityForIssue(issue, orch.cfg.AutoPromote.Gate)
 				orch.validatorResults = map[string]validatorStageResult{
 					identity.Key: {
 						Result: gate.ValidatorResult{
@@ -779,6 +779,7 @@ func TestRecoverBlockedIssuesReworkBreakerGuards(t *testing.T) {
 			}
 			tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{issue}}
 			orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{})
+			orch.connector = reworkBreakerTaskConnector{tracker}
 			if tt.sourceState != "" {
 				issue.State = tt.sourceState
 				tracker.stateIssues[0] = cloneIssue(issue)
@@ -875,6 +876,26 @@ func TestRecoverBlockedIssuesDoesNotRecordRejectedReworkBreakerUnpark(t *testing
 	if reworkBreakerAutoUnparkConsumed(metricsTimeline(t, metrics, issue), "pr=1585;head=parked-head") {
 		t.Fatal("rejected transition consumed the one-shot auto-unpark")
 	}
+}
+
+// Validator acceptance refreshes task inputs by identity before consuming a
+// cached verdict. This fixture exposes its current task without changing the
+// dependency connector used by other tests.
+type reworkBreakerTaskConnector struct {
+	*dependencyAutoUnblockConnector
+}
+
+func (c reworkBreakerTaskConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	var out []connector.Issue
+	for _, current := range c.stateIssues {
+		for _, id := range ids {
+			if current.ID == id {
+				out = append(out, cloneIssue(current))
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 type reworkBreakerRejectingConnector struct {

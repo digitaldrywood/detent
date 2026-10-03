@@ -1591,7 +1591,25 @@ or secondary quota responses retain their credential identity, reset and
 Retry-After evidence in the existing persisted wait contract, without fabricated
 reserve or reset values. The reviewed Change Request/version/head stays in
 Merging across retries and restart; capacity completions consume no failed coding
-attempt allowance. Native coding and completions that need no exhausted GitHub
+attempt allowance. Native REST quota completion calls the existing terminal
+claim-release owner to publish a prepared Finish and release the durable lease
+before recording its ordinary retry. A local wait cannot substitute for that
+settlement; `TestNativeLandingQuotaWait` retains its release assertion and also
+checks that no local claim remains. Unavailable native Finish publication retains
+completion ownership through the existing completion-deferral path; it neither
+writes a terminal capacity attempt nor schedules ordinary landing retry until
+publication and lease release settle. The same quota matrix covers unavailable
+publication and recovery of its exact reviewed identity through persisted JSON,
+including typed quota evidence and response accounting without replay duplication.
+The scheduler claim-release owner reports missing native publishers and lost
+Finish authority, including loss during release. It preserves a successor fence
+while retiring the obsolete lease and reports the failed publication to existing
+authority-loss rejection. An absent cached claim or suppressed lease-loss error
+cannot prove that Finish settled. An acknowledged terminal event remains settled
+when lease release is retried after an outage, even if the lease has since
+expired; the existing publisher never emits a second Finish. No separate
+pre-release authority check owns this decision. No new wait or recovery mechanism
+is added. Native coding and completions that need no exhausted GitHub
 operation continue normally. Pre-claim readiness, dispatch, retry and completion
 share the existing current-stage REST dependency decision (#150). Historical
 retry capacity scope is retained as evidence, not an independent applicability

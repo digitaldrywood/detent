@@ -284,6 +284,18 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 			RetryAt:            retryAt,
 		}}
 	}
+	if o.nativeWorkflow() {
+		// Native runs defer Finish to the claim owner. Publication must settle
+		// before capacity completion releases ownership to an ordinary retry.
+		if err := o.abandonClaim(ctx, running.Issue.ID); err != nil {
+			// handleRunResult already accounted for this response. Replaying
+			// completion must not count the same request again.
+			event.Result.GitHubRESTUsage = nil
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return true
+		}
+		delete(state.Claimed, running.Issue.ID)
+	}
 	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(
 		ctx,
 		state,

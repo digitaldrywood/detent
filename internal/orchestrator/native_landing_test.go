@@ -467,16 +467,20 @@ func TestWithNativeLandingLane(t *testing.T) {
 func TestNativeLandingQuotaWait(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name       string
-		status     int
-		reset      bool
-		retryAfter string
-		remaining  string
+		name              string
+		status            int
+		reset             bool
+		retryAfter        string
+		remaining         string
+		finishUnavailable bool
+		missingPublisher  bool
 	}{
 		{name: "primary 403", status: 403, reset: true},
 		{name: "secondary 429", status: 429, retryAfter: "120"},
 		{name: "secondary 429 with healthy primary reset", status: 429, retryAfter: "120", reset: true, remaining: "4990"},
 		{name: "body-only 403", status: 403},
+		{name: "native Finish outage retains completion", status: 429, retryAfter: "120", finishUnavailable: true},
+		{name: "restart without native publisher rejects completion", status: 429, retryAfter: "120", finishUnavailable: true, missingPublisher: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -516,7 +520,10 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 			tracker := &nativeWorkflowConnector{autoPromoteTickConnector: tick}
 			attempts := &recordingWorkAttemptStore{}
-			scheduling := &hubSchedulingSource{}
+			scheduling := &hubSchedulingSource{execution: &nativeLandingJourneyExecution{}}
+			if test.finishUnavailable {
+				scheduling.releaseError = errors.Join(ErrSchedulingUnavailable, errors.New("native Finish publication unavailable"))
+			}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
 			state := newState(cfg)
 			head := strings.Repeat("c", 40)
@@ -529,6 +536,40 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 				Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge},
 				Result:  runpkg.RunResult{NativeLanding: landing, GitHubRESTUsage: &usage, GitHubRESTConsumer: telemetry.RESTConsumerWorker},
 			})
+			if test.finishUnavailable {
+				deferred, retained := state.deferredCompletions[issue.ID]
+				_, claimed := state.Claimed[issue.ID]
+				if !retained || !state.Retry[issue.ID].CompletionDeferred || !claimed || len(attempts.completions) != 0 || scheduling.releases != 1 || deferred.Result.NativeLanding == nil || *deferred.Result.NativeLanding != *landing {
+					t.Fatalf("Finish outage lost completion ownership: deferred=%t claim=%t retry=%#v completions=%#v releases=%d", retained, claimed, state.Retry[issue.ID], attempts.completions, scheduling.releases)
+				}
+				// Replay the persisted JSON, including typed response evidence.
+				data, marshalErr := json.Marshal(deferred)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				var recovered deferredCompletion
+				if unmarshalErr := json.Unmarshal(data, &recovered); unmarshalErr != nil {
+					t.Fatal(unmarshalErr)
+				}
+				recovered.Persisted = true
+				state.deferredCompletions[issue.ID] = recovered
+				scheduling.releaseError = nil
+				if test.missingPublisher {
+					// A fresh scheduler has no original prepared execution.
+					scheduling = &hubSchedulingSource{releaseError: runpkg.ErrExecutionAuthorityUnavailable}
+					orch.scheduling = scheduling
+				}
+				if !orch.retryDeferredCompletions(t.Context(), &state, state.Retry[issue.ID].DueAt.Add(time.Second)) || len(state.deferredCompletions) != 0 || state.Retry[issue.ID].CompletionDeferred {
+					t.Fatal("settled Finish did not resume the original quota completion")
+				}
+			}
+			if test.missingPublisher {
+				_, claimed := state.Claimed[issue.ID]
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalAbandoned || len(state.Retry) != 0 || claimed || len(state.Running) != 0 || len(tick.updates) != 0 || state.RepeatedFailures[issue.ID].Count != 2 {
+					t.Fatalf("missing publisher fabricated settlement: attempts=%#v retry=%#v claimed=%t", attempts.completions, state.Retry, claimed)
+				}
+				return
+			}
 			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalCapacity {
 				t.Fatalf("completions = %#v", attempts.completions)
 			}
@@ -548,7 +589,14 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 			if !ok || retry.Attempt != 4 || retry.Issue.State != "Merging" || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 {
 				t.Fatalf("quota completion changed item: retry %#v state %#v", retry, state.Blocked)
 			}
-			if state.RepeatedFailures[issue.ID].Count != 2 || len(state.InstantFailures) != 0 || scheduling.releases != 1 {
+			// ReleaseClaim settles deferred native Finish and frees the durable
+			// lease; a local retry cannot stand in for that completion.
+			_, claimed := state.Claimed[issue.ID]
+			wantReleases := 1
+			if test.finishUnavailable {
+				wantReleases++
+			}
+			if state.RepeatedFailures[issue.ID].Count != 2 || len(state.InstantFailures) != 0 || scheduling.releases != wantReleases || claimed {
 				t.Fatalf("attempt allowance or claim changed: %#v releases %d", state.RepeatedFailures, scheduling.releases)
 			}
 			if orch.adaptivePollInterval(&state, now) > cfg.PollInterval {
