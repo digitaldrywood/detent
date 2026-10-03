@@ -308,7 +308,16 @@ moves delegate to the same application command as the workflow HTTP endpoint;
 workers gain no lane-writing authority. No parallel approval or recovery service
 is added (INV-3). `TestCoordinatorProjectActions` covers authorized changes,
 refusals, rejection and stale authority/revisions. The conversation browser
-journey covers approving GitHub PR mode and retrying a blocked issue.
+journey covers refusing unavailable Hub integration and approving a blocked-issue retry.
+
+Hosted repository association (native #10) uses the enrolled runner's scoped
+checkout report. Hub integration reads expose transport availability without
+forge calls or credentials. Settings show the associated checkout and direct
+owners to setup; unavailable Hub integration has no dead controls. Luna refuses
+unavailable integration previews and directs PR landing to the runner's approved
+repository policy. `TestHostedRunnerCheckoutAssociation`,
+`TestCoordinatorProjectActions`, `TestLandNativeChange` and
+`TestLocalGitLandChangeViaGitHub` cover binding, refusals and runner-owned landing.
 
 
 Permission outcome authority (#3758) belongs to the existing completion owners.

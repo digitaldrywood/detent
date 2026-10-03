@@ -48,8 +48,8 @@ func coordinatorConnectionData(ctx context.Context) json.RawMessage {
 
 func coordinatorActionTools() []runner.AgentTool {
 	return []runner.AgentTool{
-		coordinatorTool("get_project_integration", "Read this project's current integration settings. repository_enabled enables GitHub pull-request mode.", `{"type":"object","properties":{},"additionalProperties":false}`),
-		coordinatorTool("update_project_integration", "Preview changes to this project's integration settings, including GitHub pull-request mode. The user must approve the exact change in chat before it runs.", `{"type":"object","properties":{"repository_enabled":{"type":"boolean"},"intake":{"type":"string","enum":["disabled","manual"]},"projection":{"type":"string","enum":["disabled","summary"]}},"additionalProperties":false}`),
+		coordinatorTool("get_project_integration", "Read this project's integration settings and GitHub transport availability. Runner PR landing is selected by the approved repository policy.", `{"type":"object","properties":{},"additionalProperties":false}`),
+		coordinatorTool("update_project_integration", "Preview available Hub integration changes. This does not change the runner's approved PR landing policy. The user must approve the exact change in chat before it runs.", `{"type":"object","properties":{"repository_enabled":{"type":"boolean"},"intake":{"type":"string","enum":["disabled","manual"]},"projection":{"type":"string","enum":["disabled","summary"]}},"additionalProperties":false}`),
 		coordinatorTool("move_item", "Preview moving a native issue to a workflow state. Retry a blocked issue by moving it to Todo. Current workflow rules and revision apply; the user must approve in chat.", `{"type":"object","required":["work_item_id","state"],"properties":{"work_item_id":{"type":"string"},"state":{"type":"string"}},"additionalProperties":false}`),
 		coordinatorTool("edit_item", "Preview editing an issue's title, body, labels or priority (0 urgent through 3 low). The user must approve in chat.", `{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":0,"maximum":3}},"additionalProperties":false}`),
 		coordinatorTool("add_comment", "Preview adding an issue comment. The user must approve the exact comment in chat.", `{"type":"object","required":["work_item_id","body"],"properties":{"work_item_id":{"type":"string"},"body":{"type":"string"}},"additionalProperties":false}`),
@@ -141,7 +141,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	requestID := "luna_" + hex.EncodeToString(digest[:])
 	action := chat.Action{ConversationID: record.ID, Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), RequestID: requestID, Title: strings.ReplaceAll(call.Name, "_", " "), Material: true}
 	if call.Name == "get_project_integration" || call.Name == "update_project_integration" {
-		current, err := readProjectIntegration(ctx, s.database.db, scope)
+		current, err := s.projectIntegration(ctx, s.database.db, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -150,6 +150,9 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 		}
 		if len(fields) == 0 {
 			return nil, operatortool.ErrInvalidArguments
+		}
+		if !*current.GitHubTransportAvailable {
+			return nil, nativeInvalid("Hub GitHub integration is unavailable. Associate the runner checkout in project setup and approve the runner's repository policy with GitHub PR landing enabled.")
 		}
 		input := operatortool.IntegrationInput{ExpectedRevision: current.Revision, Intake: current.Intake, Projection: current.Projection, RepositoryEnabled: current.RepositoryEnabled}
 		if args.RepositoryEnabled != nil {

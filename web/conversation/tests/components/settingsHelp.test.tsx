@@ -24,7 +24,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const integration = integrationFixture as ProjectIntegration;
 const fleet = fleetFixture as unknown as FleetResponse;
 
-function renderProject(canManage = true) {
+function renderProject(canManage = true, overrides: Partial<React.ComponentProps<typeof ProjectSettingsView>> = {}) {
   const root = createRootRoute({
     component: () => (
       <ProjectSettingsView
@@ -43,6 +43,7 @@ function renderProject(canManage = true) {
         saveError={null}
         approveError={null}
         onOpenFleet={vi.fn()}
+        {...overrides}
       />
     ),
   });
@@ -51,6 +52,24 @@ function renderProject(canManage = true) {
 }
 
 describe("settings help interactions", () => {
+  it.each(["", "Acme/Private"])("uses runner checkout settings when Hub transport is unavailable (%s)", async (repository) => {
+    const onOpenSetup = vi.fn();
+    renderProject(true, {
+      integration: { ...integration, repository: "", github_transport_available: false, checkout_repository: repository },
+      onOpenSetup,
+    });
+    expect((await screen.findByText(/Hub GitHub integration is unavailable/)).textContent).toContain("runner’s approved repository policy");
+    expect(screen.queryByRole("switch", { name: "Repository and pull request integration" })).toBeNull();
+    expect(screen.queryByLabelText("Intake", { exact: true })).toBeNull();
+    expect(screen.queryByLabelText("Projection", { exact: true })).toBeNull();
+    if (repository) {
+      expect(screen.getByText(repository)).toBeTruthy();
+    } else {
+      await userEvent.setup().click(screen.getByRole("button", { name: "Associate runner checkout" }));
+      expect(onOpenSetup).toHaveBeenCalledOnce();
+    }
+  });
+
   it("opens by keyboard, describes the dialog, dismisses with Escape and restores focus", async () => {
     const user = userEvent.setup();
     render(<SettingsHelp label="Example setting">A useful explanation.</SettingsHelp>);

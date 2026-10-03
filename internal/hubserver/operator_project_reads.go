@@ -46,7 +46,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 			value, err = boundedProjectBatch(view, r)
 		}
 	case "get_project_integration":
-		value, err = readProjectIntegration(ctx, s.database.db, scope)
+		value, err = s.projectIntegration(ctx, s.database.db, scope)
 	case "get_cutover_receipt":
 		value, err = s.readCutoverReceipt(ctx, scope)
 	case "get_git_hub_import":
