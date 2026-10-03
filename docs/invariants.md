@@ -106,7 +106,12 @@ project's actual state names and edges. Ordinary reversible configured requests
 retain normal execution; terminal source or target states retain browser
 confirmation and trusted connection YOLO. Discovery retains connection role and
 scope filtering; preview, result delivery, execution and replay recheck current
-organization/project/item authority.
+organization/project/item authority. Native workflow requests reuse the same
+scoped reference resolver as item reads: canonical IDs, item numbers and returned
+project-qualified identifiers resolve to one canonical action/resource identity
+before mutation binding. Authorization uses its existing query/transaction;
+foreign project prefixes and revoked grants remain unavailable. Aliases replay
+one original action and durable workflow receipt, never another transition.
 History records the authenticated human operator and `user_requested`; a state
 request creates no Run, Attempt, lease, approval, completion or landing evidence.
 `TestMCPConfiguredWorkflowTransitions`, `TestMCPNativeWorkCommands`,

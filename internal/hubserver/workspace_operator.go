@@ -127,7 +127,7 @@ func (s *Service) checkOperatorResource(ctx context.Context, query nativeQueryer
 		_, err := readProjectAction(ctx, query, scope, r.ResourceID)
 		return err
 	case "work_item":
-		_, _, err := readNativeIssue(ctx, query, scope, r.ResourceID)
+		_, err := s.resolveOperatorNativeItem(ctx, query, scope, r.ResourceID)
 		return err
 	default:
 		return operatortool.ErrAccessDenied
