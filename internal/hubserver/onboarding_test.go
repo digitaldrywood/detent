@@ -194,11 +194,21 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 
 func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 	t.Parallel()
-	f := newBrowserHostedFixture(t, true)
+	backend := &scriptedReconcileBackend{}
+	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(cfg *Config) {
+		cfg.ReconcileBackend = backend
+	})
 	grantAppRunners(t, f)
 	runner := enrollAppRunner(t, f, "Private checkout host", "test")
 	base := browserHostedOrganizationBase + "/projects/" + f.project
 	request := map[string]any{"idempotency_key": "checkout-association", "expected_revision": "1", "repository": "Acme/Private", "source": "runner_checkout"}
+	var available ProjectIntegration
+	response := f.setupRequest(t, "owner", http.MethodGet, base+"/integration", nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &available)
+	if available.GitHubTransportAvailable == nil || *available.GitHubTransportAvailable || available.RepositoryEnabled {
+		t.Fatalf("hosted transport = %+v", available)
+	}
 
 	for _, test := range []struct {
 		name, account string
@@ -220,7 +230,7 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 	path := base + "/machines/" + string(runner.MachineID) + "/heartbeat"
 	heartbeat := map[string]any{"display_name": "Private checkout host", "capacity": 1, "version": "test", "checkout_repository": "Other/Repository"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusOK)
-	response := f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
+	response = f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
 	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 	if !strings.Contains(response.Body.String(), "matching GitHub origin") {
 		t.Fatalf("mismatch did not explain next action: %s", response.Body.String())
@@ -259,6 +269,9 @@ func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 	var count int
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM repositories").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("GitHub repository projection count = %d: %v", count, err)
+	}
+	if calls := backend.Requests(); len(calls) != 0 {
+		t.Fatalf("hosted checkout association called GitHub: %+v", calls)
 	}
 }
 

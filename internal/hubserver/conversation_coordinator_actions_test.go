@@ -18,10 +18,18 @@ import (
 
 func TestCoordinatorProjectActions(t *testing.T) {
 	for _, tool := range []string{"update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment} {
-		for _, outcome := range []string{"approve", "reject", "unauthorized", "revoked", "stale", "model approval", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"} {
+		outcomes := []string{"approve", "reject", "unauthorized", "revoked", "stale", "model approval", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
+		if tool == "update_project_integration" {
+			outcomes = append(outcomes, "transport unavailable")
+		}
+		for _, outcome := range outcomes {
 			t.Run(tool+"/"+outcome, func(t *testing.T) {
 				f := newHostedSecurityFixture(t, func(cfg *Config) {
 					cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}
+					if tool == "update_project_integration" && outcome != "transport unavailable" {
+						cfg.GitHubDisabled = false
+						cfg.ReconcileBackend = &scriptedReconcileBackend{}
+					}
 				})
 				u := f.user(t, "luna-owner", "owner", "luna@example.test", "write", "")
 				response := f.request(t, u, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "luna-issue", "title": "Original issue", "body": "Original body", "state": "Todo", "labels": []string{"original"}})
@@ -98,6 +106,13 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: raw})
 				if err != nil {
 					t.Fatal(err)
+				}
+				if outcome == "transport unavailable" {
+					if result.Success || !strings.Contains(result.Content, "runner's repository policy") {
+						t.Fatalf("unavailable integration result: %+v", result)
+					}
+					assertCoordinatorEffect(t, f, id, tool, false)
+					return
 				}
 				if outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "no write grant" || outcome == "wrong role" && tool == "update_project_integration" {
 					if result.Success || !strings.Contains(result.Content, "error") {

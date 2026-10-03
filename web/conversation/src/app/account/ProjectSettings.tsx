@@ -262,6 +262,7 @@ export function ProjectSettingsView({
   saveError,
   approveError,
   onOpenFleet,
+  onOpenSetup,
   header,
   sprites,
   workflow,
@@ -281,6 +282,7 @@ export function ProjectSettingsView({
   readonly saveError: string | null;
   readonly approveError: string | null;
   readonly onOpenFleet: () => void;
+  readonly onOpenSetup?: () => void;
   /**
    * Rendered above the screen, inside its own scroll container. The settings
    * page puts its project picker here (§17.3): two `SettingsPageContainer`s
@@ -291,6 +293,8 @@ export function ProjectSettingsView({
   readonly workflow?: React.ReactNode;
 }): React.ReactElement {
   const unbound = (integration.repository ?? "").length === 0;
+  const repository = integration.checkout_repository || integration.repository || "";
+  const transportAvailable = integration.github_transport_available !== false;
   const dirty = draftChanged(draft, draftOf(integration));
 
   return (
@@ -343,35 +347,41 @@ export function ProjectSettingsView({
       <SettingsSection title="Repository">
         <SettingsRow
           title="Repository"
-          description="The GitHub repository this project's work lands in. A binding is immutable once it exists."
+          description="The GitHub repository this project's work lands in."
           control={
-            unbound ? (
-              <span className="text-sm text-muted-foreground">Not attached</span>
+            repository === "" ? (
+              canManage && onOpenSetup ? (
+                <Button size="sm" variant="outline" onClick={onOpenSetup}>Associate runner checkout</Button>
+              ) : (
+                <span className="text-sm text-muted-foreground">Not attached</span>
+              )
             ) : (
-              <PathValue value={integration.repository ?? ""} />
+              <PathValue value={repository} />
             )
           }
         />
         <SettingsRow
           title="Repository and pull request integration"
-          help={{
+          help={transportAvailable ? {
             label: "Repository and pull request integration",
             text: "Enabling this permits repository and pull request operations, including reading, creating and merging pull requests subject to GitHub permissions and branch protections. Disabling it stops these operations but keeps the immutable repository binding. Intake and summary projection are separate settings.",
-          }}
-          description="Allow repository and pull request operations."
+          } : undefined}
+          description={transportAvailable ? "Allow repository and pull request operations." : "Hub GitHub integration is unavailable; PR landing uses the runner’s approved repository policy."}
           control={
-            <ToggleControl
-              label="Repository and pull request integration"
-              checked={draft.repositoryEnabled}
-              disabled={!canManage || unbound}
-              onCheckedChange={(repositoryEnabled) => onDraftChange({ ...draft, repositoryEnabled })}
-            />
+            transportAvailable ? (
+              <ToggleControl
+                label="Repository and pull request integration"
+                checked={draft.repositoryEnabled}
+                disabled={!canManage || unbound}
+                onCheckedChange={(repositoryEnabled) => onDraftChange({ ...draft, repositoryEnabled })}
+              />
+            ) : null
           }
         />
       </SettingsSection>
 
       <SettingsSection title="Issue flow">
-        <SettingsRow
+        {transportAvailable ? <SettingsRow
           title="Intake"
           help={{
             label: "Intake",
@@ -387,8 +397,8 @@ export function ProjectSettingsView({
               onValueChange={(intake) => onDraftChange({ ...draft, intake })}
             />
           }
-        />
-        <SettingsRow
+        /> : null}
+        {transportAvailable ? <SettingsRow
           title="Projection"
           help={{
             label: "Projection",
@@ -404,7 +414,7 @@ export function ProjectSettingsView({
               onValueChange={(projection) => onDraftChange({ ...draft, projection })}
             />
           }
-        />
+        /> : null}
         <SettingsRow
           title="Authority"
           help={{
@@ -502,7 +512,7 @@ export function ProjectSettingsRoute({
         projection: next.projection,
         repositoryEnabled: next.repositoryEnabled,
       });
-      integration.set(saved);
+      integration.set({ ...saved, github_transport_available: current.github_transport_available });
       setDraft(draftOf(saved));
       return saved;
     } catch (cause) {
@@ -526,7 +536,7 @@ export function ProjectSettingsRoute({
         repositoryEnabled: current.repository_enabled,
         states,
       });
-      integration.set(saved);
+      integration.set({ ...saved, github_transport_available: current.github_transport_available });
       globalThis.location.reload();
       return saved;
     } catch (cause) {
@@ -627,6 +637,7 @@ export function ProjectSettingsRoute({
       approveError={approve.error?.message ?? null}
       header={header}
       onOpenFleet={() => onNavigate?.("/settings/runners")}
+      onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}
       sprites={<SpritesCard key={projectId} projectId={projectId} canManage={canManage} />}
       workflow={<WorkflowSettings integration={integration.value} canManage={canManage && project?.can_write === true} saving={saveWorkflow.pending} error={saveMessage(saveWorkflow.error)} onSave={(states) => void saveWorkflow.call(states)} />}
     />

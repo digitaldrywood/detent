@@ -13,16 +13,17 @@ import (
 )
 
 type ProjectIntegration struct {
-	States             []tracker.NativeState `json:"states,omitempty"`
-	Profile            string                `json:"profile"`
-	Revision           tracker.Revision      `json:"revision,string"`
-	Intake             string                `json:"intake"`
-	Projection         string                `json:"projection"`
-	RepositoryEnabled  bool                  `json:"repository_enabled"`
-	Repository         string                `json:"repository,omitempty"`
-	CheckoutRepository string                `json:"checkout_repository,omitempty"`
-	Authority          map[string]string     `json:"authority"`
-	RepositoryID       int64                 `json:"-"`
+	States                   []tracker.NativeState `json:"states,omitempty"`
+	Profile                  string                `json:"profile"`
+	Revision                 tracker.Revision      `json:"revision,string"`
+	Intake                   string                `json:"intake"`
+	Projection               string                `json:"projection"`
+	RepositoryEnabled        bool                  `json:"repository_enabled"`
+	GitHubTransportAvailable *bool                 `json:"github_transport_available,omitempty"`
+	Repository               string                `json:"repository,omitempty"`
+	CheckoutRepository       string                `json:"checkout_repository,omitempty"`
+	Authority                map[string]string     `json:"authority"`
+	RepositoryID             int64                 `json:"-"`
 }
 
 type GitHubRequestCount struct {
@@ -63,7 +64,7 @@ FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organ
 }
 
 func (s *Service) getProjectIntegration(c echo.Context) error {
-	result, err := readProjectIntegration(c.Request().Context(), s.database.db, nativeRequestScope(c))
+	result, err := s.projectIntegration(c.Request().Context(), s.database.db, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -76,6 +77,13 @@ func (s *Service) getCutoverReceipt(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
+}
+
+func (s *Service) projectIntegration(ctx context.Context, query nativeQueryer, scope nativeScope) (ProjectIntegration, error) {
+	result, err := readProjectIntegration(ctx, query, scope)
+	available := !s.config.GitHubDisabled && s.config.ReconcileBackend != nil
+	result.GitHubTransportAvailable = &available
+	return result, err
 }
 
 type updateProjectIntegrationRequest struct {
