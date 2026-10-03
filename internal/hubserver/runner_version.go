@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/update"
@@ -19,7 +18,7 @@ func runnerClaimRefusal(minimum, reported string) string {
 	if !runnerBehind(minimum, reported) {
 		return ""
 	}
-	return fmt.Sprintf("Too old to take work, needs %s", minimum)
+	return "Too old to take work, needs " + minimum
 }
 
 func runnerVersionError(minimum, reported string) error {

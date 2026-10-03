@@ -112,7 +112,7 @@ type hostedFleetResponse struct {
 
 // hostedFleet answers GET /fleet for any member of the organization.
 func (s *Service) hostedFleet(c echo.Context) error {
-	credential, _, err := s.hostedCredential(c)
+	credential, _, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}

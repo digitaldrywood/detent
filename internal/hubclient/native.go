@@ -49,7 +49,7 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	}
 	version := strings.TrimSpace(capabilities.Version)
 	if version == "" {
-		return "", errors.New("Hub did not report its version")
+		return "", errors.New("hub did not report its version")
 	}
 	return version, nil
 }

@@ -254,6 +254,10 @@ func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
 }
 
 func New(cfg Config, deps Dependencies) (*Project, error) {
+	return NewContext(context.Background(), cfg, deps)
+}
+
+func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, error) {
 	id := normalizeProjectID(ID(cfg.Project.ID))
 	if id == "" {
 		return nil, ErrMissingProjectID
@@ -262,7 +266,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	workflow := normalizeWorkflow(cfg.Workflow)
 	workflow.Config = workflow.Config.WithAgentDefaults(cfg.Project.GlobalAgents, cfg.Project.GlobalBudget).WithWorkerDefaults(cfg.Project.GlobalWorker)
 	workflow.Config = WithMappedNativeTracker(workflow.Config, deps.Scheduling, id)
-	if err := configureProjectPolicy(context.Background(), cfg.Project, &workflow, deps.Scheduling); err != nil {
+	if err := configureProjectPolicy(ctx, cfg.Project, &workflow, deps.Scheduling); err != nil {
 		return nil, projectDefinitionError{err: err}
 	}
 	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
@@ -289,7 +293,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		}
 		connectorFactory = func(workflowconfig.Config) (connector.Connector, error) { return native, nil }
 	}
-	projectConnector, err := buildConnector(context.Background(), workflow.Config, connectorFactory, cfg.Project.Paused)
+	projectConnector, err := buildConnector(ctx, workflow.Config, connectorFactory, cfg.Project.Paused)
 	if err != nil {
 		return nil, err
 	}
@@ -309,7 +313,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if reclaimed, resolvedRoot, err := toolcache.RemoveLegacy(workflow.Config.Workspace.Root); err != nil {
+	if reclaimed, resolvedRoot, err := toolcache.RemoveLegacyContext(ctx, workflow.Config.Workspace.Root); err != nil {
 		logger.Warn("remove legacy worker caches", "workspace_root", resolvedRoot, "error", err)
 	} else if reclaimed > 0 {
 		logger.Info("removed legacy worker caches", "bytes_reclaimed", reclaimed, "workspace_root", resolvedRoot)
@@ -364,7 +368,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		return nil, err
 	}
 	releaseCoordinator := releaseBuild.coordinator
-	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(context.Background(), workflow.Config, projectConnector, connectorFactory)
+	projectRetroStore, productRetroStore, retroProductConnector, err := buildRetroIssueStores(ctx, workflow.Config, projectConnector, connectorFactory)
 	if err != nil {
 		return nil, fmt.Errorf("create project retro: %w", err)
 	}

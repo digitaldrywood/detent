@@ -382,7 +382,11 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 				t.Fatal("maintenance did not start")
 			}
 			client := &http.Client{Timeout: time.Second}
-			response, err := client.Get(dashboardURL + "/health")
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, dashboardURL+"/health", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.Do(request)
 			if err != nil {
 				t.Fatalf("health unavailable during blocked maintenance: %v", err)
 			}

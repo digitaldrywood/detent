@@ -394,7 +394,8 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 	}
 	if u.Type == AgentUpdateToolOutput && u.Tool != "tool_result" {
 		// A validation lock is a child interval, not the entire command.
-		if u.Delta == "validation_lock" {
+		switch u.Delta {
+		case "validation_lock":
 			if len(profile.Spans) >= activitySpanLimit {
 				compactActivitySpans(profile, open)
 			}
@@ -403,7 +404,7 @@ func applyActivityObservation(profile *workflowmetrics.ActivityProfile, open map
 				open[waitKey] = len(profile.Spans)
 				profile.Spans = append(profile.Spans, workflowmetrics.ActivitySpan{ID: waitKey, ParentID: key, Kind: "waiting", Evidence: "validation_lock_marker", StartedAt: observation.at, Outcome: "running", Attribution: "observed", WaitReason: "validation_lock", Repeat: 1})
 			}
-		} else if u.Delta == "validation_acquired" {
+		case "validation_acquired":
 			finishActivityWait(profile, open, key, observation.at)
 		}
 		return

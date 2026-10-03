@@ -82,6 +82,7 @@ type telemetrySnapshotPublisher interface {
 //
 // If load is nil, the default project.Load is used.
 func withRunnerFactory(
+	ctx context.Context,
 	deps project.Dependencies,
 	sessionStore runnerpkg.SessionStore,
 	load func(project.Dependencies) (*project.Project, error),
@@ -89,10 +90,11 @@ func withRunnerFactory(
 	serviceTokenSource func(string) string,
 	githubTokenSource ...func() string,
 ) project.Factory {
-	return withRunnerFactoryWithIsolation(deps, sessionStore, load, serviceConnection, serviceTokenSource, nil, githubTokenSource...)
+	return withRunnerFactoryWithIsolation(ctx, deps, sessionStore, load, serviceConnection, serviceTokenSource, nil, githubTokenSource...)
 }
 
 func withRunnerFactoryWithIsolation(
+	ctx context.Context,
 	deps project.Dependencies,
 	sessionStore runnerpkg.SessionStore,
 	load func(project.Dependencies) (*project.Project, error),
@@ -103,7 +105,7 @@ func withRunnerFactoryWithIsolation(
 ) project.Factory {
 	var hostCache atomic.Pointer[toolcache.Report]
 	return func(cfg globalconfig.Project) (*project.Project, error) {
-		workflow, err := project.LoadWorkflow(cfg)
+		workflow, err := project.LoadWorkflowContext(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("load project workflow %s: %w", cfg.ID, err)
 		}
@@ -157,7 +159,7 @@ func withRunnerFactoryWithIsolation(
 		if load != nil {
 			return load(projectDeps)
 		}
-		return project.Load(cfg, projectDeps)
+		return project.NewContext(ctx, project.Config{Project: cfg, Workflow: workflow}, projectDeps)
 	}
 }
 

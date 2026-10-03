@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -137,7 +138,7 @@ func (c *cloudDestination) comments(ctx context.Context, issue *cloudIssue) erro
 }
 
 func occurrenceKey(getenv func(string) string, j job, fingerprint string) string {
-	return issueorigin.Fingerprint(strings.Join([]string{getenv("GITHUB_REPOSITORY"), getenv("GITHUB_RUN_ID"), getenv("GITHUB_RUN_ATTEMPT"), fmt.Sprint(j.ID), j.Name, fingerprint}, ":"))
+	return issueorigin.Fingerprint(strings.Join([]string{getenv("GITHUB_REPOSITORY"), getenv("GITHUB_RUN_ID"), getenv("GITHUB_RUN_ATTEMPT"), strconv.FormatInt(j.ID, 10), j.Name, fingerprint}, ":"))
 }
 
 func occurrenceMarker(key string) string { return "<!-- detent-scheduled-occurrence:" + key + " -->" }

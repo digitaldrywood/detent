@@ -32,11 +32,10 @@ import (
 type hostedKeyMCPFixture struct {
 	hostedSecurityFixture
 	user    hostedSecurityUser
-	ctx     context.Context
 	browser func(string, string, url.Values) *httptest.ResponseRecorder
 }
 
-func newHostedKeyMCPFixture(t *testing.T, deployment, role string) hostedKeyMCPFixture {
+func newHostedKeyMCPFixture(t *testing.T, deployment, role string) (hostedKeyMCPFixture, context.Context) {
 	t.Helper()
 	var f hostedSecurityFixture
 	var shared hostedSharedFixture
@@ -71,7 +70,7 @@ func newHostedKeyMCPFixture(t *testing.T, deployment, role string) hostedKeyMCPF
 		}
 		return f.request(t, user, method, path, form)
 	}
-	return hostedKeyMCPFixture{f, user, ctx, browser}
+	return hostedKeyMCPFixture{f, user, browser}, ctx
 }
 
 func TestHostedCredentialMCP(t *testing.T) {
@@ -80,7 +79,7 @@ func TestHostedCredentialMCP(t *testing.T) {
 			for _, role := range []string{"owner", "admin", "member", "viewer"} {
 				for _, access := range []string{"default", "all", "selected", "legacy"} {
 					t.Run(deployment+"/"+transport+"/"+role+"/"+access, func(t *testing.T) {
-						f := newHostedKeyMCPFixture(t, deployment, role)
+						f, mcpCtx := newHostedKeyMCPFixture(t, deployment, role)
 						executor := hostedOperatorExecutor{f.service}
 						type reply struct {
 							Error  json.RawMessage `json:"error"`
@@ -100,7 +99,7 @@ func TestHostedCredentialMCP(t *testing.T) {
 							output, reader := io.Pipe()
 							finished := make(chan error, 1)
 							go func() {
-								finished <- mcp.NewServer(executor, "test").Serve(f.ctx, input, reader)
+								finished <- mcp.NewServer(executor, "test").Serve(mcpCtx, input, reader)
 								reader.Close()
 							}()
 							decoder := json.NewDecoder(output)
@@ -125,13 +124,13 @@ func TestHostedCredentialMCP(t *testing.T) {
 						} else {
 							handler := mcp.NewHTTPHandler(executor, "test", mcp.HTTPConfig{Principal: func(r *http.Request) operatortool.Identity { return operatortool.ConnectionIdentity(r.Context()) }})
 							t.Cleanup(func() {
-								if err := handler.Shutdown(context.WithoutCancel(f.ctx)); err != nil {
+								if err := handler.Shutdown(context.WithoutCancel(mcpCtx)); err != nil {
 									t.Error(err)
 								}
 							})
 							send = func(method, name, args string) reply {
 								t.Helper()
-								request := httptest.NewRequest(http.MethodPost, "https://hub.example.test/mcp", strings.NewReader(frame(method, name, args))).WithContext(f.ctx)
+								request := httptest.NewRequest(http.MethodPost, "https://hub.example.test/mcp", strings.NewReader(frame(method, name, args))).WithContext(mcpCtx)
 								request.Header.Set("Content-Type", "application/json")
 								request.Header.Set("Accept", "application/json, text/event-stream")
 								request.Header.Set("Mcp-Protocol-Version", mcp.ProtocolVersion)
@@ -229,7 +228,7 @@ func TestHostedCredentialMCP(t *testing.T) {
 						if receipt.Action.Status != chat.ActionPending {
 							t.Fatalf("key created without human approval: %+v", receipt)
 						}
-						human := chat.WithOperatorApproval(t.Context(), operatortool.ConnectionIdentity(f.ctx))
+						human := chat.WithOperatorApproval(t.Context(), operatortool.ConnectionIdentity(mcpCtx))
 						page := f.browser(http.MethodGet, "/chat/approval?connection_id="+receipt.Action.ConnectionID, nil)
 						requireNativeStatus(t, page, http.StatusOK)
 						var formToken string
@@ -301,9 +300,9 @@ func TestHostedCredentialMCP(t *testing.T) {
 						if len(r.Error) > 0 || r.Result.IsError {
 							t.Fatalf("revocation retry=%+v", r)
 						}
-						connection := operatortool.CurrentConnection(f.ctx)
+						connection := operatortool.CurrentConnection(mcpCtx)
 						connection.ID = "revoke-reconnected"
-						ctx := operatortool.WithConnection(f.ctx, connection)
+						ctx := operatortool.WithConnection(mcpCtx, connection)
 						if err := executor.OpenConnection(ctx); err != nil {
 							t.Fatal(err)
 						}
@@ -332,11 +331,11 @@ func TestHostedCredentialMCPAuthorityChanges(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
 		for _, scenario := range []string{"provider membership", "local membership", "provider role", "local role", "session revoked", "issuer revoked", "project grant", "key revoked", "key expired", "key grant", "foreign account", "foreign organization", "support actor", "organization switch", "other connection", "durable retry", "YOLO", "safe error", "many projects", "pending membership", "pending role", "pending grant", "pending session", "pending organization"} {
 			t.Run(deployment+"/"+scenario, func(t *testing.T) {
-				f := newHostedKeyMCPFixture(t, deployment, "owner")
+				f, mcpCtx := newHostedKeyMCPFixture(t, deployment, "owner")
 				var audit bytes.Buffer
 				f.service.config.Logger = slog.New(slog.NewTextHandler(&audit, nil))
 				e := f.service.administration
-				human := chat.WithOperatorApproval(t.Context(), operatortool.ConnectionIdentity(f.ctx))
+				human := chat.WithOperatorApproval(t.Context(), operatortool.ConnectionIdentity(mcpCtx))
 				if scenario == "YOLO" {
 					if err := e.Chat.SetConnectionMode(human, "key-connection", chat.YOLOMode); err != nil {
 						t.Fatal(err)
@@ -354,7 +353,7 @@ func TestHostedCredentialMCPAuthorityChanges(t *testing.T) {
 					}
 					call.Arguments = args
 				}
-				r, err := e.Execute(f.ctx, call)
+				r, err := e.Execute(mcpCtx, call)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -377,7 +376,7 @@ func TestHostedCredentialMCPAuthorityChanges(t *testing.T) {
 					case "pending grant":
 						operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=?", f.user.identity.Subject)
 					case "pending session":
-						operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_sessions SET revoked_at=\u0027revoked\u0027 WHERE token_hash=?", operatortool.ConnectionIdentity(f.ctx).SessionID)
+						operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_sessions SET revoked_at=\u0027revoked\u0027 WHERE token_hash=?", operatortool.ConnectionIdentity(mcpCtx).SessionID)
 					case "pending organization":
 						f.provider.mu.Lock()
 						current := f.provider.sessions[f.user.identity.Hosted.SessionID]
@@ -405,7 +404,7 @@ func TestHostedCredentialMCPAuthorityChanges(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				r, err = e.Execute(f.ctx, call)
+				r, err = e.Execute(mcpCtx, call)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -430,7 +429,7 @@ func TestHostedCredentialMCPAuthorityChanges(t *testing.T) {
 				if strings.Contains(durable, key.Token) || strings.Contains(string(conversation), key.Token) || strings.Contains(durable, apikey.HashToken(key.Token)) || strings.Contains(audit.String(), key.Token) {
 					t.Fatal("durable/browser secret leak")
 				}
-				identity := operatortool.ConnectionIdentity(f.ctx)
+				identity := operatortool.ConnectionIdentity(mcpCtx)
 				switch scenario {
 				case "provider membership":
 					if err := f.provider.RevokeMembership(t.Context(), "membership_"+f.user.identity.Subject); err != nil {
@@ -460,9 +459,9 @@ func TestHostedCredentialMCPAuthorityChanges(t *testing.T) {
 					other := f.hostedSecurityFixture.user(t, "other", "owner", "other@example.test", "write", "")
 					operatorSQL(t, f.hostedSecurityFixture, "UPDATE api_tokens SET hosted_user_id=? WHERE id=?", other.identity.Subject, key.ID)
 				case "foreign organization":
-					connection := operatortool.CurrentConnection(f.ctx)
+					connection := operatortool.CurrentConnection(mcpCtx)
 					connection.Identity.OrganizationID = "other"
-					f.ctx = operatortool.WithConnection(f.ctx, connection)
+					mcpCtx = operatortool.WithConnection(mcpCtx, connection)
 				case "support actor":
 					f.provider.mu.Lock()
 					current := f.provider.sessions[f.user.identity.Hosted.SessionID]
@@ -476,9 +475,9 @@ func TestHostedCredentialMCPAuthorityChanges(t *testing.T) {
 					f.provider.sessions[current.SessionID] = current
 					f.provider.mu.Unlock()
 				case "other connection", "durable retry":
-					c := operatortool.CurrentConnection(f.ctx)
+					c := operatortool.CurrentConnection(mcpCtx)
 					c.ID = "reconnected"
-					ctx := operatortool.WithConnection(f.ctx, c)
+					ctx := operatortool.WithConnection(mcpCtx, c)
 					if err := e.OpenConnection(ctx); err != nil {
 						t.Fatal(err)
 					}
@@ -510,17 +509,17 @@ func TestHostedCredentialMCPAuthorityChanges(t *testing.T) {
 				case "YOLO", "many projects":
 					return
 				}
-				if _, err := e.Execute(f.ctx, call); err == nil {
+				if _, err := e.Execute(mcpCtx, call); err == nil {
 					t.Fatal("stale authority delivered secret on retry")
 				}
-				if _, err := e.Execute(f.ctx, operatortool.Call{Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + receipt.Action.ID + `"}`)}); err == nil {
+				if _, err := e.Execute(mcpCtx, operatortool.Call{Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + receipt.Action.ID + `"}`)}); err == nil {
 					t.Fatal("stale action result delivered secret")
 				}
 				in, err := operatoradmin.Decode(call.Name, call.Arguments)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := e.App.Execute(f.ctx, call.Name, in, mutation.Metadata{}); err == nil {
+				if _, err := e.App.Execute(mcpCtx, call.Name, in, mutation.Metadata{}); err == nil {
 					t.Fatal("application bypassed authority")
 				}
 			})

@@ -833,22 +833,22 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	defer o.securityAuditWG.Wait()
 	defer o.releaseRunningSlots(&state)
 	o.startTick(&state, time.Now())
-	o.publishState(&state)
+	o.publishState(ctx, &state)
 	recoveryTiming := newRefreshTiming(o.logger, o.cfg.Project.ID, false)
 	recoveryTiming.message = "project startup recovery timing"
 	recoveryTiming.progress = &o.refreshProgress
 	recoveryTiming.next("recovery")
 	o.recoverDurableWorkAttempts(ctx, &state, time.Now())
 	recoveryTiming.log(ctx, ctx.Err() == nil, &state)
-	o.publishState(&state)
+	o.publishState(ctx, &state)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	initialTickAt := time.Now()
 	o.startTick(&state, initialTickAt)
 	o.tick(ctx, &state, initialTickAt)
-	o.finishTick(&state)
-	o.publishState(&state)
+	o.finishTick(ctx, &state)
+	o.publishState(ctx, &state)
 	resetTicker(ticker, state.PollInterval)
 
 	for {
@@ -859,7 +859,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			state.syncWorkerProgress()
 			o.startTick(&state, now)
 			o.tick(ctx, &state, now)
-			o.finishTick(&state)
+			o.finishTick(ctx, &state)
 			resetTicker(ticker, state.PollInterval)
 		case <-candidateChanges:
 			if state.Draining {
@@ -869,19 +869,19 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			now := o.clockNow()
 			o.startTick(&state, now)
 			o.tick(ctx, &state, now)
-			o.finishTick(&state)
+			o.finishTick(ctx, &state)
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.refreshes:
 			state.syncWorkerProgress()
 			o.startTick(&state, time.Now())
 			o.tickManual(ctx, &state, request)
-			o.finishTick(&state)
+			o.finishTick(ctx, &state)
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.reconciles:
 			state.syncWorkerProgress()
 			o.startTick(&state, time.Now())
 			o.reconcileTarget(ctx, &state, request)
-			o.finishTick(&state)
+			o.finishTick(ctx, &state)
 			resetTicker(ticker, state.PollInterval)
 		case request := <-o.capacityClearRequests:
 			state.syncWorkerProgress()
@@ -896,7 +896,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			if scheduled {
 				o.startTick(&state, request.at)
 				o.tick(ctx, &state, request.at)
-				o.finishTick(&state)
+				o.finishTick(ctx, &state)
 				resetTicker(ticker, state.PollInterval)
 			}
 		case request := <-o.trackerClearRequests:
@@ -912,7 +912,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			if result.Requested {
 				o.startTick(&state, time.Now())
 				o.tick(ctx, &state, request.at)
-				o.finishTick(&state)
+				o.finishTick(ctx, &state)
 				resetTicker(ticker, state.PollInterval)
 			}
 		case request := <-o.stopRequests:
@@ -932,9 +932,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.finishWorkspaceCleanup(&state, result)
 		case result := <-o.runResults:
 			state.syncWorkerProgress()
-			o.startCompletion(&state)
+			o.startCompletion(ctx, &state)
 			o.handleQueuedRunResults(ctx, &state, result)
-			o.publishState(&state)
+			o.publishState(ctx, &state)
 			o.completionState.Store(nil)
 			continue
 		case update := <-o.runUpdates:
@@ -958,13 +958,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.cancelPendingGlobalDispatches()
 			state.syncWorkerProgress()
 			o.startDrain(&state, request.at)
-			o.publishState(&state)
+			o.publishState(ctx, &state)
 			request.reply <- struct{}{}
 			continue
 		case request := <-o.forceRequests:
 			state.syncWorkerProgress()
 			err := o.forceQuit(request.ctx, &state, request.at)
-			o.publishState(&state)
+			o.publishState(ctx, &state)
 			request.reply <- err
 			continue
 		case request := <-o.recoveryRequests:
@@ -1004,10 +1004,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			if state.MaxConcurrentAgents > previousCapacity {
 				o.refillProjectSlots(ctx, &state, o.clockNow())
 			}
-			o.finishTick(&state)
+			o.finishTick(ctx, &state)
 			update.reply <- struct{}{}
 		}
-		o.publishState(&state)
+		o.publishState(ctx, &state)
 	}
 }
 
@@ -1036,14 +1036,14 @@ func (o *Orchestrator) startTick(state *State, at time.Time) {
 	o.tickWatchdog.Advance(at, nextRefreshAt, state.PollInterval)
 }
 
-func (o *Orchestrator) finishTick(state *State) {
+func (o *Orchestrator) finishTick(ctx context.Context, state *State) {
 	if o == nil {
 		return
 	}
 	if state != nil && state.PollInterval > 0 {
 		state.NextRefreshAt = o.clockNow().Add(state.PollInterval)
 	}
-	o.publishState(state)
+	o.publishState(ctx, state)
 	o.refreshProgress.Store(nil)
 	if o.tickWatchdog == nil || state == nil {
 		return
@@ -1051,9 +1051,9 @@ func (o *Orchestrator) finishTick(state *State) {
 	o.tickWatchdog.Schedule(state.NextRefreshAt, state.PollInterval)
 }
 
-func (o *Orchestrator) startCompletion(state *State) {
+func (o *Orchestrator) startCompletion(ctx context.Context, state *State) {
 	cloned := o.observableDispatchState(state.clone())
-	o.snapshotDispatchModes(&cloned)
+	o.snapshotDispatchModes(ctx, &cloned)
 	for id, running := range cloned.Running {
 		running.progress = nil
 		cloned.Running[id] = running
@@ -1304,12 +1304,12 @@ func (o *Orchestrator) observableDispatchState(state State) State {
 	return state
 }
 
-func (o *Orchestrator) publishState(state *State) {
+func (o *Orchestrator) publishState(ctx context.Context, state *State) {
 	if o == nil || state == nil {
 		return
 	}
 	cloned := state.clone()
-	o.snapshotDispatchModes(&cloned)
+	o.snapshotDispatchModes(ctx, &cloned)
 	o.latestRuntimeState.Store(&runtimeState{
 		WorkAttempts: cloned.WorkAttempts,
 		Running:      cloned.Running,

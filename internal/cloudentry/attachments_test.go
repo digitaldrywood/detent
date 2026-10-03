@@ -384,7 +384,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	}
 	store.mu.Unlock()
 	var audits int
-	if err := f.service.auth.store.db.QueryRow("SELECT count(*) FROM audit WHERE event IN ('attachment_uploaded','attachment_read') AND organization_id='org_alpha'").Scan(&audits); err != nil {
+	if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM audit WHERE event IN ('attachment_uploaded','attachment_read') AND organization_id='org_alpha'").Scan(&audits); err != nil {
 		t.Fatal(err)
 	}
 	if audits != 6 {
@@ -448,7 +448,7 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 		t.Fatalf("old=%v new=%v other org=%v", oldExists, newExists, betaExists)
 	}
 	f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
-	if _, err := f.service.registry.store.db.Exec("UPDATE organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='deleting' WHERE id='org_alpha'"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.finishDeletion(t.Context(), "org_alpha"); err != nil {
@@ -581,11 +581,12 @@ func exerciseAttachmentClients(t *testing.T, f entryFixture, browser, anonymous 
 				t.Fatal(err)
 			}
 			var uploaded attachment.Metadata
-			if mode == "worker" {
+			switch mode {
+			case "worker":
 				err = native.PublishValidationEvidence(t.Context(), issue.WorkItemID, tracker.Mutation{IdempotencyKey: "worker-evidence"}, []runner.ValidationEvidence{{Name: "test.png", ContentType: "image/png", Content: pixels.Bytes()}})
-			} else if mode == "API" {
+			case "API":
 				uploaded, err = native.UploadAttachment(t.Context(), bytes.NewReader(pixels.Bytes()), "test.png", "image/png")
-			} else {
+			default:
 				path := "/organizations/org_alpha/mcp"
 				headers := map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token, "Mcp-Protocol-Version": "2025-11-25"}
 				initialized := attachmentRequest(t, anonymous, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"attachment-test","version":"1"}}}`), headers)

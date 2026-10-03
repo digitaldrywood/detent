@@ -79,7 +79,10 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 		if state != "pending" || s.config.now().Sub(time.UnixMicro(at)) >= 23*time.Hour {
 			return billingDestination{}, billingFailure(http.StatusConflict, "This purchase needs billing review")
 		}
-		provider := s.config.Hosted.Billing.Provider.(billing.CreditProvider)
+		provider, ok := s.config.Hosted.Billing.Provider.(billing.CreditProvider)
+		if !ok {
+			return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "AI credit purchases are unavailable")
+		}
 		session, err = provider.CreditCheckout(ctx, billing.CreditRequest{CheckoutRequest: billing.CheckoutRequest{Binding: binding, PriceID: price, IdempotencyKey: key, ReturnURL: s.hostedBillingReturn(true), ExpiresAt: time.UnixMicro(at).Truncate(time.Second).Add(time.Hour)}, USDCents: cents})
 		if err != nil {
 			return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "Credit checkout is temporarily unavailable; retry the same purchase")
@@ -143,7 +146,11 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 		if err != nil {
 			return creditFundingInput{}, billingFailure(http.StatusConflict, "Buy credits or save a payment method in the billing portal first")
 		}
-		current, err := cfg.Provider.(billing.CreditProvider).SavedCreditPaymentMethod(ctx, binding)
+		provider, available := cfg.Provider.(billing.CreditProvider)
+		if !available {
+			return creditFundingInput{}, billingFailure(http.StatusServiceUnavailable, "AI credit purchases are unavailable")
+		}
+		current, err := provider.SavedCreditPaymentMethod(ctx, binding)
 		if err != nil && !errors.Is(err, billing.ErrPaymentFailed) {
 			return creditFundingInput{}, billingFailure(http.StatusServiceUnavailable, "The saved payment method is temporarily unavailable")
 		}

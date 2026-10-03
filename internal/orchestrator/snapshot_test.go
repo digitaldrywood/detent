@@ -46,13 +46,13 @@ func TestStateReadersCrossPublicationBoundaries(t *testing.T) {
 				state := newState(normalizeConfig(Config{}))
 				orch := &Orchestrator{done: make(chan struct{}), initialStateReady: make(chan struct{})}
 				if !tt.starting {
-					orch.publishState(&state)
+					orch.publishState(t.Context(), &state)
 				}
 				if tt.refresh {
 					orch.startTick(&state, time.Now())
 				}
 				if tt.completion {
-					orch.startCompletion(&state)
+					orch.startCompletion(t.Context(), &state)
 				}
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
@@ -83,7 +83,7 @@ func TestStateReadersCrossPublicationBoundaries(t *testing.T) {
 					case tt.stopped:
 						close(orch.done)
 					default:
-						orch.publishState(&state)
+						orch.publishState(t.Context(), &state)
 					}
 				}
 				var want error
@@ -138,15 +138,15 @@ func TestCompletionSnapshotExcludesPartialMutations(t *testing.T) {
 			state.Running[issue.ID] = Running{Issue: issue}
 			state.Claimed[issue.ID] = Claimed{Issue: issue}
 			orch := &Orchestrator{done: make(chan struct{})}
-			orch.publishState(&state)
-			orch.startCompletion(&state)
+			orch.publishState(t.Context(), &state)
+			orch.startCompletion(t.Context(), &state)
 			delete(state.Running, issue.ID)
 			state.Claimed[issue.ID].Issue.Labels[0] = "partial"
 			switch publication {
 			case "runtime":
 				orch.publishRuntimeState(&state)
 			case "full":
-				orch.publishState(&state)
+				orch.publishState(t.Context(), &state)
 			}
 			got, err := orch.State(t.Context())
 			if err != nil {
@@ -181,8 +181,8 @@ func TestCompletionSnapshotRetainsTerminalAttemptDuringHandoff(t *testing.T) {
 			state.Running[issue.ID] = failed
 			state.Running[live.Issue.ID] = live
 			state.WorkAttempts = []telemetry.WorkAttempt{{AttemptID: 5, Status: "active"}, {AttemptID: 6, Status: "active"}}
-			orch.publishState(&state)
-			orch.startCompletion(&state)
+			orch.publishState(t.Context(), &state)
+			orch.startCompletion(t.Context(), &state)
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
@@ -275,16 +275,16 @@ func TestCompletionSnapshotPreservesLiveWorkerProgress(t *testing.T) {
 				return got
 			}
 			orch := &Orchestrator{done: make(chan struct{})}
-			orch.publishState(&state)
+			orch.publishState(t.Context(), &state)
 			observe("before completion")
-			orch.startCompletion(&state)
+			orch.startCompletion(t.Context(), &state)
 			before := read(orch)
 			if before.Running[running.Issue.ID].LastMessage != "before completion" || (persisted && before.WorkAttempts[0].StatusMessage != "before completion") {
 				t.Fatal("completion snapshot omitted existing worker progress")
 			}
 			observe("during completion")
 			orch.publishRuntimeState(&state)
-			orch.publishState(&state)
+			orch.publishState(t.Context(), &state)
 			after := read(orch)
 			if after.Running[running.Issue.ID].LastMessage != "during completion" || (persisted && after.WorkAttempts[0].StatusMessage != "during completion") || before.RuntimeObservation != after.RuntimeObservation {
 				t.Fatal("completion snapshot omitted live worker progress")
@@ -296,7 +296,7 @@ func TestCompletionSnapshotPreservesLiveWorkerProgress(t *testing.T) {
 			if after.Running[running.Issue.ID].LastMessage != "during completion" {
 				t.Fatal("cloning current running state lost worker progress")
 			}
-			orch.publishState(&state)
+			orch.publishState(t.Context(), &state)
 			orch.completionState.Store(nil)
 			resumed := read(orch)
 			if resumed.Running[running.Issue.ID].LastMessage != "during completion" || (persisted && resumed.WorkAttempts[0].StatusMessage != "during completion") || !resumed.RuntimeObservation.IsZero() {
@@ -330,7 +330,7 @@ func TestStatePreservesPublishedRunningAttemptsDuringRefresh(t *testing.T) {
 				state.Running[id] = Running{Issue: connector.Issue{ID: id}}
 			}
 			orch := &Orchestrator{cfg: cfg, done: make(chan struct{})}
-			orch.publishState(&state)
+			orch.publishState(t.Context(), &state)
 			orch.startTick(&state, time.Now())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -2051,7 +2051,7 @@ func TestPromotionReadKeepsRecoveredWorkersObservable(t *testing.T) {
 				o.done = make(chan struct{})
 				state := newState(o.cfg)
 				state.LastRefreshAt = time.Now().Add(-time.Minute)
-				o.publishState(&state)
+				o.publishState(t.Context(), &state)
 				for i := range 9 {
 					id := fmt.Sprintf("recovered-%d", i)
 					running := Running{Issue: connector.Issue{ID: id, State: "In Progress"}, WorkAttemptID: int64(i + 1)}

@@ -415,7 +415,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation+"/events", nil)
 			request.AddCookie(f.cookies[tt.account])
 			c := echo.New().NewContext(request, httptest.NewRecorder())
-			credential, _, err := f.service.hostedCredential(c)
+			credential, _, err := f.service.hostedCredential(c.Request().Context(), c)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -446,7 +446,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 				tt.mutate(t, f, scope)
 			}
 			if tt.credentialStatus != 0 {
-				if _, status, err := f.service.hostedCredential(c); err == nil || status != tt.credentialStatus {
+				if _, status, err := f.service.hostedCredential(c.Request().Context(), c); err == nil || status != tt.credentialStatus {
 					t.Fatalf("credential status = %d (%v), want %d", status, err, tt.credentialStatus)
 				}
 			}

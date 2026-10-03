@@ -164,7 +164,7 @@ func runtimeEvidence(observation tracker.NativeRuntimeObservation) tracker.Nativ
 func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, generation uint64) error {
 	identity := tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}
 	if reservation := e.claim.lease.ProviderReservation; reservation != nil {
-		identity.Role, identity.Backend, identity.Model = reservation.Requirement.Role, reservation.Requirement.Backend, reservation.Requirement.Model
+		identity.Role, identity.Backend, identity.Model = reservation.Role, reservation.Backend, reservation.Model
 	}
 	if err := e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: time.Now().UTC(), Identity: agentidentity.Identity{Role: "merge", BackendKind: "git"}}); err != nil {
 		return err

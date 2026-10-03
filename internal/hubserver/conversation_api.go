@@ -591,7 +591,7 @@ func (s *Service) readableConversationProjects(ctx context.Context, scope native
 		return nil, true, nil
 	}
 	condition, grantArgs := scope.credential.projectGrantSQL("p.organization_id", "p.id")
-	query := "SELECT p.id FROM projects p WHERE p.organization_id=? AND (" + condition + ")"
+	query := strings.Join([]string{"SELECT p.id FROM projects p WHERE p.organization_id=? AND (", condition, ")"}, "")
 	args := append([]any{scope.organization}, grantArgs...)
 	rows, err := s.database.db.QueryContext(ctx, query, args...)
 	if err != nil {

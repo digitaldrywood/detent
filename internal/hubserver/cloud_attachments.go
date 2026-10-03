@@ -7,10 +7,11 @@ import (
 	"net/http"
 	"regexp"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/labstack/echo/v4"
 )
 
 const attachmentMetadataBase = nativeBase + "/attachment-metadata"

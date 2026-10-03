@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -87,7 +88,9 @@ func holdSpriteTaskWith(ctx context.Context, dial func(context.Context, string, 
 		<-done
 		release, stop := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer stop()
-		_ = call(release, http.MethodDelete, "/v1/tasks/"+name, "")
+		if err := call(release, http.MethodDelete, "/v1/tasks/"+name, ""); err != nil {
+			slog.Warn("sprite task could not be released", "error", err)
+		}
 	}, nil
 }
 

@@ -57,7 +57,7 @@ func TestNativeDispatchWaitReconnects(t *testing.T) {
 						if mode == "changes" {
 							cursor = calls
 						}
-						response.WriteString(fmt.Sprintf(`{"cursor":"generation:%d"}`, cursor))
+						fmt.Fprintf(response, `{"cursor":"generation:%d"}`, cursor)
 					}
 					return response.Result(), nil
 				})}})

@@ -132,9 +132,9 @@ func TestDispatchModeUsesPlanReviewTimelineProvenance(t *testing.T) {
 			state.Retry[issue.ID] = Retry{Issue: issue}
 			state.Blocked[issue.ID] = Blocked{Issue: issue}
 			state.Completed[issue.ID] = Completed{Issue: issue}
-			orch.publishState(&state)
+			orch.publishState(t.Context(), &state)
 			published := orch.publishedState().clone()
-			orch.startCompletion(&state)
+			orch.startCompletion(t.Context(), &state)
 			for _, observed := range []State{published, orch.publishedState()} {
 				snapshot := observed.Snapshot(at)
 				for _, row := range []telemetry.Issue{snapshot.BoardIssues[0], snapshot.Pipeline[0], snapshot.Running[0].Issue, snapshot.Queue[0].Issue, snapshot.Blocked[0].Issue, snapshot.Completed[0].Issue} {

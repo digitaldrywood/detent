@@ -320,7 +320,7 @@ func TestBillingCommandResponseLoss(t *testing.T) {
 	var credential apiCredential
 	f.service.echo.GET("/billing-command-fixture", func(c echo.Context) error {
 		var err error
-		credential, err = f.service.hostedBillingOwner(c)
+		credential, err = f.service.hostedBillingOwner(c.Request().Context(), c)
 		return err
 	})
 	requireNativeStatus(t, f.page(t, "owner", "/billing-command-fixture"), http.StatusOK)

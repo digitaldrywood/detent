@@ -168,7 +168,7 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeScope, conversationID string) (conversationRecord, error) {
 	ctx := c.Request().Context()
 	if scope.credential.Hosted != nil {
-		credential, _, err := s.hostedCredential(c)
+		credential, _, err := s.hostedCredential(c.Request().Context(), c)
 		if err != nil {
 			return conversationRecord{}, err
 		}

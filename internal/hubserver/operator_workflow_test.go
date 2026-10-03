@@ -21,7 +21,7 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
 		for _, transport := range []string{"stdio", "http"} {
 			t.Run(deployment+"/"+transport, func(t *testing.T) {
-				f := newHostedKeyMCPFixture(t, deployment, "member")
+				f, mcpCtx := newHostedKeyMCPFixture(t, deployment, "member")
 				f.grant(t, f.user, true, true)
 				states := []tracker.NativeState{
 					{Name: "Intake", Transitions: []string{"Ready"}},
@@ -39,7 +39,7 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				for _, state := range states {
 					operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", f.project, state.Name, state.Name, state.Terminal, state.Dispatchable, testTimestamp, testTimestamp)
 				}
-				send := hostedContextProtocol(t, f.service, f.ctx, transport)
+				send := hostedContextProtocol(t, f.service, mcpCtx, transport)
 				var catalog struct {
 					Tools []operatortool.Definition `json:"tools"`
 				}
@@ -182,7 +182,7 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actor_json,data_json FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1", id).Scan(&actorJSON, &dataJSON); err != nil {
 					t.Fatal(err)
 				}
-				if json.Unmarshal([]byte(actorJSON), &eventActor) != nil || eventActor.Kind != "human" || eventActor.PrincipalID != operatortool.ConnectionIdentity(f.ctx).PrincipalID || !strings.Contains(dataJSON, `"reason":"user_requested"`) {
+				if json.Unmarshal([]byte(actorJSON), &eventActor) != nil || eventActor.Kind != "human" || eventActor.PrincipalID != operatortool.ConnectionIdentity(mcpCtx).PrincipalID || !strings.Contains(dataJSON, `"reason":"user_requested"`) {
 					t.Fatalf("history actor=%s data=%s", actorJSON, dataJSON)
 				}
 				for _, table := range []string{"native_attempts", "leases", "work_events"} {
@@ -195,7 +195,7 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				if !ok {
 					t.Fatal("missing originating action")
 				}
-				ctx, scope, err := (nativeOperatorExecutor{f.service}).workflowAuthority(f.ctx, stored.Arguments)
+				ctx, scope, err := (nativeOperatorExecutor{f.service}).workflowAuthority(mcpCtx, stored.Arguments)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -208,13 +208,13 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE operation=?", nativeOperation(scope, "POST", "/work-items/"+string(id)+"/workflow")).Scan(&receipts); err != nil || receipts != 5 {
 					t.Fatalf("workflow ledger count=%d %v", receipts, err)
 				}
-				reconnected := hostedContextProtocol(t, f.service, operatortool.BindConnection(f.ctx, "workflow-reconnect", "test"), transport)
+				reconnected := hostedContextProtocol(t, f.service, operatortool.BindConnection(mcpCtx, "workflow-reconnect", "test"), transport)
 				terminal, ok := f.service.operatorChat.Action(pending.ConnectionID, pending.ID)
 				if !ok || terminal.Status != chat.ActionSucceeded {
 					t.Fatal("missing genuine terminal receipt")
 				}
 				for _, original := range []chat.Action{stored, terminal} {
-					data := hostedContextData(t, reconnected("tools/call", operatortool.MoveItem, json.RawMessage(original.Arguments)), false)
+					data := hostedContextData(t, reconnected("tools/call", operatortool.MoveItem, original.Arguments), false)
 					var receipt struct {
 						Status chat.ActionStatus   `json:"status"`
 						Data   tracker.NativeIssue `json:"data"`

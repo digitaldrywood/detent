@@ -741,7 +741,7 @@ func (s *Service) targetRelease(ctx context.Context, target string) (Release, bo
 		return Release{}, false, err
 	}
 	if release.Draft || release.TagName != tag {
-		return Release{}, false, fmt.Errorf("Hub update target %s did not resolve to its published release", tag)
+		return Release{}, false, fmt.Errorf("hub update target %s did not resolve to its published release", tag)
 	}
 	return release, true, nil
 }

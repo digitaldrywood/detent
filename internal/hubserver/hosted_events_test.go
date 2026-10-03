@@ -224,7 +224,7 @@ type hostedStreamWriter struct {
 
 func (w hostedStreamWriter) WriteHeader(status int) {
 	w.ResponseRecorder.WriteHeader(status)
-	w.headers <- w.ResponseRecorder.Result()
+	w.headers <- w.Result()
 }
 
 func (w hostedStreamWriter) Write(data []byte) (int, error) {

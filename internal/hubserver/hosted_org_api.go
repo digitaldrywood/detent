@@ -160,7 +160,7 @@ func sortHostedMembers(members []hostedMemberView) {
 // organization with its pending invitations; anybody else sees only their own
 // membership.
 func (s *Service) listHostedMembers(c echo.Context) error {
-	credential, _, err := s.hostedCredential(c)
+	credential, _, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
@@ -525,7 +525,7 @@ func (s *Service) hostedMemberByID(ctx context.Context, credential apiCredential
 // listHostedProjects answers GET /projects with the readable projects and the
 // onboarding readiness each project screen opens with.
 func (s *Service) listHostedProjects(c echo.Context) error {
-	credential, _, err := s.hostedCredential(c)
+	credential, _, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}

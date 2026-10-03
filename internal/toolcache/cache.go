@@ -121,10 +121,14 @@ func walkSize(ctx context.Context, walk func(fs.WalkDirFunc) error) (int64, erro
 // RemoveLegacy removes only the former Detent-owned cache root and returns
 // reclaimed bytes and the absolute, home-expanded workspace root.
 func RemoveLegacy(workspaceRoot string) (reclaimed int64, resolvedRoot string, err error) {
-	return removeLegacy(workspaceRoot, (*os.Root).Chmod)
+	return RemoveLegacyContext(context.Background(), workspaceRoot)
 }
 
-func removeLegacy(workspaceRoot string, chmod func(*os.Root, string, os.FileMode) error) (reclaimed int64, resolvedRoot string, err error) {
+func RemoveLegacyContext(ctx context.Context, workspaceRoot string) (reclaimed int64, resolvedRoot string, err error) {
+	return removeLegacy(ctx, workspaceRoot, (*os.Root).Chmod)
+}
+
+func removeLegacy(ctx context.Context, workspaceRoot string, chmod func(*os.Root, string, os.FileMode) error) (reclaimed int64, resolvedRoot string, err error) {
 	if strings.TrimSpace(workspaceRoot) == "" {
 		return 0, "", nil
 	}
@@ -178,7 +182,7 @@ func removeLegacy(workspaceRoot string, chmod func(*os.Root, string, os.FileMode
 	}
 	// Measure after restoring traversal permissions. An inaccessible subtree
 	// must not prevent RemoveAll from removing accessible siblings.
-	size, err := sizeFS(context.Background(), workspace.FS(), root)
+	size, err := sizeFS(ctx, workspace.FS(), root)
 	if err != nil && !os.IsPermission(err) {
 		return 0, resolved, err
 	}

@@ -113,14 +113,14 @@ func (s *Service) hostedDenied(c echo.Context, status int, message string, denia
 // still gets the organization page, which carries the chooser, create and
 // invitation guidance and the staff notice.
 func (s *Service) hostedLanding(c echo.Context) error {
-	if _, _, err := s.hostedCredential(c); err == nil {
+	if _, _, err := s.hostedCredential(c.Request().Context(), c); err == nil {
 		return s.appShell(c)
 	}
 	return s.hostedHome(c)
 }
 
 func (s *Service) hostedHome(c echo.Context) error {
-	session, _, err := s.hostedSession(c)
+	session, _, err := s.hostedSession(c.Request().Context(), c)
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 	}
@@ -135,7 +135,7 @@ func (s *Service) hostedHome(c echo.Context) error {
 		data.Notice = "Staff access is limited to account and usage metadata. Customer content requires authorized temporary support access."
 		return s.renderHosted(c, http.StatusOK, data)
 	}
-	credential, _, accessErr := s.hostedCredential(c)
+	credential, _, accessErr := s.hostedCredential(c.Request().Context(), c)
 	if accessErr != nil {
 		data.Notice = "Create your reserved organization, join with an invitation token, or switch to an organization you belong to."
 	} else {
@@ -208,7 +208,7 @@ func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data 
 }
 
 func (s *Service) hostedEvents(c echo.Context) error {
-	initial, status, err := s.hostedCredential(c)
+	initial, status, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil {
 		return c.NoContent(status)
 	}
@@ -238,7 +238,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	defer ticker.Stop()
 	var workspaceRevision int64
 	for s.ready.Load() {
-		credential, _, err := s.hostedCredential(c)
+		credential, _, err := s.hostedCredential(c.Request().Context(), c)
 		if err != nil {
 			return nil
 		}
@@ -277,7 +277,7 @@ func (s *Service) hostedMetadata(c echo.Context) error {
 			return c.NoContent(http.StatusForbidden)
 		}
 	} else {
-		session, _, err := s.hostedSession(c)
+		session, _, err := s.hostedSession(c.Request().Context(), c)
 		if err != nil || session.Identity.SupportActor != "" || !hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
 			return c.NoContent(http.StatusForbidden)
 		}
@@ -312,7 +312,7 @@ func (s *Service) hostedUsage(ctx context.Context, report HostedMetadata) (hoste
 }
 
 func (s *Service) hostedBilling(c echo.Context) error {
-	credential, err := s.hostedBillingOwner(c)
+	credential, err := s.hostedBillingOwner(c.Request().Context(), c)
 	if err != nil {
 		return s.nativeAPIError(c, auth.ErrHostedIdentity)
 	}

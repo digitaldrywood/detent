@@ -108,7 +108,7 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	if e.service.config.Hosted == nil {
 		return definitions, nil
 	}
-	definitions = append(definitions, (hostedContextExecutor{e.service}).listTools(ctx)...)
+	definitions = append(definitions, (hostedContextExecutor(e)).listTools(ctx)...)
 	for _, definition := range operatortool.BillingCatalog() {
 		kind := "billing"
 		switch definition.Name {
@@ -159,7 +159,7 @@ func safeBillingError(err error) error {
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
 	if operatortool.IsHostedContext(call.Name) {
-		return (hostedContextExecutor{e.service}).Execute(ctx, call)
+		return (hostedContextExecutor(e)).Execute(ctx, call)
 	}
 	if operatortool.IsLocalProjectTool(call.Name) {
 		return hubProjectExecutor(e).Execute(ctx, call)
@@ -528,7 +528,11 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 				return "", "", errBillingUnavailable
 			}
 			state.Customer = binding.CustomerID
-			state.SavedMethod, err = cfg.Provider.(billing.CreditProvider).SavedCreditPaymentMethod(ctx, binding)
+			provider, available := cfg.Provider.(billing.CreditProvider)
+			if !available {
+				return "", "", errBillingUnavailable
+			}
+			state.SavedMethod, err = provider.SavedCreditPaymentMethod(ctx, binding)
 			if err != nil && !errors.Is(err, billing.ErrPaymentFailed) {
 				return "", "", errBillingUnavailable
 			}
@@ -547,13 +551,13 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 
 func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.Action) (execution chat.ActionExecution, err error) {
 	if action.Kind == chat.ActionKind(operatortool.DeleteAttachment) {
-		return (nativeOperatorExecutor{service: e.service}).executeAttachmentDeletion(ctx, action)
+		return (nativeOperatorExecutor(e)).executeAttachmentDeletion(ctx, action)
 	}
 	if action.Mutation.Source == "chat" {
 		return e.service.executeCoordinatorAction(ctx, action)
 	}
 	if action.Kind == chat.ActionMoveItem {
-		return (nativeOperatorExecutor{service: e.service}).executeWorkflowTransition(ctx, action)
+		return (nativeOperatorExecutor(e)).executeWorkflowTransition(ctx, action)
 	}
 	if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
 		return (workspaceOperatorExecutor{server: e.service}).ExecuteAction(ctx, action)
@@ -583,7 +587,7 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 	identity := operatortool.ConnectionIdentity(ctx)
 	m := action.Mutation
 	bound, err := m.Bind(action.RequestID, action.Arguments)
-	if err != nil || request.RequestID != action.RequestID || m.Source != "mcp" || m.PrincipalID != identity.PrincipalID || m.OrganizationID != identity.OrganizationID || m.Action != string(action.Kind) || m.CorrelationID == "" || bound.RetryIdentity != m.RetryIdentity || bound.InputHash != m.InputHash || m.Confirmation != "approved" && m.Confirmation != "yolo" && !(action.Kind == chat.ActionKind(operatortool.CreditAutoFund) && !*request.Enabled && m.Confirmation == "none") {
+	if err != nil || request.RequestID != action.RequestID || m.Source != "mcp" || m.PrincipalID != identity.PrincipalID || m.OrganizationID != identity.OrganizationID || m.Action != string(action.Kind) || m.CorrelationID == "" || bound.RetryIdentity != m.RetryIdentity || bound.InputHash != m.InputHash || m.Confirmation != "approved" && m.Confirmation != "yolo" && (action.Kind != chat.ActionKind(operatortool.CreditAutoFund) || *request.Enabled || m.Confirmation != "none") {
 		return execution, operatortool.ErrAccessDenied
 	}
 	ctx = mutation.WithContext(ctx, m)

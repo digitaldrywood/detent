@@ -10,13 +10,14 @@ import (
 	"sync"
 	"testing"
 
+	"time"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
-	"time"
 )
 
 func TestSSHErrorRoundTrip(t *testing.T) {

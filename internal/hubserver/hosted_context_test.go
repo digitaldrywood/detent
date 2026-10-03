@@ -64,7 +64,7 @@ func hostedContextProtocol(t *testing.T, service *Service, ctx context.Context, 
 	} else {
 		handler := mcp.NewHTTPHandler(executor, "test", mcp.HTTPConfig{Principal: func(r *http.Request) operatortool.Identity { return operatortool.ConnectionIdentity(r.Context()) }})
 		t.Cleanup(func() {
-			if err := handler.Shutdown(context.WithoutCancel(t.Context())); err != nil {
+			if err := handler.Shutdown(context.WithoutCancel(ctx)); err != nil {
 				t.Error(err)
 			}
 		})
@@ -155,11 +155,11 @@ func TestHostedContextMCP(t *testing.T) {
 					if scenario == "viewer" {
 						role = "viewer"
 					}
-					f := newHostedKeyMCPFixture(t, deployment, role)
+					f, mcpCtx := newHostedKeyMCPFixture(t, deployment, role)
 					f.grant(t, f.user, true, true)
 					f.service.config.Version = "v1.2.4"
 					f.service.clientBuild = appClientBuild{Build: "client-build-sentinel"}
-					send := hostedContextProtocol(t, f.service, f.ctx, transport)
+					send := hostedContextProtocol(t, f.service, mcpCtx, transport)
 					call := func(name string, args any, denied bool) json.RawMessage {
 						return hostedContextData(t, send("tools/call", name, args), denied)
 					}
@@ -244,11 +244,12 @@ func TestHostedContextMCP(t *testing.T) {
 						return
 					}
 					if scenario == "project grant removed" || scenario == "membership removed" || scenario == "session revoked" {
-						if scenario == "project grant removed" {
+						switch scenario {
+						case "project grant removed":
 							operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=?", f.user.identity.Subject)
-						} else if scenario == "session revoked" {
+						case "session revoked":
 							operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_sessions SET revoked_at=?", formatHubTime(f.service.config.now()))
-						} else {
+						default:
 							operatorSQL(t, f.hostedSecurityFixture, "UPDATE hosted_members SET active=0 WHERE user_id=?", f.user.identity.Subject)
 						}
 						if reply := send("tools/list", "", "invalid-partial-discovery"); len(reply.Error) == 0 {
@@ -296,7 +297,7 @@ func TestHostedContextMCP(t *testing.T) {
 						return
 					}
 					if scenario == "project bound" {
-						for i := 0; i < operatortool.MaxItemLimit; i++ {
+						for range operatortool.MaxItemLimit {
 							id := newNativeID("prj")
 							operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO projects(id,organization_id,name,profile,created_at) VALUES(?,'org_security',?,'native',?)", id, id, testTimestamp)
 							operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id) VALUES(?,'org_security',?)", f.user.identity.Subject, id)
@@ -346,7 +347,7 @@ func TestHostedContextMCP(t *testing.T) {
 						call(operatortool.HostedEvents, args, true)
 						return
 					}
-					credential, err := (hubAdministration{f.service}).credential(f.ctx)
+					credential, err := (hubAdministration{f.service}).credential(mcpCtx)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -392,16 +393,16 @@ func TestHostedContextKeyProjection(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
 		for _, transport := range []string{"stdio", "http"} {
 			t.Run(deployment+"/"+transport, func(t *testing.T) {
-				f := newHostedKeyMCPFixture(t, deployment, "owner")
+				f, mcpCtx := newHostedKeyMCPFixture(t, deployment, "owner")
 				f.grant(t, f.user, true, true)
 				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO projects(id,organization_id,name,profile,created_at) VALUES('prj_private','org_security','hidden-project-sentinel','native',?)", testTimestamp)
 				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES(?,'org_security','prj_private',1,1)", f.user.identity.Subject)
 				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO token_grants(token_id,organization_id,project_id) SELECT principal_id,'org_security','prj_private' FROM hosted_members WHERE user_id=?", f.user.identity.Subject)
-				credential, err := (hubAdministration{f.service}).credential(f.ctx)
+				credential, err := (hubAdministration{f.service}).credential(mcpCtx)
 				if err != nil {
 					t.Fatal(err)
 				}
-				key, err := f.service.createHostedAPIKeyFor(f.ctx, credential, hostedKeyRequest{Name: "context-key", Scope: apikey.ScopeRead, Days: 30, ProjectAccess: hostedProjectsSelected, Projects: []string{string(f.project)}})
+				key, err := f.service.createHostedAPIKeyFor(mcpCtx, credential, hostedKeyRequest{Name: "context-key", Scope: apikey.ScopeRead, Days: 30, ProjectAccess: hostedProjectsSelected, Projects: []string{string(f.project)}})
 				if err != nil {
 					t.Fatal(err)
 				}

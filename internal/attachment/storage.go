@@ -83,7 +83,7 @@ func OrganizationPrefix(organization string) (string, error) {
 
 func validOrganization(value string) bool {
 	return value != "" && len(value) <= 128 && strings.IndexFunc(value, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-')
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
 	}) == -1
 }
 

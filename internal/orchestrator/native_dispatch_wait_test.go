@@ -72,10 +72,11 @@ func TestRunNativeCandidateWake(t *testing.T) {
 			}
 			await(source.waiting)
 			await(source.refreshed)
-			if mode == "wake" {
+			switch mode {
+			case "wake":
 				close(source.trigger)
 				await(runner.started)
-			} else if mode == "drain" {
+			case "drain":
 				drainCtx, stop := context.WithTimeout(t.Context(), 5*time.Second)
 				defer stop()
 				if err := o.Drain(drainCtx); err != nil {

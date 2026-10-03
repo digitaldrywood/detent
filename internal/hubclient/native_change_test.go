@@ -513,7 +513,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				if change == nil || !strings.Contains(change.Error+change.VersionError, test.wantDiagnostic) || change.Reviewed || change.VersionID != "" {
 					t.Fatalf("native result lost publication failure: %#v", change)
 				}
-				if change.VersionError != "" && change.VersionCode != test.versionCode && !(test.repolicy && change.VersionCode == "policy_mismatch") {
+				if change.VersionError != "" && change.VersionCode != test.versionCode && (!test.repolicy || change.VersionCode != "policy_mismatch") {
 					t.Fatalf("native result lost publication code: %#v", change)
 				}
 				h.failChanges.failDetails.Store(false)

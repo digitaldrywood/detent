@@ -85,7 +85,7 @@ func (b *executionToolTestBackend) RunTurnWithTools(ctx context.Context, request
 			b.testing.Fatalf("tool %s failed: %v", name, err)
 		}
 	}
-	return b.fakeCodexClient.RunTurn(ctx, request, update)
+	return b.RunTurn(ctx, request, update)
 }
 
 func TestRunnerExecutionReadToolsPreserveCodingAndExistingTools(t *testing.T) {

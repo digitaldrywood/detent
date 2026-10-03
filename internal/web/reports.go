@@ -10,7 +10,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -142,18 +141,6 @@ func reportsTimezone(value string) (*time.Location, error) {
 		return nil, err
 	}
 	return location, nil
-}
-
-func (s *Server) usageReportData(ctx context.Context, by store.UsageReportGroup, from time.Time, to time.Time) (templates.UsageReportData, error) {
-	report, err := s.store.UsageReport(ctx, store.UsageReportQuery{
-		By:   by,
-		From: from,
-		To:   to,
-	})
-	if err != nil {
-		return templates.UsageReportData{}, err
-	}
-	return usageReportTemplateData(usageReportResponse(report, s.pricing)), nil
 }
 
 func usageReportTemplateData(response usageReportAPIResponse) templates.UsageReportData {

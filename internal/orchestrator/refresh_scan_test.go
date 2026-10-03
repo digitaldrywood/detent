@@ -123,7 +123,7 @@ func TestRefreshScanWaitExcludedFromWatchdog(t *testing.T) {
 				if got := watchdog.Evaluate(time.Now()); got.Status != telemetry.TickLivenessStatusNeedsAttention {
 					t.Errorf("stalled work after wait = %+v", got)
 				}
-				o.finishTick(&state)
+				o.finishTick(t.Context(), &state)
 				next := state.NextRefreshAt
 				// Completing the refresh restores the ordinary cadence; the old
 				// queue wait must not postpone detection of a missed next tick.

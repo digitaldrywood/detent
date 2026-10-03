@@ -205,6 +205,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		// fill with one card per opened Files panel.
 		query += " AND " + notWorkspaceItemClause
 	}
+	var filterClauses strings.Builder
 	for _, filter := range []struct{ name, clause string }{
 		{"state", "ws.detent_state = ?"},
 		{"label", "EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE value = ?)"},
@@ -220,9 +221,10 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 			args = append(args, value)
 		}
 		if len(alternatives) > 0 {
-			query += " AND (" + strings.Join(alternatives, " OR ") + ")"
+			filterClauses.WriteString(" AND (" + strings.Join(alternatives, " OR ") + ")")
 		}
 	}
+	query += filterClauses.String()
 	workIncluded := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
 	if summary && workIncluded {
 		return tracker.NativeIssuePage{}, nativeInvalid("summary cannot include work")

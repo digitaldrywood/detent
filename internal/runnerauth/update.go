@@ -106,13 +106,16 @@ type UpdateObservation struct {
 func (o UpdateObservation) BuildRevision() string {
 	b := o.Running
 	b.ObservedAt = time.Time{}
-	raw, _ := json.Marshal(struct {
+	raw, err := json.Marshal(struct {
 		Build     BuildEvidence
 		Service   string
 		Supported bool
 		Pending   bool
 		Available string
 	}{b, o.Service, o.Supported, o.Pending, o.AvailableVersion})
+	if err != nil {
+		return ""
+	}
 	hash := sha256.Sum256(raw)
 	return hex.EncodeToString(hash[:])
 }
@@ -121,7 +124,7 @@ func (o UpdateObservation) Validate() error {
 	if !slices.Contains([]string{"unknown", "available", "up_to_date"}, o.Discovery) {
 		return errors.New("invalid update discovery evidence")
 	}
-	if o.Protocol != 1 || o.Service != "detent" || o.ObservedAt.IsZero() || o.Running.Validate() != nil || o.Revision != o.BuildRevision() || o.AvailableVersion != "" && (!updateIdentifier.MatchString(o.AvailableVersion) || o.AvailableObservedAt.IsZero()) {
+	if o.Protocol != 1 || o.Service != "detent" || o.ObservedAt.IsZero() || o.Running.Validate() != nil || !updateDigest(o.Revision) || o.Revision != o.BuildRevision() || o.AvailableVersion != "" && (!updateIdentifier.MatchString(o.AvailableVersion) || o.AvailableObservedAt.IsZero()) {
 		return errors.New("invalid installed update observation")
 	}
 	if o.Receipt != nil && o.Receipt.Validate() != nil {

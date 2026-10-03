@@ -127,9 +127,11 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				sandboxed := false
 				if runtime.GOOS == "darwin" {
 					profile := fmt.Sprintf("(version 1)(allow default)(deny file-write*)(allow file-write* (subpath %q)", mustCanonicalExistingPath(t, info.Path))
+					var allowedRoots strings.Builder
 					for _, root := range roots {
-						profile += fmt.Sprintf(" (subpath %q)", root)
+						allowedRoots.WriteString(fmt.Sprintf(" (subpath %q)", root))
 					}
+					profile += allowedRoots.String()
 					profile += ")"
 					cmd := exec.CommandContext(t.Context(), "sandbox-exec", "-p", profile, "/bin/sh", "-c", `printf 'resolved\n' > "$1/README.md" && git -C "$1" add README.md`, "resolve", info.Path)
 					output, err := cmd.CombinedOutput()

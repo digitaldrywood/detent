@@ -227,6 +227,7 @@ func TestHostedInvitationGrants(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer rows.Close()
 			var principalProjects []string
 			for rows.Next() {
 				var project string

@@ -51,11 +51,15 @@ func (c *NativeClient) Recovery(ctx context.Context, id tracker.NativeWorkItemID
 		}
 		cursor = page.NextCursor
 	}
-	result.ChangeDetail, err = c.currentChange(ctx, id)
+	detail, err := c.currentChange(ctx, id)
 	if err != nil {
 		return result, err
 	}
-	if result.ChangeDetail == nil || result.ChangeDetail.Change.CurrentVersion == "" {
+	if detail.Change.ID == "" {
+		return result, nil
+	}
+	result.ChangeDetail = &detail
+	if detail.Change.CurrentVersion == "" {
 		return result, nil
 	}
 	for _, version := range result.ChangeDetail.Versions {

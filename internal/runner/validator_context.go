@@ -30,25 +30,29 @@ func ValidationContext(issue connector.Issue, policy gate.Config) ValidatorTaskC
 	result := ValidatorTaskContext{Title: strings.TrimSpace(issue.Title), Body: normalizeValidatorText(issue.Description), MinScore: cfg.MinScore, BlockOn: slices.Clone(cfg.BlockOn)}
 	slices.Sort(result.BlockOn)
 	references := result.Body
+	workpad := ""
 	for i := len(issue.Comments) - 1; i >= 0; i-- {
 		c := issue.Comments[i]
 		if strings.Contains(c.Body, "## Codex Workpad") {
-			references += "\n" + c.Body
+			workpad = "\n" + c.Body
 			break
 		}
 	}
+	references += workpad
 	for _, url := range validatorEvidenceURL.FindAllString(references, -1) {
 		url = strings.TrimRight(url, ").,;]")
 		evidence := url
 		// Inline referenced issue comments so edits to an authoritative decision
 		// cannot hide behind an unchanged URL. Other references are immutable
 		// evidence identities to inspect during normal review, never approvals.
+		comment := ""
 		for _, c := range issue.Comments {
 			if c.URL == url {
-				evidence += "\n" + normalizeValidatorText(c.Body)
+				comment = "\n" + normalizeValidatorText(c.Body)
 				break
 			}
 		}
+		evidence += comment
 		result.Evidence = append(result.Evidence, evidence)
 	}
 	slices.Sort(result.Evidence)
@@ -57,7 +61,10 @@ func ValidationContext(issue connector.Issue, policy gate.Config) ValidatorTaskC
 }
 
 func ValidationContextDigest(issue connector.Issue, policy gate.Config) string {
-	data, _ := json.Marshal(ValidationContext(issue, policy))
+	data, err := json.Marshal(ValidationContext(issue, policy))
+	if err != nil {
+		return ""
+	}
 	sum := sha256.Sum256(append([]byte("detent-validator-context-v1\n"), data...))
 	return hex.EncodeToString(sum[:])
 }

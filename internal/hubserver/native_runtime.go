@@ -13,10 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
-	"github.com/labstack/echo/v4"
 )
 
 func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
@@ -131,6 +132,7 @@ func readNativeRuntime(ctx context.Context, query nativeQueryer, scope nativeSco
 		if err != nil {
 			return e, err
 		}
+		defer rows.Close()
 		var matches []string
 		for rows.Next() {
 			var value string
@@ -186,10 +188,13 @@ func readNativeRuntime(ctx context.Context, query nativeQueryer, scope nativeSco
 		if err != nil {
 			return e, err
 		}
+		if event.ID == "" {
+			continue
+		}
 		if kind == "workflow.transitioned" {
-			e.LatestTransition = event
+			e.LatestTransition = &event
 		} else {
-			e.LatestDecision = event
+			e.LatestDecision = &event
 		}
 	}
 	if e.LatestDecision == nil {
@@ -283,24 +288,24 @@ func readNativeRuntime(ctx context.Context, query nativeQueryer, scope nativeSco
 	return e, nil
 }
 
-func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope nativeScope, item, kind string) (*tracker.CollaborationEvent, error) {
+func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope nativeScope, item, kind string) (tracker.CollaborationEvent, error) {
 	e := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: tracker.NativeWorkItemID(item), AggregateType: "work_item"}
 	var actor, data, at string
 	err := q.QueryRowContext(ctx, "SELECT id, sequence, type, schema_version, actor_json, data_json, recorded_at FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type=? ORDER BY sequence DESC LIMIT 1", scope.organization, scope.project, item, kind).Scan(&e.ID, &e.AggregateSequence, &e.Type, &e.SchemaVersion, &actor, &data, &at)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return tracker.CollaborationEvent{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return tracker.CollaborationEvent{}, err
 	}
 	if err := json.Unmarshal([]byte(actor), &e.Actor); err != nil {
-		return nil, err
+		return tracker.CollaborationEvent{}, err
 	}
 	if err := json.Unmarshal([]byte(data), &e.Data); err != nil {
-		return nil, err
+		return tracker.CollaborationEvent{}, err
 	}
 	e.RecordedAt, err = parseTimeValue(at)
-	return &e, err
+	return e, err
 }
 
 func recordNativeSchedulingDecision(ctx context.Context, tx *sql.Tx, scope *nativeScope, id tracker.WorkItemID, ready bool, now time.Time) error {

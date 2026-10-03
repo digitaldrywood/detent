@@ -236,7 +236,7 @@ func (l *LocalGit) verifyGitHubLandingConflict(ctx context.Context, info Info, i
 	branch := githubLandingBranch(info, opts)
 	var pull githubLandingPull
 	if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "GET", fmt.Sprintf("repos/%s/pulls/%d", repository, number)); err != nil {
-		return fmt.Errorf("%w; original landing refusal: %v", err, refusal)
+		return fmt.Errorf("%w; original landing refusal: %s", err, refusal.Error())
 	}
 	if pull.Number != number || pull.State != "open" || pull.Merged || pull.MergedAt != "" ||
 		pull.Head.SHA != opts.HeadSHA || pull.Head.Ref != branch || pull.Head.Repo.FullName != repository ||

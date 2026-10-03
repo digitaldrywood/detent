@@ -124,7 +124,7 @@ func (s *Service) hostedKeyBrowser(c echo.Context) (apiCredential, error) {
 	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
-	credential, _, err := s.hostedCredential(c)
+	credential, _, err := s.hostedCredential(c.Request().Context(), c)
 	if err != nil || credential.Hosted == nil || credential.Hosted.SupportActor != "" {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}

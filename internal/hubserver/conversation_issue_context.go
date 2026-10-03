@@ -3,7 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -65,7 +65,7 @@ func (t *coordinatorToolset) readIssueHistory(ctx context.Context, record conver
 		return nil, err
 	}
 	if record.SubjectWorkItemID == "" {
-		return nil, fmt.Errorf("This conversation has no issue subject")
+		return nil, errors.New("this conversation has no issue subject")
 	}
 	allowed := []string{operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkRuns, operatortool.WorkRelationships, operatortool.WorkReferences, operatortool.WorkAttemptReceipt}
 	if !slices.Contains(allowed, args.Section) {
