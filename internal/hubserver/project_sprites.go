@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -131,6 +132,11 @@ type spriteWakeKey struct {
 	project      tracker.ProjectID
 }
 
+type spriteLifecyclePass struct {
+	done         chan struct{}
+	pendingState string
+}
+
 func (s *Service) wakeSpriteRunnersAfter(scope nativeScope, result json.RawMessage) {
 	if s.config.SecretKeys == nil {
 		return
@@ -145,26 +151,53 @@ func (s *Service) wakeSpriteRunnersAfter(scope nativeScope, result json.RawMessa
 	if err != nil || !dispatchable {
 		return
 	}
+	s.startSpriteLifecycle(scope, issue.State)
+}
+
+func (s *Service) startSpriteLifecycle(scope nativeScope, state string) {
+	if s.config.SecretKeys == nil {
+		return
+	}
 	key := spriteWakeKey{organization: scope.organization, project: scope.project}
 	s.spriteWakeMu.Lock()
 	defer s.spriteWakeMu.Unlock()
-	if s.workerContext.Err() != nil || s.spriteWakes[key] != nil {
+	if s.workerContext.Err() != nil {
 		return
 	}
-	done := make(chan struct{})
-	s.spriteWakes[key] = done
+	if active := s.spriteWakes[key]; active != nil {
+		if state != "" {
+			active.pendingState = state
+		}
+		return
+	}
+	pass := &spriteLifecyclePass{done: make(chan struct{})}
+	s.spriteWakes[key] = pass
 	s.spriteWakeWork.Add(1)
 	go func() {
 		defer s.spriteWakeWork.Done()
 		defer func() {
 			s.spriteWakeMu.Lock()
+			pending := pass.pendingState
 			delete(s.spriteWakes, key)
-			close(done)
+			close(pass.done)
 			s.spriteWakeMu.Unlock()
+			if pending != "" && s.workerContext.Err() == nil {
+				var configured int
+				if err := s.database.db.QueryRowContext(s.workerContext, `SELECT count(*) FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&configured); err == nil && configured > 0 {
+					s.startSpriteLifecycle(scope, pending)
+				}
+			}
 		}()
-		ctx, cancel := context.WithTimeout(s.workerContext, time.Minute)
+		ctx, cancel := context.WithTimeout(s.workerContext, runnerauth.MaxEnrollmentTTL)
 		defer cancel()
-		_, _ = s.wakeSpriteRunners(ctx, scope, issue.State)
+		if state != "" {
+			if _, err := s.wakeSpriteRunners(ctx, scope, state); err != nil {
+				return
+			}
+		}
+		if err := s.scaleSpritePool(ctx, scope, state != ""); err != nil && ctx.Err() == nil {
+			s.config.Logger.Warn("Sprite pool lifecycle failed", "organization", scope.organization, "project", scope.project, "error", err)
+		}
 	}()
 }
 
@@ -237,6 +270,9 @@ ORDER BY m.hostname LIMIT 1`, scope.project, flySpritesToken, scope.organization
 			return woken, err
 		}
 		if started {
+			if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_woken_at',?) WHERE organization_id=? AND hostname=? AND json_extract(capabilities_json,'$.sprite_name')=hostname`, formatHubTime(s.config.now()), scope.organization, name); err != nil {
+				return woken, err
+			}
 			woken++
 		}
 	}

@@ -136,7 +136,7 @@ func spriteWakeDone(t *testing.T, s *Service, scope nativeScope) <-chan struct{}
 	if done == nil {
 		t.Fatal("no active Sprite wake pass")
 	}
-	return done
+	return done.done
 }
 
 func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
@@ -192,7 +192,7 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 			if err := pprof.Lookup("goroutine").WriteTo(&profile, 2); err != nil {
 				t.Fatal(err)
 			}
-			retained := strings.Count(profile.String(), "hubserver.(*Service).wakeSpriteRunnersAfter.func")
+			retained := strings.Count(profile.String(), "hubserver.(*Service).startSpriteLifecycle.func")
 			f.service.spriteWakeMu.Lock()
 			active := len(f.service.spriteWakes)
 			f.service.spriteWakeMu.Unlock()

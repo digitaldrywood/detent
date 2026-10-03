@@ -45,7 +45,7 @@ type Service struct {
 	ready             atomic.Bool
 	workerContext     context.Context
 	spriteWakeMu      sync.Mutex
-	spriteWakes       map[spriteWakeKey]chan struct{}
+	spriteWakes       map[spriteWakeKey]*spriteLifecyclePass
 	spriteWakeWork    sync.WaitGroup
 	workerCancel      context.CancelFunc
 	workerDone        chan struct{}
@@ -118,7 +118,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		tracker:          workTracker,
 		config:           cfg,
 		workerContext:    workerContext,
-		spriteWakes:      make(map[spriteWakeKey]chan struct{}),
+		spriteWakes:      make(map[spriteWakeKey]*spriteLifecyclePass),
 		workerCancel:     workerCancel,
 		workerDone:       make(chan struct{}),
 		reconcileCancel:  reconcileCancel,
@@ -416,6 +416,7 @@ func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
 	if _, err := s.database.purgeWebhookPayloads(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.Warn("purge GitHub webhook payloads", "error", err)
 	}
+	s.maintainSpritePools(ctx)
 }
 
 func (s *Service) stopGitHubWebhookMaintenance() error {

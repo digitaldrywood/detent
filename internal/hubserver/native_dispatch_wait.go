@@ -76,6 +76,9 @@ func (s *Service) notifyNativeDispatch(scope nativeScope, input any) {
 		return
 	}
 	s.notifications.notify(dispatchNotificationKey(scope.organization))
+	if event, ok := input.(tracker.NativeRunEvent); ok && event.Type == "run.finished" && scope.project != "" {
+		s.startSpritePoolForQueue(scope)
+	}
 }
 
 func (s *Service) waitNativeCandidates(c echo.Context) error {
