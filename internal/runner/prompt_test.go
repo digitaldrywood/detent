@@ -63,7 +63,7 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			workflow := config.Workflow{
-				Prompt: "Keep the `## Codex Workpad` comment current and open a pull request.",
+				Prompt: "Keep the `## Codex Workpad` comment current and open a pull request. Report in_progress until a native version is published.",
 				Config: config.Config{Tracker: config.Tracker{Kind: tt.kind}},
 			}
 			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#7", State: tt.state}
@@ -82,6 +82,11 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 			for _, want := range []string{"explicit issue acceptance instructions remain authoritative", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message", "existing detent-status YAML block", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("contract missing %q", want)
+				}
+			}
+			for _, want := range []string{"assigned source deliverable is staged and ready for host finalization", "all worker-owned pre-publication requirements are met", "not that the whole issue is Done", "final report precedes the runner-owned commit and immutable Change publication", "do not report in_progress solely", "An explicitly assigned existing post-integration owner does not require a new follow-up", "For an unchanged inspection or verified already-landed result, use complete only when the issue acceptance is met"} {
+				if !strings.Contains(contract, want) {
+					t.Errorf("native source handoff contract missing %q", want)
 				}
 			}
 			if strings.Contains(contract[len("## Native completion contract"):], "\n## ") {
@@ -108,12 +113,12 @@ func TestNativePostIntegrationHandoffRequiresConfiguredOwner(t *testing.T) {
 				t.Fatal(err)
 			}
 			permitted := test.enabled && !test.planOnly
-			for _, text := range []string{"## Out-of-scope discoveries", "delegation exists only after the tool succeeds", "explicit instruction to keep the original issue open until live acceptance overrides this permission"} {
+			for _, text := range []string{"## Out-of-scope discoveries", "delegation exists only after the tool succeeds", "A future finalized head, Change version or PR remains pending host evidence", "explicit instruction to keep the original issue open until live acceptance overrides this permission"} {
 				if strings.Contains(prompt, text) != permitted {
 					t.Errorf("%q presence does not match configured permission", text)
 				}
 			}
-			for _, text := range []string{"Keep this issue open until its two-Sprite live acceptance passes.", "Report unfinished acceptance as in_progress or blocked", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
+			for _, text := range []string{"Keep this issue open until its two-Sprite live acceptance passes.", "Report unfinished acceptance as in_progress or blocked", "source readiness alone does not permit complete", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
 				if !strings.Contains(prompt, text) {
 					t.Errorf("required acceptance contract missing %q", text)
 				}
