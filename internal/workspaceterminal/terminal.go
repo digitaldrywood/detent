@@ -102,6 +102,7 @@ func newService(worktree string, shellName string, isolation string, logger *slo
 	if err != nil {
 		return nil, fmt.Errorf("resolve worktree %q: %w", worktree, err)
 	}
+	// #nosec G703 -- construction intentionally inspects the runner-assigned worktree root.
 	info, err := os.Stat(canonical)
 	if err != nil {
 		return nil, fmt.Errorf("stat worktree %q: %w", canonical, err)
@@ -210,7 +211,7 @@ func (s *Service) Open(
 	// -c and is the wrong shape for a shell that is going to read its input
 	// from a terminal.
 	//
-	// #nosec G204 -- the shell is the project's configured one, and section
+	// #nosec G204 G702 -- the shell is the project's configured one, and section
 	// 18.3 is explicit that what bounds a terminal is who may open it rather
 	// than what it may run.
 	// The command is not tied to ctx: cancellation is handled below through
@@ -276,6 +277,7 @@ func (s *Service) resolveCwd(relative string) (string, error) {
 	if !containsPath(s.worktree, joined) {
 		return "", refuse(workspacesession.CodeForbidden, fmt.Errorf("cwd %q is outside the worktree", relative))
 	}
+	// #nosec G703 -- WorkspaceRelative and the resolved containsPath check above refuse paths outside the assigned worktree.
 	info, err := os.Stat(joined)
 	if err != nil {
 		return "", refuse(workspacesession.CodeNotFound, fmt.Errorf("stat cwd %q: %w", relative, err))
