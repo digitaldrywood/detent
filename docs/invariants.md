@@ -310,6 +310,10 @@ work item, native attempt and enrolled runner under current project read grants.
 Runner credentials cannot select another runner. The bounded fixed-key snapshot
 contains ordinary REST/GraphQL HTTP and inclusive token attempt/timed counts,
 elapsed sums/maxima and actual observation times, with native landing identity.
+REST HTTP and inclusive token aggregates have empty query purposes; GraphQL
+aggregates use the existing fixed-purpose allowlist. Authenticated runtime timing
+observations preserve the landing and final completion sequence under the same
+execution authority and bounds.
 Absent observations, build identity and sub-step wall measurements remain
 explicitly unavailable; durations with no timed attempts are null. HTTP sums may
 exceed enclosing wall time, and inclusive token time can contain installation

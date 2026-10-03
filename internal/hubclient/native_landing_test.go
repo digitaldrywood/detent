@@ -234,6 +234,20 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := execution.RecordLanding(guarded, landed); err != nil {
 		t.Fatalf("recording the landing again: %v", err)
 	}
+	if github {
+		at := time.Now().UTC()
+		elapsed := int64(time.Millisecond)
+		key := tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "pull requests", Outcome: "200"}
+		scope := &tracker.NativeGitHubScope{Scope: "native_landing", StartedAt: at, ObservedAt: at, WallElapsedNS: &elapsed,
+			RESTCounts: []tracker.NativeGitHubCount{{NativeGitHubKey: key, Count: 1}},
+			Timings: []tracker.NativeGitHubTiming{
+				{NativeGitHubKey: key, Protocol: "rest", Boundary: "http_transport", AttemptCount: 1, TimedCount: 1, ElapsedSumNS: &elapsed, ElapsedMaxNS: &elapsed, FirstObservedAt: at, LastObservedAt: at},
+				{NativeGitHubKey: key, Protocol: "rest", Boundary: "token_resolution_inclusive", AttemptCount: 1, TimedCount: 1, ElapsedSumNS: &elapsed, ElapsedMaxNS: &elapsed, FirstObservedAt: at, LastObservedAt: at},
+			}}
+		if err := landing.(runner.RuntimeExecution).ObserveRuntime(guarded, tracker.NativeRuntimeObservation{HeartbeatAt: at, GitHub: scope}); err != nil {
+			t.Fatalf("observing completed REST landing timings: %v", err)
+		}
+	}
 	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, landed); err != nil {
 		t.Fatal(err)
 	}
@@ -243,6 +257,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
 	if err != nil || evidence.Attempt.Status != "succeeded" || evidence.Attempt.Runtime.Landing.MergeSHA != landed.MergeSHA || evidence.Change.Change.CurrentVersion != change.VersionID || evidence.Change.Change.Landed == nil || evidence.LatestTransition.Actor.Kind != "runner" || evidence.LatestTransition.Data.Reason != "worker_progress" || evidence.LatestDecision == nil || evidence.LatestDecision.Data.Decision.Source != "native_claim" || evidence.LatestDecision.Data.Decision.Outcome != "claimed" {
 		t.Fatalf("landed receipt=%#v err=%v", evidence, err)
+	}
+	if github && (evidence.Attempt.Runtime.GitHub == nil || len(evidence.Attempt.Runtime.GitHub.Timings) != 2 || evidence.Attempt.Runtime.GitHub.Timings[0].QueryPurpose != "") {
+		t.Fatalf("completed REST timing receipt = %#v", evidence.Attempt.Runtime.GitHub)
 	}
 	if state := h.state(t, issue.ID); state != "Done" {
 		t.Fatalf("after landing the item is in %s, want Done", state)
