@@ -41,6 +41,14 @@ sets `go test -p`, `GOMAXPROCS` for the test binaries, `golangci-lint
 usable for the others. Raise it for a solo run with `TEST_PROCS=8 make test`.
 Plain `go test ./...` outside `make` has no cap.
 
+Scheduled Windows portability runs the Hub suite through
+`make test-hub-portability`, reusing the same three exhaustive, disjoint
+partitions as the race targets with four parallel tests and a ten-minute budget
+per partition. The remaining package selection excludes Hubserver and workspace,
+which have already run separately. Evidence for each Hub partition is included
+in the existing Windows test artifact. Test selection and individual deadlines
+remain unchanged.
+
 Portability Stress is a manually dispatched macOS/Windows diagnostic workflow.
 Its suites run on separate hosted runners through
 `bash scripts/portability-stress.sh <suite>`, with `GOMAXPROCS=4`, bounded test

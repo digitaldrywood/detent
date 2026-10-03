@@ -359,10 +359,11 @@ jobs:
         shell: bash
         run: |
           bash scripts/test-workspace.sh -parallel 4 -output tmp/windows-test-evidence/workspace
+          make test-hub-portability
           go list ./... > tmp/windows-packages.txt
           packages=()
           while IFS= read -r package; do
-            if [ "$package" != github.com/digitaldrywood/detent/internal/workspace ]; then
+            if [ "$package" != github.com/digitaldrywood/detent/internal/workspace ] && [ "$package" != github.com/digitaldrywood/detent/internal/hubserver ]; then
               packages+=("$package")
             fi
           done < tmp/windows-packages.txt
