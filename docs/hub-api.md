@@ -649,6 +649,17 @@ remain unavailable without actual evidence. `explain_item` projects observed
 refusals separately from historical scheduler decisions. An older Hub retains its
 existing runtime read with runner-specific selection unavailable.
 
+With `native_admission_observation`, the existing registered-runner heartbeat
+accepts an optional bounded `admission` observation containing `context` and the
+`runner_revision` captured when that context was published. The Hub stamps
+`received_at` and stores the observation in existing machine metadata under the
+authenticated runner and project. Hosted `explain_item` reads that observation
+without accepting operator-supplied selectors. Current routing revision and
+approved policy must match, and both original selector and server receipt times
+must be fresh under the existing heartbeat window. Omitted observations do not
+freshen existing selectors; missing, mismatched or expired observations remain
+unavailable. Runner grants and machine identity remain authoritative.
+
 `GET /work-items/{item}/runtime/github-timings` requires both
 `native_attempt_id` and `runner_id`. The MCP work-read operation
 `github_scope_timings` takes those same selectors plus `project_id` and

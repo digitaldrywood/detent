@@ -49,6 +49,7 @@ type Scheduler struct {
 	updateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
 	localChecks           map[string]runnerauth.LocalChecks
+	nativeAdmissions      map[string]tracker.NativeAdmissionObservation
 	githubDiscovery       func(context.Context, tracker.GitHubDiscovery) (tracker.GitHubDiscoveryPage, error)
 	githubIntake          func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	problems              func() []runnerauth.Problem
@@ -99,6 +100,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		capacityConfiguration: config.CapacityConfiguration,
 		updateOwner:           config.UpdateOwner,
 		localChecks:           config.LocalChecks,
+		nativeAdmissions:      make(map[string]tracker.NativeAdmissionObservation),
 		githubIntake:          config.GitHubIntake,
 		githubDiscovery:       config.GitHubDiscovery,
 		problems:              config.Problems,

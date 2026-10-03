@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1809,7 +1810,8 @@ func TestAuthorizationFilterHintUsesTopLevelSelectorFields(t *testing.T) {
 			got := authorizationFilterHint(tt.auth, tt.ctx)
 			assertIssueFilterHint(t, got, tt.want)
 			now := time.Date(2026, 10, 3, 10, 41, 57, 0, time.UTC)
-			o := &Orchestrator{cfg: normalizeConfig(Config{ActiveStates: []string{"Todo"}, Authorization: tt.auth, SelectorContext: tt.ctx}), now: func() time.Time { return now }}
+			observer := &hubSchedulingSource{}
+			o := &Orchestrator{cfg: normalizeConfig(Config{ActiveStates: []string{"Todo"}, Authorization: tt.auth, SelectorContext: tt.ctx}), scheduling: observer, now: func() time.Time { return now }}
 			o.cfg.Policy.ID = "policy_current"
 			if _, observed := o.NativeAdmissionContext(); observed {
 				t.Fatal("unpublished selectors became current admission context")
@@ -1818,7 +1820,7 @@ func TestAuthorizationFilterHintUsesTopLevelSelectorFields(t *testing.T) {
 			o.publishState(t.Context(), &state)
 			o.cfg.Authorization.Labels.Exclude = []string{"replacement"}
 			current, observed := o.NativeAdmissionContext()
-			if !observed || current.PolicyID != "policy_current" || !current.ObservedAt.Equal(now) || !slices.Equal(current.WorkflowStates, []string{"todo"}) {
+			if !observed || !reflect.DeepEqual(observer.admission, current) || current.PolicyID != "policy_current" || !current.ObservedAt.Equal(now) || !slices.Equal(current.WorkflowStates, []string{"todo"}) {
 				t.Fatalf("admission context lost publication identity: %#v", current)
 			}
 			assertIssueFilterHint(t, connector.IssueFilterHint{Authors: current.Authors, Assignees: current.Assignees, LabelInclude: current.LabelInclude, LabelExclude: current.LabelExclude}, tt.want)

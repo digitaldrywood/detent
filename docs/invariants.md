@@ -320,8 +320,13 @@ pagination, redaction and refusal regressions cover these boundaries.
 Native admission explanation (#253) evaluates the same bounded claim candidate
 query and current registered-runner routing/capacity owners without writing a
 lease or scheduler event. The runner supplies its published selector context and
-observation time through the existing runtime read under its current project
-grant and approved policy identity. Per-runner snapshot refusals retain existing
+observation time through the existing runtime read and registered heartbeat under
+its current project grant and approved policy identity. Heartbeat observations
+use existing machine metadata namespaced by authenticated runner and project,
+preserving other metadata. Hosted MCP reads require the observed routing revision
+and approved policy to match the current runner, with both original selector and
+server receipt times inside the existing heartbeat freshness window. An unrelated
+heartbeat cannot refresh an old selector observation. Per-runner snapshot refusals retain existing
 codes, runner revision, source and freshness; they are distinct from recorded
 scheduler history. Missing request selectors, provider model requirements or home
 selection remain unavailable rather than inferred from labels or issue prose.

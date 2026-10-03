@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestHubSchedulingCycle(t *testing.T) {
@@ -407,6 +408,7 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 }
 
 type hubSchedulingSource struct {
+	admission  tracker.NativeAdmissionContext
 	execution  runpkg.Execution
 	issues     []connector.Issue
 	request    SchedulingRequest
@@ -415,6 +417,10 @@ type hubSchedulingSource struct {
 	fetches    int
 	adoptions  int
 	releases   int
+}
+
+func (s *hubSchedulingSource) ObserveNativeAdmission(_ string, current tracker.NativeAdmissionContext) {
+	s.admission = current
 }
 
 func (s *hubSchedulingSource) RunExecution(string) runpkg.Execution { return s.execution }

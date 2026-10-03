@@ -177,20 +177,21 @@ func recordRunnerEvent(ctx context.Context, tx *sql.Tx, runner, actor, kind stri
 
 func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 	var request struct {
-		SpriteName       string                        `json:"sprite_name,omitempty"`
-		Update           *runnerauth.UpdateObservation `json:"update,omitempty"`
-		CapacityConfig   *runnerauth.CapacityConfig    `json:"capacity_configuration,omitempty"`
-		LocalChecks      *runnerauth.LocalChecks       `json:"local_checks,omitempty"`
-		Problems         []runnerauth.Problem          `json:"problems"`
-		ProtocolMajor    int                           `json:"protocol_major,omitempty"`
-		SettingsRejected bool                          `json:"settings_rejected,omitempty"`
-		BackendIsolation isolation.Report              `json:"backend_isolation,omitempty"`
-		ProviderReports  []providercapacity.Report     `json:"provider_reports,omitempty"`
-		DisplayName      string                        `json:"display_name"`
-		Capacity         int                           `json:"capacity"`
-		Version          string                        `json:"version"`
-		OS               string                        `json:"os,omitempty"`
-		Architecture     string                        `json:"architecture,omitempty"`
+		Admission        *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
+		SpriteName       string                              `json:"sprite_name,omitempty"`
+		Update           *runnerauth.UpdateObservation       `json:"update,omitempty"`
+		CapacityConfig   *runnerauth.CapacityConfig          `json:"capacity_configuration,omitempty"`
+		LocalChecks      *runnerauth.LocalChecks             `json:"local_checks,omitempty"`
+		Problems         []runnerauth.Problem                `json:"problems"`
+		ProtocolMajor    int                                 `json:"protocol_major,omitempty"`
+		SettingsRejected bool                                `json:"settings_rejected,omitempty"`
+		BackendIsolation isolation.Report                    `json:"backend_isolation,omitempty"`
+		ProviderReports  []providercapacity.Report           `json:"provider_reports,omitempty"`
+		DisplayName      string                              `json:"display_name"`
+		Capacity         int                                 `json:"capacity"`
+		Version          string                              `json:"version"`
+		OS               string                              `json:"os,omitempty"`
+		Architecture     string                              `json:"architecture,omitempty"`
 		// WorkspaceCapabilities and WorkspaceIsolation are what this runner
 		// can serve for a workspace session (decisions section 18.10). They
 		// ride the heartbeat beside the provider reports because the claim
@@ -235,6 +236,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 				if count != 1 {
 					return nil, nativeInvalid("Sprite name must match the runner hostname")
 				}
+			}
+			if err := storeRunnerAdmissionObservation(ctx, tx, scope, request.Admission, now); err != nil {
+				return nil, err
 			}
 			if err := storeRunnerUpdateObservation(ctx, tx, scope, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
@@ -290,6 +294,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			}
 			snapshot.GitHubIntake, err = readGitHubBatchTask(ctx, tx, scope)
 			return snapshot, err
+		}
+		if request.Admission != nil {
+			return nil, nativeInvalid("Admission observations require an enrolled runner")
 		}
 		if request.Update != nil {
 			return nil, nativeInvalid("Update evidence requires an enrolled runner")

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 func updateRunnerIsolationReport(ctx context.Context, tx *sql.Tx, scope nativeScope, report isolation.Report) error {
@@ -29,6 +30,10 @@ func validateRunnerIsolation(ctx context.Context, tx nativeQueryer, scope native
 	if err != nil {
 		return err
 	}
+	return validateReadRunnerIsolation(ctx, tx, scope, runner)
+}
+
+func validateReadRunnerIsolation(ctx context.Context, tx nativeQueryer, scope nativeScope, runner runnerauth.Runner) error {
 	var encoded string
 	if err := tx.QueryRowContext(ctx, "SELECT backend_isolation_json FROM runner_identities WHERE id = ? AND organization_id = ?", runner.RunnerID, scope.organization).Scan(&encoded); err != nil {
 		return err
