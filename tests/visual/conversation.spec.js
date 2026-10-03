@@ -1329,7 +1329,7 @@ test.describe("decisions.md §10 corrections", () => {
     await chat.focus();
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(/\/chat$/);
-    await expectOneHeadingOne(page, "What should we build in");
+    await expectOneHeadingOne(page, "Choose a project to start");
     await expect(composer(page)).toBeFocused();
 
     const work = list.getByTestId("nav-work");
