@@ -43,6 +43,7 @@ type deferredCompletion struct {
 	Availability        deferredCompletionAvailability `json:"availability"`
 	DeliverableRecovery *deferredDeliverableRecovery   `json:"deliverable_recovery,omitempty"`
 	ForgeAvailability   *forgeWaitMetadata             `json:"worker_forge_availability,omitempty"`
+	GitHubRESTQuota     *github.StatusError            `json:"github_rest_quota,omitempty"`
 	Persisted           bool                           `json:"-"`
 }
 
@@ -90,6 +91,14 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 		RetryAttempt:      event.RetryAttempt,
 		RetryDelay:        event.RetryDelay,
 		DeferredAt:        deferredAt,
+	}
+	// Error interfaces do not round-trip through JSON. Retain actual quota
+	// response evidence so completion replay uses the same capacity owner.
+	var quota *github.StatusError
+	if errors.Is(event.Err, github.ErrRateLimited) && errors.As(event.Err, &quota) && quota != nil {
+		copy := *quota
+		copy.Err = nil
+		record.GitHubRESTQuota = &copy
 	}
 	record.ForgeAvailability = &forgeWaitMetadata{}
 	if fenceErr != nil {
@@ -171,6 +180,11 @@ func (r deferredCompletion) completion() runpkg.Completion {
 	}
 	if strings.TrimSpace(r.Error) != "" {
 		event.Err = errors.New(r.Error)
+	}
+	if r.GitHubRESTQuota != nil {
+		quota := *r.GitHubRESTQuota
+		quota.Err = errors.Join(github.ErrRateLimited, event.Err)
+		event.Err = &quota
 	}
 	workerAvailabilityKnown := r.ForgeAvailability != nil && (*r.ForgeAvailability == (forgeWaitMetadata{}) || validForgeAvailabilityClass(r.ForgeAvailability.ErrorClass))
 	if r.DeliverableRecovery != nil {

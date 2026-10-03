@@ -1595,7 +1595,16 @@ attempt allowance. Native REST quota completion calls the existing terminal
 claim-release owner to publish a prepared Finish and release the durable lease
 before recording its ordinary retry. A local wait cannot substitute for that
 settlement; `TestNativeLandingQuotaWait` retains its release assertion and also
-checks that no local claim remains. No new wait or recovery mechanism is added. Native coding and completions that need no exhausted GitHub
+checks that no local claim remains. Unavailable native Finish publication retains
+completion ownership through the existing completion-deferral path; it neither
+writes a terminal capacity attempt nor schedules ordinary landing retry until
+publication and lease release settle. The same quota matrix covers unavailable
+publication and recovery of its exact reviewed identity through persisted JSON,
+including typed quota evidence and response accounting without replay duplication.
+Settlement validates the existing execution authority. A fresh scheduler lacking
+the original publisher follows existing authority-loss rejection, never treating
+an absent cached claim as evidence that Finish or lease release succeeded. No new wait or recovery
+mechanism is added. Native coding and completions that need no exhausted GitHub
 operation continue normally. Pre-claim readiness, dispatch, retry and completion
 share the existing current-stage REST dependency decision (#150). Historical
 retry capacity scope is retained as evidence, not an independent applicability
