@@ -645,6 +645,12 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
 			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2}
 		}},
+		{name: "io pressure hold refuses readiness before a claim", state: "Merging", native: true, setup: func(s *State, issue connector.Issue) {
+			s.IOPressure.DispatchHeld = true
+		}},
+		{name: "memory pressure hold refuses readiness before a claim", state: "Todo", native: true, setup: func(s *State, issue connector.Issue) {
+			s.MemoryPressure.DispatchHeld = true
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, MaxConcurrentAgentsByState: map[string]int{"Merging": 1}, ActiveStates: []string{"Merging", "Rework", "Todo"}, TerminalStates: []string{"Done"}, Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets"})

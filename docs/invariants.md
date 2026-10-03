@@ -1801,6 +1801,11 @@ The lease-scoped Sprite hold re-scopes the existing job keep-awake onto the
 existing native claim owner; it adds no wake path, timer, configuration or
 reason code, and the wake pass keeps owning work that arrives while a Sprite
 is asleep.
+A host pressure hold is evaluated by the existing pre-claim readiness owner,
+so a held dispatch takes no Hub lease it would release in the same tick (the
+staging Sprite recorded 107 claim and release cycles in three minutes under
+an I/O hold). The dispatch stage keeps its own hold check; nothing is added.
+`TestHubSchedulingReadinessBeforeClaim` covers the I/O and memory hold cases.
 
 Native workflow MCP parity (#219) consolidates hosted requests under the existing
 workflow application command and connection approval service. It adds no lane
