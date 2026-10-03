@@ -43,11 +43,11 @@ test("header and keyboard open the private Ask tab", async ({ page }) => {
   await expect(panel(page)).toContainText(
     "Private · Never posted to the issue",
   );
-  await page
-    .getByRole("button", { name: "Conversation", exact: true })
-    .first()
-    .click();
+  await page.getByTestId("issue-resources")
+    .getByRole("button", { name: /^Conversation/ }).click();
   await expect(page.getByTestId("conversation-surface")).toBeVisible();
+  // The shortcut applies outside the composer's editable focus.
+  await page.getByRole("heading", { name: "Renew the lease before the handoff completes", exact: true, level: 1 }).click();
   await page.keyboard.press("a");
   await expect(panel(page)).toBeVisible();
 });

@@ -48,7 +48,7 @@ function watchConsole(page) {
 async function evidence(page, name) {
   fs.mkdirSync(EVIDENCE, { recursive: true });
   await page.waitForFunction(() =>
-    document.getAnimations().every((animation) => animation.playState !== "running"),
+    document.getAnimations().every((animation) => animation.playState !== "running" || animation.effect?.getTiming().iterations === Infinity),
   );
   await page.screenshot({ path: path.join(EVIDENCE, `${name}.png`), animations: "disabled" });
 }
