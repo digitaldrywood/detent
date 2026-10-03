@@ -3,6 +3,8 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -48,6 +50,9 @@ func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope nati
 	if err != nil {
 		return chat.Action{}, hubSafeChangeError(err)
 	}
+	if err := validateNativeWorkflowTransition(project.States, issue.State, request.TargetState, scope.credential.Scope); err != nil {
+		return chat.Action{}, err
+	}
 	action := chat.Action{Kind: chat.ActionMoveItem, NativeWorkflow: true, ProjectID: request.ProjectID, IssueID: string(issue.WorkItemID), Identifier: request.Identifier, CurrentState: issue.State, TargetState: request.TargetState, Revision: request.ExpectedRevision, Title: issue.Title}
 	for _, state := range project.States {
 		if state.Name == issue.State || state.Name == request.TargetState {
@@ -66,12 +71,12 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	action, err := e.workflowProposal(ctx, scope, request)
+	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Identifier)
 	if err != nil {
-		return operatortool.Result{}, err
+		return operatortool.Result{}, hubSafeChangeError(err)
 	}
-	request.Identifier = action.IssueID
-	action.Identifier = request.Identifier
+	request.Identifier = string(issue.WorkItemID)
+	action := chat.Action{Kind: chat.ActionMoveItem, NativeWorkflow: true, ProjectID: request.ProjectID, IssueID: request.Identifier, Identifier: request.Identifier}
 	var arguments json.RawMessage
 	arguments, err = json.Marshal(request)
 	if err != nil {
@@ -106,6 +111,12 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 		outcome = "replayed"
 		return e.workflowReceipt(replay)
 	}
+	proposal, err := e.workflowProposal(ctx, scope, request)
+	if err != nil {
+		return operatortool.Result{}, hubSafeChangeError(err)
+	}
+	proposal.RequestID, proposal.Arguments, proposal.Mutation = action.RequestID, action.Arguments, action.Mutation
+	action = proposal
 	if e.service.config.Hosted == nil {
 		if chat.RequiresConfirmation(action) {
 			return operatortool.Result{}, operatortool.ErrServiceUnavailable
@@ -151,7 +162,7 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 	}
 	current, err := e.workflowProposal(ctx, scope, request)
 	if err != nil {
-		return chat.ActionExecution{}, err
+		return workflowExecutionFailure(err)
 	}
 	if current.Material && m.Confirmation != "approved" && m.Confirmation != "yolo" {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
@@ -159,11 +170,26 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 	ctx = mutation.WithContext(ctx, m)
 	raw, err := e.service.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested"})
 	if err != nil {
-		return chat.ActionExecution{}, hubSafeChangeError(err)
+		return workflowExecutionFailure(err)
 	}
 	var issue tracker.NativeIssue
 	if err := json.Unmarshal(raw, &issue); err != nil {
 		return chat.ActionExecution{}, operatortool.ErrServiceUnavailable
 	}
 	return chat.ActionExecution{Message: string(raw), ResourceID: string(issue.WorkItemID), Identifier: request.Identifier, Revision: int64(issue.Revision)}, nil
+}
+
+func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
+	safe := hubSafeChangeError(err)
+	message := safe.Error()
+	var failure *nativeError
+	if errors.As(err, &failure) {
+		switch {
+		case failure.status == http.StatusUnprocessableEntity && failure.Code == "transition_not_allowed":
+			message = "Workflow transition is not allowed"
+		case failure.status == http.StatusConflict && failure.Code == "revision_conflict":
+			message = "Resource has changed"
+		}
+	}
+	return chat.ActionExecution{Message: message}, safe
 }
