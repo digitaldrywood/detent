@@ -72,7 +72,7 @@ func TestNativeIssueWebURL(t *testing.T) {
 		prefix string
 	}{
 		{"local", ""},
-		{"hosted", "https://cloud.detent.build/work/i/"},
+		{"hosted", "http://127.0.0.1:7777/work/i/"},
 		{"shared", "https://hub.example.test/organizations/org_security/work/i/"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -87,9 +87,7 @@ func TestNativeIssueWebURL(t *testing.T) {
 					return performHubAPIRequest(t, f.service, method, "https://untrusted.example"+path, f.token, body)
 				}
 			case "hosted":
-				f := newHostedSecurityFixture(t, func(cfg *Config) {
-					cfg.Hosted.PublicURL = "https://cloud.detent.build"
-				})
+				f := newHostedSecurityFixture(t)
 				owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 				base = f.base
 				request = func(method, path string, body any) *httptest.ResponseRecorder {
