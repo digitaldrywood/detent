@@ -29,7 +29,17 @@ ordinary/YOLO success, approved replay, rejection and provider failure.
 
 Native acceptance (native #233) uses the existing `detent-status` schema in the
 authenticated attempt's final DB report, not provider execution success or prose
-classification. The host remains the only comment and lane writer. Typed
+classification. The host remains the only comment and lane writer. The native Code/Rework
+prompt defines `complete` for source-changing work as the assigned source staged
+and ready for host finalization with worker-owned pre-publication requirements
+met. The final report precedes host commit and immutable Change publication;
+those pending host effects alone are not additional worker implementation or a
+whole-issue Done claim. Explicit pre-merge evidence, human decisions, keep-open
+live acceptance and successful permitted delegation retain their authority.
+Unchanged inspections and already-landed results still require actual acceptance.
+`TestBuildPromptNativeCompletionContract` and
+`TestNativePostIntegrationHandoffRequiresConfiguredOwner` preserve this prompt
+boundary without changing typed completion or landing enforcement. Typed
 unfinished or blocked acceptance cannot auto-land or end an item merely because
 the turn succeeded or changed no files. A missing or invalid unchanged report
 uses the existing configured review handoff with successful-turn cost and claim
