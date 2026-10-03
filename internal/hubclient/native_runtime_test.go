@@ -23,7 +23,8 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 	at := time.Now().UTC()
 	profile := workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 2, SessionID: 43, Stage: "implementation", Status: "running", Coverage: "partial", StartedAt: at, AsOf: at}
-	observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "implementation", HeartbeatAt: at, Activity: &profile}
+	observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "implementation", HeartbeatAt: at, Activity: &profile,
+		GitHub: &tracker.NativeGitHubScope{Scope: "native_landing", StartedAt: at, ObservedAt: at}}
 	if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
 		t.Fatal(err)
 	}
@@ -35,6 +36,9 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 		evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
 		if err != nil || evidence.Attempt == nil || evidence.Attempt.Sequence != sequence {
 			t.Fatalf("attempt=%+v, err=%v, want sequence=%d", evidence.Attempt, err, sequence)
+		}
+		if evidence.Attempt.Runtime.GitHub == nil || evidence.Attempt.Runtime.GitHub.Scope != "native_landing" || evidence.Attempt.Runtime.GitHub.ObservedAt != at {
+			t.Fatalf("runtime update lost GitHub observation: %#v", evidence.Attempt.Runtime)
 		}
 		events, err := h.admin.History(t.Context(), item, "")
 		if err != nil {
@@ -52,6 +56,7 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 		return evidence
 	}
 	for range 128 {
+		observation.GitHub = nil
 		profile.AsOf = profile.AsOf.Add(time.Second)
 		observation.HeartbeatAt = profile.AsOf
 		if err := execution.ObserveRuntime(t.Context(), observation); err != nil {

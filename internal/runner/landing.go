@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -51,6 +52,14 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	options := workspace.LandOptions{HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External}
 	var result workspace.LandResult
 	if target.GitHubPullRequest {
+		scope := connector.RESTScopeFromContext(ctx)
+		if scope == nil {
+			started := time.Now()
+			scope = &connector.RESTScope{Name: "native_landing", ProjectID: r.projectID}
+			ctx = connector.WithRESTScope(ctx, scope)
+			defer func() { runResult.GitHubScope = nativeGitHubScope(scope, started) }()
+		}
+		scope.Set("merging", "land")
 		githubLander, supported := backend.(workspace.GitHubPRLander)
 		if !supported {
 			return RunResult{}, errors.New("workspace backend cannot land through a GitHub pull request")

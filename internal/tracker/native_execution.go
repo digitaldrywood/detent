@@ -70,6 +70,7 @@ type NativeRuntimeObservation struct {
 	Activity       *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
 	Landing        *NativeLandingReceipt            `json:"landing,omitempty"`
 	REST           *NativeRESTEvidence              `json:"rest,omitempty"`
+	GitHub         *NativeGitHubScope               `json:"github,omitempty"`
 }
 
 func (r *NativeRuntimeObservation) WithoutActivitySpans() *NativeRuntimeObservation {

@@ -635,6 +635,27 @@ returns not found. An item with no recorded attempt returns explicit unavailable
 evidence. Older deployments return unsupported availability separately from
 grant denial.
 
+`GET /work-items/{item}/runtime/github-timings` requires both
+`native_attempt_id` and `runner_id`. The MCP work-read operation
+`github_scope_timings` takes those same selectors plus `project_id` and
+`reference`. Both reuse current project read grants and recorded attempt/runner
+ownership; runner credentials cannot select another runner. Reads inspect stored
+runtime evidence and make no GitHub or provider calls.
+
+Naturally completed native PR landings record at most 128 REST count keys and
+128 timing keys, with dropped-key counts, scope and observation timestamps,
+stage/step, endpoint family, protocol, query purpose, outcome, attempt/timed
+counts and nanosecond sums/maxima. The response includes the recorded native
+Change/version/head/merge identity. HTTP covers Do, body consumption and Close;
+token resolution is inclusive and can contain installation HTTP. Concurrent HTTP
+sums can exceed enclosing scope wall time. These values do not establish
+disjoint elapsed time, busy-wall, critical path, percentages or savings.
+Untimed durations are null; absent boundaries, build identity and sub-step wall
+timing have explicit unavailable coverage. This projection contains no raw URLs,
+queries, commands, prompts, credentials or credential attribution hashes.
+Historical receipts without timing snapshots remain unavailable; this read does
+not revive the retired legacy GitHub tracker refresh or satisfy its comparison.
+
 The typed snapshot includes the current native item, authentic last workflow
 transition and recorded scheduler decision, current Change readiness and
 enrolled runner routing/host/provider capacity. A current fenced lease is shown

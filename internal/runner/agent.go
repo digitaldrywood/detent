@@ -1560,6 +1560,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		workspaceIssue.Landing = &workspace.LandOptions{HeadSHA: landingTarget.HeadSHA, Repository: landingTarget.Repository, External: landingTarget.External}
 		if landingTarget.GitHubPullRequest {
+			started := time.Now()
+			scope := &connector.RESTScope{Name: "native_landing", ProjectID: r.projectID}
+			scope.Set("merging", "prepare")
+			ctx = connector.WithRESTScope(ctx, scope)
+			defer func() { returnValue.GitHubScope = nativeGitHubScope(scope, started) }()
 			client, policy, err := r.nativeLandingGitHubClient(ctx, req, workerGitHub)
 			if err != nil {
 				return RunResult{}, err

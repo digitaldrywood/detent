@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -366,14 +367,20 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		t.Fatalf("empty=%s err=%v", result.Content, err)
 	}
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	worker := f.worker(t, "runtime-worker")
+	registered := prepareRunner(t, f, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	registered.enroll(t)
+	worker := registered.redemption.Credential
 	selectArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(second.WorkItemID)}
 	result, err = call(operatortool.ExplainItem, selectArgs)
 	var explanation explain.IssueExplanation
 	if err != nil || json.Unmarshal(result.Content, &explanation) != nil || explanation.Eligibility.Latest != nil || explanation.Eligibility.Source != explain.SourceUnavailable {
 		t.Fatalf("missing scheduler history was fabricated: %s %v", result.Content, err)
 	}
-	lease := claimNativeAttempt(t, f, worker, "runtime-machine", "runtime-session", second.WorkItemID)
+	publishCapacity(t, f, registered, capacityReport(f.service.config.now()))
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, providerClaim(registered, second, "runtime-session"))
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
 	started := nativeStartedEvent(lease)
 	at := time.Now().UTC()
 	started.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Generation: 27, Phase: "implementation", HeartbeatAt: at, Phases: []tracker.NativePhase{{Name: "implementation", StartedAt: at}}}
@@ -388,6 +395,15 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	runtime.REST = &tracker.NativeRESTEvidence{Source: "probe", Coverage: "complete", ObservedAt: at, Requests: 19,
 		Windows:     []tracker.NativeRESTWindow{{CredentialIdentity: "github-rest:abcdef012345", Resource: "core", EndpointFamily: "other", BudgetScope: "private-path", Requests: 19, Limit: 5000, Used: 3820, UsedObserved: true, Remaining: 1180, ResetAt: at.Add(time.Hour), ObservedAt: at, Status: 200}},
 		Divergences: []tracker.NativeRESTDivergence{{CredentialIdentity: "github-rest:abcdef012345", Resource: "core", Attribution: "unattributed", ObservedRequests: 2678, DetentRequests: 19, UnattributedRequests: 2659, WindowStartedAt: at.Add(-6 * time.Minute), LastObservedAt: at, ResetAt: at.Add(time.Hour)}}}
+	elapsed, wall := int64(30), int64(10)
+	runtime.GitHub = &tracker.NativeGitHubScope{Scope: "native_landing", StartedAt: at, ObservedAt: at, WallElapsedNS: &wall,
+		RESTCounts: []tracker.NativeGitHubCount{{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "pull requests", Outcome: "200"}, Count: 2}},
+		Timings: []tracker.NativeGitHubTiming{
+			{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "pull requests", Outcome: "200"}, Protocol: "rest", QueryPurpose: "hydrate_pull_request", Boundary: "http_transport", AttemptCount: 2, TimedCount: 2, ElapsedSumNS: &elapsed, ElapsedMaxNS: &elapsed, FirstObservedAt: at, LastObservedAt: at},
+			{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "prepare", EndpointFamily: "graphql", Outcome: "error"}, Protocol: "graphql", QueryPurpose: "graphql", Boundary: "http_transport", AttemptCount: 1, FirstObservedAt: at, LastObservedAt: at},
+			{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "pull requests", Outcome: "200"}, Protocol: "rest", QueryPurpose: "hydrate_pull_request", Boundary: "token_resolution_inclusive", AttemptCount: 2, TimedCount: 2, ElapsedSumNS: &elapsed, ElapsedMaxNS: &elapsed, FirstObservedAt: at, LastObservedAt: at},
+			{NativeGitHubKey: tracker.NativeGitHubKey{Stage: "merging", Step: "land", EndpointFamily: "app installation tokens", Outcome: "200"}, Protocol: "rest", Boundary: "http_transport", AttemptCount: 1, TimedCount: 1, ElapsedSumNS: &elapsed, ElapsedMaxNS: &elapsed, FirstObservedAt: at, LastObservedAt: at},
+		}}
 	observed.Data.Runtime = &runtime
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, observed), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, observed), http.StatusOK)
@@ -403,6 +419,17 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		}, http.StatusNotFound},
 		{"private credential", func(r *tracker.NativeRuntimeObservation) {
 			r.REST = &tracker.NativeRESTEvidence{Windows: []tracker.NativeRESTWindow{{CredentialIdentity: "secret-token", EndpointFamily: "other"}}}
+		}, http.StatusUnprocessableEntity},
+		{"private timing query", func(r *tracker.NativeRuntimeObservation) {
+			scope := *r.GitHub
+			scope.Timings = slices.Clone(scope.Timings)
+			scope.Timings[0].QueryPurpose = "query private token"
+			r.GitHub = &scope
+		}, http.StatusUnprocessableEntity},
+		{"unbounded timing records", func(r *tracker.NativeRuntimeObservation) {
+			scope := *r.GitHub
+			scope.Timings = make([]tracker.NativeGitHubTiming, tracker.NativeGitHubAggregateLimit+1)
+			r.GitHub = &scope
 		}, http.StatusUnprocessableEntity},
 		{"unbounded windows", func(r *tracker.NativeRuntimeObservation) {
 			r.REST = &tracker.NativeRESTEvidence{Windows: make([]tracker.NativeRESTWindow, 65)}
@@ -427,6 +454,49 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if attempt == nil || attempt.AttemptID != started.Data.AttemptID || attempt.Runtime.LocalAttemptID != 168 || attempt.Runtime.Generation != 27 || !attempt.Current || attempt.RuntimeFreshness != "available" || attempt.Runtime.Phase != "implementation" || attempt.Runtime.Activity.Dropped != 3 || attempt.Runtime.Activity.Unpaired != 2 {
 		t.Fatalf("runtime attempt=%#v", attempt)
 	}
+	timingArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(second.WorkItemID), "native_attempt_id": started.Data.AttemptID, "runner_id": registered.binding.RunnerID}
+	protocolCtx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	timingPath := runtimePath + "/runtime/github-timings?native_attempt_id=" + started.Data.AttemptID + "&runner_id=" + registered.binding.RunnerID
+	var timingData tracker.NativeGitHubTimingEvidence
+	for _, transport := range []string{"stdio", "http"} {
+		t.Run("github timings/"+transport, func(t *testing.T) {
+			protocol := hostedContextProtocol(t, f.service, protocolCtx, transport)
+			reply := protocol("tools/call", operatortool.GitHubScopeTimings, timingArgs)
+			raw := hostedContextData(t, reply, false)
+			var envelope operatortool.WorkReadResult[tracker.NativeGitHubTimingEvidence]
+			if err := json.Unmarshal(raw, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			timingData = envelope.Data
+			if timingData.RunnerID != registered.binding.RunnerID || timingData.AttemptID != started.Data.AttemptID || len(timingData.Scope.Timings) != 4 || *timingData.Scope.Timings[0].ElapsedSumNS <= *timingData.Scope.WallElapsedNS || timingData.Scope.Timings[1].ElapsedSumNS != nil || timingData.Scope.Timings[1].ElapsedMaxNS != nil || !slices.Contains(timingData.Unavailable, "graphql_http") || slices.Contains(timingData.Unavailable, "installation_http") || !slices.Contains(timingData.Unavailable, "observed_build") || !strings.Contains(timingData.Scope.ElapsedSemantics, "inclusive") {
+				t.Fatalf("timing boundaries=%s", raw)
+			}
+			for _, secret := range []string{"github-rest:abcdef012345", "private-command-and-path", "private-path", f.token, "private-instruction-content"} {
+				if strings.Contains(string(reply.Result), secret) {
+					t.Fatalf("timing read leaked %q", secret)
+				}
+			}
+			for _, selector := range []struct{ key, value string }{{"runner_id", runnerauth.NewBinding().RunnerID}, {"reference", string(first.WorkItemID)}, {"project_id", string(foreign.project.ID)}} {
+				args := make(map[string]any)
+				for key, value := range timingArgs {
+					args[key] = value
+				}
+				args[selector.key] = selector.value
+				hostedContextData(t, protocol("tools/call", operatortool.GitHubScopeTimings, args), true)
+			}
+		})
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, timingPath, f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var apiTimings tracker.NativeGitHubTimingEvidence
+	decodeHubResponse(t, response, &apiTimings)
+	if !reflect.DeepEqual(apiTimings, timingData) {
+		t.Fatalf("API and MCP timing projection differ: %#v, %#v", apiTimings, timingData)
+	}
+	otherRunner := prepareRunner(t, f, runnerauth.Read)
+	otherRunner.enroll(t)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, timingPath, otherRunner.redemption.Credential, nil), http.StatusNotFound)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, timingPath+"&runner_id="+otherRunner.binding.RunnerID, f.token, nil), http.StatusUnprocessableEntity)
 	for _, selector := range []map[string]any{{"native_attempt_id": started.Data.AttemptID}, {"attempt_id": int64(168)}} {
 		receiptArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(second.WorkItemID)}
 		for key, value := range selector {
@@ -505,6 +575,11 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 			t.Fatalf("revoked %s=%v", tool, err)
 		}
 	}
+	for _, transport := range []string{"stdio", "http"} {
+		protocol := hostedContextProtocol(t, f.service, protocolCtx, transport)
+		hostedContextData(t, protocol("tools/call", operatortool.GitHubScopeTimings, timingArgs), true)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, timingPath, f.token, nil), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/runtime", f.token, nil), http.StatusNotFound)
 
 }

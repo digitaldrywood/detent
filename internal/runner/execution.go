@@ -200,6 +200,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		if result.GitHubRESTUsage != nil {
 			observation.REST = nativeRESTEvidence(*result.GitHubRESTUsage, r.now())
 		}
+		observation.GitHub = result.GitHubScope
 		if err := runtime.ObserveRuntime(finishCtx, observation); err != nil {
 			r.logger.Warn("native runtime observation unavailable", "issue_id", req.Issue.ID, "error", err)
 		}

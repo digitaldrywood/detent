@@ -37,6 +37,14 @@ func (c *NativeClient) RuntimeEvidence(ctx context.Context, item tracker.NativeW
 	return result, err
 }
 
+func (c *NativeClient) GitHubTimings(ctx context.Context, item tracker.NativeWorkItemID, attempt, runnerID string) (tracker.NativeGitHubTimingEvidence, error) {
+	var result tracker.NativeGitHubTimingEvidence
+	params := url.Values{"native_attempt_id": {attempt}, "runner_id": {runnerID}}
+	path := c.base() + "/work-items/" + url.PathEscape(string(item)) + "/runtime/github-timings?" + params.Encode()
+	err := c.client.request(ctx, http.MethodGet, path, nil, &result)
+	return result, err
+}
+
 func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) (err error) {
 	defer func() {
 		if err != nil {
@@ -90,6 +98,9 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 		}
 		if observation.REST == nil {
 			observation.REST = previous.REST
+		}
+		if observation.GitHub == nil {
+			observation.GitHub = previous.GitHub
 		}
 		if observation.LocalAttemptID == 0 {
 			observation.LocalAttemptID = previous.LocalAttemptID

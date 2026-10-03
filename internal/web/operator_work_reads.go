@@ -79,6 +79,9 @@ func (r dashboardWorkReads) WorkReadNames(ctx context.Context) []string {
 	if native || s.recovery != nil {
 		names = append(names, operatortool.WorkAttemptReceipt)
 	}
+	if native {
+		names = append(names, operatortool.GitHubScopeTimings)
+	}
 	return names
 }
 
@@ -105,7 +108,7 @@ func (r dashboardWorkReads) ReadWork(ctx context.Context, name string, request o
 	}
 	if client != nil {
 		switch name {
-		case operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkPRComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt:
+		case operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkPRComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings:
 			return s.readNativeWork(ctx, client, tracked, request, name)
 		}
 	}
@@ -386,6 +389,15 @@ func (s *Server) readNativeWork(ctx context.Context, client *hubclient.NativeCli
 	}
 	request.Reference = string(id)
 	switch name {
+	case operatortool.GitHubScopeTimings:
+		data, err := client.GitHubTimings(ctx, id, request.NativeAttemptID, request.RunnerID)
+		if err != nil {
+			return operatortool.Result{}, nativeWorkReadError(err)
+		}
+		if data.ProjectID != client.ProjectID() || data.WorkItemID != id || data.AttemptID != request.NativeAttemptID || data.RunnerID != request.RunnerID {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		return nativeWorkResult(request, data, nil)
 	case operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt:
 		if request.Cursor != "" {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments

@@ -7419,6 +7419,26 @@ Read recorded native work-item runtime evidence
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/runtime](../internal/hubserver/native_api.go#L141)
+## hubserver.get_native_github_timings
+
+Read recorded fixed-key GitHub timings for one native runner attempt
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3340.
+- Decision: Recorded timing reads make no upstream GitHub/provider requests. Current project grants, attempt and runner ownership and revocation apply across API, stdio and HTTP MCP. HTTP sums may exceed wall; token resolution is inclusive of observed installation HTTP. Build/sub-step coverage is explicitly unavailable.
+- Tool: `board.github_scope_timings` — Required bounded project_id, reference, native_attempt_id and runner_id. Organization, principal and current read scope/grants are connection authority. → Bounded fixed-key REST/GraphQL HTTP and inclusive token timing aggregates, actual observation timestamps and native landing identity. Missing boundaries have null durations or explicit unavailable coverage. No raw request data, commands, prompts or credential hashes.
+- Authority: role Current organization member/viewer or native credential with project read authority; credential Current native read scope or hosted session; current project read grant and exact work-item, attempt and runner ownership. Runner credentials cannot select another runner.; project native project read grant; writes need write grant; runner/terminal access additionally needs runner grant; ownership resolve project, issue, attempt, comment, change, artifact, workspace and runner under current organization; author/audience restrictions remain.
+- Application: s.readNativeRuntime; tracker.NativeRuntimeEvidence.GitHubTimings; operatorWorkReads.ReadWork
+- Extraction: The API, Cloud MCP and daemon bridge reuse scoped native runtime evidence with an exact runner/attempt projection.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.
+- Coverage: TestOperatorNativeWorkReads; TestRunnerLandingPreservesCodeAndOperatorOwners; TestNativeRuntimeCheckpointsDoNotGrowHistory.
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / native / hub application service
+- Availability: hosted_dedicated / native / hub application service
+- Availability: hosted_shared / native / hub application service
+- Availability: credential_maintenance / native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: read or ordinary non-destructive write → none
+
+Sources: [GET /api/v2/organizations/:organization/projects/:project/work-items/:item/runtime/github-timings](../internal/hubserver/native_api.go#L142)
 ## hubserver.resend_hosted_invitation_json
 
 Resend a pending hosted invitation

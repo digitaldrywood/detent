@@ -121,6 +121,9 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 				response = tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{{ID: "cmt_example", Revision: 7, Body: "Discussion <img src=x onerror=unsafe()>", Provenance: &tracker.Provenance{Provider: "github", AuthorID: "contributor"}}}, NextCursor: "next-page"}
 			case "/work-items/wi_example/runtime":
 				response = tracker.NativeRuntimeEvidence{Issue: fixture.issue, ObservedAt: time.Now().UTC(), Selection: "unavailable", Unavailable: []string{"runtime_phase_heartbeat", "historical_scheduler_decision"}}
+			case "/work-items/wi_example/runtime/github-timings":
+				fixture.last = map[string]string{"native_attempt_id": r.URL.Query().Get("native_attempt_id"), "runner_id": r.URL.Query().Get("runner_id")}
+				response = tracker.NativeGitHubTimingEvidence{ProjectID: fixture.issue.ProjectID, WorkItemID: fixture.issue.WorkItemID, AttemptID: r.URL.Query().Get("native_attempt_id"), RunnerID: r.URL.Query().Get("runner_id"), Unavailable: []string{"github_scope_timings"}}
 			case "/work-items/wi_example/attempts":
 				response = tracker.Page[tracker.NativeAttempt]{}
 			case "/work-items/wi_example/changes":

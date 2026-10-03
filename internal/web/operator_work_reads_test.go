@@ -207,6 +207,7 @@ func TestOperatorNativeClientReads(t *testing.T) {
 		{"work_item", nil, "Full native body"},
 		{"board_receipt", nil, "runtime_phase_heartbeat"},
 		{"board_session", nil, "historical_scheduler_decision"},
+		{"github_scope_timings", map[string]any{"native_attempt_id": "attempt_fixture", "runner_id": "runner_fixture"}, "github_scope_timings"},
 		{"explain_item", nil, "native_runtime"},
 		{"work_export", nil, "Full native body"},
 		{"work_comments", map[string]any{"limit": 1}, "Discussion"},
@@ -237,6 +238,9 @@ func TestOperatorNativeClientReads(t *testing.T) {
 			}
 			if strings.Contains(response.Body.String(), "FormToken") || strings.Contains(response.Body.String(), "hub-operator") {
 				t.Fatalf("UI credential leak: %s", response.Body)
+			}
+			if test.tool == "github_scope_timings" && (fixture.last["native_attempt_id"] != "attempt_fixture" || fixture.last["runner_id"] != "runner_fixture") {
+				t.Fatalf("daemon dropped timing ownership selectors: %v", fixture.last)
 			}
 			if test.tool == "work_list" {
 				include := "summary"

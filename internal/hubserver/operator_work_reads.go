@@ -58,7 +58,10 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	}
 	request.Reference = string(item.WorkItemID)
 	switch name {
-	case operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt:
+	case operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings:
+		if name == operatortool.GitHubScopeTimings && scope.credential.Runner.RunnerID != "" && scope.credential.Runner.RunnerID != request.RunnerID {
+			return operatortool.Result{}, explain.ErrNotFound
+		}
 		if request.Cursor != "" {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
@@ -177,7 +180,7 @@ func (s *Service) resolveOperatorNativeItem(ctx context.Context, query nativeQue
 }
 
 func (operatorWorkReads) WorkReadNames(context.Context) []string {
-	return []string{operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt}
+	return []string{operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings}
 }
 
 func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (explain.IssueExplanation, error) {
