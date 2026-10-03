@@ -388,8 +388,10 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	e.mu.Lock()
 	outcome := e.preparedOutcome
+	finished := e.data.Outcome != ""
 	e.mu.Unlock()
-	if outcome == "" {
+	// An acknowledged Finish stays settled when lease release is retried.
+	if outcome == "" || finished {
 		return nil
 	}
 	if e.remaining() <= 0 {

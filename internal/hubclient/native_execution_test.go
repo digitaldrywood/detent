@@ -263,6 +263,12 @@ func TestNativeMissingClaimNeverRunsUnguarded(t *testing.T) {
 	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		t.Fatalf("guard = %v", err)
 	}
+	if err := scheduler.ReleaseClaim(t.Context(), "wi_"+strings.Repeat("a", 32), "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("missing native completion owner reported settlement: %v", err)
+	}
+	if err := scheduler.ReleaseClaim(t.Context(), "github-node", "completed"); err != nil {
+		t.Fatalf("legacy idempotent release = %v", err)
+	}
 	if scheduler.RunExecution("github-node") != nil {
 		t.Fatal("legacy execution acquired a native guard")
 	}
@@ -300,7 +306,7 @@ func TestNativeExecutionContextKeepsItsOriginalFence(t *testing.T) {
 
 func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"renew", "release", "lost"} {
+	for _, operation := range []string{"renew", "release", "release_finish_lost", "release_finish_ack_retry", "lost"} {
 		t.Run(operation, func(t *testing.T) {
 			descriptor := clientTestPolicy()
 			id := "wi_" + strings.Repeat("a", 32)
@@ -308,9 +314,25 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			next := lease
 			next.ID, next.FencingToken = "new", 2
 			var scheduler *Scheduler
+			var releaseCalls, finishedEvents int
 			transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				var payload any = policy.Approval{Policy: descriptor}
-				if strings.HasSuffix(request.URL.Path, "/"+operation) {
+				if strings.HasSuffix(request.URL.Path, "/events") {
+					var event tracker.NativeRunEvent
+					if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
+						t.Fatal(err)
+					}
+					if event.Type == "run.finished" {
+						finishedEvents++
+					}
+				}
+				if strings.HasSuffix(request.URL.Path, "/release") && operation == "release_finish_ack_retry" {
+					releaseCalls++
+					if releaseCalls == 1 {
+						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"tenant_unavailable"}`)), Request: request}, nil
+					}
+				}
+				if strings.HasSuffix(request.URL.Path, "/"+strings.Split(operation, "_finish_")[0]) {
 					scheduler.mu.Lock()
 					claim := scheduler.nativeClaims[id]
 					claim.lease = next
@@ -349,8 +371,42 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 					t.Fatalf("old renewal = %v", err)
 				}
-			case "release":
+			case "release_finish_ack_retry":
+				claim := scheduler.nativeClaims[id]
+				claim.deadline = time.Now().Add(time.Minute)
+				scheduler.nativeClaims[id] = claim
+				execution := scheduler.RunExecution(id).(*nativeExecution)
+				execution.preparedOutcome = "failed"
+				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+				if err := scheduler.ReleaseClaim(t.Context(), id, "released"); err == nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("release outage = %v", err)
+				}
+				if execution.data.Outcome != "failed" || finishedEvents != 1 {
+					t.Fatalf("Finish acknowledgement = %q, events = %d", execution.data.Outcome, finishedEvents)
+				}
+				claim = scheduler.nativeClaims[id]
+				claim.deadline = time.Now().Add(-time.Second)
+				scheduler.nativeClaims[id] = claim
 				if err := scheduler.ReleaseClaim(t.Context(), id, "released"); err != nil {
+					t.Fatalf("acknowledged Finish lost on release retry: %v", err)
+				}
+				if finishedEvents != 1 {
+					t.Fatalf("Finish published again: %d events", finishedEvents)
+				}
+			case "release", "release_finish_lost":
+				if operation == "release_finish_lost" {
+					claim := scheduler.nativeClaims[id]
+					claim.deadline = time.Now().Add(-time.Second)
+					scheduler.nativeClaims[id] = claim
+					execution := scheduler.RunExecution(id).(*nativeExecution)
+					execution.preparedOutcome = "failed"
+				}
+				err := scheduler.ReleaseClaim(t.Context(), id, "released")
+				if operation == "release_finish_lost" {
+					if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+						t.Fatalf("failed Finish reported settlement: %v", err)
+					}
+				} else if err != nil {
 					t.Fatal(err)
 				}
 			case "lost":

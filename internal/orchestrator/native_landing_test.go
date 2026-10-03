@@ -556,7 +556,7 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 				scheduling.releaseError = nil
 				if test.missingPublisher {
 					// A fresh scheduler has no original prepared execution.
-					scheduling = &hubSchedulingSource{}
+					scheduling = &hubSchedulingSource{releaseError: runpkg.ErrExecutionAuthorityUnavailable}
 					orch.scheduling = scheduling
 				}
 				if !orch.retryDeferredCompletions(t.Context(), &state, state.Retry[issue.ID].DueAt.Add(time.Second)) || len(state.deferredCompletions) != 0 || state.Retry[issue.ID].CompletionDeferred {

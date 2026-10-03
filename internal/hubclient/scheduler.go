@@ -16,6 +16,7 @@ import (
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -250,13 +251,22 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	lease, ok := s.claims[issueID]
 	s.mu.Unlock()
 	if !ok {
+		// A missing native publisher cannot prove prepared Finish settled.
+		if strings.HasPrefix(issueID, "wi_") {
+			return runner.ErrExecutionAuthorityUnavailable
+		}
 		return nil
 	}
-	var err error
+	var err, finishErr error
 	if isNative {
 		if native.execution != nil {
-			if err := native.execution.finishPrepared(ctx); err != nil && !claimLost(err) && !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
-				return err
+			if err := native.execution.finishPrepared(ctx); err != nil {
+				if !claimLost(err) && !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					return err
+				}
+				// Retire the obsolete lease through the same release owner, but
+				// report that its terminal publication never settled.
+				finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 			}
 		}
 		err = native.source.client.Release(ctx, native.lease, "released")
@@ -264,18 +274,18 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		err = s.client.Release(ctx, lease, reason)
 	}
 	if err != nil && !claimLost(err) {
-		return err
+		return errors.Join(finishErr, err)
 	}
 	s.mu.Lock()
 	if current, ok := s.claims[issueID]; ok && current.FencingToken != lease.FencingToken {
 		s.mu.Unlock()
-		return nil
+		return finishErr
 	}
 	delete(s.claims, issueID)
 	delete(s.nativeClaims, issueID)
 	delete(s.claimPolicies, issueID)
 	s.mu.Unlock()
-	return nil
+	return finishErr
 }
 
 func (s *Scheduler) ensureMachine(ctx context.Context) error {

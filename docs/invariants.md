@@ -1601,10 +1601,15 @@ writes a terminal capacity attempt nor schedules ordinary landing retry until
 publication and lease release settle. The same quota matrix covers unavailable
 publication and recovery of its exact reviewed identity through persisted JSON,
 including typed quota evidence and response accounting without replay duplication.
-Settlement validates the existing execution authority. A fresh scheduler lacking
-the original publisher follows existing authority-loss rejection, never treating
-an absent cached claim as evidence that Finish or lease release succeeded. No new wait or recovery
-mechanism is added. Native coding and completions that need no exhausted GitHub
+The scheduler claim-release owner reports missing native publishers and lost
+Finish authority, including loss during release. It preserves a successor fence
+while retiring the obsolete lease and reports the failed publication to existing
+authority-loss rejection. An absent cached claim or suppressed lease-loss error
+cannot prove that Finish settled. An acknowledged terminal event remains settled
+when lease release is retried after an outage, even if the lease has since
+expired; the existing publisher never emits a second Finish. No separate
+pre-release authority check owns this decision. No new wait or recovery mechanism
+is added. Native coding and completions that need no exhausted GitHub
 operation continue normally. Pre-claim readiness, dispatch, retry and completion
 share the existing current-stage REST dependency decision (#150). Historical
 retry capacity scope is retained as evidence, not an independent applicability

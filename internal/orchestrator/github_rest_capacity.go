@@ -287,21 +287,7 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 	if o.nativeWorkflow() {
 		// Native runs defer Finish to the claim owner. Publication must settle
 		// before capacity completion releases ownership to an ordinary retry.
-		source, hasExecution := o.scheduling.(interface{ RunExecution(string) runpkg.Execution })
-		var execution runpkg.Execution
-		if hasExecution {
-			execution = source.RunExecution(running.Issue.ID)
-		}
-		var err error
-		if execution == nil {
-			err = runpkg.ErrExecutionAuthorityUnavailable
-		} else {
-			err = execution.Validate(ctx)
-		}
-		if err == nil {
-			err = o.abandonClaim(ctx, running.Issue.ID)
-		}
-		if err != nil {
+		if err := o.abandonClaim(ctx, running.Issue.ID); err != nil {
 			// handleRunResult already accounted for this response. Replaying
 			// completion must not count the same request again.
 			event.Result.GitHubRESTUsage = nil
