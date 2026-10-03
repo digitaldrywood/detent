@@ -30,6 +30,20 @@ export function WorkList({
   movesFor: (item: WorkItemView) => readonly string[];
   onMove: (item: WorkItemView, toState: string) => void;
 }): React.ReactElement {
+  const issueButtons = React.useRef<(HTMLButtonElement | null)[]>([]);
+
+  const navigateRows = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const target = event.key === "ArrowDown" ? Math.min(index + 1, items.length - 1)
+      : event.key === "ArrowUp" ? Math.max(index - 1, 0)
+      : event.key === "Home" ? 0
+      : event.key === "End" ? items.length - 1
+      : null;
+    if (target === null) return;
+    event.preventDefault();
+    issueButtons.current[target]?.focus();
+  };
+
   if (items.length === 0) {
     return (
       <p className="px-5 py-12 text-center text-muted-foreground text-sm" data-testid="work-list-empty">
@@ -39,7 +53,7 @@ export function WorkList({
   }
   return (
     <div className="px-5 pb-6" data-testid="work-list">
-      <Table>
+      <Table className={cn("min-w-[1040px] table-fixed", showProject && "min-w-[1200px]")}>
         <TableHeader>
           <TableRow>
             {showProject ? <TableHead className="w-40">Project</TableHead> : null}
@@ -47,14 +61,14 @@ export function WorkList({
             <TableHead>Title</TableHead>
             <TableHead className="w-32">Lane</TableHead>
             <TableHead className="w-36">Status</TableHead>
-            <TableHead className="w-28">Worker</TableHead>
+            <TableHead className="w-40">Worker</TableHead>
             <TableHead className="w-24">Priority</TableHead>
             <TableHead className="w-16 text-right">Age</TableHead>
             <TableHead className="w-8" />
           </TableRow>
         </TableHeader>
         <TableBody>
-          {items.map((item) => {
+          {items.map((item, index) => {
             const status = statusPill(item);
             return (
               <TableRow key={item.id} data-testid="work-list-row" data-work-item={item.id}>
@@ -79,8 +93,11 @@ export function WorkList({
                   <button
                     type="button"
                     data-testid="work-list-open"
+                    ref={(button) => { issueButtons.current[index] = button; }}
+                    onKeyDown={(event) => navigateRows(event, index)}
                     onClick={() => onOpen(item)}
-                    className="cursor-pointer rounded-sm text-left outline-none ring-ring focus-visible:ring-2 hover:underline"
+                    title={item.title}
+                    className="max-w-full cursor-pointer truncate rounded-sm text-left align-middle outline-none ring-ring focus-visible:ring-2 hover:underline"
                   >
                     {item.title}
                   </button>
@@ -107,12 +124,13 @@ export function WorkList({
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {isLive(item) && item.attempt !== null ? (
-                    <span className={cn("inline-flex items-center gap-1.5")}>
+                    <span className="inline-flex max-w-40 items-center gap-1.5" title={item.attempt.runner ?? undefined}>
                       <span
                         aria-hidden
-                        className="size-1.5 rounded-full bg-success motion-safe:animate-status-pulse"
+                        className="size-1.5 shrink-0 rounded-full bg-success motion-safe:animate-status-pulse"
                       />
-                      <span className="tabular-nums">
+                      <span className="truncate">{item.attempt.runner ?? "Runner"}</span>
+                      <span className="shrink-0 tabular-nums">
                         <ElapsedText at={item.attempt.startedAt} now={now} />
                       </span>
                     </span>

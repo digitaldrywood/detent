@@ -440,7 +440,8 @@ describe("the list view", () => {
   it("renders one row per issue with the same signals as the card", () => {
     render(
       <WorkList
-        items={[item(), item({ id: "wi_2", title: "Second", state: "Todo", blockedBy: [] })]}
+        items={[item(), item({ id: "wi_2", title: "Second", state: "Todo", blockedBy: [],
+          attempt: { ...toAttemptView(ATTEMPTS)!, runner: "Build Mac" } })]}
         showProject
         now={NOW}
         onOpen={vi.fn()}
@@ -453,6 +454,7 @@ describe("the list view", () => {
     expect(within(rows[0]!).getByText("Blocked · 1")).not.toBeNull();
     expect(within(rows[0]!).getByText("High")).not.toBeNull();
     expect(within(rows[1]!).getByText("Todo")).not.toBeNull();
+    expect(within(rows[1]!).getByText("Build Mac")).not.toBeNull();
   });
 
   it("retains neutral terminal status and history in the shared list presentation", () => {
@@ -466,11 +468,12 @@ describe("the list view", () => {
     expect(screen.getByLabelText("Priority: High").className).toContain("text-muted-foreground");
   });
 
-  it("opens an issue from its title", () => {
+  it("navigates issue titles with the keyboard and opens the focused issue", () => {
     const onOpen = vi.fn();
+    const items = [item(), item({ id: "wi_2", title: "Second" }), item({ id: "wi_3", title: "Third" })];
     render(
       <WorkList
-        items={[item()]}
+        items={items}
         showProject={false}
         now={NOW}
         onOpen={onOpen}
@@ -478,8 +481,17 @@ describe("the list view", () => {
         onMove={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByTestId("work-list-open"));
+    const buttons = screen.getAllByTestId("work-list-open");
+    buttons[0]!.focus();
+    for (const [key, index] of [["ArrowDown", 1], ["End", 2], ["ArrowDown", 2], ["ArrowUp", 1], ["Home", 0], ["ArrowUp", 0]] as const) {
+      fireEvent.keyDown(document.activeElement!, { key });
+      expect(document.activeElement).toBe(buttons[index]);
+    }
+    fireEvent.keyDown(buttons[0]!, { key: "End", ctrlKey: true });
+    expect(document.activeElement).toBe(buttons[0]);
+    fireEvent.click(buttons[0]!);
     expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onOpen).toHaveBeenCalledWith(items[0]);
   });
 
   it("says when nothing matches", () => {
@@ -918,6 +930,18 @@ describe("the live Work continuation intent", () => {
 });
 
 describe("the filter-first Work surface", () => {
+  it.each(["Todo", ""])("shares the %s lane scope between Board and List", async (lanes) => {
+    await pagedWork(`/work?lanes=${lanes}`);
+    await settledWork();
+    const boardIds = screen.queryAllByTestId("issue-card").map((card) => card.getAttribute("data-work-item"));
+    if (lanes === "") expect(boardIds).toHaveLength(0);
+    else expect(boardIds.length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("radio", { name: "List" }));
+    await settledWork();
+    const listIds = screen.queryAllByTestId("work-list-row").map((row) => row.getAttribute("data-work-item"));
+    expect(listIds.toSorted()).toEqual(boardIds.toSorted());
+  });
+
   it("keeps active workers visible with full-scope totals and appends matching results in both views", async () => {
     const { router, requests } = await pagedWork();
     await settledWork();
