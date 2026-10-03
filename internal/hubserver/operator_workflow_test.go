@@ -58,6 +58,14 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 					t.Fatalf("create=%s %v", created, err)
 				}
 				id := content.Data.WorkItemID
+				itemData := hostedContextData(t, send("tools/call", operatortool.WorkItem, map[string]any{"project_id": f.project, "reference": id}), false)
+				var item struct {
+					Data operatortool.NativeItem `json:"data"`
+				}
+				if err := json.Unmarshal(itemData, &item); err != nil || item.Data.Identifier == "" || item.Data.Number <= 0 {
+					t.Fatalf("read identifier=%s %v", itemData, err)
+				}
+				identifier := item.Data.Identifier
 				decodeAction := func(data json.RawMessage) chat.Action {
 					t.Helper()
 					var result struct {
@@ -78,7 +86,7 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				}
 				call := func(key, target string, revision int64, denied bool) chat.Action {
 					t.Helper()
-					data := hostedContextData(t, send("tools/call", operatortool.MoveItem, map[string]any{"project_id": f.project, "request_id": key, "identifier": id, "expected_revision": revision, "target_state": target}), denied)
+					data := hostedContextData(t, send("tools/call", operatortool.MoveItem, map[string]any{"project_id": f.project, "request_id": key, "identifier": identifier, "expected_revision": revision, "target_state": target}), denied)
 					if denied {
 						return chat.Action{}
 					}
@@ -96,6 +104,7 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				if admission.Status != chat.ActionSucceeded || read().State != "Ready" || read().Revision != 2 {
 					t.Fatalf("admission=%+v issue=%+v", admission, read())
 				}
+				identifier = string(id)
 				if replay := call("admit", "Ready", 1, false); replay.ID != admission.ID || replay.Status != chat.ActionSucceeded || read().Revision != 2 {
 					t.Fatalf("replay=%+v", replay)
 				}
@@ -103,6 +112,7 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				for _, fields := range []map[string]any{
 					{"project_id": "prj_foreign", "identifier": id},
 					{"project_id": f.project, "identifier": "wi_foreign"},
+					{"project_id": f.project, "identifier": "prj_foreign#" + strconv.Itoa(content.Data.Number)},
 				} {
 					fields["request_id"], fields["target_state"], fields["expected_revision"] = "foreign", "Ready", 1
 					hostedContextData(t, send("tools/call", operatortool.MoveItem, fields), true)
@@ -121,6 +131,7 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 					}
 				}
 				for i, target := range []string{"Revise", "Ship"} {
+					identifier = strconv.Itoa(content.Data.Number)
 					if action := call("progress-"+strconv.Itoa(i), target, int64(2+i), false); action.Status != chat.ActionSucceeded || read().State != target || read().Revision != tracker.Revision(3+i) {
 						t.Fatalf("request %s: action=%+v issue=%+v", target, action, read())
 					}

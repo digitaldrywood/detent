@@ -29,7 +29,7 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 		return ctx, nativeScope{}, operatortool.ErrAccessDenied
 	}
 	scope.project = tracker.ProjectID(request.ProjectID)
-	issue, err := e.service.nativeWorkObservation(ctx, scope, request.Identifier)
+	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Identifier)
 	if err != nil {
 		return ctx, nativeScope{}, hubSafeChangeError(err)
 	}
@@ -40,7 +40,7 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 }
 
 func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope nativeScope, request operatortool.MoveItemArguments) (chat.Action, error) {
-	issue, err := e.service.nativeWorkObservation(ctx, scope, request.Identifier)
+	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Identifier)
 	if err != nil {
 		return chat.Action{}, hubSafeChangeError(err)
 	}
@@ -66,14 +66,16 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	if err != nil {
 		return operatortool.Result{}, err
 	}
+	action, err := e.workflowProposal(ctx, scope, request)
+	if err != nil {
+		return operatortool.Result{}, err
+	}
+	request.Identifier = action.IssueID
+	action.Identifier = request.Identifier
 	var arguments json.RawMessage
 	arguments, err = json.Marshal(request)
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
-	}
-	action, err := e.workflowProposal(ctx, scope, request)
-	if err != nil {
-		return operatortool.Result{}, err
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
 	action.RequestID, action.Arguments = request.RequestID, arguments

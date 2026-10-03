@@ -62,7 +62,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			Labels     []nativeLabel         `json:"labels"`
 		}{project, []int{0, 1, 2, 3}, labels}, err)
 	}
-	item, err := s.resolveOperatorNativeItem(ctx, scope, request.Reference)
+	item, err := s.resolveOperatorNativeItem(ctx, s.database.db, scope, request.Reference)
 	if err != nil {
 		return operatortool.Result{}, safeWorkReadError(err)
 	}
@@ -162,9 +162,9 @@ func safeWorkReadError(err error) error {
 	return operatortool.ErrReadUnavailable
 }
 
-func (s *Service) resolveOperatorNativeItem(ctx context.Context, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+func (s *Service) resolveOperatorNativeItem(ctx context.Context, query nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
 	if strings.HasPrefix(reference, "wi_") {
-		item, _, err := readNativeIssue(ctx, s.database.db, scope, reference)
+		item, _, err := readNativeIssue(ctx, query, scope, reference)
 		return s.nativeIssueResponse(item), err
 	}
 	value := reference
@@ -179,10 +179,10 @@ func (s *Service) resolveOperatorNativeItem(ctx context.Context, scope nativeSco
 		return tracker.NativeIssue{}, explain.ErrNotFound
 	}
 	var id string
-	if err := s.database.db.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND number=?", scope.organization, scope.project, number).Scan(&id); err != nil {
+	if err := query.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND number=?", scope.organization, scope.project, number).Scan(&id); err != nil {
 		return tracker.NativeIssue{}, err
 	}
-	item, _, err := readNativeIssue(ctx, s.database.db, scope, id)
+	item, _, err := readNativeIssue(ctx, query, scope, id)
 	return s.nativeIssueResponse(item), err
 }
 
@@ -197,7 +197,7 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	}
 	scope := r.scope
 	scope.project = tracker.ProjectID(query.ProjectID)
-	issue, err := r.service.resolveOperatorNativeItem(ctx, scope, query.Reference)
+	issue, err := r.service.resolveOperatorNativeItem(ctx, r.service.database.db, scope, query.Reference)
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
