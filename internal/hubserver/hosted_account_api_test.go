@@ -209,7 +209,13 @@ func TestHostedAccountClientRoutesMounted(t *testing.T) {
 	for _, route := range f.service.echo.Routes() {
 		mounted[route.Method+" "+route.Path] = true
 	}
-	entryOwned := map[string]bool{"POST /api/v2/organizations": true}
+	// Cloud entry owns provisioning and attachment objects. Its attachment route
+	// isolation tests exercise both API path forms and tenant/project authorization.
+	entryOwned := map[string]bool{
+		"POST /api/v2/organizations":                                                       true,
+		"POST " + hostedOrganizationBase + "/projects/:project/attachments":                true,
+		"GET " + hostedOrganizationBase + "/projects/:project/attachments/:param/metadata": true,
+	}
 	calls := accountClientCall.FindAllStringSubmatch(string(raw), -1)
 	if len(calls) < 20 {
 		t.Fatalf("found %d account client calls; the call pattern no longer matches api.ts", len(calls))

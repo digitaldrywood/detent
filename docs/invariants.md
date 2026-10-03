@@ -1578,7 +1578,9 @@ Expired and revoked identities retain their historical reports but cannot clamp
 live concurrency or availability. Draining and offline runners with valid
 authority still contribute. Live, unexpired lease reservations remain counted
 once per lease and retain their pinned concurrency bounds until release or
-expiry, independently of reporting authority. Current same-account exhaustion,
+expiry when no matching fresh report provides the current bound, independently
+of reporting authority. The current report supersession rule under native #90
+below preserves reservation occupancy and execution identity. Current same-account exhaustion,
 unknown availability, organization scope and account isolation remain
 conservative. `TestProviderPoolIsolation` covers these boundaries alongside the
 existing provider observation and concurrent-claim fixtures. This consolidates

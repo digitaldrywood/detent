@@ -254,6 +254,29 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	if public.ID != record.ID || public.Name != record.Name || public.AuthorizedPrincipal != "" {
 		t.Fatalf("public metadata=%+v", public)
 	}
+	t.Run("canonical account client routes", func(t *testing.T) {
+		canonical := "/api/v2/organizations/org_alpha/projects/" + project + "/attachments"
+		upload := attachmentRequest(t, alice, http.MethodPost, canonical, strings.NewReader("canonical attachment"), map[string]string{"Content-Type": "text/plain", "X-Attachment-Name": "canonical.txt", "X-CSRF-Token": csrf})
+		if upload.Code != http.StatusCreated {
+			t.Fatalf("canonical upload=%d %s", upload.Code, upload.Body.String())
+		}
+		var created attachment.Metadata
+		if err := json.Unmarshal(upload.Body.Bytes(), &created); err != nil || created.ID == "" || created.ProjectID != project {
+			t.Fatalf("canonical upload metadata=%+v %v", created, err)
+		}
+		before := len(store.requests())
+		metadataPath := canonical + "/" + created.ID + "/metadata"
+		metadata := attachmentRequest(t, alice, http.MethodGet, metadataPath, nil, nil)
+		var public attachment.Metadata
+		if metadata.Code != http.StatusOK || json.Unmarshal(metadata.Body.Bytes(), &public) != nil || public.ID != created.ID || public.ProjectID != project || public.AuthorizedPrincipal != "" || metadata.Header().Get("Cache-Control") != "private, no-store" || len(store.requests()) != before {
+			t.Fatalf("canonical metadata=%d %s touched storage=%v", metadata.Code, metadata.Body.String(), len(store.requests()) != before)
+		}
+		anonymous := newBrowser(t, f.service.Handler())
+		denied := attachmentRequest(t, anonymous, http.MethodGet, metadataPath, nil, nil)
+		if denied.Code != http.StatusNotFound || len(store.requests()) != before {
+			t.Fatalf("anonymous canonical metadata=%d touched storage=%v", denied.Code, len(store.requests()) != before)
+		}
+	})
 	key, err := attachment.Key("org_alpha", record.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -392,7 +415,8 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM audit WHERE event IN ('attachment_uploaded','attachment_read') AND organization_id='org_alpha'").Scan(&audits); err != nil {
 		t.Fatal(err)
 	}
-	if audits != 6 {
+	// Six existing operations plus the canonical upload and metadata read.
+	if audits != 8 {
 		t.Fatalf("audit entries=%d", audits)
 	}
 	exerciseAttachmentClients(t, f, alice, anonymous, project, writeToken)

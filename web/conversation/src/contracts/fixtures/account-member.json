@@ -2,6 +2,7 @@
   "id": "mem_admin",
   "user_id": "user_dana",
   "email": "dana@threefold.solutions",
+  "never_signed_in": false,
   "role": "member",
   "status": "active",
   "grants": [{ "project_id": "proj_parable", "write": true, "runner": true }]

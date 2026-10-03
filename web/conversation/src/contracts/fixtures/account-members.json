@@ -4,6 +4,7 @@
       "id": "mem_owner",
       "user_id": "user_michael",
       "email": "michael@threefold.solutions",
+      "never_signed_in": false,
       "role": "owner",
       "status": "active",
       "grants": [{ "project_id": "proj_parable", "write": true, "runner": true }]
@@ -12,6 +13,7 @@
       "id": "mem_admin",
       "user_id": "user_dana",
       "email": "dana@threefold.solutions",
+      "never_signed_in": false,
       "role": "admin",
       "status": "active",
       "grants": [
@@ -23,6 +25,7 @@
       "id": "mem_viewer",
       "user_id": "user_sam",
       "email": "sam@example.test",
+      "never_signed_in": false,
       "role": "viewer",
       "status": "active",
       "grants": [{ "project_id": "proj_marketing", "write": false, "runner": false }]

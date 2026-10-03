@@ -496,7 +496,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 		{name: "missing expiry", authority: "missing", bound: 4, state: "available"},
 		{name: "expired pinned lease until expiry", authority: "expired", reserve: true, leaseEnd: "expiry", used: 1, bound: 2, finalBound: 4, state: "available"},
 		{name: "revoked pinned lease until expiry", authority: "revoked", reserve: true, leaseEnd: "expiry", used: 1, bound: 2, finalBound: 4, state: "available"},
-		{name: "expired report with pinned lease until release", authority: "expired", reserve: true, leaseEnd: "release", used: 1, bound: 2, finalBound: 4, state: "available"},
+		{name: "fresh report supersedes pinned lease bound before release", authority: "expired", reserve: true, leaseEnd: "release", used: 1, bound: 4, finalBound: 4, state: "available"},
 		{name: "draining authority and lease", authority: "draining", reserve: true, leaseEnd: "release", used: 1, bound: 2, finalBound: 2, state: "available"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

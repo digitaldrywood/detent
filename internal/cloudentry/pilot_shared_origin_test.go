@@ -583,12 +583,15 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		pilotStatus(t, "MCP initialized notification", alpha.owner.request(http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers), http.StatusAccepted)
 		listed := alpha.owner.request(http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`), headers)
 		pilotStatus(t, "MCP list", listed, http.StatusOK)
-		for _, name := range []string{"board_state", "fleet_health", "telemetry_usage", "recent_activity", "explain_item"} {
+		for _, name := range []string{"board_state", "fleet_health", "telemetry_usage", "recent_activity"} {
 			if strings.Contains(listed.body, `"name":"`+name+`"`) {
 				t.Fatalf("absent daemon service advertised: %s", listed.body)
 			}
 		}
-		call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"board_state","arguments":{"project_id":"foreign"}}}`
+		if !strings.Contains(listed.body, `"name":"explain_item"`) {
+			t.Fatal("native evidence explanation was not advertised")
+		}
+		call := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"explain_item","arguments":{"project_id":"foreign","reference":"wi_foreign"}}}`
 		denied := alpha.owner.request(http.MethodPost, path, strings.NewReader(call), headers)
 		pilotStatus(t, "MCP foreign project", denied, http.StatusOK)
 		if !strings.Contains(denied.body, `"isError":true`) {
