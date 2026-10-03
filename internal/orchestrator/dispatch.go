@@ -1034,8 +1034,9 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	}
 	if retryQueued {
 		request.RetryMode = queuedRetry.RetryMode
+		request.RecoveryAttemptID = queuedRetry.RecoveryAttemptID
 		request.ResumeState = queuedRetry.ResumeState
-		if queuedRetry.WorkerHost != workerHost {
+		if queuedRetry.WorkerHost != workerHost && !o.nativeWorkflow() {
 			request.RetryMode = runpkg.RetryModeFresh
 			request.ResumeState = store.AgentResumeState{}
 		}

@@ -515,19 +515,25 @@ func TestNativeRecoveryDecision(t *testing.T) {
 			r.Attempts[0].Checkpoint.Resume = "manual_recovery"
 		}, "manual_recovery", "checkpoint_requires_recovery"},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest"}
-			available := true
-			recovery := tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "machine", PolicyID: "policy"}, Attempts: []tracker.NativeAttempt{{
-				NativeRunData: tracker.NativeRunData{Identity: &identity, MachineID: "machine", PolicyID: "policy"},
-				Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: "dirty", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"},
-			}}}
-			test.edit(&recovery, &local, &available)
-			action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity)
-			if action != test.action || reason != test.reason {
-				t.Fatalf("recovery = %s/%s, want %s/%s", action, reason, test.action, test.reason)
-			}
-		})
+		for _, mode := range []RetryMode{"", RetryModeFresh} {
+			t.Run(test.name+"/"+string(mode), func(t *testing.T) {
+				local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest"}
+				available := true
+				recovery := tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "machine", PolicyID: "policy"}, Attempts: []tracker.NativeAttempt{{
+					NativeRunData: tracker.NativeRunData{Identity: &identity, MachineID: "machine", PolicyID: "policy"},
+					Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: "dirty", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"},
+				}}}
+				test.edit(&recovery, &local, &available)
+				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh)
+				wantAction, wantReason := test.action, test.reason
+				if mode == RetryModeFresh && wantAction == "resume_session" {
+					wantAction, wantReason = "fresh_checkout", "session_restart_required"
+				}
+				if action != wantAction || reason != wantReason {
+					t.Fatalf("recovery = %s/%s, want %s/%s", action, reason, wantAction, wantReason)
+				}
+			})
+		}
 	}
 }
 
@@ -618,21 +624,30 @@ func (f nativeExecutionTransport) RoundTrip(req *http.Request) (*http.Response, 
 
 func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		blocked    bool
-		workerAuth bool
-		local      bool
+		name        string
+		blocked     bool
+		workerAuth  bool
+		local       bool
+		interrupted bool
+		fresh       bool
+		ambiguous   bool
+		automatic   bool
 	}{
 		{name: "first run without worker GitHub access"},
 		{name: "lost checkpoint", blocked: true},
 		{name: "preserved planner checkpoint", local: true},
 		{name: "explicit worker GitHub access", workerAuth: true},
+		{name: "interrupted planner requires resume evidence", local: true, interrupted: true, blocked: true},
+		{name: "explicit fresh implementation preserves planner workspace", local: true, interrupted: true, fresh: true},
+		{name: "automatic fresh cannot restart interrupted planner", local: true, interrupted: true, fresh: true, blocked: true, automatic: true},
+		{name: "explicit fresh cannot discard missing dirty checkpoint", interrupted: true, fresh: true, blocked: true},
+		{name: "explicit fresh cannot replay ambiguous push", local: true, interrupted: true, fresh: true, ambiguous: true, blocked: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}}
 			agent := &fakeCodexClient{}
 			execution := &testExecution{}
-			if test.blocked || test.local {
+			if test.blocked || test.local || test.interrupted {
 				execution.recovery = tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "new-machine"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{MachineID: "lost-machine"}, Checkpoint: &tracker.NativeCheckpoint{Storage: "local_only", WorktreeState: "dirty", Resume: "resume_session"}}}}
 			}
 			if test.local {
@@ -642,6 +657,15 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 				previous.Checkpoint.WorkspaceDigest = "digest"
 				previous.Checkpoint.ExternalEffect = "none"
 				backend.recoveryStates = []workspace.RecoveryState{{HeadSHA: "head", WorkspaceFingerprint: "digest", UntrackedPaths: []string{"docs/detent-cloud-smoke-test.md"}}}
+			}
+			if test.interrupted {
+				previous := &execution.recovery.Attempts[0]
+				previous.Status = "interrupted"
+				previous.Identity = &tracker.NativeExecutionIdentity{Role: "plan", Backend: "codex", Model: "test"}
+			}
+			if test.ambiguous {
+				execution.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
+				execution.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
 			}
 			allowLocalBinding := true
 			cfg := config.Config{Worker: config.Worker{AllowLocalBinding: &allowLocalBinding, ExtraNetworkDomains: []string{"fonts.googleapis.com", "fonts.gstatic.com"}}}
@@ -696,7 +720,14 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
+			request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan}
+			if test.fresh {
+				request.Mode, request.RetryMode = RunModeImplement, RetryModeFresh
+				if !test.automatic {
+					request.RecoveryAttemptID = 1
+				}
+			}
+			result, err := r.Run(t.Context(), request)
 			if test.workerAuth {
 				if githubCredentialReads != 1 || identityReads != 1 || budgetReads != 1 {
 					t.Fatalf("worker credential/identity/budget reads = %d/%d/%d, want 1/1/1", githubCredentialReads, identityReads, budgetReads)

@@ -96,7 +96,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	if abandon {
 		orchCfg.PollInterval = time.Hour
 	}
-	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +127,14 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 		if err != nil || receipt.Attempt.Phase != "completion_deferred" {
 			t.Fatalf("planner deferral = %v, %v", receipt.Attempt.Phase, err)
 		}
+		// Hold intake through the operator's lane move and explicit retry intent.
+		// Otherwise the next tick can start a worker before the retry request.
+		heldConfig := orchCfg
+		heldConfig.ActiveStates = []string{"Human Review"}
+		heldConfig.ObservedStates = []string{"Todo", "In Progress"}
+		if err := orch.UpdateRuntime(t.Context(), orchestrator.RuntimeUpdate{Config: heldConfig}); err != nil {
+			t.Fatal(err)
+		}
 		// Replay Cloud's missing lease followed by supported local abandon.
 		h.scheduler.mu.Lock()
 		lease := h.scheduler.nativeClaims[issue.ID].lease
@@ -146,6 +154,10 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 			t.Fatal(err)
 		}
 		transport.failWorkflow.Store(false)
+		response, err = orch.RecoverWorkAttempt(t.Context(), orchestrator.WorkAttemptRecoveryRequest{ProjectID: "local", AttemptID: attempts[0].ID, Action: orchestrator.WorkAttemptRecoveryRetryFresh, Confirm: true, Reason: "operator starts implementation from the preserved planner workspace", Operator: "ops"})
+		if err != nil || !response.Queued {
+			t.Fatalf("fresh implementation handoff = %v, %v", response.Status, err)
+		}
 		orchCfg.PollInterval = 20 * time.Millisecond
 		if err := orch.UpdateRuntime(t.Context(), orchestrator.RuntimeUpdate{Config: orchCfg}); err != nil {
 			t.Fatal(err)

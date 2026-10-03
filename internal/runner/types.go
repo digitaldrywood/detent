@@ -631,6 +631,7 @@ type RunRequest struct {
 	StartedAt                 time.Time
 	WorkerHost                string
 	RetryMode                 RetryMode
+	RecoveryAttemptID         int64 // Existing operator retry intent; automatic host spillover has none.
 	ResumeState               store.AgentResumeState
 	SelectorContext           selector.Context
 	OnUsageUpdate             UsageUpdateHandler            `json:"-"`

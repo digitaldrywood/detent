@@ -77,17 +77,26 @@ func TestSSHHostPreferenceAndCaps(t *testing.T) {
 
 func TestSSHHostLossClearsResumeOnSpillover(t *testing.T) {
 	t.Parallel()
-	cfg := Config{WorkerHosts: []string{"air", "local"}, WorkerHostSelection: "preference"}
-	state := newState(cfg)
-	planner := newDispatchPlanner(cfg)
-	planner.workerHostAvailable = func(host string) bool { return host == "local" }
-	retry := Retry{WorkerHost: "air", RetryMode: runpkg.RetryModeResume, ResumeState: store.AgentResumeState{ProviderThreadID: "remote-thread"}}
-	action, ok := planner.newDispatchAction(&state, dispatchTestIssue("issue", "Todo"), 1, "air", true, true, &retry)
-	if !ok || action.workerHost != "local" || action.retryState.RetryMode != runpkg.RetryModeFresh || action.retryState.ResumeState.ProviderThreadID != "" {
-		t.Fatalf("spillover kept remote resume: %+v", action)
-	}
-	if retry.ResumeState.ProviderThreadID != "remote-thread" {
-		t.Fatal("selection mutated persisted retry")
+	for _, native := range []bool{false, true} {
+		t.Run(map[bool]string{false: "generic fresh fallback", true: "native preserves resume intent"}[native], func(t *testing.T) {
+			cfg := Config{WorkerHosts: []string{"air", "local"}, WorkerHostSelection: "preference"}
+			state := newState(cfg)
+			planner := newDispatchPlanner(cfg)
+			planner.nativeWorkflow = native
+			planner.workerHostAvailable = func(host string) bool { return host == "local" }
+			retry := Retry{RecoveryAttemptID: 42, WorkerHost: "air", RetryMode: runpkg.RetryModeResume, ResumeState: store.AgentResumeState{ProviderThreadID: "remote-thread"}}
+			action, ok := planner.newDispatchAction(&state, dispatchTestIssue("issue", "Todo"), 1, "air", true, true, &retry)
+			wantMode, wantThread := runpkg.RetryModeFresh, ""
+			if native {
+				wantMode, wantThread = runpkg.RetryModeResume, "remote-thread"
+			}
+			if !ok || action.workerHost != "local" || action.retryState.RetryMode != wantMode || action.retryState.ResumeState.ProviderThreadID != wantThread || action.retryState.RecoveryAttemptID != retry.RecoveryAttemptID {
+				t.Fatalf("spillover changed requested continuation: %+v", action)
+			}
+			if retry.ResumeState.ProviderThreadID != "remote-thread" {
+				t.Fatal("selection mutated persisted retry")
+			}
+		})
 	}
 }
 

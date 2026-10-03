@@ -66,6 +66,7 @@ type deferredCompletionRequest struct {
 	StartedAt           time.Time              `json:"started_at,omitzero"`
 	WorkerHost          string                 `json:"worker_host,omitempty"`
 	RetryMode           runpkg.RetryMode       `json:"retry_mode,omitempty"`
+	RecoveryAttemptID   int64                  `json:"recovery_attempt_id,omitempty"`
 	ResumeState         store.AgentResumeState `json:"resume_state,omitzero"`
 	MergePrecheck       *runpkg.MergePrecheck  `json:"merge_precheck,omitempty"`
 }
@@ -148,6 +149,7 @@ func deferredCompletionRequestFromRun(request runpkg.RunRequest) deferredComplet
 		StartedAt:           request.StartedAt,
 		WorkerHost:          request.WorkerHost,
 		RetryMode:           request.RetryMode,
+		RecoveryAttemptID:   request.RecoveryAttemptID,
 		ResumeState:         request.ResumeState,
 		MergePrecheck:       cloneMergePrecheck(request.MergePrecheck),
 	}
@@ -169,6 +171,7 @@ func (r deferredCompletion) completion() runpkg.Completion {
 			StartedAt:           r.Request.StartedAt,
 			WorkerHost:          r.Request.WorkerHost,
 			RetryMode:           r.Request.RetryMode,
+			RecoveryAttemptID:   r.Request.RecoveryAttemptID,
 			ResumeState:         r.Request.ResumeState,
 			MergePrecheck:       cloneMergePrecheck(r.Request.MergePrecheck),
 		},
@@ -359,6 +362,9 @@ func deferredCompletionMetadataJSON(record deferredCompletion) (string, error) {
 		"issue_title":                 strings.TrimSpace(record.Running.Issue.Title),
 		"work_product_pushed":         record.Running.WorkProductPushed,
 		deferredCompletionMetadataKey: record,
+	}
+	if record.Running.Policy.ID != "" {
+		metadata["policy"] = record.Running.Policy
 	}
 	payload, err := json.Marshal(metadata)
 	if err != nil {
