@@ -34,7 +34,6 @@ type spacesFixture struct {
 	objects         map[string]spacesObject
 	keys            []string
 	public          bool
-	versioned       bool
 	failDelete      bool
 	failPutResponse bool
 	transport       http.RoundTripper
@@ -118,17 +117,9 @@ func newSpacesFixture(t *testing.T, public bool) *spacesFixture {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
-			if f.versioned {
-				w.Header().Set("x-amz-version-id", "version-test")
-			}
 		case http.MethodDelete:
 			if f.failDelete {
 				w.WriteHeader(http.StatusServiceUnavailable)
-				return
-			}
-			if f.versioned && r.URL.Query().Get("versionId") != "version-test" {
-				t.Error("versioned deletion left retained bytes")
-				w.WriteHeader(400)
 				return
 			}
 			delete(f.objects, key)
