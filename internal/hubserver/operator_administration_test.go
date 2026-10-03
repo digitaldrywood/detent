@@ -258,6 +258,19 @@ func TestDedicatedAdministrationSetup(t *testing.T) {
 			if reply.Action.Status != chat.ActionPending {
 				t.Fatal("setup bypassed operator approval")
 			}
+			if scenario == "bootstrap" {
+				cfg := f.service.config
+				if err := f.service.Close(); err != nil {
+					t.Fatal(err)
+				}
+				f.service = openTestService(t, cfg)
+				e, dispatch = f.service.administration, hostedOperatorExecutor{f.service}
+				connection := operatortool.CurrentConnection(ctx)
+				connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
+					return f.service.resolveOperatorChatAuthority(ctx, connection.Identity)
+				}
+				ctx = operatortool.WithConnection(t.Context(), connection)
+			}
 			if response := f.request(t, u, http.MethodGet, "/chat/approval?connection_id="+operatortool.CurrentConnection(ctx).ID, nil); response.Code != http.StatusOK {
 				t.Fatalf("browser approval=%d %s", response.Code, response.Body)
 			}

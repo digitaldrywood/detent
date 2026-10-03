@@ -262,6 +262,13 @@ func TestHostedCredentialMCP(t *testing.T) {
 						if key.ProjectAccess != wantAccess || key.KeyScope != apikey.ScopeRead || key.ExpiresAt == nil || key.Token == "" {
 							t.Fatalf("key=%+v", key)
 						}
+						var proposalState string
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT identity_json || actions_json FROM operator_chat_sessions WHERE connection_id=?", receipt.Action.ConnectionID).Scan(&proposalState); err != nil {
+							t.Fatal(err)
+						}
+						if strings.Contains(proposalState, key.Token) {
+							t.Fatal("credential delivery escaped into durable proposal state")
+						}
 						for _, name := range []string{operatortool.CredentialRotate, operatortool.CredentialGrant} {
 							if r := call(name, `{}`); !r.Result.IsError && len(r.Error) == 0 {
 								t.Fatalf("unsupported direct call %s", name)

@@ -29,9 +29,6 @@ func (s *Service) operatorProjectBrowser(next echo.HandlerFunc) echo.HandlerFunc
 		}
 		if c.Request().Method == http.MethodPost {
 			c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 4096)
-			if !hmac.Equal([]byte(c.FormValue("form_token")), []byte(s.billingDecisionToken(c, c.FormValue("connection_id"), c.FormValue("action_id")))) {
-				return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
-			}
 		}
 		id := c.QueryParam("connection_id")
 		if c.Request().Method == http.MethodPost {
@@ -39,6 +36,12 @@ func (s *Service) operatorProjectBrowser(next echo.HandlerFunc) echo.HandlerFunc
 		}
 		if id == "" || len(id) > 256 || len(c.FormValue("action_id")) > 256 {
 			return echo.NewHTTPError(http.StatusNotFound, "Connection is unavailable")
+		}
+		if err := s.operatorChat.RestoreConnection(c.Request().Context(), id); err != nil {
+			return echo.NewHTTPError(http.StatusServiceUnavailable, "Connection is unavailable")
+		}
+		if c.Request().Method == http.MethodPost && !hmac.Equal([]byte(c.FormValue("form_token")), []byte(s.billingDecisionToken(c, id, c.FormValue("action_id")))) {
+			return echo.NewHTTPError(http.StatusForbidden, operatortool.ErrAccessDenied.Error())
 		}
 		conversation := s.operatorChat.Conversation(id)
 		if conversation.ConnectionID == "" || conversation.OrganizationID != identity.OrganizationID {

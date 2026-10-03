@@ -62,10 +62,16 @@ func (s *Service) AttachConnection(ctx context.Context) error {
 	current := s.session(connection.ID)
 	current.mu.Lock()
 	defer current.mu.Unlock()
+	if err := s.restoreSession(ctx, connection.ID, current); err != nil {
+		return err
+	}
 	if current.connection != nil {
 		if current.connection.Identity != connection.Identity {
 			return operatortool.ErrAccessDenied
 		}
+		connection.RequireConfirmation = connection.RequireConfirmation || current.connection.RequireConfirmation
+		connection.Client = current.connection.Client
+		current.connection = &connection
 		return nil
 	}
 	current.connection = &connection
@@ -84,7 +90,7 @@ func (s *Service) connectionSession(ctx context.Context) (*session, error) {
 		delete(s.sessions, connection.ID)
 		current = nil
 	}
-	if current != nil {
+	if current != nil && s.store == nil {
 		current.lastUsedAt = now
 	}
 	s.mu.Unlock()
@@ -153,7 +159,7 @@ func (s *Service) RetryResult(ctx context.Context, kind ActionKind, requestID st
 				outcome = "failed"
 			}
 			s.auditAction(executionContext, previous, outcome)
-			_, err = s.resolveExecution(current, index, result, executeErr)
+			_, err = s.resolveExecution(executionContext, current, index, result, executeErr)
 			if err != nil {
 				return Action{}, true, err
 			}
@@ -184,7 +190,12 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 	if _, err := operatortool.AuthorizeCurrent(operatortool.WithConnection(ctx, *current.connection), operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return err
 	}
+	previous := current.mode
 	current.mode = mode
+	if err := s.persistSession(ctx, current); err != nil {
+		current.mode = previous
+		return err
+	}
 	return nil
 }
 
@@ -315,6 +326,10 @@ func (s *Service) Submit(ctx context.Context, action Action) (Action, error) {
 	}
 	current.actions = append(current.actions, cloneActions([]Action{action})[0])
 	index := len(current.actions) - 1
+	if err := s.persistSession(ctx, current); err != nil {
+		current.actions = current.actions[:index]
+		return Action{}, err
+	}
 	if !current.connection.RequireConfirmation && (!RequiresConfirmation(action) || current.mode == YOLOMode) {
 		if s.actions == nil {
 			return Action{}, ErrUnavailable
@@ -329,7 +344,7 @@ func (s *Service) Submit(ctx context.Context, action Action) (Action, error) {
 			auditAction.IssueID = result.ResourceID
 		}
 		s.auditAction(ctx, auditAction, outcome)
-		_, err = s.resolveExecution(current, index, result, executeErr)
+		_, err = s.resolveExecution(ctx, current, index, result, executeErr)
 	}
 	return cloneActions(current.actions[index : index+1])[0], err
 }
@@ -352,7 +367,7 @@ func (s *Service) RejectConnectionAction(ctx context.Context, id, actionID strin
 		return s.conversation(current), ErrActionNotPending
 	}
 	s.auditAction(ctx, current.actions[index], "rejected")
-	return s.rejectAction(current, index)
+	return s.rejectAction(ctx, current, index)
 }
 
 // ConnectionResult is the only credential delivery path. Browser conversations

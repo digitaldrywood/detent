@@ -166,7 +166,10 @@ func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, er
 
 // authenticateAPIToken is shared by HTTP authentication and operator execution.
 func (s *Service) authenticateAPIToken(ctx context.Context, token, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
-	hash := apikey.HashToken(token)
+	return s.authenticateAPIHash(ctx, apikey.HashToken(token), renewalRunner, renewalOrganization)
+}
+
+func (s *Service) authenticateAPIHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
 	var credential apiCredential
 	var storedHash, createdAt, operations string
 	var revokedAt, expiresAt sql.NullString

@@ -40,6 +40,8 @@ type Service struct {
 	sessionTTL   time.Duration
 	mu           sync.Mutex
 	sessions     map[string]*session
+	store        SessionStore
+	resolve      func(context.Context, operatortool.Identity) (operatortool.Authority, error)
 }
 
 type session struct {
@@ -227,15 +229,20 @@ func (s *Service) Confirm(ctx context.Context, sessionID string, actionID string
 		ctx, err = authorizeAction(ctx, *current.connection, current.actions[index])
 		if err != nil {
 			s.auditAction(ctx, current.actions[index], "denied")
-			return s.resolveAction(current, index, "Operator access is unavailable.", err)
+			return s.resolveAction(ctx, current, index, "Operator access is unavailable.", err)
 		}
+		previous := current.actions[index]
 		current.actions[index].Mode = current.mode
 		current.actions[index].Mutation.Mode = string(current.mode)
 		current.actions[index].Mutation.Confirmation = "approved"
+		if err := s.persistSession(ctx, current); err != nil {
+			current.actions[index] = previous
+			return s.conversation(current), err
+		}
 		s.auditAction(ctx, current.actions[index], "approved")
 	}
 	if s.actions == nil {
-		return s.resolveAction(current, index, "Action execution is unavailable.", ErrUnavailable)
+		return s.resolveAction(ctx, current, index, "Action execution is unavailable.", ErrUnavailable)
 	}
 	result, err := s.actions.ExecuteAction(ctx, current.actions[index])
 	outcome := "succeeded"
@@ -247,10 +254,10 @@ func (s *Service) Confirm(ctx context.Context, sessionID string, actionID string
 		auditAction.IssueID = result.ResourceID
 	}
 	s.auditAction(ctx, auditAction, outcome)
-	return s.resolveExecution(current, index, result, err)
+	return s.resolveExecution(ctx, current, index, result, err)
 }
 
-func (s *Service) Reject(sessionID string, actionID string) (Conversation, error) {
+func (s *Service) Reject(ctx context.Context, sessionID string, actionID string) (Conversation, error) {
 	current := s.session(sessionID)
 	current.mu.Lock()
 	defer current.mu.Unlock()
@@ -264,14 +271,19 @@ func (s *Service) Reject(sessionID string, actionID string) (Conversation, error
 	if current.connection != nil {
 		return s.conversation(current), operatortool.ErrAccessDenied
 	}
-	return s.rejectAction(current, index)
+	return s.rejectAction(ctx, current, index)
 }
 
-func (s *Service) rejectAction(current *session, index int) (Conversation, error) {
+func (s *Service) rejectAction(ctx context.Context, current *session, index int) (Conversation, error) {
+	previous := current.actions[index]
 	now := s.now().UTC()
 	current.actions[index].Status = ActionRejected
 	current.actions[index].Result = "Cancelled by the operator."
 	current.actions[index].ResolvedAt = &now
+	if err := s.persistSession(ctx, current); err != nil {
+		current.actions[index] = previous
+		return s.conversation(current), err
+	}
 	s.appendAssistant(current, "Cancelled the proposed action.", false)
 	return s.conversation(current), nil
 }
@@ -290,7 +302,7 @@ func (s *Service) providerFailureAfterUser(current *session, err error) (Convers
 	return s.conversation(current), err
 }
 
-func (s *Service) resolveExecution(current *session, index int, result ActionExecution, actionErr error) (Conversation, error) {
+func (s *Service) resolveExecution(ctx context.Context, current *session, index int, result ActionExecution, actionErr error) (Conversation, error) {
 	if actionErr == nil {
 		if current.actions[index].Kind == ActionKind(operatortool.SessionLogout) && result.SignOut != nil {
 			copy := *result.SignOut
@@ -305,10 +317,10 @@ func (s *Service) resolveExecution(current *session, index int, result ActionExe
 		current.actions[index].Revision = result.Revision
 		current.actions[index].CommentID = result.CommentID
 	}
-	return s.resolveAction(current, index, result.Message, actionErr)
+	return s.resolveAction(ctx, current, index, result.Message, actionErr)
 }
 
-func (s *Service) resolveAction(current *session, index int, result string, actionErr error) (Conversation, error) {
+func (s *Service) resolveAction(ctx context.Context, current *session, index int, result string, actionErr error) (Conversation, error) {
 	now := s.now().UTC()
 	current.actions[index].ResolvedAt = &now
 	current.actions[index].Result = strings.TrimSpace(result)
@@ -318,6 +330,9 @@ func (s *Service) resolveAction(current *session, index int, result string, acti
 		if current.actions[index].Result != "" {
 			message = current.actions[index].Result
 		}
+		if err := s.persistSession(ctx, current); err != nil {
+			return s.conversation(current), errors.Join(actionErr, err)
+		}
 		s.appendAssistant(current, message, true)
 		return s.conversation(current), actionErr
 	}
@@ -325,6 +340,9 @@ func (s *Service) resolveAction(current *session, index int, result string, acti
 	message := current.actions[index].Result
 	if message == "" {
 		message = "Action completed."
+	}
+	if err := s.persistSession(ctx, current); err != nil {
+		return s.conversation(current), err
 	}
 	s.appendAssistant(current, message, false)
 	return s.conversation(current), nil
@@ -348,7 +366,7 @@ func (s *Service) session(sessionID string) *session {
 	if current == nil {
 		current = &session{lastUsedAt: now}
 		s.sessions[sessionID] = current
-	} else {
+	} else if s.store == nil {
 		current.lastUsedAt = now
 	}
 	return current
