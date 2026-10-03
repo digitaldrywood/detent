@@ -196,6 +196,36 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if current := readWorkItem(t, f, created.WorkItemID, ""); current.Revision != 4 || len(current.Dependencies) != 1 {
 		t.Fatalf("foreign dependency changed item=%+v", current)
 	}
+	for _, test := range []struct {
+		name, reference string
+		code            string
+	}{
+		{"stale revision", identifier, "revision_conflict"},
+		{"foreign stale revision", string(foreign.WorkItemID), ""},
+		{"foreign alias stale revision", "prj_foreign#" + strconv.Itoa(created.Number), ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			raw, failed := call(operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "title": "Correction", "expected_revision": 3})
+			var conflict operatortool.ConflictError
+			if !failed {
+				t.Fatal("stale edit succeeded")
+			}
+			if test.code != "" {
+				if err := json.Unmarshal(raw, &conflict); err != nil || conflict.Code != test.code || conflict.CurrentRevision != 4 {
+					t.Fatalf("conflict=%s %v", raw, err)
+				}
+			} else if len(raw) != 0 {
+				t.Fatalf("foreign context leaked: %s", raw)
+			}
+		})
+	}
+	for range 2 {
+		raw, failed := call(operatortool.EditItem, "fresh correction", map[string]any{"identifier": identifier, "title": "Correction", "expected_revision": 4})
+		var corrected tracker.NativeIssue
+		if err := json.Unmarshal(raw, &corrected); err != nil || failed || corrected.Revision != 5 || corrected.Title != "Correction" {
+			t.Fatalf("fresh edit/replay=%s %v", raw, err)
+		}
+	}
 }
 
 // GitHub-compatible relationships, ordering and priority use the same commands

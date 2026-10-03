@@ -3,6 +3,8 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -225,7 +227,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
 	if err != nil {
-		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
+		return operatortool.Result{}, safeNativeWorkError(err)
 	}
 	outcome = "succeeded"
 	metadata.RetryIdentity, metadata.InputHash = "", ""
@@ -263,4 +265,36 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
 	return operatortool.Result{Content: content}, nil
+}
+
+func operatorNativeConflict(err error) error {
+	var projected *operatortool.ConflictError
+	if errors.As(err, &projected) {
+		return projected
+	}
+	var failure *nativeError
+	if !errors.As(err, &failure) || failure.status != http.StatusConflict {
+		return nil
+	}
+	switch failure.Code {
+	case "revision_conflict":
+		return &operatortool.ConflictError{Code: failure.Code, CurrentRevision: int64(failure.CurrentRevision)}
+	case "stale_execution":
+		if len(failure.Details) == 0 {
+			return &operatortool.ConflictError{Code: failure.Code}
+		}
+		expected, current, _ := staleExecutionAttempts(err)
+		return &operatortool.ConflictError{Code: failure.Code, Details: &operatortool.ConflictDetails{ExpectedAttemptID: conversationOptional(expected), CurrentAttemptID: conversationOptional(current)}}
+	}
+	return nil
+}
+
+func safeNativeWorkError(err error) error {
+	if conflict := operatorNativeConflict(err); conflict != nil {
+		return conflict
+	}
+	if safe := hubSafeChangeError(err); !errors.Is(safe, operatortool.ErrServiceUnavailable) {
+		return safe
+	}
+	return operatortool.ErrSnapshotUnavailable
 }

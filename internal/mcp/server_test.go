@@ -196,26 +196,47 @@ func TestToolCallReturnsTextContentForLegacyVersions(t *testing.T) {
 func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 	t.Parallel()
 
-	executor := &staticExecutor{err: errors.New("credential-sensitive-value invitation-secret prompt-body support-token billing-secret sentinel")}
-	client := startLiveServer(t, executor)
-	client.write(initializeRequest)
-	client.read()
-	client.write(initializedNotice)
-	client.write(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fleet_health","arguments":{}}}`)
-	response := client.read()
-	client.close()
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"internal", errors.New("credential-sensitive-value invitation-secret prompt-body support-token billing-secret sentinel"), "Operator tool is unavailable"},
+		{"revision", &operatortool.ConflictError{Code: "revision_conflict", CurrentRevision: 4}, `{"code":"revision_conflict","current_revision":"4"}`},
+		{"stale", &operatortool.ConflictError{Code: "stale_execution", Details: &operatortool.ConflictDetails{}}, `{"code":"stale_execution","details":{"expected_attempt_id":null,"current_attempt_id":null}}`},
+	} {
+		for _, version := range []string{"2024-11-05", "2025-11-25"} {
+			t.Run(test.name+"/"+version, func(t *testing.T) {
+				executor := &staticExecutor{err: fmt.Errorf("internal secret: %w", test.err)}
+				client := startLiveServer(t, executor)
+				client.write(strings.Replace(initializeRequest, "2025-11-25", version, 1))
+				client.read()
+				client.write(initializedNotice)
+				client.write(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fleet_health","arguments":{}}}`)
+				response := client.read()
+				client.close()
 
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		StructuredContent json.RawMessage `json:"structuredContent"`
-		IsError           bool            `json:"isError"`
-	}
-	decodeResult(t, response, &result)
-	if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != "Operator tool is unavailable" || len(result.StructuredContent) != 0 {
-		t.Fatalf("tool error result = %#v", result)
+				var result struct {
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+					} `json:"content"`
+					StructuredContent json.RawMessage `json:"structuredContent"`
+					IsError           bool            `json:"isError"`
+				}
+				decodeResult(t, response, &result)
+				if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != test.want {
+					t.Fatalf("tool error result = %#v", result)
+				}
+				if test.name == "internal" || version == "2024-11-05" {
+					if len(result.StructuredContent) != 0 {
+						t.Fatalf("unexpected structured error=%s", result.StructuredContent)
+					}
+				} else if string(result.StructuredContent) != test.want {
+					t.Fatalf("structured error=%s", result.StructuredContent)
+				}
+			})
+		}
 	}
 }
 

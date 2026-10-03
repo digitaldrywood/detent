@@ -261,6 +261,9 @@ func resourceSelector(r workspaceToolRequest) string {
 	return ""
 }
 func safeWorkspaceError(err error) error {
+	if conflict := operatorNativeConflict(err); conflict != nil {
+		return conflict
+	}
 	for _, safe := range []error{operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
 		if errors.Is(err, safe) {
 			return safe

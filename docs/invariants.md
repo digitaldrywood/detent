@@ -144,6 +144,15 @@ request creates no Run, Attempt, lease, approval, completion or landing evidence
 `TestNativeMoveItemArguments` and `TestActionConfirmationClassification` cover
 the transport, owner, CAS, replay and approval boundaries.
 
+Native work and conversation MCP adapters (native #250) preserve the existing
+authorized `revision_conflict` and `stale_execution` results. Their bounded
+projection carries only current revision and expected/current attempt IDs;
+internal messages and unrelated details remain unavailable. Current resource
+authority and the existing command owners still enforce preconditions and
+idempotent replay. `TestHubMCPWorkCommands`, `TestWorkspaceOperatorConversation`
+and `TestToolExecutionErrorIsDistinctFromEmptyResult` cover transport projection,
+denied authority, completed-turn rejection without dispatch and completed replay.
+
 Analytics parity (native #33, imported #3665) uses the same application adapters
 for stdio, HTTP MCP and the daemon bridge. Each direct read resolves current
 read authority and project grants before selecting projects or aggregating
