@@ -73,11 +73,27 @@ func (e hostedContextExecutor) credential(ctx context.Context, name, project str
 }
 
 func (e hostedContextExecutor) listTools(ctx context.Context) []operatortool.Definition {
+	s := e.service
+	if s.config.Hosted == nil || s.database == nil || s.database.db == nil {
+		return nil
+	}
+	catalog, err := operatorCatalog(ctx)
+	if err != nil || catalog.credential.Hosted == nil || catalog.credential.HostedRole == "account" || operatorIdentity(catalog.credential, s.config.Hosted.OrganizationID) != operatortool.ConnectionIdentity(ctx) {
+		return nil
+	}
 	definitions := []operatortool.Definition{}
 	for _, d := range operatortool.HostedContextCatalog() {
-		if _, _, err := e.credential(ctx, d.Name, ""); err == nil {
-			definitions = append(definitions, d)
+		requirement := operatortool.Requirement{Scope: apikey.ScopeRead}
+		if d.Name == operatortool.AppUpdates {
+			requirement.ResourceKind = "runners"
 		}
+		if _, err := s.authorizeCatalog(ctx, requirement); err != nil {
+			continue
+		}
+		if d.Name == operatortool.AppUpdates && !s.appAllRunnerGrants(ctx, catalog.credential) {
+			continue
+		}
+		definitions = append(definitions, d)
 	}
 	return definitions
 }

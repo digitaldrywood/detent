@@ -785,8 +785,11 @@ by the current request's authentication and its local grant projection, without
 per-tool provider calls, mutation rechecks, or token last-used writes. That
 projection stays in the request context; the MCP session retains no discovered
 permissions. Scope, lesser provider/local role, all-runner grants, and configured
-service visibility still filter discovery. Direct calls and approved mutations
-independently resolve current authority, including key/user project grant
+service visibility still filter discovery. Hosted bootstrap, update and event
+context tools use that same request-local catalog projection; listing them does
+not run their direct-call credential resolver. Update discovery still checks the
+key's project intersection against every runner project. Direct calls and
+approved mutations independently resolve current authority, including key/user project grant
 intersection, expiry and revocation. `TestHubCatalogProviderCalls` counts provider,
 resolver and administration calls for browser and project-scoped read/write/admin
 keys in shared and dedicated deployments. Principal, organization, credential and session
