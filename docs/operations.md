@@ -154,6 +154,70 @@ sidecars can safely be removed and will be recreated. Thread state and history
 contain session data: back them up and review what would be lost before manual
 pruning. Detent never prunes user-level SQLite databases.
 
+## Profiling
+
+Profiling is opt-in and disabled by default. Add this block to the instance
+`global.yaml` used by the local orchestrator or Cloud runner:
+
+```yaml
+profiling:
+  listen_addr: "127.0.0.1:6060"
+  capture:
+    enabled: true
+    interval: 15m
+    cpu_duration: 30s
+    dir: ""
+    max_age: 168h
+    max_bytes: 1GB
+```
+
+The Hub reads the same block from `detent --config /path/to/global.yaml hub
+serve ...` (or `CONFIG`/`DETENT_CONFIG`). When no instance config is supplied,
+it reads the block from `--hosted-config`, if present. All three processes
+reload profiling settings from their config file without restarting or ending
+agent sessions. Invalid reloads retain the previous settings. Listener, capture,
+and retention failures are logged through `slog` and do not stop the process.
+
+Leave `listen_addr` empty to disable live endpoints; capture works independently.
+The dedicated profiling listener accepts only loopback IP addresses or
+`localhost`, which binds directly to `127.0.0.1`. It never shares the application
+listener. For a live heap profile:
+
+```sh
+go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+```
+
+When `dir` is empty, bundles land beside the instance database under
+`profiles/orchestrator`, `profiles/runner`, or `profiles/hub`. An explicit directory
+can be absolute, home-relative, or relative to the configuration file. Each
+interval captures CPU for `cpu_duration`, then writes binary `heap.pprof`,
+`allocs.pprof`, `goroutine.pprof`, `mutex.pprof`, and `block.pprof` files alongside
+`cpu.pprof` in a UTC timestamped directory. Durations and retention bounds must
+be positive; CPU duration must not exceed the interval. `max_bytes` accepts
+integer bytes or integer sizes such as `1GB` (decimal) and `1GiB` (binary).
+
+Bundles publish only after all six profiles are written. Canceled or failed
+captures remove their incomplete directory. Retention runs at process startup,
+when capture starts, and after each capture attempt, removing bundles older than `max_age`, then the
+oldest bundles until their combined file size is at most `max_bytes`. Timestamped
+`.partial` directories left by a process crash count toward retention; unrelated
+directories and symlinks are left alone. A single bundle larger than the size
+limit is removed. Use a separate directory per process when overriding `dir`.
+
+Capture enables mutex sampling at one in five events and block sampling at an
+average of one sample per millisecond blocked; both reset to zero when capture
+is disabled or the process shuts down. Go allows only one CPU profiler at a time,
+so a live CPU request overlapping periodic capture can fail; the next capture
+interval still runs. Profiles can contain sensitive process data and are written
+with owner-only file and bundle directory permissions.
+
+Compare two recorded bundles from the same process using:
+
+```sh
+go tool pprof -diff_base /path/to/older/heap.pprof /path/to/newer/heap.pprof
+go tool pprof -diff_base /path/to/older/cpu.pprof /path/to/newer/cpu.pprof
+```
+
 ## Toolchain caches
 
 Workers use the host toolchain caches, including Go's native build and module

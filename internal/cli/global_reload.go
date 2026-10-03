@@ -384,6 +384,9 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 	if !reflect.DeepEqual(previous.Notifications, next.Notifications) {
 		fields = append(fields, globalConfigChange{Field: "notifications", RequiresRestart: true})
 	}
+	if previous.Profiling != next.Profiling {
+		fields = append(fields, globalConfigChange{Field: "profiling", Old: previous.Profiling, New: next.Profiling})
+	}
 	if !reflect.DeepEqual(previous.Auth, next.Auth) {
 		fields = append(fields, globalConfigChange{Field: "auth", RequiresRestart: true})
 	}

@@ -489,6 +489,7 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 	}{
 		{name: "environment", field: "env", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { cfg.Env = "dev" }},
 		{name: "log level", field: "log_level", mutate: func(cfg *globalconfig.Config) { cfg.LogLevel = "debug" }},
+		{name: "profiling", field: "profiling", mutate: func(cfg *globalconfig.Config) { cfg.Profiling.ListenAddr = "127.0.0.1:0" }},
 		{name: "log max size", field: "log_max_size_bytes", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 2048; cfg.LogMaxSizeBytes = &value }},
 		{name: "log backups", field: "log_max_backups", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { value := 2; cfg.LogMaxBackups = &value }},
 		{name: "GitHub token", field: "github_token", mutate: func(cfg *globalconfig.Config) { cfg.GitHubToken = "gh" }},
