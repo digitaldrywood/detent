@@ -85,6 +85,7 @@ export const makeConversationDetailState = Effect.fn("ConversationDetail.make")(
 ) {
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
+  const conversationScope = yield* Effect.scope;
   const environmentId = supervisor.target.environmentId;
   const owner = {};
   if (resumeCache) resumeCache.owner = owner;
@@ -186,7 +187,7 @@ export const makeConversationDetailState = Effect.fn("ConversationDetail.make")(
             }));
             yield* Effect.sleep(`${delay} millis`).pipe(
               Effect.andThen(Queue.offer(resubscribeSignals, undefined)),
-              Effect.forkScoped,
+              Effect.forkIn(conversationScope),
             );
             return;
           }
@@ -203,6 +204,11 @@ export const makeConversationDetailState = Effect.fn("ConversationDetail.make")(
           return;
         }
         yield* Ref.set(failures, 0);
+        yield* SubscriptionRef.update(state, (current) => ({
+          ...current,
+          status: Option.isSome(current.data) ? ("live" as const) : current.status,
+          error: Option.none(),
+        }));
         if (item.seq !== null) {
           const known = yield* SubscriptionRef.get(cursor);
           if (item.seq <= known) return;
@@ -220,10 +226,6 @@ export const makeConversationDetailState = Effect.fn("ConversationDetail.make")(
           const conversation = item.event.data;
           yield* Effect.sync(() => conversationBus.publish(conversation));
         }
-        yield* SubscriptionRef.update(state, (current) => ({
-          ...current,
-          status: Option.isSome(current.data) ? ("live" as const) : current.status,
-        }));
       }).pipe(Effect.andThen(remember)),
     );
 
