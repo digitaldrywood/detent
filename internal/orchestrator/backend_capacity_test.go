@@ -840,6 +840,9 @@ func TestRequestBackendCapacityClearLifecycle(t *testing.T) {
 					}
 				} else {
 					orch.now = func() time.Time {
+						// Run also reads the clock while publishing native admission.
+						// Restore it before entering the canceled shutdown fixture.
+						orch.now = time.Now
 						if err := orch.Run(runCtx); !errors.Is(err, context.Canceled) {
 							t.Errorf("Run() error = %v", err)
 						}
