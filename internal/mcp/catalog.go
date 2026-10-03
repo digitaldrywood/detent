@@ -24,10 +24,15 @@ func (s *session) catalog(ctx context.Context, cursor string, toolsets []string)
 	if len(toolsets) > 32 {
 		return catalogPage{}, operatortool.ErrInvalidArguments
 	}
+	registry := operatortool.Registry()
+	registered := make(map[string]bool, len(registry))
+	for _, definition := range registry {
+		registered[definition.Name] = true
+	}
 	selected := make(map[string]bool, len(toolsets))
 	for _, toolset := range toolsets {
 		known := false
-		for _, definition := range operatortool.Registry() {
+		for _, definition := range registry {
 			if definition.Meta.Toolset == toolset {
 				known = true
 				break
@@ -49,19 +54,18 @@ func (s *session) catalog(ctx context.Context, cursor string, toolsets []string)
 		}
 	}
 	// Only the same typed registry that tools/call accepts can be advertised.
-	if len(definitions) > len(operatortool.Registry()) {
+	if len(definitions) > len(registry) {
 		return catalogPage{}, errors.New("invalid catalog")
 	}
 	seen := make(map[string]bool, len(definitions))
 	canonical := make([]operatortool.Definition, 0, len(definitions))
 	for _, definition := range definitions {
-		_, ok := operatortool.Lookup(definition.Name)
-		if !ok || seen[definition.Name] {
+		if !registered[definition.Name] || seen[definition.Name] {
 			return catalogPage{}, errors.New("invalid catalog")
 		}
 		seen[definition.Name] = true
 	}
-	for _, shared := range operatortool.Registry() {
+	for _, shared := range registry {
 		if seen[shared.Name] && (len(selected) == 0 || selected[shared.Meta.Toolset]) {
 			canonical = append(canonical, shared)
 		}

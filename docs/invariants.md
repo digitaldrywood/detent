@@ -725,7 +725,9 @@ deployment availability remains explicit and never confers authority.
 MCP transport parity (#3339, native #207) uses one permission-filtered typed
 registry with toolset metadata. Tool discovery returns the complete current
 catalog by default in one response without a continuation cursor, resolving application
-discovery once regardless of catalog size. Existing opaque cursors still validate
+discovery once regardless of catalog size. Each request builds the shared registry
+once and validates membership against that request-local index; it retains no
+registry or authorization cache between requests. Existing opaque cursors still validate
 their principal/catalog digest and bounded offset against current authority,
 then return all remaining tools without another cursor. Optional
 `tools/list` metadata `detent/toolsets` selects existing registry groups after
