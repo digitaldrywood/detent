@@ -30,8 +30,14 @@ func TestRESTScopeAttribution(t *testing.T) {
 			wantTiming := []GitHubTiming{{GitHubTimingKey: GitHubTimingKey{RESTScopeKey: RESTScopeKey{tt.stage, tt.step, "issue comments", tt.outcome}, Boundary: "http_transport"}, AttemptCount: 3, TimedCount: 2, ElapsedSumNS: int64(5 * time.Millisecond), ElapsedMaxNS: int64(3 * time.Millisecond)}}
 			want := []RESTScopeCount{{RESTScopeKey{tt.stage, tt.step, "issue comments", tt.outcome}, 1}}
 			drained := scope.Drain()
-			if got := drained.Timings(); !reflect.DeepEqual(got, wantTiming) {
-				t.Fatalf("timings = %#v, want %#v", got, wantTiming)
+			gotTiming := drained.Timings()
+			if len(gotTiming) != 1 || gotTiming[0].FirstObservedAt.IsZero() || gotTiming[0].LastObservedAt.Before(gotTiming[0].FirstObservedAt) {
+				t.Fatalf("timing observation interval = %#v", gotTiming)
+			}
+			wantTiming[0].FirstObservedAt = gotTiming[0].FirstObservedAt
+			wantTiming[0].LastObservedAt = gotTiming[0].LastObservedAt
+			if !reflect.DeepEqual(gotTiming, wantTiming) {
+				t.Fatalf("timings = %#v, want %#v", gotTiming, wantTiming)
 			}
 			if got := drained.Counts(); !reflect.DeepEqual(got, want) {
 				t.Fatalf("Drain().Counts() = %#v, want %#v", got, want)

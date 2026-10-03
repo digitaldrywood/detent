@@ -106,7 +106,7 @@ func TestHubRuntimeUpdateSchedule(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := BootConfig{Global: globalconfig.Config{
+			cfg := BootConfig{Version: "0.117.35", Global: globalconfig.Config{
 				Path:   filepath.Join(t.TempDir(), "config.yaml"),
 				Client: test.client,
 				Update: globalconfig.Update{AutoCheckEnabled: true, AutoApplyEnabled: true, CheckIntervalHours: test.hours},

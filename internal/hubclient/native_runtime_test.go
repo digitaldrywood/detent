@@ -55,7 +55,13 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 		}
 		return evidence
 	}
-	for range 128 {
+	for i := range 128 {
+		// Exercise normal lease renewal while writing repeated runtime checkpoints.
+		if i%16 == 0 {
+			if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
 		observation.GitHub = nil
 		profile.AsOf = profile.AsOf.Add(time.Second)
 		observation.HeartbeatAt = profile.AsOf
@@ -111,7 +117,13 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 	if err != nil || len(raw) > 128*1024 || activity.ProjectionOmitted == 0 || activity.Dropped != 31 || activity.Breakdown().ObservedSeconds != 1060 || activity.Spans[len(activity.Spans)-1].FinishedAt != profile.AsOf {
 		t.Fatalf("authenticated bounded whole-attempt activity: bytes=%d profile=%+v err=%v", len(raw), activity, err)
 	}
-	for range 128 {
+	for i := range 128 {
+		// Exercise normal lease renewal while writing repeated runtime checkpoints.
+		if i%16 == 0 {
+			if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
 		profile.AsOf = profile.AsOf.Add(time.Second)
 		observation.HeartbeatAt = profile.AsOf
 		if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
