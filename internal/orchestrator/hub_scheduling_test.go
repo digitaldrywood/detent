@@ -232,8 +232,10 @@ func TestHubSchedulingPreservesOverloadRetryAcrossAdmissions(t *testing.T) {
 		unauthorized  bool
 		wantReleased  bool
 		nonNative     bool
+		spillover     bool
 	}{
 		{name: "unrelated newly leased work"},
+		{name: "native operator resume survives host spillover", spillover: true},
 		{name: "non-native bounded admission", nonNative: true},
 		{name: "healthy empty host capacity batch", empty: true},
 		{name: "missing status is not invalidation", empty: true, unobserved: true},
@@ -281,6 +283,9 @@ func TestHubSchedulingPreservesOverloadRetryAcrossAdmissions(t *testing.T) {
 				Project:        schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets",
 				Policy: policy.Descriptor{ID: "original-policy"},
 			})
+			if test.spillover {
+				cfg.WorkerHosts = []string{"local"}
+			}
 			var backend connector.Connector = &nativeHubSchedulingConnector{tracker}
 			if test.nonNative {
 				backend = tracker
@@ -364,7 +369,7 @@ func TestHubSchedulingPreservesOverloadRetryAcrossAdmissions(t *testing.T) {
 			}
 			select {
 			case request := <-runner.requests:
-				if request.Issue.ID != issue.ID || request.Attempt != retry.Attempt || request.RetryMode != retry.RetryMode || !reflect.DeepEqual(request.ResumeState, retry.ResumeState) {
+				if request.Issue.ID != issue.ID || request.Attempt != retry.Attempt || request.RecoveryAttemptID != retry.RecoveryAttemptID || request.RetryMode != retry.RetryMode || !reflect.DeepEqual(request.ResumeState, retry.ResumeState) {
 					t.Fatalf("resumed request changed continuation: %+v", request)
 				}
 			case <-ctx.Done():

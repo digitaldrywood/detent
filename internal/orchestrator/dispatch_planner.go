@@ -465,7 +465,7 @@ func (p dispatchPlanner) newDispatchAction(
 	if !ok && !allowMergeControl {
 		return dispatchAction{}, false
 	}
-	if retryState != nil && retryState.WorkerHost != workerHost {
+	if retryState != nil && retryState.WorkerHost != workerHost && !p.nativeWorkflow {
 		copy := *retryState
 		copy.RetryMode = runpkg.RetryModeFresh
 		copy.ResumeState = store.AgentResumeState{}
