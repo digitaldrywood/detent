@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -834,12 +836,12 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				issue = h.createInProgress(t, "Update the README")
 			}
 			source := nativeChangeSourceRepo(t)
-			remote := filepath.Join(t.TempDir(), "origin.git")
+			remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
 			nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
 			nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 			nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 			nativeChangeGit(t, source, "push", "-u", "origin", "main")
-			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -971,7 +973,16 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			h.failChanges.failVersions.Store(test.failVersion)
+			if test.failVersion {
+				// A transport outage is deferred, not a definitive refusal. This
+				// case exercises the existing review handoff for a refused version.
+				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/versions") {
+						return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"invalid_request","message":"version publication refused"}`)), Request: request}, nil
+					}
+					return h.failChanges.RoundTrip(request)
+				})
+			}
 			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 			if test.lateConflict {
 				owner := execution.(*nativeExecution)
@@ -1096,7 +1107,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			change := result.NativeChange
 			if test.failVersion {
-				if change == nil || change.ChangeID != expected.Change.ID || change.VersionID != "" || change.Reviewed || !strings.Contains(change.VersionError, "version publication unavailable") {
+				if change == nil || change.ChangeID != expected.Change.ID || change.VersionID != "" || change.Reviewed || change.Error != "" || change.VersionCode != "invalid_request" || !strings.Contains(change.VersionError, "version publication refused") {
 					t.Fatalf("runner lost refused publication result: %+v", change)
 				}
 				h.complete(t, issue.ID, change)
@@ -1284,9 +1295,28 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 	return runner.AgentTurnResult{ThreadID: "thread-native", TurnID: "turn-1"}, nil
 }
 
+// Windows Git appends metadata beneath worktrees; testing's long subtest
+// directory names can exhaust its path budget before Git creates that metadata.
+func nativeChangeTempDir(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return t.TempDir()
+	}
+	dir, err := os.MkdirTemp("", "native-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
+	return dir
+}
+
 func nativeChangeSourceRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := nativeChangeTempDir(t)
 	for _, args := range [][]string{
 		{"init", "-b", "main"}, {"config", "core.autocrlf", "false"},
 		{"config", "user.name", "Test User"}, {"config", "user.email", "test@example.com"},

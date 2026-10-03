@@ -327,8 +327,15 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 			t.Fatalf("worker lost authority after rotation: %v", err)
 		}
 		after, err := adminNative.Recovery(t.Context(), issue.WorkItemID)
-		if err != nil || after.Issue.State != before.Issue.State || after.Issue.Revision != before.Issue.Revision || !reflect.DeepEqual(after.Attempts, before.Attempts) {
-			t.Fatalf("rotation charged an issue attempt or changed its lane: %#v, %v", after, err)
+		if err != nil || len(after.Attempts) != 1 {
+			t.Fatalf("rotation lost active attempt: attempts=%d, %v", len(after.Attempts), err)
+		}
+		// Renewal advances the current lease projection, not attempt history.
+		expectedAttempt := before.Attempts[0]
+		expectedAttempt.LeaseRenewedAt = after.Attempts[0].LeaseRenewedAt
+		expectedAttempt.LeaseExpiresAt = after.Attempts[0].LeaseExpiresAt
+		if !after.Attempts[0].LeaseRenewedAt.After(before.Attempts[0].LeaseRenewedAt) || !after.Attempts[0].LeaseExpiresAt.Equal(renewed.LeaseExpiresAt) || after.Issue.State != before.Issue.State || after.Issue.Revision != before.Issue.Revision || !reflect.DeepEqual(after.Attempts[0], expectedAttempt) {
+			t.Fatal("rotation changed the issue or attempt beyond the renewed lease timestamps")
 		}
 	})
 	eligibility, err := fleetAdmin.ProjectEligibility(t.Context(), "native")

@@ -314,11 +314,17 @@ func TestNativeExecutionLandingTargetRefusesUnreviewed(t *testing.T) {
 	if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Merging"); err != nil {
 		t.Fatal(err)
 	}
-	candidates := h.candidatesIn(t, "Merging")
-	if len(candidates) != 1 {
-		t.Fatalf("candidates = %#v", candidates)
+	// Missing reviewed evidence is refused at admission, before any lease.
+	if candidates := h.candidatesIn(t, "Merging"); len(candidates) != 0 || len(h.scheduler.nativeClaims) != 0 {
+		t.Fatalf("unreviewed landing dispatched: candidates=%v claims=%d", candidates, len(h.scheduler.nativeClaims))
 	}
-	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+	// Adopt an eligible coding claim, then move the item while that claim is
+	// held. The landing reader must independently refuse the missing evidence.
+	if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Todo"); err != nil {
+		t.Fatal(err)
+	}
+	h.claim(t, issue.ID)
+	if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Merging"); err != nil {
 		t.Fatal(err)
 	}
 	execution := h.scheduler.RunExecution(issue.ID).(runner.LandingExecution)
