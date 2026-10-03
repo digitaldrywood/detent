@@ -321,12 +321,9 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 	if scope == nil || id <= 0 {
 		return nil
 	}
-	var item, lane string
-	if err := tx.QueryRowContext(ctx, "SELECT native_id, revision, ws.detent_state FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.id=? AND i.organization_id=? AND i.project_id=?", id, scope.organization, scope.project).Scan(&item, &decision.WorkItemRevision, &lane); err != nil {
+	var item string
+	if err := tx.QueryRowContext(ctx, "SELECT native_id, revision FROM issues WHERE id=? AND organization_id=? AND project_id=?", id, scope.organization, scope.project).Scan(&item, &decision.WorkItemRevision); err != nil {
 		return err
-	}
-	if !strings.EqualFold(strings.TrimSpace(lane), "Merging") {
-		return nil
 	}
 	decision.At = now
 	decision.RunnerID = scope.credential.Runner.RunnerID
