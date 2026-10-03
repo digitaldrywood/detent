@@ -44,6 +44,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 AND ws.termi
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
+	defer rows.Close() // Early-return safety; explicit closes below preserve errors before subsequent transaction queries.
 	var existing string
 	for rows.Next() {
 		var id, body string

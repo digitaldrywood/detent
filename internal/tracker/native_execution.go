@@ -175,15 +175,15 @@ type NativeAdmissionContext struct {
 
 func (c NativeAdmissionContext) Validate() error {
 	if c.ObservedAt.IsZero() || c.PolicyID == "" || len(c.PolicyID) > 128 {
-		return errors.New("Admission context requires a bounded policy identity")
+		return errors.New("admission context requires a bounded policy identity")
 	}
 	for _, values := range [][]string{c.WorkflowStates, c.Authors, c.Assignees, c.LabelInclude, c.LabelExclude} {
 		if len(values) > 32 {
-			return errors.New("Admission selectors exceed their bound")
+			return errors.New("admission selectors exceed their bound")
 		}
 		for _, value := range values {
 			if strings.TrimSpace(value) == "" || len(value) > 128 {
-				return errors.New("Invalid admission selector")
+				return errors.New("invalid admission selector")
 			}
 		}
 	}

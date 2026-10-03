@@ -32,9 +32,10 @@ func FromNativeEvidence(e tracker.NativeRuntimeEvidence) IssueExplanation {
 	}
 	current := e.Scheduling
 	state := EligibilityUnknown
-	if current.Outcome == "skipped" {
+	switch current.Outcome {
+	case "skipped":
 		state = EligibilityRefused
-	} else if current.Outcome == "ready" {
+	case "ready":
 		state = EligibilityEligible
 	}
 	r.Eligibility.Current = &EligibilityDecision{Source: current.Source, State: state, Outcome: current.Outcome, Reason: current.Reason, At: current.At}
