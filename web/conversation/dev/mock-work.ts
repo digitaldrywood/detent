@@ -124,7 +124,7 @@ function pad(index: number): string {
 }
 
 export interface WorkMock {
-  addIssue: (issue: Pick<MockIssue, "work_item_id" | "project_id" | "number" | "title" | "body" | "state" | "labels">) => void;
+  addIssue: (issue: Pick<MockIssue, "work_item_id" | "project_id" | "number" | "title" | "body" | "state" | "labels"> & Pick<Partial<MockIssue>, "priority">) => void;
   /**
    * Returns true when it answered the request.
    *

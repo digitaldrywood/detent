@@ -167,6 +167,12 @@ describe("the conversation shell", () => {
     expect(form.textContent).toContain(
       "messages in this chat become readable by everyone who can read project alpha",
     );
+    fireEvent.change(within(form).getByLabelText("Objective"), {
+      target: { value: "Preserve the lock renewal objective" },
+    });
+    fireEvent.change(within(form).getByLabelText("Priority"), {
+      target: { value: "1" },
+    });
     fireEvent.click(
       screen.getByLabelText("Share this conversation's history with the project"),
     );
@@ -181,6 +187,12 @@ describe("the conversation shell", () => {
       { timeout: 5_000 },
     );
     expect(router.state.location.pathname).not.toBe(chatPath);
+    const workItemId = router.state.location.pathname.replace("/work/i/", "");
+    const linkedIssue = await fetch(
+      `${hub!.url}/api/v2/organizations/org_mock/work-items/${workItemId}`,
+    ).then((response) => response.json());
+    expect(linkedIssue.body).toBe("Preserve the lock renewal objective");
+    expect(linkedIssue.priority).toBe(1);
 
     await waitFor(
       () =>
