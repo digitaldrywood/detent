@@ -231,25 +231,37 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 	return c.JSONBlob(http.StatusOK, result)
 }
 
-func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
-	if request.GitHubIssueURL != "" {
-		return createLinkedIssueTx(ctx, tx, scope, request, now)
-	}
+func validateNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue) (tracker.NativeProject, error) {
 	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
-		return tracker.NativeIssue{}, err
+		return tracker.NativeProject{}, err
 	}
 	if err := requireUnreservedLabels(ctx, request.Labels); err != nil {
-		return tracker.NativeIssue{}, err
+		return tracker.NativeProject{}, err
 	}
 	if err := validateNativeProvenance(scope, request.Provenance); err != nil {
-		return tracker.NativeIssue{}, err
+		return tracker.NativeProject{}, err
 	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
-		return tracker.NativeIssue{}, err
+		return tracker.NativeProject{}, err
 	}
 	if project.Profile != "native" {
-		return tracker.NativeIssue{}, nativeInvalid("Compatibility project content is externally owned")
+		return tracker.NativeProject{}, nativeInvalid("Compatibility project content is externally owned")
+	}
+	return project, nil
+}
+
+func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
+	return createNativeIssue(ctx, tx, scope, request, now, false)
+}
+
+func createNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machineIntake bool) (tracker.NativeIssue, error) {
+	if request.GitHubIssueURL != "" {
+		return createLinkedIssueTx(ctx, tx, scope, request, now)
+	}
+	project, err := validateNativeIssueDraft(ctx, tx, scope, request)
+	if err != nil {
+		return tracker.NativeIssue{}, err
 	}
 	var sourceKey any
 	if request.Provenance != nil {
@@ -279,7 +291,7 @@ func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, req
 	}
 	for _, state := range project.States {
 		if state.Name == issue.State {
-			if state.OperatorOnly && scope.credential.Scope == apiScopeWorker {
+			if state.OperatorOnly && scope.credential.Scope == apiScopeWorker && !machineIntake {
 				return tracker.NativeIssue{}, nativeInvalid("Workflow target requires an operator")
 			}
 			issue.Terminal = state.Terminal

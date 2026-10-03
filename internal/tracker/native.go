@@ -69,6 +69,7 @@ type NativeIssue struct {
 	IgnoreDependencies bool               `json:"ignore_dependencies,omitempty"`
 	NativeReference
 	WebURL             string              `json:"web_url"`
+	PublicationReused  bool                `json:"publication_reused,omitempty"`
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	State              string              `json:"state"`

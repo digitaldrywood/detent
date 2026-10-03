@@ -59,7 +59,14 @@ completion owner, including the native #26 missing-status result and deferred
 completion replay.
 
 Configured native follow-ups use the existing machine intake owner for a
-post-integration handoff. Only acceptance explicitly requiring the finished
+post-integration handoff. Host-owned native intake (native #249) carries its
+current registered runner's source lease and fencing token through the existing
+creation command. The same transaction validates current runner grants, routing,
+lease and policy, then creates fixed Backlog work or records a fingerprint
+occurrence. Generic worker creation and lane transitions retain operator-only
+restrictions; source claims do not authorize generic cross-item comments.
+`TestNativeMachineIntakeAuthorityAndFingerprint` exercises operator-only Backlog,
+registered authority, reuse, missing/invalid/released claims and scoped refusals. Only acceptance explicitly requiring the finished
 source to be integrated or released may move to a successfully created or reused
 Backlog follow-up with its exact head, pending criteria, procedure, authorization
 and responsible owner recorded. Explicit instructions to keep the original issue

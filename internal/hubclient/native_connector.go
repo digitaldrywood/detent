@@ -149,7 +149,9 @@ func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.Issue
 }
 
 func (c *NativeConnector) createIssue(ctx context.Context, draft connector.IssueDraft, state string) (connector.Issue, error) {
-	if origin, machine := issueorigin.Parse(draft.Body); machine {
+	authority, bound := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
+	hostIntake := state == "Backlog" && bound && authority.scope == c.client.base()
+	if origin, machine := issueorigin.Parse(draft.Body); machine && !hostIntake {
 		existing, found, err := c.findIntakeIssue(ctx, func(issue tracker.NativeIssue) bool {
 			previous, ok := issueorigin.Parse(issue.Body)
 			return !issue.Terminal && ok && previous.Fingerprint == origin.Fingerprint
@@ -177,8 +179,15 @@ func (c *NativeConnector) createIssue(ctx context.Context, draft connector.Issue
 	if state == "" {
 		state = project.States[0].Name
 	}
-	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKeyForContext(ctx), Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: state})
-	return issueFromNative(issue), err
+	mutation := nativeMutationKeyForContext(ctx)
+	if hostIntake {
+		mutation.LeaseID = authority.lease.ID
+		mutation.FencingToken = authority.lease.FencingToken
+	}
+	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: mutation, Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: state})
+	result := issueFromNative(issue)
+	result.PublicationReused = issue.PublicationReused
+	return result, err
 }
 
 func (c *NativeConnector) FindIntakeIssue(ctx context.Context, marker string) (intake.Issue, bool, error) {
