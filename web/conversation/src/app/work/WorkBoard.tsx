@@ -47,6 +47,7 @@ function applyFilters(
   view: WorkViewState,
 ): readonly WorkItemView[] {
   return items.filter((item) => {
+    if (!laneVisible(view, item.state)) return false;
     if (view.state.length > 0 && !view.state.includes(item.state)) return false;
     if (view.priority.length > 0 && (item.priority === null || !view.priority.includes(item.priority)))
       return false;
