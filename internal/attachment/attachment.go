@@ -46,6 +46,11 @@ type Metadata struct {
 	AuthorizedPrincipal string            `json:"authorized_principal,omitempty"`
 }
 
+type UploadRequest struct {
+	Metadata
+	RequestID string `json:"request_id,omitempty"`
+}
+
 type SourceReference struct {
 	WorkItemID string `json:"work_item_id"`
 	CommentID  string `json:"comment_id,omitempty"`

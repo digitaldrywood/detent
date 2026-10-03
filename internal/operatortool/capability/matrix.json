@@ -36657,19 +36657,19 @@
       "tool": {
         "set": "work",
         "name": "upload_attachment",
-        "arguments": "{\"type\":\"object\",\"required\":[\"project_id\",\"name\",\"content_base64\"],\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"name\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"content_type\":{\"type\":\"string\",\"maxLength\":128},\"content_base64\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":60000}},\"additionalProperties\":false}",
+        "arguments": "{\"type\":\"object\",\"required\":[\"project_id\",\"name\",\"content_base64\",\"request_id\"],\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"name\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"content_type\":{\"type\":\"string\",\"maxLength\":128},\"content_base64\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":60000}},\"additionalProperties\":false}",
         "result": "Recorded normalized metadata and markdown reference; up to 60000 base64 input characters",
         "annotations": {
           "readOnly": false,
           "destructive": false,
-          "idempotent": false,
+          "idempotent": true,
           "openWorld": true
         }
       },
       "owner": "digitaldrywood/detent#3341",
       "status": "implemented",
-      "coverage": "TestAttachmentRoutesIsolation; TestCloudAttachmentSavedReferences; TestCloudAttachmentRetention; TestCloudAttachmentQuota",
-      "decision": "Delivered shared-entry attachment adapter (native #177/#238), with current authority and existing application/storage semantics; parent parity remains separate."
+      "coverage": "TestAttachmentRoutesIsolation; TestCloudAttachmentSavedReferences; TestCloudAttachmentRetention; TestCloudAttachmentQuota; TestAttachmentMetadataSettlement",
+      "decision": "Shared entry upload uses current authority, native_commands identity and registration receipts, and conditional immutable storage. Identical retries retain one attachment; changed input conflicts."
     },
     {
       "id": "cloudentry.attachment_metadata",

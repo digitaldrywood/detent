@@ -24,24 +24,29 @@ inventory check now requires zero pending operator rows on every invocation.
 
 Cloud issue `upload_attachment` is implemented only through shared Cloud entry:
 the tenant checks current operator write authority, then entry stores bytes and
-returns the genuine attachment receipt. Its schema has no `request_id` and its
-idempotent hint is false; retrying may allocate another attachment. Direct Hub
-markers do not establish storage success. Native #238 supplies metadata, bounded
-byte reads, deletion and explicit item/comment references. Existing content
-saves bind attachment references in the application transaction; conversation
-attachments are a separate resource with their own tools and authority.
-The public entry routes have organization-prefixed and canonical API aliases.
-Signed tenant metadata calls retain native scope and project authority;
-service-only retention, existence and object-deletion callbacks remain explicit
-non-model boundaries.
+returns the genuine attachment receipt. Supply a `request_id` of 1–128 bytes;
+reuse it only for identical upload retries. The shared application binds it to
+the current principal, organization, project and validated name, type, dimensions,
+size and SHA-256. Native command receipts retain the attachment ID across connections.
+Changed content conflicts before storage. Conditional object creation and bounded
+SHA-256 verification handle a lost storage response without overwriting bytes;
+metadata registration shares the native command transaction. Completed retries
+return recorded metadata without uploading again. Revoked access and deleted
+attachments cannot be restored through a retry. The idempotent annotation is true.
 
-Full parent acceptance still requires retry-safe Cloud uploads. The existing
-`upload_attachment` path accepts no business retry key; repeating an identical
-call allocates a distinct attachment ID and stores another object. The shared
-entry upload/application owner must supply retry identity and a durable storage
-receipt before this operation satisfies the parent's mutation-retry contract.
-The Hub's `entry_upload` authorization marker is not a storage outcome. Zero
-pending inventory rows establish capability coverage, not safe-retry acceptance.
+Native #238 supplies metadata, bounded byte reads, deletion and explicit
+item/comment references. Existing content saves bind attachment references in
+the application transaction; conversation attachments are a separate resource
+with their own tools and authority. API uploads can use the same retry contract
+with an `Idempotency-Key` header; uploads without that header keep their existing
+one-call behavior. The public entry routes have organization-prefixed and
+canonical API aliases. Signed tenant metadata calls retain native scope and
+project authority; service-only retention, existence and object-deletion
+callbacks remain explicit non-model boundaries. The Hub's `entry_upload`
+authorization marker does not establish storage success; entry replaces it with
+the application result and records the correlated mutation outcome without
+credentials or content. Interrupted uploads remain subject to the existing
+attachment maintenance cycle.
 
 Each stable operation ID has exact source-site decisions, deployment and tracker
 availability, current role/scope/grant/ownership restrictions, preconditions,

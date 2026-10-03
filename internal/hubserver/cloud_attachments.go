@@ -3,15 +3,19 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
+	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const attachmentMetadataBase = nativeBase + "/attachment-metadata"
@@ -58,11 +62,16 @@ func (s *Service) registerCloudAttachmentRoutes(e *echo.Echo) {
 
 func (s *Service) checkCloudAttachment(c echo.Context) error {
 	var input struct {
-		Size int64 `json:"size"`
+		Size   int64                     `json:"size"`
+		Upload *attachment.UploadRequest `json:"upload,omitempty"`
 	}
 	if err := c.Bind(&input); err != nil || input.Size < 0 || input.Size > attachment.MaxBytes {
 		return s.nativeAPIError(c, nativeInvalid("Invalid attachment size"))
 	}
+	if input.Upload != nil {
+		return s.prepareCloudAttachment(c, *input.Upload)
+	}
+
 	now := s.config.now()
 	used, err := s.database.hostedConsumption(c.Request().Context(), s.database.db, now)
 	if err != nil {
@@ -80,38 +89,64 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"principal_id": nativeRequestScope(c).credential.ID})
 }
 
-func (s *Service) recordCloudAttachment(c echo.Context) error {
-	var record attachment.Metadata
-	if err := c.Bind(&record); err != nil || record.Validate() != nil || record.WorkItemID != "" || record.CommentID != "" || len(record.ReferencedBy) != 0 || record.DeletedAt != nil {
-		return s.nativeAPIError(c, nativeInvalid("Invalid attachment metadata"))
+func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.UploadRequest) error {
+	input.ID = conversation.NewAttachmentID()
+	if input.Validate() != nil || strings.TrimSpace(input.RequestID) == "" || len(input.RequestID) > 128 || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil {
+		return s.nativeAPIError(c, nativeInvalid("Invalid attachment upload"))
 	}
 	scope := nativeRequestScope(c)
-	ctx := c.Request().Context()
-	tx, err := s.database.db.BeginTx(ctx, nil)
+	identity := input.Metadata
+	identity.ID, identity.ProjectID, identity.Uploader = "", "", ""
+	identity.CreatedAt = time.Time{}
+	result, err := s.executeNativeMutation(c.Request().Context(), scope, nativeCommandOptions{OperationID: "attachment.prepare " + string(scope.project), Feature: "collaboration"}, tracker.Mutation{IdempotencyKey: input.RequestID}, identity, func(_ context.Context, _ *sql.Tx, _ nativeScope, _ time.Time) (any, error) {
+		return input.Metadata, nil
+	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+	var prepared attachment.Metadata
+	if json.Unmarshal(result, &prepared) != nil {
+		return s.nativeAPIError(c, nativeInvalid("Invalid attachment receipt"))
+	}
+	var deleted bool
+	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NOT NULL)", scope.organization, scope.project, prepared.ID).Scan(&deleted); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	now := s.config.now()
-	before, err := s.database.hostedConsumption(ctx, tx, now)
+	if deleted {
+		return s.nativeAPIError(c, &nativeError{Code: "idempotency_conflict", Message: "The uploaded attachment was deleted", status: http.StatusConflict})
+	}
+	return c.JSONBlob(http.StatusOK, result)
+}
+
+func (s *Service) recordCloudAttachment(c echo.Context) error {
+	var input attachment.UploadRequest
+	if err := c.Bind(&input); err != nil || input.Validate() != nil || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil {
+		return s.nativeAPIError(c, nativeInvalid("Invalid attachment metadata"))
+	}
+	key := input.RequestID
+	if key == "" {
+		key = input.ID
+	}
+	scope := nativeRequestScope(c)
+	result, err := s.executeNativeMutation(c.Request().Context(), scope, nativeCommandOptions{OperationID: "attachment.record " + string(scope.project), Feature: "collaboration"}, tracker.Mutation{IdempotencyKey: key}, input.Metadata, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		record := input.Metadata
+		before, err := s.database.hostedConsumption(ctx, tx, now)
+		if err != nil {
+			return nil, err
+		}
+		record.ProjectID, record.Uploader, record.CreatedAt = string(scope.project), scope.credential.ID, now
+		if _, err := tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,width,height,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, record.ID, scope.organization, scope.project, record.Uploader, record.Name, record.ContentType, record.Size, record.SHA256, record.Width, record.Height, formatHubTime(now)); err != nil {
+			return nil, err
+		}
+		if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
+			return nil, err
+		}
+		return record, nil
+	})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	record.ProjectID, record.Uploader, record.CreatedAt = string(scope.project), scope.credential.ID, now
-	_, err = tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,width,height,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, record.ID, scope.organization, scope.project, record.Uploader, record.Name, record.ContentType, record.Size, record.SHA256, record.Width, record.Height, formatHubTime(now))
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	return c.JSON(http.StatusCreated, record)
+	return c.JSONBlob(http.StatusCreated, result)
 }
 
 func scanCloudAttachment(row interface{ Scan(...any) error }) (attachment.Metadata, error) {

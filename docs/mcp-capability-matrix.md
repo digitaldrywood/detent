@@ -7604,14 +7604,14 @@ Sources: [internal/operatortool/catalog.go:81](../internal/operatortool/catalog.
 Upload attachment
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3341.
-- Decision: Delivered shared-entry attachment adapter (native #177/#238), with current authority and existing application/storage semantics; parent parity remains separate.
-- Tool: `work.upload_attachment` — {"type":"object","required":["project_id","name","content_base64"],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"name":{"type":"string","minLength":1,"maxLength":256},"content_type":{"type":"string","maxLength":128},"content_base64":{"type":"string","minLength":1,"maxLength":60000}},"additionalProperties":false} → Recorded normalized metadata and markdown reference; up to 60000 base64 input characters
+- Decision: Shared entry upload uses current authority, native_commands identity and registration receipts, and conditional immutable storage. Identical retries retain one attachment; changed input conflicts.
+- Tool: `work.upload_attachment` — {"type":"object","required":["project_id","name","content_base64","request_id"],"properties":{"request_id":{"type":"string","minLength":1,"maxLength":128},"project_id":{"type":"string","minLength":1,"maxLength":256},"name":{"type":"string","minLength":1,"maxLength":256},"content_type":{"type":"string","maxLength":128},"content_base64":{"type":"string","minLength":1,"maxLength":60000}},"additionalProperties":false} → Recorded normalized metadata and markdown reference; up to 60000 base64 input characters
 - Authority: role current organization member with project authority; credential write; project current credential and principal grant intersection; ownership attachment organization/project; reference targets resolve in the same project.
 - Application: existing entry attachment metadata/byte/storage owners and tenant readCloudAttachment/referenceCloudAttachmentCommand/deleteCloudAttachmentMetadata
 - Extraction: native #177 upload retained; native #238 typed authenticated reads/reference and existing connection action approval/deletion receipt
 - Preconditions: configured private entry storage; current credential, membership and project grant; safe opaque attachment ID; no storage URL, credentials or internal authorization principal in results
-- Coverage: TestAttachmentRoutesIsolation; TestCloudAttachmentSavedReferences; TestCloudAttachmentRetention; TestCloudAttachmentQuota
-- Proposed hints: readOnly=false; destructive=false; idempotent=false; openWorld=true. Authorization/confirmation still apply.
+- Coverage: TestAttachmentRoutesIsolation; TestCloudAttachmentSavedReferences; TestCloudAttachmentRetention; TestCloudAttachmentQuota; TestAttachmentMetadataSettlement
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
 - Availability: hosted_shared / native,github / authenticated shared entry and tenant attachment owners
 - Availability: self_hosted / native,github / shared attachment service — unavailable: omitted from discovery; no shared storage owner
 - Availability: hosted_dedicated / native,github / shared attachment service — unavailable: omitted from discovery; no shared storage owner

@@ -23,17 +23,25 @@ func attachmentMCPClient(t *testing.T, browser *browser, token, protocol string)
 	t.Helper()
 	path := "/organizations/org_alpha/mcp"
 	headers := map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token, "Mcp-Protocol-Version": protocol}
-	initialized := attachmentRequest(t, browser, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+protocol+`","capabilities":{},"clientInfo":{"name":"attachment-operations","version":"1"}}}`), headers)
-	if initialized.Code != http.StatusOK {
-		t.Fatalf("initialize=%d %s", initialized.Code, initialized.Body.String())
+	if protocol != "2026-07-28" {
+		initialized := attachmentRequest(t, browser, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+protocol+`","capabilities":{},"clientInfo":{"name":"attachment-operations","version":"1"}}}`), headers)
+		if initialized.Code != http.StatusOK {
+			t.Fatalf("initialize=%d %s", initialized.Code, initialized.Body.String())
+		}
+		headers["Mcp-Session-Id"] = initialized.Header().Get("Mcp-Session-Id")
+		attachmentRequest(t, browser, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers)
 	}
-	headers["Mcp-Session-Id"] = initialized.Header().Get("Mcp-Session-Id")
-	attachmentRequest(t, browser, http.MethodPost, path, strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`), headers)
+
 	return func(name string, arguments any) (json.RawMessage, bool) {
 		t.Helper()
 		method, params := "tools/call", map[string]any{"name": name, "arguments": arguments}
 		if name == "tools/list" {
 			method, params = name, map[string]any{}
+		}
+		if protocol == "2026-07-28" {
+			params["_meta"] = map[string]any{"io.modelcontextprotocol/protocolVersion": protocol, "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]string{"name": "attachment-operations", "version": "1"}}
+			headers["Mcp-Method"] = method
+			headers["Mcp-Name"] = name
 		}
 		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "method": method, "params": params})
 		if err != nil {
@@ -237,10 +245,27 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 				t.Fatalf("key=%s", created.Body.String())
 			}
 			invoke := attachmentMCPClient(t, anonymous, credential.Token, "2025-11-25")
-			raw, failed := invoke(operatortool.UploadAttachment, map[string]string{"project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))})
+			raw, failed := invoke(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))})
 			var uploaded attachment.Metadata
 			if failed || json.Unmarshal(raw, &uploaded) != nil {
 				t.Fatalf("upload=%s", raw)
+			}
+			replay, replayFailed := invoke(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))})
+			var repeated attachment.Metadata
+			if replayFailed || json.Unmarshal(replay, &repeated) != nil || repeated.ID != uploaded.ID || !repeated.CreatedAt.Equal(uploaded.CreatedAt) {
+				t.Fatalf("upload replay=%s original=%s", replay, raw)
+			}
+			_, conflictFailed := invoke(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("changed evidence"))})
+			if !conflictFailed {
+				t.Fatal("changed upload reused receipt")
+			}
+			if decision == "reject" {
+				reconnected := attachmentMCPClient(t, anonymous, credential.Token, "2026-07-28")
+				before := len(store.requests())
+				replay, failed := reconnected(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))})
+				if failed || json.Unmarshal(replay, &repeated) != nil || repeated.ID != uploaded.ID || len(store.requests()) != before {
+					t.Fatalf("reconnected upload=%s touched storage=%v", replay, len(store.requests()) != before)
+				}
 			}
 			input := map[string]string{"project_id": project, "attachment_id": uploaded.ID, "request_id": "delete-" + decision}
 			raw, failed = invoke(operatortool.DeleteAttachment, input)
@@ -272,6 +297,10 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 				revoked := attachmentRequest(t, browser, http.MethodDelete, "/api/v2/organizations/org_alpha/api-keys/"+credential.ID, nil, map[string]string{"X-CSRF-Token": csrf})
 				if revoked.Code != 204 {
 					t.Fatalf("revoke=%d %s", revoked.Code, revoked.Body.String())
+				}
+				before := len(store.requests())
+				if _, failed := invoke(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))}); !failed || len(store.requests()) != before {
+					t.Fatal("revoked upload replay touched storage")
 				}
 			}
 			approvalPath := "/organizations/org_alpha/chat/approval"
@@ -370,6 +399,10 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 					t.Fatalf("object deletion=%s", raw)
 				}
 				if want == "succeeded" {
+					before := len(store.requests())
+					if _, failed := invoke(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))}); !failed || len(store.requests()) != before {
+						t.Fatal("deleted upload replay touched storage")
+					}
 					if raw, failed := invoke(operatortool.ReadAttachmentMetadata, map[string]string{"project_id": project, "attachment_id": uploaded.ID}); !failed {
 						t.Fatalf("deleted metadata read=%s", raw)
 					}

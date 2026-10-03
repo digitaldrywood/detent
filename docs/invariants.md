@@ -165,6 +165,19 @@ maintenance cycle. Results contain no storage URL, secret or internal authorizat
 principal. `TestAttachmentRoutesIsolation` additionally covers legacy/modern reads,
 content bounds, reference replay and foreign targets, approval/rejection, revoked
 credentials, stale previews and YOLO. Maintenance callbacks remain service-only.
+Native #26 uploads require a business request ID and share entry's optional API
+`Idempotency-Key` contract. Existing native command transactions bind the current
+principal, organization, project and validated content metadata to one upload ID
+and registration receipt. Replays reauthorize current writes, reject changed
+content and deleted uploads, and return completed metadata before storing bytes.
+Existing conditional object writes and bounded size/SHA-256 verification settle
+lost storage responses without overwriting or duplicating objects. Interrupted
+uploads use the existing attachment maintenance cycle; no retry worker, lease or
+alternate database writer is added. Entry records the actual MCP outcome with
+the trusted originating principal, mode and correlation, omitting payloads and
+credentials. Keyed concurrency, response loss, replay conflicts and revoked/deleted
+replays extend `TestAttachmentMetadataSettlement` and `TestAttachmentRoutesIsolation`.
+
 Worker screenshot capture (#197) selects only changed image paths from the
 existing attempt diff anchored before native Code/Rework execution. Unchanged
 inherited images and deleted paths are not current evidence. Programmatic

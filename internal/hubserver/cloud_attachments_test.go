@@ -175,8 +175,20 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if usage["collaboration_bytes"] != 100 {
+			var receiptBytes int64
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(response_json AS BLOB))),0) FROM native_commands WHERE operation LIKE 'attachment.record %'").Scan(&receiptBytes); err != nil {
+				t.Fatal(err)
+			}
+			if receiptBytes == 0 || usage["collaboration_bytes"] != record.Size+receiptBytes {
 				t.Fatalf("attachment bytes=%d", usage["collaboration_bytes"])
+			}
+			replay := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/attachment-metadata", body: string(body), csrf: csrf})
+			if replay.Code != http.StatusCreated || replay.Body.String() != response.Body.String() {
+				t.Fatalf("metadata replay=%d %s", replay.Code, replay.Body.String())
+			}
+			replayedUsage, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, time.Now())
+			if err != nil || replayedUsage["collaboration_bytes"] != usage["collaboration_bytes"] {
+				t.Fatalf("metadata replay consumption=%v err=%v", replayedUsage, err)
 			}
 		})
 	}
