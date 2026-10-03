@@ -24,6 +24,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 	for _, tt := range []struct {
 		name                                   string
 		pi                                     bool
+		startup                                bool
 		checkout                               bool
 		externalWorkflow                       bool
 		missingOrigin                          bool
@@ -37,6 +38,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 		{name: "failed doctor", checkout: true, doctor: doctorFail, auth: true, wantCheckout: "passed", wantDoctor: "failed", wantProvider: "passed"},
 		{name: "missing provider", checkout: true, doctor: doctorOK, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "failed"},
 		{name: "success", checkout: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
+		{name: "startup readiness ignores operational instruction estimate", startup: true, checkout: true, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
 		{name: "warnings", checkout: true, doctor: doctorWarn, auth: true, wantCheckout: "passed", wantDoctor: "warning", wantProvider: "passed"},
 		{name: "Pi auth unknown", pi: true, checkout: true, doctor: doctorOK, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "pending"},
 		{name: "configured workflow outside committed checkout", checkout: true, externalWorkflow: true, doctor: doctorOK, auth: true, wantCheckout: "passed", wantDoctor: "passed", wantProvider: "passed"},
@@ -70,6 +72,9 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 					body += "agents:\n  backends:\n    - id: pi\n      kind: pi_agent\n  routes:\n    - backend: pi\n      default: true\n"
 				}
 				body += "---\nPRIVATE WORKFLOW\n"
+				if tt.startup {
+					body += strings.Repeat("Read `gate.run` before review.\n", 3000)
+				}
 				if !tt.missingWorkflow {
 					if err := os.WriteFile(workflowPath, []byte(body), 0600); err != nil {
 						t.Fatal(err)
@@ -102,6 +107,9 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 				doctors++
 				if c.ProjectID != "orders" || c.ConfigPath != path || c.AllowWriteProbes || c.Flags.Port.Value != 0 {
 					t.Fatalf("wrong doctor context: %+v", c)
+				}
+				if tt.startup {
+					return runDoctorStartupPreflight(t.Context(), c, options{}, doctorDeps{})
 				}
 				return doctorReport{Checks: []doctorCheck{{Status: tt.doctor, Detail: "secret-token PRIVATE WORKFLOW", Hint: "secret-hint"}}}
 			}, func(_ context.Context, b workflowconfig.AgentBackend) bool { auths++; return tt.auth })

@@ -142,7 +142,7 @@ func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, cli
 			return nil, err
 		}
 		checks := collectRunnerLocalChecks(ctx, cfg, selected.ID, func(ctx context.Context, cfg doctorConfig) doctorReport {
-			return runDoctor(ctx, cfg, options{}, doctorDeps{})
+			return runDoctorStartupPreflight(ctx, cfg, options{}, doctorDeps{})
 		}, probeRunnerProviderAuth)
 		if checks.Checkout == "passed" {
 			_, _, descriptor, err := resolveRunnerSetupPolicy(ctx, cfg.Path, selected.ID)
