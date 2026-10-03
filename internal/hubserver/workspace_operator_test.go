@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/workspacefiles"
@@ -462,6 +463,88 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 		if err != nil || !strings.Contains(string(result.Content), "live") {
 			t.Fatalf("%s=%s %v", name, result.Content, err)
 		}
+	}
+	requireNativeStatus(t, f.link(t, f.token, id, "link-stale", true, "Completed item"), http.StatusOK)
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET execution_json = json_set(execution_json, '$.attempt_id', 'att_523', '$.turn_id', '', '$.status', 'completed') WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	before := f.snapshot(t, f.token, id)
+	var generation int64
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE native_id = ?", before.Conversation.WorkItemID).Scan(&generation); err != nil {
+		t.Fatal(err)
+	}
+	staleInput := map[string]any{"kind": "message", "text": "Late steer", "expected": map[string]any{"attempt_id": "att_523", "turn_id": "turn_finished"}}
+	revoked := workspaceOperatorContext(t, f.service, f.other, string(f.project.OrganizationID), "revoked-stale")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = created_at WHERE id = ?", f.otherID); err != nil {
+		t.Fatal(err)
+	}
+	for _, denied := range []context.Context{t.Context(), revoked} {
+		_, err := workspaceOperatorCall(t, f.service, denied, "post_conversation_command", map[string]any{"project_id": f.project.ID, "conversation_id": id, "request_id": "denied-stale", "input": staleInput})
+		if !errors.Is(err, operatortool.ErrAccessDenied) {
+			t.Fatalf("unauthorized stale command=%v", err)
+		}
+	}
+	for _, test := range []struct {
+		name, project, token string
+		conflict             bool
+		status               int
+	}{
+		{"stale completed turn", string(f.project.ID), f.token, true, http.StatusOK},
+		{"foreign project stale turn", "foreign", f.token, false, http.StatusOK},
+		{"missing credential stale turn", string(f.project.ID), "", false, http.StatusUnauthorized},
+		{"revoked credential stale turn", string(f.project.ID), f.other, false, http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := map[string]any{"project_id": test.project, "conversation_id": id, "request_id": test.name, "input": staleInput}
+			if test.conflict {
+				args["request_id"] = "application-stale"
+				_, err := workspaceOperatorCall(t, f.service, ctx, "post_conversation_command", args)
+				var conflict *operatortool.ConflictError
+				if !errors.As(err, &conflict) || conflict.Code != "stale_execution" || conflict.Details == nil || conflict.Details.CurrentAttemptID == nil || *conflict.Details.CurrentAttemptID != "att_523" {
+					t.Fatalf("application conflict=%v", err)
+				}
+				args["request_id"] = test.name
+			}
+			body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "post_conversation_command", "arguments": args, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}}}
+			response := performHubWorkCall(t, f.service, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/mcp", test.token, "post_conversation_command", body)
+			requireNativeStatus(t, response, test.status)
+			if test.status != http.StatusOK {
+				if strings.Contains(response.Body.String(), "att_523") || strings.Contains(response.Body.String(), "turn_finished") {
+					t.Fatalf("unauthorized context leaked=%s", response.Body)
+				}
+				return
+			}
+			var envelope struct {
+				Result struct {
+					IsError  bool                       `json:"isError"`
+					Conflict operatortool.ConflictError `json:"structuredContent"`
+				} `json:"result"`
+			}
+			decodeHubResponse(t, response, &envelope)
+			conflict := envelope.Result.Conflict
+			if !envelope.Result.IsError {
+				t.Fatal("late steer succeeded")
+			}
+			if test.conflict {
+				if conflict.Code != "stale_execution" || conflict.Details == nil || conflict.Details.ExpectedAttemptID == nil || *conflict.Details.ExpectedAttemptID != "att_523" || conflict.Details.CurrentAttemptID == nil || *conflict.Details.CurrentAttemptID != "att_523" {
+					t.Fatalf("MCP conflict=%s", response.Body)
+				}
+			} else if conflict.Code != "" || strings.Contains(response.Body.String(), "att_523") || strings.Contains(response.Body.String(), "turn_finished") {
+				t.Fatalf("foreign context leaked=%s", response.Body)
+			}
+		})
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = NULL WHERE id = ?", f.otherID); err != nil {
+		t.Fatal(err)
+	}
+	after := f.snapshot(t, f.token, id)
+	var afterGeneration int64
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE native_id = ?", before.Conversation.WorkItemID).Scan(&afterGeneration); err != nil || afterGeneration != generation || after.Conversation.Execution.Status != conversation.ExecutionCompleted || len(after.Messages) != len(before.Messages) {
+		t.Fatalf("late steer changed conversation/dispatch: before=%+v after=%+v generation=%d/%d err=%v", before.Conversation, after.Conversation, generation, afterGeneration, err)
+	}
+	result, err = workspaceOperatorCall(t, f.service, reconnect, "post_conversation_command", map[string]any{"project_id": f.project.ID, "conversation_id": id, "request_id": "post", "input": map[string]any{"kind": "message", "text": "A single message"}})
+	if err != nil || workspaceOperatorAction(t, result).Status != chat.ActionSucceeded {
+		t.Fatalf("completed effect replay=%s %v", result.Content, err)
 	}
 	subject := f.nativeFixture.create(t, "question subject")
 	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-subject")
@@ -984,6 +1067,31 @@ func TestWorkspaceOperatorBrowserApproval(t *testing.T) {
 // Catches missing services accidentally falling through to nil runtimes or raw
 // internal errors, even when discovery is bypassed.
 func TestWorkspaceOperatorUnavailable(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"revision projection", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, Details: map[string]any{"credential": "credential-secret"}, status: http.StatusConflict}, `{"code":"revision_conflict","current_revision":"4"}`},
+		{"stale projection", &nativeError{Code: "stale_execution", Message: "credential-secret", Details: map[string]any{"credential": "credential-secret", "expected_attempt_id": conversationOptional("att_old"), "current_attempt_id": conversationOptional("att_current")}, status: http.StatusConflict}, `{"code":"stale_execution","details":{"expected_attempt_id":"att_old","current_attempt_id":"att_current"}}`},
+		{"internal", errors.New("credential-secret"), ""},
+		{"unrelated conflict", &nativeError{Code: "internal-conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusConflict}, ""},
+		{"denied revision", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusForbidden}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := safeWorkspaceError(test.err)
+			if test.want == "" {
+				if !errors.Is(err, errWorkspaceOperationUnavailable) {
+					t.Fatalf("unsafe projection=%v", err)
+				}
+				return
+			}
+			result, encodeErr := operatortool.EncodeResult(err)
+			if encodeErr != nil || string(result.Content) != test.want {
+				t.Fatalf("projection=%s %v", result.Content, encodeErr)
+			}
+		})
+	}
 	f := newDefaultNativeFixture(t, Config{})
 	ctx := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "unavailable")
 	for _, test := range []struct {

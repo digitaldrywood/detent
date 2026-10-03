@@ -220,7 +220,7 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 		if meta.Modern {
 			if err := s.ensureBridge(ctx, meta.Client); err != nil {
 				if message.Method == "tools/call" {
-					return s.writeVersionResult(message.ID, version, message.Method, toolCallResult{Content: []textContent{{Type: "text", Text: safeToolError(err)}}, IsError: true})
+					return s.writeVersionResult(message.ID, version, message.Method, failedToolCallResult(version, err))
 				}
 				return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
 			}
@@ -412,10 +412,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 			return
 		}
 		if err != nil {
-			if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, toolCallResult{
-				Content: []textContent{{Type: "text", Text: safeToolError(err)}},
-				IsError: true,
-			}); writeErr != nil {
+			if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, failedToolCallResult(protocolVersion, err)); writeErr != nil {
 				return
 			}
 			return
@@ -605,4 +602,16 @@ func safeToolError(err error) string {
 		}
 	}
 	return "Operator tool is unavailable"
+}
+
+func failedToolCallResult(protocolVersion string, err error) toolCallResult {
+	var conflict *operatortool.ConflictError
+	if errors.As(err, &conflict) {
+		if result, encodeErr := operatortool.EncodeResult(conflict); encodeErr == nil {
+			failure := successfulToolCallResult(protocolVersion, result.Content)
+			failure.IsError = true
+			return failure
+		}
+	}
+	return toolCallResult{Content: []textContent{{Type: "text", Text: safeToolError(err)}}, IsError: true}
 }
