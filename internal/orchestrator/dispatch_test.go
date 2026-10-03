@@ -1808,6 +1808,33 @@ func TestAuthorizationFilterHintUsesTopLevelSelectorFields(t *testing.T) {
 
 			got := authorizationFilterHint(tt.auth, tt.ctx)
 			assertIssueFilterHint(t, got, tt.want)
+			now := time.Date(2026, 10, 3, 10, 41, 57, 0, time.UTC)
+			o := &Orchestrator{cfg: normalizeConfig(Config{ActiveStates: []string{"Todo"}, Authorization: tt.auth, SelectorContext: tt.ctx}), now: func() time.Time { return now }}
+			o.cfg.Policy.ID = "policy_current"
+			if _, observed := o.NativeAdmissionContext(); observed {
+				t.Fatal("unpublished selectors became current admission context")
+			}
+			state := State{}
+			o.publishState(t.Context(), &state)
+			o.cfg.Authorization.Labels.Exclude = []string{"replacement"}
+			current, observed := o.NativeAdmissionContext()
+			if !observed || current.PolicyID != "policy_current" || !current.ObservedAt.Equal(now) || !slices.Equal(current.WorkflowStates, []string{"todo"}) {
+				t.Fatalf("admission context lost publication identity: %#v", current)
+			}
+			assertIssueFilterHint(t, connector.IssueFilterHint{Authors: current.Authors, Assignees: current.Assignees, LabelInclude: current.LabelInclude, LabelExclude: current.LabelExclude}, tt.want)
+			if len(current.LabelInclude) > 0 {
+				current.LabelInclude[0] = "reader-mutation"
+				unchanged, _ := o.NativeAdmissionContext()
+				if !slices.Equal(unchanged.LabelInclude, tt.want.LabelInclude) {
+					t.Fatal("admission reader mutated published selectors")
+				}
+			}
+			next := State{}
+			o.publishState(t.Context(), &next)
+			updated, _ := o.NativeAdmissionContext()
+			if !slices.Equal(updated.LabelExclude, []string{"replacement"}) {
+				t.Fatalf("new publication retained old selector context: %#v", updated)
+			}
 		})
 	}
 }

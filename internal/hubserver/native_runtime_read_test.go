@@ -177,6 +177,17 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 			if err != nil || slices.Contains(evidence.Unavailable, "capacity_projection_truncated") != truncated || evidence.CurrentLease == nil || evidence.CurrentLease.ID != lease.ID {
 				t.Fatalf("runtime truncation or fenced lease lost: unavailable=%v lease=%#v error=%v", evidence.Unavailable, evidence.CurrentLease, err)
 			}
+			if total == 101 {
+				currentScope := scope
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM runner_identities WHERE organization_id=? ORDER BY id DESC LIMIT 1", scope.organization).Scan(&currentScope.credential.Runner.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				currentQuery := &runtimeReadQuery{nativeQueryer: f.service.database.db}
+				current, truncated, err := readRuntimeRunners(t.Context(), currentQuery, currentScope, now)
+				if err != nil || !truncated || len(current) != 100 || current[0].RunnerID != currentScope.credential.Runner.RunnerID || len(currentQuery.statements) != 4 {
+					t.Fatalf("bounded runtime projection dropped current registered runner: runners=%d truncated=%v queries=%d error=%v", len(current), truncated, len(currentQuery.statements), err)
+				}
+			}
 			t.Logf("%d runners sharing a host/provider: %d capacity queries", total, len(q.statements))
 		})
 	}

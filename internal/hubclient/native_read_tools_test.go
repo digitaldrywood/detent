@@ -54,6 +54,29 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	selected, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Runner admission context", Body: "private-admission-body", State: "Todo", Labels: []string{"human-owned"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name    string
+		exclude []string
+		outcome string
+	}{
+		{name: "registered runner selectors refuse", exclude: []string{"human-owned"}, outcome: "skipped"},
+		{name: "registered runner selectors admit", outcome: "ready"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			observed := time.Now().UTC()
+			evidence, err := h.native.RuntimeEvidence(t.Context(), selected.WorkItemID, "", tracker.NativeAdmissionContext{ObservedAt: observed, PolicyID: h.descriptor.ID, WorkflowStates: []string{"Todo"}, LabelExclude: test.exclude})
+			if err != nil || len(evidence.Admission) != 1 || evidence.Admission[0].Outcome != test.outcome || evidence.Admission[0].RunnerID != file.Identity.RunnerID || evidence.Admission[0].SelectorObservedAt == nil || !evidence.Admission[0].SelectorObservedAt.Equal(observed) || evidence.LatestDecision != nil || evidence.Issue.Body != "" {
+				t.Fatalf("native runtime dropped current runner admission context: %#v, %v", evidence, err)
+			}
+		})
+	}
+	if _, err := h.admin.SetArchived(t.Context(), selected.WorkItemID, selected.Revision, true, nativeMutationKey()); err != nil {
+		t.Fatal(err)
+	}
 	h.claim(t, issue.ID)
 	file, err = runnerauth.Load(identityPath)
 	if err != nil {

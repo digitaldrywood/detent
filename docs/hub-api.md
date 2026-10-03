@@ -635,6 +635,20 @@ returns not found. An item with no recorded attempt returns explicit unavailable
 evidence. Older deployments return unsupported availability separately from
 grant denial.
 
+With `native_admission_evidence`, the same runtime read accepts a URL-encoded
+JSON `admission` parameter from the current registered runner. It contains
+`policy_id`, `observed_at`, and the runner's current `workflow_states`, `authors`,
+`assignees`, `label_include` and `label_exclude` claim filters. The JSON before URL encoding
+is bounded to 8 KiB, each filter to 32 values and each value to 128 bytes. Operator
+credentials cannot supply runner context. The existing single-item claim query
+evaluates those filters under current project grants and approved policy; no
+claim or scheduler event is written. Per-runner `admission` snapshots include
+runner revision, approved policy identity, observation times, existing refusal
+codes and unavailable predicates. Provider model requirements and home selection
+remain unavailable without actual evidence. `explain_item` projects observed
+refusals separately from historical scheduler decisions. An older Hub retains its
+existing runtime read with runner-specific selection unavailable.
+
 `GET /work-items/{item}/runtime/github-timings` requires both
 `native_attempt_id` and `runner_id`. The MCP work-read operation
 `github_scope_timings` takes those same selectors plus `project_id` and

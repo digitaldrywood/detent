@@ -34,9 +34,25 @@ func FromNativeEvidence(e tracker.NativeRuntimeEvidence) IssueExplanation {
 	state := EligibilityUnknown
 	if current.Outcome == "skipped" {
 		state = EligibilityRefused
+	} else if current.Outcome == "ready" {
+		state = EligibilityEligible
 	}
 	r.Eligibility.Current = &EligibilityDecision{Source: current.Source, State: state, Outcome: current.Outcome, Reason: current.Reason, At: current.At}
 	r.Eligibility.State = state
+	if len(e.Admission) > 0 {
+		r.Eligibility.Source = SourceAvailable
+		r.Sources = append(r.Sources, SourceStatus{Name: "native_claim_candidate_snapshot", State: SourceAvailable})
+	}
+	for _, admission := range e.Admission {
+		if admission.Outcome != "skipped" {
+			continue
+		}
+		r.Eligibility.Refusals = append(r.Eligibility.Refusals, EligibilityDecision{
+			RunnerID: admission.RunnerID, Source: admission.Source, State: EligibilityRefused,
+			Outcome: admission.Outcome, Reason: admission.Reason, ReasonCode: admission.ReasonCode, At: admission.ObservedAt,
+		})
+	}
+
 	if a := e.Attempt; a != nil {
 		r.Attempt = &Attempt{NativeID: a.AttemptID, EvidenceID: a.AttemptID, Selection: e.Selection, Status: a.Status, StartedAt: a.StartedAt, Freshness: SourceState(a.RuntimeFreshness)}
 		if a.Status != "running" && a.Status != "interrupted" {

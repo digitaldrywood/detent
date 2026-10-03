@@ -304,6 +304,17 @@ account consumer. The runtime projection omits private bodies, raw commands,
 instruction contents, paths and credentials. Focused owner, grant, stale,
 pagination, redaction and refusal regressions cover these boundaries.
 
+Native admission explanation (#253) evaluates the same bounded claim candidate
+query and current registered-runner routing/capacity owners without writing a
+lease or scheduler event. The runner supplies its published selector context and
+observation time through the existing runtime read under its current project
+grant and approved policy identity. Per-runner snapshot refusals retain existing
+codes, runner revision, source and freshness; they are distinct from recorded
+scheduler history. Missing request selectors, provider model requirements or home
+selection remain unavailable rather than inferred from labels or issue prose.
+The snapshot grants no dispatch, completion or landing authority and adds no
+parallel scheduler or persistent decision owner.
+
 Scoped runner GitHub timing reads (native #247) extend that same runtime owner.
 `github_scope_timings` and the native runtime GitHub timing API require the exact
 work item, native attempt and enrolled runner under current project read grants.
