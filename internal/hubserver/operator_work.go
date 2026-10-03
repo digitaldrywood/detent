@@ -146,6 +146,40 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		if err != nil {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
+	}
+	if operatortool.IsWorkTool(call.Name) && call.Name != operatortool.FileIssue {
+		request, err = operatortool.DecodeWorkArguments(call.Name, arguments)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		if request.Target != "pr" {
+			item, resolveErr := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Identifier)
+			if resolveErr != nil {
+				return operatortool.Result{}, hubSafeChangeError(resolveErr)
+			}
+			request.Identifier = string(item.WorkItemID)
+			fields["identifier"], err = json.Marshal(request.Identifier)
+			if err != nil {
+				return operatortool.Result{}, operatortool.ErrInvalidArguments
+			}
+			if request.Related != "" && !strings.HasPrefix(request.Related, "wi_") {
+				related, resolveErr := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Related)
+				if resolveErr != nil {
+					return operatortool.Result{}, hubSafeChangeError(resolveErr)
+				}
+				request.Related = string(related.WorkItemID)
+				fields["related"], err = json.Marshal(request.Related)
+				if err != nil {
+					return operatortool.Result{}, operatortool.ErrInvalidArguments
+				}
+			}
+		}
+	}
+	if !definition.Annotations.ReadOnly {
+		arguments, err = json.Marshal(fields)
+		if err != nil {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
 		metadata, err = metadata.Bind(selector.RequestID, arguments)
 		if err != nil {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
@@ -169,10 +203,6 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		}
 		raw, err = e.service.operatorCreateNativeWork(ctx, scope, tracker.CreateIssue{Mutation: tracker.MutationForContext(ctx, ""), GitHubIssueURL: create.GitHubIssueURL, Title: create.Title, Body: create.Description, State: create.State, Labels: create.Labels, Priority: priority})
 	} else if operatortool.IsWorkTool(call.Name) {
-		request, err = operatortool.DecodeWorkArguments(call.Name, arguments)
-		if err != nil {
-			return operatortool.Result{}, err
-		}
 		metadata.ResourceID = request.Identifier
 		if definition.Annotations.ReadOnly {
 			if call.Name != operatortool.ListComments {

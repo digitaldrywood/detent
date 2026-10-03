@@ -132,6 +132,12 @@ project-qualified identifiers resolve to one canonical action/resource identity
 before mutation binding. Authorization uses its existing query/transaction;
 foreign project prefixes and revoked grants remain unavailable. Aliases replay
 one original action and durable workflow receipt, never another transition.
+Native work-tool reads and mutations reuse that resolver before command dispatch
+and mutation binding (#242), including comment reads/writes and related local
+item references. Canonical cross-project dependency IDs retain the dependency
+owner's current project-grant checks; a foreign project-qualified alias is not
+reinterpreted as a local item number. Alias and canonical retries retain one
+comment or command receipt, with unchanged revision and replay-conflict checks.
 History records the authenticated human operator and `user_requested`; a state
 request creates no Run, Attempt, lease, approval, completion or landing evidence.
 `TestMCPConfiguredWorkflowTransitions`, `TestMCPNativeWorkCommands`,

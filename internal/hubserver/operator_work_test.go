@@ -83,14 +83,18 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		}
 	}
 	id := string(created.WorkItemID)
+	identifier := string(f.project.ID) + "#" + strconv.Itoa(created.Number)
 	var comment tracker.NativeComment
-	raw, failed = call("add_comment", "comment", map[string]any{"identifier": id, "body": "Discussion"})
+	raw, failed = call("add_comment", "comment", map[string]any{"identifier": identifier, "body": "Discussion"})
 	if err := json.Unmarshal(raw, &comment); err != nil || failed || comment.ID == "" {
 		t.Fatalf("comment=%s %v", raw, err)
 	}
 	replay, failed = call("add_comment", "comment", map[string]any{"identifier": id, "body": "Discussion"})
 	if failed || string(raw) != string(replay) {
 		t.Fatal("comment replay changed identity")
+	}
+	if _, failed := call("add_comment", "comment", map[string]any{"identifier": identifier, "body": "Changed retry"}); !failed {
+		t.Fatal("changed comment retry was accepted")
 	}
 	for _, tt := range []struct {
 		name, tool string
@@ -103,13 +107,14 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		{"comment edit", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Edited comment", "expected_revision": 1}, false},
 		{"stale comment", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Stale", "expected_revision": 1}, true},
 		{"foreign item", "add_comment", map[string]any{"identifier": "wi_foreign", "body": "Foreign"}, true},
+		{"foreign project prefix", "add_comment", map[string]any{"identifier": "prj_foreign#" + strconv.Itoa(created.Number), "body": "Foreign"}, true},
 		{"no native delete", "delete_comment", map[string]any{"comment_id": comment.ID}, true},
 		{"no hub lane writer", "move_item", map[string]any{"target_state": "Todo", "expected_revision": 2}, true},
 		{"no hub archive approval", "archive_item", map[string]any{"expected_revision": 2}, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.fields["identifier"] == nil {
-				tt.fields["identifier"] = id
+				tt.fields["identifier"] = identifier
 			}
 			_, failed := call(tt.tool, tt.name, tt.fields)
 			if failed != tt.failed {
@@ -121,10 +126,12 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if current.Title != "Edited" || current.Revision != 2 || current.Body != "Keep body" || current.Priority == nil || *current.Priority != 2 {
 		t.Fatalf("refused mutation changed item=%+v", current)
 	}
-	raw, failed = call("list_comments", "", map[string]any{"identifier": id, "limit": 1})
-	var comments tracker.Page[tracker.NativeComment]
-	if err := json.Unmarshal(raw, &comments); err != nil || failed || len(comments.Items) != 1 || comments.Items[0].Body != "Edited comment" {
-		t.Fatalf("discussion=%s %v", raw, err)
+	for _, reference := range []string{identifier, strconv.Itoa(created.Number), id} {
+		raw, failed = call("list_comments", "", map[string]any{"identifier": reference, "limit": 1})
+		var comments tracker.Page[tracker.NativeComment]
+		if err := json.Unmarshal(raw, &comments); err != nil || failed || len(comments.Items) != 1 || comments.Items[0].Body != "Edited comment" || comments.NextCursor != "" {
+			t.Fatalf("discussion=%s %v", raw, err)
+		}
 	}
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	raw, failed = call(operatortool.CreateChange, "mcp-change", map[string]any{"work_item_id": id, "title": "Operator source"})
@@ -166,6 +173,29 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatalf("Hub workflow command=%s %v", raw, err)
 		}
 	}
+	blocker := f.create(t, "blocker")
+	for _, dependency := range []struct {
+		identifier, related string
+	}{
+		{identifier, string(f.project.ID) + "#" + strconv.Itoa(blocker.Number)},
+		{id, string(blocker.WorkItemID)},
+	} {
+		raw, failed = call("set_dependency", "dependency", map[string]any{"identifier": dependency.identifier, "related": dependency.related, "operation": "add", "expected_revision": 3})
+		var item tracker.NativeIssue
+		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 4 || len(item.Dependencies) != 1 || item.Dependencies[0] != blocker.WorkItemID {
+			t.Fatalf("dependency alias/replay=%s %v", raw, err)
+		}
+	}
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "ungranted")
+	foreign := other.create(t, "foreign")
+	for _, related := range []string{"prj_foreign#" + strconv.Itoa(blocker.Number), string(foreign.WorkItemID)} {
+		if _, failed := call("set_dependency", "foreign-"+related, map[string]any{"identifier": identifier, "related": related, "operation": "add", "expected_revision": 4}); !failed {
+			t.Fatalf("foreign dependency accepted: %s", related)
+		}
+	}
+	if current := readWorkItem(t, f, created.WorkItemID, ""); current.Revision != 4 || len(current.Dependencies) != 1 {
+		t.Fatalf("foreign dependency changed item=%+v", current)
+	}
 }
 
 // GitHub-compatible relationships, ordering and priority use the same commands
@@ -193,7 +223,9 @@ func TestHubMCPCompatibilityCommands(t *testing.T) {
 	call := func(name, key string, fields map[string]any) bool {
 		t.Helper()
 		fields["project_id"] = project
-		fields["identifier"] = nativeID
+		if fields["identifier"] == nil {
+			fields["identifier"] = project + "#1"
+		}
 		fields["request_id"] = key
 		response := performHubWorkCall(t, service, path, testHubAdminToken, name, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": fields, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}}})
 		requireNativeStatus(t, response, http.StatusOK)
@@ -204,9 +236,10 @@ func TestHubMCPCompatibilityCommands(t *testing.T) {
 		fields     map[string]any
 		failed     bool
 	}{
-		{"dependency", "set_dependency", map[string]any{"related": related, "operation": "add"}, false},
+		{"dependency", "set_dependency", map[string]any{"related": project + "#2", "operation": "add"}, false},
 		{"dependency replay", "set_dependency", map[string]any{"related": related, "operation": "add"}, false},
 		{"foreign dependency", "set_dependency", map[string]any{"related": "wi_foreign", "operation": "add"}, true},
+		{"foreign related prefix", "set_dependency", map[string]any{"related": "prj_foreign#2", "operation": "add"}, true},
 		{"order", "order_item", map[string]any{"queue_scope": "fleet", "state": "Todo", "rank": "0001"}, false},
 		{"priority", "set_queue_priority", map[string]any{"queue_scope": "fleet", "state": "Todo", "queue_priority": "high"}, false},
 		{"priority replay", "set_queue_priority", map[string]any{"queue_scope": "fleet", "state": "Todo", "queue_priority": "high"}, false},
