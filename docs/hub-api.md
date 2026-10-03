@@ -38,13 +38,19 @@ service; do not store credential values in this readable script. The Hub then
 runs the pinned public bootstrap script with a fresh single-project enrollment,
 pins the runner binary to its own released version, starts the ordinary runner
 Service and creates a post-setup checkpoint. Development builds cannot provision
-members. Arbitrary command output is suppressed; logs retain stage progress and
+members and are refused before enrollment or provider side effects. Arbitrary
+command output is suppressed; logs retain stage progress and
 failure status without provider or enrollment credentials. Enrollment does not
 prove provider authentication, checkout readiness or approved repository policy.
 
 Dispatchable native mutations size the pool from queued depth and free capacity,
 including pending bootstrap and successful wakes. Paused members are woken before
-creation. Capacity estimates respect host and reported shared-provider bounds;
+creation. Demand shares the existing native candidate exclusions, rather than counting
+intake-pending, answered, workspace-only, leased or nondispatchable issues.
+Both demand and the configured floor apply only when a new Sprite's authorized
+`sprite` tag and fresh identity satisfy the approved project requirements.
+Runner or machine pins and other required tags do not enroll matching authority.
+Free capacity follows those same requirements and host/shared-provider bounds;
 claims still use the existing admission, policy, routing and lease owners. Idle
 deletion drains members only after active host leases finish and preserves the
 current floor. Heartbeats, finish/release and the existing Hub maintenance cycle

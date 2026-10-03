@@ -1768,12 +1768,21 @@ provider retry or periodic scale-up. The pool reuses runner enrollment, grants,
 leases, routing, service wake and identity revocation; it adds no dispatch owner,
 brake, recovery reason or independent reconciliation loop. Configured floor,
 ceiling and customer bootstrap are the issue's explicitly approved settings.
+Demand uses the existing native candidate owner, including intake, workspace,
+answered-attempt, dependency, dispatchability and active-lease exclusions. Ready
+capacity uses the approved policy's actual runner requirements. Both demand and
+the floor apply only when a fresh Sprite identity with its authorized `sprite`
+tag can satisfy that policy; selectors never create or grant matching identities.
+Unsupported Hub builds are refused before enrollment, member or provider side
+effects. A pinned compatible release remains required for live provisioning.
 Provider calls recheck the configuring principal and current project secret;
 members retain their original provider organization across token replacement.
 Bootstrap sends fresh enrollment through stdin and retains only known progress
 lines. Enrolled members without provider reports contribute no ready capacity.
 `TestSpriteScaleDecision`, `TestSpritePoolLifecycle`, `TestSpritePoolCapacity`,
-`TestSpritePoolFreshAuthority`, `TestSpritePoolCancelledBootstrap` and the existing
+`TestSpritePoolFreshAuthority`, `TestSpritePoolClaimableDemand`,
+`TestSpritePoolTargeting`, `TestSpritePoolUnsupportedVersionHasNoSideEffects`,
+`TestSpritePoolCancelledBootstrap` and the existing
 Sprites permissions and wake fixtures preserve these boundaries. Actual paid
 two-member work and deletion remain acceptance for the authorized live owner.
 `TestSpritePoolDeletionBoundaries` checks active leases, idle time, the floor,

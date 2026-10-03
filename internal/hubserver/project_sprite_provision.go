@@ -78,6 +78,10 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 	if s.config.Hosted == nil || settings.MaxRunners == 0 {
 		return nil
 	}
+	version := "v" + strings.TrimPrefix(s.config.Version, "v")
+	if !regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(version) {
+		return nativeInvalid("Sprite provisioning requires a Hub built from a pinned release")
+	}
 	if _, err := s.poolSpriteTokenAvailable(ctx, scope); err != nil {
 		return err
 	}
@@ -144,9 +148,6 @@ func (s *Service) poolSpriteTokenAvailable(ctx context.Context, scope nativeScop
 
 func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, member spritePoolMember, settings spritePoolSettings, enrollment runnerauth.Enrollment) error {
 	version := "v" + strings.TrimPrefix(s.config.Version, "v")
-	if !regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(version) {
-		return nativeInvalid("Sprite provisioning requires a Hub built from a pinned release")
-	}
 	body, err := json.Marshal(struct {
 		Name string `json:"name"`
 	}{Name: member.Name})

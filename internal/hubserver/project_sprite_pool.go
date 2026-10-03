@@ -10,7 +10,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -157,9 +156,22 @@ WHERE p.organization_id=? AND p.project_id=? AND (t.expires_at IS NULL OR julian
 func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, view spritePoolView) (spriteScaleInput, []spritePoolMember, error) {
 	input := spriteScaleInput{Floor: view.MinRunners, Ceiling: view.MaxRunners}
 	now := s.config.now()
-	err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN projects p ON p.id=i.project_id AND p.organization_id=i.organization_id JOIN workflow_states w ON w.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.archived=0 AND w.dispatchable=1 AND w.terminal=0 AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)) AND (p.require_dependencies=0 OR NOT EXISTS (SELECT 1 FROM issue_dependencies d JOIN issues b ON b.id=d.blocker_issue_id LEFT JOIN workflow_states bs ON bs.id=b.workflow_state_id WHERE d.dependent_issue_id=i.id AND COALESCE(bs.terminal,0)=0))`, scope.organization, scope.project, formatHubTime(now)).Scan(&input.Depth)
+	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return input, nil, err
+	}
+	approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+	if err != nil {
+		_ = tx.Rollback()
+		return input, nil, err
+	}
+	candidates, err := nativeCandidateIDs(ctx, tx, claimCandidateQuery{NativeScope: &scope, AvailableAt: now}, nil, nil, nil, nil, nil, nil, nil)
+	if err := errors.Join(err, tx.Rollback()); err != nil {
+		return input, nil, err
+	}
+	input.Depth = len(candidates)
+	if approval.Policy.Requirements.Match("", "", []string{"sprite"}) != nil {
+		input.Depth, input.Floor = 0, 0
 	}
 	ids := []string{}
 	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r JOIN token_grants g ON g.token_id=r.token_id WHERE r.organization_id=? AND g.organization_id=? AND g.project_id=? ORDER BY r.id`, scope.organization, scope.organization, scope.project)
@@ -207,7 +219,7 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 				continue
 			}
 		}
-		if len(runner.Exclusions(scope.project, policy.Requirements{}, false)) != 0 || len(runner.Problems) != 0 || len(runner.ProviderCapacity) == 0 {
+		if len(runner.Exclusions(scope.project, approval.Policy.Requirements, false)) != 0 || len(runner.Problems) != 0 || len(runner.ProviderCapacity) == 0 {
 			continue
 		}
 		free := max(min(runner.CapacityLimit, runner.ReportedCapacity)-runner.Used, 0)
