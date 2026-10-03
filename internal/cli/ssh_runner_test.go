@@ -393,7 +393,7 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool) {
 	}
 	if probe != nil {
 		probe.mu.Lock()
-		if probe.guarded != 1 || probe.finished != 1 || probe.journalRoot != cfg.Workspace.Root || probe.bundle.Capture.Head == probe.base || len(probe.bundle.Parts) < 2 || !strings.Contains(string(probe.bundle.Parts[0].Data), "remote worker") || len(probe.lastDiff.Files) != 1 || probe.lastDiff.Files[0].Path != "feature.txt" || !strings.Contains(probe.log, "Finished remote work.") || result.NativeChange == nil || result.NativeChange.ChangeID != "central-change" {
+		if probe.observations == 0 || probe.guarded != 1 || probe.finished != 1 || probe.journalRoot != cfg.Workspace.Root || probe.bundle.Capture.Head == probe.base || len(probe.bundle.Parts) < 2 || !strings.Contains(string(probe.bundle.Parts[0].Data), "remote worker") || len(probe.lastDiff.Files) != 1 || probe.lastDiff.Files[0].Path != "feature.txt" || !strings.Contains(probe.log, "Finished remote work.") || result.NativeChange == nil || result.NativeChange.ChangeID != "central-change" {
 			t.Errorf("lost central native lifecycle: guards=%d finishes=%d diff=%+v bundle=%+v log=%q result=%+v", probe.guarded, probe.finished, probe.lastDiff, probe.bundle, probe.log, result.NativeChange)
 		}
 		probe.mu.Unlock()
