@@ -1619,7 +1619,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	afterRunPending := true
 	defer func() {
 		if afterRunPending {
-			if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState)); err != nil {
+			if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false); err != nil {
 				r.logger.Warn("native execution epilogue deferred", "issue_id", req.Issue.ID, "error", err)
 			}
 		}
@@ -1640,7 +1640,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if nativeLanding {
 		afterRunPending = false
 		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue, workerGitHub, &landingTarget)
-		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState)); afterErr != nil && err == nil {
+		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false); afterErr != nil && err == nil {
 			err = afterErr
 		}
 		return result, err
@@ -1660,7 +1660,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			mergePrecheck = mergePrecheckFromWorkspace(precheck)
 			if handled {
 				afterRunPending = false
-				if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState)); err != nil {
+				if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false); err != nil {
 					return precheckResult, err
 				}
 				r.logWorkerEvent(req.Issue, "worker_after_run_finished",
@@ -2072,7 +2072,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if mode == RunModeImplement {
 		execution = r.reconcileFailedPushPublication(sessionCtx, runWorkspace, info, workspaceIssue, initialDeliverableState, execution, req)
 	}
-	turns := int64(max(execution.turnCount, 1))
 	if deliverableErr, ok := recoverablePullRequestDeliverable(execution); ok {
 		branch := strings.TrimSpace(info.Branch)
 		if branch == "" {
@@ -2104,7 +2103,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		recovery.err = classifyAgentCapacityError(backend, selection, backendConfig, recovery.result.RuntimeIdentity, recovery.err, recovery.result.RateLimits, runStartedAt)
 		initialErr := execution.err
 		execution = mergeAgentTurnExecutions(execution, recovery)
-		turns = int64(max(execution.turnCount, 1))
 		if recovery.err != nil {
 			if recoveryFailure, exhausted := PullRequestDeliverableFailure(recovery.err); exhausted {
 				execution.err = &DeliverableRecoveryError{Branch: branch, Err: errors.Join(initialErr, recovery.err)}
@@ -2138,6 +2136,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			)
 		}
 	}
+	turns := int64(execution.turnCount)
+	if execution.turnStarted && turns == 0 {
+		turns = 1
+	}
+
 	var checkpointBrake *SessionBrakeError
 	if errors.As(execution.err, &checkpointBrake) {
 		checkpointBrake.Checkpoint = execution.result.Checkpoint
@@ -2222,7 +2225,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			"error", turnErr,
 		)
 	} else {
-		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}); err != nil {
+		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}, result.TurnStarted); err != nil {
 			turnErr = errors.Join(turnErr, err)
 		}
 		r.logWorkerEvent(req.Issue, "worker_after_run_finished",
