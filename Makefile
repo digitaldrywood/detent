@@ -64,7 +64,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-hub-portability test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -169,6 +169,13 @@ test-race: test-race-hub test-race-orchestrator
 	@packages="$$(go list ./...)" && \
 	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/hubserver" && $$0 != "github.com/digitaldrywood/detent/internal/orchestrator" && $$0 != "github.com/digitaldrywood/detent/internal/workspace"')" && \
 	$(GO_TEST) -race $$packages
+
+# Windows portability retains the full Hub suite using the existing disjoint
+# partitions instead of one ten-minute budget for the entire package.
+test-hub-portability:
+	env -u DETENT_API_TOKEN go run -p $(TEST_PROCS) ./tools/testgate -parallel $(TEST_PROCS) -timeout 10m -run '$(HUB_RACE_PARTITION)' -output tmp/windows-test-evidence/hub-a ./internal/hubserver
+	env -u DETENT_API_TOKEN go run -p $(TEST_PROCS) ./tools/testgate -parallel $(TEST_PROCS) -timeout 10m -run '$(HUB_RACE_PARTITION_B)' -output tmp/windows-test-evidence/hub-b ./internal/hubserver
+	env -u DETENT_API_TOKEN go run -p $(TEST_PROCS) ./tools/testgate -parallel $(TEST_PROCS) -timeout 10m -skip '$(HUB_RACE_PARTITION)|$(HUB_RACE_PARTITION_B)' -output tmp/windows-test-evidence/hub-c ./internal/hubserver
 
 test-race-hub: test-race-hub-a test-race-hub-b test-race-hub-c
 
