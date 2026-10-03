@@ -40,6 +40,9 @@ type SchedulerConfig struct {
 	LeaseTTL           time.Duration
 	Now                func() time.Time
 	SessionID          func() (string, error)
+	// LeaseHold keeps the host awake while a native lease is held; nil selects
+	// the Sprite task hold on a Sprite and nothing elsewhere.
+	LeaseHold func(context.Context) (func(), error)
 }
 
 type Scheduler struct {
@@ -67,6 +70,9 @@ type Scheduler struct {
 	registered            bool
 	lastHeartbeat         time.Time
 	claims                map[string]tracker.Lease
+	leaseHold             func(context.Context) (func(), error)
+	leaseHoldRelease      func()
+	leaseHoldPending      bool
 }
 
 func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
@@ -103,6 +109,10 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		leaseTTL: config.LeaseTTL, now: now, sessionID: sessionID, claims: make(map[string]tracker.Lease),
 		nativeProjects: make(map[string]*NativeConnector), nativeClaims: make(map[string]nativeClaim), nativeHeartbeats: make(map[tracker.ProjectID]time.Time),
 		checkoutRepository: config.CheckoutRepository,
+		leaseHold:          config.LeaseHold,
+	}
+	if scheduler.leaseHold == nil {
+		scheduler.leaseHold = defaultLeaseHold()
 	}
 	for project, id := range config.NativeProjects {
 		native, err := client.Native(config.OrganizationID, id)
@@ -263,6 +273,7 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	delete(s.nativeClaims, issueID)
 	delete(s.claimPolicies, issueID)
 	s.mu.Unlock()
+	s.syncLeaseHold(ctx)
 	return nil
 }
 

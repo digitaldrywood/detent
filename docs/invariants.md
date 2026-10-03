@@ -79,6 +79,13 @@ hostname at a time. Each provider request uses the current project secret and
 records its own secret-use audit; duplicate hostnames do not grant authority.
 Grant removal, token revocation, heartbeat updates, workflow changes and secret
 replacement between requests take effect on the next candidate read.
+A runner on a Sprite holds the existing Sprite task for as long as it holds any
+native lease, not only while a job runs, so the gap between a job's completion
+and the dispatch of the work the lease still covers (for example a landing after
+a Code turn) cannot pause the Sprite and expire the lease. The hold is acquired
+on the first recorded native claim and released on the last; a refused hold is
+retried on the next claim. `TestSchedulerLeaseHoldFollowsNativeClaims` covers
+acquire, retain, release and reacquire.
 The existing fleet read uses the same visible project grants and audited secret
 use to verify a Sprite's provider state before displaying idle runners as
 asleep (#220). Enrollment and heartbeats report Sprite identity only when the
@@ -1790,6 +1797,10 @@ owner. `TestWakeSpriteRunnersAfterBurst` records fixture request counts, retaine
 goroutines and mutation latency; `TestWakeSpriteRunnersCancellation` covers
 context cancellation and service shutdown. This is fixture evidence of the
 conditional source risk, not a measured production incident.
+The lease-scoped Sprite hold re-scopes the existing job keep-awake onto the
+existing native claim owner; it adds no wake path, timer, configuration or
+reason code, and the wake pass keeps owning work that arrives while a Sprite
+is asleep.
 
 Native workflow MCP parity (#219) consolidates hosted requests under the existing
 workflow application command and connection approval service. It adds no lane

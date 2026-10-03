@@ -90,3 +90,14 @@ func holdSpriteTaskWith(ctx context.Context, dial func(context.Context, string, 
 		_ = call(release, http.MethodDelete, "/v1/tasks/"+name, "")
 	}, nil
 }
+
+// SpriteSocketPresent reports whether this process runs inside a Fly Sprite.
+func SpriteSocketPresent() bool {
+	return spriteSocketPresent()
+}
+
+// HoldSpriteTask keeps the Sprite awake until the returned release runs. The
+// failed callback reports a refresh that the Sprite refused.
+func HoldSpriteTask(ctx context.Context, failed func()) (func(), error) {
+	return holdSpriteTask(ctx, failed)
+}
