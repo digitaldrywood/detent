@@ -77,6 +77,17 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 			page.NextCursor = strconv.Itoa(offset + 1)
 		}
 		output = operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]{ProjectID: scheduledCloudProject, Data: operatortool.NativeItemPage(scheduledCloudProject, page)}
+	case "work_item":
+		id := args["reference"].(string)
+		for _, item := range f.items {
+			if string(item.WorkItemID) == id {
+				output = operatortool.WorkReadResult[operatortool.NativeItem]{ProjectID: scheduledCloudProject, Reference: id, Data: operatortool.NativeItemView(scheduledCloudProject, item)}
+				break
+			}
+		}
+		if output == nil {
+			return errors.New("unknown work item")
+		}
 	case "work_comments":
 		id := args["reference"].(string)
 		offset := 0
@@ -345,7 +356,7 @@ func TestCloudReport(t *testing.T) {
 
 func (f *fakeCloud) ListTools(context.Context) ([]operatortool.Definition, error) {
 	var definitions []operatortool.Definition
-	for _, name := range []string{"work_config", "work_list", "work_comments", "file_issue", "edit_item", "add_comment", "connection_info"} {
+	for _, name := range []string{"work_config", "work_list", "work_item", "work_comments", "file_issue", "edit_item", "add_comment", "connection_info"} {
 		if f.fail == name {
 			continue
 		}
@@ -387,6 +398,7 @@ func TestCloudTransport(t *testing.T) {
 		{name: "Backlog must remain nondispatchable", dispatchable: true},
 		{name: "malformed list never means no matches", badPage: "work_list"},
 		{name: "malformed comments never lose imported matches", badPage: "work_comments"},
+		{name: "malformed item detail never loses origin evidence", badPage: "work_item"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()

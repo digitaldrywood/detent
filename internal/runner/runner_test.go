@@ -3073,7 +3073,7 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 				if authority < 0 || authority < strings.LastIndex(prompt, "gh api --method POST") {
 					t.Error("native authority must follow GitHub dependency instructions")
 				}
-				for _, want := range []string{"detent hub issue", "Use --project project-2355 and work-item issue-2355", "do not use gh issue, GitHub issue labels, or GitHub issue comments"} {
+				for _, want := range []string{"supplied read tools work_item, work_comments, work_history, list_changes and get_change", "Use project_id project-2355 and work-item issue-2355", "do not use gh issue, GitHub issue labels, or GitHub issue comments"} {
 					if !strings.Contains(prompt, want) {
 						t.Errorf("native prompt missing %q", want)
 					}

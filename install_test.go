@@ -1545,7 +1545,7 @@ func assertInstalledVersionMetadata(t *testing.T, binary string, root string, en
 	if !ok {
 		t.Skip("git metadata unavailable")
 	}
-	wantCommit, ok := gitOutput(t, root, "rev-parse", "--short", "HEAD")
+	wantCommit, ok := gitOutput(t, root, "rev-parse", "HEAD")
 	if !ok {
 		t.Skip("git metadata unavailable")
 	}

@@ -264,11 +264,11 @@ func newBrowserHostedOrganizationFixture(t *testing.T, allocated bool, organizat
 func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization string, listen bool, configure ...func(*Config)) *browserHostedFixture {
 	t.Helper()
 	server := &httptest.Server{URL: "https://browser.example.test"}
+	base := server.URL
 	if listen {
 		server = httptest.NewUnstartedServer(http.NotFoundHandler())
-		server.URL = "http://" + server.Listener.Addr().String()
+		base = "http://" + server.Listener.Addr().String()
 	}
-	base := server.URL
 	provider := &browserHostedProvider{
 		base: base, organization: auth.Organization{ID: "org_browser_provider", ExternalID: organization, Name: "Browser organization"},
 		members: make(map[string]auth.Membership), sessions: make(map[string]auth.HostedIdentity), invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string), authorizations: make(map[string]string), codes: make(map[string]auth.Identity),

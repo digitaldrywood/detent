@@ -17,7 +17,7 @@ func newAttachCommand(lookup func(string) string, httpClient *http.Client) *cobr
 		httpClient = &http.Client{Timeout: time.Minute}
 	}
 	var configPath, project, organization, hubURL, identityFile, tokenEnv, name, contentType string
-	cmd := &cobra.Command{Use: "attach <file>", Short: "Upload a Cloud issue attachment and print its markdown reference", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "attach <file>", Short: "Upload a Cloud issue attachment and print its markdown reference", Example: "  detent attach screenshot.png --project my-project\n  detent attach trace.txt --project prj_example --organization org_example --hub-url https://cloud.detent.build", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := hubclient.Config{URL: hubURL, IdentityFile: identityFile, HTTPClient: httpClient}
 		selectedTokenEnv := tokenEnv
 		org, id := organization, project
