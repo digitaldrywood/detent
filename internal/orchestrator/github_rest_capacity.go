@@ -296,6 +296,11 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 		githubRESTCapacityStatusMessage(outage),
 		metadata,
 	)
+	if o.nativeWorkflow() {
+		// Native runs defer Finish to the claim owner. Settle the prepared
+		// attempt before the quota wait returns so its lease cannot hold retry.
+		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
+	}
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		o.releaseClaim(state, running.Issue.ID)
 		return true

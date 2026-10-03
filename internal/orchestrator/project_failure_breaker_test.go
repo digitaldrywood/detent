@@ -1,7 +1,6 @@
 package orchestrator_test
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -18,7 +17,7 @@ func TestRunPausesProjectAfterCorrelatedFailuresAcrossIssues(t *testing.T) {
 		issues = append(issues, testIssue(fmt.Sprintf("issue-%d", number), fmt.Sprintf("digitaldrywood/detent#%d", number), "Todo"))
 	}
 	tracker := newFakeConnector(issues...)
-	runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: errors.New("systemic backend failure")}
+	runner := &staticRunner{result: orchestrator.RunResult{TurnStarted: true}, err: instantBackendError{body: `{"message":"systemic backend failure"}`}}
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:          time.Millisecond,
 		MaxConcurrentAgents:   1,

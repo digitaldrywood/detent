@@ -548,7 +548,10 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 			if !ok || retry.Attempt != 4 || retry.Issue.State != "Merging" || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 {
 				t.Fatalf("quota completion changed item: retry %#v state %#v", retry, state.Blocked)
 			}
-			if state.RepeatedFailures[issue.ID].Count != 2 || len(state.InstantFailures) != 0 || scheduling.releases != 1 {
+			// ReleaseClaim settles deferred native Finish and frees the durable
+			// lease; a local retry cannot stand in for that completion.
+			_, claimed := state.Claimed[issue.ID]
+			if state.RepeatedFailures[issue.ID].Count != 2 || len(state.InstantFailures) != 0 || scheduling.releases != 1 || claimed {
 				t.Fatalf("attempt allowance or claim changed: %#v releases %d", state.RepeatedFailures, scheduling.releases)
 			}
 			if orch.adaptivePollInterval(&state, now) > cfg.PollInterval {
