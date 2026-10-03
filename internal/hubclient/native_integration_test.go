@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +34,7 @@ func (t nativeOnlyTransport) RoundTrip(request *http.Request) (*http.Response, e
 func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	t.Parallel()
 	const admin = "native-integration-admin"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(admin)})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(admin)})
 	if err != nil {
 		t.Fatal(err)
 	}

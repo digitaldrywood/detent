@@ -30,7 +30,7 @@ import (
 func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	const adminToken = "runner-client-test-admin"
 	const hubURL = "https://runner-hub.example.test"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken), Version: "v1.2.4"})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(adminToken), Version: "v1.2.4"})
 	if err != nil {
 		t.Fatal(err)
 	}

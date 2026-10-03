@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -208,7 +207,7 @@ type conversationRunnerHub struct {
 func newConversationRunnerHub(t *testing.T) *conversationRunnerHub {
 	t.Helper()
 	service, err := hubserver.Open(t.Context(), hubserver.Config{
-		DatabasePath:      filepath.Join(t.TempDir(), "hub.db"),
+		DatabasePath:      hubDatabasePath(t),
 		InitialAdminToken: []byte(conversationRunnerAdminToken),
 		Conversation:      &hubserver.ConversationConfig{Enabled: true},
 	})
