@@ -8,11 +8,14 @@
 // runner. These drive the whole ladder against the mock hub in its `runner`
 // mode; no DOM is involved.
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { Result } from "effect/Result";
 
 import { makeHarness, PROJECT, type Harness } from "./harness.ts";
+import { fetchEventStreamTransport, type SseFrame, type SseTransport } from "../src/runtime/rpc/sse.ts";
+import { Execution } from "../src/contracts/index.ts";
 import type { CreateConversationResponse, ExecutionStatus } from "../src/contracts/index.ts";
 import { projectCoordinatorAvailable } from "../src/contracts/index.ts";
 import type { ConversationDetail } from "../src/runtime/state/conversationState.ts";
@@ -39,8 +42,8 @@ function detailOf(h: Harness, conversationId: string): ConversationDetail {
 }
 
 /** Opens an unlinked chat whose first message is queued for a runner. */
-async function openQueuedChat(text = "Why does the lease lapse?") {
-  const h = (harness = await makeHarness({ coordinator: "runner" }));
+async function openQueuedChat(text = "Why does the lease lapse?", transport?: SseTransport) {
+  const h = (harness = await makeHarness({ coordinator: "runner", ...(transport === undefined ? {} : { transport }) }));
   const created = (await h.run(
     h.client.effects.createConversation({
       projectId: PROJECT,
@@ -141,7 +144,40 @@ describe("the runner-dispatched coordinator", () => {
   }, 20_000);
 
   it("passes the interrupting step through on the way to interrupted", async () => {
-    const { h, conversationId } = await openQueuedChat();
+    // The mock emits both execution states synchronously. Separate their
+    // delivery so atom batching cannot erase the in-flight observation.
+    let released = false;
+    let releaseStop = () => { released = true; };
+    const transport: SseTransport = (url, handlers) => {
+      let held = false;
+      let disposed = false;
+      let queued: SseFrame[] = [];
+      releaseStop = () => {
+        released = true;
+        const frames = queued;
+        queued = [];
+        held = false;
+        if (!disposed) frames.forEach(handlers.onFrame);
+      };
+      const stop = fetchEventStreamTransport()(url, {
+        onError: handlers.onError,
+        onFrame: (frame) => {
+          if (
+            !released &&
+            frame.event === "execution.updated" &&
+            Schema.decodeUnknownSync(Execution)(JSON.parse(frame.data)).status === "interrupted"
+          ) held = true;
+          if (held) queued.push(frame);
+          else handlers.onFrame(frame);
+        },
+      });
+      return () => {
+        disposed = true;
+        queued = [];
+        stop();
+      };
+    };
+    const { h, conversationId } = await openQueuedChat(undefined, transport);
     await h.control(`runner/${conversationId}/start`);
     const running = await awaitStatus(h, conversationId, "running");
     const execution = Option.getOrThrow(running.data).conversation.execution;
@@ -153,19 +189,25 @@ describe("the runner-dispatched coordinator", () => {
       const status = Option.getOrUndefined(state.data)?.conversation.execution.status;
       if (status !== undefined && seen.at(-1) !== status) seen.push(status);
     });
-    await h.run(
-      h.client.effects.sendControl({
-        projectId: PROJECT,
-        conversationId,
-        command: {
-          key: "cmd_coordinator_cancel_ladder",
-          kind: "cancel",
-          expected: { attempt_id: execution.attempt_id, turn_id: execution.turn_id },
-        },
-      }),
-    );
-    await awaitStatus(h, conversationId, "interrupted");
-    unsubscribe();
+    try {
+      await h.run(
+        h.client.effects.sendControl({
+          projectId: PROJECT,
+          conversationId,
+          command: {
+            key: "cmd_coordinator_cancel_ladder",
+            kind: "cancel",
+            expected: { attempt_id: execution.attempt_id, turn_id: execution.turn_id },
+          },
+        }),
+      );
+      await awaitStatus(h, conversationId, "interrupting");
+      releaseStop();
+      await awaitStatus(h, conversationId, "interrupted");
+    } finally {
+      unsubscribe();
+      releaseStop();
+    }
 
     // "Your stop is on its way" and "it stopped" are different sentences in the
     // strip, so the client has to be told both rather than only the outcome.
