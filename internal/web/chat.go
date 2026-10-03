@@ -113,7 +113,7 @@ func (s *Server) apiChatReject(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Chat session could not be created").SetInternal(err)
 	}
-	conversation, actionErr := s.chat.Reject(sessionID, c.Param("action_id"))
+	conversation, actionErr := s.chat.Reject(c.Request().Context(), sessionID, c.Param("action_id"))
 	if actionErr != nil {
 		s.logger.WarnContext(c.Request().Context(), "chat action rejection failed", "action_id", c.Param("action_id"), "error", actionErr)
 	}

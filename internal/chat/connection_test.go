@@ -57,7 +57,7 @@ func TestConnectionActions(t *testing.T) {
 			if err := s.SetConnectionMode(ctx, "connection", YOLOMode); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("model YOLO = %v", err)
 			}
-			if _, err := s.Reject("connection", action.ID); !errors.Is(err, operatortool.ErrAccessDenied) {
+			if _, err := s.Reject(ctx, "connection", action.ID); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("model reject = %v", err)
 			}
 			if executor.calls != 0 {

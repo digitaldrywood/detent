@@ -127,17 +127,17 @@ func TestServiceRejectsPendingProposalWithoutExecutingIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
-	conversation, err = service.Reject("browser-session", conversation.Actions[0].ID)
+	conversation, err = service.Reject(t.Context(), "browser-session", conversation.Actions[0].ID)
 	if err != nil {
 		t.Fatalf("Reject() error = %v", err)
 	}
 	if actions.calls != 0 || conversation.Actions[0].Status != ActionRejected || conversation.Actions[0].Result != "Cancelled by the operator." {
 		t.Fatalf("rejected conversation = %#v; action calls = %d", conversation, actions.calls)
 	}
-	if _, err := service.Reject("browser-session", conversation.Actions[0].ID); !errors.Is(err, ErrActionNotPending) {
+	if _, err := service.Reject(t.Context(), "browser-session", conversation.Actions[0].ID); !errors.Is(err, ErrActionNotPending) {
 		t.Fatalf("second Reject() error = %v, want ErrActionNotPending", err)
 	}
-	if _, err := service.Reject("browser-session", "missing"); !errors.Is(err, ErrActionNotFound) {
+	if _, err := service.Reject(t.Context(), "browser-session", "missing"); !errors.Is(err, ErrActionNotFound) {
 		t.Fatalf("missing Reject() error = %v, want ErrActionNotFound", err)
 	}
 }

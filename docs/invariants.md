@@ -414,6 +414,19 @@ adapters without a tracker lane writer or an INV-3 recovery/revocation mechanism
 `TestActionConfirmationClassification` and project/budget cases in
 `TestMCPActionApprovalBoundary` cover these boundaries.
 
+Hosted operator proposals and explicitly selected connection mode (#245) persist
+through the existing chat-session owner. The durable mapping preserves proposal
+IDs, request identities, exact arguments, decisions and mutation metadata;
+`native_commands` retains ownership of executed effects. Original credential and
+session references resolve current authority at confirmation and replay, never
+persisted grants, credentials or resolver closures. Secret delivery results remain
+volatile. New connections default to confirmation. The existing 24-hour lifetime
+and 128-session retention apply; read-only previews and `action_result` neither
+execute effects nor extend durable lifetime. A proposal save failure cannot
+execute its effect. `TestOperatorApprovalSurvivesHubReopen` and
+`TestOperatorApprovalReopenOriginalTokenAuthority` cover database reopen,
+unchanged read receipts, mode, original-token revocation and stale revisions.
+
 Runner batch intake reuses `commandGitHubBatchOperation` and the existing native
 receipt contract. Discovery and non-dispatchable apply execute directly;
 dispatchable apply and retry require exact operator approval. Current project
