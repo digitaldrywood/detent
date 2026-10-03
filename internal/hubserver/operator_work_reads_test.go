@@ -367,6 +367,12 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	}
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	worker := f.worker(t, "runtime-worker")
+	selectArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(second.WorkItemID)}
+	result, err = call(operatortool.ExplainItem, selectArgs)
+	var explanation explain.IssueExplanation
+	if err != nil || json.Unmarshal(result.Content, &explanation) != nil || explanation.Eligibility.Latest != nil || explanation.Eligibility.Source != explain.SourceUnavailable {
+		t.Fatalf("missing scheduler history was fabricated: %s %v", result.Content, err)
+	}
 	lease := claimNativeAttempt(t, f, worker, "runtime-machine", "runtime-session", second.WorkItemID)
 	started := nativeStartedEvent(lease)
 	at := time.Now().UTC()
@@ -412,7 +418,6 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, invalid), test.status)
 		})
 	}
-	selectArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(second.WorkItemID)}
 	result, err = call(operatortool.BoardSession, selectArgs)
 	var runtimeResult operatortool.WorkReadResult[tracker.NativeRuntimeEvidence]
 	if err != nil || json.Unmarshal(result.Content, &runtimeResult) != nil {
@@ -481,12 +486,16 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	response = performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/workflow", worker, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "runner-done", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedRevision: second.Revision, State: "Done", Reason: "worker_progress"})
 	requireNativeStatus(t, response, http.StatusOK)
 	result, err = call(operatortool.ExplainItem, selectArgs)
-	var explanation explain.IssueExplanation
 	if err != nil || json.Unmarshal(result.Content, &explanation) != nil || explanation.LatestTransition == nil || explanation.LatestTransition.Actor.Kind != "runner" || explanation.LatestTransition.Reason != "worker_progress" || explanation.Attempt.NativeID != started.Data.AttemptID || explanation.NativeRuntime.Attempt.Runtime.Landing.Landed || explanation.NativeRuntime.Attempt.Runtime.Landing.RefusalKind != "nothing_to_land" {
 		t.Fatalf("native explanation=%s %v", result.Content, err)
 	}
-	if explanation.Eligibility.Latest != nil || explanation.Eligibility.Source != explain.SourceUnavailable {
-		t.Fatal("missing scheduler history was fabricated")
+	var decisionID string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision' ORDER BY sequence DESC LIMIT 1", f.project.OrganizationID, f.project.ID, second.WorkItemID).Scan(&decisionID); err != nil {
+		t.Fatal(err)
+	}
+	decision := explanation.Eligibility.Latest
+	if decision == nil || decision.EvidenceID != decisionID || decision.Source != "native_claim" || decision.Outcome != "claimed" || !decision.Historical || explanation.Eligibility.Source != explain.SourceAvailable {
+		t.Fatalf("recorded claim history missing: %#v", explanation.Eligibility)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE organization_id=? AND project_id=? AND token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", f.project.OrganizationID, f.project.ID, apikey.HashToken(f.token)); err != nil {
 		t.Fatal(err)

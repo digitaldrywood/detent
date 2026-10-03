@@ -96,8 +96,18 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var history tracker.Page[tracker.CollaborationEvent]
 	decodeHubResponse(t, response, &history)
-	if len(history.Items) != 3 {
+	wantHistory := []string{"issue.created", "dependency.changed", "scheduler.decision", "run.started", "scheduler.decision"}
+	if len(history.Items) != len(wantHistory) {
 		t.Fatalf("history after restart = %#v", history.Items)
+	}
+	for i, kind := range wantHistory {
+		event := history.Items[i]
+		if event.Type != kind || event.AggregateSequence != int64(i+1) {
+			t.Fatalf("history event %d = %#v, want %s", i, event, kind)
+		}
+		if kind == "scheduler.decision" && (event.Data.Decision == nil || event.Data.Decision.Source != "native_claim" || event.Data.Decision.Outcome != "claimed") {
+			t.Fatalf("claim decision %d = %#v", i, event.Data.Decision)
+		}
 	}
 	f.service.config.Version = "v1.2.5"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, Reason: "completed"}), http.StatusNoContent)

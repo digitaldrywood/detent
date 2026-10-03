@@ -3,7 +3,6 @@ package hubserver
 import (
 	"database/sql"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,12 +23,24 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	var before tracker.Page[tracker.CollaborationEvent]
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &before)
-	migrations, err := fs.Sub(migrationFiles, "migrations")
+	// Exercise migration 59 alone. Current fixtures include forward-only migrations
+	// whose deployment rollback requires a binary supporting their schema version.
+	data, err := migrationFiles.ReadFile("migrations/00059_native_runtime_evidence.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()), goose.WithGoMigrations(hubGoMigrations()...))
+	migrations := fstest.MapFS{"00059_native_runtime_evidence.sql": &fstest.MapFile{Data: data}}
+	const versionTable = "runtime_migration_test_version"
+	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(versionTable), goose.WithSlog(discardLogger()))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := provider.GetVersions(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's event table already has migration 59's shape. Record only
+	// that migration in the isolated ledger, leaving the real schema ledger intact.
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.DownTo(t.Context(), 58); err != nil {
@@ -69,7 +80,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 		t.Fatalf("failed rollback changed schema: %d %v", version, err)
 	}
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
-	if len(after.Items) != 3 || after.Items[0].ID != before.Items[0].ID || after.Items[2].Type != "run.observed" {
+	if len(after.Items) != 4 || after.Items[0].ID != before.Items[0].ID || after.Items[1].Type != "scheduler.decision" || after.Items[2].Type != "run.started" || after.Items[3].Type != "run.observed" {
 		t.Fatalf("failed rollback changed evidence: %#v", after)
 	}
 }
