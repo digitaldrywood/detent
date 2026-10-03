@@ -40,7 +40,7 @@ func parseProblems(log, workspace string) []problem {
 		}
 	}
 	for raw := range strings.SplitSeq(log, "\n") {
-		line := logTime.ReplaceAllString(ansiEscape.ReplaceAllString(raw, ""), "")
+		line := strings.TrimSuffix(logTime.ReplaceAllString(ansiEscape.ReplaceAllString(raw, ""), ""), "\r")
 		var event struct {
 			Action  string
 			Package string
