@@ -488,14 +488,16 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 			}
 			for _, test := range []struct {
 				name    string
-				ctx     context.Context
+				context func() context.Context
 				visible int
 			}{
-				{"owner", current, 1},
-				{"other owner", workspaceOperatorContext(t, f.service, f.other, string(f.project.OrganizationID), "subject-other-"+transport), 0},
+				{"owner", func() context.Context { return current }, 1},
+				{"other owner", func() context.Context {
+					return workspaceOperatorContext(t, f.service, f.other, string(f.project.OrganizationID), "subject-other-"+transport)
+				}, 0},
 			} {
 				t.Run(test.name, func(t *testing.T) {
-					list := hostedContextProtocol(t, f.service, test.ctx, transport)
+					list := hostedContextProtocol(t, f.service, test.context(), transport)
 					raw := hostedContextData(t, list("tools/call", "list_project_conversations", map[string]any{"project_id": string(f.project.ID), "subject_work_item_id": string(subject.WorkItemID)}), false)
 					var envelope struct {
 						Data conversationListResponse `json:"data"`
