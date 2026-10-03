@@ -179,6 +179,8 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 					workspaces = &workspaceConfig
 				}
 			}
+			closeProfiling := startHubProfiling(cmd, lookupEnv, hostedConfigPath, databasePath, logger)
+			defer closeProfiling()
 			return run(cmd.Context(), hubserver.Config{
 				Hosted:                     hosted,
 				Conversation:               conversation,

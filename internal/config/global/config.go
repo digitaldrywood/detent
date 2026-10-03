@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activehours"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	intakeconfig "github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/profiling"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -76,27 +77,28 @@ type PathResolution struct {
 }
 
 type Config struct {
-	Path                  string          `yaml:"-"`
-	APIVersion            string          `yaml:"apiVersion"`
-	Kind                  string          `yaml:"kind"`
-	Env                   string          `yaml:"env,omitempty"`
-	LogLevel              string          `yaml:"log_level,omitempty"`
-	LogMaxSizeBytes       *int            `yaml:"log_max_size_bytes,omitempty"`
-	LogMaxBackups         *int            `yaml:"log_max_backups,omitempty"`
-	GitHubToken           string          `yaml:"github_token,omitempty"`
-	APIToken              string          `yaml:"api_token,omitempty"`
-	TrustLoopbackPeerRead bool            `yaml:"trust_loopback_peer_read,omitempty"`
-	DashboardAccess       DashboardAccess `yaml:"dashboard_access,omitempty"`
-	Client                HubClient       `yaml:"client,omitempty"`
-	Ops                   Ops             `yaml:"ops,omitempty"`
-	Port                  *int            `yaml:"port,omitempty"`
-	InstanceName          string          `yaml:"instance_name,omitempty"`
-	ServiceName           string          `yaml:"service_name,omitempty"`
-	Notifications         Notifications   `yaml:"notifications,omitempty"`
-	Update                Update          `yaml:"update,omitempty"`
-	Auth                  Auth            `yaml:"auth,omitempty"`
-	Global                Settings        `yaml:"global"`
-	Projects              []Project       `yaml:"projects"`
+	Path                  string           `yaml:"-"`
+	APIVersion            string           `yaml:"apiVersion"`
+	Kind                  string           `yaml:"kind"`
+	Env                   string           `yaml:"env,omitempty"`
+	LogLevel              string           `yaml:"log_level,omitempty"`
+	LogMaxSizeBytes       *int             `yaml:"log_max_size_bytes,omitempty"`
+	LogMaxBackups         *int             `yaml:"log_max_backups,omitempty"`
+	GitHubToken           string           `yaml:"github_token,omitempty"`
+	APIToken              string           `yaml:"api_token,omitempty"`
+	TrustLoopbackPeerRead bool             `yaml:"trust_loopback_peer_read,omitempty"`
+	DashboardAccess       DashboardAccess  `yaml:"dashboard_access,omitempty"`
+	Client                HubClient        `yaml:"client,omitempty"`
+	Ops                   Ops              `yaml:"ops,omitempty"`
+	Port                  *int             `yaml:"port,omitempty"`
+	InstanceName          string           `yaml:"instance_name,omitempty"`
+	ServiceName           string           `yaml:"service_name,omitempty"`
+	Notifications         Notifications    `yaml:"notifications,omitempty"`
+	Update                Update           `yaml:"update,omitempty"`
+	Auth                  Auth             `yaml:"auth,omitempty"`
+	Profiling             profiling.Config `yaml:"profiling,omitempty"`
+	Global                Settings         `yaml:"global"`
+	Projects              []Project        `yaml:"projects"`
 }
 
 type DashboardAccess struct {
@@ -824,6 +826,11 @@ func (c Config) Validate(opts ...Option) error {
 		problems = append(problems, "update.max_deferral_hours: must be a positive integer")
 	}
 	problems = append(problems, c.Auth.validate("auth")...)
+	if c.Profiling != (profiling.Config{}) {
+		if err := c.Profiling.Validate(); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
 
 	if c.Global.MaxConcurrentAgents <= 0 {
 		problems = append(problems, "global.max_concurrent_agents: must be a positive integer")
@@ -2093,6 +2100,23 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	var profileConfig profiling.Config
+	if attrs["profiling"] != nil {
+		if _, err := mapValue(attrs["profiling"], "profiling"); err != nil {
+			return Config{}, buildValidationError(path, err)
+		}
+		if err := decodeYAMLValue(attrs["profiling"], &profileConfig); err != nil {
+			return Config{}, buildValidationError(path, err)
+		}
+		if profileConfig.Capture.Dir != "" {
+			profileOptions := opts
+			profileOptions.relativeTo = filepath.Dir(path)
+			profileConfig.Capture.Dir, err = expandPath(profileConfig.Capture.Dir, profileOptions)
+			if err != nil {
+				return Config{}, buildValidationError(path, err)
+			}
+		}
+	}
 	auth, err := buildAuth(attrs["auth"])
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -2132,6 +2156,7 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 		Notifications:         notifications,
 		Update:                update,
 		Auth:                  auth,
+		Profiling:             profileConfig,
 		Global:                settings,
 		Projects:              builtProjects,
 	}, nil

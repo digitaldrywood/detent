@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/notify"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/profiling"
 	"github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -482,7 +483,16 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		return err
 	}
 
+	process := "orchestrator"
+	if cfg.Global.Client.Configured() {
+		process = "runner"
+	}
+	profileService := profiling.New(runCtx, filepath.Join(filepath.Dir(runtimeBoardSnapshotPath(cfg)), "profiles", process), logger)
+	profileService.Apply(cfg.Global.Profiling)
+	defer profileService.Close()
+
 	onGlobalReload := func(reloaded globalconfig.Config) {
+		profileService.Apply(reloaded.Profiling)
 		syncGlobalDispatchProjects(globalDispatchGate, reloaded.Projects, manager.Registry())
 		globalConfigState.set(reloaded)
 		republishLatestSnapshot(snapshotHub, logger)
