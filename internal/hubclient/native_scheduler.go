@@ -284,6 +284,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
 	}
 	s.mu.Unlock()
+	s.syncLeaseHold(ctx)
 	return issues, nil
 }
 
@@ -350,6 +351,7 @@ func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken,
 			delete(s.claimPolicies, issueID)
 		}
 		s.mu.Unlock()
+		s.syncLeaseHold(context.Background())
 		return errors.Join(orchestrator.ErrSchedulingClaimLost, err)
 	}
 	return err
