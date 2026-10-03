@@ -22,6 +22,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		label       string
+		body        string
 		context     bool
 		heartbeat   bool
 		another     bool
@@ -38,17 +39,20 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 	}{
 		{name: "stored observation cannot survive revoked credential", heartbeat: true, authority: "revoked", status: http.StatusUnauthorized},
 		{name: "stored observation cannot survive removed grant", heartbeat: true, authority: "grant", status: http.StatusNotFound},
-		{name: "another runner can admit after first runner selector refusal", heartbeat: true, another: true, label: "human-owned", outcome: "skipped", code: "no_claimable_work"},
-		{name: "hosted heartbeat selector refusal", heartbeat: true, label: "human-owned", outcome: "skipped", code: "no_claimable_work"},
+		{name: "another runner can admit after first runner selector refusal", heartbeat: true, another: true, label: "excluded", outcome: "skipped", code: "no_claimable_work"},
+		{name: "hosted heartbeat selector refusal", heartbeat: true, label: "excluded", outcome: "skipped", code: "no_claimable_work"},
 		{name: "hosted heartbeat admissible", heartbeat: true, outcome: "ready"},
 		{name: "unrelated heartbeat cannot freshen selectors", heartbeat: true, observation: "stale", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
 		{name: "routing change cannot restamp selector revision", heartbeat: true, observation: "revision", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
 		{name: "stored old policy is unknown", heartbeat: true, observation: "policy", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
 		{name: "future selector observation is unknown", heartbeat: true, observation: "future", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
 		{name: "another project observation is not inherited", heartbeat: true, observation: "project", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
-		{name: "known native label refusal", label: "human-owned", context: true, outcome: "skipped", code: "no_claimable_work"},
+		{name: "known native label refusal", label: "excluded", context: true, outcome: "skipped", code: "no_claimable_work"},
 		{name: "admissible native item", label: "ordinary", context: true, outcome: "ready"},
-		{name: "label alone proves no refusal", label: "human-owned", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
+		{name: "ordinary label alone proves no refusal", label: "ordinary", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
+		{name: "human owned label refuses before missing provider requirement", label: "human-owned", context: true, provider: "unknown", outcome: "skipped", code: "inactive_state"},
+		{name: "typed human task refuses without label or selectors", body: "```detent-human\nschema: 1\nkey: operator-task\naction: Record measured costs\nowner: operator\ncompletion_criteria: Provide measurement evidence\napproval_constraint: No purchases authorized\n```", outcome: "skipped", code: "inactive_state"},
+		{name: "tracking epic refuses", label: "epic", context: true, outcome: "skipped", code: "inactive_state"},
 		{name: "approved runner selector refusal", policy: "wrong-runner", outcome: "skipped", code: "selector_no_match"},
 		{name: "stale runner policy", context: true, policy: "stale", outcome: "skipped", code: "policy_mismatch"},
 		{name: "unknown provider allows concurrency but needs model context", context: true, provider: "unknown", outcome: "unknown", unavailable: "provider_candidate_requirement"},
@@ -83,7 +87,11 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET labels_json=?, body=? WHERE native_id=?", string(labels), "private-body /private/runner credential-sentinel", issue.WorkItemID); err != nil {
+			body := "private-body /private/runner credential-sentinel"
+			if test.body != "" {
+				body += "\n" + test.body
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET labels_json=?, body=? WHERE native_id=?", string(labels), body, issue.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
 			descriptor := hubTestPolicy()
@@ -115,7 +123,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/runtime"
-			current := tracker.NativeAdmissionContext{ObservedAt: now, PolicyID: descriptor.ID, WorkflowStates: []string{"Todo"}, LabelExclude: []string{"human-owned"}}
+			current := tracker.NativeAdmissionContext{ObservedAt: now, PolicyID: descriptor.ID, WorkflowStates: []string{"Todo"}, LabelExclude: []string{"excluded"}}
 			if test.policy == "stale" {
 				current.PolicyID = "policy_stale"
 			}
@@ -221,6 +229,9 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			a := evidence.Admission[0]
 			if a.RunnerID != r.binding.RunnerID || a.RunnerRevision < 1 || a.PolicyID != descriptor.ID || a.Outcome != test.outcome || a.ReasonCode != test.code || !a.ObservedAt.Equal(now) || a.Source != "native_claim_candidate_snapshot" {
 				t.Fatalf("admission=%#v", a)
+			}
+			if test.code == "inactive_state" && len(a.Unavailable) != 0 {
+				t.Fatalf("known nonexecutable work became provider uncertainty: %#v", a)
 			}
 			if test.unavailable != "" && !slices.Contains(a.Unavailable, test.unavailable) {
 				t.Fatalf("missing unavailable predicate: %#v", a)

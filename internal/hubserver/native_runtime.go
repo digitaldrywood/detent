@@ -17,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -142,6 +143,7 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, err
 	}
+	nonExecutableReason := connector.NonExecutableReason(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels})
 	issue = issue.RuntimeReference()
 	e := tracker.NativeRuntimeEvidence{Issue: issue, ObservedAt: now, Selection: "unavailable", Unavailable: []string{"efficiency_receipt"}, Capacity: []tracker.NativeRuntimeCapacity{}}
 	if attemptID == "" {
@@ -303,7 +305,7 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		e.Unavailable = append(e.Unavailable, "runner_capacity")
 	}
 	if e.CurrentLease == nil {
-		if err := readNativeAdmission(ctx, query, scope, id, approval.Policy.ID, approval.Policy.Requirements, runners, truncated, ready, &e, admission, minimumVersion); err != nil {
+		if err := readNativeAdmission(ctx, query, scope, id, approval.Policy.ID, approval.Policy.Requirements, runners, truncated, ready, &e, admission, minimumVersion, nonExecutableReason); err != nil {
 			return e, err
 		}
 	}

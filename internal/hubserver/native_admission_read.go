@@ -65,7 +65,7 @@ func readRunnerAdmissionObservation(ctx context.Context, q nativeQueryer, scope 
 	return &observed.Context, nil
 }
 
-func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID, policyID string, requirements policy.Requirements, runners []runnerauth.Runner, truncated, ready bool, evidence *tracker.NativeRuntimeEvidence, contexts []tracker.NativeAdmissionContext, minimumVersion string) error {
+func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID, policyID string, requirements policy.Requirements, runners []runnerauth.Runner, truncated, ready bool, evidence *tracker.NativeRuntimeEvidence, contexts []tracker.NativeAdmissionContext, minimumVersion, nonExecutableReason string) error {
 	now := evidence.ObservedAt
 	query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), WorkItemID: id, AvailableAt: now, Limit: 1}
 	ids, err := nativeCandidateIDs(ctx, q, query, nil, nil, nil, nil, nil, nil, nil)
@@ -91,6 +91,8 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			a.Outcome, a.ReasonCode, a.Reason = "skipped", code, reason
 		}
 		switch {
+		case nonExecutableReason != "":
+			refuse("inactive_state", nonExecutableReason)
 		case len(ids) == 0:
 			refuse("no_claimable_work", "The existing native claim candidate query does not select this item")
 		case !ready:

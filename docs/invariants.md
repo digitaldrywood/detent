@@ -328,8 +328,11 @@ and approved policy to match the current runner, with both original selector and
 server receipt times inside the existing heartbeat freshness window. An unrelated
 heartbeat cannot refresh an old selector observation. Per-runner snapshot refusals retain existing
 codes, runner revision, source and freshness; they are distinct from recorded
-scheduler history. Missing request selectors, provider model requirements or home
-selection remain unavailable rather than inferred from labels or issue prose.
+scheduler history. The shared nonexecutable predicate evaluates canonical item
+content before its private runtime projection, retaining the existing human-owned
+or tracking-epic refusal without exposing the content. Missing request selectors,
+provider model requirements or home selection remain unavailable rather than
+inferred from labels or issue prose.
 The snapshot grants no dispatch, completion or landing authority and adds no
 parallel scheduler or persistent decision owner.
 
