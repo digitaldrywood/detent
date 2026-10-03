@@ -53,14 +53,14 @@ func readRunnerAdmissionObservation(ctx context.Context, q nativeQueryer, scope 
 		return nil, err
 	}
 	if raw == "" || len(raw) > 8192 {
-		return nil, nil
+		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
 	}
 	var observed tracker.NativeAdmissionObservation
 	if err := json.Unmarshal([]byte(raw), &observed); err != nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
 	}
 	if validateNativeAdmissionContext(observed.Context) != nil || observed.RunnerRevision != runner.Revision || observed.Context.PolicyID != policyID || observed.ReceivedAt.IsZero() || now.Before(observed.ReceivedAt) || !now.Before(observed.ReceivedAt.Add(runnerauth.HeartbeatTimeout)) || now.Before(observed.Context.ObservedAt) || !now.Before(observed.Context.ObservedAt.Add(runnerauth.HeartbeatTimeout)) {
-		return nil, nil
+		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
 	}
 	return &observed.Context, nil
 }
