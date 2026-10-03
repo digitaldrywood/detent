@@ -5,12 +5,15 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -142,6 +145,28 @@ func nativeMutationKeyForContext(ctx context.Context) tracker.Mutation {
 }
 
 func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.IssueDraft) (connector.Issue, error) {
+	return c.createIssue(ctx, draft, "")
+}
+
+func (c *NativeConnector) createIssue(ctx context.Context, draft connector.IssueDraft, state string) (connector.Issue, error) {
+	if origin, machine := issueorigin.Parse(draft.Body); machine {
+		existing, found, err := c.findIntakeIssue(ctx, func(issue tracker.NativeIssue) bool {
+			previous, ok := issueorigin.Parse(issue.Body)
+			return !issue.Terminal && ok && previous.Fingerprint == origin.Fingerprint
+		})
+		if err != nil {
+			return connector.Issue{}, err
+		}
+		if found {
+			if err := c.CreateComment(ctx, existing.ID, issueorigin.Occurrence(draft.Body)); err != nil {
+				return connector.Issue{}, err
+			}
+			issue, err := c.client.Issue(ctx, tracker.NativeWorkItemID(existing.ID))
+			result := issueFromNative(issue)
+			result.PublicationReused = true
+			return result, err
+		}
+	}
 	project, err := c.client.Project(ctx)
 	if err != nil {
 		return connector.Issue{}, err
@@ -149,8 +174,79 @@ func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.Issue
 	if len(project.States) == 0 {
 		return connector.Issue{}, errors.New("native project has no workflow states")
 	}
-	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKeyForContext(ctx), Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: project.States[0].Name})
+	if state == "" {
+		state = project.States[0].Name
+	}
+	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: nativeMutationKeyForContext(ctx), Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: state})
 	return issueFromNative(issue), err
+}
+
+func (c *NativeConnector) FindIntakeIssue(ctx context.Context, marker string) (intake.Issue, bool, error) {
+	marker = strings.TrimSpace(marker)
+	if marker == "" {
+		return intake.Issue{}, false, nil
+	}
+	return c.findIntakeIssue(ctx, func(issue tracker.NativeIssue) bool { return strings.Contains(issue.Body, marker) })
+}
+
+func (c *NativeConnector) findIntakeIssue(ctx context.Context, match func(tracker.NativeIssue) bool) (intake.Issue, bool, error) {
+	var closed intake.Issue
+	cursor := ""
+	for {
+		page, err := c.client.Issues(ctx, url.Values{"limit": {"20"}, "cursor": {cursor}})
+		if err != nil {
+			return intake.Issue{}, false, err
+		}
+		for _, issue := range page.Items {
+			if issue.Archived || !match(issue) {
+				continue
+			}
+			result := nativeIntakeIssue(issueFromNative(issue))
+			if !result.Closed {
+				return result, true, nil
+			}
+			if result.Number > closed.Number {
+				closed = result
+			}
+		}
+		connector.ReportProgress(ctx)
+		if page.NextCursor == "" {
+			return closed, closed.ID != "", nil
+		}
+		if page.NextCursor == cursor {
+			return intake.Issue{}, false, errors.New("hub repeated issue cursor")
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func (c *NativeConnector) CreateIntakeIssue(ctx context.Context, draft intake.IssueDraft) (intake.Issue, error) {
+	issue, err := c.createIssue(ctx, connector.IssueDraft{Title: draft.Title, Body: draft.Body, Labels: draft.Labels}, "Backlog")
+	return nativeIntakeIssue(issue), err
+}
+
+func (c *NativeConnector) UpdateIntakeIssue(ctx context.Context, id string, draft intake.IssueDraft) (intake.Issue, error) {
+	issue, err := c.client.Issue(ctx, tracker.NativeWorkItemID(id))
+	if err != nil {
+		return intake.Issue{}, err
+	}
+	labels := slices.Clone(issue.Labels)
+	for _, label := range draft.Labels {
+		if !slices.Contains(labels, label) {
+			labels = append(labels, label)
+		}
+	}
+	body := issueorigin.Preserve(draft.Body, issue.Body)
+	updated, err := c.client.UpdateIssue(ctx, issue.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: issue.Revision, Title: &draft.Title, Body: &body, Labels: &labels})
+	return nativeIntakeIssue(issueFromNative(updated)), err
+}
+
+func (c *NativeConnector) SetIntakeIssueState(ctx context.Context, id, state string) error {
+	return c.UpdateIssueState(ctx, id, state)
+}
+
+func nativeIntakeIssue(issue connector.Issue) intake.Issue {
+	return intake.Issue{ID: issue.ID, Identifier: issue.Identifier, Number: issue.Number, URL: issue.URL, Body: issue.Description, Closed: issue.Closed, Reused: issue.PublicationReused}
 }
 
 // ChangeReviewed reports whether the given version is the change's current

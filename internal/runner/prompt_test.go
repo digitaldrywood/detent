@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -78,13 +79,82 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 				return
 			}
 			contract := prompt[index:]
-			for _, want := range []string{"override any tracker, Workpad, or pull request instructions", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message", "existing detent-status YAML block", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
+			for _, want := range []string{"explicit issue acceptance instructions remain authoritative", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message", "existing detent-status YAML block", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("contract missing %q", want)
 				}
 			}
 			if strings.Contains(contract[len("## Native completion contract"):], "\n## ") {
 				t.Error("native completion contract must be the final prompt section")
+			}
+		})
+	}
+}
+
+func TestNativePostIntegrationHandoffRequiresConfiguredOwner(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name              string
+		enabled, planOnly bool
+	}{
+		{name: "permitted source handoff", enabled: true},
+		{name: "original acceptance retained"},
+		{name: "planning cannot delegate", enabled: true, planOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workflow := config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Agent: config.Agent{Followups: config.Followups{Enabled: test.enabled}}}, Prompt: "Keep this issue open until its two-Sprite live acceptance passes."}
+			prompt, err := BuildPrompt(workflow, connector.Issue{ID: "wi_pool", State: "In Progress"}, PromptOptions{PlanOnly: test.planOnly})
+			if err != nil {
+				t.Fatal(err)
+			}
+			permitted := test.enabled && !test.planOnly
+			for _, text := range []string{"## Out-of-scope discoveries", "delegation exists only after the tool succeeds", "explicit instruction to keep the original issue open until live acceptance overrides this permission"} {
+				if strings.Contains(prompt, text) != permitted {
+					t.Errorf("%q presence does not match configured permission", text)
+				}
+			}
+			for _, text := range []string{"Keep this issue open until its two-Sprite live acceptance passes.", "Report unfinished acceptance as in_progress or blocked", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
+				if !strings.Contains(prompt, text) {
+					t.Errorf("required acceptance contract missing %q", text)
+				}
+			}
+		})
+	}
+}
+
+func TestNativeOrphanHandoffPreservesPlanOnly(t *testing.T) {
+	t.Parallel()
+	for _, planOnly := range []bool{false, true} {
+		t.Run(strconv.FormatBool(planOnly), func(t *testing.T) {
+			backend := &fakeCodexClient{}
+			run, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Agent: config.Agent{Followups: config.Followups{Enabled: true}}}, Prompt: "Implement the issue"},
+				Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "wi_example", Branch: "detent/wi_example"}},
+				AgentBackend: backend,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mode, role := RunModeImplement, RoleCode
+			if planOnly {
+				mode, role = RunModePlan, RolePlan
+			}
+			_, err = run.Run(t.Context(), RunRequest{
+				Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", State: "In Progress", ModelOverride: "gpt-5.6-codex", Metadata: map[string]string{"hub_profile": "native", "hub_project_id": "prj_example"}},
+				Mode:  mode, WorkAttemptID: 12, Generation: 2, RetryMode: RetryModeResume,
+				ResumeState: store.AgentResumeState{DetentSessionID: 11, ProviderThreadID: "original-thread", RequestedModel: "gpt-5.6-codex", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: role, Orphaned: true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt := backend.request.Prompt
+			if !strings.Contains(prompt, "## Native completion contract") {
+				t.Fatal("native orphan lost current completion ownership")
+			}
+			for _, text := range []string{"## Out-of-scope discoveries", "delegation exists only after the tool succeeds"} {
+				if strings.Contains(prompt, text) != !planOnly {
+					t.Errorf("resumed plan-only permission differs for %q", text)
+				}
 			}
 		})
 	}

@@ -43,6 +43,15 @@ status or add a validation gate, failure allowance, recovery loop or reason code
 completion owner, including the native #26 missing-status result and deferred
 completion replay.
 
+Configured native follow-ups use the existing machine intake owner for a
+post-integration handoff. Only acceptance explicitly requiring the finished
+source to be integrated or released may move to a successfully created or reused
+Backlog follow-up with its exact head, pending criteria, procedure, authorization
+and responsible owner recorded. Explicit instructions to keep the original issue
+open until live acceptance override delegation. Actual unfinished source,
+pre-merge requirements, human decisions and typed blocked reports retain their
+existing disposition; completion and landing enforcement does not change.
+
 Inherited host subscription pacing (native #228) remains an operator scheduling
 choice, not execution authority. Policy hashing canonicalizes only its effective
 value to the historical default representation, and the existing live reload
@@ -3885,6 +3894,17 @@ permitted post-integration owner, the original requirement remains. This is an
 instruction consolidation, not a new acceptance waiver, release owner, lane
 writer, or recovery mechanism. `TestBuildPromptDocumentsWorkpadStatusContract`
 and `TestRunnerRunCompletionLeaseOnOrphanResume` cover normal and resumed turns.
+Native prompts include the existing `agent.followups.enabled` opt-in before
+their final completion contract, including resumed turns. The native connector
+implements the same intake interface as other trackers: Backlog creation,
+paginated origin-fingerprint reuse with an occurrence comment, and origin and
+metadata preservation on update. Existing project-scoped collaboration grants,
+revision checks and workflow authority remain enforced. A missing permission or
+failed tool call does not create a delegated owner or permit source completion.
+`TestNativeMachineIntakeAuthorityAndFingerprint` covers enrolled runner filing,
+duplicate reuse across pages and denied foreign-project authority;
+`TestNativePostIntegrationHandoffRequiresConfiguredOwner` covers enabled,
+disabled and plan-only permissions with explicit live-acceptance precedence.
 
 Repository notes handoff (#3498) is removed from normal, planning and merge
 fallback prompts. Failed turns no longer append diagnostics to a repository
