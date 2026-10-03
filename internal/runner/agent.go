@@ -1975,7 +1975,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			turnPrompt = appendNativeIssueInstructions(turnPrompt, req.Issue)
 		}
 		if workflow.Config.Tracker.Kind == config.TrackerHubNative {
-			turnPrompt = appendNativeCompletionContract(turnPrompt)
+			followups := workflow.Config.Agent.Followups
+			if promptOptions.PlanOnly {
+				followups.Enabled = false
+			}
+			turnPrompt = appendFollowupsBlock(turnPrompt, followups)
+			turnPrompt = appendNativeCompletionContract(turnPrompt, followups)
 		}
 	}
 	var extraWritableRoots []string
