@@ -4358,7 +4358,8 @@ bodies/comments before another write. Since `work_list` returns summaries withou
 bodies, the reporter retrieves each open item through the existing scoped
 `work_item` read before matching origin and occurrence evidence. Detail references
 and organization/project identity must match the listed destination; unavailable
-or malformed detail stops publication rather than treating provenance as absent. `TestCloudReport`, `TestCloudTransport`
+or malformed detail, including an explicitly omitted body, stops publication
+rather than treating provenance as absent. `TestCloudReport`, `TestCloudTransport`
 and `TestCloudDestinationAuthority` cover imported provenance, response loss,
 replay, held items, current connection failure and destination isolation.
 For this repository's selected native reporting context, new parsed source/test

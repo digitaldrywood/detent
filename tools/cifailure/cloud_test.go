@@ -20,15 +20,16 @@ import (
 )
 
 type fakeCloud struct {
-	items        []tracker.NativeIssue
-	comments     map[string][]tracker.NativeComment
-	writes       []map[string]any
-	fail         string
-	lost         string
-	badPage      string
-	dispatchable bool
-	conflict     bool
-	editAttempts int
+	items         []tracker.NativeIssue
+	comments      map[string][]tracker.NativeComment
+	writes        []map[string]any
+	fail          string
+	lost          string
+	badPage       string
+	summaryDetail bool
+	dispatchable  bool
+	conflict      bool
+	editAttempts  int
 }
 
 type handlerTransport struct{ handler http.Handler }
@@ -81,6 +82,9 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 		id := args["reference"].(string)
 		for _, item := range f.items {
 			if string(item.WorkItemID) == id {
+				if f.summaryDetail {
+					item = operatortool.NativeListIssue(item)
+				}
 				output = operatortool.WorkReadResult[operatortool.NativeItem]{ProjectID: scheduledCloudProject, Reference: id, Data: operatortool.NativeItemView(scheduledCloudProject, item)}
 				break
 			}
@@ -386,11 +390,14 @@ func TestCloudTransport(t *testing.T) {
 		dispatchable           bool
 		revokedAfterInitialize bool
 		priorityEdit           bool
+		summaryDetail          bool
+		emptyBody              bool
 	}{
 		{name: "scoped connection and paginated discovery and reads"},
 		{name: "priority promotion over scoped connection", priorityEdit: true},
 		{name: "read only scope", fail: "file_issue"},
 		{name: "missing priority edit authority", fail: "edit_item"},
+		{name: "missing item detail authority", fail: "work_item"},
 		{name: "revoked key", status: http.StatusUnauthorized},
 		{name: "revoked key on established session", revokedAfterInitialize: true},
 		{name: "narrow project grant", fail: "work_config"},
@@ -399,11 +406,16 @@ func TestCloudTransport(t *testing.T) {
 		{name: "malformed list never means no matches", badPage: "work_list"},
 		{name: "malformed comments never lose imported matches", badPage: "work_comments"},
 		{name: "malformed item detail never loses origin evidence", badPage: "work_item"},
+		{name: "body-omitting item detail never loses origin evidence", summaryDetail: true},
+		{name: "empty complete item body is valid", emptyBody: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := &fakeCloud{fail: tt.fail, dispatchable: tt.dispatchable, badPage: tt.badPage}
+			f := &fakeCloud{fail: tt.fail, dispatchable: tt.dispatchable, badPage: tt.badPage, summaryDetail: tt.summaryDetail}
 			f.items = []tracker.NativeIssue{cloudItem("wi_first", 1, "First diagnostic"), cloudItem("wi_second", 2, "Second diagnostic")}
+			if tt.emptyBody {
+				f.items[0].Body = ""
+			}
 			f.comments = map[string][]tracker.NativeComment{"wi_second": {
 				{OrganizationID: "org", ProjectID: scheduledCloudProject, WorkItemID: "wi_second", Body: "First occurrence"},
 				{OrganizationID: "org", ProjectID: scheduledCloudProject, WorkItemID: "wi_second", Body: "Second occurrence"},
@@ -446,7 +458,7 @@ func TestCloudTransport(t *testing.T) {
 					err = destination.file(t.Context(), fingerprint, "source failure", body, "scoped-occurrence", nil, true)
 				}
 			}
-			if (err != nil) != (tt.fail != "" || tt.status != 0 || tt.dispatchable || tt.badPage != "" || tt.revokedAfterInitialize) {
+			if (err != nil) != (tt.fail != "" || tt.status != 0 || tt.dispatchable || tt.badPage != "" || tt.revokedAfterInitialize || tt.summaryDetail) {
 				t.Fatalf("transport result %v", err)
 			}
 			if err != nil && strings.Contains(err.Error(), "private-test-key") {
