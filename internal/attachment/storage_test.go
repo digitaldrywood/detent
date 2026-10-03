@@ -48,9 +48,15 @@ func TestStoragePrivacyProbe(t *testing.T) {
 				cfg.Bucket = "../other"
 			}
 			var content []byte
+			var probePath string
 			var methods []string
 			transport := storageTransport(func(r *http.Request) (*http.Response, error) {
 				methods = append(methods, r.Method)
+				if r.Method == http.MethodPut {
+					probePath = r.URL.Path
+				} else if r.URL.Path != probePath {
+					t.Errorf("probe lifecycle changed object key: got %q want %q", r.URL.Path, probePath)
+				}
 				if !strings.HasPrefix(r.URL.Path, "/private/probe/att_") {
 					t.Errorf("unexpected probe path %q", r.URL.Path)
 				}
