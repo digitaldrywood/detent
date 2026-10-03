@@ -117,7 +117,16 @@ func TestMCPConfiguredWorkflowTransitions(t *testing.T) {
 				before := counts()
 				connectionID := operatortool.CurrentConnection(mcpCtx).ID
 				actionsBefore := len(f.service.operatorChat.Conversation(connectionID).Actions)
-				call("forbidden terminal", "Retired", 1, true)
+				forbidden := send("tools/call", operatortool.MoveItem, map[string]any{"project_id": f.project, "request_id": "forbidden terminal", "identifier": identifier, "expected_revision": 1, "target_state": "Retired"})
+				hostedContextData(t, forbidden, true)
+				var refusal struct {
+					Content []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				}
+				if err := json.Unmarshal(forbidden.Result, &refusal); err != nil || len(refusal.Content) != 1 || refusal.Content[0].Text != operatortool.ErrInvalidArguments.Error() {
+					t.Fatalf("forbidden edge lacks permanent input refusal: %s %v", forbidden.Result, err)
+				}
 				if after := counts(); !slices.Equal(before, after) || len(f.service.operatorChat.Conversation(connectionID).Actions) != actionsBefore || read().State != "Intake" || read().Revision != 1 {
 					t.Fatalf("forbidden preview created approval or mutation: before=%v after=%v issue=%+v", before, after, read())
 				}
@@ -321,7 +330,7 @@ func TestWorkflowExecutionFailureProjection(t *testing.T) {
 		name, message string
 		err, safe     error
 	}{
-		{"graph", "Workflow transition is not allowed", &nativeError{Code: "transition_not_allowed", Message: "credential-secret", Details: map[string]any{"private": "credential-secret"}, status: http.StatusUnprocessableEntity}, operatortool.ErrServiceUnavailable},
+		{"graph", "Workflow transition is not allowed", &nativeError{Code: "transition_not_allowed", Message: "credential-secret", Details: map[string]any{"private": "credential-secret"}, status: http.StatusUnprocessableEntity}, operatortool.ErrInvalidArguments},
 		{"revision", "Resource has changed", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 9, status: http.StatusConflict}, mutation.ErrConflict},
 		{"foreign graph", operatortool.ErrAccessDenied.Error(), &nativeError{Code: "transition_not_allowed", Message: "credential-secret", status: http.StatusForbidden}, operatortool.ErrAccessDenied},
 		{"missing", operatortool.ErrAccessDenied.Error(), nativeNotFound(), operatortool.ErrAccessDenied},

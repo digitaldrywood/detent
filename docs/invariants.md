@@ -166,6 +166,8 @@ edge and operator-only validation before creating a pending action. Existing
 authorized action and command receipts replay before preview validation against
 the changed board. Execution still checks fresh authority, graph, revision and
 lease/fence through the existing owners; preview grants no execution authority.
+Forbidden configured edges return the existing invalid-arguments MCP error before
+preview, without a pending action or mutation; access refusals remain opaque.
 Failed workflow action receipts retain fixed safe graph or revision refusal text
 through result reads, persistence and replay, excluding underlying messages and
 private details. `TestMCPConfiguredWorkflowTransitions` and
