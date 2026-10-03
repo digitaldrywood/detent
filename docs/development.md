@@ -91,6 +91,35 @@ coverage for now is the goleak-backed test gate.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full contributor workflow.
 
 
+## Concurrent migrations and generated files
+
+New Goose SQL migrations use `NNNNN_migration.sql`, with a zero-padded version
+and no feature-specific suffix. Keep descriptive names on existing migrations:
+store versions through 68, Hub through 70, registry through 5, and auth through 4.
+These historical boundaries are fixed, not updated when a new migration lands.
+`make check-migrations` diagnoses duplicate versions and noncanonical new names
+in the existing scheduled suite or during optional focused diagnostics.
+
+One version now names one Git path. Two branches adding different SQL at the
+same version produce an ordinary add/add conflict instead of a clean merge
+with duplicate Goose versions. Resolve it through the existing Rework owner:
+preserve the landed migration, give the unlanded addition the next available
+version, and regenerate derived output. Never renumber a migration that may
+already have been applied; use a forward repair for deployed collisions.
+
+Tracked sqlc Go, generated Templ Go, and Tailwind output have the Git merge
+attribute unset. Concurrent changes to the same generated file therefore require
+resolution even when their text edits do not overlap. Merge the source inputs,
+then regenerate and stage the output with `make generate`; choosing one branch's
+generated file alone does not resolve the combined source. Ordinary source
+files retain Git's text merge behavior. Conversation bundles remain ignored
+and are built from each consumer's complete pinned checkout with `make app`.
+
+This source convention does not add a required check, strict branch freshness,
+merge worker, or recovery path. It exposes these collisions to existing Git
+conflict handling; unrelated semantic conflicts still rely on review and the
+scheduled suite.
+
 ## Conversation assets
 
 Conversation source and its npm lockfile are tracked; `static/app/conversation/`
