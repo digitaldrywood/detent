@@ -93,8 +93,17 @@ func (o *Orchestrator) completeNativeChangeRun(
 	report, reported := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
 	accepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusComplete && len(report.Blockers) == 0 && report.HumanAction == ""
 	needsReview := !change.Changed && !accepted || reported && !accepted
-	review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState()
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	review := cfg.reviewTargetState()
 	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed || needsReview)
+	unfinished := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "" && change.VersionError == ""
+	if unfinished && nativePlanStateExists(states, cfg.ReworkState) && dispatchableState(states, cfg.ReworkState) {
+		if normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
+			target, ok = issue.State, true
+		} else if rework, allowed := connector.CompletionLane(states, issue.State, cfg.ReworkState, true); allowed {
+			target, ok = rework, true
+		}
+	}
 	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && !needsReview && direct && dispatchableState(states, landing) {
 		target, ok = landing, true
 	}
@@ -104,8 +113,10 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 		return handoff(fmt.Errorf("native workflow allows no move from %s to a terminal lane", strings.TrimSpace(issue.State)))
 	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, "completed_active_review_transition"); err != nil {
-		return handoff(fmt.Errorf("move native item to %s: %w", target, err))
+	if normalizeState(issue.State) != normalizeState(target) {
+		if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, "completed_active_review_transition"); err != nil {
+			return handoff(fmt.Errorf("move native item to %s: %w", target, err))
+		}
 	}
 	comment := nativeCompletionComment(change, issue.State, target)
 	if needsReview {
@@ -114,6 +125,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 			disposition = "detent-status " + report.Status
 		}
 		comment = fmt.Sprintf("The provider turn completed with %s. Moved from %s to %s for review; the completed turn and any genuine source version are preserved, but issue acceptance is not recorded.", disposition, displayStateName(issue.State), displayStateName(target))
+		if unfinished && normalizeState(target) == normalizeState(cfg.ReworkState) {
+			comment = fmt.Sprintf("The provider turn completed with %s and no reported blocker or human action. Implementation remains unfinished in %s; the completed turn and any genuine source version are preserved for further work, but issue acceptance is not recorded.", disposition, displayStateName(target))
+		}
 	}
 	if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
 		o.warnNativeCompletion(issue, fmt.Errorf("comment on the completed run: %w", err))

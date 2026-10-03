@@ -429,7 +429,14 @@ type NativeLeaseMutation struct {
 	Reason       string       `json:"reason,omitempty"`
 }
 
+type NativeDisposition struct {
+	Status      string `json:"status"`
+	Blockers    bool   `json:"blockers"`
+	HumanAction bool   `json:"human_action"`
+}
+
 type NativeRunData struct {
+	Disposition  *NativeDisposition        `json:"disposition,omitempty"`
 	Runtime      *NativeRuntimeObservation `json:"runtime,omitempty"`
 	Sequence     int64                     `json:"sequence,string,omitempty"`
 	Identity     *NativeExecutionIdentity  `json:"identity,omitempty"`

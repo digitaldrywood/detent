@@ -345,6 +345,8 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		versionCode    string
 		diffCode       string
 		conversation   bool
+		finalMessage   string
+		disposition    *tracker.NativeDisposition
 		unreadFinal    bool
 		checkpointHead string
 		existing       bool
@@ -359,6 +361,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
 	}{
+		{name: "unfinished clean source retains normalized disposition", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "in_progress"}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
+		{name: "human action retains normalized disposition", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: Approve the rollout\n```", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
+		{name: "invalid report preserves legacy receipt", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 99\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "commits open a change", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"),
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "rework reuses the item's change", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true,
@@ -402,7 +407,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "version allowance refusal retains the previous immutable version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: strings.Repeat("b", 40), versionCode: "allowance_exhausted", wantDiagnostic: "allowance_exhausted", wantChanges: 1, wantVersions: 1},
 		{name: "diff allowance refusal is a publication diagnostic", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), diffCode: "allowance_exhausted", wantDiagnostic: "allowance_exhausted"},
 		{name: "fenced diff refusal retains lost authority", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), diffCode: "stale_fencing_token", wantDiagnostic: "stale_fencing_token"},
-		{name: "conversation completion remains conversation owned", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", conversation: true},
+		{name: "conversation completion remains conversation owned", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", conversation: true, finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -493,11 +498,29 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				owner.conversationContinuation = true
 				owner.mu.Unlock()
 			}
+			if test.disposition != nil {
+				transport := &executionTransport{next: h.native.client.httpClient.Transport}
+				h.native.client.httpClient.Transport = transport
+				transport.drop.Store(true)
+				if err := execution.(runner.RuntimeExecution).ObserveRuntime(guarded, tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: time.Now()}); err != nil {
+					t.Fatalf("temporary runtime publication failure escaped observation owner: %v", err)
+				}
+				if transport.drop.Load() || execution.(*nativeExecution).pending == nil {
+					t.Fatal("runtime acknowledgment loss did not retain a pending event")
+				}
+			}
 			finish := execution.Finish
-			if test.wantDiagnostic != "" {
-				finish = execution.(runner.CompletionExecution).PrepareFinish
+			if test.wantDiagnostic != "" || test.finalMessage != "" {
+				finish = func(ctx context.Context, outcome string) error {
+					return execution.(runner.CompletionExecution).PrepareFinish(ctx, outcome, test.finalMessage)
+				}
 			}
 			finishErr := finish(guarded, test.outcome)
+			if test.finalMessage != "" && finishErr == nil {
+				if err := execution.(runner.RuntimeExecution).ObserveRuntime(guarded, tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: time.Now()}); err != nil {
+					t.Fatalf("post-preparation runtime observation: %v", err)
+				}
+			}
 			lostAuthority := test.loseLease || test.diffCode == "stale_fencing_token"
 			if lostAuthority != (finishErr != nil) {
 				t.Fatalf("finish error = %v, lease lost = %t", finishErr, test.loseLease)
@@ -539,10 +562,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					h.failChanges.failDiffs.Store(false)
 					h.failChanges.failDetails.Store(false)
 					h.failChanges.failVersions.Store(false)
-					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome); err != nil {
+					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, ""); err != nil {
 						t.Fatal(err)
 					}
-					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome); err != nil {
+					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, ""); err != nil {
 						t.Fatal(err)
 					}
 					republished := execution.(runner.ChangeExecution).NativeChange()
@@ -633,6 +656,16 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				t.Fatalf("repeated finish error = %v", again)
 			}
 			checkChange(test.wantChanges, test.wantVersions)
+			if test.finalMessage != "" {
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "succeeded" {
+					t.Fatalf("typed receipt lost provider outcome: %#v, %v", recovery.Attempts, err)
+				}
+				got := recovery.Attempts[0].Disposition
+				if (got == nil) != (test.disposition == nil) || got != nil && *got != *test.disposition {
+					t.Fatalf("disposition=%#v, want %#v", got, test.disposition)
+				}
+			}
 			if state := h.state(t, issue.ID); state != "In Progress" {
 				t.Fatalf("the execution moved the item to %s; only the orchestrator moves lanes", state)
 			}

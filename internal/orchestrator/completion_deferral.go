@@ -493,7 +493,7 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 				if publisher, ok := execution.(runpkg.CompletionExecution); ok {
 					if err := execution.Validate(ctx); err != nil {
 						completion.Err = err
-					} else if err := publisher.PrepareFinish(ctx, "succeeded"); err != nil {
+					} else if err := publisher.PrepareFinish(ctx, "succeeded", completion.Result.FinalMessage); err != nil {
 						completion.Err = err
 					} else if changes, ok := execution.(runpkg.ChangeExecution); ok {
 						completion.Result.NativeChange = changes.NativeChange()
