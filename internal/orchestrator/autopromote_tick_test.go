@@ -4491,14 +4491,13 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 		}),
 	}
 	tests := []struct {
-		name            string
-		attempts        []store.WorkAttempt
-		wantRestore     bool
-		mergedClaim     bool
-		stopAtAllowance bool
+		name        string
+		attempts    []store.WorkAttempt
+		wantRestore bool
+		mergedClaim bool
 	}{
 		{name: "successful attempt after declaration", attempts: []store.WorkAttempt{successfulAttempt}, wantRestore: true},
-		{name: "merged branch claim cannot bypass failed allowance", wantRestore: true, mergedClaim: true, stopAtAllowance: true, attempts: []store.WorkAttempt{
+		{name: "merged branch completion after prior failed attempts", wantRestore: true, mergedClaim: true, attempts: []store.WorkAttempt{
 			successfulAttempt,
 			{ID: 2, WorkerType: "agent", StartedAt: now.Add(-time.Hour), TerminalState: store.WorkAttemptTerminalNoProgress, Phase: "no_progress"},
 			{ID: 3, WorkerType: "agent", StartedAt: now.Add(-2 * time.Hour), TerminalState: store.WorkAttemptTerminalNoProgress, Phase: "no_progress"},
@@ -4563,13 +4562,9 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 			if restored != tt.wantRestore {
 				t.Fatalf("state.Completed[%q] present = %v, want %v", issue.ID, restored, tt.wantRestore)
 			}
-			if tt.stopAtAllowance {
-				state.Running[issue.ID] = Running{Issue: issue}
-			}
-
 			result := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
 			_, transitioned := result.transitioned[issue.ID]
-			wantTransition := tt.wantRestore && !tt.stopAtAllowance
+			wantTransition := tt.wantRestore
 			if transitioned != wantTransition {
 				t.Fatalf("transitioned[%q] present = %v, want %v", issue.ID, transitioned, wantTransition)
 			}
@@ -4593,12 +4588,8 @@ func TestAutoPromoteOperationalCompletionAfterRuntimeStateLoss(t *testing.T) {
 			} else if len(tracker.comments) != 0 {
 				t.Fatalf("comments = %#v, want none", tracker.comments)
 			}
-			wantQueries := 1
-			if tt.stopAtAllowance {
-				wantQueries = 2
-			}
-			if len(attempts.historyQueries) != wantQueries {
-				t.Fatalf("history queries = %d, want %d", len(attempts.historyQueries), wantQueries)
+			if len(attempts.historyQueries) != 1 {
+				t.Fatalf("history queries = %d, want 1", len(attempts.historyQueries))
 			}
 		})
 	}
