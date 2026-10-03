@@ -20,7 +20,24 @@ type catalogCursor struct {
 	Digest string `json:"digest"`
 }
 
-func (s *session) catalog(ctx context.Context, cursor string) (catalogPage, error) {
+func (s *session) catalog(ctx context.Context, cursor string, toolsets []string) (catalogPage, error) {
+	if len(toolsets) > 32 {
+		return catalogPage{}, operatortool.ErrInvalidArguments
+	}
+	selected := make(map[string]bool, len(toolsets))
+	for _, toolset := range toolsets {
+		known := false
+		for _, definition := range operatortool.Registry() {
+			if definition.Meta.Toolset == toolset {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return catalogPage{}, operatortool.ErrInvalidArguments
+		}
+		selected[toolset] = true
+	}
 	definitions := operatortool.Catalog()
 	if lister, ok := s.executor.(interface {
 		ListTools(context.Context) ([]operatortool.Definition, error)
@@ -45,7 +62,7 @@ func (s *session) catalog(ctx context.Context, cursor string) (catalogPage, erro
 		seen[definition.Name] = true
 	}
 	for _, shared := range operatortool.Registry() {
-		if seen[shared.Name] {
+		if seen[shared.Name] && (len(selected) == 0 || selected[shared.Meta.Toolset]) {
 			canonical = append(canonical, shared)
 		}
 	}

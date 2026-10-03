@@ -200,8 +200,10 @@ The process reads newline-delimited JSON-RPC from stdin and reserves stdout for
 protocol frames. Diagnostics use stderr. Successful results include serialized
 JSON text; versions from `2025-06-18` also receive `structuredContent`, and modern
 results include `resultType: "complete"`. Arguments, results, frames and catalog
-pages are bounded. Follow `nextCursor` until absent to load every tool; each
-shared definition has `_meta["detent/toolset"]` for grouping.
+responses are bounded. `tools/list` returns the complete current authorized
+catalog by default; each shared definition has `_meta["detent/toolset"]` for
+grouping. Request smaller groups with `params._meta["detent/toolsets"]`, an
+array such as `["board", "connection"]`. Discovery never authorizes a call.
 
 The MCP process uses the already-running daemon's authenticated application
 bridge, with the same config, host, port, wildcard-to-loopback mapping and

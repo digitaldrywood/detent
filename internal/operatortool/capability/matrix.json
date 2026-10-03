@@ -9615,7 +9615,7 @@
       "tool": {
         "set": "conversations_workspaces",
         "name": "create_conversation",
-        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"input\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\",\"maxLength\":800},\"first_message\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"maxLength\":16000}},\"required\":[\"text\"],\"additionalProperties\":false}},\"required\":[],\"additionalProperties\":false}},\"required\":[\"request_id\",\"project_id\",\"input\"],\"additionalProperties\":false}",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"request_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128},\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"input\":{\"type\":\"object\",\"properties\":{\"subject_work_item_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"title\":{\"type\":\"string\",\"maxLength\":800},\"first_message\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"maxLength\":16000}},\"required\":[\"text\"],\"additionalProperties\":false}},\"required\":[],\"additionalProperties\":false}},\"required\":[\"request_id\",\"project_id\",\"input\"],\"additionalProperties\":false}",
         "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": false,
@@ -9625,9 +9625,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "TestWorkspaceOperatorConversation covers ordinary adapters; TestConversationSubjectOwnership covers subject API/ownership. Typed MCP subject schema/execution remains pending; schema below describes only the delivered ordinary variant.",
-      "decision": "Ordinary conversation adapter delivered by #3346 remains available, but current subject_work_item_id is absent from WorkspaceCatalog and the create input schema. Issue Q&A parity remains pending under the conversation adapter owner; canonical linked worker conversations are not subject chats. Parent native #26 remains the final acceptance owner."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation exercises subject create/list over real stdio and HTTP, cross-project denial, private creator audience and same-request replay; TestConversationSubjectOwnership retains shared command ownership and no-link invariants.",
+      "decision": "subject_work_item_id is a typed create input and project-list selector. Shared commandCreateConversation resolves the subject under current organization/project; readConversationsPage preserves creator-only audience. Request receipts bind the complete subject input. No alternate writer or comment publication is introduced."
     },
     {
       "id": "hubserver.create_hosted_organization",
@@ -12159,6 +12159,27 @@
           "definition": "send(NativeIssue,\"GET\",url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`))",
           "occurrence": 1,
           "line": 557
+        },
+        {
+          "source": "web/conversation/src/app/work/IssuePage.tsx",
+          "kind": "request",
+          "definition": "EventSource(http.eventsUrl(projectId, undefined, workItemId),{ withCredentials: true })",
+          "occurrence": 1,
+          "line": 211
+        },
+        {
+          "source": "web/conversation/src/app/work/IssuePage.tsx",
+          "kind": "request",
+          "definition": "read()",
+          "occurrence": 1,
+          "line": 195
+        },
+        {
+          "source": "web/conversation/src/app/work/IssuePage.tsx",
+          "kind": "request",
+          "definition": "read()",
+          "occurrence": 2,
+          "line": 202
         }
       ],
       "availability": [
@@ -12226,7 +12247,7 @@
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
       "coverage": "internal/operatortool/work_reads_test.go; internal/web/operator_work_reads_test.go; internal/hubserver/operator_work_reads_test.go; internal/hubserver/operator_authority_test.go; shared stdio/HTTP conformance in internal/mcp/protocol_test.go. Original five-read compatibility remains covered by existing executor/protocol fixtures.",
-      "decision": "Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes. Organization-scoped item lookup resolves the owning project by item ID, then applies the same native project read grants; browser selection does not supply authority."
+      "decision": "Typed work_item exposes the authorized application read. Browser rendering and continuous SSE use bounded pull reads through the same application models; no UI scraping or tracker writes. Organization-scoped item lookup resolves the owning project by item ID, then applies the same native project read grants; browser selection does not supply authority. IssuePage read() refresh callbacks and work-item-selected SSE reload the same authorized detail plus separately inventoried attempts/history/comments/changes; work_item returns current detail through bounded pull reads."
     },
     {
       "id": "hubserver.get_native_project",
@@ -17349,7 +17370,7 @@
       "tool": {
         "set": "board",
         "name": "work_list",
-        "arguments": "Delivered WorkReadCatalog work_list: project_id, optional query/state/label/cursor/offset/limit 1\u2013200; query <= 256 bytes, cursor <= 4096. Native operatorWorkReads maps query to q and rejects offset. API archived/assignee/priority/include variants are absent from MCP arguments.",
+        "arguments": "{\"additionalProperties\":false,\"properties\":{\"archived\":{\"enum\":[\"true\",\"false\",\"all\"],\"type\":\"string\"},\"assignee\":{\"maxLength\":256,\"type\":\"string\"},\"assignees\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"},\"cursor\":{\"maxLength\":4096,\"type\":\"string\"},\"include\":{\"items\":{\"enum\":[\"workspace\",\"work\",\"summary\"],\"type\":\"string\"},\"maxItems\":3,\"type\":\"array\"},\"label\":{\"maxLength\":256,\"type\":\"string\"},\"labels\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"},\"limit\":{\"maximum\":200,\"minimum\":1,\"type\":\"integer\"},\"offset\":{\"maximum\":1000000,\"minimum\":0,\"type\":\"integer\"},\"priorities\":{\"items\":{\"maximum\":3,\"minimum\":0,\"type\":\"integer\"},\"maxItems\":32,\"type\":\"array\"},\"priority\":{\"maximum\":3,\"minimum\":0,\"type\":\"integer\"},\"project_id\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"query\":{\"maxLength\":256,\"type\":\"string\"},\"state\":{\"maxLength\":256,\"type\":\"string\"},\"states\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"}},\"required\":[\"project_id\"],\"type\":\"object\"}",
         "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.",
         "annotations": {
           "readOnly": true,
@@ -17359,9 +17380,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3340",
-      "status": "pending",
-      "coverage": "TestOperatorNativeWorkReads covers search/cursor execution; existing native issue include/filter regressions cover API behavior. Missing typed filter/include parity stays pending.",
-      "decision": "Search, state, label and native cursor paging are implemented by operatorWorkReads/readIssues, including query -> q. Browser/API archived, assignee, queue-priority and include=workspace/work variants are absent from the tool schema/executor; whole-operation parity remains pending under #3340. The frontend legacy include=coordinator option is refused by parseNativeIssueIncludes and is not an implemented application capability. No operator variant is excluded or adapter added by #239."
+      "status": "implemented",
+      "coverage": "TestNativeWorkPageOperationalScope compares shared API filter, cursor and work-envelope results with real stdio/HTTP calls; TestWorkspaceRequestCreatesSessionAndDispatchItem proves include=workspace parity over both transports; TestOperatorNativeClientReads checks daemon forwarding, compact work projections and current-grant relationship filtering; TestWorkReadArguments checks schema bounds.",
+      "decision": "Typed bounded singular/plural state, label, assignee and queue-priority selectors, archive selection and workspace/work/summary projections reuse readIssues. Query maps to q. Default summary and explicit work items remain compact. Unsupported legacy include=coordinator is rejected by the shared application; GitHub snapshots reject native-only selectors."
     },
     {
       "id": "hubserver.list_native_labels",
@@ -17808,7 +17829,7 @@
       "tool": {
         "set": "conversations_workspaces",
         "name": "list_project_conversations",
-        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"cursor\":{\"type\":\"string\",\"maxLength\":1024},\"query\":{\"type\":\"string\",\"maxLength\":256},\"settled\":{\"type\":\"boolean\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":200}},\"required\":[\"project_id\"],\"additionalProperties\":false}",
+        "arguments": "{\"type\":\"object\",\"properties\":{\"project_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"subject_work_item_id\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":256},\"cursor\":{\"type\":\"string\",\"maxLength\":1024},\"query\":{\"type\":\"string\",\"maxLength\":256},\"settled\":{\"type\":\"boolean\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":200}},\"required\":[\"project_id\"],\"additionalProperties\":false}",
         "result": "Typed application projection with identifiers, current freshness, bounded pages/chunks; mutations return shared action status, exact preview and application data. Destructive/material effects require browser approval.",
         "annotations": {
           "readOnly": true,
@@ -17818,9 +17839,9 @@
         }
       },
       "owner": "digitaldrywood/detent#3346",
-      "status": "pending",
-      "coverage": "TestWorkspaceOperatorConversation covers ordinary adapters; TestConversationSubjectOwnership covers subject API/ownership. Typed MCP subject schema/execution remains pending; schema below describes only the delivered ordinary variant.",
-      "decision": "Ordinary conversation adapter delivered by #3346 remains available, but current subject_work_item_id is absent from WorkspaceCatalog and the workspaceToolRequest/conversationListQuery executor. Issue Q&A parity remains pending under the conversation adapter owner; canonical linked worker conversations are not subject chats. Parent native #26 remains the final acceptance owner."
+      "status": "implemented",
+      "coverage": "TestWorkspaceOperatorConversation exercises subject create/list over real stdio and HTTP, cross-project denial, private creator audience and same-request replay; TestConversationSubjectOwnership retains shared command ownership and no-link invariants.",
+      "decision": "subject_work_item_id is a typed create input and project-list selector. Shared commandCreateConversation resolves the subject under current organization/project; readConversationsPage preserves creator-only audience. Request receipts bind the complete subject input. No alternate writer or comment publication is introduced."
     },
     {
       "id": "hubserver.list_runner_routing",
@@ -18182,7 +18203,7 @@
       "tool": {
         "set": "board",
         "name": "work_list",
-        "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1\u2013200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.",
+        "arguments": "{\"additionalProperties\":false,\"properties\":{\"archived\":{\"enum\":[\"true\",\"false\",\"all\"],\"type\":\"string\"},\"assignee\":{\"maxLength\":256,\"type\":\"string\"},\"assignees\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"},\"cursor\":{\"maxLength\":4096,\"type\":\"string\"},\"include\":{\"items\":{\"enum\":[\"workspace\",\"work\",\"summary\"],\"type\":\"string\"},\"maxItems\":3,\"type\":\"array\"},\"label\":{\"maxLength\":256,\"type\":\"string\"},\"labels\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"},\"limit\":{\"maximum\":200,\"minimum\":1,\"type\":\"integer\"},\"offset\":{\"maximum\":1000000,\"minimum\":0,\"type\":\"integer\"},\"priorities\":{\"items\":{\"maximum\":3,\"minimum\":0,\"type\":\"integer\"},\"maxItems\":32,\"type\":\"array\"},\"priority\":{\"maximum\":3,\"minimum\":0,\"type\":\"integer\"},\"project_id\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"query\":{\"maxLength\":256,\"type\":\"string\"},\"state\":{\"maxLength\":256,\"type\":\"string\"},\"states\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"}},\"required\":[\"project_id\"],\"type\":\"object\"}",
         "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.",
         "annotations": {
           "readOnly": true,
@@ -30241,7 +30262,7 @@
       "tool": {
         "set": "board",
         "name": "work_list",
-        "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1\u2013200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.",
+        "arguments": "{\"additionalProperties\":false,\"properties\":{\"archived\":{\"enum\":[\"true\",\"false\",\"all\"],\"type\":\"string\"},\"assignee\":{\"maxLength\":256,\"type\":\"string\"},\"assignees\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"},\"cursor\":{\"maxLength\":4096,\"type\":\"string\"},\"include\":{\"items\":{\"enum\":[\"workspace\",\"work\",\"summary\"],\"type\":\"string\"},\"maxItems\":3,\"type\":\"array\"},\"label\":{\"maxLength\":256,\"type\":\"string\"},\"labels\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"},\"limit\":{\"maximum\":200,\"minimum\":1,\"type\":\"integer\"},\"offset\":{\"maximum\":1000000,\"minimum\":0,\"type\":\"integer\"},\"priorities\":{\"items\":{\"maximum\":3,\"minimum\":0,\"type\":\"integer\"},\"maxItems\":32,\"type\":\"array\"},\"priority\":{\"maximum\":3,\"minimum\":0,\"type\":\"integer\"},\"project_id\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"query\":{\"maxLength\":256,\"type\":\"string\"},\"state\":{\"maxLength\":256,\"type\":\"string\"},\"states\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"}},\"required\":[\"project_id\"],\"type\":\"object\"}",
         "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.",
         "annotations": {
           "readOnly": true,
@@ -33799,7 +33820,7 @@
       "tool": {
         "set": "board",
         "name": "work_list",
-        "arguments": "Bounded project_id plus reference where item-scoped; operation-specific query/state/label, cursor or offset, limit 1\u2013200, revision/comment_id or attempt_id. Organization, principal, scope and mode are connection authority.",
+        "arguments": "{\"additionalProperties\":false,\"properties\":{\"archived\":{\"enum\":[\"true\",\"false\",\"all\"],\"type\":\"string\"},\"assignee\":{\"maxLength\":256,\"type\":\"string\"},\"assignees\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"},\"cursor\":{\"maxLength\":4096,\"type\":\"string\"},\"include\":{\"items\":{\"enum\":[\"workspace\",\"work\",\"summary\"],\"type\":\"string\"},\"maxItems\":3,\"type\":\"array\"},\"label\":{\"maxLength\":256,\"type\":\"string\"},\"labels\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"},\"limit\":{\"maximum\":200,\"minimum\":1,\"type\":\"integer\"},\"offset\":{\"maximum\":1000000,\"minimum\":0,\"type\":\"integer\"},\"priorities\":{\"items\":{\"maximum\":3,\"minimum\":0,\"type\":\"integer\"},\"maxItems\":32,\"type\":\"array\"},\"priority\":{\"maximum\":3,\"minimum\":0,\"type\":\"integer\"},\"project_id\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"query\":{\"maxLength\":256,\"type\":\"string\"},\"state\":{\"maxLength\":256,\"type\":\"string\"},\"states\":{\"items\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"},\"maxItems\":32,\"type\":\"array\"}},\"required\":[\"project_id\"],\"type\":\"object\"}",
         "result": "Typed application read envelope/data with project/item identifiers, URLs, source freshness, bounded page and opaque unavailable errors; at most 256 KiB. work_history is durable history; recent_activity remains a live snapshot.",
         "annotations": {
           "readOnly": true,

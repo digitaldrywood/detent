@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"sync"
 	"testing"
@@ -23,7 +22,7 @@ func TestMCPCommandUsesDaemonBridgeAndProtocolOnlyStdout(t *testing.T) {
 			t.Run("modern="+strconv.FormatBool(modern)+"/commands="+strconv.FormatBool(commands), func(t *testing.T) {
 
 				requested := make(chan struct{}, 1)
-				httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 					if request.Method == http.MethodPost && request.URL.Path == "/api/v1/operator-connections" {
 						if !commands {
 							writer.WriteHeader(http.StatusNotFound)
@@ -48,23 +47,19 @@ func TestMCPCommandUsesDaemonBridgeAndProtocolOnlyStdout(t *testing.T) {
 					}
 					requested <- struct{}{}
 					_, _ = io.WriteString(writer, `{"generated_at":"2026-08-08T02:30:00Z","freshness":"live","counts":{}}`)
-				}))
-				t.Cleanup(httpServer.Close)
-				parsed, err := url.Parse(httpServer.URL)
-				if err != nil {
-					t.Fatalf("Parse() error = %v", err)
-				}
-				port, err := strconv.Atoi(parsed.Port())
-				if err != nil {
-					t.Fatalf("Atoi() error = %v", err)
-				}
-				opts := dashboardClientOptions(httpServer.Client().Do, "", "")
+				})
+				opts := dashboardClientOptions(func(request *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					handler.ServeHTTP(response, request)
+					return response.Result(), nil
+				}, "", "")
+				port := 0
 				opts.read = func(string) (globalconfig.Config, error) {
 					return globalconfig.Config{Port: &port}, nil
 				}
 				opts.version = "v-test"
 				configPath := "/config/global.yaml"
-				host := parsed.Hostname()
+				host := "127.0.0.1"
 				configuredPort := port
 				cmd := newMCPCommand(&configPath, &host, &configuredPort, opts)
 				reader, writer := io.Pipe()

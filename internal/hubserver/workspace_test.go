@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"database/sql"
+	"encoding/json"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -220,6 +222,28 @@ func TestWorkspaceRequestCreatesSessionAndDispatchItem(t *testing.T) {
 		decodeHubResponse(t, response, &page)
 		if !listedWorkItem(page, item) {
 			t.Fatal("include=workspace did not surface the workspace item")
+		}
+		for _, transport := range []string{"stdio", "http"} {
+			current := workspaceOperatorContext(t, f.service, f.token, string(f.project.OrganizationID), "workspace-list-"+transport)
+			call := hostedContextProtocol(t, f.service, current, transport)
+			for _, include := range [][]string{nil, {"workspace"}} {
+				args := map[string]any{"project_id": string(f.project.ID), "limit": 100}
+				if include != nil {
+					args["include"] = include
+				}
+				raw := hostedContextData(t, call("tools/call", operatortool.WorkList, args), false)
+				var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+				if err := json.Unmarshal(raw, &result); err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, listed := range result.Data.Items {
+					found = found || string(listed.WorkItemID) == item
+				}
+				if found != (include != nil) {
+					t.Fatalf("%s workspace projection: found=%v include=%v", transport, found, include)
+				}
+			}
 		}
 	})
 

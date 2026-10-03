@@ -564,14 +564,20 @@ item/byte bounds or return a safe unavailable response. `TestHostedContextMCP` a
 `TestHostedContextKeyProjection` and `TestHostedContextUnavailable` cover dedicated/shared bindings through both
 transports, shared browser content, current and removed authority, direct calls,
 secret omission, bounded/unavailable reads and activity/workspace cursor changes.
-Parent #3259 conformance and unconditional zero-pending acceptance remain pending.
+The parent source inventory diagnostic requires zero pending operator rows;
+deployment availability remains explicit and never confers authority.
 
 MCP transport parity (#3339, native #207) uses one permission-filtered typed
 registry with toolset metadata. Tool discovery returns the complete current
-catalog in one response without a continuation cursor, resolving application
+catalog by default in one response without a continuation cursor, resolving application
 discovery once regardless of catalog size. Existing opaque cursors still validate
 their principal/catalog digest and bounded offset against current authority,
-then return all remaining tools without another cursor. The `2026-07-28` stateless
+then return all remaining tools without another cursor. Optional
+`tools/list` metadata `detent/toolsets` selects existing registry groups after
+current application discovery. It cannot add tools or authorize a direct call;
+cursor digests bind the selected catalog. Results remain bounded at 256 KiB;
+protocol frames allow up to 832 KiB for text and structured copies.
+The `2026-07-28` stateless
 protocol validates per-request metadata and mirrored HTTP headers; older handshakes retain their
 bound sessions. Modern `tools/list` and `server/discover` results carry
 `ttlMs: 0` and `cacheScope: "private"` through the shared result serializer
@@ -590,6 +596,18 @@ writer is introduced. `TestProtocolApplicationParity`,
 `TestModernHTTPMetadataValidation`, `TestCatalogCursorCurrentAuthority`, and
 modern cases in `TestMCPActionApprovalBoundary` cover transport parity, forged
 metadata, direct-call ownership, revoked authority and approval after a POST ends.
+
+Native #26 completes conversation subject create/list through the shared
+`commandCreateConversation` and `readConversationsPage` owners. Subject IDs
+resolve in the current project; private creator audience, no worker link, and
+complete-input mutation receipts remain enforced. Native work-list argument
+variants reuse `readIssues`, including bounded repeated selectors, archive
+selection and workspace/work projections. Both list and operational items use
+compact projections; the daemon additionally filters relations under current
+local grants before serializing either collection. The original five read
+schemas remain unchanged. `TestWorkspaceOperatorConversation`,
+`TestNativeWorkPageOperationalScope`, `TestWorkspaceRequestCreatesSessionAndDispatchItem`
+and `TestOperatorNativeClientReads` cover these adapters and both transports.
 
 Organization, membership/grant and credential administration (#3344) uses the
 same application commands as dashboard handlers. Dedicated bootstrap accounts

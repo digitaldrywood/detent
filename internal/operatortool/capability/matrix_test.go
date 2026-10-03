@@ -23,7 +23,7 @@ func TestDashboardCapabilityCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Validate(matrix, candidates, false); err != nil {
+	if err := Validate(matrix, candidates, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, op := range matrix.Operations {
@@ -49,11 +49,6 @@ func TestDashboardCapabilityCoverage(t *testing.T) {
 			if !reflect.DeepEqual(recorded, advertised) {
 				t.Errorf("%s implemented schema differs from %s", op.ID, definition.Name)
 			}
-		}
-	}
-	if os.Getenv("DETENT_MCP_REQUIRE_PARITY") == "1" {
-		if err := Validate(matrix, candidates, true); err != nil {
-			t.Fatal(err)
 		}
 	}
 	t.Logf("%d source sites, %d operation decisions", len(candidates), len(matrix.Operations))

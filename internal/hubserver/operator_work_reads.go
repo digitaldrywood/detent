@@ -37,18 +37,8 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	if name == operatortool.WorkList {
-		params.Set("include", "summary")
-		if request.State != "" {
-			params.Set("state", request.State)
-		}
-		if request.Label != "" {
-			params.Set("label", request.Label)
-		}
-		if request.Query != "" {
-			params.Set("q", request.Query)
-		}
-		page, err := s.readIssues(ctx, scope, params)
-		return hubWorkResult(r, request, operatortool.NativeItemPage(request.ProjectID, page.Page), err)
+		page, err := s.readIssues(ctx, scope, request.NativeWorkQuery())
+		return hubWorkResult(r, request, operatortool.NativeWorkPageView(request.ProjectID, page), err)
 	}
 	if name == operatortool.WorkConfig {
 		project, err := readNativeProject(ctx, s.database.db, scope)

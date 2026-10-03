@@ -448,8 +448,10 @@ revisions retain `initialize`, `notifications/initialized` and principal-bound
 `Mcp-Session-Id`; DELETE ends those legacy sessions. GET returns `405`. Modern
 requests ignore protocol session IDs and receive no session header.
 
-Both transports follow the same bounded `tools/list` pages and typed registry.
-Follow `nextCursor` until absent; `_meta["detent/toolset"]` groups definitions.
+Both transports use the same bounded `tools/list` response and typed registry.
+The complete authorized catalog is returned by default. Each definition's
+`_meta["detent/toolset"]` identifies its group; select smaller catalogs with
+`params._meta["detent/toolsets"]`, for example `["board", "connection"]`.
 Unavailable application services return safe opaque errors. Structured results
 also have serialized JSON text for older clients. See
 [generic MCP setup](mcp-capabilities.md#generic-client-setup) for portable

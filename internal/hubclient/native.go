@@ -120,7 +120,12 @@ func (c *NativeClient) Issue(ctx context.Context, id tracker.NativeWorkItemID) (
 }
 
 func (c *NativeClient) Issues(ctx context.Context, query url.Values) (tracker.Page[tracker.NativeIssue], error) {
-	var result tracker.Page[tracker.NativeIssue]
+	result, err := c.IssuesPage(ctx, query)
+	return result.Page, err
+}
+
+func (c *NativeClient) IssuesPage(ctx context.Context, query url.Values) (tracker.NativeIssuePage, error) {
+	var result tracker.NativeIssuePage
 	err := c.client.request(ctx, http.MethodGet, c.base()+"/work-items?"+query.Encode(), nil, &result)
 	return result, err
 }

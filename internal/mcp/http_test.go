@@ -151,6 +151,10 @@ func TestHTTPTransportResultLimits(t *testing.T) {
 		wantToolError bool
 	}{
 		{
+			name:     "valid result with text and structured copies",
+			executor: &staticExecutor{result: operatortool.Result{Content: json.RawMessage(`{"value":"` + strings.Repeat(`\"`, operatortool.MaxResultBytes/2-16) + `"}`)}},
+		},
+		{
 			name:          "tool result limit",
 			executor:      &staticExecutor{result: operatortool.Result{Content: json.RawMessage(`{"value":"` + strings.Repeat("x", operatortool.MaxResultBytes) + `"}`)}},
 			wantToolError: true,

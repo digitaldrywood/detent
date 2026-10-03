@@ -109,6 +109,9 @@ func TestOperatorGitHubWorkReads(t *testing.T) {
 		{"work_list", `{"project_id":"visible","query":"needle","limit":1}`, 200, `"next_offset":1`},
 		{"work_list", `{"project_id":"visible","offset":1,"limit":1}`, 200, "Needle second"},
 		{"work_list", `{"project_id":"visible","query":"absent"}`, 200, `"items":[]`},
+		{"work_list", `{"project_id":"visible","states":["Todo","Done"],"labels":["bug","enhancement"]}`, 200, "Needle"},
+		{"work_list", `{"project_id":"visible","include":["work"]}`, 400, "invalid"},
+		{"work_list", `{"project_id":"visible","archived":"true"}`, 400, "invalid"},
 		{"work_item", `{"project_id":"visible","reference":"#1"}`, 200, "Body"},
 		{"work_config", `{"project_id":"visible"}`, 200, "bug"},
 		{"work_comments", `{"project_id":"visible","reference":"#1","limit":1}`, 200, "First note"},
@@ -213,6 +216,7 @@ func TestOperatorNativeClientReads(t *testing.T) {
 		{"work_relationships", nil, "wi_visible"},
 		{"work_version", map[string]any{"revision": 7}, "Full native body"},
 		{"work_list", map[string]any{"query": "native", "limit": 1}, `"omitted_fields":["body"`},
+		{"work_list", map[string]any{"states": []string{"Todo", "Done"}, "assignees": []string{"owner"}, "priorities": []int{0, 3}, "archived": "all", "include": []string{"work"}, "limit": 1}, `"lanes":[{"state":"Todo","total":1`},
 		{"work_config", nil, "bug"},
 	} {
 		t.Run(test.tool, func(t *testing.T) {
@@ -235,7 +239,16 @@ func TestOperatorNativeClientReads(t *testing.T) {
 				t.Fatalf("UI credential leak: %s", response.Body)
 			}
 			if test.tool == "work_list" {
-				if strings.Contains(response.Body.String(), "Full native body") || strings.Contains(response.Body.String(), "private imported") || fixture.last["include"] != "summary" {
+				include := "summary"
+				if test.extra["include"] != nil {
+					include = "work"
+					for key, want := range map[string]string{"state": "Todo,Done", "assignee": "owner", "priority": "0,3", "archived": "all", "limit": "1"} {
+						if fixture.last[key] != want {
+							t.Fatalf("native selector %s=%q, want %q", key, fixture.last[key], want)
+						}
+					}
+				}
+				if strings.Contains(response.Body.String(), "Full native body") || strings.Contains(response.Body.String(), "private imported") || fixture.last["include"] != include {
 					t.Fatalf("list projection or selector=%s include=%q", response.Body, fixture.last["include"])
 				}
 			}

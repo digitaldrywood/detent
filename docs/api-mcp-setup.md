@@ -130,9 +130,14 @@ bearer_token_env_var = "DETENT_API_KEY"
 
 Configure another client using its documented private bearer-header support.
 Send JSON POSTs with `Content-Type: application/json` and
-`Accept: application/json, text/event-stream`. Initialize, retain
-`Mcp-Session-Id` and the negotiated protocol version, send
-`notifications/initialized`, and follow every `tools/list` cursor. Call the
+`Accept: application/json, text/event-stream`. Clients using `2026-07-28` send
+per-request protocol metadata and matching `MCP-Protocol-Version`, `Mcp-Method`
+and tool-call `Mcp-Name` headers; they use stateless POSTs without initialize or
+a protocol session. Older supported revisions initialize, retain
+`Mcp-Session-Id` and the negotiated protocol version, then send
+`notifications/initialized`. See [generic setup](mcp-capabilities.md#generic-client-setup)
+for both lifecycle examples. `tools/list` returns the complete current catalog
+by default; optional `_meta["detent/toolsets"]` selects groups. Call the
 discovered `work_list` with `{"project_id":"YOUR_GRANTED_PROJECT_ID","limit":20}`.
 Verify the result's organization/project. No browser state or OAuth login is
 required. GET/SSE returns 405; clients that require SSE/OAuth or cannot send
@@ -146,8 +151,8 @@ A concise agent handoff is:
 > it privately as DETENT_API_KEY; never include it in conversation, URLs, logs,
 > screenshots, diagnostics or committed configuration. Use bearer JSON POSTs
 > with no cookies, CSRF or OAuth. If your client cannot do this, say it is
-> unsupported and stop. Initialize, send initialized, discover every tools/list
-> page and call work_list for a project granted to that key. Verify the context
+> unsupported and stop. Use the lifecycle supported by your client, discover
+> tools/list and call work_list for a project granted to that key. Verify the context
 > and report success without secrets. Present material/destructive previews for
 > my signed-in browser approval; you and the key cannot approve them.
 

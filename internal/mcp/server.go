@@ -237,7 +237,7 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 	}
 }
 
-const operatorInstructions = "Follow nextCursor in tools/list to discover all typed toolsets. Use current connection authority. Pending actions require a human to use the returned dashboard approval URL; a tool call cannot approve them."
+const operatorInstructions = "tools/list returns the current authorized catalog. Optionally select toolsets with _meta.detent/toolsets, an array of toolset names from tool metadata. Use current connection authority. Pending actions require a human to use the returned dashboard approval URL; a tool call cannot approve them."
 
 func (s *session) requestVersion() string {
 	s.mu.Lock()
@@ -347,13 +347,19 @@ func (s *session) ready() bool {
 
 func (s *session) listTools(ctx context.Context, message request, version string) error {
 	var params struct {
-		Cursor string          `json:"cursor,omitempty"`
-		Meta   json.RawMessage `json:"_meta,omitempty"`
+		Cursor string                     `json:"cursor,omitempty"`
+		Meta   map[string]json.RawMessage `json:"_meta,omitempty"`
 	}
 	if err := decodeObject(message.Params, &params, true); err != nil {
 		return s.writeError(message.ID, codeInvalidParams, "Invalid tools/list parameters", nil)
 	}
-	page, err := s.catalog(ctx, params.Cursor)
+	var toolsets []string
+	if raw, ok := params.Meta["detent/toolsets"]; ok {
+		if string(raw) == "null" || json.Unmarshal(raw, &toolsets) != nil {
+			return s.writeError(message.ID, codeInvalidParams, "Invalid toolset selection", nil)
+		}
+	}
+	page, err := s.catalog(ctx, params.Cursor, toolsets)
 	if err != nil {
 		if errors.Is(err, operatortool.ErrAccessDenied) {
 			return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
