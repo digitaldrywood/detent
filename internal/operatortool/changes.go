@@ -371,6 +371,9 @@ type ChangeApplication interface {
 }
 
 func ChangePage[T any](items []T, args ChangeArguments) ([]T, *int) {
+	if items == nil {
+		return []T{}, nil
+	}
 	limit := args.Limit
 	if limit == 0 {
 		limit = 100
