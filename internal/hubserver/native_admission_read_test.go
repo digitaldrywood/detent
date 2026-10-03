@@ -23,6 +23,9 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		name        string
 		label       string
 		context     bool
+		heartbeat   bool
+		another     bool
+		observation string
 		policy      string
 		provider    string
 		stale       bool
@@ -33,6 +36,16 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		authority   string
 		status      int
 	}{
+		{name: "stored observation cannot survive revoked credential", heartbeat: true, authority: "revoked", status: http.StatusUnauthorized},
+		{name: "stored observation cannot survive removed grant", heartbeat: true, authority: "grant", status: http.StatusNotFound},
+		{name: "another runner can admit after first runner selector refusal", heartbeat: true, another: true, label: "human-owned", outcome: "skipped", code: "no_claimable_work"},
+		{name: "hosted heartbeat selector refusal", heartbeat: true, label: "human-owned", outcome: "skipped", code: "no_claimable_work"},
+		{name: "hosted heartbeat admissible", heartbeat: true, outcome: "ready"},
+		{name: "unrelated heartbeat cannot freshen selectors", heartbeat: true, observation: "stale", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
+		{name: "routing change cannot restamp selector revision", heartbeat: true, observation: "revision", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
+		{name: "stored old policy is unknown", heartbeat: true, observation: "policy", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
+		{name: "future selector observation is unknown", heartbeat: true, observation: "future", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
+		{name: "another project observation is not inherited", heartbeat: true, observation: "project", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
 		{name: "known native label refusal", label: "human-owned", context: true, outcome: "skipped", code: "no_claimable_work"},
 		{name: "admissible native item", label: "ordinary", context: true, outcome: "ready"},
 		{name: "label alone proves no refusal", label: "human-owned", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
@@ -53,6 +66,13 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			now := time.Now().UTC()
 			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			var other runnerFixture
+			if test.another {
+				other = prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+				if other.binding.RunnerID < r.binding.RunnerID {
+					r, other = other, r
+				}
+			}
 			r.enroll(t)
 			issue := f.create(t, "native candidate")
 			labelValues := []string{}
@@ -102,6 +122,55 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if test.authority == "oversized" {
 				current.LabelExclude = []string{strings.Repeat("x", 8192)}
 			}
+			if test.heartbeat {
+				before := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+				requireNativeStatus(t, before, http.StatusOK)
+				var baseline tracker.NativeRuntimeEvidence
+				decodeHubResponse(t, before, &baseline)
+				if baseline.Scheduling.Outcome != "unknown" || len(baseline.Admission) != 1 || baseline.Admission[0].SelectorObservedAt != nil {
+					t.Fatalf("unknown selectors were invented: %#v", baseline)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_name', 'preserved') WHERE id=?", r.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+				context := current
+				switch test.observation {
+				case "stale":
+					context.ObservedAt = now.Add(-runnerauth.HeartbeatTimeout)
+				case "policy":
+					context.PolicyID = "policy_old"
+				case "future":
+					context.ObservedAt = now.Add(time.Second)
+				}
+				payload := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "admission": map[string]any{"context": context, "runner_revision": 1}}
+				heartbeat := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, payload)
+				requireNativeStatus(t, heartbeat, http.StatusOK)
+				var preserved string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(capabilities_json, '$.sprite_name') FROM machines WHERE id=?", r.binding.MachineID).Scan(&preserved); err != nil || preserved != "preserved" {
+					t.Fatalf("heartbeat overwrote existing metadata: %q %v", preserved, err)
+				}
+				if test.observation == "revision" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET revision=revision+1 WHERE id=?", r.binding.RunnerID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.observation == "project" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json=json_set(json_remove(capabilities_json, ?), ?, json(?)) WHERE id=?", admissionObservationPath(r.binding.RunnerID, f.project.ID), admissionObservationPath(r.binding.RunnerID, "prj_other"), `{"context":{},"runner_revision":1}`, r.binding.MachineID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.another {
+					other.enroll(t)
+					permitted := current
+					permitted.LabelExclude = nil
+					otherPayload := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": other.redemption.BackendIsolation, "admission": map[string]any{"context": permitted, "runner_revision": 1}}
+					otherHeartbeat := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(other.binding.MachineID)+"/heartbeat", other.redemption.Credential, otherPayload)
+					requireNativeStatus(t, otherHeartbeat, http.StatusOK)
+				}
+				delete(payload, "admission")
+				heartbeat = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, payload)
+				requireNativeStatus(t, heartbeat, http.StatusOK)
+			}
 			if test.context {
 				raw, err := json.Marshal(current)
 				if err != nil {
@@ -130,12 +199,23 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 						t.Fatalf("denied admission leaked evidence: %s", response.Body)
 					}
 				}
+				if test.heartbeat {
+					response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/runtime", f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var current tracker.NativeRuntimeEvidence
+					decodeHubResponse(t, response, &current)
+					for _, admission := range current.Admission {
+						if admission.Outcome == "ready" || admission.SelectorObservedAt != nil {
+							t.Fatalf("retired authority still supplied selectors: %#v", current)
+						}
+					}
+				}
 				return
 			}
 			requireNativeStatus(t, response, http.StatusOK)
 			var evidence tracker.NativeRuntimeEvidence
 			decodeHubResponse(t, response, &evidence)
-			if len(evidence.Admission) != 1 {
+			if len(evidence.Admission) != 1+map[bool]int{false: 0, true: 1}[test.another] {
 				t.Fatalf("admission is unavailable: %#v", evidence)
 			}
 			a := evidence.Admission[0]
@@ -145,8 +225,8 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if test.unavailable != "" && !slices.Contains(a.Unavailable, test.unavailable) {
 				t.Fatalf("missing unavailable predicate: %#v", a)
 			}
-			if test.name == "known native label refusal" || test.name == "admissible native item" {
-				if a.SelectorObservedAt == nil || !a.SelectorObservedAt.Equal(now) || a.SelectorSource != "registered_runner_published_context" {
+			if test.name == "known native label refusal" || test.name == "admissible native item" || test.name == "hosted heartbeat selector refusal" || test.name == "hosted heartbeat admissible" {
+				if a.SelectorObservedAt == nil || !a.SelectorObservedAt.Equal(now) || a.SelectorSource != map[bool]string{false: "registered_runner_published_context", true: "registered_runner_heartbeat"}[test.heartbeat] {
 					t.Fatalf("selector observation lost its source or freshness: %#v", a)
 				}
 			}
@@ -154,7 +234,11 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if explanation.Eligibility.Latest != nil || evidence.LatestDecision != nil || !slices.Contains(evidence.Unavailable, "historical_scheduler_decision") || explanation.Eligibility.Source != explain.SourceAvailable {
 				t.Fatalf("snapshot became history: %#v", explanation.Eligibility)
 			}
-			if test.outcome == "skipped" {
+			if test.another {
+				if evidence.Scheduling.Outcome != "ready" || evidence.Admission[1].RunnerID != other.binding.RunnerID || evidence.Admission[1].Outcome != "ready" || evidence.Admission[1].ReasonCode != "" {
+					t.Fatalf("one runner refusal poisoned another runner: %#v", evidence)
+				}
+			} else if test.outcome == "skipped" {
 				if explanation.Eligibility.State != explain.EligibilityRefused || len(explanation.Eligibility.Refusals) != 1 || explanation.Eligibility.Refusals[0].Historical || explanation.Eligibility.Refusals[0].ReasonCode != test.code || explanation.Eligibility.Refusals[0].RunnerID != r.binding.RunnerID {
 					t.Fatalf("refusal missing from explanation: %#v", explanation.Eligibility)
 				}

@@ -1,7 +1,9 @@
 package tracker
 
 import (
+	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
@@ -13,6 +15,7 @@ const NativeExecutionCapability = "fenced_run_history"
 
 const NativeRuntimeEvidenceCapability = "native_runtime_evidence"
 const NativeAdmissionEvidenceCapability = "native_admission_evidence"
+const NativeAdmissionObservationCapability = "native_admission_observation"
 
 type NativeExecutionIdentity struct {
 	Role    string `json:"role"`
@@ -154,6 +157,12 @@ type NativeSchedulerDecision struct {
 	WorkItemRevision Revision  `json:"work_item_revision,string"`
 }
 
+type NativeAdmissionObservation struct {
+	Context        NativeAdmissionContext `json:"context"`
+	RunnerRevision int64                  `json:"runner_revision"`
+	ReceivedAt     time.Time              `json:"received_at,omitempty"`
+}
+
 type NativeAdmissionContext struct {
 	ObservedAt     time.Time `json:"observed_at"`
 	PolicyID       string    `json:"policy_id"`
@@ -162,6 +171,23 @@ type NativeAdmissionContext struct {
 	Assignees      []string  `json:"assignees,omitempty"`
 	LabelInclude   []string  `json:"label_include,omitempty"`
 	LabelExclude   []string  `json:"label_exclude,omitempty"`
+}
+
+func (c NativeAdmissionContext) Validate() error {
+	if c.ObservedAt.IsZero() || c.PolicyID == "" || len(c.PolicyID) > 128 {
+		return errors.New("Admission context requires a bounded policy identity")
+	}
+	for _, values := range [][]string{c.WorkflowStates, c.Authors, c.Assignees, c.LabelInclude, c.LabelExclude} {
+		if len(values) > 32 {
+			return errors.New("Admission selectors exceed their bound")
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) == "" || len(value) > 128 {
+				return errors.New("Invalid admission selector")
+			}
+		}
+	}
+	return nil
 }
 
 type NativeRuntimeAdmission struct {

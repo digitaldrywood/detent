@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -201,6 +202,10 @@ type SchedulingSource interface {
 	AdoptClaim(context.Context, connector.Issue, time.Time) (Claimed, error)
 	RenewClaim(context.Context, string, time.Time) (Claimed, error)
 	ReleaseClaim(context.Context, string, string) error
+}
+
+type nativeAdmissionObserver interface {
+	ObserveNativeAdmission(string, tracker.NativeAdmissionContext)
 }
 
 type candidateChangeWaiter interface {
@@ -1311,6 +1316,9 @@ func (o *Orchestrator) publishState(ctx context.Context, state *State) {
 	cloned := state.clone()
 	o.snapshotDispatchModes(ctx, &cloned)
 	o.snapshotNativeAdmission(&cloned)
+	if observer, ok := o.scheduling.(nativeAdmissionObserver); ok {
+		observer.ObserveNativeAdmission(o.cfg.Project.ID, *cloned.nativeAdmission)
+	}
 	o.latestRuntimeState.Store(&runtimeState{
 		WorkAttempts: cloned.WorkAttempts,
 		Running:      cloned.Running,

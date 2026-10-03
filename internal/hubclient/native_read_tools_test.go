@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -58,19 +59,42 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	largeSelectors := make([]string, 33)
+	for i := range largeSelectors {
+		largeSelectors[i] = "label-" + strconv.Itoa(i)
+	}
 	for _, test := range []struct {
 		name    string
 		exclude []string
 		outcome string
 	}{
+		{name: "large legitimate selector list keeps heartbeat and unknown evidence", exclude: largeSelectors, outcome: "unknown"},
+		{name: "long legitimate selector keeps heartbeat and unknown evidence", exclude: []string{strings.Repeat("a", 129)}, outcome: "unknown"},
 		{name: "registered runner selectors refuse", exclude: []string{"human-owned"}, outcome: "skipped"},
 		{name: "registered runner selectors admit", outcome: "ready"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if err := h.scheduler.Heartbeat(t.Context()); err != nil {
+				t.Fatal(err)
+			}
 			observed := time.Now().UTC()
-			evidence, err := h.native.RuntimeEvidence(t.Context(), selected.WorkItemID, "", tracker.NativeAdmissionContext{ObservedAt: observed, PolicyID: h.descriptor.ID, WorkflowStates: []string{"Todo"}, LabelExclude: test.exclude})
-			if err != nil || len(evidence.Admission) != 1 || evidence.Admission[0].Outcome != test.outcome || evidence.Admission[0].RunnerID != file.Identity.RunnerID || evidence.Admission[0].SelectorObservedAt == nil || !evidence.Admission[0].SelectorObservedAt.Equal(observed) || evidence.LatestDecision != nil || evidence.Issue.Body != "" {
+			h.scheduler.ObserveNativeAdmission("local", tracker.NativeAdmissionContext{ObservedAt: observed, PolicyID: h.descriptor.ID, WorkflowStates: []string{"Todo"}, LabelExclude: test.exclude})
+			h.scheduler.mu.Lock()
+			h.scheduler.nativeHeartbeats[h.project] = time.Now().Add(-2 * time.Second)
+			h.scheduler.mu.Unlock()
+			if err := h.scheduler.Heartbeat(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := h.admin.RuntimeEvidence(t.Context(), selected.WorkItemID, "")
+			if err != nil || len(evidence.Admission) != 1 || evidence.Admission[0].Outcome != test.outcome || evidence.Admission[0].RunnerID != file.Identity.RunnerID || evidence.LatestDecision != nil || evidence.Issue.Body != "" {
 				t.Fatalf("native runtime dropped current runner admission context: %#v, %v", evidence, err)
+			}
+			if test.outcome == "unknown" {
+				if evidence.Admission[0].SelectorObservedAt != nil {
+					t.Fatalf("unrepresentable selectors were truncated into evidence: %#v", evidence)
+				}
+			} else if evidence.Admission[0].SelectorSource != "registered_runner_heartbeat" || evidence.Admission[0].SelectorObservedAt == nil || !evidence.Admission[0].SelectorObservedAt.Equal(observed) {
+				t.Fatalf("heartbeat observation identity lost: %#v", evidence)
 			}
 		})
 	}

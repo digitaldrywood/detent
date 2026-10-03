@@ -2,9 +2,11 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"slices"
-	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -12,20 +14,55 @@ import (
 )
 
 func validateNativeAdmissionContext(c tracker.NativeAdmissionContext) error {
-	if c.ObservedAt.IsZero() || c.PolicyID == "" || len(c.PolicyID) > 128 {
-		return nativeInvalid("Admission context requires a bounded policy identity")
-	}
-	for _, values := range [][]string{c.WorkflowStates, c.Authors, c.Assignees, c.LabelInclude, c.LabelExclude} {
-		if len(values) > 32 {
-			return nativeInvalid("Admission selectors exceed their bound")
-		}
-		for _, value := range values {
-			if strings.TrimSpace(value) == "" || len(value) > 128 {
-				return nativeInvalid("Invalid admission selector")
-			}
-		}
+	if err := c.Validate(); err != nil {
+		return nativeInvalid(err.Error())
 	}
 	return nil
+}
+
+func admissionObservationPath(runner string, project tracker.ProjectID) string {
+	return "$.native_admission." + runner + "." + string(project)
+}
+
+func storeRunnerAdmissionObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, observation *tracker.NativeAdmissionObservation, now time.Time) error {
+	if observation == nil {
+		return nil
+	}
+	if observation.RunnerRevision < 1 || !observation.ReceivedAt.IsZero() {
+		return nativeInvalid("Admission observation requires the observed runner revision")
+	}
+	if err := validateNativeAdmissionContext(observation.Context); err != nil {
+		return err
+	}
+	current := *observation
+	current.ReceivedAt = now
+	raw, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	if len(raw) > 8192 {
+		return nativeInvalid("Admission observation exceeds its bound")
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, ?, json(?)) WHERE id=? AND organization_id=?", admissionObservationPath(scope.credential.Runner.RunnerID, scope.project), string(raw), scope.credential.Runner.MachineID, scope.organization)
+	return requireRunnerUpdate(result, err)
+}
+
+func readRunnerAdmissionObservation(ctx context.Context, q nativeQueryer, scope nativeScope, runner runnerauth.Runner, policyID string, now time.Time) (*tracker.NativeAdmissionContext, error) {
+	var raw string
+	if err := q.QueryRowContext(ctx, "SELECT COALESCE(json_extract(capabilities_json, ?), '') FROM machines WHERE id=? AND organization_id=?", admissionObservationPath(runner.RunnerID, scope.project), runner.MachineID, scope.organization).Scan(&raw); err != nil {
+		return nil, err
+	}
+	if raw == "" || len(raw) > 8192 {
+		return nil, nil
+	}
+	var observed tracker.NativeAdmissionObservation
+	if err := json.Unmarshal([]byte(raw), &observed); err != nil {
+		return nil, nil
+	}
+	if validateNativeAdmissionContext(observed.Context) != nil || observed.RunnerRevision != runner.Revision || observed.Context.PolicyID != policyID || observed.ReceivedAt.IsZero() || now.Before(observed.ReceivedAt) || !now.Before(observed.ReceivedAt.Add(runnerauth.HeartbeatTimeout)) || now.Before(observed.Context.ObservedAt) || !now.Before(observed.Context.ObservedAt.Add(runnerauth.HeartbeatTimeout)) {
+		return nil, nil
+	}
+	return &observed.Context, nil
 }
 
 func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID, policyID string, requirements policy.Requirements, runners []runnerauth.Runner, truncated, ready bool, evidence *tracker.NativeRuntimeEvidence, contexts []tracker.NativeAdmissionContext, minimumVersion string) error {
@@ -35,11 +72,20 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 	if err != nil {
 		return err
 	}
-	var selected *tracker.NativeAdmissionContext
+	var supplied *tracker.NativeAdmissionContext
 	if len(contexts) > 0 {
-		selected = &contexts[0]
+		supplied = &contexts[0]
 	}
 	for _, r := range runners {
+		selected, err := readRunnerAdmissionObservation(ctx, q, scope, r, policyID, now)
+		if err != nil {
+			return err
+		}
+		selectorSource := "registered_runner_heartbeat"
+		if supplied != nil && scope.credential.Runner.RunnerID == r.RunnerID {
+			selected = supplied
+			selectorSource = "registered_runner_published_context"
+		}
 		a := tracker.NativeRuntimeAdmission{RunnerID: r.RunnerID, RunnerRevision: r.Revision, PolicyID: policyID, Source: "native_claim_candidate_snapshot", ObservedAt: now, Outcome: "unknown", Reason: "Current native candidate predicates match; runner request selectors are unavailable", Unavailable: []string{}}
 		refuse := func(code, reason string) {
 			a.Outcome, a.ReasonCode, a.Reason = "skipped", code, reason
@@ -53,18 +99,18 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			exclusions := r.Exclusions(scope.project, requirements, false)
 			if len(exclusions) > 0 {
 				refuse(exclusions[0].Code, exclusions[0].Message)
-			} else if selected == nil || scope.credential.Runner.RunnerID != r.RunnerID {
+			} else if selected == nil {
 				a.Unavailable = append(a.Unavailable, "runner_specific_candidate_selection")
 			} else if selected.PolicyID != policyID {
 				refuse("policy_mismatch", "Runner policy is missing or stale; load the approved repository definition and permitted local overrides before claiming work")
 			} else {
-				a.SelectorSource = "registered_runner_published_context"
+				a.SelectorSource = selectorSource
 				a.SelectorObservedAt = &selected.ObservedAt
-				ids, err := nativeCandidateIDs(ctx, q, query, nil, nil, normalizedQueryStrings(selected.WorkflowStates), normalizedQueryStrings(selected.Authors), normalizedQueryStrings(selected.Assignees), normalizedQueryStrings(selected.LabelInclude), normalizedQueryStrings(selected.LabelExclude))
+				selectedIDs, err := nativeCandidateIDs(ctx, q, query, nil, nil, normalizedQueryStrings(selected.WorkflowStates), normalizedQueryStrings(selected.Authors), normalizedQueryStrings(selected.Assignees), normalizedQueryStrings(selected.LabelInclude), normalizedQueryStrings(selected.LabelExclude))
 				if err != nil {
 					return err
 				}
-				if len(ids) == 0 || len(selected.WorkflowStates) == 0 {
+				if len(selectedIDs) == 0 || len(selected.WorkflowStates) == 0 {
 					refuse("no_claimable_work", "Current registered-runner claim selectors do not select this item")
 				} else {
 					var version string
@@ -77,7 +123,7 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 							return err
 						}
 						refuse(failure.Code, failure.Message)
-					} else if err := validateRunnerIsolation(ctx, q, scope, now); err != nil {
+					} else if err := validateReadRunnerIsolation(ctx, q, scope, r); err != nil {
 						if !errors.Is(err, ErrNoClaimableWork) {
 							return err
 						}

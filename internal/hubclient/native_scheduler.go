@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -31,6 +32,29 @@ func (s *Scheduler) ConnectorForProject(project string) (connector.Connector, bo
 		return nil, false
 	}
 	return source, true
+}
+
+func (s *Scheduler) ObserveNativeAdmission(project string, current tracker.NativeAdmissionContext) {
+	if s.client.runner == nil || s.nativeProjects[project] == nil {
+		return
+	}
+	s.client.runner.routingMu.Lock()
+	var revision int64
+	if s.client.runner.routing != nil {
+		revision = s.client.runner.routing.Revision
+	}
+	s.client.runner.routingMu.Unlock()
+	if revision < 1 {
+		return
+	}
+	current.WorkflowStates = slices.Clone(current.WorkflowStates)
+	current.Authors = slices.Clone(current.Authors)
+	current.Assignees = slices.Clone(current.Assignees)
+	current.LabelInclude = slices.Clone(current.LabelInclude)
+	current.LabelExclude = slices.Clone(current.LabelExclude)
+	s.mu.Lock()
+	s.nativeAdmissions[project] = tracker.NativeAdmissionObservation{Context: current, RunnerRevision: revision}
+	s.mu.Unlock()
 }
 
 func (s *Scheduler) Heartbeat(ctx context.Context) error {
@@ -109,10 +133,16 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	}
 	var localChecks *runnerauth.LocalChecks
 	var repository *string
+	var admission *tracker.NativeAdmissionObservation
 	for name, candidate := range s.nativeProjects {
 		if candidate != source {
 			continue
 		}
+		s.mu.Lock()
+		if current, ok := s.nativeAdmissions[name]; ok {
+			admission = &current
+		}
+		s.mu.Unlock()
 		if checks, ok := s.localChecks[name]; ok && s.client.runner != nil {
 			localChecks = &checks
 		}
@@ -148,6 +178,7 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	machine := s.machine
 	s.mu.Unlock()
 	machine.LocalChecks = localChecks
+	machine.Admission = admission
 	machine.CheckoutRepository = repository
 	if s.client.runner != nil && !last.IsZero() {
 		if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
