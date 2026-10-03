@@ -418,7 +418,7 @@ test("the fleet page redirects into settings and renders the hosts and providers
   } else {
     await expect(page.getByText("No runners yet. Enroll a machine to start taking work.")).toBeVisible();
   }
-  await expect(page.getByRole("heading", { name: "Providers" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Providers", exact: true })).toBeVisible();
 
   const meters = page.getByRole("progressbar");
   if ((await meters.count()) > 0) {
