@@ -23,6 +23,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		name        string
 		label       string
 		body        string
+		dependency  bool
 		context     bool
 		heartbeat   bool
 		another     bool
@@ -50,7 +51,8 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		{name: "known native label refusal", label: "excluded", context: true, outcome: "skipped", code: "no_claimable_work"},
 		{name: "admissible native item", label: "ordinary", context: true, outcome: "ready"},
 		{name: "ordinary label alone proves no refusal", label: "ordinary", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
-		{name: "human owned label refuses before missing provider requirement", label: "human-owned", context: true, provider: "unknown", outcome: "skipped", code: "inactive_state"},
+		{name: "human owned label refuses before missing provider requirement", label: "human-owned", heartbeat: true, provider: "unknown", outcome: "skipped", code: "inactive_state"},
+		{name: "hosted unfinished dependency refuses", heartbeat: true, dependency: true, outcome: "skipped", code: "no_claimable_work"},
 		{name: "typed human task refuses without label or selectors", body: "```detent-human\nschema: 1\nkey: operator-task\naction: Record measured costs\nowner: operator\ncompletion_criteria: Provide measurement evidence\napproval_constraint: No purchases authorized\n```", outcome: "skipped", code: "inactive_state"},
 		{name: "tracking epic refuses", label: "epic", context: true, outcome: "skipped", code: "inactive_state"},
 		{name: "approved runner selector refusal", policy: "wrong-runner", outcome: "skipped", code: "selector_no_match"},
@@ -79,6 +81,12 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			}
 			r.enroll(t)
 			issue := f.create(t, "native candidate")
+			if test.dependency {
+				blocker := f.create(t, "unfinished blocker")
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (dependent_issue_id, blocker_issue_id, provenance, created_at, updated_at) SELECT a.id, b.id, 'native', ?, ? FROM issues a, issues b WHERE a.native_id = ? AND b.native_id = ?", testTimestamp, testTimestamp, issue.WorkItemID, blocker.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			labelValues := []string{}
 			if test.label != "" {
 				labelValues = append(labelValues, test.label)
@@ -135,7 +143,11 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				requireNativeStatus(t, before, http.StatusOK)
 				var baseline tracker.NativeRuntimeEvidence
 				decodeHubResponse(t, before, &baseline)
-				if baseline.Scheduling.Outcome != "unknown" || len(baseline.Admission) != 1 || baseline.Admission[0].SelectorObservedAt != nil {
+				baselineOutcome := "unknown"
+				if test.label == "human-owned" || test.dependency {
+					baselineOutcome = "skipped"
+				}
+				if baseline.Scheduling.Outcome != baselineOutcome || len(baseline.Admission) != 1 || baseline.Admission[0].SelectorObservedAt != nil {
 					t.Fatalf("unknown selectors were invented: %#v", baseline)
 				}
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_name', 'preserved') WHERE id=?", r.binding.MachineID); err != nil {
@@ -266,6 +278,15 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				}
 				if projected.Eligibility.State != explanation.Eligibility.State || len(projected.Eligibility.Refusals) != len(explanation.Eligibility.Refusals) {
 					t.Fatalf("MCP admission differs: %s", data)
+				}
+				if test.name == "hosted heartbeat admissible" || test.label == "human-owned" || test.dependency {
+					for _, name := range []string{operatortool.Dashboard, operatortool.BoardState} {
+						data := hostedContextData(t, call("tools/call", name, map[string]any{"project_id": string(f.project.ID)}), false)
+						var board nativeBoardResult
+						if err := json.Unmarshal(data, &board); err != nil || board.Counts.QueuedInventory != 1+map[bool]int{false: 0, true: 1}[test.dependency] || board.Counts.Running != 0 || board.Counts.ClosedInventory != 0 || board.EligibilityTool != operatortool.ExplainItem || !slices.Contains(board.Unavailable, "aggregate_dispatch_readiness") {
+							t.Fatalf("native inventory confused with admission: %s err=%v", data, err)
+						}
+					}
 				}
 			}
 			for _, secret := range []string{"private-body", "/private/runner", "credential-sentinel", r.redemption.Credential, f.token} {

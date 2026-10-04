@@ -21,7 +21,7 @@ export function StatsRow({
 }): React.ReactElement {
   const counters = [
     { key: "running", value: totals?.running ?? stats.running, label: "running" },
-    { key: "queued", value: totals?.queued ?? stats.queued, label: "queued" },
+    { key: "queued", value: totals?.queued ?? stats.queued, label: "queued inventory" },
     { key: "open", value: totals?.open ?? stats.open, label: "open" },
     { key: "completed", value: totals?.completed ?? stats.completed, label: "closed inventory" },
   ];
@@ -40,7 +40,9 @@ export function StatsRow({
               data-testid={`stat-${counter.key}`}
               title={counter.key === "completed"
                 ? `${totals === null ? "Loaded items" : "All items"} in terminal states in the current filter scope, including cancelled and custom terminal states. Inventory, not shipping throughput. Imported terminal history: ${stats.importedClosed} of ${stats.completed} loaded closed items.`
-                : undefined}
+                : counter.key === "queued"
+                  ? "Items in dispatchable lanes without a live worker in the current filter scope. Human ownership, dependencies and other dispatch conditions may hold them."
+                  : undefined}
             >
               <b className="font-semibold text-foreground tabular-nums">{counter.value}</b>{" "}
               {counter.label}

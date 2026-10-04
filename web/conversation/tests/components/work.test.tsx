@@ -531,9 +531,10 @@ describe("the stats row", () => {
     expect(stats.importedClosed).toBe(2);
     render(<StatsRow stats={stats} hasMore={false} loadedCount={12} loading={false} onLoadMore={vi.fn()} />);
     expect(screen.getByTestId("stat-running").textContent).toBe("2 running");
-    expect(screen.getByTestId("stat-queued").textContent).toBe("4 queued");
+    expect(screen.getByTestId("stat-queued").textContent).toBe("4 queued inventory");
     expect(screen.getByTestId("stat-open").textContent).toBe("8 open");
     expect(screen.queryByTestId("stat-ready")).toBeNull();
+    expect(screen.getByTestId("stat-queued").getAttribute("title")).toContain("Human ownership, dependencies");
     expect(screen.getByTestId("stat-completed").textContent).toBe("4 closed inventory (2 imported history loaded)");
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("including cancelled and custom terminal states");
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
@@ -546,7 +547,7 @@ describe("the stats row", () => {
     const props = { stats, totals, hasMore: true, loadedCount: 100, loading: false, onLoadMore };
     const mounted = render(<StatsRow {...props} />);
     const counts = screen.getByTestId("work-stats");
-    expect(counts.textContent).toContain("2 running·3 queued·17 open·126 closed inventory (1 imported history loaded)");
+    expect(counts.textContent).toContain("2 running·3 queued inventory·17 open·126 closed inventory (1 imported history loaded)");
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 1 of 1 loaded closed items");
     const more = screen.getByRole("button", { name: "Load 43 more · 100 of 143" });
     expect(counts.contains(more)).toBe(true);
@@ -555,7 +556,7 @@ describe("the stats row", () => {
     mounted.rerender(<StatsRow {...props} loading />);
     expect(counts.getAttribute("aria-busy")).toBe("true");
     expect(screen.getByTestId("stat-queued").parentElement!.className).toContain("opacity-50");
-    expect(screen.getByTestId("stat-queued").textContent).toBe("3 queued");
+    expect(screen.getByTestId("stat-queued").textContent).toBe("3 queued inventory");
     expect((more as HTMLButtonElement).disabled).toBe(true);
     mounted.rerender(<StatsRow {...props} hasMore={false} loadedCount={143} />);
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();

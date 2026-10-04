@@ -74,7 +74,11 @@ func FleetCatalog() []Definition {
 		definitions = append(definitions, Definition{Name: name, Description: description, InputSchema: json.RawMessage(`{"type":"object","properties":{` + properties + `}` + required + `,"additionalProperties":false}`), Annotations: Annotations{ReadOnly: read, Destructive: material, Idempotent: true, OpenWorld: !read || name == RunnerFleet}, Meta: ToolMetadata{Toolset: "fleet"}})
 	}
 	for _, name := range []string{Dashboard, HealthDashboard, DiagnosticsDashboard} {
-		add(name, "Read the current dashboard application snapshot, projected to current project grants.", `"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false)
+		description := "Read the current dashboard application snapshot, projected to current project grants."
+		if name == Dashboard {
+			description += " Native hubs return bounded board inventory and live-worker observations; queued inventory includes held work, not dispatch readiness. Use explain_item for current item eligibility."
+		}
+		add(name, description, `"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false)
 	}
 	page := `"limit":{"type":"integer","minimum":1,"maximum":200},"offset":{"type":"integer","minimum":0,"maximum":100000}`
 	add(AnalyticsDashboard, "Read dashboard analytics attempts and activity within current project grants.", page, "", true, false)

@@ -158,6 +158,9 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	if call.Name == operatortool.BoardState || call.Name == operatortool.Dashboard {
+		return nativeOperatorExecutor(e).Execute(ctx, call)
+	}
 	if operatortool.IsHostedContext(call.Name) {
 		return (hostedContextExecutor(e)).Execute(ctx, call)
 	}
