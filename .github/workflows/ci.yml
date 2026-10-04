@@ -571,7 +571,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
           TMPDIR: ${{ runner.temp }}
-          DETENT_MCP_URL: https://cloud.detent.build/api/v2/organizations/org_9e0e65eec07a6639979a/mcp
+          DETENT_MCP_URL: https://cloud.detent.build/organizations/org_9e0e65eec07a6639979a/mcp
           DETENT_PROJECT_ID: prj_6d4919bebd73446798e6cd807feda10e
           DETENT_API_KEY: ${{ secrets.DETENT_API_KEY }}
         run: bash scripts/scheduled-ci-finish.sh
