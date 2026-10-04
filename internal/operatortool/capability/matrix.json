@@ -2278,7 +2278,7 @@
         {
           "source": "internal/operatortool/catalog.go",
           "kind": "existing_tool",
-          "definition": "definition(BoardState, \"Read live board items, lanes, priorities, blockers, and active run identity. Use this before answering board questions or proposing item actions.\", limitedSchema)",
+          "definition": "definition(BoardState, \"Read live board items, lanes, priorities, blockers, and active run identity. Native hubs return bounded board inventory and live-worker observations; queued inventory includes held work, not dispatch readiness. Use explain_item for current item eligibility.\", limitedSchema)",
           "occurrence": 1,
           "line": 58,
           "handler": "BoardState"
@@ -2291,7 +2291,7 @@
             "github",
             "native"
           ],
-          "service": "telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error"
+          "service": "Local telemetry snapshot or native Hub board projection; absent dependency returns existing safe unavailable error"
         },
         {
           "deployment": "hosted_dedicated",
@@ -2299,7 +2299,7 @@
             "github",
             "native"
           ],
-          "service": "telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error"
+          "service": "Local telemetry snapshot or native Hub board projection; absent dependency returns existing safe unavailable error"
         },
         {
           "deployment": "hosted_shared",
@@ -2307,7 +2307,7 @@
             "github",
             "native"
           ],
-          "service": "telemetry snapshot or explanation service; absent dependency returns existing safe unavailable error"
+          "service": "Local telemetry snapshot or native Hub board projection; absent dependency returns existing safe unavailable error"
         }
       ],
       "authority": {
@@ -2325,13 +2325,13 @@
           "class": "none"
         }
       ],
-      "application": "operatortool.Executor.Execute / board_state",
-      "extraction": "None; retain existing definition, argument schema, executor and result schema.",
+      "application": "operatortool.Executor.Execute / board_state; hubserver.Service.executeBoardRead",
+      "extraction": "Retain the existing argument schema and local snapshot result; native Hub reads reuse the Work page projection with explicit inventory counts and unavailable aggregate dispatch readiness.",
       "tool": {
         "set": "board",
         "name": "board_state",
-        "arguments": "definition(BoardState, \"Read live board items, lanes, priorities, blockers, and active run identity. Use this before answering board questions or proposing item actions.\", limitedSchema)",
-        "result": "board_state existing typed executor result with freshness",
+        "arguments": "definition(BoardState, \"Read live board items, lanes, priorities, blockers, and active run identity. Native hubs return bounded board inventory and live-worker observations; queued inventory includes held work, not dispatch readiness. Use explain_item for current item eligibility.\", limitedSchema)",
+        "result": "Local typed snapshot or native per-project board inventory with freshness and truncation",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -2342,7 +2342,7 @@
       "owner": "digitaldrywood/detent#3340",
       "status": "implemented",
       "coverage": "internal/operatortool/executor_test.go; internal/mcp/server_test.go and http_test.go; current existing read coverage only, not full organization parity; current authority and aggregate projection: internal/operatortool/authority_test.go; internal/web/mcp_http_test.go; internal/mcp/http_test.go; stdio discovery: internal/cli/mcp_test.go; #3339 transport/catalog parity: internal/mcp/protocol_test.go and internal/cli/mcp_test.go",
-      "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Wider dashboard parity remains pending in separate rows."
+      "decision": "Existing name/schema preserved. #3336 binds discovery/direct calls to freshly resolved connection authority and restricts aggregate/explanation snapshots. Native #257 routes hosted reads to bounded native board observations; queued inventory includes held work. TestNativeWorkPageOperationalScope, TestHostedAnalyticsReads and TestNativeAdmissionExplanation cover transport, authority, inventory and eligibility. Wider dashboard parity remains pending in separate rows."
     },
     {
       "id": "existing.explain_item",

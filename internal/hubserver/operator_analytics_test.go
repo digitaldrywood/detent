@@ -61,6 +61,22 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 		if grant != "native" {
 			other.grant(t, user, false, false)
 		}
+		for _, name := range []string{operatortool.Dashboard, operatortool.BoardState} {
+			t.Run(grant+"/"+name, func(t *testing.T) {
+				response, raw := call(user, name, map[string]any{})
+				var board nativeBoardResult
+				if err := json.Unmarshal(raw, &board); err != nil || response.Code != http.StatusOK || board.GeneratedAt.IsZero() {
+					t.Fatalf("hosted board: %s err=%v", response.Body.String(), err)
+				}
+				want := 1
+				if grant == "both" {
+					want = 2
+				}
+				if len(board.Projects) != want || grant == "native" && strings.Contains(string(raw), "prj_other") || grant == "github" && strings.Contains(string(raw), string(f.project)) {
+					t.Fatalf("hosted board project authority: %s", raw)
+				}
+			})
+		}
 		for _, name := range []string{operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports} {
 			t.Run(grant+"/"+name, func(t *testing.T) {
 				response, raw := call(user, name, map[string]any{})
@@ -129,7 +145,7 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=?", user.identity.Subject); err != nil {
 			t.Fatal(err)
 		}
-		for _, name := range []string{operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports} {
+		for _, name := range []string{operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports, operatortool.Dashboard, operatortool.BoardState} {
 			response, raw := call(user, name, map[string]any{"project_id": string(f.project)})
 			if len(raw) > 0 || !strings.Contains(response.Body.String(), `"isError":true`) {
 				t.Fatalf("revoked grant %s", response.Body.String())

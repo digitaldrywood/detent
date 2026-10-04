@@ -408,6 +408,8 @@ metadata records the connection mode, client, organization, action and retry ID.
 Connections start in confirmation mode again after a new setup or server restart.
 
 Hosted hubs with no dashboard command service return opaque unavailable results.
+Native `dashboard` and `board_state` reads use the existing board projection;
+see [native board inventory semantics](api-mcp-setup.md).
 Conversation, access and billing commands use the same human approval and
 connection authority boundary.
 

@@ -55,7 +55,7 @@ func Catalog() []Definition {
 	limitedSchema := fmt.Sprintf(`{"type":"object","properties":{"project_id":{"type":"string"},"state":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":%d}},"additionalProperties":false}`, MaxItemLimit)
 	activitySchema := fmt.Sprintf(`{"type":"object","properties":{"project_id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":%d}},"additionalProperties":false}`, MaxItemLimit)
 	return []Definition{
-		definition(BoardState, "Read live board items, lanes, priorities, blockers, and active run identity. Use this before answering board questions or proposing item actions.", limitedSchema),
+		definition(BoardState, "Read live board items, lanes, priorities, blockers, and active run identity. Native hubs return bounded board inventory and live-worker observations; queued inventory includes held work, not dispatch readiness. Use explain_item for current item eligibility.", limitedSchema),
 		definition(FleetHealth, "Read live fleet health, capacity outages, failure breakers, rate limits, refresh state, and running counts.", `{"type":"object","properties":{},"additionalProperties":false}`),
 		definition(TelemetryUsage, "Read live token, spend, throughput, and per-project usage telemetry.", `{"type":"object","properties":{"project_id":{"type":"string"}},"additionalProperties":false}`),
 		definition(RecentActivity, "Read recent events and completed work retained in the current live telemetry snapshot, including merge timestamps. This is live-only activity, not the durable issue activity stream.", activitySchema),

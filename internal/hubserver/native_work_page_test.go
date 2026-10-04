@@ -49,12 +49,23 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET labels_json = '[\"human-owned\"]' WHERE native_id = ?", todo[2].WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (dependent_issue_id, blocker_issue_id, provenance, created_at, updated_at) SELECT a.id, b.id, 'native', ?, ? FROM issues a, issues b WHERE a.native_id = ? AND b.native_id = ?", testTimestamp, testTimestamp, todo[3].WorkItemID, todo[2].WorkItemID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = 0 WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", todo[0].WorkItemID); err != nil {
 		t.Fatal(err)
 	}
 	otherProject := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-project")
 	otherProject.create(t, "Historical needle")
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = f.service.withOperatorCatalog(ctx, credential, string(f.project.OrganizationID))
 	transports := map[string]func(string, string, any) hostedContextReply{}
 	for _, name := range []string{"stdio", "http"} {
 		transports[name] = hostedContextProtocol(t, f.service, ctx, name)
@@ -114,6 +125,50 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		return page
 	}
 	first := read("")
+	for transport, call := range transports {
+		for _, name := range []string{operatortool.Dashboard, operatortool.BoardState} {
+			t.Run(transport+"/"+name, func(t *testing.T) {
+				catalog := call("tools/list", "", nil).Result
+				if !strings.Contains(string(catalog), `"name":"`+name+`"`) {
+					t.Fatalf("native read missing from catalog: %s", catalog)
+				}
+				for _, test := range []struct {
+					state  string
+					counts nativeBoardCounts
+				}{
+					{"", nativeBoardCounts{Running: 1, QueuedInventory: 5, Open: 6, ClosedInventory: 130, Total: 136}},
+					{"Todo", nativeBoardCounts{QueuedInventory: 4, Open: 4, Total: 4}},
+					{"Done", nativeBoardCounts{ClosedInventory: 130, Total: 130}},
+				} {
+					if name == operatortool.Dashboard && test.state != "" {
+						continue
+					}
+					args := map[string]any{"project_id": string(f.project.ID), "limit": 100}
+					if test.state != "" {
+						args["state"] = test.state
+					}
+					raw := hostedContextData(t, call("tools/call", name, args), false)
+					var result nativeBoardResult
+					if err := json.Unmarshal(raw, &result); err != nil || result.Counts != test.counts || len(result.Projects) != 1 || result.Projects[0].Project.ID != f.project.ID || result.GeneratedAt.IsZero() || result.Truncated != (test.counts.Total > 100) {
+						t.Fatalf("native inventory: %s err=%v", raw, err)
+					}
+					if !slices.Contains(result.Unavailable, "aggregate_dispatch_readiness") || result.EligibilityTool != operatortool.ExplainItem || strings.Contains(string(raw), `"ready"`) || strings.Contains(string(raw), "foreign-project") {
+						t.Fatalf("inventory claimed readiness or leaked scope: %s", raw)
+					}
+					if test.state != "Done" && len(result.Projects[0].Board.Work.Items) != test.counts.Open {
+						t.Fatalf("lost bounded operational items: %s", raw)
+					}
+				}
+				hostedContextData(t, call("tools/call", name, map[string]any{"project_id": "prj_foreign"}), true)
+				hostedContextData(t, call("tools/call", name, map[string]any{"project_id": string(f.project.ID), "limit": 201}), true)
+				raw := hostedContextData(t, call("tools/call", name, map[string]any{"limit": 1}), false)
+				var bounded nativeBoardResult
+				if err := json.Unmarshal(raw, &bounded); err != nil || !bounded.Truncated || len(bounded.Projects) != 1 || len(bounded.Projects[0].Board.Items) > 1 || len(bounded.Projects[0].Board.Work.Items) > 1 {
+					t.Fatalf("unscoped read exceeded bounds: %s err=%v", raw, err)
+				}
+			})
+		}
+	}
 	for _, test := range []struct {
 		name, query          string
 		total, running, open int
@@ -230,7 +285,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		t.Fatal("large open inventory displaced live work or exceeded the bound")
 	}
 	q := &runtimeReadQuery{nativeQueryer: f.service.database.db}
-	_, err := readNativeWorkSummary(t.Context(), q, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 100, f.service.config.now())
+	_, err = readNativeWorkSummary(t.Context(), q, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 100, f.service.config.now())
 	if err != nil {
 		t.Fatal(err)
 	}

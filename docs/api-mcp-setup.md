@@ -1,5 +1,21 @@
 # API & MCP setup
 
+Native Hub `dashboard` and `board_state` reads use the same filtered board
+inventory and bounded operational observations as the Work page. Their native
+results contain per-project workflow definitions, lane totals, paged items and
+operational items, plus `running`, `queued_inventory`, `open`,
+`closed_inventory` and `total` counts. Queued inventory includes held items in
+dispatchable lanes without a live worker; it is not a dispatch-readiness count.
+Terminal states do not contribute to running or queued inventory. `board_state` accepts a
+state filter. Both reads accept an optional project and an item limit (default
+100, maximum 200); omitted projects resolve through current readable grants.
+The item budget is shared across returned projects. `truncated` marks omitted
+projects or items, so aggregate counts may cover only returned projects. Use
+project-scoped reads or `work_list` cursors to continue inventory reads.
+`aggregate_dispatch_readiness` remains explicitly unavailable; use the advertised
+`eligibility_tool` (`explain_item`) for current native admission evidence,
+including human ownership, dependencies and registered-runner conditions.
+
 For a selected local board, discover the `local_projects` toolset on its
 authenticated `/mcp` connection. `local_project_configuration` reads the actual
 local revision and redacted selected/effective policy. Its admin commands apply
