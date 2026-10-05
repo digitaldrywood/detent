@@ -25,9 +25,12 @@ func TestProjectArgumentBounds(t *testing.T) {
 		{"too many states", `{"input":{"states":[` + strings.TrimSuffix(strings.Repeat(`{},`, 201), ",") + `]}}`, func() any { return &ProjectRequest[ProjectCreateInput]{} }, true},
 		{"too many intake numbers", `{"input":{"numbers":[` + strings.TrimSuffix(strings.Repeat(`1,`, 201), ",") + `]}}`, func() any { return &ProjectRequest[GitHubBatchInput]{} }, true},
 		{"behavior object", `{"input":{"policy":{"configuration":{"behavior":{"Budget":{"PerIssueMaxUSD":0.25},"ActiveStates":null,"AllowLocalBinding":null},"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
-		{"behavior array", `{"input":{"policy":{"configuration":{"behavior":[],"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, true},
-		{"behavior string", `{"input":{"policy":{"configuration":{"behavior":"opaque","prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, true},
-		{"null behavior", `{"input":{"policy":{"configuration":{"behavior":null,"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, true},
+		{"behavior array", `{"input":{"policy":{"configuration":{"behavior":[{"enabled":true},null,0.25],"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
+		{"behavior string", `{"input":{"policy":{"configuration":{"behavior":"` + strings.Repeat("x", 257) + `","prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
+		{"behavior number", `{"input":{"policy":{"configuration":{"behavior":-0.25,"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
+		{"behavior boolean", `{"input":{"policy":{"configuration":{"behavior":false,"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
+		{"null behavior", `{"input":{"policy":{"configuration":{"behavior":null,"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
+		{"oversized behavior", `{"input":{"policy":{"configuration":{"behavior":"` + strings.Repeat("x", MaxArgumentBytes) + `","prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := DecodeProjectArguments(json.RawMessage(tt.raw), tt.target())
@@ -52,8 +55,8 @@ func TestProjectArgumentBounds(t *testing.T) {
 			input := properties(schema, "input")
 			descriptor := properties(input, "policy")
 			configuration := properties(descriptor, "configuration")
-			if properties(configuration, "behavior")["type"] != "object" {
-				t.Fatal("policy behavior must be advertised as a JSON object")
+			if len(properties(configuration, "behavior")) != 0 {
+				t.Fatal("policy behavior must allow any JSON value")
 			}
 			for _, name := range []string{"prompt", "shared_prompt", "agents_prompt"} {
 				if properties(configuration, name)["maxLength"] != float64(MaxArgumentBytes) {

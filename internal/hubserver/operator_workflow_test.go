@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,8 +13,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -86,6 +89,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 			operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Cancelled','Cancelled',1,0,?,?)", f.project, testTimestamp, testTimestamp)
 			var call operatortool.Call
 			var issue tracker.NativeIssue
+			var descriptor policy.Descriptor
 			if test.tool == operatortool.MoveItem {
 				raw, _ := json.Marshal(map[string]any{"project_id": f.project, "request_id": "create", "title": "Terminal move", "state": "Todo"})
 				result, err := executor.Execute(human, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw})
@@ -113,9 +117,20 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				descriptor := hubTestPolicy()
-				descriptor.SourceRevision = strings.Repeat("b", 40)
-				descriptor = descriptor.WithID()
+				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+					ConfigPath: "detent.yaml", HasConfig: true,
+					Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: true\n  required_status_checks: []\n"),
+					WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", 100)),
+					AgentsPath: "AGENTS.md", HasAgents: true, Agents: []byte(strings.Repeat("Preserve policy authority.\n", 100)),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				workflow.SharedPrompt = strings.Repeat("Review the material policy.\n", 100)
+				descriptor, err = workflowconfig.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
 				call = projectCall(t, test.tool, string(f.project), "policy", operatortool.PolicyApprovalInput{ExpectedID: current.Policy.ID, Policy: descriptor})
 			}
 			if test.revoked {
@@ -173,7 +188,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 					}
 				} else {
 					approval, err := readProjectPolicy(t.Context(), f.service.database.db, "org_security/"+string(f.project))
-					if err != nil || approval.Policy.SourceRevision != strings.Repeat("b", 40) {
+					if err != nil || !reflect.DeepEqual(approval.Policy, descriptor) || approval.ApprovedBy != key.ID {
 						t.Fatalf("policy=%+v %v", approval, err)
 					}
 				}
