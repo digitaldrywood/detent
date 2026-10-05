@@ -40,6 +40,9 @@ func readLinkedIssueSourceProjection(ctx context.Context, query nativeQueryer, i
 	return &source, nil
 }
 
+const linkedIssueRepositoryRequired = "Read get_project_integration for this project. An administrator must associate its repository through bind_native_repository before linking GitHub issues; use source runner_checkout with an enrolled runner reporting the matching checkout."
+const linkedIssueRepositoryMismatch = "GitHub issue must belong to this native project's attached repository"
+
 func createLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
 	canonical, repository, number, err := tracker.ParseGitHubIssueURL(strings.TrimSpace(request.GitHubIssueURL))
 	if err != nil {
@@ -52,8 +55,11 @@ func createLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, req
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
+	if integration.Profile == "native" && integration.Repository == "" && integration.CheckoutRepository == "" {
+		return tracker.NativeIssue{}, nativeInvalid(linkedIssueRepositoryRequired)
+	}
 	if integration.Profile != "native" || (!strings.EqualFold(repository, integration.Repository) && !strings.EqualFold(repository, integration.CheckoutRepository)) {
-		return tracker.NativeIssue{}, nativeInvalid("GitHub issue must belong to this native project's attached repository")
+		return tracker.NativeIssue{}, nativeInvalid(linkedIssueRepositoryMismatch)
 	}
 	key := "github:" + canonical
 	var existing string
