@@ -27,7 +27,7 @@ type fakeCloud struct {
 	lost          string
 	badPage       string
 	summaryDetail bool
-	dispatchable  bool
+	states        []tracker.NativeState
 	conflict      bool
 	editAttempts  int
 }
@@ -64,7 +64,11 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 	var output any
 	switch name {
 	case "work_config":
-		output = operatortool.WorkReadResult[map[string]any]{ProjectID: scheduledCloudProject, Data: map[string]any{"project": tracker.NativeProject{ID: scheduledCloudProject, OrganizationID: "org", Profile: "native", States: []tracker.NativeState{{Name: "Backlog", Dispatchable: f.dispatchable}}}}}
+		states := f.states
+		if states == nil {
+			states = []tracker.NativeState{{Name: "Backlog"}, {Name: "Todo", Dispatchable: true}}
+		}
+		output = operatortool.WorkReadResult[map[string]any]{ProjectID: scheduledCloudProject, Data: map[string]any{"project": tracker.NativeProject{ID: scheduledCloudProject, OrganizationID: "org", Profile: "native", States: states}}}
 	case "work_list":
 		offset := 0
 		if cursor, _ := args["cursor"].(string); cursor != "" {
@@ -107,11 +111,12 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 		}
 		output = operatortool.WorkReadResult[tracker.Page[tracker.NativeComment]]{ProjectID: scheduledCloudProject, Reference: id, Data: page}
 	case "file_issue":
-		if args["state"] != "Backlog" || !strings.HasPrefix(args["request_id"].(string), "scheduled-create-") {
-			return errors.New("filing bypassed intake")
+		if args["state"] != "Backlog" && args["state"] != "Todo" || !strings.HasPrefix(args["request_id"].(string), "scheduled-create-") {
+			return errors.New("filing bypassed reporting policy")
 		}
 		id := fmt.Sprintf("wi_%d", len(f.items)+1)
 		item := cloudItem(id, len(f.items)+1, args["description"].(string))
+		item.State = args["state"].(string)
 		if raw, present := args["priority"]; present {
 			encoded, err := json.Marshal(raw)
 			var rank int
@@ -200,6 +205,7 @@ func TestCloudReport(t *testing.T) {
 		markerReplay          bool
 		finalizerFailed       bool
 		priority              *int
+		holdState             string
 		missingRevision       bool
 		conflict              bool
 		wantItems, wantWrites int
@@ -212,6 +218,8 @@ func TestCloudReport(t *testing.T) {
 		{name: "lost creation response", log: diagnostic, lost: "file_issue", wantItems: 1, wantWrites: 4, wantErrors: 1},
 		{name: "lost occurrence response", log: diagnostic, lost: "add_comment", wantItems: 1, wantWrites: 4, wantErrors: 1},
 		{name: "imported comment fingerprint", log: diagnostic, imported: true, wantItems: 2, wantWrites: 5, wantEdits: 1},
+		{name: "Backlog hold retains lane", log: diagnostic, imported: true, holdState: "Backlog", wantItems: 2, wantWrites: 5, wantEdits: 1},
+		{name: "Human Review retains lane and Urgent", log: diagnostic, imported: true, holdState: "Human Review", priority: new(0), wantItems: 2, wantWrites: 4},
 		{name: "normal imported priority", log: diagnostic, imported: true, priority: new(2), wantItems: 2, wantWrites: 5, wantEdits: 1},
 		{name: "low imported priority", log: diagnostic, imported: true, priority: new(3), wantItems: 2, wantWrites: 5, wantEdits: 1},
 		{name: "High imported priority", log: diagnostic, imported: true, priority: new(1), wantItems: 2, wantWrites: 4},
@@ -223,6 +231,8 @@ func TestCloudReport(t *testing.T) {
 		{name: "imported legacy run replay", log: diagnostic, imported: true, legacyReplay: true, wantItems: 2, wantWrites: 3, wantEdits: 1},
 		{name: "imported marker replay promotes priority", log: diagnostic, imported: true, legacyReplay: true, markerReplay: true, wantItems: 2, wantWrites: 3, wantEdits: 1},
 		{name: "instance intake replay", log: "network setup failed", wantItems: 2, wantWrites: 4},
+		{name: "authentication remains intake", log: "HTTP 401: authentication required", wantItems: 2, wantWrites: 4},
+		{name: "backend startup remains intake", log: "backend startup failed: protocol handshake error", wantItems: 2, wantWrites: 4},
 		{name: "green imported evidence replay", imported: true, green: true, wantItems: 2, wantWrites: 1},
 		{name: "failed finalizer cannot publish green evidence", imported: true, finalizerFailed: true, wantItems: 3, wantWrites: 2},
 	} {
@@ -240,6 +250,9 @@ func TestCloudReport(t *testing.T) {
 			if tt.imported {
 				f.items = []tracker.NativeIssue{cloudItem("wi_unrelated", 1, "Operator work"), cloudItem("wi_imported", 2, "Imported body edited by operator")}
 				f.items[1].State = "Blocked"
+				if tt.holdState != "" {
+					f.items[1].State = tt.holdState
+				}
 				f.items[1].Priority = tt.priority
 				if tt.missingRevision {
 					f.items[1].Revision = 0
@@ -299,8 +312,14 @@ func TestCloudReport(t *testing.T) {
 			if len(gh.created) != 0 || len(gh.comments) != 0 {
 				t.Fatal("native report wrote to GitHub")
 			}
-			if tt.imported && f.items[1].State != "Blocked" {
-				t.Fatal("report changed operator hold")
+			if tt.imported {
+				state := tt.holdState
+				if state == "" {
+					state = "Blocked"
+				}
+				if f.items[1].State != state {
+					t.Fatal("report changed operator hold")
+				}
 			}
 			for i, item := range f.items {
 				want := tt.priority
@@ -327,8 +346,12 @@ func TestCloudReport(t *testing.T) {
 				body, comment := args["body"].(string)
 				if !comment {
 					body = args["description"].(string)
-					if args["state"] != "Backlog" {
-						t.Fatal("dispatchable source intake")
+					state := "Backlog"
+					if sourceFailure {
+						state = "Todo"
+					}
+					if args["state"] != state {
+						t.Fatalf("new report state=%v; want %s", args["state"], state)
 					}
 				}
 				if tt.green {
@@ -387,7 +410,7 @@ func TestCloudTransport(t *testing.T) {
 	for _, tt := range []struct {
 		name, fail, badPage    string
 		status                 int
-		dispatchable           bool
+		states                 []tracker.NativeState
 		revokedAfterInitialize bool
 		priorityEdit           bool
 		summaryDetail          bool
@@ -402,7 +425,13 @@ func TestCloudTransport(t *testing.T) {
 		{name: "revoked key on established session", revokedAfterInitialize: true},
 		{name: "narrow project grant", fail: "work_config"},
 		{name: "provider unavailable", status: http.StatusServiceUnavailable},
-		{name: "Backlog must remain nondispatchable", dispatchable: true},
+		{name: "Backlog must remain nondispatchable", states: []tracker.NativeState{{Name: "Backlog", Dispatchable: true}, {Name: "Todo", Dispatchable: true}}},
+		{name: "Backlog must remain nonterminal", states: []tracker.NativeState{{Name: "Backlog", Terminal: true}, {Name: "Todo", Dispatchable: true}}},
+		{name: "Backlog must allow reporter creation", states: []tracker.NativeState{{Name: "Backlog", OperatorOnly: true}, {Name: "Todo", Dispatchable: true}}},
+		{name: "missing Todo rejects destination", states: []tracker.NativeState{{Name: "Backlog"}}},
+		{name: "Todo must be dispatchable", states: []tracker.NativeState{{Name: "Backlog"}, {Name: "Todo"}}},
+		{name: "Todo must be nonterminal", states: []tracker.NativeState{{Name: "Backlog"}, {Name: "Todo", Dispatchable: true, Terminal: true}}},
+		{name: "Todo must allow automatic admission", states: []tracker.NativeState{{Name: "Backlog"}, {Name: "Todo", Dispatchable: true, OperatorOnly: true}}},
 		{name: "malformed list never means no matches", badPage: "work_list"},
 		{name: "malformed comments never lose imported matches", badPage: "work_comments"},
 		{name: "malformed item detail never loses origin evidence", badPage: "work_item"},
@@ -411,7 +440,7 @@ func TestCloudTransport(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := &fakeCloud{fail: tt.fail, dispatchable: tt.dispatchable, badPage: tt.badPage, summaryDetail: tt.summaryDetail}
+			f := &fakeCloud{fail: tt.fail, states: tt.states, badPage: tt.badPage, summaryDetail: tt.summaryDetail}
 			f.items = []tracker.NativeIssue{cloudItem("wi_first", 1, "First diagnostic"), cloudItem("wi_second", 2, "Second diagnostic")}
 			if tt.emptyBody {
 				f.items[0].Body = ""
@@ -458,7 +487,7 @@ func TestCloudTransport(t *testing.T) {
 					err = destination.file(t.Context(), fingerprint, "source failure", body, "scoped-occurrence", nil, true)
 				}
 			}
-			if (err != nil) != (tt.fail != "" || tt.status != 0 || tt.dispatchable || tt.badPage != "" || tt.revokedAfterInitialize || tt.summaryDetail) {
+			if (err != nil) != (tt.fail != "" || tt.status != 0 || tt.states != nil || tt.badPage != "" || tt.revokedAfterInitialize || tt.summaryDetail) {
 				t.Fatalf("transport result %v", err)
 			}
 			if err != nil && strings.Contains(err.Error(), "private-test-key") {

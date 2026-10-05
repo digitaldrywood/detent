@@ -23,20 +23,27 @@ release. Production installations and releases use validated version tags.
 A failed scheduled job reports through the existing native scheduled reporter
 for `digitaldrywood/detent` and its selected Detent Cloud project, following
 [deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting).
-New diagnostics enter Backlog. Reproducible source or test failures blocking
-deployment or the scheduled validated release require at least High priority.
+Under the human-approved Detent scheduled reporting policy, new proven source
+or test failures blocking deployment or the scheduled validated release enter
+Todo at least High when backed by reliable, pinned evidence. The selected
+workflow must have dispatchable, nonterminal Todo and nondispatchable,
+nonterminal Backlog, neither operator-only. Unknown instance diagnostics enter
+Backlog.
 The reporter matches open fingerprints and imported occurrences before filing,
 appends occurrences to matching work, and raises unset, Normal or Low priority
 through the existing expected-revision priority owner, preserving High and
 Urgent. Origin stamps, stable problem fingerprints, pinned commit, run, attempt,
 job and source evidence, occurrence replay identity, and imported history remain
-durable. Priority does not authorize admission, remove migration/operator holds,
-or change existing tracker lanes.
+durable. Reused items retain existing lanes, human questions, migration/operator
+holds and terminal history; a new occurrence never moves or reopens them.
+Priority updates alone do not authorize admission.
 
-Unknown setup, network, backend and protocol failures remain instance-owned
+Unknown setup, startup, download, network, backend, protocol and authentication
+failures remain instance-owned
 intake; they authorize no source repair and consume no issue failure allowance.
 A historical pinned failure does not prove that the current head fails or
-staging is down. A green run appends validation evidence through the same native
+staging is down; repair workers verify the failure on their current base.
+A green run appends validation evidence through the same native
 comment owner; it does not close issues or establish repair, landing, review
 approval or completion. Other trackers and projects retain their chosen
 reporting priority, admission and validation policies.

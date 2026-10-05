@@ -146,9 +146,9 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			}
 			disposition := "Let the next scheduled full validation confirm the repair; a green run closes scheduled repair issues."
 			if _, native := destination.(*cloudDestination); native {
-				disposition = "Let the next scheduled full validation confirm the repair. Scheduled evidence does not authorize admission, review approval or native completion."
+				disposition = "Let the next scheduled full validation confirm the repair. Scheduled evidence does not authorize review approval or native completion."
 				if sourceFailure {
-					disposition += " This Detent repository's source blockers of deployment or the scheduled validated release require at least High priority, preserving Urgent. Priority does not authorize admission or remove operator holds. Use focused diagnostics; do not require a local-gate status or wait for CI before ordinary issue merging. This pinned failure does not prove a current staging outage or that the current head still fails."
+					disposition += " Under the human-approved Detent scheduled reporting policy, newly reported proven source or test blockers enter Todo at High priority. Reused work retains its lane, human questions and operator holds, with at least High priority and Urgent preserved. Verify this reported failure on the worker's current base using focused diagnostics; do not require a local-gate status or wait for CI before ordinary issue merging. This pinned failure does not prove a current staging outage or that the current head still fails."
 				}
 			}
 			body := fmt.Sprintf("Scheduled validation job **%s** (%s) failed on development commit %s.\n\nRun: %s\nJob: %s\nProblem: `%s`\n\n```text\n%s\n```\n\nDiagnose this problem using the linked logs. Runner setup, backend startup, network/download, and protocol failures belong to the CI instance. %s\n\n```detent-agent\nschema: 1\neffort: high\n```", j.Name, j.Conclusion, getenv("CI_DEVELOP_SHA"), runURL, j.URL, p.Key, p.Evidence, disposition)

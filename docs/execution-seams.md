@@ -130,9 +130,11 @@ configured scheduled jobs must succeed before a green run posts
 `scheduled-full-ci` status and cuts an annotated patch version tag. The release
 workflow verifies the authenticated status and tag provenance before signing
 and publishing artifacts. It does not merge to `main` or deploy production.
-The existing native scheduled reporter files diagnostics in Backlog, gives
-source/test blockers at least High priority while preserving Urgent, and appends
-occurrences to matching fingerprints, including imported evidence. A later green
+Under the human-approved Detent policy, the existing native scheduled reporter
+files new proven, pinned source/test blockers in Todo at least High and unknown
+instance diagnostics in Backlog. It appends occurrences to matching fingerprints,
+including imported evidence, preserving Urgent, existing lanes, human questions
+and operator holds. A later green
 run appends validation evidence without closing native work. Historical pinned
 failures do not establish that the current head fails or staging is down. See
 [release reporting](release.md) for evidence preservation, instance-owned intake
