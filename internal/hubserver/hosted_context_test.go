@@ -35,7 +35,9 @@ func hostedContextProtocol(t *testing.T, service *Service, ctx context.Context, 
 		input, inputWriter := io.Pipe()
 		outputReader, output := io.Pipe()
 		done := make(chan error, 1)
-		go func() { done <- mcp.NewServer(executor, "test").Serve(context.WithoutCancel(ctx), input, output) }()
+		go func() {
+			done <- mcp.NewServer(executor, "test", mcp.WithLogger(service.config.Logger)).Serve(context.WithoutCancel(ctx), input, output)
+		}()
 		t.Cleanup(func() {
 			if err := inputWriter.Close(); err != nil {
 				t.Error(err)
@@ -62,7 +64,7 @@ func hostedContextProtocol(t *testing.T, service *Service, ctx context.Context, 
 			return raw
 		}
 	} else {
-		handler := mcp.NewHTTPHandler(executor, "test", mcp.HTTPConfig{Principal: func(r *http.Request) operatortool.Identity { return operatortool.ConnectionIdentity(r.Context()) }})
+		handler := mcp.NewHTTPHandler(executor, "test", mcp.HTTPConfig{Logger: service.config.Logger, Principal: func(r *http.Request) operatortool.Identity { return operatortool.ConnectionIdentity(r.Context()) }})
 		t.Cleanup(func() {
 			if err := handler.Shutdown(context.WithoutCancel(ctx)); err != nil {
 				t.Error(err)

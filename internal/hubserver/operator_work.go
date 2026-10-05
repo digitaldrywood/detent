@@ -162,8 +162,15 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			return operatortool.Result{}, err
 		}
 		if request.Target != "pr" {
-			item, resolveErr := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Identifier)
+			resolve := e.service.resolveOperatorNativeItem
+			if definition.Annotations.ReadOnly {
+				resolve = e.service.resolveOperatorNativeReadItem
+			}
+			item, resolveErr := resolve(ctx, e.service.database.db, scope, request.Identifier)
 			if resolveErr != nil {
+				if definition.Annotations.ReadOnly {
+					return operatortool.Result{}, safeWorkReadError(resolveErr)
+				}
 				return operatortool.Result{}, hubSafeChangeError(resolveErr)
 			}
 			request.Identifier = string(item.WorkItemID)
@@ -222,7 +229,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			}
 			page, readErr := e.service.nativeWorkComments(ctx, scope, request.Identifier, request.Limit, request.Cursor)
 			if readErr != nil {
-				return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
+				return operatortool.Result{}, safeWorkReadError(readErr)
 			}
 			raw, err = json.Marshal(page)
 		} else {
