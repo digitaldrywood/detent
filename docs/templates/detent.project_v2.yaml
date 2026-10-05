@@ -114,7 +114,7 @@ agent:
   skills:
     enabled: true
     path: .detent/skills
-    max_skills_in_prompt: 50
+    max_skills_in_prompt: 100
     creation:
       enabled: true
       max_drafts_per_run: 1

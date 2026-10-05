@@ -17,7 +17,7 @@ import (
 
 const (
 	DefaultPath              = ".detent/skills"
-	DefaultMaxSkillsInPrompt = 50
+	DefaultMaxSkillsInPrompt = 100
 )
 
 type Skill struct {

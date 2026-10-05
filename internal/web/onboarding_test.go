@@ -430,6 +430,9 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 				t.Fatalf("ParseWorkflow() error = %v", err)
 			}
 			cfg := workflow.Config
+			if cfg.Agent.Skills.MaxSkillsInPrompt != workflowconfig.Default().Agent.Skills.MaxSkillsInPrompt {
+				t.Fatalf("MaxSkillsInPrompt = %d, want config default", cfg.Agent.Skills.MaxSkillsInPrompt)
+			}
 			if cfg.Tracker.GitHubStatusSource != tt.source {
 				t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, tt.source)
 			}

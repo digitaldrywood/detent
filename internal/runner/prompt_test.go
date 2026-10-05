@@ -520,8 +520,8 @@ func TestPromptWrapperBytes(t *testing.T) {
 	// The wrapper budget measures authored text, not the worker's temp-root length.
 	size := len(strings.ReplaceAll(prompt, workspacePath, "/workspace")) - len("WORKFLOW")
 	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(available)))
-	if size >= 7000 {
-		t.Errorf("wrapper is %d bytes, want under 7000", size)
+	if size >= 8500 {
+		t.Errorf("wrapper is %d bytes, want under 8500", size)
 	}
 }
 

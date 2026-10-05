@@ -2725,7 +2725,7 @@ The `agent.skills` keys and defaults are:
 | --- | --- | --- |
 | `enabled` | `true` | Load repository skills and enable the creation loop when creation is also enabled. |
 | `path` | `.detent/skills` | Workspace-relative directory containing skill Markdown files. |
-| `max_skills_in_prompt` | `50` | Maximum valid skills included in an agent prompt. |
+| `max_skills_in_prompt` | `100` | Maximum valid skills included in an agent prompt. |
 | `creation.enabled` | `true` | Allow agents to propose skill drafts. |
 | `creation.max_drafts_per_run` | `1` | Maximum candidate skill files an agent may draft in one run. |
 
@@ -2736,7 +2736,7 @@ agent:
   skills:
     enabled: true
     path: .detent/skills
-    max_skills_in_prompt: 50
+    max_skills_in_prompt: 100
     creation:
       enabled: true
       max_drafts_per_run: 1

@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,38 +12,62 @@ import (
 func TestLoadReadsSkillsDeterministicallyDeduplicatesAndCaps(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
-	skillsDir := filepath.Join(workspace, ".detent", "skills")
-	writeSkill(t, skillsDir, "01-alpha.md", "deploy", "Deploy changes.", "Issue mentions deploys.")
-	writeSkill(t, skillsDir, "02-duplicate.md", "deploy", "Duplicate deploy.", "Issue mentions deploys again.")
-	writeSkill(t, skillsDir, "03-migrate.md", "migrate", "Add migrations.", "Issue mentions schema changes.")
-	writeSkill(t, skillsDir, "04-lint.md", "lint", "Fix lint.", "Issue mentions lint failures.")
+	tests := []struct {
+		name        string
+		maxSkills   int
+		extraSkills int
+		wantSkills  int
+		wantCapped  string
+	}{
+		{name: "explicit cap", maxSkills: 2, wantSkills: 2, wantCapped: "lint"},
+		{name: "default has headroom", extraSkills: 97, wantSkills: 100},
+		{name: "default cap", extraSkills: 98, wantSkills: 100, wantCapped: "skill-098"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			workspace := t.TempDir()
+			skillsDir := filepath.Join(workspace, ".detent", "skills")
+			writeSkill(t, skillsDir, "01-alpha.md", "deploy", "Deploy changes.", "Issue mentions deploys.")
+			writeSkill(t, skillsDir, "02-duplicate.md", "deploy", "Duplicate deploy.", "Issue mentions deploys again.")
+			writeSkill(t, skillsDir, "03-migrate.md", "migrate", "Add migrations.", "Issue mentions schema changes.")
+			writeSkill(t, skillsDir, "04-lint.md", "lint", "Fix lint.", "Issue mentions lint failures.")
+			for i := 1; i <= tt.extraSkills; i++ {
+				name := fmt.Sprintf("skill-%03d", i)
+				writeSkill(t, skillsDir, "05-"+name+".md", name, "Test skill.", "Test skill loading.")
+			}
 
-	result, err := Load(workspace, Options{MaxSkillsInPrompt: 2})
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
+			result, err := Load(workspace, Options{MaxSkillsInPrompt: tt.maxSkills})
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
 
-	if len(result.Skills) != 2 {
-		t.Fatalf("skills len = %d, want 2: %#v", len(result.Skills), result.Skills)
-	}
-	if result.Skills[0].Name != "deploy" || result.Skills[1].Name != "migrate" {
-		t.Fatalf("skills order = %#v, want deploy then migrate", result.Skills)
-	}
-	if result.Skills[0].Description != "Deploy changes." {
-		t.Fatalf("Description = %q", result.Skills[0].Description)
-	}
-	if !strings.HasSuffix(result.Skills[0].BodyPath, filepath.Join(".detent", "skills", "01-alpha.md")) {
-		t.Fatalf("BodyPath = %q", result.Skills[0].BodyPath)
-	}
-	if len(result.Dropped) != 2 {
-		t.Fatalf("dropped len = %d, want 2: %#v", len(result.Dropped), result.Dropped)
-	}
-	if result.Dropped[0].Reason != DropReasonDuplicate || !strings.Contains(result.Dropped[0].Message, `duplicate skill name "deploy"`) {
-		t.Fatalf("duplicate drop = %#v", result.Dropped[0])
-	}
-	if result.Dropped[1].Reason != DropReasonMaxSkillsInPrompt || result.Dropped[1].Name != "lint" {
-		t.Fatalf("over-limit drop = %#v", result.Dropped[1])
+			if len(result.Skills) != tt.wantSkills {
+				t.Fatalf("skills len = %d, want %d", len(result.Skills), tt.wantSkills)
+			}
+			if result.Skills[0].Name != "deploy" || result.Skills[1].Name != "migrate" {
+				t.Fatalf("skills order = %#v, want deploy then migrate", result.Skills)
+			}
+			if result.Skills[0].Description != "Deploy changes." {
+				t.Fatalf("Description = %q", result.Skills[0].Description)
+			}
+			if !strings.HasSuffix(result.Skills[0].BodyPath, filepath.Join(".detent", "skills", "01-alpha.md")) {
+				t.Fatalf("BodyPath = %q", result.Skills[0].BodyPath)
+			}
+			wantDropped := 1
+			if tt.wantCapped != "" {
+				wantDropped++
+			}
+			if len(result.Dropped) != wantDropped {
+				t.Fatalf("dropped len = %d, want %d: %#v", len(result.Dropped), wantDropped, result.Dropped)
+			}
+			if result.Dropped[0].Reason != DropReasonDuplicate || !strings.Contains(result.Dropped[0].Message, `duplicate skill name "deploy"`) {
+				t.Fatalf("duplicate drop = %#v", result.Dropped[0])
+			}
+			if tt.wantCapped != "" && (result.Dropped[1].Reason != DropReasonMaxSkillsInPrompt || result.Dropped[1].Name != tt.wantCapped) {
+				t.Fatalf("over-limit drop = %#v, want %s", result.Dropped[1], tt.wantCapped)
+			}
+		})
 	}
 }
 
