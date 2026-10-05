@@ -76,6 +76,10 @@ func openRecoverySource(ctx context.Context, source string) (*database, error) {
 	if err != nil {
 		return nil, errors.Join(err, owner.Close())
 	}
+	supportedSchemaVersion, err := latestHubSchemaVersion()
+	if err != nil {
+		return nil, errors.Join(err, owner.Close())
+	}
 	if version < 1 || version > supportedSchemaVersion {
 		return nil, errors.Join(fmt.Errorf("%w: database=%d supported=%d", ErrUnsupportedSchema, version, supportedSchemaVersion), owner.Close())
 	}

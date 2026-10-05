@@ -19,10 +19,12 @@ Diagnostics, coverage, provenance, and debugging data for agents belong in the
 existing API and MCP reads and logs. Never add UI to make them observable,
 including on the Diagnostics page or behind toggles or debug flags.
 
-New SQL migrations use `NNNNN_migration.sql` so concurrent additions at one
-version conflict on one Git path. Preserve historical migration names and the
-fixed cutover versions in `tools/migrationcheck`; do not advance those cutovers.
-Resolve generated-file conflicts by regenerating from combined source inputs.
+New Hub and store SQL migrations use UTC Goose timestamps:
+`YYYYMMDDHHMMSS_name.sql`. Preserve historical migration filenames and the fixed
+cutover versions in `tools/migrationcheck`; do not advance those cutovers.
+Adding a SQL migration requires only its new file, with no schema-version
+registry edit or landing-time renumbering. Resolve generated-file conflicts by
+regenerating from combined source inputs.
 See [concurrent migrations and generated files](docs/development.md#concurrent-migrations-and-generated-files).
 
 ## Issue authoring

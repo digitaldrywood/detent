@@ -8,7 +8,7 @@ This runbook was written against PR #2635, which was never merged; parts of it h
 - A hosted hub (`detent hub serve --hosted-config`) serves the client shell from `internal/hubserver` for every client route the Templ hosted pages do not already own. Behind the shared entry (`detent cloud serve --entry-config`, `internal/cloudentry`) the tenant hub serves under the base path `/organizations/<organization>`, and the entry handles sign-in, the organization chooser and routing to the tenant.
 - The conversation API and worker endpoints (bind, unbind, controls, turn events), turn preferences, references, Settled and its sweep, attachments, provider thread origin, restart normalization and explicit dispatch requests. The `conversation:` section accepts `enabled`, `model`, `question_timeout`, `settle_window` and `control_queue_size`.
 - Stored attempt diffs, the read-only pull request panel (`GET …/work-items/:item/pull-requests`) and the optional `?include=change` surface on a single work item.
-- Hub migrations 00023 and 00025 to 00031; `supportedSchemaVersion` is 31.
+- This milestone introduced Hub migrations 00023 and 00025 to 00031. The current supported version is derived from the embedded migration set.
 
 Described below but not yet on main:
 
@@ -1060,15 +1060,14 @@ the hub's own dispatch, and `runner:<id>` for a run the runner started itself.
 The partial index is what keeps the dispatch's own read an index scan over the
 queued rows rather than a scan of every run the project has ever made.
 
-The hub pins the schema it supports. `internal/hubserver/migrate.go` sets
-`supportedSchemaVersion = 31` (00031 is `00031_hosted_billing_modes.sql`, and
-00022 `00022_hosted_shared_origin.sql` adds the shared entry's `hosted_tenant`
-columns and `hosted_binding_migrations`;
-there is no 00024), verifies the embedded migration set reaches
-exactly that version, applies any missing migrations when the database is
-opened, checks foreign keys afterwards, and fails to start when the database is
-already at a higher version. Operators do not run a migration command: starting
-the hub is the migration step.
+The Hub derives its supported schema version from the embedded migration set,
+including the historical Go data conversions. New SQL migrations use UTC Goose
+timestamps (`YYYYMMDDHHMMSS_name.sql`); existing numbered files remain unchanged.
+Startup applies pending migrations, including older timestamps that land later,
+and checks foreign keys inside the last pending migration's transaction before
+recording its version. A database above the embedded maximum still fails to
+start. Operators do not run a migration command: starting the Hub is the migration
+step. See [migration authoring](../development.md#concurrent-migrations-and-generated-files).
 
 ### Retention and size
 

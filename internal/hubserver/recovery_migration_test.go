@@ -75,7 +75,7 @@ func TestRecoveryInterruptedMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 			verified, err = VerifyDatabase(t.Context(), restored)
-			if err != nil || verified.SchemaVersion != supportedSchemaVersion {
+			if err != nil || verified.SchemaVersion != supportedSchemaVersion(t) {
 				t.Fatalf("migration retry: %+v, %v", verified, err)
 			}
 		})

@@ -103,19 +103,46 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full contributor workflow.
 
 ## Concurrent migrations and generated files
 
-New Goose SQL migrations use `NNNNN_migration.sql`, with a zero-padded version
-and no feature-specific suffix. Keep descriptive names on existing migrations:
-store versions through 68, Hub through 70, registry through 5, and auth through 4.
-These historical boundaries are fixed, not updated when a new migration lands.
-`make check-migrations` diagnoses duplicate versions and noncanonical new names
+New Goose SQL migrations in `internal/store/migrations` and
+`internal/hubserver/migrations` use UTC timestamp versions:
+`YYYYMMDDHHMMSS_name.sql`. Use a descriptive name and Goose's default timestamp
+mode, never `-s` (sequential mode):
+
+```sh
+make db-create NAME=add_feature
+make db-create NAME=add_feature MIGRATIONS_DIR=internal/hubserver/migrations
+```
+
+The target runs `TZ=UTC goose -dir "$MIGRATIONS_DIR" create "$NAME" sql`.
+The equivalent direct command is
+`TZ=UTC goose -dir internal/store/migrations create add_feature sql`.
+Existing numbered files remain unchanged: store through 68 and Hub through 71.
+The older descriptive-name boundaries (store 68, Hub 70, registry 5, auth 4)
+remain fixed in the checker; registry and auth retain their sequential convention.
+`make check-migrations` diagnoses duplicate versions and invalid timestamp names
 in the existing scheduled suite or during optional focused diagnostics.
 
-One version now names one Git path. Two branches adding different SQL at the
-same version produce an ordinary add/add conflict instead of a clean merge
-with duplicate Goose versions. Resolve it through the existing Rework owner:
-preserve the landed migration, give the unlanded addition the next available
-version, and regenerate derived output. Never renumber a migration that may
-already have been applied; use a forward repair for deployed collisions.
+Adding a SQL migration changes only its new file. The embedded directory supplies
+the migration set and supported Hub version; the historical Go data conversions
+remain registered at their original versions. Timestamp versions sort after
+every historical sequential version. Fresh databases apply them in version
+order. Existing databases apply pending files through Goose, including older
+timestamps that land after a newer timestamp, without renumbering at landing.
+Hub foreign-key verification stays in the last pending migration's transaction,
+including when that migration has an older timestamp than the database maximum.
+
+Independent migrations with distinct timestamps merge in either order. Timestamps
+have one-second precision, so simultaneous creation can still produce a duplicate
+version; the checker reports it even when descriptive filenames differ. Choose a
+distinct UTC timestamp before publishing an unapplied migration. Never rename or
+renumber a migration that may already have been applied; use a forward repair for
+deployed collisions. Migrations that depend on another branch's schema still
+require their source dependency to land first and an appropriate version order.
+
+sqlc reads `internal/store/migrations` through `sqlc/sqlc.yaml`, including timestamp
+files. Run `make sqlc` after schema or query changes, or `make generate` when
+other generated inputs also changed. `make db-migrate` applies store migrations
+with Goose's `-allow-missing` option; Hub migrations run automatically at startup.
 
 Tracked sqlc Go, generated Templ Go, and Tailwind output have the Git merge
 attribute unset. Concurrent changes to the same generated file therefore require
