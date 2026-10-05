@@ -95,7 +95,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 				view.Constraint = "Active or deferred work must settle through its existing completion owner before applying policy."
 				return false
 			}
-			workflow, loadErr := loadManagedWorkflow(ctx, p.Config())
+			workflow, loadErr := p.loadManagedWorkflow(ctx, request.SourceRevision)
 			if loadErr != nil {
 				view.Constraint = "The configured committed workflow revision is unavailable or has local overlays."
 				return false
@@ -252,12 +252,14 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 			view.EffectivePolicy = &descriptor
 		}
 	}
-	if current.WorkflowRef != "" {
+	if workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud {
+		view.Source = "cloud_workflow"
+	} else if current.WorkflowRef != "" {
 		view.Source = "configured_committed_workflow"
 	} else {
 		view.Source = "configured_local_workflow_read_only"
 	}
-	if loaded, err := LoadWorkflowContext(ctx, current); err == nil {
+	if loaded, err := loadWorkflowForScheduling(ctx, current, p.policyScheduling); err == nil {
 		selected := loaded
 		selected.Config = WithMappedNativeTracker(selected.Config, p.policyScheduling, p.ID())
 		if descriptor, err := ResolvePolicy(current, selected); err == nil {
@@ -306,6 +308,33 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	}
 	view.UnsettledAttempts = max(view.UnsettledAttempts, len(attempts))
 	return view
+}
+
+func (p *Project) loadManagedWorkflow(ctx context.Context, revision string) (workflowconfig.Workflow, error) {
+	cfg := p.Config()
+	var workflow workflowconfig.Workflow
+	var err error
+	if cfg.WorkflowRef == "" && p.Workflow().Definition.Layout == workflowconfig.ProjectDefinitionCloud {
+		workflow, err = loadWorkflowForScheduling(ctx, cfg, p.policyScheduling)
+	} else {
+		workflow, err = loadManagedWorkflow(ctx, cfg)
+		if errors.Is(err, workflowconfig.ErrNoProjectDefinition) {
+			workflow, err = loadWorkflowForScheduling(ctx, cfg, p.policyScheduling)
+		}
+	}
+	if err != nil {
+		return workflowconfig.Workflow{}, err
+	}
+	candidate := workflow
+	candidate.Config = WithMappedNativeTracker(candidate.Config, p.policyScheduling, p.ID())
+	descriptor, err := ResolvePolicy(cfg, candidate)
+	if err != nil {
+		return workflowconfig.Workflow{}, err
+	}
+	if revision != "" && descriptor.SourceRevision != revision {
+		return workflowconfig.Workflow{}, errors.New("configured workflow revision changed")
+	}
+	return workflow, nil
 }
 
 func loadManagedWorkflow(ctx context.Context, cfg globalconfig.Project) (workflowconfig.Workflow, error) {

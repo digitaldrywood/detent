@@ -37,6 +37,95 @@ type mappedPolicyScheduling struct {
 	observed policy.Descriptor
 }
 
+type cloudPolicyScheduling struct {
+	mappedPolicyScheduling
+	markdown string
+}
+
+func (s *cloudPolicyScheduling) ProjectWorkflowMarkdown(context.Context, string) (string, error) {
+	return s.markdown, nil
+}
+
+func TestNativeCloudWorkflowFallback(t *testing.T) {
+	t.Parallel()
+	markdown := "---\ntracker:\n  kind: hub_native\n  active_states: [Todo, Repair, Merging]\n  observed_states: [Backlog, Blocked, Human Review]\n  terminal_states: [Done, Cancelled]\nplan:\n  enabled: true\n---\nCloud instructions.\n"
+	for _, test := range []struct {
+		name, instructions, config string
+		wantCloud                  bool
+		wantError                  string
+	}{
+		{name: "no files", wantCloud: true},
+		{name: "instructions only", instructions: "# Agent instructions\n- Todo\n- A prose lane is not configuration\n", wantCloud: true},
+		{name: "split takes precedence", instructions: "Repository instructions.\n", config: "schema: 1\ntracker:\n  kind: hub_native\n  active_states: [Todo, Rework]\n"},
+		{name: "legacy takes precedence", instructions: "---\ntracker:\n  kind: hub_native\n---\nRepository instructions.\n"},
+		{name: "invalid supplied definition", instructions: "Repository instructions.\n", config: "schema: 999\ntracker:\n  kind: memory\n", wantError: "schema"},
+		{name: "mixed supplied definition", instructions: "---\ntracker:\n  kind: memory\n---\nInstructions.\n", config: "schema: 1\ntracker:\n  kind: memory\n", wantError: "mixed"},
+		{name: "unavailable definition directory", wantError: "read definition directory"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := globalconfig.Project{ID: "cloud-project", Workdir: dir, Workflow: filepath.Join(dir, "WORKFLOW.md")}
+			if test.name == "unavailable definition directory" {
+				cfg.Workflow = filepath.Join(dir, "missing", "WORKFLOW.md")
+			}
+			if test.instructions != "" {
+				if err := os.WriteFile(cfg.Workflow, []byte(test.instructions), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.config != "" {
+				if err := os.WriteFile(filepath.Join(dir, "detent.yaml"), []byte(test.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			scheduling := &cloudPolicyScheduling{markdown: markdown}
+			workflow, err := loadWorkflowForScheduling(t.Context(), cfg, scheduling)
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("load error = %v, want %s", err, test.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud) != test.wantCloud {
+				t.Fatalf("definition authority = %s", workflow.Definition.Layout)
+			}
+			workflow.Config = MapNativeTracker(workflow.Config, true)
+			descriptor, err := ResolvePolicy(cfg, workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (descriptor.Workflow == nil) != test.wantCloud {
+				t.Fatalf("repository workflow projection = %#v", descriptor.Workflow)
+			}
+			scheduling.approved = descriptor
+			loaded, err := Load(cfg, Dependencies{Scheduling: scheduling, Runner: orchestrator.FakeRunner{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := loaded.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			if test.wantCloud && !loaded.Workflow().Config.KanbanTransitionAllowed("Todo", "Repair") {
+				t.Fatal("Cloud workflow did not reach runner transition policy")
+			}
+			if test.wantCloud {
+				if _, err := loaded.loadManagedWorkflow(t.Context(), descriptor.SourceRevision); err != nil {
+					t.Fatalf("Cloud policy revision cannot be applied: %v", err)
+				}
+				scheduling.markdown = strings.ReplaceAll(markdown, "Repair", "Updated Repair")
+				if _, err := loaded.loadManagedWorkflow(t.Context(), descriptor.SourceRevision); err == nil {
+					t.Fatal("stale Cloud policy revision accepted a changed definition")
+				}
+			}
+		})
+	}
+}
+
 func (s *mappedPolicyScheduling) ConnectorForProject(string) (connector.Connector, bool) {
 	return memory.New(memory.Config{}), true
 }

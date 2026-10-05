@@ -16,6 +16,8 @@ import (
 
 const ProjectDefinitionSchema = 1
 
+var ErrNoProjectDefinition = errors.New("no structured project definition")
+
 type ProjectDefinitionLayout string
 
 const (
@@ -23,6 +25,7 @@ const (
 	ProjectDefinitionSplit      ProjectDefinitionLayout = "split"
 	ProjectDefinitionMixed      ProjectDefinitionLayout = "mixed"
 	ProjectDefinitionIncomplete ProjectDefinitionLayout = "incomplete"
+	ProjectDefinitionCloud      ProjectDefinitionLayout = "cloud"
 )
 
 type ProjectDefinition struct {
@@ -101,7 +104,12 @@ func LoadProjectDefinitionWithLocalConfig(path string, local []byte) (Workflow, 
 
 func readProjectDefinitionSources(path string) (ProjectDefinitionSources, error) {
 	workflowRaw, err := os.ReadFile(path)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
+		if _, parentErr := os.Stat(filepath.Dir(path)); parentErr != nil {
+			return ProjectDefinitionSources{}, projectDefinitionReadError(path, "read definition directory", parentErr)
+		}
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return ProjectDefinitionSources{}, &ProjectDefinitionError{
 			Definition: projectDefinitionForPath(path),
 			Err:        fmt.Errorf("read workflow file: %w", err),
@@ -184,9 +192,10 @@ func ParseProjectDefinition(sources ProjectDefinitionSources) (Workflow, error) 
 		return Workflow{}, definitionError(definition, mixedProjectDefinitionError(sources, shared, local))
 	default:
 		return Workflow{}, definitionError(definition, fmt.Errorf(
-			"incomplete project definition: %s is prompt-only and %s is missing",
+			"incomplete project definition: %s is prompt-only and %s is missing: %w",
 			displayDefinitionPath(sources.WorkflowPath, "WORKFLOW.md"),
 			displayDefinitionPath(sources.ConfigPath, "detent.yaml"),
+			ErrNoProjectDefinition,
 		))
 	}
 }

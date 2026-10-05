@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -418,8 +419,12 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, body), status)
 	}
 	original := hubTestPolicy()
+	original.Workflow = &policy.Workflow{Source: "detent.yaml", States: nativeFixtureStates()}
+	original = original.WithID()
 	changed := original
 	changed.Gates.AutoPromote = true
+	changed.SourceRevision = strings.Repeat("b", 40)
+	changed.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Repair", Dispatchable: true})}
 	changed = changed.WithID()
 
 	if ids, _ := observedIDs(t); len(ids) != 0 {
@@ -433,6 +438,10 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	want := []string{changed.ID + "@" + second.binding.RunnerID, original.ID + "@" + first.binding.RunnerID}
 	if approved != nil || !slices.Equal(ids, want) {
 		t.Fatalf("observed policies = %v, want %v (approved %+v)", ids, want, approved)
+	}
+	project, err := readNativeProject(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+	if err != nil || !reflect.DeepEqual(project.States, nativeFixtureStates()) {
+		t.Fatalf("unapproved runner report changed workflow: %#v, %v", project, err)
 	}
 
 	approveHubTestPolicy(t, f.service, f.base+"/policy", original)

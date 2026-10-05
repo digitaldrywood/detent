@@ -344,6 +344,7 @@ describe("the project settings", () => {
   it("shows the saved workflow and submits a reviewed edit without allowing viewer edits", () => {
     const integration = {
       profile: "native", revision: "2", intake: "disabled", projection: "disabled", repository_enabled: false,
+      authority: { workflow: "detent" },
       states: [
         { name: "Backlog", terminal: false, dispatchable: false, operator_only: true, transitions: ["Todo"] },
         { name: "Todo", terminal: false, dispatchable: true, transitions: [] },
@@ -353,13 +354,18 @@ describe("the project settings", () => {
     const view = render(<WorkflowSettings integration={integration} canManage saving={false} error={null} onSave={onSave} />);
     expect(screen.getByText("Backlog · Initial · Nondispatchable · Operator only")).toBeTruthy();
     const states = [...integration.states, { name: "Rework", terminal: false, dispatchable: true, transitions: ["Todo"] }];
-    fireEvent.change(screen.getByRole("textbox", { name: "Workflow definition" }), { target: { value: JSON.stringify(states) } });
+    const markdown = "---\ntracker:\n  kind: hub_native\n  active_states: [Todo, Rework]\n---\nComplete the issue.\n";
+    fireEvent.change(screen.getByRole("textbox", { name: "Workflow definition" }), { target: { value: markdown } });
     fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
-    expect(onSave).toHaveBeenCalledWith(states);
+    expect(onSave).toHaveBeenCalledWith(markdown);
     view.rerender(<WorkflowSettings integration={{ ...integration, states }} canManage={false} saving={false} error={null} onSave={onSave} />);
     expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
     expect(screen.getByText("Rework · Dispatchable")).toBeTruthy();
+    view.rerender(<WorkflowSettings integration={{ ...integration, states, authority: { workflow: "repository" }, checkout_repository: "acme/parable", workflow_source: "detent.yaml", workflow_source_revision: "abc123" }} canManage saving={false} error={null} onSave={onSave} />);
+    expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
+    expect(screen.getByText(/Controlled by acme\/parable: detent.yaml at revision abc123/)).toBeTruthy();
   });
 
   it("reads both shapes of \"nothing is approved\" as an answer, not a failure", () => {

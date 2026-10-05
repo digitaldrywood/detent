@@ -263,6 +263,9 @@ export type SupportResponse = typeof SupportResponse.Type;
  * so recovering means re-reading, never guessing.
  */
 export const ProjectIntegration = Schema.Struct({
+  workflow_source: Schema.optional(Schema.String),
+  workflow_source_revision: Schema.optional(Schema.String),
+  workflow_markdown: Schema.optional(Schema.String),
   states: Schema.optional(Schema.Array(WorkflowState)),
   profile: Schema.String,
   revision: Schema.String,
@@ -305,6 +308,7 @@ export type PolicyGates = typeof PolicyGates.Type;
 
 /** `policy.Descriptor`: the resolved policy a human approves by identity. */
 export const PolicyDescriptor = Schema.Struct({
+  workflow: Schema.optional(Schema.Struct({ source: Schema.String, revision: Schema.optional(Schema.String), states: Schema.Array(WorkflowState) })),
   schema: Schema.Number,
   policy_id: Schema.String,
   source_revision: Schema.String,
@@ -314,6 +318,7 @@ export const PolicyDescriptor = Schema.Struct({
   requirements: PolicyRequirements,
   gates: PolicyGates,
   configuration: Schema.optional(Schema.Struct({
+    definition_digest: Schema.optional(Schema.String),
     behavior: Schema.Unknown,
     prompt: Schema.String,
     shared_prompt: Schema.optional(Schema.String),

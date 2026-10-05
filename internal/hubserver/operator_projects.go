@@ -198,6 +198,9 @@ func projectToolError(err error) error {
 		return err
 	}
 	var failure *nativeError
+	if errors.As(err, &failure) && failure.Code == "invalid_request" && failure.publicMessage {
+		return err
+	}
 	if errors.As(err, &failure) && (failure.Code == "revision_conflict" || failure.Code == "policy_mismatch" || failure.Code == "idempotency_conflict") {
 		return mutation.ErrConflict
 	}
@@ -361,7 +364,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
 		feature = "github_integration"
-		request := updateProjectIntegrationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Intake: r.Input.Intake, Projection: r.Input.Projection, RepositoryEnabled: r.Input.RepositoryEnabled, States: r.Input.States}
+		request := updateProjectIntegrationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Intake: r.Input.Intake, Projection: r.Input.Projection, RepositoryEnabled: r.Input.RepositoryEnabled, States: r.Input.States, WorkflowMarkdown: r.Input.WorkflowMarkdown}
 		input = request
 		operation = s.updateProjectIntegrationOperation(request)
 	case "start_git_hub_import":

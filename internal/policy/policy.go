@@ -46,13 +46,53 @@ type Descriptor struct {
 	Requirements   Requirements   `json:"requirements"`
 	Gates          Gates          `json:"gates"`
 	Configuration  *Configuration `json:"configuration,omitempty"`
+	Workflow       *Workflow      `json:"workflow,omitempty"`
 }
 
 type Configuration struct {
-	Behavior     json.RawMessage `json:"behavior"`
-	Prompt       string          `json:"prompt"`
-	SharedPrompt string          `json:"shared_prompt,omitempty"`
-	AgentsPrompt string          `json:"agents_prompt,omitempty"`
+	DefinitionDigest string          `json:"definition_digest,omitempty"`
+	Behavior         json.RawMessage `json:"behavior"`
+	Prompt           string          `json:"prompt"`
+	SharedPrompt     string          `json:"shared_prompt,omitempty"`
+	AgentsPrompt     string          `json:"agents_prompt,omitempty"`
+}
+
+type State struct {
+	OperatorOnly bool     `json:"operator_only,omitempty"`
+	Name         string   `json:"name"`
+	Terminal     bool     `json:"terminal"`
+	Dispatchable bool     `json:"dispatchable"`
+	Transitions  []string `json:"transitions"`
+}
+
+type Workflow struct {
+	Source   string  `json:"source"`
+	Revision string  `json:"revision,omitempty"`
+	States   []State `json:"states"`
+}
+
+func ValidateStates(states []State) error {
+	if len(states) == 0 || len(states) > 50 {
+		return errors.New("between 1 and 50 workflow states are required")
+	}
+	names := make(map[string]bool, len(states))
+	for _, state := range states {
+		if strings.TrimSpace(state.Name) == "" || state.Name != strings.TrimSpace(state.Name) || len(state.Name) > 100 || names[state.Name] || state.Terminal && state.Dispatchable {
+			return errors.New("workflow states must be unique and valid")
+		}
+		if len(state.Transitions) > 50 {
+			return errors.New("workflow states may contain at most 50 transitions")
+		}
+		names[state.Name] = true
+	}
+	for _, state := range states {
+		for _, target := range state.Transitions {
+			if !names[target] {
+				return errors.New("workflow transition target does not exist")
+			}
+		}
+	}
+	return nil
 }
 
 type Approval struct {
@@ -151,6 +191,20 @@ func (d Descriptor) Validate() error {
 	}
 	if d.Profile != "" && !ValidToken(d.Profile) {
 		return errors.New("policy_mismatch: invalid runner profile name")
+	}
+	if d.Configuration != nil && d.Configuration.DefinitionDigest != "" && !validHash(d.Configuration.DefinitionDigest, 64) {
+		return errors.New("policy_mismatch: invalid definition digest")
+	}
+	if d.Workflow != nil {
+		if d.Workflow.Revision != "" && !validHash(d.Workflow.Revision, 40) {
+			return errors.New("policy_mismatch: invalid repository workflow revision")
+		}
+		if strings.TrimSpace(d.Workflow.Source) == "" || len(d.Workflow.Source) > 1024 || strings.ContainsAny(d.Workflow.Source, "\r\n") {
+			return errors.New("policy_mismatch: repository workflow source is required and limited to 1024 bytes on one line")
+		}
+		if err := ValidateStates(d.Workflow.States); err != nil {
+			return fmt.Errorf("policy_mismatch: %w", err)
+		}
 	}
 	if err := d.Requirements.Validate(); err != nil {
 		return err

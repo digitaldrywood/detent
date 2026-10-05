@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/workpad"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -366,15 +367,10 @@ type NativeWorkLane struct {
 	Running int    `json:"running"`
 }
 
-type NativeState struct {
-	OperatorOnly bool     `json:"operator_only,omitempty"`
-	Name         string   `json:"name"`
-	Terminal     bool     `json:"terminal"`
-	Dispatchable bool     `json:"dispatchable"`
-	Transitions  []string `json:"transitions"`
-}
+type NativeState = policy.State
 
 type NativeProject struct {
+	WorkflowMarkdown    string         `json:"workflow_markdown,omitempty"`
 	ID                  ProjectID      `json:"project_id"`
 	OrganizationID      OrganizationID `json:"organization_id"`
 	Name                string         `json:"name"`

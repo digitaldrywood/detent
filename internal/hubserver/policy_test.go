@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -65,6 +66,8 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	worker := f.worker(t, "worker")
 	issue := f.create(t, "work")
 	descriptor := hubTestPolicy()
+	descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Done"}})}
+	descriptor = descriptor.WithID()
 	claim := tracker.NativeClaim{WorkItemID: issue.WorkItemID, MachineID: "machine_abc", SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": claim.MachineID, "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
 	for _, token := range []string{worker, f.token} {
@@ -72,6 +75,15 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusConflict)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	for _, field := range []string{"states", "workflow_markdown"} {
+		request := map[string]any{"idempotency_key": "repository-override-" + field, "expected_revision": "2", "intake": "disabled", "projection": "disabled"}
+		if field == "states" {
+			request[field] = nativeFixtureStates()
+		} else {
+			request[field] = "---\ntracker:\n  kind: hub_native\n---\nWork\n"
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, request), http.StatusUnprocessableEntity)
+	}
 	for _, test := range []struct{ name, id string }{{"missing", ""}, {"stale", "policy_" + strings.Repeat("b", 64)}} {
 		t.Run(test.name, func(t *testing.T) {
 			claim.PolicyID = test.id
@@ -92,6 +104,7 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	}
 	changed := descriptor
 	changed.Gates.AutoPromote = true
+	changed.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(append([]tracker.NativeState(nil), descriptor.Workflow.States...), tracker.NativeState{Name: "QA"})}
 	changed = changed.WithID()
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), http.StatusConflict)
 	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "forged"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{RunID: newNativeID("run"), AttemptID: newNativeID("attempt"), PolicyID: changed.ID, LeaseID: lease.ID, FencingToken: lease.FencingToken}}
@@ -113,9 +126,11 @@ func TestProjectPolicyIsolationAndRestart(t *testing.T) {
 	b := newNativeFixture(t, service, a.project.OrganizationID, "automatic")
 	human := hubTestPolicy()
 	human.Gates.Kind, human.Gates.AutomatedReview = "human_review", ""
+	human.Workflow = &policy.Workflow{Source: "WORKFLOW.md", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Plan Review"})}
 	human = human.WithID()
 	automatic := hubTestPolicy()
 	automatic.Gates.AutoPromote, automatic.Gates.MergeMethod = true, "rebase"
+	automatic.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Repair", Dispatchable: true})}
 	automatic = automatic.WithID()
 	approveHubTestPolicy(t, service, a.base+"/policy", human)
 	approveHubTestPolicy(t, service, b.base+"/policy", automatic)
@@ -140,6 +155,13 @@ func TestProjectPolicyIsolationAndRestart(t *testing.T) {
 			}
 			if approval.ApprovedBy == "" || approval.ApprovedAt == "" {
 				t.Fatalf("provenance missing: %#v", approval)
+			}
+			response = performHubAPIRequest(t, service, http.MethodGet, test.path, test.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var project tracker.NativeProject
+			decodeHubResponse(t, response, &project)
+			if !reflect.DeepEqual(project.States, test.want.Workflow.States) {
+				t.Fatalf("reopened project workflow = %#v", project.States)
 			}
 		})
 	}
