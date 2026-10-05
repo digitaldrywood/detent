@@ -104,7 +104,7 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 		return operatortool.Result{}, nativeConflict(tracker.Revision(selected.Revision))
 	}
 	if name == "apply_local_project_policy" {
-		if !view.Paused && !view.Draining || view.UnsettledAttempts != 0 {
+		if view.UnsettledAttempts != 0 {
 			return operatortool.Result{}, policyMismatch("Active leases retain their approved policy; finish or cancel them before approving a different revision")
 		}
 		approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))

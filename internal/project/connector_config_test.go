@@ -115,7 +115,7 @@ func TestBuildNativeScheduleOwnership(t *testing.T) {
 			if tt.repository != "" {
 				deps.ScheduleStore = &constructorOnlyScheduleStore{t: t}
 			}
-			manager, _, _, err := buildScheduleOwnership(cfg, deps, slog.Default(), nil)
+			manager, _, ownership, err := buildScheduleOwnership(cfg, deps, slog.Default(), nil)
 			if tt.wantError {
 				if err == nil || !strings.Contains(err.Error(), "explicit schedule_ownership.repository") || manager != nil {
 					t.Fatalf("buildScheduleOwnership() = (%v, %v), want explicit repository error", manager, err)
@@ -124,6 +124,12 @@ func TestBuildNativeScheduleOwnership(t *testing.T) {
 			}
 			if err != nil || (manager != nil) != tt.enabled {
 				t.Fatalf("buildScheduleOwnership() = (%v, %v), want manager enabled = %v", manager, err, tt.enabled)
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if ownership != cfg.ScheduleOwnership {
+				t.Fatalf("startup ownership=%+v reload ownership=%+v", ownership, cfg.ScheduleOwnership)
 			}
 		})
 	}

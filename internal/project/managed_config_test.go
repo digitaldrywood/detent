@@ -8,10 +8,15 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -20,7 +25,7 @@ import (
 func TestManagedProjectConfiguration(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, scenario := range []string{"detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained"} {
+	for _, scenario := range []string{"detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := initWorkflowSourceRepo(t)
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
@@ -53,7 +58,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				{ID: "selected", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: root, Weight: 1, Paused: true},
 				{ID: "unrelated", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: otherRoot, Weight: 3, Priority: 7, Paused: true, PausedReason: "user pause", PausedUntilIssue: "unrelated#42"},
 			}
-			if scenario == "binding drained" {
+			if strings.HasSuffix(scenario, "drained") || strings.HasSuffix(scenario, "running") {
 				cfg.Projects[0].Paused = false
 			}
 			if scenario == "binding local source" {
@@ -76,18 +81,33 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			scheduling := &policyTestScheduling{approved: map[string]policy.Descriptor{}}
+			native := strings.HasPrefix(scenario, "binding native")
+			if native {
+				if err := os.WriteFile(workflowPath, []byte("Shared native instructions\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				runWorkflowSourceGit(t, root, "add", "WORKFLOW.md")
+				raw := "schema: 1\ntracker:\n  kind: github\n  repository: example/project\n  github_status_source: label\n  api_key: fixture-token\nschedule_ownership:\n  enabled: false\n"
+				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte(raw), 0600); err != nil {
+					t.Fatal(err)
+				}
+				runWorkflowSourceGit(t, root, "add", "detent.yaml")
+				commitWorkflowSourceRepo(t, root, "native source")
+			}
+			scheduling := &managedConfigScheduling{policyTestScheduling: policyTestScheduling{approved: map[string]policy.Descriptor{}}, native: native}
+			worker := &managedConfigRunner{started: make(chan orchestrator.RunRequest, 1)}
 			manager, err := NewManager(ManagerConfigFromGlobal(cfg), ManagerDependencies{ProjectFactory: func(selected globalconfig.Project) (*Project, error) {
 				workflow, err := LoadWorkflow(selected)
 				if err != nil {
 					return nil, err
 				}
+				workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, ID(selected.ID))
 				descriptor, err := ResolvePolicy(selected, workflow)
 				if err != nil {
 					return nil, err
 				}
 				scheduling.approved[selected.ID] = descriptor
-				return New(Config{Project: selected, Workflow: workflow}, Dependencies{Scheduling: scheduling, Runner: orchestrator.FakeRunner{}, WorkAttempts: attempts})
+				return New(Config{Project: selected, Workflow: workflow}, Dependencies{Scheduling: scheduling, Runner: worker, WorkAttempts: attempts})
 			}})
 			if err != nil {
 				t.Fatal(err)
@@ -119,6 +139,9 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, private := range []string{root, cfg.APIToken, "private-worker-credential", "Private workflow instructions", "WORKFLOW.md"} {
+				if native && private == "WORKFLOW.md" {
+					continue
+				}
 				if strings.Contains(string(raw), private) {
 					t.Fatalf("private provenance in %s", raw)
 				}
@@ -172,7 +195,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			var originalLocal []byte
 			if binding {
 				operation = "apply_local_project_policy"
-				if scenario == "binding drained" {
+				if strings.HasSuffix(scenario, "drained") {
 					if before.Paused {
 						t.Fatal("drain fixture started paused")
 					}
@@ -207,6 +230,11 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				request.SourceRevision, request.PolicyID = before.LocalBindingPolicy.SourceRevision, before.LocalBindingPolicy.ID
 				if scenario != "binding unapproved" {
 					scheduling.approved["selected"] = *before.LocalBindingPolicy
+					if scenario == "binding native running" {
+						scheduling.mu.Lock()
+						scheduling.dispatchPolicy = request.PolicyID
+						scheduling.mu.Unlock()
+					}
 				}
 				if scenario == "binding stale overlay" {
 					if err := os.WriteFile(filepath.Join(root, "detent.local.yaml"), []byte("schema: 1\nworker:\n  github_token: operator-new-credential\n"), 0600); err != nil {
@@ -240,7 +268,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if scenario == "binding" || scenario == "binding local source" || scenario == "binding drained" {
+				if scenario == "binding" || scenario == "binding local source" || strings.HasSuffix(scenario, "drained") || strings.HasSuffix(scenario, "running") || scenario == "binding native paused" || scenario == "binding native schedule change" {
 					if !result.Saved || !result.Applied || !result.AllowLocalBinding || result.EffectivePolicy.ID != request.PolicyID || string(after) != string(original) {
 						t.Fatalf("binding application=%+v", result)
 					}
@@ -251,13 +279,46 @@ func TestManagedProjectConfiguration(t *testing.T) {
 						t.Fatal("permission escaped selected project")
 					}
 					selected, _ := manager.Registry().Get("selected")
-					if !selected.Paused() || selected.Running() {
-						t.Fatal("applied policy did not retain the settled pause boundary")
+					wantRunning := !cfg.Projects[0].Paused
+					if selected.Paused() == wantRunning || selected.Running() != wantRunning || result.Paused == wantRunning {
+						t.Fatalf("application lifecycle: paused=%t running=%t receipt=%+v", selected.Paused(), selected.Running(), result)
+					}
+					if result.Draining != strings.HasSuffix(scenario, "drained") {
+						t.Fatalf("draining=%t", result.Draining)
+					}
+					if scenario == "binding native running" {
+						select {
+						case dispatched := <-worker.started:
+							if dispatched.ProjectID != "selected" || dispatched.Policy.ID != request.PolicyID || dispatched.Issue.ID != "wi_binding_dispatch" {
+								t.Fatalf("dispatch=%+v", dispatched)
+							}
+							worker.mu.Lock()
+							allowed := worker.workflow.Config.Worker.EffectiveAllowLocalBinding()
+							worker.mu.Unlock()
+							if !allowed {
+								t.Fatal("dispatched worker retained restricted binding")
+							}
+						case <-time.After(5 * time.Second):
+							t.Fatal("no native dispatch after application")
+						}
+					}
+					if native {
+						if selected.Workflow().Config.Tracker.Kind != workflowconfig.TrackerHubNative {
+							t.Fatal("native routing changed")
+						}
+						if scenario == "binding native schedule change" {
+							changed := selected.Workflow()
+							changed.Config.ScheduleOwnership.Key = "changed/key"
+							if err := selected.handleWorkflowUpdate(t.Context(), configwatcher.Update{Workflow: changed}); err == nil || !strings.Contains(err.Error(), "schedule_ownership changes") {
+								t.Fatalf("schedule change refusal=%v", err)
+							}
+						}
 					}
 					loaded, err := LoadWorkflowContext(t.Context(), selected.Config())
 					if err != nil {
 						t.Fatal(err)
 					}
+					loaded.Config = WithMappedNativeTracker(loaded.Config, scheduling, selected.ID())
 					savedPolicy, err := ResolvePolicy(selected.Config(), loaded)
 					if err != nil || savedPolicy.ID != request.PolicyID {
 						t.Fatalf("saved definition policy differs: %v", err)
@@ -309,4 +370,51 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+type managedConfigScheduling struct {
+	policyTestScheduling
+	mu             sync.Mutex
+	native         bool
+	dispatchPolicy string
+	dispatched     bool
+}
+
+func (s *managedConfigScheduling) ConnectorForProject(id string) (connector.Connector, bool) {
+	return memory.New(memory.Config{}), s.native && id == "selected"
+}
+
+func (s *managedConfigScheduling) FetchCandidateIssues(_ context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dispatched || s.dispatchPolicy == "" || request.Policy.ID != s.dispatchPolicy {
+		return nil, nil
+	}
+	issue := connector.NewIssue()
+	issue.ID, issue.Identifier, issue.Title, issue.State = "wi_binding_dispatch", "selected#1", "Dispatch after binding application", "Todo"
+	issue.Fields["detent_hub_work_item_id"] = issue.ID
+	s.dispatched = true
+	return []connector.Issue{issue}, nil
+}
+
+func (s *managedConfigScheduling) AdoptClaim(_ context.Context, issue connector.Issue, now time.Time) (orchestrator.Claimed, error) {
+	return orchestrator.Claimed{Issue: issue, Owner: "selected-runner", ClaimedAt: now, LeaseRenewedAt: now, LeaseExpiresAt: now.Add(time.Minute)}, nil
+}
+
+type managedConfigRunner struct {
+	mu       sync.Mutex
+	workflow workflowconfig.Workflow
+	started  chan orchestrator.RunRequest
+}
+
+func (r *managedConfigRunner) UpdateWorkflow(workflow workflowconfig.Workflow) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.workflow = workflow
+}
+
+func (r *managedConfigRunner) Run(ctx context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
+	r.started <- request
+	<-ctx.Done()
+	return orchestrator.RunResult{}, ctx.Err()
 }

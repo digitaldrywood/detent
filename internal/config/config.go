@@ -1754,18 +1754,10 @@ func (c *Config) Validate() error {
 	}
 	c.Budget.validate("budget", &problems)
 	c.Hooks.validate(&problems)
-	coordinationEndpoint := ""
-	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
-		coordinationEndpoint = c.Tracker.Endpoint
+	if c.Tracker.Kind == TrackerHubNative && c.ScheduleOwnership.Enabled && strings.TrimSpace(c.ScheduleOwnership.Repository) == "" {
+		problems = append(problems, "native schedule ownership requires an explicit schedule_ownership.repository to opt into GitHub coordination")
 	}
-	coordinationRepository := c.Tracker.Repository
-	if c.Tracker.Kind == TrackerHubNative {
-		coordinationRepository = ""
-		if c.ScheduleOwnership.Enabled && strings.TrimSpace(c.ScheduleOwnership.Repository) == "" {
-			problems = append(problems, "native schedule ownership requires an explicit schedule_ownership.repository to opt into GitHub coordination")
-		}
-	}
-	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(coordinationRepository, coordinationEndpoint)
+	c.ScheduleOwnership = c.NormalizedScheduleOwnership()
 	problems = append(problems, c.ScheduleOwnership.Validate("schedule_ownership")...)
 	states := make([]string, 0, len(c.configuredWorkflowStates()))
 	for _, state := range c.configuredWorkflowStates() {
@@ -2000,19 +1992,23 @@ func (c *Config) normalize() {
 	c.Server.Normalize()
 	c.Observability.Normalize()
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
-	coordinationEndpoint := ""
-	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
-		coordinationEndpoint = c.Tracker.Endpoint
-	}
-	coordinationRepository := c.Tracker.Repository
-	if c.Tracker.Kind == TrackerHubNative {
-		coordinationRepository = ""
-	}
-	c.ScheduleOwnership = c.ScheduleOwnership.Normalized(coordinationRepository, coordinationEndpoint)
+	c.ScheduleOwnership = c.NormalizedScheduleOwnership()
 	c.Intake.Normalize()
 	c.Retro.Normalize()
 	c.Routines = NormalizeRoutines(c.Routines)
 	c.BacklogAdmission.Normalize()
+}
+
+func (c Config) NormalizedScheduleOwnership() scheduleowner.Config {
+	endpoint := ""
+	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
+		endpoint = c.Tracker.Endpoint
+	}
+	repository := c.Tracker.Repository
+	if c.Tracker.Kind == TrackerHubNative {
+		repository = ""
+	}
+	return c.ScheduleOwnership.Normalized(repository, endpoint)
 }
 
 func (c Config) SchedulersEnabled() bool {

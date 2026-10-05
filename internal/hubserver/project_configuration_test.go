@@ -17,7 +17,7 @@ import (
 )
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"apply", "drained apply", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"apply", "running apply", "drained apply", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
@@ -28,6 +28,9 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			candidate = candidate.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", current)
 			view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, Paused: true, Source: "configured_committed_workflow", EffectivePolicy: &current, SelectedPolicy: &current, LocalBindingPolicy: &candidate, ObservedAt: time.Now()}
+			if scenario == "running apply" {
+				view.Paused = false
+			}
 			if scenario == "drained apply" {
 				view.Paused, view.Draining = false, true
 			}
@@ -119,7 +122,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 			}
 			snapshot := heartbeat()
-			if scenario != "apply" && scenario != "drained apply" {
+			if scenario != "apply" && scenario != "drained apply" && scenario != "running apply" {
 				if snapshot.ProjectConfigurationRequest != nil {
 					t.Fatal("revoked or stale request reached runner")
 				}

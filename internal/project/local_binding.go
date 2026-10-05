@@ -90,13 +90,13 @@ func localBindingWorkflow(ctx context.Context, cfg globalconfig.Project, enabled
 }
 
 func (o *ConfigurationOwner) applyLocalBinding(ctx context.Context, cfg globalconfig.Config, revision string, p *Project, request ManagedConfigRequest, view ManagedConfigView) ManagedConfigView {
-	if !view.Paused && !view.Draining || view.UnsettledAttempts != 0 {
+	if view.UnsettledAttempts != 0 {
 		view.Constraint = "Active or deferred work must settle through its existing completion owner before applying policy."
 		return view
 	}
 	current := p.Config()
 	candidate, path, raw, err := localBindingWorkflow(ctx, current, *request.AllowLocalBinding)
-	if err != nil || candidate.Definition.Revision != request.SourceRevision {
+	if err != nil {
 		view.Constraint = "The configured committed workflow revision is unavailable or has local overlays."
 		return view
 	}
@@ -116,7 +116,7 @@ func (o *ConfigurationOwner) applyLocalBinding(ctx context.Context, cfg globalco
 	candidate.Config = WithMappedNativeTracker(candidate.Config, p.policyScheduling, p.ID())
 	descriptor, err := ResolvePolicy(current, candidate)
 	checker, ok := p.policyScheduling.(policyChecker)
-	if err != nil || descriptor.ID != request.PolicyID || !ok || checker.CheckProjectPolicy(ctx, current.ID, candidate.Config.Tracker.Repository, descriptor) != nil {
+	if err != nil || descriptor.ID != request.PolicyID || descriptor.SourceRevision != request.SourceRevision || !ok || checker.CheckProjectPolicy(ctx, current.ID, candidate.Config.Tracker.Repository, descriptor) != nil {
 		view.Constraint = "The selected policy was not applied; verify approval and supported workflow through the existing policy owner."
 		return view
 	}

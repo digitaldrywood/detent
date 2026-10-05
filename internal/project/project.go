@@ -133,6 +133,7 @@ type WorkflowWatcher interface {
 type WorkflowWatcherFactory func(string) (WorkflowWatcher, error)
 
 type startOptions struct {
+	draining      bool
 	provision     bool
 	publishEvents bool
 }
@@ -824,7 +825,13 @@ func (p *Project) start(ctx context.Context, opts startOptions) error {
 		p.publishStarted()
 	}
 
+	if opts.draining {
+		orch.BeginDrain()
+	}
 	go p.run(runCtx, done, orch)
+	if opts.draining {
+		return orch.Drain(ctx)
+	}
 	return nil
 }
 
@@ -870,6 +877,10 @@ func (p *Project) Pause(ctx context.Context) error {
 }
 
 func (p *Project) Unpause(ctx context.Context) error {
+	return p.unpause(ctx, false)
+}
+
+func (p *Project) unpause(ctx context.Context, draining bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -902,7 +913,7 @@ func (p *Project) Unpause(ctx context.Context) error {
 	p.mu.Unlock()
 
 	if !running {
-		if err := p.Start(ctx); err != nil {
+		if err := p.start(ctx, startOptions{provision: true, publishEvents: true, draining: draining}); err != nil {
 			p.mu.Lock()
 			if p.done == nil {
 				p.cfg.Paused = true
@@ -2010,14 +2021,10 @@ func buildScheduleOwnership(
 	logger *slog.Logger,
 	state func(error),
 ) (*scheduleowner.Manager, *scheduleowner.IssueCoordinator, scheduleowner.Config, error) {
-	coordinationEndpoint := ""
-	if cfg.Tracker.Kind == workflowconfig.TrackerGitHub || cfg.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
-		coordinationEndpoint = cfg.Tracker.Endpoint
-	}
 	if cfg.Tracker.Kind == workflowconfig.TrackerHubNative && cfg.ScheduleOwnership.Enabled && strings.TrimSpace(cfg.ScheduleOwnership.Repository) == "" {
 		return nil, nil, scheduleowner.Config{}, errors.New("native schedule ownership requires an explicit schedule_ownership.repository to opt into GitHub coordination")
 	}
-	ownership := cfg.ScheduleOwnership.Normalized(cfg.Tracker.Repository, coordinationEndpoint)
+	ownership := cfg.NormalizedScheduleOwnership()
 	if !ownership.Enabled {
 		return nil, nil, ownership, nil
 	}
