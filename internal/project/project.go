@@ -245,7 +245,7 @@ func (s *scheduleFaultState) current() RuntimeError {
 }
 
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
-	workflow, err := LoadWorkflow(cfg)
+	workflow, err := loadWorkflowForScheduling(context.Background(), cfg, deps.Scheduling)
 	if err != nil {
 		return nil, fmt.Errorf("load project workflow: %w", err)
 	}
@@ -1474,7 +1474,7 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 	loadedPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 
-	workflow, err := LoadWorkflowContext(ctx, projectConfig)
+	workflow, err := loadWorkflowForScheduling(ctx, projectConfig, p.policyScheduling)
 	now := time.Now().UTC()
 	p.mu.Lock()
 	p.workflowSource.LastReconcileAt = now
@@ -2501,6 +2501,9 @@ func resolveWorkflowWatcherFactory(
 				return nil, err
 			}
 			watcher.currentProject = currentProject
+			watcher.fallback = func(ctx context.Context) (workflowconfig.Workflow, error) {
+				return loadWorkflowForScheduling(ctx, currentProject(), deps.Scheduling)
+			}
 			return watcher, nil
 		}
 	}
@@ -2508,7 +2511,7 @@ func resolveWorkflowWatcherFactory(
 		return configwatcher.New(path,
 			configwatcher.WithLoader(func(path string) (workflowconfig.Workflow, error) {
 				project := currentProject()
-				workflow, err := workflowconfig.LoadWorkflow(path)
+				workflow, err := loadWorkflowForScheduling(context.Background(), project, deps.Scheduling)
 				if err != nil {
 					return workflow, err
 				}

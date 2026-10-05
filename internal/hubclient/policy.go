@@ -59,6 +59,15 @@ func (c *NativeClient) ReportObservedPolicy(ctx context.Context, descriptor poli
 	return c.client.request(ctx, http.MethodPost, c.base()+"/policy/observed", descriptor, nil)
 }
 
+func (s *Scheduler) ProjectWorkflowMarkdown(ctx context.Context, project string) (string, error) {
+	source := s.nativeProjects[project]
+	if source == nil {
+		return "", nil
+	}
+	definition, err := source.client.Project(ctx)
+	return definition.WorkflowMarkdown, err
+}
+
 func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository string, descriptor policy.Descriptor) error {
 	if err := descriptor.Validate(); err != nil {
 		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()}
@@ -100,6 +109,9 @@ func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, 
 }
 
 func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+	if workflow.Definition.Layout == workflowconfig.ProjectDefinitionSplit || workflow.Definition.Layout == workflowconfig.ProjectDefinitionLegacy || workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud {
+		return workflow, nil
+	}
 	approval, err := c.ProjectPolicy(ctx)
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch" {

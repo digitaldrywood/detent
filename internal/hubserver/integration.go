@@ -9,10 +9,14 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type ProjectIntegration struct {
+	WorkflowSource           string                `json:"workflow_source,omitempty"`
+	WorkflowSourceRevision   string                `json:"workflow_source_revision,omitempty"`
+	WorkflowMarkdown         string                `json:"workflow_markdown,omitempty"`
 	States                   []tracker.NativeState `json:"states,omitempty"`
 	Profile                  string                `json:"profile"`
 	Revision                 tracker.Revision      `json:"revision,string"`
@@ -46,9 +50,9 @@ func readProjectIntegration(ctx context.Context, query nativeQueryer, scope nati
 	var result ProjectIntegration
 	var states string
 	err := query.QueryRowContext(ctx, `SELECT p.profile, p.integration_revision, p.github_intake, p.github_projection,
-p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository, p.states_json
+p.github_repository_enabled, COALESCE(r.github_owner || '/' || r.github_name, ''), COALESCE(r.id, 0), p.checkout_repository, p.states_json, p.workflow_source, p.workflow_source_revision, p.workflow_markdown
 FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(
-		&result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states)
+		&result.Profile, &result.Revision, &result.Intake, &result.Projection, &result.RepositoryEnabled, &result.Repository, &result.RepositoryID, &result.CheckoutRepository, &states, &result.WorkflowSource, &result.WorkflowSourceRevision, &result.WorkflowMarkdown)
 	if err != nil {
 		return result, err
 	}
@@ -60,6 +64,9 @@ FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organ
 		owner = "github"
 	}
 	result.Authority = map[string]string{"title": owner, "body": owner, "discussion": owner, "dependencies": owner, "authors": owner, "source_timestamps": "source", "workflow": owner, "labels": owner, "assignees": owner, "priority": owner, "scheduling": "detent", "progress": "detent", "repository_policy": "trusted_repository_revision", "github_merge": "github_branch_protections_and_fresh_checks", "native_approval": "detent_only"}
+	if result.WorkflowSource != "" {
+		result.Authority["workflow"] = "repository"
+	}
 	return result, err
 }
 
@@ -89,6 +96,7 @@ func (s *Service) projectIntegration(ctx context.Context, query nativeQueryer, s
 type updateProjectIntegrationRequest struct {
 	tracker.Mutation
 	States            *[]tracker.NativeState `json:"states,omitempty"`
+	WorkflowMarkdown  *string                `json:"workflow_markdown,omitempty"`
 	ExpectedRevision  tracker.Revision       `json:"expected_revision,string"`
 	Intake            string                 `json:"intake"`
 	Projection        string                 `json:"projection"`
@@ -127,7 +135,40 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		if err := requireIntegrationIdle(ctx, tx, scope, now); err != nil {
 			return nil, err
 		}
+		if request.States != nil && request.WorkflowMarkdown != nil {
+			return nil, nativeWorkflowInvalid("Supply workflow_markdown or states, not both")
+		}
+		if request.WorkflowMarkdown != nil {
+			if current.WorkflowSource != "" {
+				return nil, nativeWorkflowInvalid("Workflow is controlled by the repository; edit its definition and approve the new repository policy")
+			}
+			if len(*request.WorkflowMarkdown) > 128*1024 {
+				return nil, nativeWorkflowInvalid("Workflow Markdown is limited to 128 KiB")
+			}
+			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(*request.WorkflowMarkdown)})
+			if err != nil {
+				return nil, nativeWorkflowInvalid(err.Error())
+			}
+			if workflow.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
+				return nil, nativeWorkflowInvalid("Cloud workflow must use tracker.kind hub_native")
+			}
+			if err := workflow.Config.Validate(); err != nil {
+				return nil, nativeWorkflowInvalid(err.Error())
+			}
+			if err := workflow.Config.ValidateNativeWorkflow(); err != nil {
+				return nil, nativeWorkflowInvalid(err.Error())
+			}
+			if err := updateNativeProjectStates(ctx, tx, scope, workflow.Config.NativeWorkflowStates(), now); err != nil {
+				return nil, err
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE projects SET workflow_markdown=? WHERE organization_id=? AND id=?", *request.WorkflowMarkdown, scope.organization, scope.project); err != nil {
+				return nil, err
+			}
+		}
 		if request.States != nil {
+			if current.WorkflowMarkdown != "" {
+				return nil, nativeWorkflowInvalid("Workflow is authored in Markdown; update workflow_markdown instead of competing state arrays")
+			}
 			if err := updateNativeProjectStates(ctx, tx, scope, *request.States, now); err != nil {
 				return nil, err
 			}

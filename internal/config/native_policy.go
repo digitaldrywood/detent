@@ -31,6 +31,7 @@ type nativeBehavior struct {
 	ActiveStates               []string
 	ObservedStates             []string
 	TerminalStates             []string
+	AllowedTransitions         map[string][]string `json:",omitempty"`
 	StateMap                   StringOrMap
 	PriorityMap                StringOrMap
 	DependencyAutoUnblock      DependencyAutoUnblock
@@ -53,7 +54,8 @@ func nativeProjectBehavior(cfg Config) nativeBehavior {
 		Release: cfg.Release, Retro: cfg.Retro, Operator: cfg.Operator, BacklogAdmission: cfg.BacklogAdmission,
 		Repository: cfg.Tracker.Repository, ActiveStates: cfg.Tracker.ActiveStates,
 		ObservedStates: cfg.Tracker.ObservedStates, TerminalStates: cfg.Tracker.TerminalStates,
-		StateMap: cfg.Tracker.StateMap, PriorityMap: cfg.Tracker.PriorityMap,
+		AllowedTransitions: cfg.Server.Kanban.AllowedTransitions,
+		StateMap:           cfg.Tracker.StateMap, PriorityMap: cfg.Tracker.PriorityMap,
 		DependencyAutoUnblock: cfg.Tracker.DependencyAutoUnblock,
 		BlockedRecovery:       cfg.Tracker.BlockedRecovery, BlockerAutoPromote: cfg.Tracker.BlockerAutoPromote,
 		ExtraNetworkDomains: cfg.Worker.ExtraNetworkDomains, AllowLocalBinding: cfg.Worker.AllowLocalBinding,
@@ -105,6 +107,7 @@ func (b nativeBehavior) apply(local Config) Config {
 	local.Retro = b.Retro
 	local.Tracker.Kind, local.Tracker.Repository = TrackerHubNative, b.Repository
 	local.Tracker.ActiveStates, local.Tracker.ObservedStates, local.Tracker.TerminalStates = b.ActiveStates, b.ObservedStates, b.TerminalStates
+	local.Server.Kanban.AllowedTransitions = b.AllowedTransitions
 	local.Tracker.StateMap, local.Tracker.PriorityMap = b.StateMap, b.PriorityMap
 	local.Tracker.DependencyAutoUnblock = b.DependencyAutoUnblock
 	local.Tracker.BlockedRecovery, local.Tracker.BlockerAutoPromote = b.BlockedRecovery, b.BlockerAutoPromote
@@ -122,6 +125,9 @@ func resolveNativePolicy(workflow Workflow) (policy.Descriptor, error) {
 		return policy.Descriptor{}, fmt.Errorf("encode shared project behavior: %w", err)
 	}
 	configuration := &policy.Configuration{Behavior: behavior, Prompt: workflow.Prompt, SharedPrompt: workflow.SharedPrompt, AgentsPrompt: workflow.AgentsPrompt}
+	if workflow.Definition.Layout == ProjectDefinitionCloud {
+		configuration.DefinitionDigest = workflow.SourceHash
+	}
 	raw, err := json.Marshal(configuration)
 	if err != nil {
 		return policy.Descriptor{}, err
@@ -162,6 +168,14 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 	workflow.Config = behavior.apply(workflow.Config)
 	workflow.Prompt, workflow.SharedPrompt = descriptor.Configuration.Prompt, descriptor.Configuration.SharedPrompt
 	workflow.AgentsPrompt = descriptor.Configuration.AgentsPrompt
+	if descriptor.Workflow != nil {
+		workflow.Definition.Layout = ProjectDefinitionSplit
+		workflow.Definition.ConfigPath = descriptor.Workflow.Source
+		workflow.Definition.Revision = descriptor.Workflow.Revision
+	} else if descriptor.Configuration.DefinitionDigest != "" {
+		workflow.Definition.Layout = ProjectDefinitionCloud
+		workflow.SourceHash = descriptor.Configuration.DefinitionDigest
+	}
 	resolved, err := ResolvePolicy(workflow)
 	if err != nil {
 		return Workflow{}, err

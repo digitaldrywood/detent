@@ -3042,7 +3042,7 @@ func (c Config) KanbanAllowedTransitionTargets(source string) []string {
 	if len(states) == 0 {
 		return nil
 	}
-	if c.defaultKanbanTransitionRestricted(source) {
+	if c.Tracker.Kind != TrackerHubNative && c.defaultKanbanTransitionRestricted(source) {
 		targets := defaultKanbanExceptionTargets(states)
 		if sameKanbanPolicyState(source, "Rework") {
 			targets = append(targets, "Merging")

@@ -22,6 +22,30 @@ func TestDescriptorValidation(t *testing.T) {
 		valid  bool
 	}{
 		{"valid", func(*Descriptor) {}, true},
+		{"workflow", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "detent.yaml", States: []State{{Name: "Todo", Dispatchable: true}}}
+			*d = d.WithID()
+		}, true},
+		{"empty workflow source", func(d *Descriptor) { d.Workflow = &Workflow{States: []State{{Name: "Todo"}}}; *d = d.WithID() }, false},
+		{"unknown workflow transition", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "WORKFLOW.md", States: []State{{Name: "Todo", Transitions: []string{"Missing"}}}}
+			*d = d.WithID()
+		}, false},
+		{"terminal workflow dispatch", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "WORKFLOW.md", States: []State{{Name: "Done", Terminal: true, Dispatchable: true}}}
+			*d = d.WithID()
+		}, false},
+		{"forged workflow", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "detent.yaml", States: []State{{Name: "Unapproved"}}}
+		}, false},
+		{"invalid workflow revision", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "detent.yaml", Revision: "private prose", States: []State{{Name: "Todo"}}}
+			*d = d.WithID()
+		}, false},
+		{"invalid definition digest", func(d *Descriptor) {
+			d.Configuration = &Configuration{DefinitionDigest: "private prose"}
+			*d = d.WithID()
+		}, false},
 		{"schema", func(d *Descriptor) { d.Schema++ }, false},
 		{"forged identity", func(d *Descriptor) { d.Gates.Kind = "human_review" }, false},
 		{"missing source", func(d *Descriptor) { d.SourceDigest = ""; *d = d.WithID() }, false},

@@ -282,13 +282,15 @@ export function makeAccountApi(options: AccountApiOptions) {
       projection: string;
       repositoryEnabled: boolean;
       states?: readonly WorkflowState[];
+      workflowMarkdown?: string;
     }) =>
-      send(ProjectIntegration, "PUT", `${project(input.projectId)}/integration`, {
+      send(ProjectIntegration, "PUT", `${project(input.projectId)}/onboarding/integration`, {
         expected_revision: input.revision,
         intake: input.intake,
         projection: input.projection,
         repository_enabled: input.repositoryEnabled,
         ...(input.states !== undefined ? { states: input.states } : {}),
+        ...(input.workflowMarkdown !== undefined ? { workflow_markdown: input.workflowMarkdown } : {}),
         idempotency_key: input.key,
       }),
     policy: (projectId: string) => send(PolicyApproval, "GET", `${project(projectId)}/policy`),
