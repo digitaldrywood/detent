@@ -43,6 +43,9 @@ func TestFleetArgumentBoundary(t *testing.T) {
 		{"null", RunnerFleet, `null`, false},
 		{"oversized id", RevokeRunnerIdentity, `{"request_id":"r","runner_id":"` + strings.Repeat("x", 257) + `"}`, false},
 		{"unknown nested field", UpdateRunnerHost, `{"request_id":"r","machine_id":"m","change":{"expected_revision":1,"display_name":"h","capacity":1,"confirm":true}}`, false},
+		{"empty routing timezone readback", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"draining","capacity_limit":8,"project_ids":["p1","p2"],"availability":{"timezone":"","windows":[],"hard_deadline":""}}}`, true},
+		{"configured routing timezone", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"draining","capacity_limit":8,"project_ids":["p1","p2"],"availability":{"timezone":"America/Chicago","windows":["Mon-Fri 09:00-17:00"],"hard_deadline":"1h"}}}`, true},
+		{"routing timezone bounded", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"draining","capacity_limit":8,"project_ids":["p1","p2"],"availability":{"timezone":"` + strings.Repeat("x", 257) + `","windows":[],"hard_deadline":""}}}`, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if err := ValidateFleetArguments(tt.tool, json.RawMessage(tt.input)); (err == nil) != tt.valid {
