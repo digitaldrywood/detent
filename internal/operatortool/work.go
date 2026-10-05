@@ -2,6 +2,8 @@ package operatortool
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -106,77 +108,53 @@ func DecodeWorkArguments(name string, raw json.RawMessage) (WorkArguments, error
 	if definition.Name == "" {
 		return request, ErrUnknownTool
 	}
-	var schema struct {
-		Required   []string                   `json:"required"`
-		Properties map[string]json.RawMessage `json:"properties"`
+	var schema argumentSchema
+	if err := json.Unmarshal(definition.InputSchema, &schema); err != nil {
+		return request, err
+	}
+	schema.Required = slices.DeleteFunc(schema.Required, func(key string) bool { return key == "request_id" })
+	delete(schema.Properties, "request_id")
+	if err := validateArgumentSchema(raw, schema); err != nil {
+		return request, err
 	}
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(definition.InputSchema, &schema) != nil || json.Unmarshal(raw, &fields) != nil {
-		return request, ErrInvalidArguments
-	}
-	// The shared submission layer removes the business key before proposals.
-	for _, required := range schema.Required {
-		if required != "request_id" && fields[required] == nil {
-			return request, ErrInvalidArguments
-		}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return request, err
 	}
 	for key, value := range fields {
-		if schema.Properties[key] == nil || string(value) == "null" {
-			return request, ErrInvalidArguments
-		}
 		var text string
-		if json.Unmarshal(value, &text) == nil {
-			limit := 256
-			if key == "title" {
-				limit = 500
-			}
-			if key == "body" {
-				limit = 32768
-			}
-			if key == "evidence" {
-				limit = 4096
-			}
-			if key == "cursor" {
-				limit = 2048
-			}
-			if len(text) > limit || key != "body" && key != "cursor" && strings.TrimSpace(text) == "" {
-				return request, ErrInvalidArguments
-			}
+		if json.Unmarshal(value, &text) == nil && key != "body" && key != "cursor" && strings.TrimSpace(text) == "" {
+			return request, invalidArgument(key, "must not be blank")
 		}
-	}
-	if strings.TrimSpace(request.ProjectID) == "" || strings.TrimSpace(request.Identifier) == "" || request.ExpectedRevision < 0 || request.Limit < 0 || request.Limit > 200 || request.PullRequest < 0 {
-		return request, ErrInvalidArguments
-	}
-	if fields["expected_revision"] != nil && request.ExpectedRevision <= 0 || fields["limit"] != nil && request.Limit <= 0 || fields["pull_request"] != nil && request.PullRequest <= 0 {
-		return request, ErrInvalidArguments
-	}
-	if request.Priority != nil && (*request.Priority < 0 || *request.Priority > 3) {
-		return request, ErrInvalidArguments
 	}
 	if request.Labels != nil {
-		if len(*request.Labels) > 64 {
-			return request, ErrInvalidArguments
-		}
-		for _, label := range *request.Labels {
-			if strings.TrimSpace(label) == "" || len(label) > 200 {
-				return request, ErrInvalidArguments
+		for i, label := range *request.Labels {
+			if strings.TrimSpace(label) == "" {
+				return request, invalidArgument(fmt.Sprintf("labels[%d]", i), "must not be blank")
 			}
 		}
 	}
-	if name == EditItem && request.Title == nil && request.Body == nil && request.Labels == nil && request.Priority == nil || name == SetDependency && request.Operation != "add" && request.Operation != "remove" {
-		return request, ErrInvalidArguments
+	if name == EditItem && request.Title == nil && request.Body == nil && request.Labels == nil && request.Priority == nil {
+		return request, invalidArgument("title, body, labels, priority", "at least one field is required")
 	}
-	if (name == AddComment || name == EditComment) && (request.Body == nil || strings.TrimSpace(*request.Body) == "") {
-		return request, ErrInvalidArguments
+	if (name == AddComment || name == EditComment) && strings.TrimSpace(*request.Body) == "" {
+		return request, invalidArgument("body", "must not be blank")
 	}
-	if name == AddComment && (request.Target != "" && request.Target != "issue" && request.Target != "pr" || request.Target == "pr" && (request.Repository == "" || request.PullRequest <= 0) || request.Target != "pr" && (request.Repository != "" || request.PullRequest != 0)) {
-		return request, ErrInvalidArguments
-	}
-	if name == SetQueuePriority {
-		switch request.QueuePriority {
-		case "urgent", "high", "normal", "low", "none":
-		default:
-			return request, ErrInvalidArguments
+	if name == AddComment {
+		if request.Target == "pr" {
+			if request.Repository == "" {
+				return request, invalidArgument("repository", "is required when target is pr")
+			}
+			if request.PullRequest <= 0 {
+				return request, invalidArgument("pull_request", "is required when target is pr")
+			}
+		} else {
+			if request.Repository != "" {
+				return request, invalidArgument("repository", "is only allowed when target is pr")
+			}
+			if request.PullRequest != 0 {
+				return request, invalidArgument("pull_request", "is only allowed when target is pr")
+			}
 		}
 	}
 	return request, nil

@@ -208,6 +208,7 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 		{"missing", explain.ErrNotFound, "work item not found in this project"},
 		{"unauthorized project", operatortool.ErrProjectScopeRequired, operatortool.ErrProjectScopeRequired.Error()},
 		{"read fault", &operatortool.ReadUnavailableError{Err: errors.New("database fault sentinel")}, "Operator tool is unavailable"},
+		{"argument validation", nativeMoveArgumentError(), `{"code":"invalid_request","message":"expected_revision: is required"}`},
 		{"request", &operatortool.RequestError{Code: "invalid_request", Message: "Read get_project_integration"}, `{"code":"invalid_request","message":"Read get_project_integration"}`},
 		{"revision", &operatortool.ConflictError{Code: "revision_conflict", CurrentRevision: 4}, `{"code":"revision_conflict","current_revision":"4"}`},
 		{"stale", &operatortool.ConflictError{Code: "stale_execution", Details: &operatortool.ConflictDetails{}}, `{"code":"stale_execution","details":{"expected_attempt_id":null,"current_attempt_id":null}}`},
@@ -257,7 +258,7 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 				} else if logs.Len() != 0 {
 					t.Fatalf("expected tool error logged as a fault: %s", logs.Bytes())
 				}
-				if test.name != "request" && test.name != "revision" && test.name != "stale" || version == "2024-11-05" {
+				if test.name != "argument validation" && test.name != "request" && test.name != "revision" && test.name != "stale" || version == "2024-11-05" {
 					if len(result.StructuredContent) != 0 {
 						t.Fatalf("unexpected structured error=%s", result.StructuredContent)
 					}
@@ -287,7 +288,7 @@ func TestToolCallReturnsArgumentValidationError(t *testing.T) {
 		IsError bool `json:"isError"`
 	}
 	decodeResult(t, response, &result)
-	if !result.IsError || len(result.Content) != 1 || !strings.Contains(result.Content[0].Text, operatortool.ErrInvalidArguments.Error()) {
+	if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != `{"code":"invalid_request","message":"limit: must have type int"}` {
 		t.Fatalf("tool argument result = %#v", result)
 	}
 }
@@ -644,4 +645,9 @@ func waitChannel(t *testing.T, channel <-chan struct{}, operation string) {
 
 func bytesTrimSpace(value []byte) []byte {
 	return []byte(strings.TrimSpace(string(value)))
+}
+
+func nativeMoveArgumentError() error {
+	_, err := operatortool.DecodeNativeMoveItem(json.RawMessage(`{"project_id":"detent","request_id":"move","identifier":"295","target_state":"Done"}`))
+	return err
 }

@@ -279,9 +279,9 @@ func TestExecutorReportsInvalidInputsAndUnavailableDependencies(t *testing.T) {
 		call     Call
 		want     string
 	}{
-		{name: "invalid board arguments", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: BoardState, Arguments: json.RawMessage(`{"limit":`)}, want: "invalid tool arguments"},
-		{name: "unknown board argument", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: BoardState, Arguments: json.RawMessage(`{"unknown":true}`)}, want: "unknown field"},
-		{name: "invalid fleet arguments", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: FleetHealth, Arguments: json.RawMessage(`[]`)}, want: "invalid tool arguments"},
+		{name: "invalid board arguments", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: BoardState, Arguments: json.RawMessage(`{"limit":`)}, want: "arguments: must be valid JSON"},
+		{name: "unknown board argument", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: BoardState, Arguments: json.RawMessage(`{"unknown":true}`)}, want: "unknown: is not an allowed field"},
+		{name: "invalid fleet arguments", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: FleetHealth, Arguments: json.RawMessage(`[]`)}, want: "arguments: must have type struct {}"},
 		{name: "missing snapshot", executor: NewExecutor(Dependencies{}), call: Call{Name: BoardState}, want: "snapshot is unavailable"},
 		{name: "zero snapshot", executor: newTestExecutor(telemetry.Snapshot{}, explain.IssueExplanation{}), call: Call{Name: RecentActivity}, want: "snapshot is unavailable"},
 		{name: "snapshot failure", executor: NewExecutor(Dependencies{Snapshots: failingSnapshot{err: dependencyErr}}), call: Call{Name: FleetHealth}, want: dependencyErr.Error()},
@@ -292,7 +292,18 @@ func TestExecutorReportsInvalidInputsAndUnavailableDependencies(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := test.executor.Execute(context.Background(), test.call)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
+			message := ""
+			if err != nil {
+				message = err.Error()
+			}
+			var detail *RequestError
+			if errors.As(err, &detail) {
+				if !errors.Is(err, ErrInvalidArguments) {
+					t.Fatalf("validation error lost invalid-argument identity: %v", err)
+				}
+				message = detail.Message
+			}
+			if err == nil || !strings.Contains(message, test.want) {
 				t.Fatalf("Execute() error = %v, want containing %q", err, test.want)
 			}
 		})

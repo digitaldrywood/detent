@@ -2,6 +2,7 @@ package operatortool
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -43,6 +44,7 @@ func TestWorkArgumentsDirectCallBounds(t *testing.T) {
 		name, tool, fields string
 		valid              bool
 	}{
+		{"reported issue comment", AddComment, `"body":"` + strings.Repeat("Discuss `approval` at /chat/approval. ", 25) + `","target":"issue"`, true},
 		{"ordinary comment", AddComment, `"body":"hello"`, true},
 		{"PR comment", AddComment, `"body":"hello","target":"pr","repository":"owner/repo","pull_request":1`, true},
 		{"missing PR ownership", AddComment, `"body":"hello","target":"pr"`, false},
@@ -93,6 +95,44 @@ func TestNativeMoveItemArguments(t *testing.T) {
 			_, err := DecodeNativeMoveItem(json.RawMessage(`{"project_id":"project","request_id":"move","identifier":"item",` + test.fields + `}`))
 			if (err == nil) != test.valid {
 				t.Fatalf("valid=%t error=%v", test.valid, err)
+			}
+		})
+	}
+}
+
+func TestToolArgumentValidationDetails(t *testing.T) {
+	for _, test := range []struct {
+		name, tool, raw, message string
+	}{
+		{"move missing revision", MoveItem, `{"project_id":"detent","request_id":"move","identifier":"295","target_state":"Done"}`, "expected_revision: is required"},
+		{"move rejected revision", MoveItem, `{"project_id":"detent","request_id":"move","identifier":"329","target_state":"Todo","expected_revision":0}`, "expected_revision: must be at least 1"},
+		{"comment missing body", AddComment, `{"project_id":"detent","identifier":"259"}`, "body: is required"},
+		{"comment rejected target", AddComment, `{"project_id":"detent","identifier":"259","body":"hello","target":"other"}`, "target: must be one of: issue, pr"},
+		{"comment rejected body", AddComment, `{"project_id":"detent","identifier":"259","body":"` + strings.Repeat("x", 32769) + `"}`, "body: must not exceed 32768 bytes"},
+		{"comment blank body", AddComment, `{"project_id":"detent","identifier":"259","body":" "}`, "body: must not be blank"},
+		{"comment missing PR repository", AddComment, `{"project_id":"detent","identifier":"259","body":"hello","target":"pr","pull_request":1}`, "repository: is required when target is pr"},
+		{"comment missing PR number", AddComment, `{"project_id":"detent","identifier":"259","body":"hello","target":"pr","repository":"owner/repo"}`, "pull_request: is required when target is pr"},
+		{"comment irrelevant PR repository", AddComment, `{"project_id":"detent","identifier":"259","body":"hello","target":"issue","repository":"owner/repo"}`, "repository: is only allowed when target is pr"},
+		{"comment unknown field", AddComment, `{"project_id":"detent","identifier":"259","body":"hello","confirm":true}`, "confirm: is not an allowed field"},
+		{"comment wrong body type", AddComment, `{"project_id":"detent","identifier":"259","body":123}`, "body: must have type string"},
+		{"comment null body", AddComment, `{"project_id":"detent","identifier":"259","body":null}`, "body: must be a string"},
+		{"edit missing revision", EditItem, `{"project_id":"detent","identifier":"259","title":"title"}`, "expected_revision: is required"},
+		{"edit rejected label", EditItem, `{"project_id":"detent","identifier":"259","expected_revision":1,"labels":[""]}`, "labels[0]: must contain at least 1 characters"},
+		{"comments rejected limit", ListComments, `{"project_id":"detent","identifier":"259","limit":201}`, "limit: must be at most 200"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var err error
+			if test.tool == MoveItem {
+				_, err = DecodeNativeMoveItem(json.RawMessage(test.raw))
+			} else {
+				_, err = DecodeWorkArguments(test.tool, json.RawMessage(test.raw))
+			}
+			var detail *RequestError
+			if !errors.Is(err, ErrInvalidArguments) || !errors.As(err, &detail) {
+				t.Fatalf("error = %v, want structured invalid arguments", err)
+			}
+			if detail.Code != "invalid_request" || detail.Message != test.message {
+				t.Fatalf("detail = %+v, want invalid_request with %q", detail, test.message)
 			}
 		})
 	}

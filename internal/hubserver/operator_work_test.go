@@ -129,12 +129,31 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	})
 	id := string(created.WorkItemID)
 	identifier := string(f.project.ID) + "#" + strconv.Itoa(created.Number)
+	for _, test := range []struct {
+		name, tool, message string
+		fields              map[string]any
+	}{
+		{"missing revision", operatortool.MoveItem, "expected_revision: is required", map[string]any{"target_state": "Todo"}},
+		{"rejected revision", operatortool.MoveItem, "expected_revision: must be at least 1", map[string]any{"target_state": "Todo", "expected_revision": 0}},
+		{"missing body", operatortool.AddComment, "body: is required", map[string]any{}},
+		{"rejected target", operatortool.AddComment, "target: must be one of: issue, pr", map[string]any{"body": "hello", "target": "other"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.fields["identifier"] = identifier
+			raw, failed := call(test.tool, test.name, test.fields)
+			var detail operatortool.RequestError
+			if err := json.Unmarshal(raw, &detail); err != nil || !failed || detail.Code != "invalid_request" || detail.Message != test.message {
+				t.Fatalf("validation = %s, failed=%t, err=%v", raw, failed, err)
+			}
+		})
+	}
+	commentBody := strings.Repeat("Discuss `approval` at /chat/approval. ", 25)
 	var comment tracker.NativeComment
-	raw, failed = call("add_comment", "comment", map[string]any{"identifier": identifier, "body": "Discussion"})
-	if err := json.Unmarshal(raw, &comment); err != nil || failed || comment.ID == "" {
+	raw, failed = call("add_comment", "comment", map[string]any{"identifier": identifier, "body": commentBody, "target": "issue"})
+	if err := json.Unmarshal(raw, &comment); err != nil || failed || comment.ID == "" || comment.Body != commentBody {
 		t.Fatalf("comment=%s %v", raw, err)
 	}
-	replay, failed = call("add_comment", "comment", map[string]any{"identifier": id, "body": "Discussion"})
+	replay, failed = call("add_comment", "comment", map[string]any{"identifier": id, "body": commentBody, "target": "issue"})
 	if failed || string(raw) != string(replay) {
 		t.Fatal("comment replay changed identity")
 	}

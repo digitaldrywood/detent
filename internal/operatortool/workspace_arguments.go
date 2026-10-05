@@ -3,6 +3,8 @@ package operatortool
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -21,10 +23,7 @@ func ValidateWorkspaceArguments(call Call) error {
 		if err := DecodeArguments(call.Arguments, &value); err != nil {
 			return err
 		}
-		if !schema.accepts(value) {
-			return ErrInvalidArguments
-		}
-		return nil
+		return schema.validate(value, "arguments")
 	}
 	return ErrUnknownTool
 }
@@ -44,68 +43,109 @@ type argumentSchema struct {
 	Maximum       *float64                  `json:"maximum"`
 }
 
+func invalidArgument(field, rule string) error {
+	return &RequestError{Code: "invalid_request", Message: field + ": " + rule}
+}
+
+func validateArgumentSchema(raw json.RawMessage, schema argumentSchema) error {
+	var value any
+	if err := DecodeArguments(raw, &value); err != nil {
+		return err
+	}
+	return schema.validate(value, "arguments")
+}
+
 func (s argumentSchema) accepts(value any) bool {
+	return s.validate(value, "arguments") == nil
+}
+
+func (s argumentSchema) validate(value any, field string) error {
 	switch s.Type {
 	case "object":
 		fields, ok := value.(map[string]any)
-		if !ok || s.MaxProperties > 0 && len(fields) > s.MaxProperties {
-			return false
+		if !ok {
+			return invalidArgument(field, "must be an object")
+		}
+		if s.MaxProperties > 0 && len(fields) > s.MaxProperties {
+			return invalidArgument(field, fmt.Sprintf("must contain at most %d properties", s.MaxProperties))
 		}
 		for _, key := range s.Required {
 			if _, ok := fields[key]; !ok {
-				return false
+				return invalidArgument(argumentField(field, key), "is required")
 			}
 		}
-		for key, value := range fields {
+		keys := make([]string, 0, len(fields))
+		for key := range fields {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
 			child, found := s.Properties[key]
 			if !found {
-				if string(s.Additional) == "false" || len(s.Additional) == 0 {
-					return false
-				}
-				if json.Unmarshal(s.Additional, &child) != nil {
-					return false
+				if string(s.Additional) == "false" || len(s.Additional) == 0 || json.Unmarshal(s.Additional, &child) != nil {
+					return invalidArgument(argumentField(field, key), "is not an allowed field")
 				}
 			}
-			if !child.accepts(value) {
-				return false
+			if err := child.validate(fields[key], argumentField(field, key)); err != nil {
+				return err
 			}
 		}
 	case "string":
 		v, ok := value.(string)
-		if !ok || utf8.RuneCountInString(v) < s.MinLength || s.MaxLength > 0 && len(v) > s.MaxLength {
-			return false
+		if !ok {
+			return invalidArgument(field, "must be a string")
 		}
-		if len(s.Enum) > 0 {
-			for _, allowed := range s.Enum {
-				if v == allowed {
-					return true
-				}
-			}
-			return false
+		if utf8.RuneCountInString(v) < s.MinLength {
+			return invalidArgument(field, fmt.Sprintf("must contain at least %d characters", s.MinLength))
+		}
+		if s.MaxLength > 0 && len(v) > s.MaxLength {
+			return invalidArgument(field, fmt.Sprintf("must not exceed %d bytes", s.MaxLength))
+		}
+		if len(s.Enum) > 0 && !slices.Contains(s.Enum, v) {
+			return invalidArgument(field, "must be one of: "+strings.Join(s.Enum, ", "))
 		}
 	case "array":
 		v, ok := value.([]any)
-		if !ok || s.MaxItems > 0 && len(v) > s.MaxItems || s.Items == nil {
-			return false
+		if !ok {
+			return invalidArgument(field, "must be an array")
 		}
-		for _, item := range v {
-			if !s.Items.accepts(item) {
-				return false
+		if s.MaxItems > 0 && len(v) > s.MaxItems {
+			return invalidArgument(field, fmt.Sprintf("must contain at most %d items", s.MaxItems))
+		}
+		if s.Items == nil {
+			return invalidArgument(field, "items are not allowed")
+		}
+		for i, item := range v {
+			if err := s.Items.validate(item, fmt.Sprintf("%s[%d]", field, i)); err != nil {
+				return err
 			}
 		}
 	case "integer":
 		v, ok := value.(float64)
-		if !ok || v != float64(int64(v)) || s.Minimum != nil && v < *s.Minimum || s.Maximum != nil && v > *s.Maximum {
-			return false
+		if !ok || v != float64(int64(v)) {
+			return invalidArgument(field, "must be an integer")
+		}
+		if s.Minimum != nil && v < *s.Minimum {
+			return invalidArgument(field, fmt.Sprintf("must be at least %g", *s.Minimum))
+		}
+		if s.Maximum != nil && v > *s.Maximum {
+			return invalidArgument(field, fmt.Sprintf("must be at most %g", *s.Maximum))
 		}
 	case "boolean":
 		if _, ok := value.(bool); !ok {
-			return false
+			return invalidArgument(field, "must be a boolean")
 		}
 	default:
-		return false
+		return invalidArgument(field, "has an unsupported schema type")
 	}
-	return true
+	return nil
+}
+
+func argumentField(parent, key string) string {
+	if parent == "arguments" {
+		return key
+	}
+	return parent + "." + key
 }
 
 // WorkspaceResult preserves the application's typed projection and rejects
