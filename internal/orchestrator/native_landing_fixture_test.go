@@ -149,6 +149,11 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			if mergeStatus == http.StatusOK {
+				nativeLandingGit(t, request.Context(), source, "push", "origin", merge+":refs/heads/main")
+				fmt.Fprintf(w, `{"merged":true,"sha":%q}`, merge)
+				return
+			}
 			if puts.Add(1) == 1 || sourceConflict || mergeStatus == http.StatusMethodNotAllowed && !strings.HasPrefix(mergeMessage, "Base branch was modified") && mergeMessage != "Pull Request has merge conflicts" {
 				nativeLandingGit(t, request.Context(), source, "push", "origin", freshBase+":refs/heads/main")
 				w.WriteHeader(mergeStatus)

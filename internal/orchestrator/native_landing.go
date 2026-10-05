@@ -38,7 +38,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 	running Running,
 ) bool {
 	landing := event.Result.NativeLanding
-	if landing == nil || state.Draining || !o.nativeWorkflow() {
+	if landing == nil || !o.nativeWorkflow() {
 		return false
 	}
 	issue := running.Issue

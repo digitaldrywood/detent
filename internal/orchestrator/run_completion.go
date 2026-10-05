@@ -116,7 +116,8 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	defer func() {
-		if _, deferred := state.deferredCompletions[event.IssueID]; !deferred {
+		current, active := state.Running[event.IssueID]
+		if _, deferred := state.deferredCompletions[event.IssueID]; !deferred && (!active || current.done == running.done) {
 			o.heartbeats.remove(event.IssueID)
 			delete(state.Running, event.IssueID)
 			o.publishRuntimeState(state)
@@ -134,8 +135,12 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	} else {
 		event.Result.Tokens = running.Tokens
 	}
-	running.Compute = event.Result.Compute
-	running.TokenUSD = event.Result.TokenUSD
+	if event.Result.NativeLanding == nil || event.Result.Compute != nil {
+		running.Compute = event.Result.Compute
+	}
+	if event.Result.NativeLanding == nil || event.Result.TokenUSD != 0 {
+		running.TokenUSD = event.Result.TokenUSD
+	}
 	if event.Result.TurnCount > 0 {
 		running.TurnCount = event.Result.TurnCount
 	}
@@ -207,6 +212,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if running.CompletionLane != "" && running.Mode != runpkg.RunModeTriage {
+		if event.Err == nil && o.completeNativeLandingRun(ctx, state, event, running) {
+			return
+		}
 		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
 			if err := o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt); err != nil {
 				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)

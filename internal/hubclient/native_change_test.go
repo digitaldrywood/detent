@@ -358,6 +358,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		versionCode    string
 		diffCode       string
 		conversation   bool
+		land           bool
 		finalMessage   string
 		disposition    *tracker.NativeDisposition
 		unreadFinal    bool
@@ -374,6 +375,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
 	}{
+		{name: "reviewed source lands with its coding lease in the four lane workflow", land: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "blocked reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "merge_conflict", FinalSummary: "Source conflicts remain unresolved."}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "human action reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait", HumanAction: true, FinalSummary: "The operator must approve the migration."}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "instance limitation reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation", FinalSummary: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403."}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
@@ -429,7 +431,17 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			h := newNativeChangeHub(t, true)
+			var h *nativeChangeHub
+			if test.land {
+				h = newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
+					{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Human Review", "Done"}},
+					{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
+					{Name: "Human Review", Transitions: []string{"In Progress", "Done"}},
+					{Name: "Done", Terminal: true},
+				}, true)
+			} else {
+				h = newNativeChangeHub(t, true)
+			}
 			issue := h.createInProgress(t, "Native change")
 			item := tracker.NativeWorkItemID(issue.ID)
 			if test.existing {
@@ -546,6 +558,27 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			if lostAuthority {
 				if !errors.Is(finishErr, runner.ErrExecutionAuthorityUnavailable) || execution.(runner.ChangeExecution).NativeChange() != nil {
 					t.Fatalf("lost authority fabricated a native result: %v", finishErr)
+				}
+				return
+			}
+			if test.land {
+				if err := execution.(runner.LandingRuntimeExecution).StartLanding(guarded, 42, 7); err != nil {
+					t.Fatal(err)
+				}
+				landing := execution.(runner.LandingExecution)
+				target, err := landing.LandingTarget(guarded)
+				if err != nil || target.HeadSHA != head || target.VersionID == "" || h.state(t, issue.ID) != "In Progress" {
+					t.Fatalf("coding lease lost reviewed source: %+v, %v", target, err)
+				}
+				if err := landing.RecordLanding(guarded, runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, Landed: true, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: target.Method}); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+					t.Fatal(err)
+				}
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "succeeded" || recovery.Attempts[0].Identity.Role != runner.RoleCode || h.state(t, issue.ID) != "Done" || len(h.candidates(t)) != 0 {
+					t.Fatalf("direct landing restarted work or lost source identity: %+v, %v", recovery.Attempts, err)
 				}
 				return
 			}
