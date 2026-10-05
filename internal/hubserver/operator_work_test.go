@@ -82,6 +82,51 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatalf("foreign linkage accepted: %s", link)
 		}
 	}
+	t.Run("repository association diagnostics", func(t *testing.T) {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=NULL WHERE id=?", f.project.ID); err != nil {
+			t.Fatal(err)
+		}
+		raw, failed := call("file_issue", "unbound-link", map[string]any{"github_issue_url": "github.com/acme/orders/issues/13", "state": "Todo"})
+		var refusal struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(raw, &refusal); err != nil || !failed || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "get_project_integration") || !strings.Contains(refusal.Message, "bind_native_repository") {
+			t.Fatalf("missing association refusal=%s failed=%t err=%v", raw, failed, err)
+		}
+		raw, failed = call("file_issue", "unbound-native", map[string]any{"title": "Native without repository", "state": "Todo"})
+		var native tracker.NativeIssue
+		if err := json.Unmarshal(raw, &native); err != nil || failed || native.LinkedSource != nil || native.Body != "" || native.Number != linked.Number+1 {
+			t.Fatalf("unbound native creation=%s failed=%t err=%v", raw, failed, err)
+		}
+		states := append([]tracker.NativeState(nil), f.project.States...)
+		states = append(states, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
+		stateJSON, err := json.Marshal(states)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository='acme/orders', states_json=? WHERE id=?", string(stateJSON), f.project.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id,source_name,detent_state,dispatchable,terminal,created_at,updated_at) SELECT project_id,'Backlog','Backlog',0,0,created_at,updated_at FROM workflow_states WHERE project_id=? AND detent_state='Todo'", f.project.ID); err != nil {
+			t.Fatal(err)
+		}
+		args := map[string]any{"github_issue_url": "github.com/Acme/Orders/issues/13", "state": "Backlog"}
+		raw, failed = call("file_issue", "checkout-link", args)
+		var item tracker.NativeIssue
+		if err := json.Unmarshal(raw, &item); err != nil || failed || item.State != "Backlog" || item.LinkedSource == nil || item.LinkedSource.Status != "pending" {
+			t.Fatalf("checkout link=%s failed=%t err=%v", raw, failed, err)
+		}
+		for _, key := range []string{"checkout-link", "checkout-duplicate"} {
+			if replay, failed := call("file_issue", key, args); failed || string(raw) != string(replay) {
+				t.Fatalf("checkout replay=%s failed=%t", replay, failed)
+			}
+		}
+		raw, failed = call("file_issue", "checkout-foreign", map[string]any{"github_issue_url": "github.com/acme/private/issues/13", "state": "Backlog"})
+		if err := json.Unmarshal(raw, &refusal); err != nil || !failed || refusal.Code != "invalid_request" || refusal.Message != "GitHub issue must belong to this native project's attached repository" {
+			t.Fatalf("foreign association refusal=%s failed=%t err=%v", raw, failed, err)
+		}
+	})
 	id := string(created.WorkItemID)
 	identifier := string(f.project.ID) + "#" + strconv.Itoa(created.Number)
 	var comment tracker.NativeComment

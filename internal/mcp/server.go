@@ -606,8 +606,16 @@ func safeToolError(err error) string {
 
 func failedToolCallResult(protocolVersion string, err error) toolCallResult {
 	var conflict *operatortool.ConflictError
-	if errors.As(err, &conflict) {
-		if result, encodeErr := operatortool.EncodeResult(conflict); encodeErr == nil {
+	var request *operatortool.RequestError
+	var detail any
+	switch {
+	case errors.As(err, &conflict):
+		detail = conflict
+	case errors.As(err, &request):
+		detail = request
+	}
+	if detail != nil {
+		if result, encodeErr := operatortool.EncodeResult(detail); encodeErr == nil {
 			failure := successfulToolCallResult(protocolVersion, result.Content)
 			failure.IsError = true
 			return failure

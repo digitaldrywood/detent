@@ -202,6 +202,7 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 		want string
 	}{
 		{"internal", errors.New("credential-sensitive-value invitation-secret prompt-body support-token billing-secret sentinel"), "Operator tool is unavailable"},
+		{"request", &operatortool.RequestError{Code: "invalid_request", Message: "Read get_project_integration"}, `{"code":"invalid_request","message":"Read get_project_integration"}`},
 		{"revision", &operatortool.ConflictError{Code: "revision_conflict", CurrentRevision: 4}, `{"code":"revision_conflict","current_revision":"4"}`},
 		{"stale", &operatortool.ConflictError{Code: "stale_execution", Details: &operatortool.ConflictDetails{}}, `{"code":"stale_execution","details":{"expected_attempt_id":null,"current_attempt_id":null}}`},
 	} {
