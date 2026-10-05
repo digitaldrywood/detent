@@ -151,7 +151,11 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 			return nil, err
 		}
 		if publish {
-			if err := appendNativeHistory(ctx, tx, scope, string(issue.WorkItemID), request.Type, tracker.CollaborationData{Run: &request.Data}, now); err != nil {
+			data := tracker.CollaborationData{Run: &request.Data}
+			if request.Type == "run.finished" {
+				data.Revision = issue.Revision
+			}
+			if err := appendNativeHistory(ctx, tx, scope, string(issue.WorkItemID), request.Type, data, now); err != nil {
 				return nil, err
 			}
 		}

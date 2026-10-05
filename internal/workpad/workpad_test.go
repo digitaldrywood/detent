@@ -421,6 +421,8 @@ func TestParseRef(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
+		{name: "native project issue", ref: "prj_012abc#336", repo: "prj_other", want: "prj_012abc#336"},
+		{name: "local native issue", ref: "#336", repo: "prj_012abc", want: "prj_012abc#336"},
 		{name: "local issue", ref: "#42", repo: "digitaldrywood/detent", want: "digitaldrywood/detent#42"},
 		{name: "owner repo issue", ref: "digitaldrywood/pyroapex#1462", repo: "digitaldrywood/detent", want: "digitaldrywood/pyroapex#1462"},
 		{name: "local issue without repo", ref: "#42", want: "#42"},

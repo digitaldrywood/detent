@@ -109,6 +109,11 @@ func newNativeChangeHubWithStates(t *testing.T, review string, states []tracker.
 
 func newNativeChangeHubTransport(t *testing.T, review string, states []tracker.NativeState, inMemory bool, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
 	t.Helper()
+	return newNativeChangeHubDependencies(t, review, states, inMemory, false, repositoryBackend...)
+}
+
+func newNativeChangeHubDependencies(t *testing.T, review string, states []tracker.NativeState, inMemory, requireDependencies bool, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
+	t.Helper()
 	config := hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}
 	if len(repositoryBackend) > 0 {
 		config.ReconcileBackend = repositoryBackend[0]
@@ -148,7 +153,7 @@ func newNativeChangeHubTransport(t *testing.T, review string, states []tracker.N
 	}
 	h := &nativeChangeHub{review: review, organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
 	var project tracker.NativeProject
-	body := map[string]any{"name": "native-change", "idempotency_key": "project-native-change", "states": states, "require_dependencies": false}
+	body := map[string]any{"name": "native-change", "idempotency_key": "project-native-change", "states": states, "require_dependencies": requireDependencies}
 	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", body, &project); err != nil {
 		t.Fatal(err)
 	}
