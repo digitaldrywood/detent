@@ -266,6 +266,9 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 		return chat.ActionExecution{}, err
 	}
 	ctx = mutation.WithContext(ctx, action.Mutation)
+	if action.Kind == chat.ActionIssueSplit {
+		return s.executeCoordinatorIssueSplit(ctx, action)
+	}
 	if coordinatorSpriteMutation(string(action.Kind)) {
 		return s.executeCoordinatorSpriteAction(ctx, action)
 	}

@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"fmt"
 	"strings"
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
@@ -65,3 +66,23 @@ func chatApprovalPath(data ChatData) string {
 }
 
 func (d ChatData) approvalStylesheet() string { return d.ApprovalBasePath + "/static/css/output.css" }
+
+func splitPriority(priority *int) string {
+	if priority == nil {
+		return "No priority"
+	}
+	if *priority < 0 || *priority > 3 {
+		return "Unknown priority"
+	}
+	return []string{"Urgent", "High", "Normal", "Low"}[*priority]
+}
+
+func splitNode(position int, split *chatpkg.IssueSplit) string {
+	if position == 0 {
+		return "Parent"
+	}
+	if position < 1 || position > len(split.Children) {
+		return "Unknown child"
+	}
+	return fmt.Sprintf("%d. %s", position, split.Children[position-1].Title)
+}

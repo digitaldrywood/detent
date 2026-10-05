@@ -3,9 +3,11 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,10 +19,13 @@ import (
 )
 
 func TestCoordinatorProjectActions(t *testing.T) {
-	for _, tool := range []string{"update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "set_sprite_pool", "scale_up_sprite_pool"} {
+	for _, tool := range []string{"update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, string(chat.ActionIssueSplit), "set_sprite_pool", "scale_up_sprite_pool"} {
 		outcomes := []string{"approve", "reject", "unauthorized", "revoked", "stale", "model approval", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
 		if tool == "update_project_integration" {
 			outcomes = append(outcomes, "transport unavailable")
+		}
+		if tool == string(chat.ActionIssueSplit) {
+			outcomes = append(outcomes, "child failure", "edge failure", "comment failure", "invalid state", "cycle")
 		}
 		if coordinatorSpriteMutation(tool) {
 			outcomes = append(outcomes, "no runner grant", "runner grant revoked")
@@ -110,10 +115,26 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					arguments["title"], arguments["body"], arguments["labels"], arguments["priority"] = "Edited by Luna", "", []string{"approved"}, 2
 				case operatortool.AddComment:
 					arguments["body"] = "Comment approved by the owner"
+				case string(chat.ActionIssueSplit):
+					priority := 1
+					arguments = map[string]any{"parent_work_item_id": id, "children": []chat.IssueSplitChild{
+						{Title: "Split storage", Description: "Create storage", Priority: &priority, State: "Todo"},
+						{Title: "Split API", Description: "Use storage", Priority: &priority, State: "Todo"},
+						{Title: "Split UI", Description: "Build UI", Priority: &priority, State: "Todo"},
+					}, "edges": []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}}}
 				case "set_sprite_pool":
 					arguments = map[string]any{"min_runners": 0, "max_runners": 0}
 				case "scale_up_sprite_pool":
 					arguments = map[string]any{}
+				}
+				if tool == string(chat.ActionIssueSplit) {
+					if outcome == "invalid state" {
+						children := arguments["children"].([]chat.IssueSplitChild)
+						children[0].State = "Missing"
+					}
+					if outcome == "cycle" {
+						arguments["edges"] = []chat.IssueSplitEdge{{Dependent: 1, Blocker: 2}, {Dependent: 2, Blocker: 1}}
+					}
 				}
 				if outcome == "bad arguments" {
 					arguments["approve"] = true
@@ -154,12 +175,18 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					assertCoordinatorEffect(t, f, id, tool, false)
 					return
 				}
-				if outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "no write grant" || outcome == "no runner grant" || outcome == "wrong role" && (tool == "update_project_integration" || coordinatorSpriteMutation(tool)) {
+				if outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "invalid state" || outcome == "cycle" || outcome == "no write grant" || outcome == "no runner grant" || outcome == "wrong role" && (tool == "update_project_integration" || coordinatorSpriteMutation(tool)) {
 					if result.Success || !strings.Contains(result.Content, "error") {
 						t.Fatalf("unauthorized result: %+v", result)
 					}
 					assertCoordinatorEffect(t, f, id, tool, false)
 					return
+				}
+				if tool == string(chat.ActionIssueSplit) && result.Success {
+					replay, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: raw})
+					if err != nil || replay.Content != result.Content {
+						t.Fatalf("proposal replay=%+v error=%v, want %s", replay, err, result.Content)
+					}
 				}
 				if !result.Success {
 					t.Fatalf("preview: %s", result.Content)
@@ -221,6 +248,22 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if tool == string(chat.ActionIssueSplit) {
+					trigger := ""
+					switch outcome {
+					case "child failure":
+						trigger = "CREATE TRIGGER split_failure BEFORE INSERT ON issues WHEN NEW.title='Split API' BEGIN SELECT RAISE(ABORT, 'child failed'); END"
+					case "edge failure":
+						trigger = "CREATE TRIGGER split_failure BEFORE INSERT ON issue_dependencies BEGIN SELECT RAISE(ABORT, 'edge failed'); END"
+					case "comment failure":
+						trigger = "CREATE TRIGGER split_failure BEFORE INSERT ON native_comments BEGIN SELECT RAISE(ABORT, 'comment failed'); END"
+					}
+					if trigger != "" {
+						if _, err := db.ExecContext(t.Context(), trigger); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				form := url.Values{"connection_id": {connectionID}, "action_id": {action.ID}, "decision": {decision}, "form_token": {tokens[len(tokens)-1][1]}}
 				response = f.request(t, u, http.MethodPost, "/chat/approval", form)
 				want := http.StatusSeeOther
@@ -228,6 +271,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					want = http.StatusForbidden
 				}
 				if outcome == "stale" && tool != operatortool.AddComment {
+					want = http.StatusConflict
+				}
+				if strings.HasSuffix(outcome, " failure") {
 					want = http.StatusConflict
 				}
 				if outcome == "runner grant revoked" {
@@ -249,6 +295,18 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				if outcome == "reject" && resolved.Status != chat.ActionRejected || changed && resolved.Status != chat.ActionSucceeded {
 					t.Fatalf("decision=%+v", resolved)
+				}
+				if changed && tool == string(chat.ActionIssueSplit) {
+					if _, err := f.service.executeCoordinatorAction(ctx, resolved); err != nil {
+						t.Fatalf("confirmation replay failed: %v", err)
+					}
+					var count int
+					if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title LIKE 'Split %'").Scan(&count); err != nil {
+						t.Fatal(err)
+					}
+					if count != 3 {
+						t.Fatalf("confirmation replay created %d children", count)
+					}
 				}
 				if outcome != "revoked" {
 					messages, err = f.service.conversations.store.listMessages(t.Context(), db, record.ID, 0, 100)
@@ -275,6 +333,9 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 	var actual bool
 	var err error
 	switch tool {
+	case string(chat.ActionIssueSplit):
+		assertCoordinatorSplitEffect(t, f, id, changed)
+		return
 	case "set_sprite_pool":
 		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT max_runners=0 FROM project_sprite_pools WHERE project_id=?", f.project).Scan(&actual)
 	case "scale_up_sprite_pool":
@@ -326,7 +387,29 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 	backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
 	backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 		prompt := strings.ToLower(backend.request(t, turn-1).Prompt)
+		if _, current, ok := strings.Cut(prompt, "</transcript>"); ok {
+			prompt = current
+		}
 		call := runner.AgentToolCall{Name: "update_project_integration", Arguments: json.RawMessage(`{"repository_enabled":true}`)}
+		if strings.Contains(prompt, "split this issue") || strings.Contains(prompt, "cyclic split") {
+			children := []chat.IssueSplitChild{{Title: "Split storage", Description: "Create the storage layer.", State: "Todo"}, {Title: "Split API", Description: "Use the storage layer.", State: "Todo"}, {Title: "Split UI", Description: "Render the approved UI.", State: "Todo"}}
+			edges := []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}, {Dependent: 0, Blocker: 1}, {Dependent: 0, Blocker: 2}, {Dependent: 0, Blocker: 3}}
+			if strings.Contains(prompt, "cyclic split") {
+				edges = append(edges, chat.IssueSplitEdge{Dependent: 1, Blocker: 2})
+			}
+			raw, err := json.Marshal(chat.IssueSplit{ParentID: f.workItem, Children: children, Edges: edges})
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			loaded, err := handle(ctx, runner.AgentToolCall{Name: "load_split_issue_skill", Arguments: json.RawMessage(`{}`)})
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			if !loaded.Success {
+				return runner.AgentTurnResult{}, fmt.Errorf("load split skill: %s", loaded.Content)
+			}
+			call = runner.AgentToolCall{Name: string(chat.ActionIssueSplit), Arguments: raw}
+		}
 		if strings.Contains(prompt, "disable the sprite pool") {
 			call = runner.AgentToolCall{Name: "set_sprite_pool", Arguments: json.RawMessage(`{"min_runners":0,"max_runners":0}`)}
 		}
@@ -350,4 +433,77 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 		}
 		return runner.AgentTurnResult{}, nil
 	})
+}
+
+func assertCoordinatorSplitEffect(t *testing.T, f hostedSecurityFixture, parent tracker.NativeWorkItemID, changed bool) {
+	t.Helper()
+	db := f.service.database.db
+	var children, edges, comments int
+	for query, target := range map[string]*int{
+		"SELECT count(*) FROM issues WHERE title LIKE 'Split %'":    &children,
+		"SELECT count(*) FROM issue_dependencies":                   &edges,
+		"SELECT count(*) FROM native_comments WHERE work_item_id=?": &comments,
+	} {
+		var args []any
+		if strings.Contains(query, "?") {
+			args = []any{parent}
+		}
+		if err := db.QueryRowContext(t.Context(), query, args...).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !changed {
+		if children != 0 || edges != 0 || comments != 0 {
+			t.Fatalf("partial split survived: children=%d edges=%d comments=%d", children, edges, comments)
+		}
+		var residue int
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type='issue.created' AND work_item_id<>?", parent).Scan(&residue); err != nil {
+			t.Fatal(err)
+		}
+		if residue != 0 {
+			t.Fatalf("rolled back split left %d history events", residue)
+		}
+		return
+	}
+	if children != 3 || edges != 1 || comments != 1 {
+		t.Fatalf("split: children=%d edges=%d comments=%d", children, edges, comments)
+	}
+	var correctlyFiled int
+	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id JOIN queue_entries q ON q.issue_id=i.id WHERE i.title LIKE 'Split %' AND w.detent_state='Todo' AND q.priority_override=1").Scan(&correctlyFiled); err != nil {
+		t.Fatal(err)
+	}
+	if correctlyFiled != 3 {
+		t.Fatalf("only %d children have the approved state and priority", correctlyFiled)
+	}
+	scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+	var blocker, dependent tracker.WorkItemID
+	var blockerNative string
+	if err := db.QueryRowContext(t.Context(), "SELECT id,native_id FROM issues WHERE title='Split storage'").Scan(&blocker, &blockerNative); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE title='Split API'").Scan(&dependent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "UPDATE projects SET require_dependencies=1 WHERE id=?", f.project); err != nil {
+		t.Fatal(err)
+	}
+	for _, terminal := range []bool{false, true} {
+		if terminal {
+			if _, err := db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE id=?", f.project, blocker); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tx, err := db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{NativeScope: &scope, Scope: string(f.project)}, nil, nil, nil, nil, nil, nil, nil, nil)
+		_ = tx.Rollback()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(ids, dependent) != terminal {
+			t.Fatalf("dependent dispatch=%v while blocker terminal=%v", slices.Contains(ids, dependent), terminal)
+		}
+	}
 }

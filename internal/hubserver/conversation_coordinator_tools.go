@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -70,6 +71,8 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 			"Explain one issue: title, body, workflow state, latest attempt, recent comments and its linked conversation.",
 			`{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string","description":"Work item identifier (wi_...)"}},"additionalProperties":false}`),
 		coordinatorTool("read_issue_history", "Read current records for this conversation's attached issue, with pagination. Sections include full body, comments, lane and phase history with reasons, attempts with outcomes, dependencies and PR state.", `{"type":"object","required":["section"],"properties":{"section":{"type":"string","enum":["work_item","work_comments","work_history","work_runs","work_relationships","work_references","work_attempt_receipt"]},"cursor":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer","minimum":1,"maximum":200},"native_attempt_id":{"type":"string"}},"additionalProperties":false}`),
+		coordinatorIssueSplitTool(),
+		coordinatorTool("load_split_issue_skill", "Load the split-issue skill before proposing an issue decomposition.", `{"type":"object","properties":{},"additionalProperties":false}`),
 		coordinatorTool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
@@ -81,10 +84,10 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
 	result, err := t.execute(ctx, call)
 	if err != nil {
-		if coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" {
+		if coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) {
 			err = coordinatorActionError(err)
 		}
-		if coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" {
+		if coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) {
 			if postErr := t.postActionRefusal(ctx, call.Name, err); postErr != nil {
 				t.coordinator.logger.Warn("coordinator could not persist refusal", "conversation_id", t.state.conversationID, "error", postErr)
 			}
@@ -161,6 +164,10 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 			return nil, err
 		}
 		return t.explainIssue(ctx, record, readable, args.WorkItemID)
+	case "load_split_issue_skill":
+		return t.loadSplitIssueSkill(call.Arguments)
+	case string(chat.ActionIssueSplit):
+		return t.proposeIssueSplit(ctx, record, call)
 	case coordinatorToolProposeIssue:
 		var args struct {
 			Title     string `json:"title"`

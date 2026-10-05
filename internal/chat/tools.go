@@ -34,6 +34,8 @@ func ActionSummary(action Action) string {
 			summary += " at " + action.Priority + " priority"
 		}
 		return summary
+	case ActionIssueSplit:
+		return action.Title
 	case ActionFileIssue:
 		return fmt.Sprintf("File %q on %s", action.Title, action.ProjectID)
 	case "set_sprite_pool", "scale_up_sprite_pool":
