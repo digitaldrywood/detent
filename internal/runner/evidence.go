@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
-	"mime"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/conversation"
 )
 
 func workspaceEvidenceSource(directory string) func(context.Context, string) (ValidationEvidence, error) {
@@ -55,12 +54,27 @@ func workspaceEvidenceSource(directory string) func(context.Context, string) (Va
 		if len(content) > attachment.MaxBytes {
 			return result, attachment.ErrTooLarge
 		}
-		media := mime.TypeByExtension(filepath.Ext(path))
-		if media == "" {
-			media = http.DetectContentType(content)
+		var declared string
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".log", ".txt":
+			declared = "text/plain"
+		case ".md", ".markdown":
+			declared = "text/markdown"
+		case ".csv":
+			declared = "text/csv"
+		case ".json":
+			declared = "application/json"
+		case ".png":
+			declared = "image/png"
+		case ".jpg", ".jpeg":
+			declared = "image/jpeg"
+		case ".gif":
+			declared = "image/gif"
+		case ".webp":
+			declared = "image/webp"
 		}
-		media, _, err = mime.ParseMediaType(media)
-		if err != nil || !strings.HasPrefix(media, "image/") && media != "text/plain" && media != "text/markdown" && media != "text/csv" && media != "application/json" {
+		media, err := attachment.Sniff(declared, content)
+		if err != nil || !conversation.AttachmentMediaAllowed(media) {
 			return result, attachment.ErrInvalid
 		}
 		return ValidationEvidence{Name: filepath.Base(path), ContentType: media, Content: content}, ctx.Err()
