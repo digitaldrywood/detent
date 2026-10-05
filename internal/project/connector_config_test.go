@@ -346,8 +346,15 @@ func TestWithMappedNativeTrackerUsesTheHubForMappedProjects(t *testing.T) {
 			t.Parallel()
 			workflow := workflowconfig.Config{}
 			workflow.Tracker.Kind = test.kind
-			if got := WithMappedNativeTracker(workflow, test.scheduling, test.project).Tracker.Kind; got != test.want {
-				t.Fatalf("tracker kind = %q, want %q", got, test.want)
+			workflow.Tracker.ActiveStates = []string{"Todo", "Repair"}
+			workflow.Tracker.ObservedStates = []string{"Backlog", "Plan Review", "Customer QA"}
+			workflow.Tracker.TerminalStates = []string{"Done", "Cancelled"}
+			got := WithMappedNativeTracker(workflow, test.scheduling, test.project)
+			if got.Tracker.Kind != test.want {
+				t.Fatalf("tracker kind = %q, want %q", got.Tracker.Kind, test.want)
+			}
+			if !reflect.DeepEqual(got.Tracker.ActiveStates, workflow.Tracker.ActiveStates) || !reflect.DeepEqual(got.Tracker.ObservedStates, workflow.Tracker.ObservedStates) || !reflect.DeepEqual(got.Tracker.TerminalStates, workflow.Tracker.TerminalStates) {
+				t.Fatalf("native mapping discarded repository states: %#v", got.Tracker)
 			}
 		})
 	}

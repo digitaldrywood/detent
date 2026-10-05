@@ -2786,7 +2786,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
-    if (tail === "integration" && method === "PUT") {
+    if ((tail === "integration" || tail === "onboarding/integration") && method === "PUT") {
       const body = await readBody(request);
       if (refuseReadOnly(response)) return true;
       runMutation(response, method, path, body, () => {

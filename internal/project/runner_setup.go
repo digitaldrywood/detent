@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
@@ -49,6 +50,9 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 		}
 	}()
 	workflow, err := LoadWorkflowContext(ctx, cfg)
+	if errors.Is(err, workflowconfig.ErrNoProjectDefinition) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("load runner project setup: %w", err)
 	}

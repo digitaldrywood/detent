@@ -29,9 +29,21 @@ Enumerated connector adapters implement or forward those operations without
 deciding transitions. Admission uses the injected orchestrator writer. Raw
 HTTP tracker writes must not bypass this ownership boundary.
 
+For native projects, a supplied repository workflow definition owns the state
+and transition model through the existing trusted-revision policy approval
+path. Approval applies the resolved model atomically and rejects removal of
+occupied states. Cloud Markdown authoring is available only without repository
+definition authority; UI, API and MCP cannot independently override an approved
+repository workflow. Definition authority does not transfer issue-move ownership.
+
 **Enforcement:** `TestRepositorySources` in `internal/invariants`;
 `TestAdmissionRequiresLedgerWriter` in `internal/admission`. Review rejects
 lane-write bypasses and new ownership exceptions.
+
+**Workflow authority enforcement:** `TestRepositoryNativeWorkflowProjection` in
+`internal/config`, `TestNativeCloudWorkflowFallback` in `internal/project`, and
+`TestHostedProjectWorkflowConfiguration`, `TestProjectPolicyAuthorizationAndAtomicClaims`
+and `TestHostedProjectTools` in `internal/hubserver`.
 
 ## INV-2 — Instance-owned infrastructure failures
 

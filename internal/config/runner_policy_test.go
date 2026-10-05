@@ -306,6 +306,7 @@ func TestNativeSharedPolicy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		workflow.Config.Server.Kanban.AllowedTransitions = map[string][]string{"Todo": {"In Progress"}}
 		return workflow
 	}
 	pro := load("pro")
@@ -339,6 +340,7 @@ func TestNativeSharedPolicy(t *testing.T) {
 			w.Config.Worker.HostCaps = map[string]int{"another-host": 2}
 		}, true},
 		{"planning", func(w *Workflow) { w.Config.Plan.Enabled = false }, false},
+		{"transitions", func(w *Workflow) { w.Config.Server.Kanban.AllowedTransitions = map[string][]string{"Todo": {"Done"}} }, false},
 		{"validation", func(w *Workflow) { w.Config.Gate.Validator.Enabled = false }, false},
 		{"promotion", func(w *Workflow) { w.Config.Agent.AutoPromote.Enabled = false }, false},
 		{"instructions", func(w *Workflow) { w.Prompt += "Keep a human review hold." }, false},
@@ -361,6 +363,9 @@ func TestNativeSharedPolicy(t *testing.T) {
 				t.Fatal(err)
 			}
 			resolved.Config = resolved.Config.WithWorkerDefaults(WorkerDefaults{AllowLocalBinding: new(true)})
+			if resolved.Config.KanbanTransitionAllowed("Todo", "Done") || !resolved.Config.KanbanTransitionAllowed("Todo", "In Progress") {
+				t.Fatal("shared configuration did not retain the approved transition policy")
+			}
 			actual, err := ResolvePolicy(resolved)
 			if err != nil || actual.Match(approved) != nil {
 				t.Fatalf("shared policy resolution = %+v, %v", actual, err)
