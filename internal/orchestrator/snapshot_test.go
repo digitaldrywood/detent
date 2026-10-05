@@ -132,34 +132,60 @@ func TestRefreshProgressPreservesTrackerFreshness(t *testing.T) {
 
 func TestCompletionSnapshotExcludesPartialMutations(t *testing.T) {
 	for _, publication := range []string{"none", "runtime", "full"} {
-		t.Run(publication, func(t *testing.T) {
-			state := newState(normalizeConfig(Config{}))
-			issue := connector.Issue{ID: "worker", State: "In Progress", Labels: []string{"original"}}
-			state.Running[issue.ID] = Running{Issue: issue}
-			state.Claimed[issue.ID] = Claimed{Issue: issue}
-			orch := &Orchestrator{done: make(chan struct{})}
-			orch.publishState(t.Context(), &state)
-			orch.startCompletion(t.Context(), &state)
-			delete(state.Running, issue.ID)
-			state.Claimed[issue.ID].Issue.Labels[0] = "partial"
-			switch publication {
-			case "runtime":
-				orch.publishRuntimeState(&state)
-			case "full":
+		for _, mutation := range []string{"removed worker", "terminal attempt", "active attempt", "replacement attempt", "worker without durable attempt"} {
+			t.Run(publication+"/"+mutation, func(t *testing.T) {
+				state := newState(normalizeConfig(Config{}))
+				issue := connector.Issue{ID: "worker", State: "In Progress", Labels: []string{"original"}}
+				running := Running{Issue: issue, WorkAttemptID: 5}
+				if mutation == "worker without durable attempt" {
+					running.WorkAttemptID = 0
+				}
+				state.Running[issue.ID] = running
+				state.WorkAttempts = []telemetry.WorkAttempt{{AttemptID: 5, Status: string(store.WorkAttemptStatusActive)}}
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+				orch := &Orchestrator{done: make(chan struct{})}
 				orch.publishState(t.Context(), &state)
-			}
-			got, err := orch.State(t.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantRunning := 0
-			if publication == "none" {
-				wantRunning = 1
-			}
-			if len(got.Running) != wantRunning || got.Claimed[issue.ID].Issue.Labels[0] != "original" {
-				t.Fatalf("completion snapshot exposes partial mutation: running %#v, claimed %#v", got.Running, got.Claimed)
-			}
-		})
+				orch.startCompletion(t.Context(), &state)
+				switch mutation {
+				case "removed worker":
+					delete(state.Running, issue.ID)
+				case "terminal attempt", "worker without durable attempt":
+					state.WorkAttempts[0].Status = string(store.WorkAttemptStatusTerminal)
+				case "replacement attempt":
+					state.WorkAttempts[0].Status = string(store.WorkAttemptStatusTerminal)
+					running.WorkAttemptID = 6
+					state.Running[issue.ID] = running
+				}
+				state.Claimed[issue.ID].Issue.Labels[0] = "partial"
+				switch publication {
+				case "runtime":
+					orch.publishRuntimeState(&state)
+				case "full":
+					orch.publishState(t.Context(), &state)
+				}
+				got, err := orch.State(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantRunning := 1
+				if publication != "none" && (mutation == "removed worker" || mutation == "terminal attempt") {
+					wantRunning = 0
+				}
+				if len(got.Running) != wantRunning || got.Claimed[issue.ID].Issue.Labels[0] != "original" {
+					t.Fatalf("completion snapshot exposes partial mutation: running %#v, claimed %#v", got.Running, got.Claimed)
+				}
+				wantStatus := string(store.WorkAttemptStatusActive)
+				if publication != "none" {
+					wantStatus = state.WorkAttempts[0].Status
+				}
+				if got.WorkAttempts[0].Status != wantStatus {
+					t.Fatalf("work attempt status = %q, want %q", got.WorkAttempts[0].Status, wantStatus)
+				}
+				if _, retained := state.Running[issue.ID]; retained != (mutation != "removed worker") {
+					t.Fatal("publication changed actor worker ownership")
+				}
+			})
+		}
 	}
 }
 

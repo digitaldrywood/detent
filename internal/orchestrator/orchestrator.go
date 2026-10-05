@@ -1339,7 +1339,7 @@ func (o *Orchestrator) publishState(ctx context.Context, state *State) {
 	if observer, ok := o.scheduling.(nativeAdmissionObserver); ok {
 		observer.ObserveNativeAdmission(o.cfg.Project.ID, *cloned.nativeAdmission)
 	}
-	o.latestRuntimeState.Store(&runtimeState{
+	o.publishRuntimeSnapshot(&runtimeState{
 		WorkAttempts: cloned.WorkAttempts,
 		Running:      cloned.Running,
 		Claimed:      cloned.Claimed,
@@ -1354,11 +1354,26 @@ func (o *Orchestrator) publishRuntimeState(state *State) {
 	if o == nil || state == nil {
 		return
 	}
-	o.latestRuntimeState.Store(&runtimeState{
+	o.publishRuntimeSnapshot(&runtimeState{
 		WorkAttempts: cloneTelemetryWorkAttempts(state.WorkAttempts),
 		Running:      cloneRunning(state.Running),
 		Claimed:      cloneClaimed(state.Claimed),
 	})
+}
+
+func (o *Orchestrator) publishRuntimeSnapshot(runtime *runtimeState) {
+	terminalAttempts := make(map[int64]struct{})
+	for _, attempt := range runtime.WorkAttempts {
+		if attempt.Status == string(store.WorkAttemptStatusTerminal) && attempt.AttemptID > 0 {
+			terminalAttempts[attempt.AttemptID] = struct{}{}
+		}
+	}
+	for issueID, running := range runtime.Running {
+		if _, terminal := terminalAttempts[running.WorkAttemptID]; terminal {
+			delete(runtime.Running, issueID)
+		}
+	}
+	o.latestRuntimeState.Store(runtime)
 }
 
 func (o *Orchestrator) Drain(ctx context.Context) error {
