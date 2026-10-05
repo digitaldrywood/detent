@@ -20,7 +20,7 @@ let hub;
 test.beforeAll(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("conversation", {
-    env: { DETENT_HOSTED_BROWSER_CHAT_ORIGIN: "1" },
+    env: { DETENT_HOSTED_BROWSER_CHAT_ORIGIN: "1", DETENT_HOSTED_BROWSER_RESTART: "1" },
   });
 });
 
@@ -416,6 +416,94 @@ test("keeps an open chat visible when its session cookie expires and reconnects"
   expect(accepted.status).toBe(200);
   await expect(page.getByTestId("user-turn").last()).toContainText("Message after reconnect");
   await expectComposerText(page, "Unsent draft survives refresh");
+});
+
+test("open chat reconnects after a Hub restart and replays the gap once", async ({ page }) => {
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.restartStreams = { urls: [], closed: [], hold: false, held: [] };
+    window.EventSource = class extends NativeEventSource {
+      constructor(url, options) {
+        const conversation = String(url).includes("/conversations/");
+        if (conversation && window.restartStreams.hold) {
+          super(url, options);
+          this.close();
+          window.restartStreams.held.push(String(url));
+          setTimeout(() => this.dispatchEvent(new Event("error")), 0);
+          return;
+        }
+        super(url, options);
+        if (!conversation) return;
+        window.restartStreams.urls.push(String(url));
+        this.addEventListener("closed", (event) => {
+          const reason = JSON.parse(event.data).reason;
+          window.restartStreams.closed.push(reason);
+          if (reason === "server_shutdown") window.restartStreams.hold = true;
+        });
+      }
+    };
+    window.restartMarker = true;
+  });
+  await openChat(page);
+  await sendWithKeyboard(page, "Keep this chat through restart");
+  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  await expect(page.getByTestId("assistant-turn").last()).toContainText("Hello, world.");
+  const conversation = currentConversation(page);
+  const before = await hubAPI(page, "GET", conversationPath(conversation));
+  const cursor = before.payload.cursor;
+  await composer(page).fill("Unsent draft survives restart");
+  const url = page.url();
+  const response = await fetch(hub.fixture.restart, { method: "POST", signal: AbortSignal.timeout(20_000) });
+  expect(response.status).toBe(204);
+  await expect.poll(() => page.evaluate(() => window.restartStreams.closed)).toContain("server_shutdown");
+  const gap = await hubAPI(page, "POST", `${conversationPath(conversation)}/commands`, {
+    key: "spec-message-during-restart-gap", kind: "message", text: "Published during the reconnect gap",
+  });
+  expect(gap.status).toBe(200);
+  await expect.poll(async () => {
+    const snapshot = await hubAPI(page, "GET", conversationPath(conversation));
+    return snapshot.payload.messages.find((message) => message.id === gap.payload.message_id)?.delivery;
+  }).toBe("delivered");
+  await expect.poll(() => page.evaluate(() => window.restartStreams.held.length)).toBeGreaterThan(0);
+  await page.evaluate(() => { window.restartStreams.hold = false; });
+  await expect(page.getByTestId("user-turn").filter({ hasText: "Published during the reconnect gap" })).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() => window.restartStreams.urls.length)).toBeGreaterThan(1);
+  const resumed = await page.evaluate(() => window.restartStreams.urls.at(-1));
+  expect(Number(new URL(resumed, url).searchParams.get("after"))).toBe(cursor);
+  expect(page.url()).toBe(url);
+  expect(await page.evaluate(() => window.restartMarker)).toBe(true);
+  await expectComposerText(page, "Unsent draft survives restart");
+  await expect(page.getByTestId("user-turn")).toHaveCount(2);
+  await expect(page.getByTestId("assistant-turn")).toHaveCount(2);
+  await expect(page.getByTestId("message-retry")).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath("chat-reconnected.png") });
+});
+
+test("a Luna turn abandoned by restart offers Retry and clears sending", async ({ page }) => {
+  await openChat(page);
+  const blocked = await fetch(`${hub.fixture.restart}/block`, { method: "POST" });
+  expect(blocked.status).toBe(204);
+  await sendWithKeyboard(page, "Retry this turn after restart");
+  await expect(page).toHaveURL(/\/chat\/c\/conv_[0-9a-f]+$/);
+  await expect(page.getByTestId("assistant-turn").last()).toContainText("Working before restart");
+  const url = page.url();
+  await page.evaluate(() => { window.restartMarker = true; });
+  const response = await fetch(hub.fixture.restart, { method: "POST", signal: AbortSignal.timeout(20_000) });
+  expect(response.status).toBe(204);
+  const retry = page.getByTestId("message-retry");
+  await expect(retry).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("chat-retry-after-restart.png") });
+  expect(page.url()).toBe(url);
+  expect(await page.evaluate(() => window.restartMarker)).toBe(true);
+  const snapshot = await hubAPI(page, "GET", conversationPath(currentConversation(page)));
+  expect(snapshot.status).toBe(200);
+  expect(snapshot.payload.conversation.execution.status).toBe("failed");
+  expect(snapshot.payload.messages.find((message) => message.role === "user").delivery).toBe("failed");
+  await retry.click();
+  await expect(page.getByTestId("assistant-turn").last()).toContainText("Hello, world.");
+  await expect(retry).toHaveCount(0);
+  await expect(page.getByTestId("user-turn")).toHaveCount(1);
+  await expect(composer(page)).toBeEditable();
 });
 
 test("Shift+Enter inserts a newline instead of sending", async ({ page }) => {

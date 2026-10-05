@@ -17,7 +17,7 @@ afterEach(async () => {
 });
 
 describe("reconnect", () => {
-  it.each(["transport drop", "server_error"])("resumes after %s without hiding or duplicating messages", async (reason) => {
+  it.each(["transport drop", "server_error", "server_shutdown"])("resumes after %s without hiding or duplicating messages", async (reason) => {
     const h = (harness = await makeHarness());
     const created = (await h.run(
       h.client.effects.createConversation({
@@ -57,9 +57,6 @@ describe("reconnect", () => {
     // own cursor, so the hub replays only what came after it.
     await h.control("drop-open-streams", { reason });
     await h.waitFor(atom, (value) => value.status === "synchronizing", "the interrupted stream");
-    const recovered = await h.waitFor(atom, (value) => value.status === "live", "the reconnected stream");
-    expect(Option.isNone(recovered.closedReason)).toBe(true);
-
     await h.run(
       h.client.effects.sendMessage({
         projectId: PROJECT,
@@ -78,6 +75,8 @@ describe("reconnect", () => {
         }),
       "the message sent after the drop",
     );
+    expect(after.status).toBe("live");
+    expect(Option.isNone(after.closedReason)).toBe(true);
     const detail = Option.getOrThrow(after.data);
     const ids = detail.messages.map((message) => message.id);
     expect(emptied).toBe(false);

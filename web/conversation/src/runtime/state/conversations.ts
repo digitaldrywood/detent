@@ -171,7 +171,7 @@ export const makeConversationDetailState = Effect.fn("ConversationDetail.make")(
             yield* Queue.offer(resubscribeSignals, undefined);
             return;
           }
-          if (reason === "server_error") {
+          if (reason === "server_error" || reason === "server_shutdown") {
             // The hub could not hold the stream open. It says nothing about
             // the conversation, so the client comes back from the cursor it
             // already holds, on the same backoff a dropped transport uses.

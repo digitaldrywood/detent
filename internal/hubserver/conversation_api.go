@@ -685,6 +685,9 @@ func conversationExecutionLive(status conversation.ExecutionStatus) bool {
 // the conversation inside tx and returns the receipt to store. Errors roll
 // the whole command back, including its reservation.
 func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, record *conversationRecord, command conversation.Command, now time.Time) (conversation.Receipt, error) {
+	if !c.server.ready.Load() {
+		return conversation.Receipt{}, &nativeError{Code: "unavailable", Message: "The Hub is shutting down; try again", status: http.StatusServiceUnavailable}
+	}
 	receipt := conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliverySaved}
 	// An accepted command is activity: a settled conversation wakes before
 	// the command is applied (decisions section 14).

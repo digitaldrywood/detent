@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -297,8 +298,8 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 	accounts := make(map[string]auth.Identity)
 	t.Cleanup(func() {
 		if listen {
-			server.CloseClientConnections()
-			server.Close()
+			fixture.server.CloseClientConnections()
+			fixture.server.Close()
 		}
 		if err := fixture.service.Close(); err != nil {
 			t.Error(err)
@@ -436,7 +437,9 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 			t.Error(err)
 		}
 	})
-	mux.Handle("/", service.Handler())
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fixture.service.Handler().ServeHTTP(w, r)
+	}))
 	if listen {
 		server.Config.Handler = mux
 		server.Start()
@@ -967,6 +970,57 @@ func TestHostedBrowserPreview(t *testing.T) {
 			}
 		}
 	}
+	var restartURL string
+	if os.Getenv("DETENT_HOSTED_BROWSER_RESTART") != "" {
+		controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			if r.URL.Path == "/block" {
+				backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
+				backend.setRun(blockingRun(make(chan struct{}), "Working before restart"))
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			cfg := f.service.config
+			handler := f.server.Config.Handler
+			address := f.server.Listener.Addr().String()
+			ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+			defer cancel()
+			if err := f.service.Shutdown(ctx); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			f.server.CloseClientConnections()
+			f.server.Close()
+			if err := f.service.Close(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			cfg.Conversation.Backend = newFakeCoordinatorBackend()
+			service, err := Open(t.Context(), cfg)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			f.service = service
+			var lc net.ListenConfig
+			listener, err := lc.Listen(r.Context(), "tcp", address)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			server := httptest.NewUnstartedServer(handler)
+			_ = server.Listener.Close()
+			server.Listener = listener
+			f.server = server
+			server.Start()
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		t.Cleanup(controller.Close)
+		restartURL = controller.URL
+	}
 	accounts := make(map[string]string, len(f.cookies))
 	for account := range f.cookies {
 		accounts[account] = f.server.URL + "/__preview/account/" + account
@@ -986,6 +1040,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 		OwnerEmail        string             `json:"owner_email"`
 		Accounts          map[string]string  `json:"accounts"`
 		Stop              string             `json:"stop"`
+		Restart           string             `json:"restart,omitempty"`
 		Expires           time.Time          `json:"expires"`
 		ProblemRunner     runnerauth.Binding `json:"problem_runner"`
 		ProblemCredential string             `json:"problem_credential,omitempty"`
@@ -995,7 +1050,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 		Chat: f.server.URL + "/chat", ProjectID: f.project, Conversation: f.conversation, WorkItem: f.workItem,
 		WorkerChat: f.workerChat, WorkerItem: f.workerItem,
 		OwnerEmail: browserHostedOwnerEmail, Accounts: accounts, Stop: f.server.URL + "/__preview/stop", Expires: time.Now().Add(browserHostedPreviewLifetime),
-		ProblemRunner: problemRunner, ProblemCredential: problemCredential,
+		ProblemRunner: problemRunner, ProblemCredential: problemCredential, Restart: restartURL,
 	}
 	encoded, err := json.MarshalIndent(fixture, "", "  ")
 	if err != nil {

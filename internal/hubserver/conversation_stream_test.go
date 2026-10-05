@@ -186,9 +186,32 @@ func TestConversationStreamReplaysAndFollows(t *testing.T) {
 	}
 	stream.close()
 
+	if err := f.service.Shutdown(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.server.Close()
+	restarted, err := Open(t.Context(), f.service.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	f.service = restarted
+	f.server = httptest.NewServer(restarted.Handler())
+	t.Cleanup(f.server.Close)
+	response = f.command(t, f.token, id, conversation.Command{Key: "gap", Kind: conversation.CommandMessage, Text: "During the gap"})
+	requireNativeStatus(t, response, http.StatusOK)
+
 	reconnect := f.open(t, f.token, id, 4)
+	for _, seq := range []string{"5", "6"} {
+		if frame := reconnect.nextEvent(t); frame.ID != seq {
+			t.Fatalf("restart replay frame = %#v, want %s", frame, seq)
+		}
+	}
 	frame := reconnect.next(t)
-	if frame.Event != string(conversation.EventHeartbeat) || frame.Data != `{"seq":4}` {
+	if frame.Event != string(conversation.EventHeartbeat) || frame.Data != `{"seq":6}` {
 		t.Fatalf("reconnect frame = %#v, want heartbeat without duplicates", frame)
 	}
 	reconnect.close()
@@ -249,7 +272,9 @@ func TestConversationStreamClosesOnRevocationAndShutdown(t *testing.T) {
 		if frame := stream.next(t); frame.Event != string(conversation.EventHeartbeat) {
 			t.Fatalf("frame = %#v", frame)
 		}
-		f.service.conversations.broker.closeAll()
+		if err := f.service.Shutdown(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 		requireClosed(t, stream.nextEvent(t), "server_shutdown")
 	})
 }
