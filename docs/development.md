@@ -31,10 +31,12 @@ Follow the repository's [validation policy](../AGENTS.md#validation) and
 [failure reporting policy](../AGENTS.md#deployment-and-release-failure-reporting).
 Focused diagnostics do not become merge gates or local-gate statuses. The
 scheduled suite validates pinned integrated develop commits for release tags;
-new proven, pinned Detent source blockers enter native Todo at least High under
-the human-approved scheduled reporting policy. Reused items preserve Urgent,
-existing lanes, human questions and operator holds; unknown instance diagnostics
-remain in nondispatchable Backlog.
+every failing Detent scheduled job enters native Todo at least High under the
+human-approved reporting policy, including infrastructure and unclassified
+failures. Reused job issues preserve Urgent, human questions and operator holds;
+matching Backlog intake moves to Todo through the native workflow owner, while
+active and review lanes remain intact. Other unknown instance diagnostics remain
+in nondispatchable Backlog. A red suite receives no release tag.
 
 Several worktrees usually run gates on the same host at once. Every `make`
 test, lint, vet, and build target is capped by `TEST_PROCS` (default 4): it

@@ -112,7 +112,7 @@ func (m *cloudMCP) initialize(ctx context.Context) error {
 		}
 		cursor = page.NextCursor
 	}
-	for _, name := range []string{"work_config", "work_list", "work_item", "work_comments", "file_issue", "edit_item", "add_comment"} {
+	for _, name := range []string{"work_config", "work_list", "work_item", "work_comments", "file_issue", "edit_item", "move_item", "add_comment"} {
 		if !available[name] {
 			return fmt.Errorf("scheduled MCP connection lacks %s authority", name)
 		}

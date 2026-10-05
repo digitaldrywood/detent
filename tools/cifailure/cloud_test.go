@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -111,12 +112,16 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 		}
 		output = operatortool.WorkReadResult[tracker.Page[tracker.NativeComment]]{ProjectID: scheduledCloudProject, Reference: id, Data: page}
 	case "file_issue":
-		if args["state"] != "Backlog" && args["state"] != "Todo" || !strings.HasPrefix(args["request_id"].(string), "scheduled-create-") {
+		if encoded, err := json.Marshal(args); err != nil || len(encoded) > 64<<10 {
+			return errors.New("scheduled creation exceeds the native request bound")
+		}
+		if args["state"] != "Todo" || !strings.HasPrefix(args["request_id"].(string), "scheduled-create-") {
 			return errors.New("filing bypassed reporting policy")
 		}
 		id := fmt.Sprintf("wi_%d", len(f.items)+1)
 		item := cloudItem(id, len(f.items)+1, args["description"].(string))
 		item.State = args["state"].(string)
+		item.Labels = args["labels"].([]string)
 		if raw, present := args["priority"]; present {
 			encoded, err := json.Marshal(raw)
 			var rank int
@@ -144,8 +149,8 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 		if err != nil {
 			return err
 		}
-		if len(args) != 5 || request.Priority == nil || !strings.HasPrefix(args["request_id"].(string), "scheduled-priority-") {
-			return errors.New("priority edit changed other fields")
+		if request.Priority == nil && request.Labels == nil || !strings.HasPrefix(args["request_id"].(string), "scheduled-priority-") {
+			return errors.New("failure edit has no priority or labels")
 		}
 		for i := range f.items {
 			item := &f.items[i]
@@ -158,7 +163,12 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 			if int64(item.Revision) != request.ExpectedRevision {
 				return errors.New("revision conflict")
 			}
-			item.Priority = request.Priority
+			if request.Priority != nil {
+				item.Priority = request.Priority
+			}
+			if request.Labels != nil {
+				item.Labels = *request.Labels
+			}
 			item.Revision++
 			f.writes = append(f.writes, args)
 			output = map[string]any{"resource_id": request.Identifier, "revision": fmt.Sprint(item.Revision)}
@@ -166,6 +176,32 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 		}
 		if output == nil {
 			return errors.New("unknown priority target")
+		}
+	case "move_item":
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			return err
+		}
+		request, err := operatortool.DecodeNativeMoveItem(encoded)
+		if err != nil || request.TargetState != "Todo" || !strings.HasPrefix(request.RequestID, "scheduled-todo-") {
+			return errors.New("invalid scheduled transition")
+		}
+		for i := range f.items {
+			item := &f.items[i]
+			if string(item.WorkItemID) != request.Identifier {
+				continue
+			}
+			if int64(item.Revision) != request.ExpectedRevision || item.State != "Backlog" {
+				return errors.New("transition conflict")
+			}
+			item.State = request.TargetState
+			item.Revision++
+			f.writes = append(f.writes, args)
+			output = map[string]any{"data": item, "resource_id": request.Identifier, "revision": int64(item.Revision)}
+			break
+		}
+		if output == nil {
+			return errors.New("unknown transition target")
 		}
 	case "add_comment":
 		id := args["identifier"].(string)
@@ -197,39 +233,52 @@ func TestCloudReport(t *testing.T) {
 	gosecDiagnostic := fixture(t, "gosec")
 	const jobs = `[{"id":1,"name":"Coverage","conclusion":"failure","html_url":"coverage-job"},{"id":2,"name":"Race","conclusion":"failure","html_url":"race-job"}]`
 	fp := issueorigin.Fingerprint("go-test:owner/repo/pkg:TestOne")
-	stamp := issueorigin.Stamp("Imported diagnostic", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/digitaldrywood/detent/actions/runs/previous", Fingerprint: fp})
+	stamp := issueorigin.Stamp("Scheduled validation job **Coverage** (failure) failed on development commit previous.\nImported diagnostic", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/digitaldrywood/detent/actions/runs/previous", Fingerprint: fp})
+	var verbose strings.Builder
+	for i := range 12 {
+		fmt.Fprintf(&verbose, "--- FAIL: TestVerbose%d (0s)\n%s\n", i, strings.Repeat("diagnostic output ", 500))
+	}
+	verbose.WriteString("FAIL\towner/repo/pkg\t0s")
 	for _, tt := range []struct {
-		name, log, lost, fail string
-		imported, green       bool
-		legacyReplay          bool
-		markerReplay          bool
-		finalizerFailed       bool
-		priority              *int
-		holdState             string
-		missingRevision       bool
-		conflict              bool
-		wantItems, wantWrites int
-		wantEdits, wantErrors int
+		name, log, laterLog, lost, fail string
+		imported, green, foreign        bool
+		legacyReplay                    bool
+		markerReplay                    bool
+		finalizerFailed                 bool
+		priority                        *int
+		holdState                       string
+		missingRevision                 bool
+		conflict                        bool
+		wantItems, wantWrites           int
+		wantEdits, wantErrors           int
 	}{
-		{name: "source problem replay", log: diagnostic, wantItems: 1, wantWrites: 4},
-		{name: "source lint replay", log: lintDiagnostic, wantItems: 1, wantWrites: 4},
-		{name: "recorded gosec replay", log: gosecDiagnostic, wantItems: 1, wantWrites: 4},
+		{name: "source problem replay", log: diagnostic, wantItems: 2, wantWrites: 4},
+		{name: "source lint replay", log: lintDiagnostic, wantItems: 2, wantWrites: 4},
+		{name: "recorded gosec replay", log: gosecDiagnostic, wantItems: 2, wantWrites: 4},
 		{name: "gosec cache keeps instance intake", log: strings.ReplaceAll(gosecDiagnostic, "/home/runner/work/detent/detent/", "/runner/cache/tool/"), wantItems: 2, wantWrites: 4},
-		{name: "lost creation response", log: diagnostic, lost: "file_issue", wantItems: 1, wantWrites: 4, wantErrors: 1},
-		{name: "lost occurrence response", log: diagnostic, lost: "add_comment", wantItems: 1, wantWrites: 4, wantErrors: 1},
-		{name: "imported comment fingerprint", log: diagnostic, imported: true, wantItems: 2, wantWrites: 5, wantEdits: 1},
-		{name: "Backlog hold retains lane", log: diagnostic, imported: true, holdState: "Backlog", wantItems: 2, wantWrites: 5, wantEdits: 1},
-		{name: "Human Review retains lane and Urgent", log: diagnostic, imported: true, holdState: "Human Review", priority: new(0), wantItems: 2, wantWrites: 4},
-		{name: "normal imported priority", log: diagnostic, imported: true, priority: new(2), wantItems: 2, wantWrites: 5, wantEdits: 1},
-		{name: "low imported priority", log: diagnostic, imported: true, priority: new(3), wantItems: 2, wantWrites: 5, wantEdits: 1},
-		{name: "High imported priority", log: diagnostic, imported: true, priority: new(1), wantItems: 2, wantWrites: 4},
-		{name: "Urgent imported priority", log: diagnostic, imported: true, priority: new(0), wantItems: 2, wantWrites: 4},
-		{name: "lost priority response", log: diagnostic, imported: true, lost: "edit_item", wantItems: 2, wantWrites: 5, wantEdits: 1, wantErrors: 1},
-		{name: "stale revision stops publication", log: diagnostic, imported: true, conflict: true, wantItems: 2, wantEdits: 5, wantErrors: 5},
-		{name: "missing revision stops publication", log: diagnostic, imported: true, missingRevision: true, wantItems: 2, wantErrors: 5},
-		{name: "priority authority denied", log: diagnostic, imported: true, fail: "edit_item", wantItems: 2, wantEdits: 5, wantErrors: 5},
+		{name: "lost creation response", log: diagnostic, lost: "file_issue", wantItems: 2, wantWrites: 4, wantErrors: 1},
+		{name: "lost occurrence response", log: diagnostic, lost: "add_comment", wantItems: 2, wantWrites: 4, wantErrors: 1},
+		{name: "foreign scheduled job is not reused", log: diagnostic, imported: true, foreign: true, wantItems: 4, wantWrites: 4},
+		{name: "imported comment fingerprint", log: diagnostic, imported: true, wantItems: 3, wantWrites: 5, wantEdits: 1},
+		{name: "Backlog intake enters Todo", log: diagnostic, imported: true, holdState: "Backlog", wantItems: 3, wantWrites: 6, wantEdits: 1},
+		{name: "Human Review retains lane and Urgent", log: diagnostic, imported: true, holdState: "Human Review", priority: new(0), wantItems: 3, wantWrites: 4},
+		{name: "normal imported priority", log: diagnostic, imported: true, priority: new(2), wantItems: 3, wantWrites: 5, wantEdits: 1},
+		{name: "low imported priority", log: diagnostic, imported: true, priority: new(3), wantItems: 3, wantWrites: 5, wantEdits: 1},
+		{name: "High imported priority", log: diagnostic, imported: true, priority: new(1), wantItems: 3, wantWrites: 4},
+		{name: "Urgent imported priority", log: diagnostic, imported: true, priority: new(0), wantItems: 3, wantWrites: 4},
+		{name: "lost priority response", log: diagnostic, imported: true, lost: "edit_item", wantItems: 3, wantWrites: 5, wantEdits: 1, wantErrors: 1},
+		{name: "stale revision stops publication", log: diagnostic, imported: true, conflict: true, wantItems: 3, wantWrites: 2, wantEdits: 5, wantErrors: 5},
+		{name: "missing revision stops publication", log: diagnostic, imported: true, missingRevision: true, wantItems: 3, wantWrites: 2, wantErrors: 5},
+		{name: "priority authority denied", log: diagnostic, imported: true, fail: "edit_item", wantItems: 3, wantWrites: 2, wantEdits: 5, wantErrors: 5},
 		{name: "imported legacy run replay", log: diagnostic, imported: true, legacyReplay: true, wantItems: 2, wantWrites: 3, wantEdits: 1},
 		{name: "imported marker replay promotes priority", log: diagnostic, imported: true, legacyReplay: true, markerReplay: true, wantItems: 2, wantWrites: 3, wantEdits: 1},
+		{name: "verbose findings stay bounded", log: verbose.String(), wantItems: 2, wantWrites: 4},
+		{name: "multiple findings stay in one job issue", log: diagnostic + "\n--- FAIL: TestTwo (0s)\nFAIL\towner/repo/pkg\t0s", wantItems: 2, wantWrites: 4},
+		{name: "changed findings reuse job", log: diagnostic, laterLog: "--- FAIL: TestTwo (0s)\nFAIL\towner/repo/pkg\t0s", wantItems: 2, wantWrites: 4},
+		{name: "unclassified then source reuses job", log: "exit code 1", laterLog: diagnostic, wantItems: 2, wantWrites: 4},
+		{name: "imported infra labelled and promoted", log: "The runner has received a shutdown signal", imported: true, holdState: "Backlog", priority: new(0), wantItems: 3, wantWrites: 6, wantEdits: 1},
+		{name: "lost transition response", log: diagnostic, imported: true, holdState: "Backlog", lost: "move_item", wantItems: 3, wantWrites: 6, wantEdits: 1, wantErrors: 1},
+		{name: "transition authority denied", log: diagnostic, imported: true, holdState: "Backlog", fail: "move_item", wantItems: 3, wantWrites: 3, wantEdits: 1, wantErrors: 5},
 		{name: "instance intake replay", log: "network setup failed", wantItems: 2, wantWrites: 4},
 		{name: "authentication remains intake", log: "HTTP 401: authentication required", wantItems: 2, wantWrites: 4},
 		{name: "backend startup remains intake", log: "backend startup failed: protocol handshake error", wantItems: 2, wantWrites: 4},
@@ -239,14 +288,6 @@ func TestCloudReport(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := &fakeCloud{lost: tt.lost, fail: tt.fail, conflict: tt.conflict}
-			sourceFailure := tt.log == diagnostic || tt.log == lintDiagnostic || tt.log == gosecDiagnostic
-			problemFingerprint := fp
-			if tt.log == lintDiagnostic {
-				problemFingerprint = issueorigin.Fingerprint("go-diagnostic:internal/one.go:12:3:unused value (staticcheck)")
-			}
-			if tt.log == gosecDiagnostic {
-				problemFingerprint = issueorigin.Fingerprint(gosecProblem)
-			}
 			if tt.imported {
 				f.items = []tracker.NativeIssue{cloudItem("wi_unrelated", 1, "Operator work"), cloudItem("wi_imported", 2, "Imported body edited by operator")}
 				f.items[1].State = "Blocked"
@@ -254,14 +295,19 @@ func TestCloudReport(t *testing.T) {
 					f.items[1].State = tt.holdState
 				}
 				f.items[1].Priority = tt.priority
+				f.items[1].Labels = []string{"operator-label"}
 				if tt.missingRevision {
 					f.items[1].Revision = 0
 				}
-				f.comments = map[string][]tracker.NativeComment{"wi_imported": {{OrganizationID: "org", ProjectID: scheduledCloudProject, WorkItemID: "wi_imported", Body: "Historical discussion"}, {OrganizationID: "org", ProjectID: scheduledCloudProject, WorkItemID: "wi_imported", Body: stamp}}}
+				importedStamp := stamp
+				if tt.foreign {
+					importedStamp = strings.ReplaceAll(stamp, "digitaldrywood/detent/actions", "owner/other/actions")
+				}
+				f.comments = map[string][]tracker.NativeComment{"wi_imported": {{OrganizationID: "org", ProjectID: scheduledCloudProject, WorkItemID: "wi_imported", Body: "Historical discussion"}, {OrganizationID: "org", ProjectID: scheduledCloudProject, WorkItemID: "wi_imported", Body: importedStamp}}}
 			}
 			if tt.legacyReplay {
 				for i, link := range []string{"coverage-job", "race-job"} {
-					body := issueorigin.Stamp("Original legacy occurrence\n\nJob: "+link, issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/digitaldrywood/detent/actions/runs/1/attempts/1", Fingerprint: fp})
+					body := issueorigin.Stamp("Scheduled validation job **"+[]string{"Coverage", "Race"}[i]+"** (failure) failed on development commit previous.\n\nJob: "+link, issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/digitaldrywood/detent/actions/runs/1/attempts/1", Fingerprint: fp})
 					if tt.markerReplay {
 						getenv := func(key string) string {
 							if key == "GITHUB_RUN_ID" {
@@ -294,6 +340,9 @@ func TestCloudReport(t *testing.T) {
 					}
 					return scheduledEnv(key)
 				}
+				if run == "2" && tt.laterLog != "" {
+					gh.logs = map[int64]string{1: tt.laterLog, 2: tt.laterLog}
+				}
 				destination := &cloudDestination{command: f.command, project: scheduledCloudProject, evidence: &evidence}
 				err := reportTo(t.Context(), strings.NewReader(input), gh.command, getenv, destination)
 				if err != nil {
@@ -316,42 +365,56 @@ func TestCloudReport(t *testing.T) {
 				state := tt.holdState
 				if state == "" {
 					state = "Blocked"
+				} else if state == "Backlog" && tt.fail != "move_item" {
+					state = "Todo"
 				}
 				if f.items[1].State != state {
 					t.Fatal("report changed operator hold")
 				}
 			}
 			for i, item := range f.items {
-				want := tt.priority
-				if tt.imported && i == 0 {
-					want = nil
-				} else if sourceFailure && tt.wantErrors < 5 && (want == nil || *want > 1) {
+				var want *int
+				if !tt.imported || i > 1 {
 					want = new(1)
+				} else if i == 1 {
+					want = tt.priority
+					if tt.wantEdits == 1 && (want == nil || *want > 1) {
+						want = new(1)
+					}
 				}
 				if (item.Priority == nil) != (want == nil) || want != nil && *item.Priority != *want {
 					t.Fatalf("item %s priority=%v; want %v", item.WorkItemID, item.Priority, want)
 				}
 			}
-			if tt.imported && (f.items[1].Body != "Imported body edited by operator" || f.comments["wi_imported"][1].Body != stamp) {
+			if tt.imported && !tt.foreign && (f.items[1].Body != "Imported body edited by operator" || f.comments["wi_imported"][1].Body != stamp) {
 				t.Fatal("priority changed imported content or history")
 			}
 			for _, args := range f.writes {
+				if target, move := args["target_state"]; move {
+					if target != "Todo" || args["identifier"] != "wi_imported" || args["expected_revision"] != int64(8) {
+						t.Fatal("transition lost its native revision or target")
+					}
+					continue
+				}
 				if _, edit := args["expected_revision"]; edit {
-					key := issueorigin.Fingerprint("digitaldrywood/detent:1:1:1:Coverage:" + fp)
-					if args["expected_revision"] != int64(7) || args["identifier"] != "wi_imported" || args["priority"] != 1 || args["request_id"] != "scheduled-priority-"+key {
-						t.Fatal("priority edit lost the observed revision or identity")
+					fingerprint := legacyJobFingerprint("scheduled-ci:digitaldrywood/detent:Coverage")
+					key := issueorigin.Fingerprint("digitaldrywood/detent:1:1:1:Coverage:" + fingerprint)
+					if args["expected_revision"] != int64(7) || args["identifier"] != "wi_imported" || args["request_id"] != "scheduled-priority-"+key {
+						t.Fatal("failure edit lost the observed revision or identity")
+					}
+					if raw, ok := args["labels"]; ok && !reflect.DeepEqual(raw, []string{"operator-label", "ci-infrastructure-failure"}) {
+						t.Fatal("infrastructure edit replaced operator labels")
 					}
 					continue
 				}
 				body, comment := args["body"].(string)
 				if !comment {
 					body = args["description"].(string)
-					state := "Backlog"
-					if sourceFailure {
-						state = "Todo"
+					if args["state"] != "Todo" || args["priority"] != 2 {
+						t.Fatal("new report did not enter Todo at High")
 					}
-					if args["state"] != state {
-						t.Fatalf("new report state=%v; want %s", args["state"], state)
+					if strings.Contains(body, "No source repair is authorized") && !slices.Contains(args["labels"].([]string), "ci-infrastructure-failure") {
+						t.Fatal("instance failure has no infrastructure label")
 					}
 				}
 				if tt.green {
@@ -366,11 +429,22 @@ func TestCloudReport(t *testing.T) {
 					if !ok || !strings.Contains(origin.Source, "/attempts/1") || !strings.Contains(body, scheduledEnv("CI_DEVELOP_SHA")) || !strings.Contains(body, "-job") {
 						t.Fatal("native occurrence lost source identity")
 					}
-					if sourceFailure && origin.Fingerprint != problemFingerprint {
-						t.Fatal("native fingerprint differs from GitHub")
+					name := scheduledJob(body)
+					if origin.Fingerprint != legacyJobFingerprint("scheduled-ci:digitaldrywood/detent:"+name) {
+						t.Fatal("native occurrence lost stable job identity")
 					}
-					if !sourceFailure && !strings.Contains(body, "No source repair is authorized") {
-						t.Fatal("unknown infrastructure became source repair")
+					if tt.log == diagnostic && tt.laterLog == "" && !strings.Contains(body, "TestOne") && !tt.finalizerFailed {
+						t.Fatal("native occurrence lost failing test names")
+					}
+					if tt.log == verbose.String() {
+						for i := range 12 {
+							if !strings.Contains(body, fmt.Sprintf("go-test:owner/repo/pkg:TestVerbose%d`", i)) {
+								t.Fatal("bounded job evidence lost a failing test name")
+							}
+						}
+					}
+					if strings.Contains(tt.name, "multiple findings") && !strings.Contains(body, "TestTwo") {
+						t.Fatal("job aggregation lost a failing test")
 					}
 				}
 			}
@@ -383,7 +457,7 @@ func TestCloudReport(t *testing.T) {
 
 func (f *fakeCloud) ListTools(context.Context) ([]operatortool.Definition, error) {
 	var definitions []operatortool.Definition
-	for _, name := range []string{"work_config", "work_list", "work_item", "work_comments", "file_issue", "edit_item", "add_comment", "connection_info"} {
+	for _, name := range []string{"work_config", "work_list", "work_item", "work_comments", "file_issue", "edit_item", "move_item", "add_comment", "connection_info"} {
 		if f.fail == name {
 			continue
 		}
@@ -420,6 +494,7 @@ func TestCloudTransport(t *testing.T) {
 		{name: "priority promotion over scoped connection", priorityEdit: true},
 		{name: "read only scope", fail: "file_issue"},
 		{name: "missing priority edit authority", fail: "edit_item"},
+		{name: "missing transition authority", fail: "move_item"},
 		{name: "missing item detail authority", fail: "work_item"},
 		{name: "revoked key", status: http.StatusUnauthorized},
 		{name: "revoked key on established session", revokedAfterInitialize: true},
@@ -498,7 +573,7 @@ func TestCloudTransport(t *testing.T) {
 					t.Fatalf("paginated native reads lost destination or occurrence evidence: %+v", destination.issues)
 				}
 			}
-			if tt.priorityEdit && (len(f.writes) != 2 || f.items[0].Priority == nil || *f.items[0].Priority != 1 || f.items[0].Revision != 8) {
+			if tt.priorityEdit && (len(f.writes) != 3 || f.items[0].State != "Todo" || f.items[0].Priority == nil || *f.items[0].Priority != 1 || f.items[0].Revision != 9) {
 				t.Fatal("scoped priority edit lost its native owner or occurrence")
 			}
 			if transport.session != "" {

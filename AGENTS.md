@@ -160,31 +160,34 @@ fall back to host scratch space in a worker.
 
 ## Deployment and release failure reporting
 
-For `digitaldrywood/detent` and its selected native Cloud project, reproducible
-source or test failures that prevent deployment or the scheduled validated
-release require at least High priority. Under the human-approved scheduled
-reporting policy, newly reported proven source/test failures with reliable,
-pinned evidence enter Todo through the existing selected native filing owner.
-Validate that the selected workflow has dispatchable, nonterminal Todo and
-nondispatchable, nonterminal Backlog, neither operator-only. Unknown instance
-diagnostics enter Backlog. Match open fingerprints and imported
-occurrences first; raise unset, Normal or Low priority through the existing
-expected-revision priority owner, preserving High and Urgent. Preserve pinned
-commit, run, attempt, job, source, fingerprint and occurrence evidence, stable
-replay identity, and imported history. Do not create duplicates to change priority.
+For `digitaldrywood/detent` and its selected native Cloud project, every
+failing scheduled full-suite job creates or updates one issue at least High
+priority through the existing selected native reporting owner. Source, test,
+unclassified and infrastructure failures all enter Todo; infrastructure and
+unclassified reports carry the infrastructure label and remain attributed to
+the CI instance. Reproducible source or test failures that prevent deployment
+also require at least High priority. Validate that the selected workflow has
+dispatchable, nonterminal Todo and nondispatchable, nonterminal Backlog, neither
+operator-only. Other unknown instance diagnostics remain Backlog intake.
 
-Reused items retain their lanes, human questions, migration/operator holds and
-terminal history; a new occurrence never authorizes moving or reopening them.
-Priority updates alone do not authorize admission. Unknown setup, startup,
-download, network, backend, protocol and authentication failures
-remain instance-owned intake; they authorize no source repair and consume no
-issue failure allowance. A historical pinned failure does not prove that the
-current head fails or staging is down; repair workers verify the failure on
-their current base. Staging deploys independently on develop
-pushes, while validated release tags require all configured scheduled jobs to
-succeed. Repair guidance must not demand a local-gate status, blocking CI or CI
-waiting in ordinary issue merging. Other projects retain their chosen reporting
-priority and validation policy.
+Match open job fingerprints and imported occurrences first. Comment with the
+new run URL, failing test names or lint/vet findings, and pinned develop SHA
+instead of filing duplicates. Raise unset, Normal or Low priority through the
+existing expected-revision edit owner, preserving High and Urgent. Promote
+matching scheduled Backlog intake to Todo through the existing native workflow
+owner. Preserve human questions, migration/operator holds, active and review
+lanes, terminal history, origin stamps, imported provenance and stable replay
+identity. A new occurrence does not reopen terminal work or clear holds.
+
+Scheduled infrastructure reporting does not authorize source repair without a
+reproducible test or source diagnostic and does not consume issue failure
+allowance. A historical pinned failure does not prove that the current head
+fails or staging is down; repair workers verify the failure on their current
+base. Staging deploys independently on develop pushes, while validated release
+tags require every configured scheduled job to succeed; no release is tagged
+for a red suite. Repair guidance must not demand a local-gate status, blocking
+CI or CI waiting in ordinary issue merging. Other projects retain their chosen
+reporting priority and validation policy.
 
 The operator retired the private Mac hourly producer for Detent on 2026-10-02;
 it continues to serve other repositories. Do not restore its Detent selection

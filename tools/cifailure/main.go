@@ -122,6 +122,7 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 		return err
 	}
 
+	var failures []error
 	runURL := fmt.Sprintf("%s/%s/actions/runs/%s/attempts/%s", getenv("GITHUB_SERVER_URL"), repository, getenv("GITHUB_RUN_ID"), getenv("GITHUB_RUN_ATTEMPT"))
 	for _, j := range jobs {
 		if (j.Name == "Finalize scheduled validation" && j.Conclusion != "failure") || j.Conclusion == "success" {
@@ -129,6 +130,7 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 		}
 		log, logErr := gh(ctx, "", "api", fmt.Sprintf("repos/%s/actions/jobs/%d/logs", repository, j.ID), "--allow-escape-sequences")
 		problems := parseProblems(string(log), getenv("GITHUB_WORKSPACE"))
+		sourceFailure := len(problems) > 0
 		labels := []string{"detent:todo", "hotfix", "ci-scheduled-failure"}
 		if len(problems) == 0 {
 			labels = []string{"detent:backlog", "ci-scheduled-failure"}
@@ -138,8 +140,19 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			}
 			problems = []problem{{Key: "scheduled-ci:" + repository + ":" + j.Name, Summary: "scheduled " + j.Name + " failure", Evidence: evidence}}
 		}
+		if _, native := destination.(*cloudDestination); native {
+			var findings, details []string
+			for _, p := range problems {
+				findings = append(findings, "Problem: `"+p.Key+"`")
+				details = append(details, p.Evidence)
+			}
+			problems = []problem{{Key: "scheduled-ci:" + repository + ":" + j.Name, Summary: "scheduled " + j.Name + " failure", Evidence: strings.Join(findings, "\n") + "\n\n" + diagnosticExcerpt(strings.Join(details, "\n\n"))}}
+			labels = []string{"ci-scheduled-failure"}
+			if !sourceFailure {
+				labels = append(labels, "ci-infrastructure-failure")
+			}
+		}
 		for _, p := range problems {
-			sourceFailure := !strings.HasPrefix(p.Key, "scheduled-ci:")
 			fingerprint := issueorigin.Fingerprint(p.Key)
 			if strings.HasPrefix(p.Key, "scheduled-ci:") {
 				fingerprint = legacyJobFingerprint(p.Key)
@@ -147,12 +160,10 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			disposition := "Let the next scheduled full validation confirm the repair; a green run closes scheduled repair issues."
 			if _, native := destination.(*cloudDestination); native {
 				disposition = "Let the next scheduled full validation confirm the repair. Scheduled evidence does not authorize review approval or native completion."
-				if sourceFailure {
-					disposition += " Under the human-approved Detent scheduled reporting policy, newly reported proven source or test blockers enter Todo at High priority. Reused work retains its lane, human questions and operator holds, with at least High priority and Urgent preserved. Verify this reported failure on the worker's current base using focused diagnostics; do not require a local-gate status or wait for CI before ordinary issue merging. This pinned failure does not prove a current staging outage or that the current head still fails."
-				}
+				disposition += " Under the human-approved Detent scheduled reporting policy, every failing job enters Todo at High priority, including unclassified and infrastructure failures. Reuse open work for the same job, promote matching Backlog intake through the native workflow owner, and preserve Urgent, human questions and operator holds. Verify this reported failure on the worker's current base using focused diagnostics; do not require a local-gate status or wait for CI before ordinary issue merging. This pinned failure does not prove a current staging outage or that the current head still fails."
 			}
 			body := fmt.Sprintf("Scheduled validation job **%s** (%s) failed on development commit %s.\n\nRun: %s\nJob: %s\nProblem: `%s`\n\n```text\n%s\n```\n\nDiagnose this problem using the linked logs. Runner setup, backend startup, network/download, and protocol failures belong to the CI instance. %s\n\n```detent-agent\nschema: 1\neffort: high\n```", j.Name, j.Conclusion, getenv("CI_DEVELOP_SHA"), runURL, j.URL, p.Key, p.Evidence, disposition)
-			if strings.HasPrefix(p.Key, "scheduled-ci:") {
+			if !sourceFailure {
 				body += "\n\nThis issue is an intake for the CI instance owner. No source repair is authorized until a reproducible test or source diagnostic is identified."
 			}
 			if logErr != nil {
@@ -164,14 +175,18 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			}
 			body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: runURL, Fingerprint: fingerprint})
 			if err := destination.file(ctx, fingerprint, p.Summary, body, occurrenceKey(getenv, j, fingerprint), labels, sourceFailure); err != nil {
-				return fmt.Errorf("report %s (%s): %w", j.Name, p.Key, err)
+				err = fmt.Errorf("report %s (%s): %w", j.Name, p.Key, err)
+				if _, native := destination.(*cloudDestination); !native {
+					return err
+				}
+				failures = append(failures, err)
 			}
 		}
 	}
 	if allGreen(jobs) {
 		return destination.success(ctx, getenv)
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func fileProblem(ctx context.Context, gh ghCommand, repository string, issues map[string]int, fingerprint, summary, body string, labels []string) error {
