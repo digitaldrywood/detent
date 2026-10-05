@@ -5,11 +5,14 @@
 // and a refused move is a `409` whose body — in hosted mode — cannot tell the
 // client what the current revision is.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import * as Schema from "effect/Schema";
 
 import { startMockHub, type MockHub } from "../dev/mock-hub.ts";
 import { loadBootstrap } from "../src/runtime/bootstrap.ts";
-import { toWorkItemView, transitionsFrom } from "../src/app/work/lib/fromWire.ts";
-import { boardStats, searchItems, sortItems } from "../src/app/work/lib/model.ts";
+import { NativeIssue } from "../src/contracts/work.ts";
+import { toAttemptView, toWorkItemView, transitionsFrom } from "../src/app/work/lib/fromWire.ts";
+import { boardStats, searchItems, sortItems, type WorkItemView } from "../src/app/work/lib/model.ts";
+import type { WorkSort } from "../src/app/work/lib/viewState.ts";
 import { moveItem } from "../src/app/work/lib/useWork.ts";
 import {
   makeWorkHttp,
@@ -120,13 +123,53 @@ describe("the derived board", () => {
     expect(stats.queued).toBe(5);
   });
 
-  it("gives the board and the list the same order", async () => {
+  it.each(["default", "priority", "updated", "created", "title"] as const)("gives the board and the list the same %s order", async (sort) => {
     const project = await http.getProject(PROJECT);
     const page = await http.listWorkItems({ projectId: PROJECT, limit: 200 });
     const items = page.items.map((issue) => toWorkItemView(issue, project.name));
-    const once = sortItems(items, "priority").map((item) => item.id);
-    const twice = sortItems([...items].reverse(), "priority").map((item) => item.id);
+    const once = sortItems(items, sort).map((item) => item.id);
+    const twice = sortItems([...items].reverse(), sort).map((item) => item.id);
     expect(twice).toEqual(once);
+  });
+
+  it.each([
+    { name: "non-terminal priority before activity", terminal: false, priorities: ["Low", "High", "Urgent", "Normal", null], activity: ["2026-10-05", "2026-10-04", "2026-10-03", "2026-10-02", "2026-10-06"], expected: [3, 2, 4, 1, 5] },
+    { name: "non-terminal activity ties", terminal: false, priorities: ["High", "High", "High"], activity: ["2026-10-03", "2026-10-05", "2026-10-04"], expected: [2, 3, 1] },
+    { name: "terminal activity before priority", terminal: true, priorities: ["Urgent", "Low", null], activity: ["2026-10-03", "2026-10-04", "2026-10-05"], expected: [3, 2, 1] },
+    { name: "terminal identifier ties", terminal: true, priorities: ["Low", "Urgent", "High"], activity: ["2026-10-05", "2026-10-05", "2026-10-05"], expected: [1, 2, 3] },
+    { name: "non-terminal identifier ties", terminal: false, priorities: ["High", "High", "High"], activity: ["2026-10-05", "2026-10-05", "2026-10-05"], expected: [1, 2, 3] },
+    { name: "terminal missing and invalid activity", terminal: true, priorities: ["Urgent", "High", "Low", null], activity: [null, "invalid", "2026-10-05", undefined], expected: [3, 1, 2, 4] },
+    { name: "non-terminal missing and invalid activity", terminal: false, priorities: [null, null, null, null], activity: [null, "invalid", "2026-10-05", undefined], expected: [3, 1, 2, 4] },
+    { name: "offset timestamps compared as instants", terminal: true, priorities: ["High", "High", "High"], activity: ["2026-10-05T12:00:00+02:00", "2026-10-05T11:00:00Z", "2026-10-05T10:00:00Z"], expected: [2, 1, 3] },
+  ])("defaults to $name", async ({ terminal, priorities, activity, expected }) => {
+    const page = await http.listWorkItems({ projectId: PROJECT, limit: 1 });
+    const items = priorities.map((priority, index) => {
+      const issue = Schema.decodeUnknownSync(NativeIssue)({ ...page.items[0]!, last_activity_at: activity[index] });
+      const item = toWorkItemView(issue, "alpha");
+      expect(item.lastActivityAt).toBe(activity[index] ?? null);
+      return { ...item, identifier: `alpha#${index + 1}`, priority, terminal };
+    });
+    for (const input of [items, [...items].reverse()]) {
+      expect(sortItems(input, "default").map((item) => item.identifier)).toEqual(expected.map((number) => `alpha#${number}`));
+    }
+  });
+
+  it.each([
+    { sort: "default", expected: [2, 1, 3] },
+    { sort: "priority", expected: [3, 1, 2] },
+    { sort: "updated", expected: [1, 2, 3] },
+    { sort: "created", expected: [3, 2, 1] },
+    { sort: "title", expected: [2, 1, 3] },
+  ] satisfies { sort: WorkSort; expected: number[] }[])("keeps $sort ordering independent of other timestamps", async ({ sort, expected }) => {
+    const page = await http.listWorkItems({ projectId: PROJECT, state: "In Progress", limit: 1 });
+    const attempts = await http.listAttempts(PROJECT, page.items[0]!.work_item_id);
+    const base = toWorkItemView(page.items[0]!, "alpha");
+    const items: WorkItemView[] = [
+      { ...base, identifier: "alpha#1", priority: "High", title: "B", terminal: false, lastActivityAt: "2026-10-03", updatedAt: "2026-10-05", createdAt: "2026-10-03", attempt: toAttemptView(attempts.items) },
+      { ...base, identifier: "alpha#2", priority: "High", title: "A", terminal: false, lastActivityAt: "2026-10-04", updatedAt: "2026-10-04", createdAt: "2026-10-04", attempt: null },
+      { ...base, identifier: "alpha#3", priority: "Urgent", title: "C", terminal: true, lastActivityAt: "2026-10-05", updatedAt: "2026-10-03", createdAt: "2026-10-05", attempt: null },
+    ];
+    expect(sortItems(items, sort).map((item) => item.identifier)).toEqual(expected.map((number) => `alpha#${number}`));
   });
 
   it("searches title, identifier and label over the loaded board", async () => {

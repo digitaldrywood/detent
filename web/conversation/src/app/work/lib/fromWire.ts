@@ -204,6 +204,7 @@ export function toWorkItemView(
     epic: labelValue(labels, "epic"),
     createdAt: issue.created_at,
     updatedAt: issue.updated_at,
+    lastActivityAt: issue.last_activity_at ?? null,
     revision: issue.revision,
     // Only a blocker that has not reached a terminal state still blocks. The
     // hub filters out blockers the reader cannot see, so this list is what

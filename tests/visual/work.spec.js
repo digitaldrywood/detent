@@ -78,6 +78,46 @@ async function scan(page, name) {
 }
 
 test.describe("the work board", () => {
+  test("defaults board lanes and list rows to priority then activity for open work and activity for Done", async ({ page }) => {
+    const fixture = require("../../web/conversation/src/contracts/fixtures/work-item.json");
+    const entries = [
+      { number: 1, state: "Todo", priority: 1, last_activity_at: "2026-10-03T12:00:00Z" },
+      { number: 2, state: "Todo", priority: 3, last_activity_at: "2026-10-05T12:00:00Z" },
+      { number: 3, state: "Todo", priority: 1, last_activity_at: "2026-10-04T12:00:00Z" },
+      { number: 4, state: "Done", priority: 0, last_activity_at: "2026-10-03T12:00:00Z" },
+      { number: 5, state: "Done", priority: 3, last_activity_at: "2026-10-05T12:00:00Z" },
+      { number: 6, state: "Done", priority: 1, last_activity_at: "2026-10-04T12:00:00Z" },
+    ];
+    await page.route("**/projects/*/work-items?**", async (route) => {
+      await route.fulfill({ json: {
+        items: entries.map((entry) => ({ ...fixture, ...entry,
+          project_id: hub.fixture.project_id,
+          work_item_id: `wi_sort_${entry.number}`, title: `Sort fixture ${entry.number}`,
+          terminal: entry.state !== "Done", blockers: [],
+          updated_at: "2026-10-02T12:00:00Z",
+        })),
+      } });
+    });
+    await page.route("**/work-items/wi_sort_*/attempts?**", (route) => route.fulfill({ json: { items: [] } }));
+    await page.route("**/work-items/wi_sort_*/changes", (route) => route.fulfill({ json: { items: [] } }));
+    await openWork(page, `/work/p/${hub.fixture.project_id}`);
+    const todo = page.locator('[data-testid="board-lane"][data-lane="Todo"]');
+    const done = page.locator('[data-testid="board-lane"][data-lane="Done"]');
+    await page.getByTestId("lane-collapse-Done").click();
+    await expect(todo.getByTestId("issue-card-open")).toHaveText(["Sort fixture 3", "Sort fixture 1", "Sort fixture 2"]);
+    await expect(done.getByTestId("issue-card-open")).toHaveText(["Sort fixture 5", "Sort fixture 6", "Sort fixture 4"]);
+    await page.getByTestId("view-list").click();
+    await expect(page.getByTestId("work-list-open")).toHaveText([
+      "Sort fixture 3", "Sort fixture 1", "Sort fixture 2", "Sort fixture 5", "Sort fixture 6", "Sort fixture 4",
+    ]);
+    await page.getByTestId("sort-trigger").click();
+    await page.getByTestId("sort-priority").click();
+    await expect(page).toHaveURL(/sort=priority/);
+    await expect(page.getByTestId("work-list-open")).toHaveText([
+      "Sort fixture 4", "Sort fixture 1", "Sort fixture 3", "Sort fixture 6", "Sort fixture 2", "Sort fixture 5",
+    ]);
+  });
+
   test("renders the project's lanes and its issues", async ({ page }) => {
     const errors = watchConsole(page);
     await openWork(page, `/work/p/${hub.fixture.project_id}`);

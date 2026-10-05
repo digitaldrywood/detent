@@ -158,7 +158,7 @@ export function WorkToolbar({
         </MenuTrigger>
         <MenuPopup align="start" className="w-52">
           <MenuRadioGroup
-            value={view.sort}
+            value={view.sort === "default" ? "priority" : view.sort}
             onValueChange={(value) => onChange({ ...view, sort: value as WorkSort })}
           >
             {WORK_SORTS.map((sort) => (

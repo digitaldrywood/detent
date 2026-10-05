@@ -15,9 +15,10 @@ export const WORK_VIEWS = ["board", "list"] as const;
 export type WorkViewMode = (typeof WORK_VIEWS)[number];
 
 export const WORK_SORTS = ["priority", "updated", "created", "title"] as const;
-export type WorkSort = (typeof WORK_SORTS)[number];
+export type WorkSort = (typeof WORK_SORTS)[number] | "default";
 
 export const SORT_LABELS: Readonly<Record<WorkSort, string>> = {
+  default: "Priority",
   priority: "Priority",
   updated: "Recently updated",
   created: "Newest",
@@ -50,7 +51,7 @@ export const DEFAULT_VIEW_STATE: WorkViewState = {
   label: [],
   assignee: [],
   priority: [],
-  sort: "priority",
+  sort: "default",
   lanes: null,
 };
 
@@ -93,7 +94,7 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
     label: readList(params.get("label")),
     assignee: readList(params.get("assignee")),
     priority: readList(params.get("priority")),
-    sort: WORK_SORTS.includes(sort as WorkSort) ? (sort as WorkSort) : DEFAULT_VIEW_STATE.sort,
+    sort: WORK_SORTS.find((candidate) => candidate === sort) ?? DEFAULT_VIEW_STATE.sort,
     // `lanes=` with an empty value is "no lanes", which is a legitimate (if
     // odd) thing to link to; a missing `lanes` is "every lane".
     lanes: lanes === null ? null : readList(lanes),

@@ -51,12 +51,19 @@ describe("the board's view state", () => {
   it("falls back rather than failing on a value it does not know", () => {
     const state = parseViewState("view=gallery&sort=vibes");
     expect(state.view).toBe("board");
-    expect(state.sort).toBe("priority");
+    expect(state.sort).toBe("default");
   });
 
   it("omits defaults when it serializes", () => {
     expect(serializeViewState(DEFAULT_VIEW_STATE)).toBe("");
     expect(serializeViewState({ ...DEFAULT_VIEW_STATE, view: "list" })).toBe("view=list");
+  });
+
+  it.each(["priority", "updated", "created", "title"])("preserves an explicit %s sort", (sort) => {
+    const state = parseViewState(`sort=${sort}`);
+    expect(state.sort).toBe(sort);
+    expect(serializeViewState(state)).toBe(`sort=${sort}`);
+    expect(parseViewState(serializeViewState(state))).toEqual(state);
   });
 
   it("round-trips", () => {
