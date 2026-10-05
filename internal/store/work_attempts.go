@@ -776,3 +776,17 @@ func boolInt64(value bool) int64 {
 	}
 	return 0
 }
+
+func (s *sqliteStore) ListLocalAdmittedIssueIDs(ctx context.Context, projectID string) ([]string, error) {
+	rows, err := s.queries.ListLocalAdmittedIssueIDs(ctx, strings.TrimSpace(projectID))
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.Valid && row.String != "" {
+			ids = append(ids, row.String)
+		}
+	}
+	return ids, nil
+}

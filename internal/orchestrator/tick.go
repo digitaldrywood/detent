@@ -84,6 +84,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		}
 	}()
 
+	o.recoverLocalAdmissions(ctx, state)
 	o.expireOrphanedWorkAttempts(ctx, state, now)
 	o.syncGitHubRESTCapacityOutage(state, now)
 	if o.scheduling == nil && o.githubLookupBackoffGate(ctx, state, now) {
@@ -701,13 +702,28 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			if o.now != nil {
 				now = o.now()
 			}
-			return knownDispatchWait(issue, state, dueRetriesByIssue(state, now), o.cfg.TerminalStates)
+			return !o.localIntakeAllows(state, issue) || knownDispatchWait(issue, state, dueRetriesByIssue(state, now), o.cfg.TerminalStates)
 		}
 		var admitted []connector.Issue
 		request.CandidateAdmitted = func(issue connector.Issue) {
 			admitted = append(admitted, issue)
+			if state.localAdmitted == nil {
+				state.localAdmitted = map[string]struct{}{}
+			}
+			state.localAdmitted[issue.ID] = struct{}{}
+		}
+		request.CandidateAdmission = func(issue connector.Issue) (func(), bool) {
+			o.dispatchStartMu.Lock()
+			if !o.localIntakeAllows(state, issue) {
+				o.dispatchStartMu.Unlock()
+				return nil, false
+			}
+			return o.dispatchStartMu.Unlock, true
 		}
 		request.CandidateReady = func(ctx context.Context, issue connector.Issue) bool {
+			if !o.localIntakeAllows(state, issue) {
+				return false
+			}
 			now := time.Now()
 			if o.now != nil {
 				now = o.now()
@@ -1306,7 +1322,7 @@ func candidatesMissingFromBoard(candidates, board []connector.Issue) int {
 }
 
 func (o *Orchestrator) earlyDependencyUnblock(ctx context.Context, state *State, issues []connector.Issue, now time.Time) (map[string]struct{}, string) {
-	if !o.cfg.DependencyAutoUnblock.Enabled || state.Draining || o.dispatchQuiesced() {
+	if !o.cfg.DependencyAutoUnblock.Enabled || state.Draining || o.dispatchQuiesced() || !o.LocalIntakeEnabled() {
 		return nil, ""
 	}
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)

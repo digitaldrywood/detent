@@ -108,6 +108,7 @@ func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, requ
 
 	ready := false
 	if request.WriteTracker {
+
 		owner := o
 		ownerState := state
 		if request.Tracker != nil {
@@ -140,7 +141,19 @@ func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, requ
 		if reason == "operator_move" && metadata.Provenance.Origin == "" {
 			metadata.Provenance = provenance.Prepare(provenance.Attribution{Origin: provenance.OriginHuman})
 		}
-		if err := owner.updateIssueStateByIDStrictWithMetadata(ctx, ownerState, issue.ID, issue, request.ToState, at, reason, metadata); err != nil {
+		scheduledAdmission := reason == "backlog_admission" || reason == "intake" || reason == "routine" || reason == "retro"
+		if scheduledAdmission {
+			o.dispatchStartMu.Lock()
+			if !o.LocalIntakeEnabled() {
+				o.dispatchStartMu.Unlock()
+				return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: errors.New("local intake disabled")}}
+			}
+		}
+		err := owner.updateIssueStateByIDStrictWithMetadata(ctx, ownerState, issue.ID, issue, request.ToState, at, reason, metadata)
+		if scheduledAdmission {
+			o.dispatchStartMu.Unlock()
+		}
+		if err != nil {
 			return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: err}}
 		}
 		if request.Tracker != nil {

@@ -107,6 +107,7 @@ type IssueStore interface {
 }
 
 type Settings struct {
+	IntakeEnabled       func() bool
 	LaneWriter          func(context.Context, string, string) error
 	DependencyReadiness string
 	dependencies        map[string]*runner.AdmissionDependencies
@@ -302,7 +303,7 @@ func (m *Manager) run(ctx context.Context, scheduledFor time.Time, scheduled boo
 	settings := cloneSettings(m.settings)
 	baseline := m.baseline
 	m.mu.RUnlock()
-	if !settings.Config.Enabled {
+	if !settings.Config.Enabled || settings.IntakeEnabled != nil && !settings.IntakeEnabled() {
 		return newResult(), nil
 	}
 	if scheduled {
@@ -1690,6 +1691,9 @@ func (m *Manager) admitProposal(
 	proposal admissionmodel.Proposal,
 	decision admissionmodel.Decision,
 ) error {
+	if settings.IntakeEnabled != nil && !settings.IntakeEnabled() {
+		return nil
+	}
 	issues, err := settings.Issues.FetchIssueStatesByIDs(ctx, []string{proposal.IssueID})
 	if err != nil {
 		return fmt.Errorf("revalidate admitted backlog issue %s: %w", proposal.IssueIdentifier, err)
@@ -1718,6 +1722,9 @@ func (m *Manager) admitProposal(
 		return nil
 	}
 	issue = current
+	if settings.IntakeEnabled != nil && !settings.IntakeEnabled() {
+		return nil
+	}
 	if settings.Config.RequireEffort {
 		if err := m.writeRecommendedEffort(ctx, settings, issue, proposal, &decision); err != nil {
 			return err
@@ -1952,7 +1959,7 @@ func (m *Manager) nextScheduledAttempt(ctx context.Context) (scheduledAttempt, b
 	settings := cloneSettings(m.settings)
 	baseline := m.baseline
 	m.mu.RUnlock()
-	if !settings.Config.Enabled {
+	if !settings.Config.Enabled || settings.IntakeEnabled != nil && !settings.IntakeEnabled() {
 		return scheduledAttempt{}, false, nil
 	}
 	latest, ok, err := m.store.LatestAdmissionRun(ctx, settings.ProjectID)

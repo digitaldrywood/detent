@@ -28,6 +28,9 @@ type ProjectConfigurationCommand struct {
 }
 
 type ProjectConfiguration struct {
+	LocalIntakeEnabled      bool               `json:"local_intake_enabled"`
+	LocalIntakeRemaining    []string           `json:"local_intake_remaining"`
+	LocalIntakeBlocked      []string           `json:"local_intake_blocked"`
 	RunnerID                string             `json:"runner_id,omitempty"`
 	RunnerRevision          int64              `json:"runner_revision,omitempty"`
 	RequestID               string             `json:"request_id,omitempty"`

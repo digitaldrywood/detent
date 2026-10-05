@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -70,7 +71,10 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 				}
 				claim.SessionID = session
 			}
-			lease, err := source.client.Claim(ctx, claim)
+			lease, err, admitted := claimPreviewCandidate(ctx, request, source, claim, candidate)
+			if !admitted {
+				continue
+			}
 			if err == nil {
 				if providerEnabled && lease.ProviderReservation == nil {
 					return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub omitted the required provider reservation"), source.client.Release(context.WithoutCancel(ctx), lease, "failed"))
@@ -94,7 +98,10 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 		}
 		if providerEnabled && len(page.Items) == 0 && page.Next == 0 && len(leases) == 0 {
 			claim.ProviderCandidates = nil
-			lease, err := source.client.Claim(ctx, claim)
+			lease, err, admitted := claimPreviewCandidate(ctx, request, source, claim, connector.Issue{})
+			if !admitted {
+				return leases, ErrNoClaimableWork
+			}
 			if err == nil {
 				return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub claimed work absent from its provider preview"), source.client.Release(context.WithoutCancel(ctx), lease, "failed"))
 			}
@@ -148,4 +155,16 @@ func (e *nativeExecution) validateProviderStart(identity tracker.NativeExecution
 
 func (e *nativeExecution) ProviderCapacity() *providercapacity.Reservation {
 	return e.claim.lease.ProviderReservation
+}
+
+func claimPreviewCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim, candidate connector.Issue) (tracker.NativeLease, error, bool) {
+	if request.CandidateAdmission != nil {
+		release, allowed := request.CandidateAdmission(candidate)
+		if !allowed {
+			return tracker.NativeLease{}, nil, false
+		}
+		defer release()
+	}
+	lease, err := source.client.Claim(ctx, claim)
+	return lease, err, true
 }

@@ -172,6 +172,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		o.cancelPendingGlobalDispatches()
 		return
 	}
+	issues = o.localIntakeIssues(state, issues)
 	rankingIssues := issues
 	// Refresh retains closed snapshots for lane reconciliation, not dispatch.
 	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
@@ -272,6 +273,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 }
 
 func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
+	issues = o.localIntakeIssues(state, issues)
 	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
@@ -444,6 +446,7 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 	if state.Draining || o.dispatchQuiesced() {
 		return
 	}
+	issues = o.localIntakeIssues(state, issues)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.enforceLifetimeLimits(ctx, state, issues, now)
 	blockerCache := make(map[string]dependencyBlocker)
@@ -612,6 +615,9 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	}
 	if reason := humanDependencyWaitReason(issue.BlockedBy); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: reason}
+	}
+	if !o.localIntakeAllows(state, issue) {
+		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "local intake disabled"}
 	}
 	if !o.beginDispatchStart() {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
@@ -791,8 +797,21 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
 	}
 
+	o.dispatchStartMu.Lock()
+	if !o.localIntakeAllows(state, issue) {
+		o.dispatchStartMu.Unlock()
+		if recovery {
+			releaseDispatchRecoveryAdmission(state, issue.ID)
+		}
+		if canary {
+			releaseProjectFailureBreakerCanary(state, issue.ID)
+		}
+		o.releaseGlobalDispatchSlot(globalSlot)
+		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "local intake disabled"}
+	}
 	claimedIssue, claim, ok := o.claimIssue(runCtx, issue, now)
 	if !ok {
+		o.dispatchStartMu.Unlock()
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)
 		}
@@ -823,6 +842,13 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		dispatchLoopStart.PRMergeableState = issue.PullRequest.MergeableState
 	}
 	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, dispatchLoopStart)
+	if ok {
+		if state.localAdmitted == nil {
+			state.localAdmitted = map[string]struct{}{}
+		}
+		state.localAdmitted[issue.ID] = struct{}{}
+	}
+	o.dispatchStartMu.Unlock()
 	if !ok {
 		if recovery {
 			releaseDispatchRecoveryAdmission(state, issue.ID)

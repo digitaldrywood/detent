@@ -28,3 +28,10 @@ func admissionDependencyIssues(owner func() *orchestrator.Orchestrator) func(con
 		return orch.DependencyIssues()
 	}
 }
+
+func admissionIntakeEnabled(owner func() *orchestrator.Orchestrator) func() bool {
+	return func() bool {
+		orch := owner()
+		return orch != nil && orch.LocalIntakeEnabled()
+	}
+}

@@ -146,6 +146,7 @@ func (u Update) NormalizedMaxDeferralHours() int {
 }
 
 type Settings struct {
+	LocalIntakeEnabled  *bool                              `yaml:"local_intake_enabled,omitempty"`
 	Worker              workflowconfig.WorkerDefaults      `yaml:"worker,omitempty"`
 	Cache               toolcache.Policy                   `yaml:"cache,omitempty"`
 	Agents              workflowconfig.Agents              `yaml:"agents,omitempty"`
@@ -228,6 +229,8 @@ type AgentPool struct {
 }
 
 type Project struct {
+	LocalIntakeEnabled       *bool                              `yaml:"local_intake_enabled,omitempty"`
+	GlobalLocalIntakeEnabled *bool                              `yaml:"-"`
 	GlobalWorker             workflowconfig.WorkerDefaults      `yaml:"-"`
 	GlobalAgents             workflowconfig.Agents              `yaml:"-"`
 	GlobalBudget             workflowconfig.AgentBudgetDefaults `yaml:"-"`
@@ -260,6 +263,13 @@ type Project struct {
 	GlobalIO                 IO                                 `yaml:"-"`
 	GlobalCPU                CPU                                `yaml:"-"`
 	IntakeConfigured         bool                               `yaml:"-"`
+}
+
+func (p Project) LocalIntakeOn() bool {
+	if p.LocalIntakeEnabled != nil {
+		return *p.LocalIntakeEnabled
+	}
+	return p.GlobalLocalIntakeEnabled == nil || *p.GlobalLocalIntakeEnabled
 }
 
 func (p Project) EffectiveMemory() Memory {
@@ -2270,6 +2280,13 @@ func buildUpdate(value any, hubRunner bool) (Update, error) {
 
 func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	settings := defaultSettings()
+	if attrs["local_intake_enabled"] != nil {
+		value, err := optionalBool(attrs["local_intake_enabled"], "global.local_intake_enabled")
+		if err != nil {
+			return Settings{}, err
+		}
+		settings.LocalIntakeEnabled = &value
+	}
 	if attrs["worker"] != nil {
 		if err := decodeYAMLValue(attrs["worker"], &settings.Worker); err != nil {
 			return Settings{}, fmt.Errorf("global.worker: %w", err)
@@ -2528,7 +2545,16 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 			}
 		}
 
+		var localIntakeEnabled *bool
+		if project["local_intake_enabled"] != nil {
+			value, err := optionalBool(project["local_intake_enabled"], prefix+".local_intake_enabled")
+			if err != nil {
+				return nil, err
+			}
+			localIntakeEnabled = &value
+		}
 		out = append(out, Project{
+			LocalIntakeEnabled:       localIntakeEnabled,
 			ID:                       strings.TrimSpace(id),
 			Pool:                     pool,
 			Workflow:                 strings.TrimSpace(workflow),

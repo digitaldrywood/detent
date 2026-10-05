@@ -130,6 +130,7 @@ type Manager struct {
 func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
 	projects := append([]globalconfig.Project(nil), cfg.Projects...)
 	for index := range projects {
+		projects[index].GlobalLocalIntakeEnabled = cfg.Global.LocalIntakeEnabled
 		projects[index].GlobalAgents = cfg.Global.Agents
 		projects[index].GlobalBudget = cfg.Global.Budget
 		projects[index].GlobalWorker = cfg.Global.Worker
@@ -1388,6 +1389,8 @@ func sameProjectConfig(left globalconfig.Project, right globalconfig.Project) bo
 func sameProjectConfigExceptLiveFields(left globalconfig.Project, right globalconfig.Project) bool {
 	left = normalizeManagerProjectConfig(left)
 	right = normalizeManagerProjectConfig(right)
+	left.LocalIntakeEnabled = right.LocalIntakeEnabled
+	left.GlobalLocalIntakeEnabled = right.GlobalLocalIntakeEnabled
 	left.ActiveHours = right.ActiveHours
 	left.GlobalActiveHours = right.GlobalActiveHours
 	left.ActiveHoursOverrideUntil = right.ActiveHoursOverrideUntil

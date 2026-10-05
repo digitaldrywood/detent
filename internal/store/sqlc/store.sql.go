@@ -3772,6 +3772,36 @@ func (q *Queries) ListIssueWorkAttempts(ctx context.Context, arg ListIssueWorkAt
 	return items, nil
 }
 
+const listLocalAdmittedIssueIDs = `-- name: ListLocalAdmittedIssueIDs :many
+SELECT DISTINCT issue_id FROM work_attempts
+WHERE project_id = ? AND json_valid(worker_metadata_json)
+  AND COALESCE(json_extract(worker_metadata_json, '$.run_mode'), '') != ''
+ORDER BY issue_id
+`
+
+func (q *Queries) ListLocalAdmittedIssueIDs(ctx context.Context, projectID string) ([]sql.NullString, error) {
+	rows, err := q.db.QueryContext(ctx, listLocalAdmittedIssueIDs, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []sql.NullString{}
+	for rows.Next() {
+		var issue_id sql.NullString
+		if err := rows.Scan(&issue_id); err != nil {
+			return nil, err
+		}
+		items = append(items, issue_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOrphanedAgentSessions = `-- name: ListOrphanedAgentSessions :many
 SELECT
   s.id,

@@ -15,6 +15,7 @@ import (
 )
 
 type Snapshot struct {
+	LocalIntake *LocalIntake `json:"local_intake,omitempty"`
 	// Shipped is the dashboard projection of durable lane-writer deliveries.
 	// Completed and Counts remain runtime session observations.
 	Shipped []Completed `json:"-"`
@@ -482,6 +483,12 @@ type Shutdown struct {
 	Result            string     `json:"result,omitempty"`
 }
 
+type LocalIntake struct {
+	Enabled   bool     `json:"enabled"`
+	Remaining []string `json:"remaining"`
+	Blocked   []string `json:"blocked"`
+}
+
 type Project struct {
 	ID          string      `json:"id,omitempty"`
 	DisplayName string      `json:"display_name,omitempty"`
@@ -547,15 +554,16 @@ type Instance struct {
 }
 
 type ProjectSnapshot struct {
-	Project    Project         `json:"project"`
-	Tracker    SnapshotSection `json:"tracker,omitzero"`
-	Runtime    SnapshotSection `json:"runtime,omitzero"`
-	Counts     Counts          `json:"counts"`
-	Tokens     Tokens          `json:"tokens"`
-	Throughput TokenThroughput `json:"throughput"`
-	Auth       AuthHealth      `json:"auth,omitzero"`
-	Refresh    Refresh         `json:"refresh,omitzero"`
-	Dispatch   DispatchStatus  `json:"dispatch"`
+	LocalIntake *LocalIntake    `json:"local_intake,omitempty"`
+	Project     Project         `json:"project"`
+	Tracker     SnapshotSection `json:"tracker,omitzero"`
+	Runtime     SnapshotSection `json:"runtime,omitzero"`
+	Counts      Counts          `json:"counts"`
+	Tokens      Tokens          `json:"tokens"`
+	Throughput  TokenThroughput `json:"throughput"`
+	Auth        AuthHealth      `json:"auth,omitzero"`
+	Refresh     Refresh         `json:"refresh,omitzero"`
+	Dispatch    DispatchStatus  `json:"dispatch"`
 }
 
 type SnapshotSource string

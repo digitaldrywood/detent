@@ -428,6 +428,7 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 		DispatchLabels:      workflow.Config.Agent.DispatchPriorityByLabel,
 		PrioritizeBlockers:  workflow.Config.Agent.PrioritizeUnblockers,
 		DependencyIssues:    admissionDependencyIssues(laneOwner),
+		IntakeEnabled:       admissionIntakeEnabled(laneOwner),
 		DependencyReadiness: workflow.Config.Tracker.DependencyAutoUnblock.Readiness,
 		Runner:              deps.Runner,
 		Issues:              admissionIssueStore(projectConnector),
@@ -1666,6 +1667,7 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 			DispatchLabels:      workflow.Config.Agent.DispatchPriorityByLabel,
 			PrioritizeBlockers:  workflow.Config.Agent.PrioritizeUnblockers,
 			DependencyIssues:    admissionDependencyIssues(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
+			IntakeEnabled:       admissionIntakeEnabled(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
 			DependencyReadiness: workflow.Config.Tracker.DependencyAutoUnblock.Readiness,
 			Runner:              runner,
 			Issues:              admissionIssueStore(projectConnector),
@@ -1798,6 +1800,7 @@ func projectSchedulingSource(source orchestrator.SchedulingSource, workflow work
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
 	workflow = workflowConfigWithProjectIdentity(project, workflow)
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
+	cfg.LocalIntakeDisabled = !project.LocalIntakeOn()
 	cfg.HostCache = project.GlobalCache.Normalized()
 	memory := project.EffectiveMemory()
 	cfg.MemoryPressureSomeAvg60Max = memory.PressureSomeAvg60Threshold

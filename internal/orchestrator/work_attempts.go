@@ -37,6 +37,7 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	if o == nil || o.workAttempts == nil {
 		return
 	}
+	o.recoverLocalAdmissions(ctx, state)
 	projectID := strings.TrimSpace(o.cfg.Project.ID)
 	if projectID == "" {
 		return

@@ -97,6 +97,9 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 	issues []connector.Issue,
 	now time.Time,
 ) map[string]struct{} {
+	if !o.LocalIntakeEnabled() {
+		return nil
+	}
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	if !cfg.Enabled {
 		return nil
@@ -240,6 +243,9 @@ func (o *Orchestrator) autoPromoteBlockerIssues(
 	issues []connector.Issue,
 	now time.Time,
 ) map[string]struct{} {
+	if !o.LocalIntakeEnabled() {
+		return nil
+	}
 	cfg := normalizeBlockerAutoPromoteConfig(o.cfg.BlockerAutoPromote, o.cfg.ActiveStates, o.cfg.DependencyAutoUnblock)
 	if !cfg.Enabled {
 		return nil

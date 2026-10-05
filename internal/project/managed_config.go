@@ -194,6 +194,7 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	for _, p := range ManagerConfigFromGlobal(cfg).Projects {
 		if p.ID == id {
 			selected, view.Registered = p, true
+			view.LocalIntakeEnabled = p.LocalIntakeOn()
 			break
 		}
 	}
@@ -267,6 +268,9 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 			return view
 		}
 		view.Draining, view.UnsettledAttempts = state.Draining, state.UnsettledWork()
+		view.LocalIntakeEnabled = state.LocalIntake.Enabled
+		view.LocalIntakeRemaining = state.LocalIntake.Remaining
+		view.LocalIntakeBlocked = state.LocalIntake.Blocked
 	}
 	if o.attempts == nil {
 		view.Constraint = "The durable local attempt owner is unavailable."

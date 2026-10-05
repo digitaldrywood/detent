@@ -118,9 +118,11 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 		wantAcceptedTokens int64
 		forgeClass         string
 		approvalDenied     bool
+		intakeOff          bool
 		native             bool
 		mixed              bool
 	}{
+		{name: "intake off preserves deferred completion through restart", intakeOff: true, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{
 			name:           "deferral survives restart",
 			recoveredState: "In Progress",
@@ -179,6 +181,7 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			initialStore := openCompletionDeferralStoreWithoutCleanup(t, dbPath)
 			attemptID := startCompletionDeferralAttempt(t, initialStore, issue, now)
 			initialOrch := Orchestrator{cfg: cfg, connector: trackerOwner, workAttempts: initialStore, now: func() time.Time { return now }}
+			initialOrch.localIntakeDisabled.Store(tt.intakeOff)
 			initialState := newState(cfg)
 			initialState.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
 			initialState.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
@@ -215,6 +218,7 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			}
 			restartAt := now.Add(2 * time.Minute)
 			restartedOrch := Orchestrator{cfg: cfg, connector: trackerOwner, workAttempts: restartedStore, now: func() time.Time { return restartAt }}
+			restartedOrch.localIntakeDisabled.Store(tt.intakeOff)
 			restartedState := newState(cfg)
 			restartedOrch.recoverDurableWorkAttempts(t.Context(), &restartedState, restartAt)
 

@@ -92,6 +92,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 	}
 
 	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
+	issues = o.localIntakeIssues(state, issues)
 	for _, issue := range o.autoPromoteEvaluationIssues(ctx, state, issues, cfg) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {

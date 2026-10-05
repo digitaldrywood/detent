@@ -77,6 +77,7 @@ var (
 )
 
 type Config struct {
+	LocalIntakeDisabled           bool
 	Policy                        policy.Descriptor
 	PollInterval                  time.Duration
 	RefreshFailureThreshold       int
@@ -186,6 +187,7 @@ type SchedulingRequest struct {
 	CandidateReady          func(context.Context, connector.Issue) bool
 	CandidateKnownWait      func(connector.Issue) bool
 	CandidateAdmitted       func(connector.Issue)
+	CandidateAdmission      func(connector.Issue) (func(), bool)
 	CandidateLimit          int
 	AdmissionLimit          int
 	ProviderRequirement     func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
@@ -360,6 +362,7 @@ type Orchestrator struct {
 	dispatchStarts          int
 	dispatchStartsDone      chan struct{}
 	dispatchClosed          atomic.Bool
+	localIntakeDisabled     atomic.Bool
 	projectID               string
 	dispatchGateSampleMu    sync.Mutex
 	dispatchGateSamples     map[dispatchGateSampleKey]time.Time
@@ -767,6 +770,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		completedStops:          map[string]StopRunResult{},
 		tickWatchdog:            newTickWatchdog(cfg.Project.ID, cfg.PollInterval, logger),
 	}
+	orchestrator.setLocalIntakeDisabled(cfg.LocalIntakeDisabled)
 	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger, deps.Scheduling)
 	return orchestrator, nil
 }
@@ -1193,17 +1197,30 @@ func (o *Orchestrator) UpdateRuntime(ctx context.Context, update RuntimeUpdate) 
 		ctx = context.Background()
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	previousIntakeDisabled := o.localIntakeDisabled.Load()
+	if update.Config.LocalIntakeDisabled {
+		o.setLocalIntakeDisabled(true)
+	}
 	request := configUpdateRequest{
 		update: update,
 		reply:  make(chan struct{}, 1),
 	}
 	select {
 	case <-ctx.Done():
+		o.setLocalIntakeDisabled(previousIntakeDisabled)
 		return ctx.Err()
 	case <-o.done:
+		o.setLocalIntakeDisabled(previousIntakeDisabled)
 		return ErrStopped
 	case o.configUpdates <- request:
+		return o.waitRuntimeUpdate(ctx, request)
 	}
+}
+
+func (o *Orchestrator) waitRuntimeUpdate(ctx context.Context, request configUpdateRequest) error {
 
 	select {
 	case <-ctx.Done():
@@ -1258,6 +1275,7 @@ func (o *Orchestrator) publishedState() State {
 	} else {
 		state = o.latestState.Load().clone()
 	}
+	state.LocalIntake.Enabled = o.LocalIntakeEnabled()
 	if runtime := o.latestRuntimeState.Load(); runtime != nil {
 		state.Running = cloneRunning(runtime.Running)
 		state.WorkAttempts = cloneTelemetryWorkAttempts(runtime.WorkAttempts)
@@ -1313,6 +1331,7 @@ func (o *Orchestrator) publishState(ctx context.Context, state *State) {
 	if o == nil || state == nil {
 		return
 	}
+	o.snapshotLocalIntake(state)
 	cloned := state.clone()
 	o.snapshotDispatchModes(ctx, &cloned)
 	o.snapshotNativeAdmission(&cloned)
@@ -1481,6 +1500,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 		o.connector = update.Connector
 	}
 	cfg = withNativeLandingLane(cfg, o.connector)
+	o.setLocalIntakeDisabled(cfg.LocalIntakeDisabled)
 	o.cfg = cfg
 	now := time.Now
 	if o.now != nil {

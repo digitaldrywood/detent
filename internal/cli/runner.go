@@ -1778,15 +1778,16 @@ func mergeShutdown(current, next telemetry.Shutdown) telemetry.Shutdown {
 
 func projectSnapshot(snapshot telemetry.Snapshot) telemetry.ProjectSnapshot {
 	return telemetry.ProjectSnapshot{
-		Project:    snapshot.Project,
-		Tracker:    snapshot.Tracker,
-		Runtime:    snapshot.Runtime,
-		Counts:     snapshot.Counts,
-		Tokens:     snapshot.Tokens,
-		Throughput: snapshot.Throughput,
-		Auth:       snapshot.Auth,
-		Refresh:    snapshot.Refresh,
-		Dispatch:   snapshot.Dispatch,
+		LocalIntake: snapshot.LocalIntake,
+		Project:     snapshot.Project,
+		Tracker:     snapshot.Tracker,
+		Runtime:     snapshot.Runtime,
+		Counts:      snapshot.Counts,
+		Tokens:      snapshot.Tokens,
+		Throughput:  snapshot.Throughput,
+		Auth:        snapshot.Auth,
+		Refresh:     snapshot.Refresh,
+		Dispatch:    snapshot.Dispatch,
 	}
 }
 

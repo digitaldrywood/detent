@@ -1785,3 +1785,9 @@ SELECT reason, CAST(recorded_at AS TEXT) AS recorded_at FROM (
       AND sqlc.arg(issue_url) != '' AND event_by_url.issue_url = sqlc.arg(issue_url)
   ) AND phase_type = 'lane' AND status = 'entered'
 ) ORDER BY julianday(recorded_at) DESC, source_priority DESC, id DESC LIMIT 1;
+
+-- name: ListLocalAdmittedIssueIDs :many
+SELECT DISTINCT issue_id FROM work_attempts
+WHERE project_id = ? AND json_valid(worker_metadata_json)
+  AND COALESCE(json_extract(worker_metadata_json, '$.run_mode'), '') != ''
+ORDER BY issue_id;
