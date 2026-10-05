@@ -5,18 +5,25 @@ tracker:
     local_sqlite:
         path: .detent/work-items.db
         project_id: video-production
-    active_states:
-        - Todo
-        - Production
-        - Rework
-    observed_states:
-        - Backlog
-        - Review
-        - Blocked
-    terminal_states:
-        - Ready for Pickup
-        - Done
-        - Cancelled
+    lanes:
+        - name: Backlog
+          role: holding
+        - name: Review
+          role: holding
+        - name: Blocked
+          role: holding
+        - name: Todo
+          role: active
+        - name: Production
+          role: active
+        - name: Rework
+          role: active
+        - name: Ready for Pickup
+          role: terminal
+        - name: Done
+          role: terminal
+        - name: Cancelled
+          role: terminal
 workspace:
     kind: filesystem
     root: .detent/workspaces

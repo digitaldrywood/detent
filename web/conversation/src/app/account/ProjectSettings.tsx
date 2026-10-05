@@ -101,9 +101,7 @@ export function WorkflowSettings({
   const stored = integration.workflow_markdown ?? `---
 tracker:
   kind: hub_native
-  active_states: ${JSON.stringify(states.filter((state) => state.dispatchable).map((state) => state.name))}
-  observed_states: ${JSON.stringify(states.filter((state) => !state.dispatchable && !state.terminal).map((state) => state.name))}
-  terminal_states: ${JSON.stringify(states.filter((state) => state.terminal).map((state) => state.name))}
+  lanes: ${JSON.stringify(states.map((state) => ({ name: state.name, role: state.terminal ? "terminal" : state.dispatchable ? "active" : "holding" })))}
 server:
   kanban:
     allowed_transitions: ${JSON.stringify(Object.fromEntries(states.map((state) => [state.name, state.transitions])))}

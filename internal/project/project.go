@@ -314,6 +314,11 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 	if logger == nil {
 		logger = slog.Default()
 	}
+	for _, warning := range workflow.Config.ValidationWarnings() {
+		if strings.HasPrefix(warning, "tracker.") {
+			logger.Warn("workflow configuration warning", "project_id", id, "warning", warning)
+		}
+	}
 	if reclaimed, resolvedRoot, err := toolcache.RemoveLegacyContext(ctx, workflow.Config.Workspace.Root); err != nil {
 		logger.Warn("remove legacy worker caches", "workspace_root", resolvedRoot, "error", err)
 	} else if reclaimed > 0 {
@@ -1754,6 +1759,11 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 		}
 	}
 
+	for _, warning := range workflow.Config.ValidationWarnings() {
+		if strings.HasPrefix(warning, "tracker.") {
+			p.logger.Warn("workflow configuration warning", "project_id", id, "warning", warning)
+		}
+	}
 	p.logger.Info("workflow reloaded", "project_id", p.id, "path", update.Path)
 	if publishEvents {
 		p.publish(Event{

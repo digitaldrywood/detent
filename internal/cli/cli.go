@@ -1046,10 +1046,10 @@ func newEditProjectCommand(configPath *string, opts options, operation Operation
 func newConfigCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "config",
-		Short:   "Inspect global config settings",
+		Short:   "Inspect and migrate config settings",
 		Example: "detent config path",
 	}
-	cmd.AddCommand(newConfigPathCommand(configPath, opts))
+	cmd.AddCommand(newConfigPathCommand(configPath, opts), newConfigMigrateCommand())
 	return cmd
 }
 

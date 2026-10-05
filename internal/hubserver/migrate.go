@@ -24,10 +24,10 @@ func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64,
 	if err != nil {
 		return 0, fmt.Errorf("open hub migrations: %w", err)
 	}
-	return runMigrationsFromFS(ctx, db, migrations, logger)
+	return runMigrationsFromFS(ctx, db, migrations, logger, hubGoMigrations())
 }
 
-func runMigrationsFromFS(ctx context.Context, db *sql.DB, migrations fs.FS, logger *slog.Logger) (int64, error) {
+func runMigrationsFromFS(ctx context.Context, db *sql.DB, migrations fs.FS, logger *slog.Logger, goMigrations []*goose.Migration) (int64, error) {
 	store, err := goosedb.NewStore(goosedb.DialectSQLite3, hubSchemaTable)
 	if err != nil {
 		return 0, fmt.Errorf("create hub migration store: %w", err)
@@ -41,7 +41,7 @@ func runMigrationsFromFS(ctx context.Context, db *sql.DB, migrations fs.FS, logg
 		goose.WithStore(migrationStore),
 		goose.WithAllowOutofOrder(true),
 		goose.WithSlog(logger),
-		goose.WithGoMigrations(hubGoMigrations()...),
+		goose.WithGoMigrations(goMigrations...),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create hub migration provider: %w", err)
@@ -151,6 +151,7 @@ func hubGoMigrations() []*goose.Migration {
 		),
 		goose.NewGoMigration(64, &goose.GoFunc{RunTx: migrateAttachmentReferences}, nil),
 		goose.NewGoMigration(65, &goose.GoFunc{RunTx: migrateConversationOrigin}, nil),
+		goose.NewGoMigration(20261005231500, &goose.GoFunc{RunTx: migrateCloudWorkflowLanes}, nil),
 	}
 }
 
