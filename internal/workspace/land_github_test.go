@@ -26,6 +26,159 @@ type landingHTTPClient func(*http.Request) (*http.Response, error)
 
 func (f landingHTTPClient) Do(req *http.Request) (*http.Response, error) { return f(req) }
 
+func TestLocalGitLandingReplacement(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, cleanupFailure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cleanup failure=%t", cleanupFailure), func(t *testing.T) {
+			f := newLandingFixture(t)
+			repository := "https://github.com/example/repo"
+			runGit(t, f.source, "config", "url.file://"+f.remote+".insteadOf", repository+".git")
+			runGit(t, f.source, "remote", "set-url", "origin", repository+".git")
+			f.advanceMain(t, "feature.txt", "parallel conflict\n")
+			base := f.remoteMain(t)
+			pulls := make(map[int]githubLandingPull)
+			var comments []string
+			wantComments := 1
+			if cleanupFailure {
+				wantComments = 2
+			}
+			client, err := github.NewClient(github.ClientConfig{
+				TokenSource: github.StaticTokenSource(t.Name()), DisableConditionalRequests: true,
+				HTTPClient: landingHTTPClient(func(req *http.Request) (*http.Response, error) {
+					status := http.StatusOK
+					var response any
+					var body map[string]string
+					if req.Body != nil && req.URL.Path != "/graphql" {
+						if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+							t.Fatal(err)
+						}
+					}
+					switch {
+					case req.Method == http.MethodGet && req.URL.Path == "/repos/example/repo/pulls":
+						listed := []githubLandingPull{}
+						for _, pull := range pulls {
+							if req.URL.Query().Get("head") == "example:"+pull.Head.Ref || req.URL.Query().Get("state") == "open" && pull.State == "open" {
+								listed = append(listed, pull)
+							}
+						}
+						if req.URL.Query().Get("state") == "open" {
+							if req.URL.Query().Get("base") != "main" {
+								t.Fatal("cleanup did not scope its base")
+							}
+							if req.URL.Query().Get("page") == "1" {
+								listed = make([]githubLandingPull, 100)
+								for i := range listed {
+									pull := pulls[17]
+									pull.Number = i + 1
+									switch i {
+									case 0:
+										pull.Head.Repo.FullName = "fork/repo"
+									case 1:
+										pull.Base.Repo.FullName = "other/repo"
+									case 2:
+										pull.Base.Ref = "develop"
+									case 3:
+										pull.Head.Ref = strings.TrimSuffix(pull.Head.Ref, f.head) + "invalid"
+									case 4:
+										pull.State = "closed"
+									case 5:
+										pull.Merged = true
+									case 6:
+										pull.MergedAt = "2026-10-05T15:31:37Z"
+									case 17:
+									default:
+										pull.Head.Ref = "detent/landing/another-item/" + f.head
+									}
+									listed[i] = pull
+								}
+							} else if req.URL.Query().Get("page") != "2" {
+								t.Fatalf("unexpected cleanup page %s", req.URL)
+							}
+						}
+						response = listed
+					case req.Method == http.MethodPost && req.URL.Path == "/repos/example/repo/pulls":
+						pull := githubLandingPull{Number: len(pulls) + 17, State: "open", Body: body["body"]}
+						_, pull.Head.Ref, _ = strings.Cut(body["head"], ":")
+						pull.Head.SHA = strings.TrimSpace(runGit(t, f.remote, "rev-parse", "refs/heads/"+pull.Head.Ref))
+						pull.Head.Repo.FullName, pull.Base.Repo.FullName = "example/repo", "example/repo"
+						pull.Base.Ref, pull.Base.SHA = "main", base
+						pulls[pull.Number], response = pull, pull
+					case req.Method == http.MethodPut && strings.HasSuffix(req.URL.Path, "/merge"):
+						if body["sha"] == f.head {
+							status, response = http.StatusMethodNotAllowed, map[string]string{"message": "Pull Request has merge conflicts"}
+						} else {
+							pull := pulls[18]
+							pull.State, pull.Merged = "closed", true
+							pulls[18] = pull
+							runGit(t, f.remote, "update-ref", "refs/heads/main", body["sha"])
+							response = githubLandingMerge{Merged: true, SHA: body["sha"]}
+						}
+					case req.Method == http.MethodGet && req.URL.Path == "/repos/example/repo/pulls/17":
+						response = pulls[17]
+					case req.Method == http.MethodPost && req.URL.Path == "/repos/example/repo/issues/17/comments":
+						comments = append(comments, body["body"])
+						response = map[string]string{}
+					case req.Method == http.MethodPatch && req.URL.Path == "/repos/example/repo/pulls/17":
+						if body["state"] != "closed" || f.remoteMain(t) == base {
+							t.Fatalf("cleanup before verified merge: %v", body)
+						}
+						if cleanupFailure {
+							cleanupFailure = false
+							status, response = http.StatusInternalServerError, map[string]string{"message": "cleanup unavailable"}
+						} else {
+							pull := pulls[17]
+							pull.State = "closed"
+							pulls[17], response = pull, pull
+						}
+					case req.URL.Path == "/graphql":
+						pull := pulls[18]
+						response = map[string]any{"data": map[string]any{"repository": map[string]any{"nameWithOwner": "example/repo", "pullRequest": map[string]any{"number": 18, "merged": true, "headRefOid": pull.Head.SHA, "headRefName": pull.Head.Ref, "baseRefName": "main", "headRepository": map[string]string{"nameWithOwner": "example/repo"}, "mergeCommit": map[string]string{"oid": pull.Head.SHA}}}}}
+					default:
+						t.Fatalf("unexpected landing request %s %s", req.Method, req.URL)
+					}
+					encoded, err := json.Marshal(response)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(encoded)))}, nil
+				}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := LandOptions{HeadSHA: f.head, Method: "squash", Repository: repository, Message: "Native Change Request", GitHubClient: client}
+			issue := f.issue
+			issue.Landing = &opts
+			info, err := f.backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.backend.LandChangeViaGitHub(t.Context(), info, issue, opts)
+			var refusal *LandRefusal
+			if !errors.As(err, &refusal) || refusal.Kind != LandRefusalConflict || pulls[17].State != "open" {
+				t.Fatalf("initial conflict: %v, pulls=%v", err, pulls)
+			}
+			tree := strings.TrimSpace(runGit(t, f.source, "rev-parse", f.head+"^{tree}"))
+			opts.HeadSHA = strings.TrimSpace(runGit(t, f.source, "commit-tree", tree, "-p", base, "-m", "Resolved rebased head"))
+			info, err = f.backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.backend.LandChangeViaGitHub(t.Context(), info, issue, opts)
+			if wantComments == 2 {
+				if !errors.Is(err, forgeavailability.ErrUnavailable) || errors.As(err, &refusal) || !pulls[18].Merged {
+					t.Fatalf("cleanup failure changed merged outcome: %v", err)
+				}
+				_, err = f.backend.LandChangeViaGitHub(t.Context(), info, issue, opts)
+			}
+			if err != nil || !pulls[18].Merged || pulls[17].State != "closed" || len(comments) != wantComments || !strings.Contains(comments[0], repository+"/pull/18") {
+				t.Fatalf("replacement leaked conflicted pull: err=%v pulls=%v comments=%v", err, pulls, comments)
+			}
+		})
+	}
+}
+
 func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
