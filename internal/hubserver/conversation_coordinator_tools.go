@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -68,9 +69,9 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 			"List issues that need attention, grouped as blocked, waiting_for_input, running and review. Scope is this conversation's project or every project the user can read.",
 			`{"type":"object","properties":{"scope":{"type":"string","enum":["project","all_projects"],"description":"project (default) or all_projects"},"limit":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum issues per group, default 20"}},"additionalProperties":false}`),
 		coordinatorTool(coordinatorToolExplainIssue,
-			"Explain one issue: title, body, workflow state, latest attempt, recent comments and its linked conversation.",
-			`{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string","description":"Work item identifier (wi_...)"}},"additionalProperties":false}`),
-		coordinatorTool("read_issue_history", "Read current records for this conversation's attached issue, with pagination. Sections include full body, comments, lane and phase history with reasons, attempts with outcomes, dependencies and PR state.", `{"type":"object","required":["section"],"properties":{"section":{"type":"string","enum":["work_item","work_comments","work_history","work_runs","work_relationships","work_references","work_attempt_receipt"]},"cursor":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer","minimum":1,"maximum":200},"native_attempt_id":{"type":"string"}},"additionalProperties":false}`),
+			"Explain one issue, including Done and other terminal issues: title, body, workflow state, latest attempt, recent comments and its linked conversation. Resolve issue numbers within this conversation's project and return the native work_item_id for action proposals.",
+			`{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string","description":"Issue number (#19 or 19) in this conversation's project, or native work item identifier (wi_...)"}},"additionalProperties":false}`),
+		coordinatorTool("read_issue_history", "Read current issue records with pagination, including Done and terminal issues. Supply work_item_id to resolve an issue number in this conversation's project; otherwise defaults to the attached issue. Sections include full body, comments, lane and phase history with reasons, attempts with outcomes, dependencies and PR state.", `{"type":"object","required":["section"],"properties":{"work_item_id":{"type":"string","description":"Issue number (#19 or 19) or native work item identifier (wi_...) in this conversation's project; defaults to the attached issue"},"section":{"type":"string","enum":["work_item","work_comments","work_history","work_runs","work_relationships","work_references","work_attempt_receipt"]},"cursor":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer","minimum":1,"maximum":200},"native_attempt_id":{"type":"string"}},"additionalProperties":false}`),
 		coordinatorIssueSplitTool(),
 		coordinatorTool("load_split_issue_skill", "Load the split-issue skill before proposing an issue decomposition.", `{"type":"object","properties":{},"additionalProperties":false}`),
 		coordinatorTool(coordinatorToolProposeIssue,
@@ -492,9 +493,28 @@ type coordinatorIssue struct {
 	URL            string               `json:"url"`
 }
 
+func (t *coordinatorToolset) resolveIssueReference(ctx context.Context, record conversationRecord, reference string) (string, error) {
+	reference = strings.TrimSpace(reference)
+	if reference == "" || strings.HasPrefix(reference, "wi_") {
+		return reference, nil
+	}
+	s := t.coordinator.service.server
+	issue, err := s.resolveOperatorNativeItem(ctx, s.database.db, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, reference)
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, explain.ErrNotFound) {
+		return "", fmt.Errorf("no issue %s in this project", "#"+strings.TrimPrefix(reference, "#"))
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(issue.WorkItemID), nil
+}
+
 // explainIssue describes one issue in a project the owner can read.
 func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, workItemID string) (any, error) {
-	workItemID = strings.TrimSpace(workItemID)
+	workItemID, err := t.resolveIssueReference(ctx, record, workItemID)
+	if err != nil {
+		return nil, err
+	}
 	if workItemID == "" {
 		return nil, fmt.Errorf("%w: work_item_id is required", errCoordinatorToolArguments)
 	}
