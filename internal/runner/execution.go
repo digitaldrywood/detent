@@ -359,6 +359,21 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	return completionErr
 }
 
+func nativeConflictRework(recovery tracker.NativeRecovery) bool {
+	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
+		runtime := recovery.Attempts[i].Runtime
+		if runtime == nil || runtime.Landing == nil {
+			continue
+		}
+		landing := runtime.Landing
+		if recovery.Change != nil && (landing.ChangeID != recovery.Change.ChangeID || landing.VersionID != recovery.Change.VersionID || landing.HeadSHA != recovery.Change.HeadSHA) {
+			return false
+		}
+		return !landing.Landed && landing.RefusalKind == workspace.LandRefusalConflict
+	}
+	return false
+}
+
 func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.NativeAttempt {
 	if len(recovery.Attempts) == 0 {
 		return nil
