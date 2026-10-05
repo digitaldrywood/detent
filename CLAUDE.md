@@ -102,6 +102,15 @@ source of incidents.
 ## Repository invariants
 
 Follow the [targeted invariant reading guidance](AGENTS.md#repository-invariants)
-and [docs/invariants.md](docs/invariants.md). Changes to an invariant or its
-enforcement must update that document in the same PR and identify the invariant
-in the PR template.
+and [docs/invariants.md](docs/invariants.md). Only a change to an invariant's
+rule or its enforcing check edits `docs/invariants.md`. Identify affected INV
+IDs in the Change/PR description; per-change rationale, evidence and
+verification go there or in issue comments.
+
+Follow [INV-16](docs/invariants.md#inv-16--the-tracker-database-is-the-only-shared-knowledge-channel):
+agents, runs and issues share knowledge only through the selected tracker
+database (issue bodies, comments, the Workpad, Change/PR records and run history).
+Never use repository files to pass knowledge between issues or runs. Keep
+repository documentation normative; do not append evidence, notes or history,
+and do not treat any repository file as append-only. The current completion
+contract retains ownership of tracker publication.
