@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -143,7 +145,7 @@ func TestAppServerUpdateHandlerFailureIsNotStartupFailure(t *testing.T) {
 		},
 		{
 			name:     "thread resume",
-			response: responseMessage(t, threadResumeRequestID, `{"thread":{"id":"thread-1"}}`),
+			response: rolloutResponseMessage(t, threadResumeRequestID, `{"thread":{"id":"thread-1"}}`, nil),
 			run: func(server *AppServer, transport Transport, onUpdate UpdateHandler) error {
 				_, _, err := server.resumeThread(t.Context(), transport, RunTurnRequest{}, "thread-1", onUpdate)
 				return err
@@ -764,64 +766,129 @@ func TestAppServerDefaultModelReadsWorkspaceConfig(t *testing.T) {
 
 func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 	t.Parallel()
-
-	transport := newFakeAppServerTransport([]Message{
-		responseMessage(t, 1, `{"userAgent":"codex-cli/0.142.5"}`),
-		responseMessage(t, 4, `{"thread":{"id":"thread-existing","model":"gpt-5-codex-resumed"}}`),
-		responseMessage(t, 3, `{"turn":{"id":"turn-2"}}`),
-		notificationMessage(t, "turn/completed", `{"threadId":"thread-existing","turn":{"id":"turn-2","status":"completed"}}`),
-	})
-	server, err := NewAppServer(staticTransportFactory{transport: transport},
-		WithReadTimeout(time.Second),
-		WithTurnTimeout(time.Second),
-	)
-	if err != nil {
-		t.Fatalf("NewAppServer() error = %v", err)
-	}
-
-	var updates []Update
-	result, err := server.RunTurn(context.Background(), RunTurnRequest{
-		Workspace:             "/tmp/detent-workspace",
-		Prompt:                "Continue issue #18",
-		ResumeThreadID:        "thread-existing",
-		DeveloperInstructions: "Use only Detent tools.",
-		Model:                 "gpt-5-codex",
-	}, func(update Update) error {
-		updates = append(updates, update)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("RunTurn() error = %v", err)
-	}
-	if result.ThreadID != "thread-existing" || result.TurnID != "turn-2" || result.SessionID != "thread-existing-turn-2" {
-		t.Fatalf("RunTurn() result = %#v, want resumed thread and new turn", result)
-	}
-
-	sent := transport.sentMessages()
-	if len(sent) != 4 {
-		t.Fatalf("sent messages = %d, want 4", len(sent))
-	}
-	assertRequest(t, sent[0], 1, "initialize")
-	if sent[1].Method != "initialized" || len(sent[1].ID) != 0 {
-		t.Fatalf("sent[1] = %#v, want initialized notification", sent[1])
-	}
-	assertRequest(t, sent[2], 4, "thread/resume")
-	assertJSONContains(t, sent[2].Params, "threadId", "thread-existing")
-	assertJSONContains(t, sent[2].Params, "cwd", "/tmp/detent-workspace")
-	assertJSONContains(t, sent[2].Params, "developerInstructions", "Use only Detent tools.")
-	assertJSONContains(t, sent[2].Params, "model", "gpt-5-codex")
-	assertRequest(t, sent[3], 3, "turn/start")
-	assertJSONContains(t, sent[3].Params, "threadId", "thread-existing")
-	assertJSONContains(t, sent[3].Params, "input.0.text", "Continue issue #18")
-
-	if len(updates) != 3 {
-		t.Fatalf("updates = %d, want identity, turn started, and completed: %#v", len(updates), updates)
-	}
-	if updates[0].Type != UpdateRuntimeIdentity || updates[0].Model != "gpt-5-codex-resumed" {
-		t.Fatalf("updates[0] = %#v, want resumed runtime identity", updates[0])
-	}
-	if updates[1].Type != UpdateTurnStarted || updates[1].ThreadID != "thread-existing" || updates[1].TurnID != "turn-2" || updates[1].Model != "gpt-5-codex-resumed" {
-		t.Fatalf("updates[1] = %#v, want resumed turn started", updates[1])
+	readTool := DynamicTool{Type: "function", Name: "work_item", Description: "Read the issue", InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}}}`)}
+	evidenceTool := DynamicTool{Type: "function", Name: "attach_evidence", Description: "Attach evidence", InputSchema: json.RawMessage(`{"type":"object"}`)}
+	changedDescription := readTool
+	changedDescription.Description = "Read current issue details"
+	changedSchema := readTool
+	changedSchema.InputSchema = json.RawMessage(`{"type":"object","required":["id"],"properties":{"id":{"type":"string"}}}`)
+	reorderedSchema := readTool
+	reorderedSchema.InputSchema = json.RawMessage(`{ "properties": { "id": { "type": "string" } }, "type": "object" }`)
+	for _, tt := range []struct {
+		name                string
+		saved, current      []DynamicTool
+		localBinding, fresh bool
+		metadata            string
+	}{
+		{name: "unchanged no tools"},
+		{name: "unchanged tools", saved: []DynamicTool{readTool}, current: []DynamicTool{readTool}},
+		{name: "catalog and schema order", saved: []DynamicTool{readTool, evidenceTool}, current: []DynamicTool{evidenceTool, reorderedSchema}},
+		{name: "current policy on resume", saved: []DynamicTool{readTool}, current: []DynamicTool{readTool}, localBinding: true},
+		{name: "local binding and evidence tool added", saved: []DynamicTool{readTool}, current: []DynamicTool{readTool, evidenceTool}, localBinding: true, fresh: true},
+		{name: "tools removed", saved: []DynamicTool{readTool}, fresh: true},
+		{name: "description changed", saved: []DynamicTool{readTool}, current: []DynamicTool{changedDescription}, fresh: true},
+		{name: "schema changed", saved: []DynamicTool{readTool}, current: []DynamicTool{changedSchema}, fresh: true},
+		{name: "metadata missing", current: []DynamicTool{readTool}, metadata: "missing", fresh: true},
+		{name: "metadata corrupt", metadata: "corrupt", fresh: true},
+		{name: "metadata wrong thread", metadata: "wrong thread", fresh: true},
+		{name: "legacy without tools", metadata: "legacy"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resumeResponse := rolloutResponseMessage(t, threadResumeRequestID, `{"thread":{"id":"thread-existing","model":"gpt-5-codex-resumed"}}`, tt.saved)
+			var response threadRuntimeResponse
+			if err := json.Unmarshal(resumeResponse.Result, &response); err != nil {
+				t.Fatal(err)
+			}
+			switch tt.metadata {
+			case "missing":
+				if err := os.Remove(response.Thread.Path); err != nil {
+					t.Fatal(err)
+				}
+			case "corrupt":
+				if err := os.WriteFile(response.Thread.Path, []byte(`{"type":`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong thread":
+				if err := os.WriteFile(response.Thread.Path, []byte(`{"type":"session_meta","payload":{"id":"other-thread"}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "legacy":
+				if err := os.WriteFile(response.Thread.Path, []byte(`{"type":"session_meta","payload":{"id":"thread-existing"}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			threadID, model := "thread-existing", "gpt-5-codex-resumed"
+			messages := []Message{responseMessage(t, 1, `{"userAgent":"codex-cli/0.159.2"}`), resumeResponse}
+			if tt.fresh {
+				threadID, model = "thread-fresh", "gpt-5-codex-fresh"
+				messages = append(messages, responseMessage(t, threadStartRequestID, `{"thread":{"id":"thread-fresh","model":"gpt-5-codex-fresh"}}`))
+			}
+			messages = append(messages,
+				responseMessage(t, 3, `{"turn":{"id":"turn-2"}}`),
+				notificationMessage(t, "turn/completed", `{"threadId":"`+threadID+`","turn":{"id":"turn-2","status":"completed"}}`))
+			transport := newFakeAppServerTransport(messages)
+			server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
+			if err != nil {
+				t.Fatal(err)
+			}
+			workspace := t.TempDir()
+			checkpointPath := filepath.Join(workspace, "unfinished.txt")
+			if err := os.WriteFile(checkpointPath, []byte("preserved work"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			network := map[string]any{"enabled": true, "allow_local_binding": tt.localBinding, "domains": map[string]any{"example.com": "allow"}}
+			settings := map[string]any{"permissions": map[string]any{"detent-runner": map[string]any{"network": network}}}
+			var updates []Update
+			result, err := server.RunTurn(t.Context(), RunTurnRequest{
+				Workspace: workspace, Prompt: "Continue issue #18", ResumeThreadID: "thread-existing",
+				DeveloperInstructions: "Use current Detent tools.", Model: "gpt-5-codex",
+				Permissions: "detent-runner", RuntimeWorkspaceRoots: []string{workspace}, Config: settings, DynamicTools: tt.current,
+			}, func(update Update) error { updates = append(updates, update); return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.ThreadID != threadID || result.TurnID != "turn-2" || result.SessionID != threadID+"-turn-2" {
+				t.Fatalf("result = %#v, want thread %s", result, threadID)
+			}
+			sent := transport.sentMessages()
+			turnIndex := 3
+			if tt.fresh {
+				turnIndex++
+			}
+			if len(sent) != turnIndex+1 {
+				t.Fatalf("sent messages = %d, want %d", len(sent), turnIndex+1)
+			}
+			assertRequest(t, sent[2], threadResumeRequestID, "thread/resume")
+			assertJSONContains(t, sent[2].Params, "threadId", "thread-existing")
+			for _, index := range []int{2, turnIndex - 1} {
+				assertJSONContains(t, sent[index].Params, "cwd", workspace)
+				assertJSONContains(t, sent[index].Params, "config.permissions.detent-runner.network.allow_local_binding", tt.localBinding)
+				assertJSONContains(t, sent[index].Params, "config.permissions.detent-runner.network.domains", map[string]any{"example.com": "allow"})
+				assertJSONContains(t, sent[index].Params, "permissions", "detent-runner")
+				assertJSONContains(t, sent[index].Params, "developerInstructions", "Use current Detent tools.")
+			}
+			if tt.fresh {
+				assertRequest(t, sent[3], threadStartRequestID, "thread/start")
+				if len(tt.current) > 0 {
+					assertJSONContains(t, sent[3].Params, "dynamicTools.0.name", tt.current[0].Name)
+				}
+				if len(tt.current) > 1 {
+					assertJSONContains(t, sent[3].Params, "dynamicTools.1.name", "attach_evidence")
+				}
+			}
+			assertRequest(t, sent[turnIndex], turnStartRequestID, "turn/start")
+			assertJSONContains(t, sent[turnIndex].Params, "threadId", threadID)
+			assertJSONContains(t, sent[turnIndex].Params, "permissions", "detent-runner")
+			assertJSONContains(t, sent[turnIndex].Params, "runtimeWorkspaceRoots", []any{workspace})
+			assertJSONContains(t, sent[turnIndex].Params, "input.0.text", "Continue issue #18")
+			if len(updates) != 3 || updates[0].Model != model || updates[1].Type != UpdateTurnStarted || updates[1].ThreadID != threadID || updates[1].Model != model {
+				t.Fatalf("updates = %#v, want current thread identity and turn", updates)
+			}
+			if content, err := os.ReadFile(checkpointPath); err != nil || string(content) != "preserved work" {
+				t.Fatalf("checkpoint work = %q, error = %v", content, err)
+			}
+		})
 	}
 }
 
@@ -1072,7 +1139,7 @@ func TestAppServerRunTurnPreservesLatestSettingsIdentity(t *testing.T) {
 
 			messages := []Message{
 				responseMessage(t, 1, `{"userAgent":"codex-cli/0.143.0"}`),
-				responseMessage(t, threadResumeRequestID, `{"thread":{"id":"thread-1"},"model":"gpt-6-astra","modelProvider":"openai","reasoningEffort":"`+tt.threadEffort+`","serviceTier":"default"}`),
+				rolloutResponseMessage(t, threadResumeRequestID, `{"thread":{"id":"thread-1"},"model":"gpt-6-astra","modelProvider":"openai","reasoningEffort":"`+tt.threadEffort+`","serviceTier":"default"}`, nil),
 			}
 			wantModel := "gpt-6-astra"
 			if tt.settingsModel != "" {
@@ -2523,6 +2590,29 @@ func (t *deadlineRecordingAppServerTransport) Receive(ctx context.Context) (Mess
 	}
 	time.Sleep(time.Millisecond)
 	return t.fakeAppServerTransport.Receive(ctx)
+}
+
+func rolloutResponseMessage(t *testing.T, id int, result string, tools []DynamicTool) Message {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal([]byte(result), &body); err != nil {
+		t.Fatal(err)
+	}
+	thread := body["thread"].(map[string]any)
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	metadata, err := json.Marshal(map[string]any{"type": "session_meta", "payload": map[string]any{"id": thread["id"], "dynamic_tools": tools}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	thread["path"] = path
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return responseMessage(t, id, string(encoded))
 }
 
 func responseMessage(t *testing.T, id int, result string) Message {

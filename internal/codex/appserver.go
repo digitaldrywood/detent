@@ -803,6 +803,7 @@ func (s *AppServer) initialize(ctx context.Context, transport Transport, onUpdat
 type threadRuntimeResponse struct {
 	Thread struct {
 		ID            string `json:"id"`
+		Path          string `json:"path"`
 		Model         string `json:"model"`
 		ModelID       string `json:"model_id"`
 		ModelIDCamel  string `json:"modelId"`
@@ -976,6 +977,12 @@ func (s *AppServer) resumeThread(
 	}
 	if response.Thread.ID == "" {
 		return "", agentidentity.Identity{}, fmt.Errorf("%w: thread/resume result missing thread id", ErrInvalidResponse)
+	}
+	matchingTools, toolsErr := threadToolsMatch(response.Thread.Path, response.Thread.ID, req.DynamicTools)
+	if !matchingTools {
+		startupComplete = true
+		s.logger.DebugContext(ctx, "starting fresh Codex thread with current tools", "thread_id", response.Thread.ID, "error", toolsErr)
+		return s.startThread(ctx, transport, req, onUpdate)
 	}
 	identity := response.runtimeIdentity()
 	if identity.Model() == "" && req.Model != "" {

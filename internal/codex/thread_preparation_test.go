@@ -26,7 +26,7 @@ func TestAppServerThreadPreparation(t *testing.T) {
 				}
 				messages := []Message{
 					responseMessage(t, initializeRequestID, `{"userAgent":"codex-test"}`),
-					responseMessage(t, requestID, `{"thread":{"id":"thread-existing"}}`),
+					rolloutResponseMessage(t, requestID, `{"thread":{"id":"thread-existing"}}`, nil),
 				}
 				if mode != "verify" {
 					messages = append(messages,
