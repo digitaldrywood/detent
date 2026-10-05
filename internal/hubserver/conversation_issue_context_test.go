@@ -139,7 +139,18 @@ func (f *browserHostedFixture) seedIssueAsk(t *testing.T) {
 		if !strings.Contains(request.Prompt, f.workItem) || !strings.Contains(request.Prompt, "<issue_context>") {
 			return runner.AgentTurnResult{}, errors.New("issue subject missing")
 		}
-		if strings.HasSuffix(request.Prompt, "Post answer as comment") {
+		prompt, _, _ := strings.Cut(request.Prompt, "\n\n## Available skills")
+		if strings.HasSuffix(prompt, "Use the split-issue skill to break this issue into smaller issues that can each land on their own. Wire up the dependencies so independent pieces can run in parallel, and show me the whole split as one proposal so I can confirm it once.") {
+			result, err := f.proposeBrowserIssueSplit(ctx, handle, false)
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			if !result.Success {
+				return runner.AgentTurnResult{}, errors.New(result.Content)
+			}
+			return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "Review the whole split below and confirm it once."})
+		}
+		if strings.HasSuffix(prompt, "Post answer as comment") {
 			raw, err := json.Marshal(map[string]string{"work_item_id": f.workItem, "body": "The issue was blocked for the recorded reason: user_requested."})
 			if err != nil {
 				return runner.AgentTurnResult{}, err

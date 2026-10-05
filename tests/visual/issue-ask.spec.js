@@ -171,3 +171,40 @@ test("posting an answer remains approval gated", async ({ page }) => {
     )
     .toBe(before.items.length + 1);
 });
+
+test("the split suggestion proposes one batch in Ask and confirmation files its dependencies", async ({ page }, testInfo) => {
+  await openIssue(page);
+  const workItems = async () => (await read(page, "work-items")).items;
+  const before = await workItems();
+  const splitPrompt = "Use the split-issue skill to break this issue into smaller issues that can each land on their own. Wire up the dependencies so independent pieces can run in parallel, and show me the whole split as one proposal so I can confirm it once.";
+  await page.getByTestId("issue-ask-inline")
+    .getByRole("button", { name: "Split into smaller issues", exact: true }).click();
+  await expect(panel(page).getByTestId("operator-approval-card")).toHaveCount(1);
+  const approval = panel(page).getByTestId("operator-approval-card").frameLocator("iframe");
+  const proposal = approval.getByTestId("issue-split-proposal");
+  await expect(proposal).toBeVisible();
+  for (const title of ["1. Split storage", "2. Split API", "3. Split UI"]) {
+    await expect(proposal.getByRole("heading", { name: title, exact: true })).toBeVisible();
+  }
+  await expect(proposal.getByRole("group", { name: "Dependency graph" }))
+    .toContainText("2. Split API → blocked by → 1. Split storage");
+  const threadId = await panel(page).getByRole("combobox", { name: "Issue chats" }).inputValue();
+  const detail = await read(page, `conversations/${threadId}`);
+  expect(detail.conversation.subject_work_item_id).toBe(hub.fixture.work_item);
+  expect(detail.messages.find((message) => message.role === "user").text).toBe(splitPrompt);
+  expect(await workItems()).toHaveLength(before.length);
+  await panel(page).getByTestId("operator-approval-card").scrollIntoViewIfNeeded();
+  await expect(proposal).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("issue-ask-split-proposal.png") });
+  await approval.getByRole("button", { name: "Confirm action", exact: true }).click();
+  await expect.poll(async () => (await workItems()).length).toBe(before.length + 3);
+  const children = (await workItems()).filter((item) => item.title.startsWith("Split "));
+  const storage = children.find((item) => item.title === "Split storage");
+  const api = await read(page, `work-items/${children.find((item) => item.title === "Split API").work_item_id}`);
+  expect(api.dependencies).toEqual([storage.work_item_id]);
+  const ui = await read(page, `work-items/${children.find((item) => item.title === "Split UI").work_item_id}`);
+  expect(ui.dependencies).toEqual([]);
+  const parent = await read(page, `work-items/${hub.fixture.work_item}`);
+  expect(new Set(parent.dependencies)).toEqual(new Set(children.map((item) => item.work_item_id)));
+  await expect(panel(page).getByText(/into 3 issues: succeeded/)).toBeVisible();
+});

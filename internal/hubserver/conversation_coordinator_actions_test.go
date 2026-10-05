@@ -502,23 +502,15 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 		}
 		call := runner.AgentToolCall{Name: "update_project_integration", Arguments: json.RawMessage(`{"repository_enabled":true}`)}
 		if strings.Contains(prompt, "split this issue") || strings.Contains(prompt, "cyclic split") {
-			children := []chat.IssueSplitChild{{Title: "Split storage", Description: "Create the storage layer.", State: "Todo"}, {Title: "Split API", Description: "Use the storage layer.", State: "Todo"}, {Title: "Split UI", Description: "Render the approved UI.", State: "Todo"}}
-			edges := []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}, {Dependent: 0, Blocker: 1}, {Dependent: 0, Blocker: 2}, {Dependent: 0, Blocker: 3}}
-			if strings.Contains(prompt, "cyclic split") {
-				edges = append(edges, chat.IssueSplitEdge{Dependent: 1, Blocker: 2})
-			}
-			raw, err := json.Marshal(chat.IssueSplit{ParentID: f.workItem, Children: children, Edges: edges})
+			result, err := f.proposeBrowserIssueSplit(ctx, handle, strings.Contains(prompt, "cyclic split"))
 			if err != nil {
 				return runner.AgentTurnResult{}, err
 			}
-			loaded, err := handle(ctx, runner.AgentToolCall{Name: "load_split_issue_skill", Arguments: json.RawMessage(`{}`)})
-			if err != nil {
-				return runner.AgentTurnResult{}, err
+			text := "Review the exact change below and confirm it to continue."
+			if !result.Success {
+				text = "The change was refused: " + result.Content
 			}
-			if !loaded.Success {
-				return runner.AgentTurnResult{}, fmt.Errorf("load split skill: %s", loaded.Content)
-			}
-			call = runner.AgentToolCall{Name: string(chat.ActionIssueSplit), Arguments: raw}
+			return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: text})
 		}
 		if strings.Contains(prompt, "archive the test issues") || strings.Contains(prompt, "archive the running issue") {
 			ids := make([]string, 0, len(archiveIssues))
@@ -557,6 +549,26 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 		}
 		return runner.AgentTurnResult{}, nil
 	})
+}
+
+func (f *browserHostedFixture) proposeBrowserIssueSplit(ctx context.Context, handle runner.AgentToolHandler, cyclic bool) (runner.AgentToolResult, error) {
+	children := []chat.IssueSplitChild{{Title: "Split storage", Description: "Create the storage layer.", State: "Todo"}, {Title: "Split API", Description: "Use the storage layer.", State: "Todo"}, {Title: "Split UI", Description: "Render the approved UI.", State: "Todo"}}
+	edges := []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}, {Dependent: 0, Blocker: 1}, {Dependent: 0, Blocker: 2}, {Dependent: 0, Blocker: 3}}
+	if cyclic {
+		edges = append(edges, chat.IssueSplitEdge{Dependent: 1, Blocker: 2})
+	}
+	raw, err := json.Marshal(chat.IssueSplit{ParentID: f.workItem, Children: children, Edges: edges})
+	if err != nil {
+		return runner.AgentToolResult{}, err
+	}
+	loaded, err := handle(ctx, runner.AgentToolCall{Name: "load_split_issue_skill", Arguments: json.RawMessage(`{}`)})
+	if err != nil {
+		return runner.AgentToolResult{}, err
+	}
+	if !loaded.Success {
+		return runner.AgentToolResult{}, fmt.Errorf("load split skill: %s", loaded.Content)
+	}
+	return handle(ctx, runner.AgentToolCall{Name: string(chat.ActionIssueSplit), Arguments: raw})
 }
 
 func assertCoordinatorSplitEffect(t *testing.T, f hostedSecurityFixture, parent tracker.NativeWorkItemID, changed bool) {
