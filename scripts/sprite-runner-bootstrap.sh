@@ -165,6 +165,19 @@ verify() {
     (cd "$scratch" && printf '%s  %s\n' "$sum" "$file" | sha256sum --check --status) || die "checksum mismatch for $file"
 }
 
+as_root() {
+    if [[ $(id -u) == 0 ]]; then "$@"; else sudo "$@"; fi
+}
+
+apt_updated=false
+apt_install() {
+    if [[ $apt_updated == false ]]; then
+        as_root apt-get update
+        apt_updated=true
+    fi
+    as_root apt-get install -y --no-install-recommends --allow-downgrades "$@"
+}
+
 if [[ -n $source_root ]]; then
     source_root=$(cd -- "$source_root" && pwd)
     [[ -f $source_root/go.mod ]] || die "--from-source needs a Detent checkout"
@@ -173,8 +186,11 @@ elif [[ -z $go_mod && -f $script_root/go.mod ]]; then
     go_mod="$script_root/go.mod"
 fi
 if [[ -z $go_mod ]]; then
-    go_mod="$scratch/go.mod"
-    download "https://raw.githubusercontent.com/digitaldrywood/detent/$version/go.mod" "$go_mod"
+    go_mod="$lib_dir/go-$version.mod"
+    if [[ ! -f $go_mod ]]; then
+        download "https://raw.githubusercontent.com/digitaldrywood/detent/$version/go.mod" "$scratch/go.mod"
+        install -m 644 "$scratch/go.mod" "$go_mod"
+    fi
 fi
 [[ -f $go_mod ]] || die "go.mod not found: $go_mod"
 go_version=$(awk '$1 == "toolchain" {sub(/^go/, "", $2); print $2; exit}' "$go_mod")
@@ -199,29 +215,127 @@ fi
 export PATH="$go_dir/bin:$PATH"
 ln -sfn "$go_dir/bin/go" "$bin_dir/go"
 ln -sfn "$go_dir/bin/gofmt" "$bin_dir/gofmt"
-if ! gh --version >/dev/null 2>&1; then
-    printf 'Installing GitHub CLI\n'
-    if [[ $(id -u) == 0 ]]; then
-        apt-get update
-        apt-get install -y gh
-    else
-        sudo apt-get update
-        sudo apt-get install -y gh
-    fi
+gh_version=2.101.0
+if [[ $(gh --version 2>/dev/null | sed -n '1p' || true) != "gh version $gh_version "* ]]; then
+    printf 'Installing GitHub CLI %s\n' "$gh_version"
+    archive="gh_${gh_version}_linux_${arch}.tar.gz"
+    checksums="gh_${gh_version}_checksums.txt"
+    base="https://github.com/cli/cli/releases/download/v$gh_version"
+    download "$base/$archive" "$scratch/$archive"
+    download "$base/$checksums" "$scratch/$checksums"
+    verify "$archive" "$scratch/$checksums"
+    tar -xzf "$scratch/$archive" -C "$scratch"
+    install -m 755 "$scratch/gh_${gh_version}_linux_${arch}/bin/gh" "$bin_dir/gh"
 fi
-# The image already owns ~/.local/bin/codex; npm refuses to replace that link.
+
+case $arch in
+    amd64)
+        rust_target=x86_64-unknown-linux-musl
+        fd_checksum=2b6bfaae8c48f12050813c2ffe1884c61ea26e750d803df9c9114550a314cd14 ;;
+    arm64)
+        rust_target=aarch64-unknown-linux-musl
+        fd_checksum=996b9b1366433b211cb3bbedba91c9dbce2431842144d925428ead0adf32020b ;;
+esac
+rg_version=15.2.0
+if [[ $(rg --version 2>/dev/null | sed -n '1p' || true) != "ripgrep $rg_version"* ]]; then
+    printf 'Installing ripgrep %s\n' "$rg_version"
+    archive="ripgrep-${rg_version}-${rust_target}.tar.gz"
+    base="https://github.com/BurntSushi/ripgrep/releases/download/$rg_version"
+    download "$base/$archive" "$scratch/$archive"
+    download "$base/$archive.sha256" "$scratch/$archive.sha256"
+    verify "$archive" "$scratch/$archive.sha256"
+    tar -xzf "$scratch/$archive" -C "$scratch"
+    install -m 755 "$scratch/ripgrep-${rg_version}-${rust_target}/rg" "$bin_dir/rg"
+fi
+fd_version=10.3.0
+if [[ $(fd --version 2>/dev/null || true) != "fd $fd_version" ]]; then
+    printf 'Installing fd %s\n' "$fd_version"
+    archive="fd-v${fd_version}-${rust_target}.tar.gz"
+    download "https://github.com/sharkdp/fd/releases/download/v$fd_version/$archive" "$scratch/$archive"
+    printf '%s  %s\n' "$fd_checksum" "$archive" > "$scratch/fd-checksums.txt"
+    verify "$archive" "$scratch/fd-checksums.txt"
+    tar -xzf "$scratch/$archive" -C "$scratch"
+    install -m 755 "$scratch/fd-v${fd_version}-${rust_target}/fd" "$bin_dir/fd"
+fi
+
+psql_package_version=17.10-0ubuntu0.25.10.1
+if [[ $(dpkg-query -W -f='${Status} ${Version}' postgresql-client-17 2>/dev/null || true) != "install ok installed $psql_package_version" ]]; then
+    printf 'Installing PostgreSQL client %s\n' "$psql_package_version"
+    apt_install "postgresql-client-17=$psql_package_version"
+fi
+ln -sfn /usr/lib/postgresql/17/bin/psql "$bin_dir/psql"
+
 npm_prefix="$HOME/.local/share/detent-runner/npm"
-npm install --global --prefix "$npm_prefix" --allow-scripts=@anthropic-ai/claude-code @openai/codex @anthropic-ai/claude-code
+codex_version=0.160.0
+claude_version=2.1.289
+playwright_version=1.63.0
+npm_packages=()
+if [[ $("$npm_prefix/bin/codex" --version 2>/dev/null || true) != "codex-cli $codex_version" ]]; then
+    npm_packages+=("@openai/codex@$codex_version")
+fi
+if [[ $("$npm_prefix/bin/claude" --version 2>/dev/null || true) != "$claude_version (Claude Code)" ]]; then
+    npm_packages+=("@anthropic-ai/claude-code@$claude_version")
+fi
+if [[ $("$npm_prefix/bin/playwright" --version 2>/dev/null || true) != "Version $playwright_version" ]]; then
+    npm_packages+=("playwright@$playwright_version")
+fi
+if [[ ${#npm_packages[@]} -gt 0 ]]; then
+    npm install --global --prefix "$npm_prefix" --allow-scripts=@anthropic-ai/claude-code "${npm_packages[@]}"
+fi
 ln -sfn "$npm_prefix/bin/codex" "$bin_dir/codex"
 ln -sfn "$npm_prefix/bin/claude" "$bin_dir/claude"
+ln -sfn "$npm_prefix/bin/playwright" "$bin_dir/playwright"
 hash -r
-codex --version
-claude --version
+
+chromium_screenshot() {
+    node - "$npm_prefix/lib/node_modules/playwright" "$scratch/chromium.png" <<'NODE'
+const { chromium } = require(process.argv[2]);
+(async () => {
+    const browser = await chromium.launch({ headless: true });
+    try {
+        const page = await browser.newPage();
+        await page.setContent('<title>Sprite bootstrap</title><p>Chromium is ready.</p>');
+        await page.screenshot({ path: process.argv[3] });
+        console.log(`Chromium ${browser.version()}: headless screenshot verified`);
+    } finally {
+        await browser.close();
+    }
+})().catch(error => { console.error(error); process.exit(1); });
+NODE
+}
+if ! chromium_screenshot > "$scratch/chromium-status.txt" 2> "$scratch/chromium-error.txt"; then
+    printf 'Installing Playwright Chromium and system dependencies\n'
+    playwright install --with-deps chromium
+    chromium_screenshot > "$scratch/chromium-status.txt"
+fi
+
+docker_package_version=29.1.3-0ubuntu3~25.10.1
+docker_status='skipped: mount/network/PID namespaces or writable cgroups unavailable'
+if command -v unshare >/dev/null && as_root unshare --mount --net --pid --fork true >/dev/null 2>&1 &&
+    as_root test -w /sys/fs/cgroup; then
+    if [[ $(dpkg-query -W -f='${Status} ${Version}' docker.io 2>/dev/null || true) != "install ok installed $docker_package_version" ]]; then
+        printf 'Installing Docker %s\n' "$docker_package_version"
+        apt_install "docker.io=$docker_package_version"
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        docker_launcher="$lib_dir/start-docker"
+        {
+            printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+            if [[ $(id -u) != 0 ]]; then printf 'exec sudo '; else printf 'exec '; fi
+            printf '%q --data-root %q --group %q\n' "$(command -v dockerd)" "$HOME/.local/share/detent-runner/docker" "$(id -gn)"
+        } > "$docker_launcher"
+        chmod 700 "$docker_launcher"
+        sprite-env services create detent-docker --cmd "$docker_launcher" --dir "$HOME" --no-stream
+    fi
+    docker_status=$(docker --version)
+else
+    printf 'Docker %s\n' "$docker_status"
+fi
 
 if [[ -n $source_root ]]; then
     printf 'Building Detent from %s\n' "$source_root"
     (cd "$source_root" && GOBIN="$bin_dir" go install ./cmd/detent)
-else
+elif [[ $(detent --version 2>/dev/null || true) != "$version" ]]; then
     printf 'Installing pinned Detent %s\n' "$version"
     release=${version#v}
     archive="detent_${release}_linux_${arch}.tar.gz"
@@ -276,7 +390,19 @@ printf '  Prepare dependencies and git author identity; approve the observed rep
 printf '  Re-run this script with empty input to restart the service, then route a Todo issue.\n'
 printf '  After auth and checkout changes, take a new baseline with sprite-env checkpoints create.\n'
 printf '\nCreating the enrolled, clean checkpoint (save the returned id for restore).\n'
+chromium_status=$(cat "$scratch/chromium-status.txt")
 rm -rf -- "$scratch"
 sprite-env checkpoints create --comment "detent runner bootstrap $version"
 printf '\nInspect service: sprite-env services get detent-runner\n'
 printf 'Restore this same Sprite: sprite-env checkpoints restore CHECKPOINT_ID\n'
+printf '\nInstalled runner toolset:\n'
+go version
+gh --version | sed -n '1p'
+rg --version | sed -n '1p'
+fd --version
+psql --version
+codex --version
+claude --version
+playwright --version
+printf '%s\n' "$chromium_status"
+printf 'Docker: %s\n' "$docker_status"
