@@ -5,6 +5,7 @@ import { ClientContext } from "../../web/conversation/src/app/client.ts";
 import { RunnersSettings } from "../../web/conversation/src/app/fleet/RunnersSection.tsx";
 import type { ConversationClient } from "../../web/conversation/src/runtime/bootstrap.ts";
 import fleet from "../../web/conversation/src/contracts/fixtures/account-fleet.json";
+import spritePool from "./providers-runners-sprite-pool.json";
 
 const client = {
   account: {
@@ -12,7 +13,7 @@ const client = {
     organization: { id: "org_preview", name: "Threefold" },
     organizations: [{ current: true, public_url: "https://runners.detent.test" }],
     actor: { can_manage: true, can_manage_runners: true },
-    projects: [{ id: "proj_preview", name: "Preview project" }],
+    projects: [{ id: "proj_preview", name: "Preview project", can_write: true }],
     base_path: "",
   },
   http: { origin: "", apiBase: "/api/v2/organizations/org_preview", csrfToken: "preview" },
@@ -32,6 +33,7 @@ if (location.protocol === "file:") {
     spillover: { mode: "after", after_minutes: 5 },
   } })) };
   globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/sprite-pool")) return new Response(JSON.stringify(spritePool));
     if (String(input).endsWith("/routing") && init?.method === "PUT") {
       const id = String(input).split("/").at(-2);
       const { expected_revision, ...routing } = JSON.parse(String(init.body));
