@@ -44,8 +44,8 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 		if request.Scope != apiScopeOperator && request.Scope != apiScopeAdmin || (request.Scope == apiScopeAdmin) != (request.KeyScope == apikey.ScopeAdmin) || !hostedRoleAllows(issuer.HostedRole, request.KeyScope) {
 			return tokenResponse{}, nativeInvalid("Select a scope allowed by your current role")
 		}
-		if request.ExpiresAt == nil || !request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(90*24*time.Hour)) {
-			return tokenResponse{}, nativeInvalid("Select an expiry within 90 days")
+		if request.ExpiresAt != nil && (!request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(90*24*time.Hour))) {
+			return tokenResponse{}, nativeInvalid("Select no expiry or an expiry within 90 days")
 		}
 		var message string
 		request.ProjectAccess, message = resolveHostedProjectAccess(request.ProjectAccess, request.ProjectIDs)

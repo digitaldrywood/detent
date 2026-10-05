@@ -795,7 +795,7 @@ export const OperatorAPIKey = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   scope: Schema.Literals(["read", "write", "admin"]),
-  expires_at: Schema.String,
+  expires_at: Schema.NullOr(Schema.String),
   fingerprint: Schema.String,
   created_at: Schema.optional(Schema.String),
   revoked_at: Schema.optional(Schema.String),

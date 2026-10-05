@@ -4,7 +4,7 @@ Detent Hub owns its SQLite database and exposes fleet coordination through an au
 
 This page documents implemented behavior, including native collaboration, Changes and scoped runner enrollment through `/api/v2`. See [self-hosted operations](hub-self-hosting.md) for deployment, export/import and recovery, and [artifact deployment](artifacts-deployment.md) for independent durable storage. The [native Hub and Cloud RFC](cloud-hub-rfc.md) defines the broader architecture.
 
-Cloud members get one expiring scoped key for direct API and MCP access from
+Cloud members get one scoped key for direct API and MCP access from
 **Settings → API & MCP**, at the preserved `/settings/mcp` bookmark. See
 [API & MCP setup](api-mcp-setup.md) for organization URLs, tested requests,
 private credential handling, agent prompts and the browser approval contract.

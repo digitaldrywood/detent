@@ -171,7 +171,10 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 				return operatortool.ErrAccessDenied
 			}
 			if name == operatortool.CredentialCreate {
-				expiry, err := parseTimeValue(key.Expiry)
+				if key.Expiry == nil {
+					return operatortool.ErrAccessDenied
+				}
+				expiry, err := parseTimeValue(*key.Expiry)
 				projects := append([]string(nil), in.ProjectIDs...)
 				sort.Strings(projects)
 				projects = slices.Compact(projects)

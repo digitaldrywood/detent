@@ -46,12 +46,16 @@ async function openSettings(page) {
   ).toBeVisible();
 }
 
-for (const mode of ["all", "selected"]) {
-  test(`creates a ${mode} key, copies secret-free prompts, disposes the secret and confirms revocation`, async ({
+for (const { mode, neverExpires } of [
+  { mode: "all", neverExpires: false },
+  { mode: "selected", neverExpires: false },
+  { mode: "all", neverExpires: true },
+]) {
+  test(`creates a ${mode}${neverExpires ? " no-expiry" : ""} key, copies secret-free prompts, disposes the secret and confirms revocation`, async ({
     page,
   }) => {
     await openSettings(page);
-    const name = `${mode} browser agent`;
+    const name = `${mode}${neverExpires ? " no-expiry" : ""} browser agent`;
     await page.getByRole("button", { name: "Create key", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toHaveAccessibleName("Create API key");
@@ -60,6 +64,13 @@ for (const mode of ["all", "selected"]) {
       dialog.getByRole("radio", { name: "All projects", exact: true }),
     ).toBeChecked();
     await expect(dialog.getByLabel("Expires")).toHaveValue("30");
+    if (neverExpires) {
+      await dialog.getByLabel("Expires").selectOption({ label: "Never" });
+      await expect(dialog.getByLabel("Expires")).toHaveValue("0");
+      await page.screenshot({
+        path: path.join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, "api-key-never-dialog.png"),
+      });
+    }
     await expect(dialog.getByRole("checkbox")).toHaveCount(0);
     if (mode === "selected") {
       await dialog
@@ -84,6 +95,8 @@ for (const mode of ["all", "selected"]) {
     expect(created.status()).toBe(201);
     expect(created.request().postDataJSON()).toMatchObject({
       project_access: mode,
+      expires_days: neverExpires ? 0 : 30,
+      ...(neverExpires ? { never_expires: true } : {}),
       project_ids: mode === "all" ? [] : [hub.fixture.project_id],
     });
     await expect(dialog).toHaveAccessibleName("Key created");
@@ -120,7 +133,8 @@ for (const mode of ["all", "selected"]) {
             return (
               prompt.includes("DETENT_API_KEY") &&
               !prompt.includes(secret) &&
-              prompt.includes("Project access:")
+              prompt.includes("Project access:") &&
+              !prompt.includes("expiring API key")
             );
           }, secret),
         )
@@ -142,6 +156,12 @@ for (const mode of ["all", "selected"]) {
     await expect(keyRow).toContainText(
       mode === "all" ? "All projects" : "Browser collaboration",
     );
+    await expect(keyRow).toContainText(neverExpires ? "Never expires" : "Expires");
+    if (neverExpires) {
+      await page.screenshot({
+        path: path.join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, "api-key-never-expires.png"),
+      });
+    }
     await keyRow
       .getByRole("button", { name: `Revoke ${name}`, exact: true })
       .click();

@@ -49,7 +49,10 @@ their existing owners.
 
 Sign in to the intended Cloud organization and open **Settings → API & MCP**.
 Existing `/settings/mcp` bookmarks open this same page. Create a named key,
-choose Read, Write or Admin, and choose an expiry (7, 30 or 90 days in the UI; the creation API accepts 1–90 days).
+choose Read, Write or Admin, and choose an expiry (7, 30 or 90 days, or Never). The creation API accepts 1–90
+days
+with `expires_days`, or `never_expires: true` with `expires_days: 0`. Keys with no
+expiry are listed with `expires_at: null`.
 Project access defaults to **All projects, including future projects** within
 this organization and your current permissions. You can create this key before
 any project exists. Choose **Selected projects** and select at least one project

@@ -3,8 +3,10 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -539,8 +541,10 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 		t.Run(deployment, func(t *testing.T) {
 			for _, access := range []hostedProjectAccess{hostedProjectsSelected, hostedProjectsAll} {
 				t.Run(string(access), func(t *testing.T) {
-					for _, scenario := range []string{"read", "write", "admin", "key revoked", "key expired", "key grant removed", "user grant removed", "provider membership removed", "local membership removed", "membership replaced", "provider role downgraded", "local role downgraded", "write grant removed", "foreign organization", "foreign organization route", "foreign project", "unselected project", "issuer principal revoked", "issuer grant removed", "future project", "future project read key", "future project without user grant", "future project without issuer grant", "no projects at creation", "machine", "worker"} {
+					for _, scenario := range []string{"read", "write", "admin", "key revoked", "key expired", "key grant removed", "user grant removed", "provider membership removed", "local membership removed", "membership replaced", "provider role downgraded", "local role downgraded", "write grant removed", "foreign organization", "foreign organization route", "foreign project", "unselected project", "issuer principal revoked", "issuer grant removed", "future project", "future project read key", "future project without user grant", "future project without issuer grant", "no projects at creation", "machine", "worker", "never expires read", "never expires write", "never expires admin", "never expires key revoked", "never expires provider membership removed", "never expires local membership removed", "never expires provider role downgraded", "never expires local role downgraded", "never expires user grant removed", "never expires key grant removed"} {
 						t.Run(scenario, func(t *testing.T) {
+							neverExpires := strings.HasPrefix(scenario, "never expires ")
+							scenario := strings.TrimPrefix(scenario, "never expires ")
 							if access == hostedProjectsSelected && scenario == "no projects at creation" {
 								t.Skip("only all-project keys can be created without projects")
 							}
@@ -568,6 +572,9 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								keyScope = apikey.ScopeAdmin
 							}
 							request := tokenRequest{Name: "external-client", Scope: scope, Issuer: &credential, KeyScope: keyScope, ExpiresAt: &expiry, ProjectIDs: []string{string(f.project)}, ProjectAccess: access}
+							if neverExpires {
+								request.ExpiresAt = nil
+							}
 							if access == hostedProjectsAll {
 								request.ProjectIDs = nil
 							}
@@ -818,23 +825,31 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 				csrf                   bool
 				status                 int
 				access                 hostedProjectAccess
+				days                   int
+				neverExpires           bool
 			}{
-				{"no CSRF", "read", `,"project_ids":["` + string(f.project) + `"]`, &owner, false, http.StatusForbidden, ""},
-				{"viewer elevation", "admin", "", &viewer, true, http.StatusUnprocessableEntity, ""},
-				{"viewer write", "write", "", &viewer, true, http.StatusUnprocessableEntity, ""},
-				{"foreign project", "read", `,"project_ids":["foreign"]`, &owner, true, http.StatusNotFound, ""},
-				{"invalid project", "read", `,"project_ids":[""]`, &owner, true, http.StatusNotFound, ""},
-				{"selected without projects", "read", `,"project_access":"selected"`, &owner, true, http.StatusUnprocessableEntity, ""},
-				{"unknown access", "read", `,"project_access":"unknown"`, &owner, true, http.StatusUnprocessableEntity, ""},
-				{"ambiguous all", "read", `,"project_access":"all","project_ids":["` + string(f.project) + `"]`, &owner, true, http.StatusUnprocessableEntity, ""},
-				{"owner legacy", "read", `,"project_ids":["` + string(f.project) + `"]`, &owner, true, http.StatusCreated, hostedProjectsSelected},
-				{"viewer selected", "read", `,"project_access":"selected","project_ids":["` + string(f.project) + `"]`, &viewer, true, http.StatusCreated, hostedProjectsSelected},
-				{"default all", "read", "", &owner, true, http.StatusCreated, hostedProjectsAll},
-				{"empty default all", "read", `,"project_ids":[]`, &owner, true, http.StatusCreated, hostedProjectsAll},
-				{"viewer all", "read", `,"project_access":"all"`, &viewer, true, http.StatusCreated, hostedProjectsAll},
+				{"no CSRF", "read", `,"project_ids":["` + string(f.project) + `"]`, &owner, false, http.StatusForbidden, "", 30, false},
+				{"viewer elevation", "admin", "", &viewer, true, http.StatusUnprocessableEntity, "", 30, false},
+				{"viewer write", "write", "", &viewer, true, http.StatusUnprocessableEntity, "", 30, false},
+				{"foreign project", "read", `,"project_ids":["foreign"]`, &owner, true, http.StatusNotFound, "", 30, false},
+				{"invalid project", "read", `,"project_ids":[""]`, &owner, true, http.StatusNotFound, "", 30, false},
+				{"selected without projects", "read", `,"project_access":"selected"`, &owner, true, http.StatusUnprocessableEntity, "", 30, false},
+				{"unknown access", "read", `,"project_access":"unknown"`, &owner, true, http.StatusUnprocessableEntity, "", 30, false},
+				{"ambiguous all", "read", `,"project_access":"all","project_ids":["` + string(f.project) + `"]`, &owner, true, http.StatusUnprocessableEntity, "", 30, false},
+				{"owner legacy", "read", `,"project_ids":["` + string(f.project) + `"]`, &owner, true, http.StatusCreated, hostedProjectsSelected, 30, false},
+				{"viewer selected", "read", `,"project_access":"selected","project_ids":["` + string(f.project) + `"]`, &viewer, true, http.StatusCreated, hostedProjectsSelected, 30, false},
+				{"default all", "read", "", &owner, true, http.StatusCreated, hostedProjectsAll, 30, false},
+				{"empty default all", "read", `,"project_ids":[]`, &owner, true, http.StatusCreated, hostedProjectsAll, 30, false},
+				{"viewer all", "read", `,"project_access":"all"`, &viewer, true, http.StatusCreated, hostedProjectsAll, 30, false},
+				{"never expires", "read", "", &owner, true, http.StatusCreated, hostedProjectsAll, 0, true},
+				{"viewer never expires", "read", `,"project_access":"selected","project_ids":["` + string(f.project) + `"]`, &viewer, true, http.StatusCreated, hostedProjectsSelected, 0, true},
+				{"zero expiry", "read", "", &owner, true, http.StatusUnprocessableEntity, "", 0, false},
+				{"conflicting expiry", "read", "", &owner, true, http.StatusUnprocessableEntity, "", 30, true},
+				{"negative expiry", "read", "", &owner, true, http.StatusUnprocessableEntity, "", -1, false},
+				{"excessive expiry", "read", "", &owner, true, http.StatusUnprocessableEntity, "", 91, false},
 			} {
 				t.Run(test.name, func(t *testing.T) {
-					body := `{"name":"` + test.name + `","scope":"` + test.scope + `","expires_days":30` + test.selection + `}`
+					body := fmt.Sprintf(`{"name":%q,"scope":%q,"expires_days":%d,"never_expires":%t%s}`, test.name, test.scope, test.days, test.neverExpires, test.selection)
 					response := request(test.user, http.MethodPost, endpoint, body, test.csrf, "")
 					requireNativeStatus(t, response, test.status)
 					if test.status != http.StatusCreated {
@@ -848,6 +863,16 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 					}
 					var key tokenResponse
 					decodeHubResponse(t, response, &key)
+					if (key.ExpiresAt == nil) != test.neverExpires {
+						t.Fatal("unexpected key expiry")
+					}
+					var expiry sql.NullString
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT expires_at FROM api_tokens WHERE id=?", key.ID).Scan(&expiry); err != nil {
+						t.Fatal(err)
+					}
+					if expiry.Valid == test.neverExpires {
+						t.Fatal("unexpected stored key expiry")
+					}
 					wantProjects := 0
 					if test.access == hostedProjectsSelected {
 						wantProjects = 1
@@ -868,6 +893,9 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 					for _, metadata := range result.Keys {
 						if metadata.ID == key.ID {
 							found = true
+							if (metadata.Expiry == nil) != test.neverExpires {
+								t.Fatal("unexpected listed key expiry")
+							}
 							if len(metadata.Projects) != wantProjects || metadata.Scope != apikey.ScopeRead || metadata.ProjectAccess != test.access {
 								t.Fatal("key metadata or grants missing")
 							}
@@ -880,6 +908,8 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 					if !found {
 						t.Fatal("key not listed")
 					}
+					requireNativeStatus(t, request(nil, http.MethodGet, "/api/v2/organizations/org_security/projects/"+string(f.project), "", false, key.Token), http.StatusOK)
+					requireNativeStatus(t, request(nil, http.MethodPost, "/api/v2/organizations/org_security/mcp", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"created-key","version":"1"}}}`, false, key.Token), http.StatusOK)
 					requireNativeStatus(t, request(nil, http.MethodGet, endpoint, "", false, key.Token), http.StatusForbidden)
 					if test.user != &viewer {
 						requireNativeStatus(t, request(&viewer, http.MethodDelete, endpoint+"/"+key.ID, "", true, ""), http.StatusNotFound)
