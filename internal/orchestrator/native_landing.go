@@ -82,10 +82,11 @@ func (o *Orchestrator) completeNativeLandingRun(
 		}
 		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 		destination := cfg.reviewTargetState()
-		if landing.RefusalKind == workspace.LandRefusalConflict {
+		rework := landing.RefusalKind == workspace.LandRefusalConflict
+		if rework {
 			destination = cfg.ReworkState
 		}
-		lane, ok := connector.CompletionLane(states, issue.State, destination, true)
+		lane, ok := connector.LandingRefusalLane(states, issue.State, destination, rework)
 		if !ok {
 			return handoff(fmt.Errorf("native workflow allows no move from %s to the landing refusal lane %s", strings.TrimSpace(issue.State), destination))
 		}

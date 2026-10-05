@@ -41,6 +41,27 @@ type ChangeReviewReader interface {
 // workflow marks terminal. It reports false when the workflow allows no such
 // move, and the item is not moved.
 func CompletionLane(states []WorkflowState, current, review string, changed bool) (string, bool) {
+	return completionLane(states, current, func(target WorkflowState) bool {
+		if changed {
+			return !target.Terminal && normalizeWorkflowState(target.Name) == normalizeWorkflowState(review)
+		}
+		return target.Terminal
+	})
+}
+
+func LandingRefusalLane(states []WorkflowState, current, preferred string, rework bool) (string, bool) {
+	eligible := func(target WorkflowState) bool {
+		return !target.Terminal && target.Dispatchable == rework
+	}
+	if lane, ok := completionLane(states, current, func(target WorkflowState) bool {
+		return eligible(target) && normalizeWorkflowState(target.Name) == normalizeWorkflowState(preferred)
+	}); ok {
+		return lane, true
+	}
+	return completionLane(states, current, eligible)
+}
+
+func completionLane(states []WorkflowState, current string, eligible func(WorkflowState) bool) (string, bool) {
 	byName := make(map[string]WorkflowState, len(states))
 	for _, state := range states {
 		byName[normalizeWorkflowState(state.Name)] = state
@@ -54,10 +75,7 @@ func CompletionLane(states []WorkflowState, current, review string, changed bool
 		if !ok || target.OperatorOnly || normalizeWorkflowState(target.Name) == normalizeWorkflowState(from.Name) {
 			continue
 		}
-		if changed && !target.Terminal && normalizeWorkflowState(target.Name) == normalizeWorkflowState(review) {
-			return target.Name, true
-		}
-		if !changed && target.Terminal {
+		if eligible(target) {
 			return target.Name, true
 		}
 	}
