@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -28,6 +29,29 @@ func TestSummarizeVersionReview(t *testing.T) {
 		status string
 	}{
 		{"reviewed", func(_ *tracker.ChangeDetail, _ *time.Time) {}, "approved", "success", "reviewed"},
+		{"validator missing", func(d *tracker.ChangeDetail, _ *time.Time) {
+			d.Versions[0].Policy.Gates.Validator = true
+		}, "approved", "success", "needs_evidence"},
+		{"validator pass", func(d *tracker.ChangeDetail, _ *time.Time) {
+			d.Versions[0].Policy.Gates.Validator = true
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "approved", Validator: &gate.ValidatorResult{Verdict: "pass"}})
+		}, "approved", "success", "reviewed"},
+		{"validator rework", func(d *tracker.ChangeDetail, _ *time.Time) {
+			d.Versions[0].Policy.Gates.Validator = true
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", Validator: &gate.ValidatorResult{Verdict: "rework"}})
+		}, "approved", "success", "needs_evidence"},
+		{"validator cannot approve human review", func(d *tracker.ChangeDetail, _ *time.Time) {
+			d.Versions[0].Policy.Gates.Validator = true
+			d.Reviews = []tracker.ChangeReview{{VersionID: "v1", Decision: "approved", Validator: &gate.ValidatorResult{Verdict: "pass"}}}
+		}, "pending", "success", "needs_evidence"},
+		{"old validator cannot make human approval stale", func(d *tracker.ChangeDetail, _ *time.Time) {
+			d.Versions[0].Policy.Gates.Validator = true
+			d.Reviews = []tracker.ChangeReview{{VersionID: "old", Decision: "approved", Validator: &gate.ValidatorResult{Verdict: "pass"}}}
+		}, "pending", "success", "needs_evidence"},
+		{"validator approval belongs to old version", func(d *tracker.ChangeDetail, _ *time.Time) {
+			d.Versions[0].Policy.Gates.Validator = true
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "old", Decision: "approved", Validator: &gate.ValidatorResult{Verdict: "pass"}})
+		}, "approved", "success", "needs_evidence"},
 		{"empty", func(d *tracker.ChangeDetail, _ *time.Time) { d.Versions = nil }, "pending", "missing", "draft"},
 		{"no checks", func(d *tracker.ChangeDetail, _ *time.Time) { d.Checks = nil }, "approved", "missing", "needs_evidence"},
 		{"empty check set", func(d *tracker.ChangeDetail, _ *time.Time) { d.Versions[0].Checks = nil }, "approved", "missing", "needs_evidence"},
@@ -108,10 +132,14 @@ func TestReviewPolicyPreservesRepositoryGates(t *testing.T) {
 		}, true},
 		{"configured opt out", func(r *tracker.ChangeReviewPolicy, _ *policy.Descriptor) { r.RequireReview = false }, false},
 		{"check floor", func(_ *tracker.ChangeReviewPolicy, p *policy.Descriptor) { p.Gates.RequiredChecks = 2 }, true},
+		{"validator without checks", func(r *tracker.ChangeReviewPolicy, p *policy.Descriptor) {
+			p.Gates.Validator = true
+			r.RequiredChecks = nil
+		}, false},
 		{"validator", func(r *tracker.ChangeReviewPolicy, p *policy.Descriptor) {
 			p.Gates.Validator = true
 			r.RequiredChecks[0].Source = "customer"
-		}, true},
+		}, false},
 		{"independent validator", func(_ *tracker.ChangeReviewPolicy, p *policy.Descriptor) { p.Gates.Validator = true }, false},
 		{"duplicate check", func(r *tracker.ChangeReviewPolicy, _ *policy.Descriptor) {
 			r.RequiredChecks = append(r.RequiredChecks, r.RequiredChecks[0])

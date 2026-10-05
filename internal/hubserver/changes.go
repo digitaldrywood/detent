@@ -90,9 +90,9 @@ func (s *Service) registerChangeRoutes(e *echo.Echo) {
 // Self-hosted operator tokens retain their existing review authority.
 func (s *Service) requireChangeReviewer() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return s.requireNativeScope(apiScopeOperator)(func(c echo.Context) error {
+		return s.requireNativeScope(apiScopeOperator, apiScopeWorker)(func(c echo.Context) error {
 			scope := nativeRequestScope(c)
-			if scope.credential.Hosted != nil {
+			if scope.credential.Hosted != nil && scope.credential.Scope != apiScopeWorker {
 				if scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
 					return s.nativeAPIError(c, nativeNotFound())
 				}
@@ -285,7 +285,7 @@ func readCurrentChangeDetail(ctx context.Context, query nativeQueryer, scope nat
 			return result, err
 		}
 		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
-AND json_extract(record_json, '$.decision') = 'approved' AND version_id != ?)`, change.ID, version.ID).Scan(&staleApproval)
+AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND version_id != ?)`, change.ID, version.ID).Scan(&staleApproval)
 		if err != nil {
 			return result, err
 		}

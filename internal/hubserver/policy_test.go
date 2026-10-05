@@ -342,4 +342,21 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 	if asked.PolicyID != gated.ID || !asked.RequireReview {
 		t.Fatalf("a human-review gate seeded %#v, want a review requirement", asked)
 	}
+	for _, humanReview := range []bool{false, true} {
+		t.Run(fmt.Sprintf("validator human review=%t", humanReview), func(t *testing.T) {
+			f := newNativeFixture(t, nil, "", "validator")
+			descriptor := hubTestPolicy()
+			descriptor.Gates.Validator, descriptor.Gates.HumanReview = true, humanReview
+			descriptor = descriptor.WithID()
+			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/change-review-policy", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var rules tracker.ChangeReviewPolicy
+			decodeHubResponse(t, response, &rules)
+			if rules.PolicyID != descriptor.ID || rules.RequireReview != humanReview || len(rules.RequiredChecks) != 0 {
+				t.Fatalf("validator default policy = %+v", rules)
+			}
+		})
+	}
+
 }

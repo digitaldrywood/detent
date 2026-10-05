@@ -65,6 +65,7 @@ type PromptOptions struct {
 }
 
 type ValidatorPromptOptions struct {
+	VersionID          string
 	WorkspacePath      string
 	Branch             string
 	Repository         string
@@ -326,7 +327,7 @@ func BuildMergeFallbackPrompt(workflow config.Workflow, issue connector.Issue, o
 
 func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts ValidatorPromptOptions) string {
 	var b strings.Builder
-	b.WriteString("You are the Detent validator-agent. Review the pull request diff against the issue acceptance criteria and return a structured gate verdict.\n\n")
+	b.WriteString("You are the Detent validator-agent. Review the diff against the issue acceptance criteria and return a structured gate verdict.\n\n")
 	if opts.WorkspacePath != "" {
 		b.WriteString("Workspace: `")
 		b.WriteString(opts.WorkspacePath)
@@ -343,7 +344,11 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		b.WriteString("\n")
 	}
 	if opts.Repository != "" {
-		fmt.Fprintf(&b, "Reviewed PR: %s#%d base=%s head=%s sha256=%s\n", opts.Repository, opts.PRNumber, opts.BaseSHA, opts.HeadSHA, opts.DiffDigest)
+		if opts.VersionID != "" {
+			fmt.Fprintf(&b, "Reviewed native version: %s repository=%s base=%s head=%s sha256=%s\n", opts.VersionID, opts.Repository, opts.BaseSHA, opts.HeadSHA, opts.DiffDigest)
+		} else {
+			fmt.Fprintf(&b, "Reviewed PR: %s#%d base=%s head=%s sha256=%s\n", opts.Repository, opts.PRNumber, opts.BaseSHA, opts.HeadSHA, opts.DiffDigest)
+		}
 		b.WriteString("Reviewed files: ")
 		b.WriteString(strings.Join(opts.DiffFiles, ", "))
 		b.WriteString("\n")

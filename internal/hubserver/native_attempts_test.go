@@ -15,11 +15,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-func claimNativeAttempt(t *testing.T, f nativeFixture, worker, machine, session string, item tracker.NativeWorkItemID) tracker.NativeLease {
+func claimNativeAttempt(t *testing.T, f nativeFixture, worker, machine, session string, item tracker.NativeWorkItemID, policyIDs ...string) tracker.NativeLease {
 	t.Helper()
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": machine, "hostname": machine, "version": "test", "capacity": 1}), http.StatusOK)
+	policyID := hubTestPolicy().ID
+	if len(policyIDs) > 0 {
+		policyID = policyIDs[0]
+	}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{
-		PolicyID: hubTestPolicy().ID, WorkItemID: item, MachineID: tracker.MachineID(machine), SessionID: session,
+		PolicyID: policyID, WorkItemID: item, MachineID: tracker.MachineID(machine), SessionID: session,
 		TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
 	})
 	requireNativeStatus(t, response, http.StatusOK)

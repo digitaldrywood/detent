@@ -123,7 +123,7 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 				}
 				requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPost, path+"/versions/"+version.ID+"/reviews", tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
 			}
-			if summary := detail().Summary; summary.Status != "reviewed" || summary.ExternalReview != "external_gate" {
+			if summary := detail().Summary; summary.Status != "needs_evidence" || summary.ExternalReview != "external_gate" {
 				t.Fatalf("readiness or external protection changed: %+v", summary)
 			}
 			now := f.service.config.now

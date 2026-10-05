@@ -101,8 +101,12 @@ func (o *Orchestrator) completeNativeChangeRun(
 	needsReview := !change.Changed && !accepted || reported && !accepted
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	review := cfg.reviewTargetState()
+	if autoPromoteOptoutLabel(issue, cfg) {
+		review = cfg.SourceState
+	}
 	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed || needsReview)
-	unfinished := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "" && change.VersionError == ""
+	validatorRework := change.Validator != nil && change.Validator.Verdict == "rework"
+	unfinished := validatorRework || reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "" && change.VersionError == ""
 	if unfinished && nativePlanStateExists(states, cfg.ReworkState) && dispatchableState(states, cfg.ReworkState) {
 		if normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
 			target, ok = issue.State, true
@@ -110,7 +114,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 			target, ok = rework, true
 		}
 	}
-	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && !needsReview && direct && dispatchableState(states, landing) {
+	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && !needsReview && !autoPromoteOptoutLabel(issue, cfg) && direct && dispatchableState(states, landing) {
 		target, ok = landing, true
 	}
 	if !ok {

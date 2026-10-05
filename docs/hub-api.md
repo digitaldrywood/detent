@@ -1024,16 +1024,25 @@ repository policy again rewrites it to the default, and an approval that expects
 no review policy may replace it. A review policy an administrator shaped by
 pinning checks is never rewritten; it goes stale when the repository policy
 changes and must be approved again. A repository policy whose gates the default
-cannot satisfy (a required check count or validator) seeds nothing. Hub
+cannot satisfy (a required check count) seeds nothing. Hub
 migration 40 applies the same rule once to every project with an approved
 repository policy, so projects approved before seeding existed can publish.
 Its `require_review` setting cannot weaken a repository
 human-review gate. `required_checks` cannot fall below the repository check count,
-and a repository validator requires an independent check. Every check pins `name`,
+and explicit independent checks retain their independent authority. Every check pins `name`,
 `principal_id` (an existing token with a project grant), `workflow_id`,
 `workflow_sha256`, `source` (`customer` or `independent`), and `max_age_seconds`
 (60 seconds to 7 days). Independent checks require operator credentials. Use a
 dedicated CI credential, kept outside the implementation runner's environment.
+
+The repository validator flag instead runs the existing validator agent in a fresh
+session after immutable publication. Its version-pinned verdict uses the review
+endpoint under the runner's fenced authority; the implementing session cannot
+submit its own verdict. A validator pass satisfies the validator gate, while
+human approval and explicit checks remain separate requirements. Rework retains
+the findings on the version and returns the item to the existing Rework lane.
+No separately provisioned operator credential is required by this flag.
+
 These settings do not modify repository auto-promotion, opt-out, security audit,
 validator, external required review, or merge-method configuration.
 
