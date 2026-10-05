@@ -24,29 +24,29 @@ import (
 
 var errAttachmentReadAudit = errors.New("attachment read audit unavailable")
 
-func attachmentEvidenceRequest(c echo.Context) (*attachment.EvidenceRequest, error) {
+func attachmentEvidenceRequest(c echo.Context) (*attachment.EvidenceRequest, bool, error) {
 	encoded := c.Request().Header.Get("X-Detent-Evidence")
 	if c.Param("attempt") == "" {
 		if encoded != "" {
-			return nil, attachment.ErrInvalid
+			return nil, false, attachment.ErrInvalid
 		}
-		return nil, nil
+		return nil, false, nil
 	}
 	if len(encoded) > 4096 {
-		return nil, attachment.ErrInvalid
+		return nil, false, attachment.ErrInvalid
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var evidence attachment.EvidenceRequest
 	if err := json.Unmarshal(raw, &evidence); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if evidence.AttemptID != c.Param("attempt") || evidence.IdempotencyKey == "" || evidence.IdempotencyKey != c.Request().Header.Get("Idempotency-Key") {
-		return nil, attachment.ErrInvalid
+		return nil, false, attachment.ErrInvalid
 	}
-	return &evidence, nil
+	return &evidence, true, nil
 }
 
 func (s *Service) registerAttachmentRoutes(e *echo.Echo) {
@@ -124,7 +124,7 @@ func attachmentCallError(c echo.Context, status int, body []byte, err error, hid
 }
 
 func (s *Service) uploadAttachment(c echo.Context) error {
-	evidence, err := attachmentEvidenceRequest(c)
+	evidence, _, err := attachmentEvidenceRequest(c)
 	if err != nil {
 		return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "Invalid attempt evidence authority")
 	}
@@ -224,7 +224,7 @@ func (s *Service) closeAttachmentUpload(upload *attachment.Upload) {
 }
 
 func (s *Service) storeAttachment(c echo.Context, organization Organization, principal string, upload *attachment.Upload) error {
-	evidence, err := attachmentEvidenceRequest(c)
+	evidence, _, err := attachmentEvidenceRequest(c)
 	if err != nil {
 		return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "Invalid attempt evidence authority")
 	}
