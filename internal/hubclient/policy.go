@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -109,6 +110,27 @@ func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, 
 }
 
 func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+	project, err := c.Project(ctx)
+	if err != nil {
+		return workflowconfig.Workflow{}, fmt.Errorf("load Cloud model selection: %w", err)
+	}
+	var selection workflowconfig.ModelSelection
+	if len(project.ModelSelection) > 0 {
+		if err := json.Unmarshal(project.ModelSelection, &selection); err != nil {
+			return workflowconfig.Workflow{}, fmt.Errorf("decode Cloud model selection: %w", err)
+		}
+	}
+	sources := selection.Sources
+	selection = workflowconfig.ResolveCloudModelSelection(selection, workflowconfig.ModelSelection{})
+	for key, source := range sources {
+		selection.Sources[key] = source
+	}
+	selection.Sources["authority"] = "cloud"
+	if problems := selection.Validate(); len(problems) > 0 {
+		return workflowconfig.Workflow{}, fmt.Errorf("invalid Cloud model selection: %s", strings.Join(problems, "; "))
+	}
+	workflow.Config.Agents.ModelSelection = selection
+
 	if workflow.Definition.Layout == workflowconfig.ProjectDefinitionSplit || workflow.Definition.Layout == workflowconfig.ProjectDefinitionLegacy || workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud {
 		return workflow, nil
 	}

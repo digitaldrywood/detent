@@ -374,13 +374,14 @@ type NativeWorkLane struct {
 type NativeState = policy.State
 
 type NativeProject struct {
-	WorkflowMarkdown    string         `json:"workflow_markdown,omitempty"`
-	ID                  ProjectID      `json:"project_id"`
-	OrganizationID      OrganizationID `json:"organization_id"`
-	Name                string         `json:"name"`
-	Profile             string         `json:"profile"`
-	States              []NativeState  `json:"states"`
-	RequireDependencies bool           `json:"require_dependencies"`
+	ModelSelection      json.RawMessage `json:"model_selection,omitempty"`
+	WorkflowMarkdown    string          `json:"workflow_markdown,omitempty"`
+	ID                  ProjectID       `json:"project_id"`
+	OrganizationID      OrganizationID  `json:"organization_id"`
+	Name                string          `json:"name"`
+	Profile             string          `json:"profile"`
+	States              []NativeState   `json:"states"`
+	RequireDependencies bool            `json:"require_dependencies"`
 }
 
 type NativeClaim struct {

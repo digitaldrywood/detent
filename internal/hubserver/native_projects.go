@@ -186,7 +186,12 @@ func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeSco
 	if err := json.Unmarshal([]byte(states), &project.States); err != nil {
 		return project, err
 	}
-	return project, nil
+	selection, err := readCloudModelSelection(ctx, query, scope)
+	if err != nil {
+		return project, err
+	}
+	project.ModelSelection, err = json.Marshal(selection.Effective)
+	return project, err
 }
 
 func (s *Service) getNativeProject(c echo.Context) error {

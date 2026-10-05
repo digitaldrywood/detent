@@ -1,3 +1,4 @@
+import { CloudModelSelection, type CloudSelection } from "../../contracts/account.ts";
 import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts";
 // The hosted account API client.
 //
@@ -175,6 +176,11 @@ export function makeAccountApi(options: AccountApiOptions) {
     },
 
     // --- Organization -------------------------------------------------------
+    modelSelection: (projectId?: string) => send(CloudModelSelection, "GET", `${projectId === undefined ? base : project(projectId)}/model-selection`),
+    saveModelSelection: (input: { projectId?: string; revision: string; selection: CloudSelection | null; key: string }) =>
+      send(CloudModelSelection, "PUT", `${input.projectId === undefined ? base : project(input.projectId)}/model-selection`, {
+        expected_revision: input.revision, selection: input.selection, idempotency_key: input.key,
+      }),
     members: () => send(MembersResponse, "GET", `${base}/members`),
     invite: (input: { email: string; role: string; key: string; grants?: readonly ProjectGrant[] }) =>
       send(Schema.Unknown, "POST", `${base}/members/invitations`, {

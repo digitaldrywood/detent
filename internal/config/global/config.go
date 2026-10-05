@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -2304,6 +2305,9 @@ func buildSettings(attrs map[string]any, opts options) (Settings, error) {
 	if attrs["agents"] != nil {
 		if err := decodeYAMLValue(attrs["agents"], &settings.Agents); err != nil {
 			return Settings{}, fmt.Errorf("global.agents: %w", err)
+		}
+		for _, warning := range settings.Agents.ModelSelectionWarnings() {
+			slog.Warn("global." + warning)
 		}
 		if err := settings.Agents.ValidateDefaults(); err != nil {
 			return Settings{}, err

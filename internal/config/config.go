@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/url"
 	"os"
@@ -438,12 +439,13 @@ type MergeFastPath struct {
 }
 
 type Agents struct {
-	Backends       []AgentBackend    `yaml:"backends"`
-	Routes         []AgentRoute      `yaml:"routes"`
-	ModelSelection ModelSelection    `yaml:"model_selection"`
-	Sources        map[string]string `yaml:"-"`
-	local          *Agents
-	pricingPath    string
+	Backends             []AgentBackend    `yaml:"backends"`
+	Routes               []AgentRoute      `yaml:"routes"`
+	ModelSelection       ModelSelection    `yaml:"-"`
+	Sources              map[string]string `yaml:"-"`
+	local                *Agents
+	pricingPath          string
+	legacyModelSelection bool
 }
 
 type AgentBackend struct {
@@ -599,6 +601,7 @@ func (c Config) USDBrakes() USDBrakes {
 
 func (c Config) ValidationWarnings() []string {
 	var warnings []string
+	warnings = append(warnings, c.Agents.ModelSelectionWarnings()...)
 	if c.Workspace.legacyCacheStrategy {
 		warnings = append(warnings, "workspace.cache_strategy is unknown and ignored; remove it before the next release, which will reject it")
 	}
@@ -1391,6 +1394,9 @@ func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
 		cfg.configuredFields = configuredFieldPaths(root)
 		// Capture the opt-in before normalization can fill a blank repository.
 		cfg.scheduleOwnershipRepositoryExplicit = strings.TrimSpace(cfg.ScheduleOwnership.Repository) != ""
+	}
+	for _, warning := range cfg.Agents.ModelSelectionWarnings() {
+		slog.Warn(warning)
 	}
 	cfg.normalize()
 	if err := cfg.validateEffectiveSandboxPolicies(); err != nil {

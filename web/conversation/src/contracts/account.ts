@@ -821,3 +821,48 @@ export type OperatorAPIKey = typeof OperatorAPIKey.Type;
 export const OperatorAPIKeys = Schema.Struct({ keys: Schema.Array(OperatorAPIKey) });
 export const CreatedOperatorAPIKey = Schema.Struct({ token: Schema.String, project_access: OperatorProjectAccess, project_ids: Schema.Array(Schema.String) });
 export type CreatedOperatorAPIKey = typeof CreatedOperatorAPIKey.Type;
+
+type SelectionSelector = {
+  readonly assignee_in?: readonly string[];
+  readonly author_in?: readonly string[];
+  readonly priority_in?: readonly number[];
+  readonly labels?: { readonly include?: readonly string[]; readonly exclude?: readonly string[] };
+  readonly fields?: readonly { readonly name: string; readonly value: string }[];
+  readonly and?: readonly SelectionSelector[];
+  readonly or?: readonly SelectionSelector[];
+};
+const SelectionSelector: Schema.Codec<SelectionSelector> = Schema.Struct({
+  assignee_in: Schema.optional(Schema.Array(Schema.String)),
+  author_in: Schema.optional(Schema.Array(Schema.String)),
+  priority_in: Schema.optional(Schema.Array(Schema.Number)),
+  labels: Schema.optional(Schema.Struct({ include: Schema.optional(Schema.Array(Schema.String)), exclude: Schema.optional(Schema.Array(Schema.String)) })),
+  fields: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.String }))),
+  and: Schema.optional(Schema.Array(Schema.suspend(() => SelectionSelector))),
+  or: Schema.optional(Schema.Array(Schema.suspend(() => SelectionSelector))),
+});
+const SelectionLevel = Schema.Struct({
+  model: Schema.optional(Schema.String), effort: Schema.optional(Schema.String),
+  max_session_duration_ms: Schema.optional(Schema.Number), max_session_tokens: Schema.optional(Schema.Number),
+});
+const SelectionStage = Schema.Struct({
+  model: Schema.optional(Schema.String), effort: Schema.optional(Schema.String),
+  level: Schema.optional(Schema.String), issue_complexity: Schema.optional(Schema.Boolean),
+});
+export const CloudSelection = Schema.Struct({
+  enabled: Schema.optional(Schema.Boolean), preset: Schema.optional(Schema.String),
+  normal_model: Schema.optional(Schema.String), complex_model: Schema.optional(Schema.String),
+  backend_kinds: Schema.optional(Schema.Array(Schema.String)), default_level: Schema.optional(Schema.String),
+  levels: Schema.optional(Schema.Record(Schema.String, SelectionLevel)),
+  stages: Schema.optional(Schema.Record(Schema.String, SelectionStage)),
+  rules: Schema.optional(Schema.Array(Schema.Struct({
+    name: Schema.String, level: Schema.String, disabled: Schema.optional(Schema.Boolean),
+    roles: Schema.optional(Schema.Array(Schema.String)), efforts: Schema.optional(Schema.Array(Schema.String)),
+    selector: Schema.optional(SelectionSelector),
+  }))),
+  unavailable: Schema.optional(Schema.String), fallback_order: Schema.optional(Schema.Array(Schema.String)),
+});
+export type CloudSelection = typeof CloudSelection.Type;
+export const CloudModelSelection = Schema.Struct({
+  revision: Schema.String, selection: Schema.NullOr(CloudSelection), effective: CloudSelection,
+});
+export type CloudModelSelection = typeof CloudModelSelection.Type;

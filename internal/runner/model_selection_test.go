@@ -20,6 +20,7 @@ import (
 
 func selectionCatalog() []AgentModel {
 	return []AgentModel{
+		{ID: "gpt-6.1-sol", Model: "gpt-6.1-sol", SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}},
 		{ID: "gpt-5.6-sol", Model: "gpt-5.6-sol", SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}},
 		{ID: "gpt-6-astra", Model: "gpt-6-astra", Default: true, SupportedReasoningEfforts: []string{"low", "medium", "high", "xhigh", "max"}},
 	}
@@ -121,7 +122,13 @@ func TestCustomSelectionSettings(t *testing.T) {
 func TestAutomaticModelSelection(t *testing.T) {
 	for _, tt := range []struct {
 		name, body, role, label, base, projectEffort, model, effort string
+		cloud                                                       bool
 	}{
+		{name: "cloud code high", cloud: true, body: "effort: high", model: "gpt-6.1-sol", effort: "high"},
+		{name: "cloud plan clamps high", cloud: true, role: RolePlan, body: "effort: high", model: "gpt-6-astra", effort: "low"},
+		{name: "cloud validator clamps high", cloud: true, role: RoleValidator, body: "effort: high", model: "gpt-6-astra", effort: "medium"},
+		{name: "cloud complex stays sol", cloud: true, label: "complexity:complex", body: "effort: high", model: "gpt-6.1-sol", effort: "high"},
+		{name: "cloud very complex clamps high", cloud: true, label: "complexity:very-complex", body: "effort: high", model: "gpt-6-astra", effort: "medium"},
 		{name: "missing metadata", model: "gpt-5.6-sol", effort: "medium"},
 		{name: "generic enhancement", label: "enhancement", model: "gpt-5.6-sol", effort: "medium"},
 		{name: "high effort", body: "effort: high", model: "gpt-5.6-sol", effort: "medium"},
@@ -149,6 +156,13 @@ func TestAutomaticModelSelection(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.Default()
 			cfg.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first")}
+			if tt.cloud {
+				cfg.Agents.ModelSelection = config.ResolveCloudModelSelection(config.ModelSelection{Preset: new("sol_first"), NormalModel: new("gpt-6.1-sol"), Levels: map[string]config.ModelSelectionDefaults{
+					"normal": {Effort: new("high")}, "complex": {Model: new("normal"), Effort: new("high")}, "very_complex": {Effort: new("medium")},
+				}, Stages: map[string]config.ModelSelectionStage{
+					RolePlan: {Model: new("complex"), Effort: new("low"), IssueComplexity: new(false)}, RoleValidator: {Model: new("complex"), Effort: new("medium")},
+				}}, config.ModelSelection{})
+			}
 			cfg.Agent.Effort.Code = tt.projectEffort
 			issue := connector.Issue{Priority: new(1), State: "Rework"}
 			if tt.body != "" {

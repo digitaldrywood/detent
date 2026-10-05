@@ -33,8 +33,9 @@ type policyTestScheduling struct {
 type mappedPolicyScheduling struct {
 	mu sync.Mutex
 	testSchedulingSource
-	approved policy.Descriptor
-	observed policy.Descriptor
+	approved       policy.Descriptor
+	observed       policy.Descriptor
+	modelSelection workflowconfig.ModelSelection
 }
 
 type cloudPolicyScheduling struct {
@@ -140,6 +141,9 @@ func (s *mappedPolicyScheduling) CheckProjectPolicy(_ context.Context, _, _ stri
 func (s *mappedPolicyScheduling) ResolveProjectWorkflow(_ context.Context, _ string, workflow workflowconfig.Workflow) (workflowconfig.Workflow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.modelSelection.Configured() {
+		workflow.Config.Agents.ModelSelection = s.modelSelection
+	}
 	if s.approved.Configuration == nil {
 		return workflow, nil
 	}
@@ -471,13 +475,24 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 	if current.Config.Policy.ID != replacement.ID || !current.Config.Plan.Enabled || !current.Config.Gate.Validator.Enabled || !current.Config.Agent.AutoPromote.Enabled || !p.Running() {
 		t.Fatalf("shared policy was not reloaded in the running project: %+v", current.Config.Policy)
 	}
+	scheduling.mu.Lock()
+	scheduling.modelSelection = workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{Preset: new("sol_first"), NormalModel: new("gpt-6.1-sol")}, workflowconfig.ModelSelection{})
+	scheduling.mu.Unlock()
+	if err := p.reconcileWorkflow(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	current = p.Workflow()
+	if current.SourceHash != workflow.SourceHash || current.Config.Policy.ID != replacement.ID || current.Config.EffectiveModelSelection().Model("normal") != "gpt-6.1-sol" {
+		t.Fatalf("Cloud selection did not reload without a source or policy change: %+v", current.Config.Agents.ModelSelection)
+	}
+
 	host := cfg
 	host.GlobalWorker.AllowLocalBinding = new(true)
 	host.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}
 	if err := p.updateLiveConfig(t.Context(), host); err != nil {
 		t.Fatal(err)
 	}
-	if p.Workflow().Config.Policy.ID != replacement.ID || p.Workflow().Config.Worker.EffectiveAllowLocalBinding() {
+	if p.Workflow().Config.Policy.ID != replacement.ID || p.Workflow().Config.Worker.EffectiveAllowLocalBinding() || p.Workflow().Config.EffectiveModelSelection().Model("normal") != "gpt-6.1-sol" {
 		t.Fatal("host reload changed shared permissions or policy identity")
 	}
 }
