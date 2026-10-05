@@ -1066,76 +1066,125 @@ func TestCapacityFreeNativeClaimRefusal(t *testing.T) {
 type hostedConsumptionQueries struct {
 	nativeQueryer
 	statements []string
+	resultRows int64
 }
 
 func (q *hostedConsumptionQueries) QueryRowContext(ctx context.Context, statement string, args ...any) *sql.Row {
 	q.statements = append(q.statements, statement)
+	q.resultRows++
 	return q.nativeQueryer.QueryRowContext(ctx, statement, args...)
 }
 
 func (q *hostedConsumptionQueries) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
 	q.statements = append(q.statements, statement)
+	var count int64
+	if err := q.nativeQueryer.QueryRowContext(ctx, "SELECT count(*) FROM ("+statement+")", args...).Scan(&count); err != nil {
+		return nil, err
+	}
+	q.resultRows += count
 	return q.nativeQueryer.QueryContext(ctx, statement, args...)
 }
 
 func TestHostedNativeMutationConsumption(t *testing.T) {
 	t.Parallel()
-	f := newHostedSecurityFixture(t)
-	hostedTestPlans(t, f.service, nil)
-	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
-	for i := range 8 {
-		requireNativeStatus(t, f.request(t, owner, http.MethodPost, f.base+"/work-items", map[string]any{
-			"idempotency_key": fmt.Sprintf("retained-%d", i), "title": "retained", "body": strings.Repeat("x", 32768), "state": "Todo",
-		}), http.StatusOK)
-	}
-	now := time.Now()
+	f := newNativeFixture(t, nil, "", "accounting")
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	worker := f.worker(t, "worker")
 	d := f.service.database
-	fullQueries := &hostedConsumptionQueries{nativeQueryer: d.db}
-	full, err := d.hostedConsumption(t.Context(), fullQueries, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(fullQueries.statements) != 14 || full["collaboration_bytes"] < 8*32768 {
-		t.Fatalf("full queries=%d bytes=%d", len(fullQueries.statements), full["collaboration_bytes"])
-	}
-	for _, test := range []struct {
-		name       string
-		input      any
-		completion bool
-		queries    int
-	}{
-		{"ordinary mutation", struct{}{}, false, 9},
-		{"ordinary completion", struct{}{}, true, 6},
-		{"run observation", tracker.NativeRunEvent{Type: "run.observed"}, false, 4},
-		{"run completion", tracker.NativeRunEvent{Type: "run.finished"}, true, 2},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			queries := &hostedConsumptionQueries{nativeQueryer: d.db}
-			metrics := hostedNativeMutationMetrics(test.input, test.completion)
-			actual, err := d.hostedConsumption(t.Context(), queries, now, metrics...)
-			if err != nil {
+	now := time.Now()
+	previous := 0
+	for _, retained := range []int{1, 32} {
+		d.hostedPlans = nil
+		for i := previous; i < retained; i++ {
+			issue := f.create(t, fmt.Sprintf("retained-%d", i))
+			body := strings.Repeat("x", 32768)
+			if _, err := d.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, issue.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
-			if len(queries.statements) != test.queries {
-				t.Fatalf("queries=%d want=%d", len(queries.statements), test.queries)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token,
+				tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("comment-%d", i)}, Body: body}), http.StatusOK)
+			lease := claimNativeAttempt(t, f, worker, fmt.Sprintf("machine-%d", i), fmt.Sprintf("session-%d", i), issue.WorkItemID)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
+			if _, err := d.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.retained',?) WHERE lease_id=?", body, lease.ID); err != nil {
+				t.Fatal(err)
 			}
-			for name, amount := range actual {
-				if full[name] != amount {
-					t.Fatalf("%s=%d full=%d", name, amount, full[name])
+		}
+		previous = retained
+		f.service.config.Hosted = &HostedConfig{}
+		d.hostedOrganization = f.project.OrganizationID
+		hostedTestPlans(t, f.service, nil)
+		f.service.config.Hosted = nil
+		window := now.Unix() / d.hostedPlans.WindowSeconds * d.hostedPlans.WindowSeconds
+		if _, err := d.db.ExecContext(t.Context(), "INSERT OR REPLACE INTO hosted_usage_windows(window_start,metric,amount) VALUES(?,'api_mutations',7),(?,'ingested_events',3)", window, window); err != nil {
+			t.Fatal(err)
+		}
+		fullQueries := &hostedConsumptionQueries{nativeQueryer: d.db}
+		full, err := d.hostedConsumption(t.Context(), fullQueries, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(fullQueries.statements) != 14 || full["collaboration_bytes"] < int64(retained*3*32768) {
+			t.Fatalf("full queries=%d bytes=%d", len(fullQueries.statements), full["collaboration_bytes"])
+		}
+		for _, test := range []struct {
+			name    string
+			metrics []string
+			queries int
+		}{
+			{"ordinary mutation", hostedNativeMutationMetrics(struct{}{}, false), 9},
+			{"ordinary completion", hostedNativeMutationMetrics(struct{}{}, true), 6},
+			{"run observation", hostedNativeMutationMetrics(tracker.NativeRunEvent{Type: "run.observed"}, false), 4},
+			{"run completion", hostedNativeMutationMetrics(tracker.NativeRunEvent{Type: "run.finished"}, true), 2},
+			{"lease validation", hostedRunnerTransactionMetrics(nativeBase + "/leases/:lease/validate"), 2},
+			{"runner mutation", hostedRunnerTransactionMetrics(runnerBase + "/:runner/rotate"), 14},
+			{"attachment preflight", []string{"collaboration_bytes"}, 1},
+			{"attachment growth", []string{"collaboration_bytes", "usage_windows"}, 2},
+		} {
+			t.Run(fmt.Sprintf("%d retained/%s", retained, test.name), func(t *testing.T) {
+				queries := &hostedConsumptionQueries{nativeQueryer: d.db}
+				actual, err := d.hostedConsumption(t.Context(), queries, now, test.metrics...)
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			for _, name := range metrics {
-				if name != "usage_windows" && actual[name] != full[name] {
-					t.Fatalf("omitted %s", name)
+				if len(queries.statements) != test.queries {
+					t.Fatalf("queries=%d want=%d", len(queries.statements), test.queries)
 				}
-			}
-			for _, statement := range queries.statements {
-				if strings.Contains(statement, "hosted_artifact_usage") || strings.Contains(statement, "hosted_members") || strings.Contains(statement, "hosted_member_reservations") || strings.Contains(statement, "FROM leases") {
-					t.Fatalf("unrelated report query: %s", statement)
+				for name, amount := range actual {
+					if full[name] != amount {
+						t.Fatalf("%s=%d full=%d", name, amount, full[name])
+					}
 				}
-			}
-			t.Logf("full_queries=%d selected_queries=%d retained_bytes=%d", len(fullQueries.statements), len(queries.statements), full["collaboration_bytes"])
-		})
+				for _, name := range test.metrics {
+					if name != "usage_windows" && actual[name] != full[name] {
+						t.Fatalf("omitted %s", name)
+					}
+				}
+				if test.name == "lease validation" {
+					if actual["api_mutations"] != 7 || actual["ingested_events"] != 3 || len(actual) != 3 || queries.resultRows != 3 {
+						t.Fatalf("lease accounting=%v", actual)
+					}
+					for _, statement := range queries.statements {
+						if strings.Contains(statement, "issues") || strings.Contains(statement, "native_comments") || strings.Contains(statement, "native_attempts") || strings.Contains(statement, "CAST(") {
+							t.Fatalf("lease validation aggregated retained JSON: %s", statement)
+						}
+					}
+				}
+				if test.name == "attachment preflight" && (len(actual) != 1 || queries.resultRows != 1) {
+					t.Fatalf("attachment accounting=%v rows=%d", actual, queries.resultRows)
+				}
+				if test.name == "attachment growth" && (actual["api_mutations"] != 7 || len(actual) != 3 || queries.resultRows != 3) {
+					t.Fatalf("attachment growth=%v rows=%d", actual, queries.resultRows)
+				}
+				if test.name != "runner mutation" {
+					for _, statement := range queries.statements {
+						if strings.Contains(statement, "hosted_artifact_usage") || strings.Contains(statement, "hosted_members") || strings.Contains(statement, "hosted_member_reservations") || strings.Contains(statement, "FROM leases") {
+							t.Fatalf("unrelated report query: %s", statement)
+						}
+					}
+				}
+				t.Logf("retained_issue_comment_attempt_rows=%d full_queries=%d full_result_rows=%d selected_queries=%d selected_result_rows=%d retained_bytes=%d", retained*3, len(fullQueries.statements), fullQueries.resultRows, len(queries.statements), queries.resultRows, full["collaboration_bytes"])
+			})
+		}
 	}
 }
 

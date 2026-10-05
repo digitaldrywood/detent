@@ -143,13 +143,19 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 func TestCloudAttachmentQuota(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name      string
-		allowance int64
-		status    int
-	}{{"allowed", 10000, http.StatusCreated}, {"refused", 1, http.StatusTooManyRequests}} {
+		name                      string
+		allowance, apiLimit, used int64
+		status                    int
+	}{
+		{"allowed", 10000, 2, 0, http.StatusCreated},
+		{"exact preflight limit", 100, 100, 0, http.StatusTooManyRequests},
+		{"refused", 99, 100, 0, http.StatusTooManyRequests},
+		{"API exhausted", 10000, 1, 1, http.StatusTooManyRequests},
+		{"outer API limit", 10000, 1, 0, http.StatusTooManyRequests},
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
-			hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": test.allowance})
+			plans := hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": test.allowance, "api_mutations": test.apiLimit})
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			record := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "file.txt", ContentType: "text/plain", Size: 100, SHA256: artifact.Digest([]byte("hello"))}
 			body, err := json.Marshal(record)
@@ -157,6 +163,27 @@ func TestCloudAttachmentQuota(t *testing.T) {
 				t.Fatal(err)
 			}
 			csrf := cloudassert.CSRFToken("shared-"+owner.identity.Subject, "org_security")
+			now := time.Now().UTC()
+			f.service.config.now = func() time.Time { return now }
+			f.service.database.now = f.service.config.now
+			window := now.Unix() / plans.WindowSeconds * plans.WindowSeconds
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR REPLACE INTO hosted_usage_windows(window_start,metric,amount) VALUES(?,'api_mutations',?)", window, test.used); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO machines(id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id,token_id) VALUES('unrelated','unrelated','unrelated',1,'test','invalid',?,?,'org_security',?)`, formatHubTime(now), formatHubTime(now), bootstrapTokenID); err != nil {
+				t.Fatal(err)
+			}
+			preflight := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/attachment-metadata/check", body: `{"size":100}`, csrf: csrf})
+			wantPreflight := http.StatusOK
+			if test.allowance < record.Size {
+				wantPreflight = http.StatusTooManyRequests
+			}
+			if preflight.Code != wantPreflight {
+				t.Fatalf("preflight=%d %s", preflight.Code, preflight.Body.String())
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET last_heartbeat_at=? WHERE id='unrelated'", formatHubTime(now)); err != nil {
+				t.Fatal(err)
+			}
 			response := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/attachment-metadata", body: string(body), csrf: csrf})
 			if response.Code != test.status {
 				t.Fatalf("upload=%d %s", response.Code, response.Body.String())
@@ -168,6 +195,20 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if test.status == http.StatusTooManyRequests {
 				if count != 0 || !strings.Contains(response.Body.String(), "allowance_exhausted") {
 					t.Fatal("quota refusal retained metadata or changed allowance error")
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE operation LIKE 'attachment.record %'").Scan(&count); err != nil || count != 0 {
+					t.Fatalf("quota refusal retained receipt: count=%d error=%v", count, err)
+				}
+				var used int64
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT amount FROM hosted_usage_windows WHERE window_start=? AND metric='api_mutations'", window).Scan(&used); err != nil || used != test.used {
+					t.Fatalf("quota refusal changed API usage: used=%d error=%v", used, err)
+				}
+				if test.name == "API exhausted" {
+					var failure hostedLimitError
+					decodeHubResponse(t, response, &failure)
+					if failure.Resource != "api_mutations" || failure.Consumption != test.used {
+						t.Fatalf("inner quota refusal=%+v", failure)
+					}
 				}
 				return
 			}
@@ -187,7 +228,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 				t.Fatalf("metadata replay=%d %s", replay.Code, replay.Body.String())
 			}
 			replayedUsage, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, time.Now())
-			if err != nil || replayedUsage["collaboration_bytes"] != usage["collaboration_bytes"] {
+			if err != nil || replayedUsage["collaboration_bytes"] != usage["collaboration_bytes"] || replayedUsage["api_mutations"] != 2 || usage["api_mutations"] != 2 {
 				t.Fatalf("metadata replay consumption=%v err=%v", replayedUsage, err)
 			}
 		})
