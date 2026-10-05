@@ -378,7 +378,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.finishAttemptTriage(ctx, state, event, running)
 		return
 	}
-	if o.completeRecordedInstanceBlockers(ctx, state, event, running) {
+	if !nativeCompletion && o.completeRecordedInstanceBlockers(ctx, state, event, running) {
 		return
 	}
 

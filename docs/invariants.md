@@ -41,6 +41,15 @@ protocol, credential, network and workspace-hook failures do not consume the
 issue's failure allowance or authorize source repair. Issue retry accounting
 must distinguish genuine code failures from instance interruptions.
 
+Valid native final reports use the existing instance blocker completion and
+evidence owner after execution and source publication fencing. Instance-only
+reports preserve successful provider accounting and typed evidence without
+recording issue acceptance or moving the issue to Blocked. The native claim
+owner treats that disposition as unanswered work, including clean checkpoints
+at the current revision and dispatch generation; actual instance eligibility,
+leases, authorization and human or external holds still govern dispatch.
+Invalid reports and explicit acceptance requirements retain their existing owners.
+
 Workspace preparation retains the actual failure attribution. A matching
 forge host and Git read operation are required to classify a workspace error
 as forge unavailability; an unrelated hook failure cannot inherit that
@@ -64,7 +73,10 @@ remain excluded; unreachable destinations retain the existing error handoff.
 `TestWorkspaceSSHRefusalDoesNotTripProjectBreaker`,
 `TestRecoverDurableWorkspaceGitReadWait`,
 `TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker`, and
-`TestNativeLandingRunCompletion` in `internal/orchestrator`;
+`TestNativeLandingRunCompletion` and `TestNativeChangeRunCompletion`
+in `internal/orchestrator`;
+`TestNativeExecutionSettlesFinishedRun` in `internal/hubclient`;
+`TestClaimCandidatesRequireUnansweredWorkItem` in `internal/hubserver`;
 `TestLocalGitLandChangeViaGitHub` in `internal/workspace`;
 `TestWorkerCredentialBlockerError` in `internal/runner`;
 `TestIssueSpendSinceExcludesInstanceInfrastructureAttempts`

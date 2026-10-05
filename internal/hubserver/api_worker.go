@@ -588,8 +588,14 @@ const notAlreadyAnsweredClause = `(p.profile <> 'native' OR NOT EXISTS (SELECT 1
    AND answered.project_id = i.project_id
    AND answered.work_item_id = i.native_id
    AND answered.status = 'succeeded'
-   AND NOT (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') = 'in_progress'
-     AND COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 1) = 0
+   AND NOT (((COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') = 'in_progress'
+     AND COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 1) = 0)
+     OR (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') = 'blocked'
+       AND COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) = 1
+       AND COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = ''
+       AND COALESCE(json_array_length(json_extract(answered.data_json, '$.disposition.blocker_evidence')), 0) > 0
+       AND NOT EXISTS (SELECT 1 FROM json_each(answered.data_json, '$.disposition.blocker_evidence') blocker
+         WHERE COALESCE(json_extract(blocker.value, '$.owner'), '') <> 'instance')))
      AND COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 1) = 0)
    AND COALESCE(json_extract(answered.checkpoint_json, '$.worktree_state'), '') <> 'dirty'
    AND answered.work_item_revision >= i.revision

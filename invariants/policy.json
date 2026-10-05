@@ -47,6 +47,7 @@
       "TestPlanCompletionCoordinationDeferral",
       "TestPlanCompletionPublicationRecovery",
       "TestRecordedBlockerDispatchOwnership",
+      "TestNativeChangeRunCompletion",
       "TestWorkpadHumanActionSnapshot",
       "TestObservedLanePreTurnFailureRemainsInstanceOwned",
       "TestHandleRunResultReconcilesDeliverableRecoveryExactHead",
@@ -178,6 +179,12 @@
     ],
     "./internal/workpad": [
       "TestMergedCompletionEvidence"
+    ],
+    "./internal/hubclient": [
+      "TestNativeExecutionSettlesFinishedRun"
+    ],
+    "./internal/hubserver": [
+      "TestClaimCandidatesRequireUnansweredWorkItem"
     ],
     "./internal/web": [
       "TestOperationsWorkpadHumanAction"
