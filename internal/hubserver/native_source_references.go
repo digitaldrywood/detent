@@ -22,18 +22,22 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	if err != nil {
 		return nil, err
 	}
+	var source *tracker.Provenance
+	if provenance.Valid {
+		if err := json.Unmarshal([]byte(provenance.String), &source); err != nil {
+			return nil, err
+		}
+	}
+	return nativeSourceReferences(nodeID, owner, repository, number, sourceURL, source), nil
+}
+
+func nativeSourceReferences(nodeID, owner, repository string, number int, sourceURL string, source *tracker.Provenance) []tracker.ExternalReference {
 	references := []tracker.ExternalReference{}
 	if sourceURL != "" {
 		references = append(references, tracker.GitHubIssueSourceReference(sourceURL, sourceURL))
 	}
 	if number > 0 && owner != "" && repository != "" {
 		sourceURL = "https://github.com/" + owner + "/" + repository + "/issues/" + strconv.Itoa(number)
-	}
-	var source *tracker.Provenance
-	if provenance.Valid {
-		if err := json.Unmarshal([]byte(provenance.String), &source); err != nil {
-			return nil, err
-		}
 	}
 	if source != nil {
 		if source.Provider == "github" {
@@ -47,7 +51,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 		}
 		references = append(references, tracker.GitHubIssueSourceReference(nodeID, sourceURL))
 	}
-	return references, nil
+	return references
 }
 
 func readChangeSourceIssues(ctx context.Context, query nativeQueryer, scope nativeScope, changeID string) ([]tracker.ExternalReference, error) {

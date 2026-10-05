@@ -51,6 +51,8 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	var internalID tracker.WorkItemID
 	var labels, assignees, actor, created, updated, externalID string
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
+	var repositoryOwner, repositoryName string
+	var sourceNumber int
 	var provenance sql.NullString
 	var priority sql.NullInt64
 	bodyColumn := "i.body"
@@ -60,14 +62,17 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	err := query.QueryRowContext(ctx, `SELECT i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
  i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
  i.actor_json, i.provenance_json, i.native_created_at, i.native_updated_at, COALESCE(i.github_node_id, ''),
- i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived
+ i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
+ COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0)
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
+LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
 WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, id).Scan(
 		&internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
 		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &provenance, &created, &updated, &externalID,
-		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived)
+		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
+		&repositoryOwner, &repositoryName, &sourceNumber)
 	if err != nil {
 		return issue, 0, err
 	}
@@ -89,10 +94,11 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	if err != nil {
 		return issue, 0, err
 	}
-	issue.ExternalReferences, err = readNativeSourceReferences(ctx, query, scope, id)
-	if err != nil {
-		return issue, 0, err
+	var sourceURL string
+	if issue.LinkedSource != nil {
+		sourceURL = issue.LinkedSource.URL
 	}
+	issue.ExternalReferences = nativeSourceReferences(externalID, repositoryOwner, repositoryName, sourceNumber, sourceURL, issue.Provenance)
 	if externalID != "" && issue.Provenance == nil {
 		issue.Provenance = &tracker.Provenance{Provider: "github", ExternalID: externalID, AuthorID: sourceAuthor}
 		if issue.Provenance.CreatedAt, err = parseTimeValue(sourceCreated); err != nil {
