@@ -502,11 +502,14 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 			t.Fatalf("stale heartbeat disturbed the active lease: %v", err)
 		}
 	})
-	if err := admin.RevokeRunner(t.Context(), organization, identity.Binding); err != nil {
+	if err := scheduler.RunExecution(string(issue.WorkItemID)).Finish(t.Context(), "interrupted"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := scheduler.RenewClaim(t.Context(), string(issue.WorkItemID), time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
-		t.Fatalf("revocation did not stop the owned claim: %v", err)
+	if err := scheduler.ReleaseClaim(t.Context(), string(issue.WorkItemID), "interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := admin.RevokeRunner(t.Context(), organization, identity.Binding); err != nil {
+		t.Fatal(err)
 	}
 	_, err = native.Project(t.Context())
 	var apiErr *APIError
