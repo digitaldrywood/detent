@@ -1713,7 +1713,15 @@ and SSH-signed Rework.
 Native landing merge conflicts are repository refusals, not infrastructure
 failures or shipped work. Explicit mergeability evidence in the decoded GitHub
 HTTP 405 `message` requires current source verification before the existing
-`LandRefusalConflict` can select Rework. A clean or unproven source response uses
+`LandRefusalConflict` can select an allowed dispatchable non-terminal lane.
+Landing refusals (#267) resolve destinations through the workflow owner: conflicts
+prefer configured Rework, then the first allowed dispatchable non-terminal lane
+(In Progress in the hosted default). Other refusals prefer the configured review
+lane, then the first allowed non-dispatchable non-terminal lane. Terminal,
+operator-only and self-transitions remain excluded. An unreachable destination
+retains the existing error handoff. `TestNativeLandingRunCompletion` covers hosted
+fallback, configured destinations, alternate workflow names and refusal warnings.
+A clean or unproven source response uses
 the existing `LandRefusalBaseMoved` and item-local landing continuation (#193),
 without registering or extending a host server outage. Authentic HTTP 5xx,
 transport and timeout errors reuse the forge classifier and outage backoff.
@@ -2352,8 +2360,8 @@ the freshly fetched base must match the current published base in the same
 `merge-tree` uses that fetched commit. PR repository, base ref, head branch and
 head identity, worktree/source authority, policy and quota precedence remain
 required. Changing or unproven Git refs and clean source trees retain the
-existing item-local landing continuation; proven current source conflicts select configured Rework
-without reapproval. `TestLocalGitLandChangeViaGitHub` and
+existing item-local landing continuation; proven current source conflicts select
+workflow-owned rework without reapproval. `TestLocalGitLandChangeViaGitHub` and
 `TestNativeLandingRunCompletion` cover advanced live bases with stale PR
 projections for conflicting matrix files and clean source trees.
 
