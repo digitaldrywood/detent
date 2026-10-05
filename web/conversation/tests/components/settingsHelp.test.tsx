@@ -66,7 +66,7 @@ describe("settings help interactions", () => {
       expect(screen.getByText("Authorized runners consume this approved project configuration.")).toBeTruthy();
     } else {
       expect(screen.getByText("Runners have conflicting project configurations.")).toBeTruthy();
-      expect(screen.getByText("runner_air, runner_pro")).toBeTruthy();
+      expect(screen.getByText("Review policy from runner_air, runner_pro")).toBeTruthy();
       expect(screen.getByText(/Load the approved shared configuration on the reported runners/)).toBeTruthy();
     }
   });
@@ -121,6 +121,44 @@ describe("settings help interactions", () => {
 });
 
 describe("project settings help", () => {
+  it.each([
+    [true, "approved"], [false, "approved"],
+    [true, "missing"], [false, "missing"],
+    [true, "pending"], [false, "pending"],
+  ] as const)("keeps policy state visible and technical details closed (%s, %s)", async (canManage, state) => {
+    const policy = policyFixture as PolicyApproval;
+    const onApprovePolicy = vi.fn();
+    renderProject(canManage, {
+      policy: state === "missing" ? null : policy,
+      observedPolicies: state === "pending" ? [{ policy: { ...policy.policy, policy_id: "pol_updated" }, runner_id: "runner_example", observed_at: "2026-10-05T00:00:00Z" }] : [],
+      onApprovePolicy,
+    });
+    expect(await screen.findByText(state === "pending" ? "Needs approval" : state === "missing" ? "Not approved" : "Approved")).toBeTruthy();
+    const ownership = screen.getByText("Field ownership").closest("details")!;
+    expect(ownership.open).toBe(false);
+    expect(ownership.textContent).toContain(Object.values(integration.authority!)[0]);
+    if (state !== "missing") {
+      const approval = screen.getByText("Approval details").closest("details")!;
+      expect(approval.open).toBe(false);
+      expect(approval.textContent).toContain(policy.approved_by);
+    }
+    if (state === "pending") {
+      const review = screen.getByText("Review policy from runner_example").closest("details")!;
+      expect(review.open).toBe(false);
+      const user = userEvent.setup();
+      await user.click(screen.getByText("Review policy from runner_example"));
+      expect(review.open).toBe(true);
+      expect(review.textContent).toContain(JSON.stringify({ ...policy.policy, policy_id: "pol_updated" }, null, 2));
+      if (canManage) {
+        await user.click(screen.getByRole("button", { name: "Approve updated policy pol_updated" }));
+        expect(onApprovePolicy).toHaveBeenCalledWith("pol_updated");
+      } else {
+        expect(screen.queryByRole("button", { name: /Approve/ })).toBeNull();
+        expect(screen.getByText(/An owner or admin must approve the reported policy/)).toBeTruthy();
+      }
+    }
+  });
+
   it.each([
     ["Repository and pull request integration", /Disabling it.*immutable repository binding/],
     ["Intake", /Manual intake.*when you request it.*Disabled prevents new manual imports/],

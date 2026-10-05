@@ -101,9 +101,16 @@ describe("repository policy after setup", () => {
       releaseRead!();
     }
     expect(await screen.findByText("A runner is waiting for a new policy.", {}, httpWait)).toBeTruthy();
-    expect(screen.getByText(/runner upgrade changed the resolved policy/)).toBeTruthy();
-    expect(screen.getByText("pol_changed")).toBeTruthy();
-    expect((await screen.findAllByText(approvedId, {}, httpWait)).length).toBeGreaterThan(0);
+    expect(screen.getByText("Needs approval")).toBeTruthy();
+    const review = screen.getByText(/Review policy from/).closest("details")!;
+    expect(review.open).toBe(false);
+    review.open = true;
+    expect(review.textContent).toContain('"human_review": true');
+    const approval = (await screen.findByText("Approval details", {}, httpWait)).closest("details")!;
+    expect(approval.open).toBe(false);
+    approval.open = true;
+    expect(review.textContent).toContain("pol_changed");
+    expect(approval.textContent).toContain(approvedId);
 
     fireEvent.click(screen.getAllByRole("button", { name: "Approve updated policy" })[0]!);
     await waitFor(() => expect(screen.queryByText("A runner is waiting for a new policy.")).toBeNull(), httpWait);
@@ -160,8 +167,8 @@ describe("repository policy after setup", () => {
     expect(await screen.findByText("Runners have conflicting project configurations.", {}, httpWait)).toBeTruthy();
     expect(screen.getByText(/Inspect and approve one shared configuration/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Approve updated policy/ })).toBeNull();
-    expect(screen.getByText("runner_a")).toBeTruthy();
-    expect(screen.getByText("runner_b")).toBeTruthy();
+    expect(screen.getByText("Review policy from runner_a")).toBeTruthy();
+    expect(screen.getByText("Review policy from runner_b")).toBeTruthy();
     const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
     expect(after.policy.policy_id).toBe(current.policy.policy_id);
   });
@@ -170,14 +177,14 @@ describe("repository policy after setup", () => {
     const { base } = await mount();
     const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
     await renderSettings();
-    fireEvent.click(await screen.findByRole("button", { name: "Paste a descriptor" }, httpWait));
+    fireEvent.click(await screen.findByRole("button", { name: "Paste policy" }, httpWait));
     const box = screen.getByLabelText("Policy descriptor");
     fireEvent.change(box, { target: { value: "not json" } });
-    fireEvent.click(screen.getByRole("button", { name: "Approve pasted descriptor" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve policy" }));
     expect(await screen.findByText(/The pasted descriptor is not JSON/, {}, httpWait)).toBeTruthy();
 
     fireEvent.change(box, { target: { value: JSON.stringify({ ...current.policy, policy_id: "pol_pasted" }) } });
-    fireEvent.click(screen.getByRole("button", { name: "Approve pasted descriptor" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve policy" }));
     await waitFor(async () => {
       const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
       expect(after.policy.policy_id).toBe("pol_pasted");
