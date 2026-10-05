@@ -20,7 +20,7 @@ Change platform entitlement
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [POST /api/cloud/platform/organizations/:organization/entitlements](../internal/cloudentry/service.go#L236), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:182](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L182), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:299](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L299), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:182](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L182), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:299](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L299), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:155](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L155), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:277](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L277), [web/conversation/src/app/entry/api.ts:257](../web/conversation/src/app/entry/api.ts#L257)
+Sources: [POST /api/cloud/platform/organizations/:organization/entitlements](../internal/cloudentry/service.go#L236), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:182](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L182), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:299](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L299), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:187](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L187), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:309](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L309), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:160](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L160), [web/conversation/src/app/entry/ComplimentaryPlans.tsx:277](../web/conversation/src/app/entry/ComplimentaryPlans.tsx#L277), [web/conversation/src/app/entry/api.ts:257](../web/conversation/src/app/entry/api.ts#L257)
 ## cloudentry.chooser
 
 Chooser
@@ -4694,7 +4694,7 @@ Revoke runner identity
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: material action; YOLO suppresses confirmation only → operator
 
-Sources: [DELETE /api/v2/organizations/:organization/runners/:runner](../internal/hubserver/runner_enrollment.go#L31)
+Sources: [DELETE /api/v2/organizations/:organization/runners/:runner](../internal/hubserver/runner_enrollment.go#L31), [web/conversation/src/app/account/api.ts:385](../web/conversation/src/app/account/api.ts#L385)
 ## hubserver.rotate_api_token
 
 Rotate a p i token
@@ -7817,3 +7817,19 @@ workHttp.ts http adapter
 - Confirmation: read or ordinary non-destructive write → none
 
 Sources: [web/conversation/src/app/work/IssuePage.tsx:121](../web/conversation/src/app/work/IssuePage.tsx#L121)
+## cloudentry.attach_attempt_evidence
+
+Attach native attempt evidence
+
+- Audience: worker; status: **excluded**; owner: digitaldrywood/detent#3341.
+- Decision: These exact native attempt evidence routes require the current worker producer and running attempt authority. The worker attach_evidence tool reuses existing attachment owners; operator upload_attachment cannot impersonate an evidence producer.
+- Tool: `boundary.no_tool` — not applicable → explicit source decision
+- Authority: role authenticated worker/runner owning the running attempt; credential worker scope and existing runner events operation; signed entry assertion for tenant transport; project current runner project authority and approved lease policy; ownership current organization, project, work item, runner lease and running attempt; exact lease ID and fencing token.
+- Application: Service.uploadAttachment and Service.attachmentCall; tenant checkCloudAttachment, recordCloudAttachment, checkAttachmentEvidence, attachmentEvidenceCommand and recordAttachmentEvidence
+- Extraction: None; existing worker attach_evidence transport reuses attachment storage and native lease-bound commands.
+- Preconditions: configured private shared entry storage; current runner credential, lease, fencing token and matching running attempt; attempt endpoint matches evidence identity and Idempotency-Key matches the upload retry identity; validated bounded attachment content and caption; at most ten evidence files per attempt
+- Coverage: internal/cloudentry/agent_evidence_test.go: TestNativeAgentEvidence (worker upload, identical retry, completion publication, authenticated read and stale execution refusal)
+- Availability: hosted_shared / native / authenticated shared entry storage and tenant attempt evidence owners
+- Confirmation: worker evidence upload under current attempt authority → not_applicable
+
+Sources: [POST strings.TrimSuffix(base, "/attachments") + "/attempts/:attempt/evidence"](../internal/cloudentry/attachments.go#L55), [POST /api/v2/organizations/:organization/projects/:project/attempts/:attempt/evidence](../internal/hubserver/cloud_attachments.go#L55), [POST /api/v2/organizations/:organization/projects/:project/attempts/:attempt/evidence/check](../internal/hubserver/cloud_attachments.go#L54)

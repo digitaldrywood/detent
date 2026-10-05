@@ -35,23 +35,23 @@
         {
           "source": "web/conversation/src/app/entry/ComplimentaryPlans.tsx",
           "kind": "form",
-          "definition": "<form onSubmit={onSubmit} noValidate>",
+          "definition": "<form className=\"contents\" onSubmit={onSubmit} noValidate>",
           "occurrence": 1,
-          "line": 182
+          "line": 187
         },
         {
           "source": "web/conversation/src/app/entry/ComplimentaryPlans.tsx",
           "kind": "form",
-          "definition": "<form onSubmit={onSubmit} noValidate>",
+          "definition": "<form className=\"contents\" onSubmit={onSubmit} noValidate>",
           "occurrence": 2,
-          "line": 299
+          "line": 309
         },
         {
           "source": "web/conversation/src/app/entry/ComplimentaryPlans.tsx",
           "kind": "request",
-          "definition": "submit({ action: \"grant\", idempotency_key: key, expected_revision: revision, plan: { id: selected.id, version: selected.version }, expires_at: expires === \"\" ? null : `${expires}T23:59:59Z`, reason: reason.trim(), })",
+          "definition": "submit({ action: \"grant\", idempotency_key: key, expected_revision: revision, ...selection, expires_at: expires === \"\" ? null : `${expires}T23:59:59Z`, reason: reason.trim(), })",
           "occurrence": 1,
-          "line": 155
+          "line": 160
         },
         {
           "source": "web/conversation/src/app/entry/ComplimentaryPlans.tsx",
@@ -21831,6 +21831,13 @@
           "path": "runnerBase + \"/:runner\"",
           "handler": "s.revokeRunnerIdentity",
           "resolved_path": "/api/v2/organizations/:organization/runners/:runner"
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(Empty,\"DELETE\",`${base}/runners/${encodeURIComponent(runner)}`)",
+          "occurrence": 1,
+          "line": 385
         }
       ],
       "availability": [
@@ -37557,6 +37564,84 @@
       "status": "excluded",
       "coverage": "internal/mcp/protocol_test.go: TestProtocolApplicationParity, TestModernHTTPMetadataValidation, TestCatalogCursorCurrentAuthority; internal/cli/mcp_test.go: modern/legacy authenticated bridge and clean stdout; internal/web/operator_commands_test.go: modern HTTP shared command approval/current authority. Transport exclusions remain exclusions; no pending application parity claimed.",
       "decision": "Exact read(cursor) callback is frontend pagination plumbing. Concrete attempt/history/comment API requests retain separately inventoried operator decisions; this callback introduces no application command."
+    },
+    {
+      "id": "cloudentry.attach_attempt_evidence",
+      "summary": "Attach native attempt evidence",
+      "audience": "worker",
+      "sources": [
+        {
+          "source": "internal/cloudentry/attachments.go",
+          "kind": "route",
+          "definition": "e.POST(strings.TrimSuffix(base, \"/attachments\")+\"/attempts/:attempt/evidence\", s.uploadAttachment)",
+          "occurrence": 1,
+          "line": 55,
+          "method": "POST",
+          "path": "strings.TrimSuffix(base, \"/attachments\") + \"/attempts/:attempt/evidence\"",
+          "handler": "s.uploadAttachment"
+        },
+        {
+          "source": "internal/hubserver/cloud_attachments.go",
+          "kind": "route",
+          "definition": "e.POST(nativeBase+\"/attempts/:attempt/evidence\", s.recordCloudAttachment, s.requireNativeScope(apiScopeWorker)) [route=\"/api/v2/organizations/:organization/projects/:project/attempts/:attempt/evidence\"]",
+          "occurrence": 1,
+          "line": 55,
+          "method": "POST",
+          "path": "nativeBase + \"/attempts/:attempt/evidence\"",
+          "handler": "s.recordCloudAttachment",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/attempts/:attempt/evidence"
+        },
+        {
+          "source": "internal/hubserver/cloud_attachments.go",
+          "kind": "route",
+          "definition": "e.POST(nativeBase+\"/attempts/:attempt/evidence/check\", s.checkCloudAttachment, s.requireNativeScope(apiScopeWorker)) [route=\"/api/v2/organizations/:organization/projects/:project/attempts/:attempt/evidence/check\"]",
+          "occurrence": 1,
+          "line": 54,
+          "method": "POST",
+          "path": "nativeBase + \"/attempts/:attempt/evidence/check\"",
+          "handler": "s.checkCloudAttachment",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/attempts/:attempt/evidence/check"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "authenticated shared entry storage and tenant attempt evidence owners"
+        }
+      ],
+      "authority": {
+        "role": "authenticated worker/runner owning the running attempt",
+        "credential_scope": "worker scope and existing runner events operation; signed entry assertion for tenant transport",
+        "project_grant": "current runner project authority and approved lease policy",
+        "ownership": "current organization, project, work item, runner lease and running attempt; exact lease ID and fencing token"
+      },
+      "preconditions": [
+        "configured private shared entry storage",
+        "current runner credential, lease, fencing token and matching running attempt",
+        "attempt endpoint matches evidence identity and Idempotency-Key matches the upload retry identity",
+        "validated bounded attachment content and caption; at most ten evidence files per attempt"
+      ],
+      "confirmation": [
+        {
+          "when": "worker evidence upload under current attempt authority",
+          "class": "not_applicable"
+        }
+      ],
+      "application": "Service.uploadAttachment and Service.attachmentCall; tenant checkCloudAttachment, recordCloudAttachment, checkAttachmentEvidence, attachmentEvidenceCommand and recordAttachmentEvidence",
+      "extraction": "None; existing worker attach_evidence transport reuses attachment storage and native lease-bound commands.",
+      "tool": {
+        "set": "",
+        "name": "",
+        "arguments": "",
+        "result": ""
+      },
+      "owner": "digitaldrywood/detent#3341",
+      "status": "excluded",
+      "coverage": "internal/cloudentry/agent_evidence_test.go: TestNativeAgentEvidence (worker upload, identical retry, completion publication, authenticated read and stale execution refusal)",
+      "decision": "These exact native attempt evidence routes require the current worker producer and running attempt authority. The worker attach_evidence tool reuses existing attachment owners; operator upload_attachment cannot impersonate an evidence producer."
     }
   ]
 }
