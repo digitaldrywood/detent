@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -137,26 +138,63 @@ func TestToolCallReturnsStructuredAndTextContent(t *testing.T) {
 	t.Parallel()
 
 	observedAt := time.Date(2026, 8, 8, 2, 30, 0, 0, time.UTC)
-	executor := &staticExecutor{result: operatortool.Result{Content: json.RawMessage(fmt.Sprintf(`{"generated_at":%q,"freshness":"live","items":[]}`, observedAt.Format(time.RFC3339)))}}
-	client := startLiveServer(t, executor)
-	client.write(initializeRequest)
-	client.read()
-	client.write(initializedNotice)
-	client.write(`{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"board_state","arguments":{"limit":1}}}`)
-	response := client.read()
-	client.close()
+	stored := &tracker.AttemptDiff{ID: "diff_a", AttemptID: "attempt_a", Producer: tracker.DiffProducer{Kind: tracker.DiffSourceAttempt, ID: "attempt_a"}, Generation: tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: 2}, CreatedAt: observedAt.Add(-time.Hour), Files: []tracker.AttemptDiffFile{}}
+	for _, test := range []struct {
+		name string
+		diff *tracker.AttemptDiff
+	}{
+		{"absent stored generation", nil},
+		{"stored generation", stored},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content, err := operatortool.BoundedChangeResult(operatortool.ChangeResult{ProjectID: "prj_p", WorkItemID: "wi_i", GeneratedAt: observedAt, Freshness: "live", Diff: test.diff})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := startLiveServer(t, &staticExecutor{result: content})
+			client.write(initializeRequest)
+			client.read()
+			client.write(initializedNotice)
+			client.write(`{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"get_work_item_diff","arguments":{"project_id":"prj_p","work_item_id":"wi_i"}}}`)
+			response := client.read()
+			client.close()
 
-	var result struct {
-		Content           []json.RawMessage          `json:"content"`
-		StructuredContent map[string]json.RawMessage `json:"structuredContent"`
-		IsError           bool                       `json:"isError"`
-	}
-	decodeResult(t, response, &result)
-	if result.IsError || len(result.Content) != 1 || string(result.StructuredContent["freshness"]) != `"live"` {
-		t.Fatalf("tool result = %#v", result)
-	}
-	if _, wrapped := result.StructuredContent["content"]; wrapped {
-		t.Fatalf("structured result was wrapped: %#v", result.StructuredContent)
+			var result struct {
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+				StructuredContent map[string]json.RawMessage `json:"structuredContent"`
+				IsError           bool                       `json:"isError"`
+			}
+			decodeResult(t, response, &result)
+			if result.IsError || len(result.Content) != 1 || string(result.StructuredContent["freshness"]) != `"live"` {
+				t.Fatalf("tool result = %#v", result)
+			}
+			if _, wrapped := result.StructuredContent["content"]; wrapped {
+				t.Fatalf("structured result was wrapped: %#v", result.StructuredContent)
+			}
+			if result.Content[0].Type != "text" || result.Content[0].Text != string(content.Content) {
+				t.Fatalf("text result = %#v", result.Content)
+			}
+			raw, present := result.StructuredContent["diff"]
+			if !present {
+				t.Fatal("nullable diff field omitted")
+			}
+			if test.diff == nil {
+				if string(raw) != "null" {
+					t.Fatalf("absent diff = %s, want null", raw)
+				}
+			} else {
+				var diff tracker.AttemptDiff
+				if err := json.Unmarshal(raw, &diff); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(diff, *test.diff) {
+					t.Fatalf("stored diff = %#v, want %#v", diff, *test.diff)
+				}
+			}
+		})
 	}
 }
 
