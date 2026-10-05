@@ -159,17 +159,18 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 }
 
 type runnerSettings struct {
-	UpdateRequest   *runnerauth.UpdateRequest   `json:"update_request,omitempty"`
-	CapacityRequest *runnerauth.CapacityRequest `json:"capacity_request,omitempty"`
-	HomeProjectIDs  []tracker.ProjectID         `json:"home_project_ids"`
-	IsolationTier   string                      `json:"isolation_tier"`
-	HostServices    []string                    `json:"host_services"`
-	Availability    runnerauth.Availability     `json:"availability"`
-	Spillover       runnerauth.Spillover        `json:"spillover"`
+	ProjectConfigurationCommand *runnerauth.ProjectConfigurationCommand `json:"project_configuration_request,omitempty"`
+	UpdateRequest               *runnerauth.UpdateRequest               `json:"update_request,omitempty"`
+	CapacityRequest             *runnerauth.CapacityRequest             `json:"capacity_request,omitempty"`
+	HomeProjectIDs              []tracker.ProjectID                     `json:"home_project_ids"`
+	IsolationTier               string                                  `json:"isolation_tier"`
+	HostServices                []string                                `json:"host_services"`
+	Availability                runnerauth.Availability                 `json:"availability"`
+	Spillover                   runnerauth.Spillover                    `json:"spillover"`
 }
 
 func settingsFromRouting(r runnerauth.Routing) runnerSettings {
-	return runnerSettings{UpdateRequest: r.UpdateRequest, CapacityRequest: r.CapacityRequest, HomeProjectIDs: r.HomeProjectIDs, IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability, Spillover: r.Spillover}
+	return runnerSettings{ProjectConfigurationCommand: r.ProjectConfigurationCommand, UpdateRequest: r.UpdateRequest, CapacityRequest: r.CapacityRequest, HomeProjectIDs: r.HomeProjectIDs, IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability, Spillover: r.Spillover}
 }
 
 func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
@@ -178,6 +179,7 @@ func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
 		return err
 	}
 	routing.UpdateRequest = settings.UpdateRequest
+	routing.ProjectConfigurationCommand = settings.ProjectConfigurationCommand
 	routing.CapacityRequest = settings.CapacityRequest
 	routing.IsolationTier = settings.IsolationTier
 	routing.HostServices = settings.HostServices
@@ -237,6 +239,7 @@ func (request runnerRoutingRequest) effective(current runnerauth.Routing) runner
 	change := request.RoutingChange
 	change.UpdateRequest = current.UpdateRequest
 	change.CapacityRequest = current.CapacityRequest
+	change.ProjectConfigurationCommand = current.ProjectConfigurationCommand
 	if request.IsolationTier == nil || *request.IsolationTier == "" {
 		change.IsolationTier = current.IsolationTier
 	} else {

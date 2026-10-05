@@ -11,35 +11,13 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
-type ManagedConfigRequest struct {
-	ProjectID              string `json:"project_id"`
-	ExpectedConfigRevision string `json:"expected_config_revision,omitempty"`
-	ExpectedPolicyID       string `json:"expected_policy_id,omitempty"`
-	PolicyID               string `json:"policy_id,omitempty"`
-	SourceRevision         string `json:"source_revision,omitempty"`
-	Checkpoint             string `json:"checkpoint,omitempty"`
-}
+type ManagedConfigRequest = runnerauth.ProjectConfigurationRequest
 
-type ManagedConfigView struct {
-	ProjectID         string             `json:"project_id"`
-	Authority         string             `json:"authority"`
-	ConfigRevision    string             `json:"config_revision,omitempty"`
-	Registered        bool               `json:"registered"`
-	RuntimeRegistered bool               `json:"runtime_registered"`
-	Paused            bool               `json:"paused"`
-	Draining          bool               `json:"draining"`
-	UnsettledAttempts int                `json:"unsettled_attempts"`
-	Source            string             `json:"source"`
-	SelectedPolicy    *policy.Descriptor `json:"selected_policy,omitempty"`
-	EffectivePolicy   *policy.Descriptor `json:"effective_policy,omitempty"`
-	Saved             bool               `json:"saved"`
-	Applied           bool               `json:"applied"`
-	Constraint        string             `json:"constraint,omitempty"`
-	ObservedAt        time.Time          `json:"observed_at"`
-}
+type ManagedConfigView = runnerauth.ProjectConfiguration
 
 type CutoverVerifier func(context.Context, globalconfig.Config, string, string, string) error
 
@@ -89,7 +67,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 		if view.Constraint != "" || ctx.Err() != nil {
 			return false
 		}
-		if revision != request.ExpectedConfigRevision {
+		if view.ConfigRevision != request.ExpectedConfigRevision {
 			view.Constraint = "The selected configuration revision changed; read it before retrying."
 			return false
 		}
@@ -104,12 +82,14 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 		}
 		switch operation {
 		case "apply_local_project_policy":
-			if !p.Paused() {
+			if request.AllowLocalBinding != nil {
+				view = o.applyLocalBinding(ctx, *cfg, revision, p, request, view)
+				return false
+			}
+			if !view.Paused && !view.Draining || view.UnsettledAttempts != 0 {
 				view.Constraint = "Finish current work and pause the selected project through its existing owner before applying policy."
 				return false
 			}
-			p.configMu.Lock()
-			defer p.configMu.Unlock()
 			workflow, loadErr := loadManagedWorkflow(ctx, p.Config(), request.SourceRevision)
 			if loadErr != nil {
 				view.Constraint = "The configured committed workflow revision is unavailable or has local overlays."
@@ -122,12 +102,19 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 				view.Constraint = "The selected source policy identity changed; read it before retrying."
 				return false
 			}
-			if err := p.requireSettledWork(ctx); err != nil || view.UnsettledAttempts != 0 {
+			checker, ok := p.policyScheduling.(policyChecker)
+			if !ok || checker.CheckProjectPolicy(ctx, p.Config().ID, candidate.Config.Tracker.Repository, descriptor) != nil {
+				view.Constraint = "The selected approved-policy owner is unavailable."
+				return false
+			}
+			if err := pauseSettledConfiguration(ctx, p, view); err != nil {
 				view.Constraint = "Active or deferred work must settle through its existing completion owner before applying policy."
 				return false
 			}
-			if _, ok := p.policyScheduling.(policyChecker); !ok {
-				view.Constraint = "The selected approved-policy owner is unavailable."
+			p.configMu.Lock()
+			defer p.configMu.Unlock()
+			if latest := o.observe(ctx, *cfg, revision, request.ProjectID); latest.Constraint != "" || latest.ConfigRevision != request.ExpectedConfigRevision || latest.EffectivePolicy == nil || latest.EffectivePolicy.ID != request.ExpectedPolicyID {
+				view.Constraint = "The selected configuration revision changed; read it before retrying."
 				return false
 			}
 			if err := p.applyWorkflowUpdate(ctx, configwatcher.Update{Workflow: workflow, At: time.Now().UTC()}, true); err != nil {
@@ -227,11 +214,13 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	}
 	view.Paused = p.Paused()
 	current := p.Config()
+	selected.Paused = current.Paused
 	if !sameProjectConfig(selected, current) {
 		view.Constraint = "The existing configuration reload has not applied the selected project settings."
 		return view
 	}
 	workflow := p.Workflow()
+	view.AllowLocalBinding = workflow.Config.Worker.EffectiveAllowLocalBinding()
 	view.EffectivePolicy = &workflow.Config.Policy
 	if workflow.Config.Policy.ID == "" {
 		descriptor, err := ResolvePolicy(current, workflow)
@@ -241,16 +230,35 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	}
 	if current.WorkflowRef != "" {
 		view.Source = "configured_committed_workflow"
-		candidate, err := loadManagedWorkflow(ctx, current, "")
-		if err == nil {
+	} else {
+		view.Source = "configured_local_workflow_read_only"
+	}
+	if loaded, err := LoadWorkflowContext(ctx, current); err == nil {
+		selected := loaded
+		selected.Config = WithMappedNativeTracker(selected.Config, p.policyScheduling, p.ID())
+		if descriptor, err := ResolvePolicy(current, selected); err == nil {
+			view.SelectedPolicy = &descriptor
+		}
+		view.ConfigRevision = policy.Digest([]byte(revision + "\x00" + loaded.SourceHash))
+		for _, enabled := range []bool{true, false} {
+			candidate, _, _, err := localBindingWorkflow(ctx, current, enabled)
+			if err != nil {
+				continue
+			}
 			candidate.Config = WithMappedNativeTracker(candidate.Config, p.policyScheduling, p.ID())
 			descriptor, err := ResolvePolicy(current, candidate)
-			if err == nil {
-				view.SelectedPolicy = &descriptor
+			if err != nil {
+				continue
+			}
+			if enabled {
+				view.LocalBindingPolicy = &descriptor
+			} else {
+				view.RestrictedBindingPolicy = &descriptor
 			}
 		}
 	} else {
-		view.Source = "configured_local_workflow_read_only"
+		view.Constraint = "The selected local configuration cannot be read or validated."
+		return view
 	}
 	if orch := p.Orchestrator(); orch != nil && p.Running() {
 		state, err := orch.State(ctx)
@@ -308,4 +316,14 @@ func (p *Project) requireSettledWork(ctx context.Context) error {
 		return errors.New("project has unsettled attempts")
 	}
 	return nil
+}
+
+func pauseSettledConfiguration(ctx context.Context, p *Project, view ManagedConfigView) error {
+	if view.UnsettledAttempts != 0 || !view.Paused && !view.Draining {
+		return errors.New("project work must drain before configuration application")
+	}
+	if err := p.Pause(ctx); err != nil {
+		return err
+	}
+	return p.requireSettledWork(ctx)
 }

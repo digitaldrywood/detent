@@ -22,11 +22,30 @@ local revision and redacted selected/effective policy. Its admin commands apply
 an approved committed policy, drain current work or detach one settled migrated
 project. They use the existing operator command API and approval/receipt owner;
 see [managed local project configuration](mcp-capabilities.md#managed-local-project-configuration-native-94)
-for exact revision, policy and handoff requirements. Cloud routing and runner
-source association do not edit local board configuration. A stopped or missing
-owner requires its supported installed configuration service; these calls never
-start or enable a board. Verify `registered` and `runtime_registered` through a
+for exact revision, policy and handoff requirements. Cloud also reaches the
+enrolled runner's configuration owner through its existing heartbeat transport,
+independently of the local board. Select `runner_id` when more than one granted
+runner reports the project. Commands through Cloud additionally require that
+runner's current `expected_runner_revision`. A stopped or missing runner owner
+returns an explicit constraint; these calls never start or enable a board.
+Verify `registered` and `runtime_registered` through a
 fresh read after a saved removal; a command retry returns its original receipt.
+
+For the existing `worker.allow_local_binding` setting, read the effective
+`allow_local_binding` and the complete `local_binding_policy` or
+`restricted_binding_policy` descriptor. Approve the selected descriptor through
+`approve_project_policy` using the current approved policy identity, then submit
+`apply_local_project_policy` with the matching `allow_local_binding`, policy ID,
+source revision and configuration revision. The owner changes only that field
+in the configured project's private `detent.local.yaml`, preserving its other
+settings. Configuration CAS includes the global configuration and actual project
+definition. `pending` means the selected request awaits heartbeat application; read again
+for `saved` and `applied` evidence. The project must be paused or draining with
+settled work. After draining settles, application uses the existing pause owner
+before changing policy. The grant
+defaults to false and includes connections to other localhost services as well
+as temporary test servers; the sandbox tier and host-service grants retain
+their existing owners.
 
 Sign in to the intended Cloud organization and open **Settings → API & MCP**.
 Existing `/settings/mcp` bookmarks open this same page. Create a named key,

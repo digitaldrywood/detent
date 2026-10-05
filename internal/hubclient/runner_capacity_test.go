@@ -20,10 +20,12 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 		name      string
 		supported bool
 		denied    bool
+		dispatch  bool
 	}{
-		{"older Hub", false, false},
-		{"capacity owner Hub", true, false},
-		{"denied heartbeat", true, true},
+		{"older Hub", false, false, false},
+		{"capacity owner Hub", true, false, false},
+		{"dispatch heartbeat", true, false, true},
+		{"denied heartbeat", true, true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -41,8 +43,9 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			if err := runnerauth.Save(path, file); err != nil {
 				t.Fatal(err)
 			}
+			staleProject := &runnerauth.ProjectConfigurationRequest{RequestID: "cached-project-request", ProjectID: "prj_test", Operation: "apply_local_project_policy"}
 			stale := runnerauth.CapacityRequest{ExpectedConfigRevision: strings.Repeat("b", 64), Capacity: 4, Backend: "codex"}
-			if err := runnerauth.SaveRoutingCache(path, runnerauth.RoutingSnapshot{RunnerID: file.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 4, CapacityRequest: &stale, UpdateRequest: &runnerauth.UpdateRequest{RequestedAt: time.Now().UTC(), ID: "cached-stale-update", Service: "detent", ExpectedBuildRevision: strings.Repeat("b", 64), Version: "1.2.0", Release: true}}.Normalized()}); err != nil {
+			if err := runnerauth.SaveRoutingCache(path, runnerauth.RoutingSnapshot{ProjectConfigurationRequest: staleProject, RunnerID: file.Identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 4, CapacityRequest: &stale, UpdateRequest: &runnerauth.UpdateRequest{RequestedAt: time.Now().UTC(), ID: "cached-stale-update", Service: "detent", ExpectedBuildRevision: strings.Repeat("b", 64), Version: "1.2.0", Release: true}}.Normalized()}); err != nil {
 				t.Fatal(err)
 			}
 			request := runnerauth.CapacityRequest{ExpectedConfigRevision: strings.Repeat("a", 64), Capacity: 6, Backend: "codex"}
@@ -52,7 +55,10 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			updateReport.Revision = updateReport.BuildRevision()
 			updateCalls, updateApplications := 0, 0
 
-			snapshot := runnerauth.RoutingSnapshot{RunnerID: file.Identity.RunnerID, Revision: 2, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 6, CapacityRequest: &request, UpdateRequest: &updateRequest}.Normalized()}
+			projectRequest := &runnerauth.ProjectConfigurationRequest{RequestID: "project-request", ProjectID: "prj_test", Operation: "apply_local_project_policy"}
+			projectCalls, projectApplications := 0, 0
+			projectReport := runnerauth.ProjectConfiguration{ProjectID: "prj_test", Authority: "local_global_configuration", Source: "unavailable", ObservedAt: observedAt}
+			snapshot := runnerauth.RoutingSnapshot{ProjectConfigurationRequest: projectRequest, RunnerID: file.Identity.RunnerID, Revision: 2, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 6, CapacityRequest: &request, UpdateRequest: &updateRequest}.Normalized()}
 			calls, observations, applications, appliedLimit := 0, 0, 0, 2
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -64,7 +70,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				case r.URL.Path == "/api/v2/capabilities":
 					features := []string{"native_issues", "scoped_collaboration", "repository_policy"}
 					if test.supported {
-						features = append(features, tracker.NativeRunnerCapacityCapability, tracker.NativeRunnerUpdateCapability)
+						features = append(features, tracker.NativeRunnerCapacityCapability, tracker.NativeRunnerUpdateCapability, tracker.NativeProjectConfigurationCapability)
 					}
 					if err := json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": features}); err != nil {
 						t.Error(err)
@@ -75,9 +81,10 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 					}
 				case strings.HasSuffix(r.URL.Path, "/heartbeat"):
 					var report struct {
-						Update        *runnerauth.UpdateObservation `json:"update"`
-						Capacity      int                           `json:"capacity"`
-						Configuration *runnerauth.CapacityConfig    `json:"capacity_configuration"`
+						Project       *runnerauth.ProjectConfiguration `json:"project_configuration"`
+						Update        *runnerauth.UpdateObservation    `json:"update"`
+						Capacity      int                              `json:"capacity"`
+						Configuration *runnerauth.CapacityConfig       `json:"capacity_configuration"`
 					}
 					if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
 						t.Error(err)
@@ -92,6 +99,12 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 					}
 					if test.supported && report.Update == nil || !test.supported && report.Update != nil {
 						t.Errorf("update support report=%+v", report.Update)
+					}
+					if test.supported && !test.dispatch && report.Project == nil || (!test.supported || test.dispatch) && report.Project != nil {
+						t.Error("incorrect project configuration capability")
+					}
+					if report.Project != nil && report.Project.RequestID == projectRequest.RequestID {
+						snapshot.ProjectConfigurationRequest = nil
 					}
 					observations++
 					if test.denied {
@@ -148,8 +161,27 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			scheduler.SetProjectConfigurationOwner(func(_ context.Context, project string, desired *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration {
+				projectCalls++
+				if project != "prj_test" {
+					t.Errorf("foreign owner project: %s", project)
+				}
+				if desired != nil {
+					if desired.RequestID != projectRequest.RequestID {
+						t.Error("cached request applied without authenticated heartbeat")
+					}
+					projectApplications++
+					projectReport.RequestID = desired.RequestID
+				}
+				return projectReport
+			})
 			for range 2 {
-				err := scheduler.Heartbeat(t.Context())
+				var err error
+				if test.dispatch {
+					err = scheduler.ensureNativeMachine(t.Context(), scheduler.nativeProjects["native"])
+				} else {
+					err = scheduler.Heartbeat(t.Context())
+				}
 				if test.denied {
 					if err == nil {
 						t.Fatal("denied heartbeat succeeded")
@@ -166,6 +198,13 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			}
 			if test.supported && !test.denied && (updateCalls != 3 || updateApplications != 1) || !test.supported && updateCalls != 0 || test.denied && (updateCalls != 1 || updateApplications != 0) {
 				t.Fatalf("update observations/applications=%d/%d", updateCalls, updateApplications)
+			}
+			if test.dispatch {
+				if projectCalls != 0 || projectApplications != 0 {
+					t.Fatalf("configuration owner called from dispatch: %d/%d", projectCalls, projectApplications)
+				}
+			} else if test.supported && !test.denied && (projectCalls != 3 || projectApplications != 1) || !test.supported && projectCalls != 0 || test.denied && (projectCalls != 1 || projectApplications != 0) {
+				t.Fatalf("project calls/applications=%d/%d", projectCalls, projectApplications)
 			}
 			if observations == 0 {
 				t.Fatal("heartbeat was not sent")

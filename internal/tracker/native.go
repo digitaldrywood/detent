@@ -24,6 +24,8 @@ const NativeProviderCapacityCapability = "provider_capacity_reservations"
 const NativeCheckoutRepositoryCapability = "runner_checkout_repository"
 const NativeRunnerUpdateCapability = "runner_installed_update"
 
+const NativeProjectConfigurationCapability = "runner_project_configuration"
+
 const NativeRunnerCapacityCapability = "runner_capacity_configuration"
 const NativeLocalChecksCapability = "runner_local_checks"
 const NativeRunnerSetupCapability = "runner_project_setup"

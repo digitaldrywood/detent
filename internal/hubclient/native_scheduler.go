@@ -62,13 +62,20 @@ func (s *Scheduler) Heartbeat(ctx context.Context) error {
 		return nil
 	}
 	var result error
+	s.mu.Lock()
+	projectOwner := s.projectConfiguration
+	s.mu.Unlock()
 	for _, source := range s.nativeProjects {
-		result = errors.Join(result, s.ensureNativeMachine(ctx, source))
+		result = errors.Join(result, s.heartbeatNativeMachine(ctx, source, projectOwner))
 	}
 	return result
 }
 
 func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConnector) error {
+	return s.heartbeatNativeMachine(ctx, source, nil)
+}
+
+func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeConnector, projectOwner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration) error {
 	project := source.client.project
 	s.mu.Lock()
 	last := s.nativeHeartbeats[project]
@@ -87,6 +94,17 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 		updateSupported = supported
 		if supported {
 			update = owner(ctx, nil)
+		}
+	}
+	var projectConfig *runnerauth.ProjectConfiguration
+	if projectOwner != nil {
+		supported, err := source.client.HubFeature(ctx, tracker.NativeProjectConfigurationCapability)
+		if err != nil {
+			return err
+		}
+		if supported {
+			view := projectOwner(ctx, string(project), nil)
+			projectConfig = &view
 		}
 	}
 	var capacityConfig *runnerauth.CapacityConfig
@@ -180,6 +198,7 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	s.machine.Problems = problems
 	machine := s.machine
 	s.mu.Unlock()
+	machine.ProjectConfiguration = projectConfig
 	machine.LocalChecks = localChecks
 	machine.Admission = admission
 	machine.CheckoutRepository = repository
@@ -190,6 +209,15 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 	} else {
 		if err := source.client.RegisterMachine(ctx, machine); err != nil {
 			return err
+		}
+	}
+	if projectConfig != nil {
+		if request := s.client.runner.projectConfigurationRequest(); request != nil && request.ProjectID == string(project) && request.RequestID != projectConfig.RequestID {
+			view := projectOwner(ctx, string(project), request)
+			machine.ProjectConfiguration = &view
+			if err := source.client.HeartbeatMachine(ctx, machine); err != nil {
+				return err
+			}
 		}
 	}
 	if updateSupported {

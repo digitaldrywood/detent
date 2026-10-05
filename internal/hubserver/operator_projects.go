@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -85,7 +84,21 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scope, ProjectID: r.ProjectID}); err != nil {
 			return result, err
 		}
-		return hubProjectResult(project.MissingConfigurationOwner(r.ProjectID))
+		if !d.Annotations.ReadOnly {
+			connection := operatortool.CurrentConnection(ctx)
+			metadata, err := (mutation.Metadata{PrincipalID: connection.Identity.PrincipalID, OrganizationID: connection.Identity.OrganizationID, ProjectID: r.ProjectID, Action: call.Name, Source: "mcp", CorrelationID: newNativeID("mcp"), Confirmation: "none"}).Bind(r.RequestID, call.Arguments)
+			if err != nil {
+				return result, operatortool.ErrInvalidArguments
+			}
+			defer func() {
+				outcome := "submitted"
+				if resultErr != nil {
+					outcome = "failed"
+				}
+				e.AuditAction(ctx, chatpkg.Action{Mutation: metadata}, outcome)
+			}()
+		}
+		return e.localProjectConfiguration(ctx, call.Name, r)
 	}
 	if d.Meta.Toolset != "projects" {
 		return operatortool.NewAuthorizedExecutor(nil).Execute(ctx, call)

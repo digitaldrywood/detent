@@ -149,8 +149,10 @@ references through the shared detail owners.
 ## Managed local project configuration (native #94)
 
 The `local_projects` toolset uses the selected installed local configuration
-owner. `local_project_configuration` reads its actual global configuration
-revision, effective policy and selected committed workflow policy. Provenance
+owner. `local_project_configuration` reads its actual configuration
+revision, effective policy and selected workflow policy, including private
+overlays. The revision covers both global configuration and the selected project
+definition. Provenance
 contains identities and revisions, without file paths, workflow instructions,
 credentials or private configuration values. A Cloud project, runner source
 association and local board registration remain separate authorities.
@@ -161,7 +163,24 @@ require current admin scope for the exact project, existing operator approval,
 durable operator command receipts; retries reauthorize and return the original
 receipt without repeating the effect. Policy application additionally requires
 the exact approved `policy_id` and `source_revision` from the configured committed
-workflow, a paused project and settled work. Local workflow overlays are refused.
+workflow, a paused or draining project and settled work. A settled draining
+project is paused through the existing owner before policy application. Ordinary committed policy
+application refuses local overlays. For the existing `worker.allow_local_binding`
+field, the owner resolves complete candidate descriptors from the actual
+definition and its overlays. `local_binding_policy` and
+`restricted_binding_policy` can be presented to the existing policy approval
+owner; applying one requires the matching `allow_local_binding` argument. The
+private split definition's `detent.local.yaml` retains all other settings.
+No arbitrary configuration path, digest or worker privilege is accepted.
+
+Cloud reaches the enrolled runner's same configuration owner through heartbeat
+observations and requests, without starting or enabling the retired local board.
+The current runner binding and project grants select the owner. `runner_id`
+disambiguates multiple granted runners; Cloud commands also require
+`expected_runner_revision`. The issuer's current authority, runner revision,
+project grants and approved policy are rechecked before delivery. A selected
+request awaiting heartbeat application returns `pending: true`; fresh configuration reads distinguish delivery
+from saved configuration and applied runtime policy.
 
 Drain uses the existing project orchestrator to finish current work and reject
 new dispatch. Local intake, routines, backlog admission and retro schedules must
@@ -176,8 +195,8 @@ Receipts distinguish `saved` configuration from `applied` runtime policy/drain.
 A saved removal returns `registered: false` while `runtime_registered: true`
 until the existing reload removes the runtime project. Read again to verify
 both registrations are absent. A missing/stopped owner explicitly requires a
-supported installed configuration service; hosted Cloud calls cannot edit that
-file or start the stopped board. Stale revisions, unsupported sources and
+supported installed configuration service; Cloud never edits a file directly
+or starts a stopped board. Stale revisions, unsupported sources and
 incomplete handoff return redacted constraints, never fabricated completion.
 
 ## Current connection authority
