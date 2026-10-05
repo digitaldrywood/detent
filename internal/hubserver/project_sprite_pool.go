@@ -110,18 +110,36 @@ func (s *Service) setSpritePool(c echo.Context) error {
 	if err := decodeAPIJSON(c, &settings); err != nil {
 		return invalidAPIRequest(c, err)
 	}
+	if err := s.updateSpritePool(c.Request().Context(), scope, settings); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	s.startSpritePoolForQueue(scope)
+	return s.getSpritePool(c)
+}
+
+func validateSpritePoolSettings(settings *spritePoolSettings) error {
 	if settings.IdleSeconds == 0 {
 		settings.IdleSeconds = 300
 	}
 	if settings.MinRunners < 0 || settings.MaxRunners < settings.MinRunners || settings.MaxRunners > 100 || settings.IdleSeconds < 30 || settings.IdleSeconds > 86400 || len(settings.Bootstrap) > 65536 || settings.MaxRunners > 0 && strings.TrimSpace(settings.Bootstrap) == "" || settings.Revision < 0 {
-		return s.nativeAPIError(c, nativeInvalid("Sprite pools require 0 <= min_runners <= max_runners <= 100, an idle threshold of 30 to 86400 seconds, and customer provider/project bootstrap steps when enabled"))
+		return nativeInvalid("Sprite pools require 0 <= min_runners <= max_runners <= 100, an idle threshold of 30 to 86400 seconds, and customer provider/project bootstrap steps when enabled")
+	}
+	return nil
+}
+
+func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, settings spritePoolSettings) error {
+	if !canManageProjectSecrets(scope.credential) {
+		return nativeInvalid("Sprite pool settings require owner or admin access")
+	}
+	if err := validateSpritePoolSettings(&settings); err != nil {
+		return err
 	}
 	if settings.MaxRunners > 0 && (s.config.SecretKeys == nil || s.config.Hosted == nil) {
-		return s.nativeAPIError(c, nativeInvalid("Sprite pools require hosted configuration and the project secret store"))
+		return nativeInvalid("Sprite pools require hosted configuration and the project secret store")
 	}
 	scope.requireHostedAdmin = true
-	err := s.secretMutation(c.Request().Context(), scope, func(tx *sql.Tx) error {
-		if err := requireCredentialAuthority(c.Request().Context(), tx, scope.credential, s.config.now()); err != nil {
+	return s.secretMutation(ctx, scope, func(tx *sql.Tx) error {
+		if err := requireCredentialAuthority(ctx, tx, scope.credential, s.config.now()); err != nil {
 			return err
 		}
 		actor := scope.credential.ID
@@ -129,21 +147,16 @@ func (s *Service) setSpritePool(c echo.Context) error {
 			actor = scope.credential.HostedPrincipal
 		}
 		var revision int64
-		err := tx.QueryRowContext(c.Request().Context(), `SELECT revision FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&revision)
+		err := tx.QueryRowContext(ctx, `SELECT revision FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&revision)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if revision != settings.Revision {
 			return nativeConflict(tracker.Revision(revision))
 		}
-		_, err = tx.ExecContext(c.Request().Context(), `INSERT INTO project_sprite_pools(organization_id,project_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by,revision) VALUES(?,?,?,?,?,?,?,1) ON CONFLICT(organization_id,project_id) DO UPDATE SET min_runners=excluded.min_runners,max_runners=excluded.max_runners,idle_seconds=excluded.idle_seconds,bootstrap=excluded.bootstrap,configured_by=excluded.configured_by,revision=project_sprite_pools.revision+1`, scope.organization, scope.project, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Bootstrap, actor)
+		_, err = tx.ExecContext(ctx, `INSERT INTO project_sprite_pools(organization_id,project_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by,revision) VALUES(?,?,?,?,?,?,?,1) ON CONFLICT(organization_id,project_id) DO UPDATE SET min_runners=excluded.min_runners,max_runners=excluded.max_runners,idle_seconds=excluded.idle_seconds,bootstrap=excluded.bootstrap,configured_by=excluded.configured_by,revision=project_sprite_pools.revision+1`, scope.organization, scope.project, settings.MinRunners, settings.MaxRunners, settings.IdleSeconds, settings.Bootstrap, actor)
 		return err
 	})
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	s.startSpritePoolForQueue(scope)
-	return s.getSpritePool(c)
 }
 
 func (s *Service) spritePoolAuthority(ctx context.Context, query nativeQueryer, scope nativeScope) (string, error) {

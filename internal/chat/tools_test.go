@@ -35,6 +35,8 @@ func TestActionSummaryDescribesOperatorActions(t *testing.T) {
 		{name: "file", action: Action{Kind: ActionFileIssue, ProjectID: "detent", Title: "Follow-up"}, want: `File "Follow-up" on detent`},
 		{name: "project policy", action: Action{Kind: "approve_project_policy", ProjectID: "project"}, want: "approve project policy for project project"},
 		{name: "project creation", action: Action{Kind: "create_hosted_project"}, want: "create hosted project"},
+		{name: "Sprite pool", action: Action{Kind: "set_sprite_pool", ProjectID: "project"}, want: "set sprite pool for project project"},
+		{name: "Sprite retry", action: Action{Kind: "scale_up_sprite_pool", ProjectID: "project"}, want: "scale up sprite pool for project project"},
 		{name: "budget", action: Action{Kind: ActionKind(operatortool.BudgetOverrideSet), ProjectID: "project"}, want: "Set budget override for project"},
 		{name: "unknown", action: Action{}, want: "Unknown operator action"},
 	}

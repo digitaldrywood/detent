@@ -7,6 +7,24 @@ checkouts. The runner executes work inside the Sprite; the Hub owns the work
 items and wakes the runner for new work. This guide takes you from a Fly account
 to a completed issue with the console closed.
 
+An organization owner or admin with the project's runner-management grant can
+also ask **Luna** to "run this project on Fly Sprites." Luna reads the project's
+pool, links to the existing Sprites connector for secure token entry, and
+previews the floor, ceiling and customer bootstrap steps for approval in chat.
+Start with a floor and ceiling of one to connect the first runner even before
+there is queued work. New Sprites run the saved customer setup before the pinned
+runner bootstrap; provide credential-free steps that prepare the project's
+checkout and dependencies using your own approved credential setup.
+
+Luna reports bootstrap progress and provider readiness. Follow the sign-in steps
+below inside the Sprite; never paste tokens, provider API keys or private
+bootstrap credentials into chat. After a token, billing or bootstrap failure,
+correct the cause and approve Luna's scale-up retry. The existing pool lifecycle
+cleans up the failed member and provisions within the saved bounds. A connected
+runner still needs Git access, configured providers and approved repository
+policy; verify a confirmed Todo issue reaches a real pushed branch before
+considering onboarding complete.
+
 ## 1. What you need
 
 - A [Fly.io account](https://fly.io/app/sign-up) with Sprites billing enabled

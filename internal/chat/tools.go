@@ -36,6 +36,8 @@ func ActionSummary(action Action) string {
 		return summary
 	case ActionFileIssue:
 		return fmt.Sprintf("File %q on %s", action.Title, action.ProjectID)
+	case "set_sprite_pool", "scale_up_sprite_pool":
+		return fmt.Sprintf("%s for project %s", strings.ReplaceAll(string(action.Kind), "_", " "), action.ProjectID)
 	case "create_workspace", "delete_workspace", "create_conversation", "patch_conversation", "post_conversation_command", "link_conversation", "upload_conversation_attachment", "delete_conversation_attachment", "create_project_action", "patch_project_action", "delete_project_action", "create_project_action_run":
 		return fmt.Sprintf("%s on project %s (%s)", strings.ReplaceAll(string(action.Kind), "_", " "), action.ProjectID, actionLabel(action))
 	case ActionKind(operatortool.BillingCheckout):

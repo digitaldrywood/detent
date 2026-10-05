@@ -126,7 +126,13 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	_, markErr := s.database.db.ExecContext(cleanup, `UPDATE project_sprite_members SET state='deleting' WHERE organization_id=? AND project_id=? AND name=?`, scope.organization, scope.project, name)
+	failure := "Sprite provisioning did not complete; check customer setup and retry\n"
+	if errors.Is(err, errSpritesTokenRejected) {
+		failure = errSpritesTokenRejected.Error() + "\n"
+	} else if errors.Is(err, errSpritesBilling) {
+		failure = errSpritesBilling.Error() + "\n"
+	}
+	_, markErr := s.database.db.ExecContext(cleanup, `UPDATE project_sprite_members SET state='deleting',bootstrap_log=bootstrap_log || ? WHERE organization_id=? AND project_id=? AND name=?`, failure, scope.organization, scope.project, name)
 	if ctx.Err() != nil {
 		return errors.Join(err, markErr)
 	}
@@ -159,6 +165,9 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	}
 	data, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	_ = response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		return spritesResponseError(response.StatusCode)
+	}
 	var created struct {
 		Name string `json:"name"`
 	}

@@ -213,9 +213,19 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 		}
 		action.Description = fmt.Sprintf("Issue %s: %s (revision %d).", current.Title, current.State, current.Revision)
 	}
+	return t.submitCoordinatorAction(ctx, record, call, action)
+}
+
+func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall, action chat.Action) (any, error) {
+	if action.RequestID == "" {
+		digest := sha256.Sum256([]byte(t.state.users[len(t.state.users)-1].ID + ":" + call.Name + ":" + string(call.Arguments)))
+		action.RequestID = "luna_" + hex.EncodeToString(digest[:])
+	}
+	s := t.coordinator.service.server
 	identity := operatortool.ConnectionIdentity(ctx)
 	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: call.Name, Source: "chat", CorrelationID: newNativeID("luna")}
-	action.Mutation, err = action.Mutation.Bind(requestID, action.Arguments)
+	var err error
+	action.Mutation, err = action.Mutation.Bind(action.RequestID, action.Arguments)
 	if err != nil {
 		return nil, err
 	}
@@ -256,6 +266,9 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 		return chat.ActionExecution{}, err
 	}
 	ctx = mutation.WithContext(ctx, action.Mutation)
+	if coordinatorSpriteMutation(string(action.Kind)) {
+		return s.executeCoordinatorSpriteAction(ctx, action)
+	}
 	if string(action.Kind) == "update_project_integration" {
 		raw, err := (hubProjectExecutor{s}).command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
 		if err != nil {
@@ -300,7 +313,7 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 
 func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Action) (context.Context, error) {
 	requirement := operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: action.ProjectID, ResourceKind: "work_item", ResourceID: action.IssueID}
-	if string(action.Kind) == "update_project_integration" {
+	if string(action.Kind) == "update_project_integration" || coordinatorSpriteMutation(string(action.Kind)) {
 		requirement.Scope, requirement.ResourceKind, requirement.ResourceID = apikey.ScopeAdmin, "", ""
 	}
 	ctx, err := operatortool.AuthorizeCurrent(ctx, requirement)

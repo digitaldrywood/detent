@@ -17,6 +17,20 @@ import (
 
 var errSpritesValidation = errors.New("sprites rejected the token or could not validate its organization")
 
+var errSpritesTokenRejected = errors.New("Sprites rejected the organization token; replace it through the Sprites connector")
+var errSpritesBilling = errors.New("the Fly organization needs Sprites billing enabled; open the Sprites account page, enable billing, then retry")
+
+func spritesResponseError(status int) error {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return errSpritesTokenRejected
+	case http.StatusPaymentRequired:
+		return errSpritesBilling
+	default:
+		return errSpritesValidation
+	}
+}
+
 // validateSpritesToken uses only the fixed Sprites origin. Redirects are refused
 // and neither provider bodies nor transport errors are returned or logged.
 func validateSpritesToken(ctx context.Context, configured *http.Client, token []byte) (string, error) {
@@ -63,7 +77,7 @@ func validateSpritesToken(ctx context.Context, configured *http.Client, token []
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return "", errSpritesValidation
+		return "", spritesResponseError(response.StatusCode)
 	}
 	var result struct {
 		Sprites []struct {
