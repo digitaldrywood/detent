@@ -414,6 +414,13 @@ func TestChangeLanding(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+first.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approval"}, Decision: "approved"}), http.StatusOK)
 	requireNativeStatus(t, landing("unchecked", first.ID, land), http.StatusConflict)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+first.ID+"/checks", f.token, changeTestResult(first)), http.StatusOK)
+	updated := hubTestPolicy()
+	updated.ConfigDigest = policy.Digest([]byte("non-gate configuration after checks completed"))
+	updated = updated.WithID()
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: first.PolicyID, Policy: updated}), http.StatusOK)
+	if detail := f.detail(t); len(detail.Versions) != 1 || detail.Versions[0].PolicyID != first.PolicyID || detail.Versions[0].ReviewPolicy.ID != first.ReviewPolicy.ID || len(detail.Checks) != 1 || detail.Checks[0].PolicyID != first.PolicyID || detail.Checks[0].ConfigDigest != first.Policy.ConfigDigest {
+		t.Fatalf("policy approval changed immutable acceptance evidence: %+v", detail)
+	}
 	if summary := f.detail(t).Summary; summary.Status != "reviewed" {
 		t.Fatalf("summary before landing = %#v", summary)
 	}

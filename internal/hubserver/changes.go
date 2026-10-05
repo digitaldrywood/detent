@@ -263,16 +263,10 @@ func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScop
 	if err != nil {
 		return result, err
 	}
-	var approvedID string
-	err = query.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", string(scope.organization)+"/"+string(scope.project)).Scan(&approvedID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	result.Summary, err = readChangeSummary(ctx, query, scope, result, now, false)
+	if err != nil {
 		return result, err
 	}
-	rules, err := readChangePolicy(ctx, query, scope)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return result, err
-	}
-	result.Summary = changerequest.Summarize(result, approvedID, rules.ID, now)
 	err = loadChangeExternal(ctx, query, scope, &result)
 	return result, err
 }
@@ -300,19 +294,42 @@ AND json_extract(record_json, '$.decision') = 'approved' AND version_id != ?)`, 
 			return result, err
 		}
 	}
-	var approvedID string
-	err = query.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", string(scope.organization)+"/"+string(scope.project)).Scan(&approvedID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	result.Summary, err = readChangeSummary(ctx, query, scope, result, now, staleApproval)
+	if err != nil {
 		return result, err
 	}
-	rules, err := readChangePolicy(ctx, query, scope)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return result, err
-	}
-	result.Summary = changerequest.SummarizeCurrentVersion(result, approvedID, rules.ID, now, staleApproval)
 	err = loadChangeExternal(ctx, query, scope, &result)
 	result.Versions, result.Reviews, result.Checks = nil, nil, nil
 	return result, err
+}
+
+func readChangeSummary(ctx context.Context, query nativeQueryer, scope nativeScope, detail tracker.ChangeDetail, now time.Time, priorApproval bool) (tracker.ChangeSummary, error) {
+	approval, err := readProjectPolicy(ctx, query, string(scope.organization)+"/"+string(scope.project))
+	if err != nil {
+		var failure *nativeError
+		if !errors.As(err, &failure) || failure.Code != "policy_mismatch" {
+			return tracker.ChangeSummary{}, err
+		}
+	}
+	rules, err := readChangePolicy(ctx, query, scope)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return tracker.ChangeSummary{}, err
+	}
+	policyID, reviewID := approval.Policy.ID, rules.ID
+	for _, version := range detail.Versions {
+		if version.ID != detail.Change.CurrentVersion {
+			continue
+		}
+		currentRules := rules
+		currentRules.PolicyID = policyID
+		if policyID != "" && rules.ID != "" && version.PolicyID == version.Policy.ID && version.ReviewPolicy.ID != "" &&
+			version.Policy.Gates == approval.Policy.Gates && version.ReviewPolicy.RequireReview == rules.RequireReview &&
+			slices.Equal(version.ReviewPolicy.RequiredChecks, rules.RequiredChecks) && changerequest.ValidatePolicy(currentRules, approval.Policy) == nil {
+			policyID, reviewID = version.PolicyID, version.ReviewPolicy.ID
+		}
+		break
+	}
+	return changerequest.SummarizeCurrentVersion(detail, policyID, reviewID, now, priorApproval), nil
 }
 
 func loadChangeExternal(ctx context.Context, query nativeQueryer, scope nativeScope, detail *tracker.ChangeDetail) error {
