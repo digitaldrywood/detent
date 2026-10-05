@@ -471,7 +471,7 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 	for _, opts := range []PromptOptions{{}, {WorkAttemptID: 5715, Generation: 68}} {
 		t.Run(strconv.FormatInt(opts.WorkAttemptID, 10), func(t *testing.T) {
 			prompt := appendBlockedHandoffBlock("", opts)
-			for _, required := range []string{"authoritative `## Codex Workpad` comment", "current context. Edit when permitted", "post a new comment with that heading/current status block", "Body/final-only status cannot supersede it", "Keep native/local writers", "Verified same-head/test-input evidence can publish a receipt", "Required verification, pending acceptance and human approvals remain", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve explicit pre-merge runtime evidence, human approvals, and project gates", "If no permitted post-integration owner exists, retain the original acceptance requirement"} {
+			for _, required := range []string{"current authoritative `## Codex Workpad`", "if permitted, else post anew", "body/final cannot supersede it", "Keep native/local writers", "reuse verified same-head/test-input receipts without handoff-only reruns", "Finish source/pre-merge requirements", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve pre-merge evidence, approvals and gates", "Without a permitted owner, retain original acceptance"} {
 				if !strings.Contains(prompt, required) {
 					t.Fatalf("handoff lost acceptance ownership: %s", required)
 				}
@@ -520,8 +520,8 @@ func TestPromptWrapperBytes(t *testing.T) {
 	// The wrapper budget measures authored text, not the worker's temp-root length.
 	size := len(strings.ReplaceAll(prompt, workspacePath, "/workspace")) - len("WORKFLOW")
 	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(available)))
-	if size >= 8500 {
-		t.Errorf("wrapper is %d bytes, want under 8500", size)
+	if size >= 7000 {
+		t.Errorf("wrapper is %d bytes, want under 7000", size)
 	}
 }
 
@@ -571,7 +571,7 @@ func TestBuildPromptSkillCreationInstructionsAreConfigurable(t *testing.T) {
 			}},
 			want: []string{
 				"## Skill creation loop",
-				"Draft at most 2 candidate skill files under `.detent/team-skills/`",
+				"Draft at most 2 skill files under `.detent/team-skills/`",
 			},
 		},
 		{
@@ -682,10 +682,10 @@ func TestBuildPromptFollowupInstructionsAreConfigurable(t *testing.T) {
 
 			for _, text := range []string{
 				"## Out-of-scope discoveries",
-				"project's Backlog state",
-				"fenced `detent-agent` block",
-				"best-guess `effort`",
-				"file the issue without a state and say so in the final handoff",
+				"project Backlog",
+				"fenced `detent-agent`",
+				"`effort` per project rubric",
+				"missing state: file stateless and report",
 			} {
 				if strings.Contains(prompt, text) != tt.wantPresent {
 					t.Fatalf("prompt presence of %q = %t, want %t:\n%s", text, strings.Contains(prompt, text), tt.wantPresent, prompt)

@@ -693,9 +693,9 @@ func appendSkillCreationBlock(prompt string, cfg config.Skills) string {
 
 	var b strings.Builder
 	b.WriteString("## Skill creation loop\n\n")
-	b.WriteString("Draft only reusable methods: multi-step procedures, debugging recipes, or hard-won project conventions; no routine edits, secrets, or issue restatements. ")
-	b.WriteString("Draft at most " + pluralizeCount(cfg.Creation.MaxDraftsPerRun, "candidate skill file", "candidate skill files") + " under `" + path + "` with YAML name, description, when_to_use and concise Markdown guidance. Rerun validation after drafting; PR review approves it.\n")
-	b.WriteString("Final handoff: exactly one line `Skill draft: yes — <path and purpose>` or `Skill draft: no — <reason>`.\n")
+	b.WriteString("Only reusable multi-step methods, debugging recipes or learned conventions; no routine edits, secrets or issue restatements. ")
+	b.WriteString("Draft at most " + pluralizeCount(cfg.Creation.MaxDraftsPerRun, "skill file", "skill files") + " under `" + path + "`; YAML name/description/when_to_use, concise Markdown. Revalidate; PR review approves.\n")
+	b.WriteString("One line: `Skill draft: yes — <path and purpose>` or `Skill draft: no — <reason>`.\n")
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimRight(b.String(), "\n")
 }
@@ -706,7 +706,7 @@ func appendFollowupsBlock(prompt string, cfg config.Followups) string {
 	}
 
 	const block = "## Out-of-scope discoveries\n\n" +
-		"File follow-ups only via file_machine_issue in the project's Backlog state; if unavailable, report here. Search open issues; reuse matching fingerprints or a stable problem key (no timestamps/attempt IDs). The optional priority argument is an integer creation rank: 1=Urgent, 2=High, 3=Normal, 4=Low; omission leaves priority unset. For native follow-ups, reuse raises weaker or unset priority while preserving stronger priority and operator holds; priority never changes lanes or admission. Include a fenced `detent-agent` block: schema: 1, best-guess `effort` per project rubric. If unavailable, file the issue without a state and say so in the final handoff."
+		"Use only file_machine_issue in project Backlog; missing tool: report here; missing state: file stateless and report. Search/reuse open fingerprints/stable problem keys (no timestamps/attempt IDs). Priority (integer): 1=Urgent, 2=High, 3=Normal, 4=Low; omitted: unset. Native reuse raises only weaker/unset priority; preserve stronger priority, holds, lanes and admission. Include fenced `detent-agent`: schema: 1, `effort` per project rubric."
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block
 }
@@ -786,8 +786,8 @@ func githubTrackerHostname(tracker config.Tracker) string {
 	return parsed.Host
 }
 
-const repositoryHandoffContract = "Use the current Detent completion contract for handoff; Detent owns durable attempt and session records. Ignore earlier instructions to maintain repository notes. Do not create, update, stage, or commit `.detent/notes.md` for runtime handoff. Leave existing notes intact." +
-	"\n\nAcceptance explicitly requiring this change to be integrated or released belongs to the existing post-integration owner. Finish the source changes and all required pre-merge verification, then record the exact PR/head, pending acceptance, verification procedure, required authorization, and responsible owner in the Workpad and final handoff. Reuse a matching follow-up or, when the project permits, file it through file_machine_issue in Backlog. Do not park completed source work solely because its own unmerged PR has not yet been released. Pending acceptance remains unverified; do not claim it passed. Detent owns integration and the project's release owner owns deployment; source workers must not merge or deploy merely to make their own PR mergeable. Preserve explicit pre-merge runtime evidence, human approvals, and project gates. If no permitted post-integration owner exists, retain the original acceptance requirement."
+const repositoryHandoffContract = "Detent owns completion and durable attempt/session records. Ignore earlier instructions to maintain repository notes. Do not create, update, stage, or commit `.detent/notes.md`; leave existing notes intact." +
+	"\n\nFinish source/pre-merge requirements. Integration/release Workpad/final: exact PR/head, pending acceptance, procedure, authorization and existing post-integration owner; reuse/file permitted follow-ups. Pending acceptance remains unverified; ready source need not await its PR's release. Detent integrates; release owner deploys; source workers must not merge/deploy for PR mergeability. Preserve pre-merge evidence, approvals and gates. Without a permitted owner, retain original acceptance."
 
 func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
 	completionFields := ""
