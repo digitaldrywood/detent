@@ -117,6 +117,8 @@ type Finding struct {
 }
 
 type ValidatorResult struct {
+	VersionID  string `json:"version_id,omitempty"`
+	SessionID  int64  `json:"session_id,string,omitempty"`
 	Submitted  bool
 	Verdict    string
 	Score      float64
@@ -565,7 +567,7 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	if out, ok := EvaluateSecurityAudit(cfg.SecurityAudit, summary.SecurityAudit); ok {
 		return out
 	}
-	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
+	if out, ok := EvaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
 	if !opts.AutomatedReviewWaitExpired && automatedReviewWaits(cfg) && (summary.ReviewPending || !automatedReviewSubmitted(summary.ReviewState)) {
@@ -910,7 +912,7 @@ func normalizeSeverity(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func evaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, bool) {
+func EvaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, bool) {
 	cfg = effectiveValidatorConfig(cfg)
 	if !cfg.Enabled {
 		return Decision{}, false

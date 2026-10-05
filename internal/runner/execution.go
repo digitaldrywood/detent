@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -25,6 +27,16 @@ type Execution interface {
 	Checkpoint(context.Context, tracker.NativeCheckpoint) error
 	Finish(context.Context, string) error
 	Recovery() tracker.NativeRecovery
+}
+
+type NativeValidation struct {
+	Version *tracker.ChangeVersion
+	Diff    *connector.ValidationDiff
+}
+
+type NativeValidatorExecution interface {
+	ValidatorVersion(context.Context) (NativeValidation, error)
+	RecordValidator(context.Context, gate.ValidatorResult) error
 }
 
 type RuntimeExecution interface {
@@ -214,21 +226,24 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			runErr = errors.Join(runErr, err)
 		}
 	}
-	finish := req.Execution.Finish
 	if prepared, ok := req.Execution.(CompletionExecution); ok {
-		finish = func(ctx context.Context, outcome string) error {
-			if req.DeferExecutionFinish {
-				return prepared.PrepareFinish(ctx, outcome, result.FinalMessage)
-			}
-			preparationErr := prepared.PrepareFinish(ctx, outcome, result.FinalMessage)
-			if preparationErr != nil {
+		if err := prepared.PrepareFinish(finishCtx, outcome, result.FinalMessage); err != nil {
+			runErr = errors.Join(runErr, err)
+			outcome = "failed"
+		} else if outcome == "succeeded" {
+			if err := r.validateNativeChange(guarded, req); err != nil {
+				runErr = errors.Join(runErr, err)
 				outcome = "failed"
 			}
-			return errors.Join(preparationErr, req.Execution.Finish(ctx, outcome))
 		}
 	}
-	if err := finish(finishCtx, outcome); err != nil {
-		runErr = errors.Join(runErr, err)
+	_, prepared := req.Execution.(CompletionExecution)
+	if !req.DeferExecutionFinish || !prepared {
+		finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer finalCancel()
+		if err := req.Execution.Finish(finalCtx, outcome); err != nil {
+			runErr = errors.Join(runErr, err)
+		}
 	}
 	if changes, ok := req.Execution.(ChangeExecution); ok && runErr == nil {
 		result.NativeChange = changes.NativeChange()
@@ -507,4 +522,31 @@ func nativeGitError(operation string, err error) error {
 		return fmt.Errorf("%s: %w", operation, err)
 	}
 	return fmt.Errorf("%w: %s: %w", ErrWorkspacePreparation, operation, err)
+}
+
+func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error {
+	execution, ok := req.Execution.(NativeValidatorExecution)
+	if !ok {
+		return nil
+	}
+	workflow, _, _, _ := r.runtimeSnapshot()
+	cfg := gate.Effective(workflow.Config.Gate).Validator
+	if !cfg.Enabled {
+		return nil
+	}
+	input, err := execution.ValidatorVersion(ctx)
+	if err != nil || input.Version == nil {
+		return err
+	}
+	result, err := r.Validate(ctx, ValidatorRequest{Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate})
+	if err != nil {
+		return err
+	}
+	if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
+		result.Verdict = string(decision.Action)
+		result.Summary = strings.TrimSpace(result.Summary + "\n\nValidator gate: " + string(decision.Reason))
+	} else {
+		result.Verdict = gate.ValidatorVerdictPass
+	}
+	return execution.RecordValidator(ctx, result)
 }

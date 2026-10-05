@@ -172,7 +172,7 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 // report on it. It reads the policy the version was published under, so the
 // answer does not depend on a second request succeeding.
 func acceptedOnPublish(version tracker.ChangeVersion) bool {
-	return version.ReviewPolicy.ID != "" && !version.ReviewPolicy.RequireReview && len(version.ReviewPolicy.RequiredChecks) == 0
+	return !version.Policy.Gates.Validator && version.ReviewPolicy.ID != "" && !version.ReviewPolicy.RequireReview && len(version.ReviewPolicy.RequiredChecks) == 0
 }
 
 // SetRepository names the repository a published version refers to.

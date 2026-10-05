@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -175,4 +176,18 @@ func (e *sshNativeExecution) ObserveLanding(ctx context.Context, landing NativeL
 
 func (e *sshNativeExecution) PublishValidationEvidence(ctx context.Context, files []ValidationEvidence) error {
 	return e.peer.Call(ctx, "execution.PublishValidationEvidence", nil, files)
+}
+
+func (e *sshNativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string) error {
+	return e.peer.Call(ctx, "execution.PrepareFinish", nil, outcome, finalMessage)
+}
+
+func (e *sshNativeExecution) ValidatorVersion(ctx context.Context) (NativeValidation, error) {
+	var input NativeValidation
+	err := e.peer.Call(ctx, "execution.ValidatorVersion", &input)
+	return input, err
+}
+
+func (e *sshNativeExecution) RecordValidator(ctx context.Context, result gate.ValidatorResult) error {
+	return e.peer.Call(ctx, "execution.RecordValidator", nil, result)
 }

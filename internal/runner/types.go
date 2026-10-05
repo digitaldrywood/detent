@@ -744,6 +744,7 @@ const (
 )
 
 type ValidatorRequest struct {
+	NativeVersion    *tracker.ChangeVersion
 	Issue            connector.Issue
 	Diff             *connector.ValidationDiff
 	StartedAt        time.Time
@@ -850,6 +851,7 @@ type NativeLanding struct {
 // native item has no pull request; the runner opens the Change Request under
 // the run's lease and reports it here, and the orchestrator moves the item.
 type NativeChange struct {
+	Validator *gate.ValidatorResult
 	// Changed reports that the run's final attempt diff has commits ahead of
 	// its base. A run that committed nothing has nothing to review.
 	Changed bool

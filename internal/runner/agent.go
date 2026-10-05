@@ -3186,7 +3186,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := verifyValidatorDiff(req.Issue, req.Diff); err != nil {
+	if err := verifyValidatorRequest(req); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
@@ -3197,6 +3197,15 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	if req.NativeVersion != nil {
+		if _, ok := r.workspace.(workspace.HeadProvider); !ok {
+			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires immutable head verification", ErrValidatorInfrastructure)
+		}
+		if _, ok := r.workspace.(workspace.ReviewTreeVerifier); !ok {
+			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires a clean review tree", ErrValidatorInfrastructure)
+		}
+		workspaceIssue.PullRequestHeadSHA = req.NativeVersion.HeadSHA
+	}
 	if usage, ok := r.workspace.(workspace.Usage); ok {
 		release, err := usage.Use(ctx, workspaceIssue)
 		if err != nil {
@@ -3213,7 +3222,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		"workspace_path", info.Path,
 		"workspace_branch", info.Branch,
 	)
-	if seeder, ok := r.workspace.(workspace.ReviewHeadSeeder); ok {
+	if seeder, ok := r.workspace.(workspace.ReviewHeadSeeder); ok && req.NativeVersion == nil {
 		if err := seeder.SeedReviewHead(ctx, info, workspaceIssue); err != nil {
 			return gate.ValidatorResult{}, fmt.Errorf("%w: seed validation review head: %w", ErrValidatorInfrastructure, err)
 		}
@@ -3251,6 +3260,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	promptOptions := validatorPromptOptionsForPR(info, *req.Diff, validatorMaxInlineDiffBytes(validator))
+	if req.NativeVersion != nil {
+		promptOptions.VersionID = req.NativeVersion.ID
+		promptOptions.DiffTruncated = promptOptions.DiffTruncated || req.Diff.Patch == ""
+	}
 	prompt := BuildValidatorPrompt(workflow, req.Issue, promptOptions)
 	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
 	if err != nil {
@@ -3352,6 +3365,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	defer activityProfile.finish()
 	stopCompute := r.meterCompute(runReq.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
+		ReadOnly:            req.NativeVersion != nil,
 		AllowLocalBinding:   workflow.Config.Worker.EffectiveAllowLocalBinding(),
 		ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains,
 		Workspace:           info.Path,
@@ -3540,6 +3554,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err := r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0); err != nil {
 		return gate.ValidatorResult{}, err
 	}
+	if req.NativeVersion != nil {
+		validation.VersionID = req.NativeVersion.ID
+	}
+	validation.SessionID = sessionID
 	validation.Repository = req.Diff.Repository
 	validation.PRNumber = req.Diff.PRNumber
 	validation.BaseSHA = req.Diff.BaseSHA
@@ -3547,6 +3565,17 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	validation.DiffDigest = req.Diff.Digest
 	validation.DiffFiles = append([]string(nil), req.Diff.Files...)
 	return validation, nil
+}
+
+func verifyValidatorRequest(req ValidatorRequest) error {
+	if req.NativeVersion == nil {
+		return verifyValidatorDiff(req.Issue, req.Diff)
+	}
+	version, diff := req.NativeVersion, req.Diff
+	if diff == nil || version.ID == "" || !version.Policy.Gates.Validator || diff.Repository != version.Repository || diff.BaseSHA != version.BaseSHA || diff.HeadSHA != version.HeadSHA || diff.Digest == "" {
+		return fmt.Errorf("%w: validator diff differs from immutable native version", ErrValidatorInfrastructure)
+	}
+	return nil
 }
 
 func verifyValidatorDiff(issue connector.Issue, diff *connector.ValidationDiff) error {

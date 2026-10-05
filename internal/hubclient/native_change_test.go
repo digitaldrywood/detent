@@ -22,10 +22,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -775,6 +777,10 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
+		lowScore       bool
+		wantVerdict    string
+		ssh            bool
+		validator      string
 		name           string
 		localIntakeOff bool
 		interactive    bool
@@ -795,6 +801,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		wantState      string
 		wantChanges    int
 	}{
+		{name: "SSH native validator pass after publication", ssh: true, validator: "pass", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "native validator pass after publication", validator: "pass", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "native validator low score requests rework", lowScore: true, validator: "pass", wantVerdict: "rework", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
+		{name: "native validator rework retains version", validator: "rework", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "enrolled runner executes beside intake-off local runtime", localIntakeOff: true, staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "commits", commit: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "initial interactive code stays conversation owned", interactive: true, staged: true, wantNone: true, wantState: "In Progress"},
@@ -848,6 +858,14 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: transitions})
 			}
 			h := newNativeChangeHubTransport(t, review, states, true)
+			if test.validator != "" {
+				previous := h.descriptor.ID
+				h.descriptor.Gates.Validator = true
+				h.descriptor = h.descriptor.WithID()
+				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.localIntakeOff {
 				local, err := orchestrator.New(orchestrator.Config{LocalIntakeDisabled: true, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}}, orchestrator.Dependencies{Connector: memory.New(memory.Config{Issues: []connector.Issue{{ID: "local-queued", State: "Todo"}}}), Runner: orchestrator.FakeRunner{}})
 				if err != nil {
@@ -1013,10 +1031,19 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				nativeChangeGit(t, source, "config", "commit.gpgsign", "true")
 				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
 			}
-			provider := &committingAgent{commit: test.commit, dirty: test.dirty, staged: test.staged}
+			provider := &committingAgent{commit: test.commit, dirty: test.dirty, staged: test.staged, validator: test.validator, lowScore: test.lowScore}
+			var runtimeStore store.Store
+			if test.validator != "" {
+				runtimeStore, err = store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = runtimeStore.Close() })
+			}
 			agent, err := runner.NewRunner(runner.Dependencies{
+				Store:        runtimeStore,
 				ProjectID:    "local",
-				Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Complete the issue"},
+				Workflow:     config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: test.validator != ""}}}, Prompt: "Complete the issue"},
 				Workspace:    backend,
 				AgentBackend: provider,
 			})
@@ -1033,7 +1060,16 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					return h.failChanges.RoundTrip(request)
 				})
 			}
-			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			runExecution := execution
+			if test.ssh {
+				remote, closePeers := nativeSSHExecution(t, t.Context(), execution, t.TempDir())
+				defer closePeers()
+				runExecution = remote
+			}
+			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: runExecution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			if test.ssh && err == nil {
+				result.NativeChange = execution.(runner.ChangeExecution).NativeChange()
+			}
 			if test.lateConflict {
 				owner := execution.(*nativeExecution)
 				if err != nil || result.FinalState != runner.FinalStateCompleted || result.NativeChange != nil || owner.data.Outcome != "succeeded" || owner.worktreeState != "dirty" || owner.artifacts.finished {
@@ -1075,7 +1111,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				execution = h.scheduler.RunExecution(issue.ID)
 				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 			}
-			if !provider.bound {
+			if !provider.bound && !test.ssh {
 				t.Fatal("native worker did not bind its conversation")
 			}
 			if test.signingFail {
@@ -1124,38 +1160,53 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					}
 				}
 			}
-			var transcript struct {
-				Conversation struct {
-					Execution struct {
-						AttemptID *string `json:"attempt_id"`
-					} `json:"execution"`
-				} `json:"conversation"`
-				Messages []struct {
-					Text      string  `json:"text"`
-					AttemptID *string `json:"attempt_id"`
-					TurnID    *string `json:"turn_id"`
-					Actor     struct {
-						Kind string `json:"kind"`
-					} `json:"actor"`
-				} `json:"messages"`
-			}
-			if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/conversation", nil, &transcript); err != nil {
-				t.Fatal(err)
-			}
 			attemptID := executionID("attempt", string(execution.Recovery().Lease.ID))
-			if transcript.Conversation.Execution.AttemptID == nil || *transcript.Conversation.Execution.AttemptID != attemptID {
-				t.Fatalf("conversation lost attempt identity: %+v", transcript)
-			}
-			found := false
-			for _, message := range transcript.Messages {
-				if message.Text == "Finished the native work" {
-					found = message.AttemptID != nil && *message.AttemptID == attemptID && message.TurnID != nil && *message.TurnID == "turn-1" && message.Actor.Kind == "runner"
+			if !test.ssh {
+				var transcript struct {
+					Conversation struct {
+						Execution struct {
+							AttemptID *string `json:"attempt_id"`
+						} `json:"execution"`
+					} `json:"conversation"`
+					Messages []struct {
+						Text      string  `json:"text"`
+						AttemptID *string `json:"attempt_id"`
+						TurnID    *string `json:"turn_id"`
+						Actor     struct {
+							Kind string `json:"kind"`
+						} `json:"actor"`
+					} `json:"messages"`
+				}
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/conversation", nil, &transcript); err != nil {
+					t.Fatal(err)
+				}
+				if transcript.Conversation.Execution.AttemptID == nil || *transcript.Conversation.Execution.AttemptID != attemptID {
+					t.Fatalf("conversation lost attempt identity: %+v", transcript)
+				}
+				found := false
+				for _, message := range transcript.Messages {
+					if message.Text == "Finished the native work" {
+						found = message.AttemptID != nil && *message.AttemptID == attemptID && message.TurnID != nil && *message.TurnID == "turn-1" && message.Actor.Kind == "runner"
+					}
+				}
+				if !found {
+					t.Fatalf("conversation lost authenticated worker events: %+v", transcript.Messages)
 				}
 			}
-			if !found {
-				t.Fatalf("conversation lost authenticated worker events: %+v", transcript.Messages)
-			}
 			change := result.NativeChange
+			if test.validator != "" {
+				verdict := test.validator
+				if test.wantVerdict != "" {
+					verdict = test.wantVerdict
+				}
+				if change == nil || change.Validator == nil || change.Validator.Verdict != verdict || change.Validator.SessionID <= 0 || provider.calls != 2 {
+					t.Fatalf("validator did not review the native version in a fresh session: change=%+v calls=%d", change, provider.calls)
+				}
+				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+				if err != nil || len(detail.Reviews) != 1 || detail.Reviews[0].Validator == nil || detail.Reviews[0].VersionID != change.VersionID || change.Validator.HeadSHA != change.HeadSHA {
+					t.Fatalf("validator verdict was not pinned to the immutable version: %+v, %v", detail, err)
+				}
+			}
 			if test.failVersion {
 				if change == nil || change.ChangeID != expected.Change.ID || change.VersionID != "" || change.Reviewed || change.Error != "" || change.VersionCode != "invalid_request" || !strings.Contains(change.VersionError, "version publication refused") {
 					t.Fatalf("runner lost refused publication result: %+v", change)
@@ -1353,6 +1404,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					path, expectedContent = "PRESERVED.md", "reviewed source\n"
 				}
 				calls := 1
+				if test.validator != "" {
+					calls++
+				}
 				if test.lateConflict {
 					calls = 2
 				}
@@ -1395,6 +1449,8 @@ func nativeDiffHas(files []tracker.AttemptDiffFile, path string) bool {
 // committingAgent is a fake provider: it completes one turn, committing a
 // file in the worktree first when commit is set.
 type committingAgent struct {
+	lowScore  bool
+	validator string
 	commit    bool
 	dirty     bool
 	staged    bool
@@ -1408,6 +1464,19 @@ func (*committingAgent) SupportsLiveControl() bool { return true }
 
 func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	a.calls++
+	if strings.Contains(request.Prompt, "Detent validator-agent") {
+		if request.Resume.ThreadID != "" || request.Resume.SessionID != "" || !request.ReadOnly || !strings.Contains(request.Prompt, "Reviewed native version:") {
+			return runner.AgentTurnResult{}, errors.New("native validator did not start a fresh read-only version review")
+		}
+		score := .95
+		if a.lowScore {
+			score = .5
+		}
+		if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: fmt.Sprintf(`{"verdict":%q,"score":%f,"summary":"Checked acceptance","findings":[]}`, a.validator, score)}); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		return runner.AgentTurnResult{ThreadID: "thread-validator", TurnID: "validator-turn"}, nil
+	}
 	a.prompt = request.Prompt
 	a.workspace = request.Workspace
 	a.bound = request.ConversationControl != nil
