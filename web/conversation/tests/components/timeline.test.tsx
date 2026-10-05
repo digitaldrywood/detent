@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import React from "react";
 
+import { readTimelineCards } from "../../src/app/adapters/timelineEntries.ts";
 import { Timeline } from "../../src/app/components/Timeline.tsx";
 import type { Message } from "../../src/contracts/index.ts";
 import {
@@ -43,15 +44,25 @@ function renderTimeline(
 
 describe("Timeline", () => {
   it.each([
-    ["/chat/approval?connection_id=luna_abcdef", true],
-    ["/organizations/org_demo/chat/approval?connection_id=luna_abcdef", true],
-    ["https://example.test/chat/approval?connection_id=luna_abcdef", false],
-    ["/chat/approval?connection_id=other_connection", false],
-  ])("renders only a local Luna approval form: %s", (url, allowed) => {
-    renderTimeline({ messages: [assistantMessage({ kind: "status", data: { operator_approval: { url } } })] });
-    const frame = screen.queryByTitle("Approve project change");
-    expect(frame !== null).toBe(allowed);
-    if (allowed) expect(frame?.getAttribute("src")).toBe(url);
+    [{ action: { kind: "propose_issue_split" }, conversation_id: "conv_reply" }, true],
+    [{ action: null, conversation_id: "conv_reply" }, false],
+    [{ action: {}, conversation_id: 123 }, false],
+    [null, false],
+  ])("reads an inline action only with its conversation: %j", (action, allowed) => {
+    const cards = readTimelineCards(assistantMessage({ kind: "status", data: { operator_action: action } }));
+    expect(cards?.action !== undefined).toBe(allowed);
+  });
+
+  it.each([
+    ["same turn", "turn_reply", false],
+    ["different turn", "turn_other", true],
+  ])("keeps the empty placeholder only without content in the %s", (_name, laterTurn, placeholder) => {
+    const { container } = renderTimeline({ messages: [
+      assistantMessage({ id: "empty", text: "", turn_id: "turn_reply" }),
+      assistantMessage({ id: "later", text: "The split is ready.", turn_id: laterTurn }),
+    ] });
+    expect(container.textContent?.includes("(empty response)")).toBe(placeholder);
+    expect(container.textContent).toContain("The split is ready.");
   });
 
   it("renders a user bubble and an assistant turn", () => {

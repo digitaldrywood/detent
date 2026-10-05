@@ -1,6 +1,7 @@
 import React from "react";
 import { Button } from "../../components/ui/button.tsx";
 import { useClient } from "../client.ts";
+import { OperatorActionPreview } from "./OperatorActionPreview.tsx";
 
 export function InlineActionCard({ proposal, text }: {
   proposal: { readonly action: Record<string, unknown>; readonly conversation_id: string };
@@ -42,6 +43,7 @@ export function InlineActionCard({ proposal, text }: {
     : argumentsValue;
   return <section className="rounded-lg border p-3 space-y-3" data-testid="operator-action-card">
     <p className="text-sm">{text}</p>
+    <OperatorActionPreview action={proposal.action} />
     <details><summary className="text-xs cursor-pointer">Proposed change</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(change, null, 2)}</pre></details>
     <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={confirm} onChange={(event) => {
       const enabled = event.target.checked;
@@ -54,7 +56,7 @@ export function InlineActionCard({ proposal, text }: {
         setStatus("cancelled");
         try { localStorage.setItem(resultKey, "cancelled"); } catch { }
       }}>Cancel</Button>
-      <Button size="sm" onClick={() => { void execute(); }}>Confirm change</Button>
+      <Button size="sm" onClick={() => { void execute(); }}>Approve</Button>
     </div> : <p role="status" className="text-xs">{status === "running" ? "Applying change…" : status === "completed" ? "Change completed." : status === "cancelled" ? "Cancelled." : "Change failed. Request a fresh proposal."}</p>}
   </section>;
 }

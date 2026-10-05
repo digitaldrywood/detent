@@ -106,11 +106,24 @@ export interface TimelineSources {
 export function timelineSources(detail: ConversationDetail): TimelineSources {
   const messages: ChatMessage[] = [];
   const workEntries: WorkLogEntry[] = [];
+  const hasContent = (message: Message): boolean =>
+    message.text.trim().length > 0 ||
+    deltaText(detail.deltas[message.id]).trim().length > 0 ||
+    readTimelineCards(message) !== undefined ||
+    (message.attachments?.length ?? 0) > 0;
+  const populatedTurns = new Set(
+    detail.messages.filter((message) =>
+      message.role === "assistant" && message.turn_id !== null &&
+      !isWorkMessage(message) && hasContent(message),
+    ).map((message) => message.turn_id),
+  );
   for (const message of detail.messages) {
     if (isWorkMessage(message)) {
       workEntries.push(toWorkLogEntry(message));
       continue;
     }
+    if (message.role === "assistant" && message.turn_id !== null &&
+      populatedTurns.has(message.turn_id) && !hasContent(message)) continue;
     messages.push(toChatMessage(message, deltaText(detail.deltas[message.id])));
   }
   return { messages, proposedPlans: EMPTY_PROPOSED_PLANS, workEntries };

@@ -123,6 +123,11 @@ func TestCoordinatorSubjectRefresh(t *testing.T) {
 
 func (f *browserHostedFixture) seedIssueAsk(t *testing.T) {
 	t.Helper()
+	next := f.server.Config.Handler
+	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
 	base := browserHostedOrganizationBase + "/projects/" + f.project + "/work-items/" + f.workItem
 	var issue tracker.NativeIssue
 	browserHostedDecode(t, f.api(t, "owner", http.MethodGet, base, nil, http.StatusOK), &issue)
