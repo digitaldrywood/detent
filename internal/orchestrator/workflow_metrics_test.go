@@ -312,6 +312,10 @@ func statePointer(state State) *State {
 }
 
 func TestRefreshCurrentLaneEntriesPersistsPollObservationAcrossRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := t.Context()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	enteredAt := time.Date(2026, 7, 10, 14, 36, 55, 0, time.UTC)
@@ -363,6 +367,10 @@ func TestRefreshCurrentLaneEntriesPersistsPollObservationAcrossRestart(t *testin
 }
 
 func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := t.Context()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	enteredAt := time.Date(2026, 7, 10, 14, 36, 55, 0, time.UTC)
@@ -429,6 +437,10 @@ func TestRefreshCurrentLaneEntriesUsesTrackerTransitionAcrossPollsAndRestart(t *
 }
 
 func TestRefreshCurrentLaneEntriesUsesHydratedTrackerReentry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := t.Context()
@@ -482,6 +494,10 @@ func TestRefreshCurrentLaneEntriesUsesHydratedTrackerReentry(t *testing.T) {
 }
 
 func TestRefreshCurrentLaneEntriesSurvivesStoreRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := t.Context()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	enteredAt := time.Date(2026, 7, 9, 17, 0, 0, 0, time.UTC)

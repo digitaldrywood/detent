@@ -14,6 +14,10 @@ import (
 )
 
 func TestHubMigrationVerificationScope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name           string
@@ -143,6 +147,10 @@ func TestHubMigrationVerificationScope(t *testing.T) {
 }
 
 func TestHubTimestampMigrations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	historicalGoMigrations := []*goose.Migration{}
 	for _, migration := range hubGoMigrations() {

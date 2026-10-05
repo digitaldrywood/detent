@@ -873,6 +873,10 @@ func TestHostedBrowserPreviewSeed(t *testing.T) {
 }
 
 func TestHostedBrowserPreview(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	if os.Getenv("DETENT_HOSTED_BROWSER_PREVIEW") == "" {
 		t.Skip("set DETENT_HOSTED_BROWSER_PREVIEW=1 to run the isolated browser preview")
 	}

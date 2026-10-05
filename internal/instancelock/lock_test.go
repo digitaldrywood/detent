@@ -11,6 +11,10 @@ import (
 )
 
 func TestAcquireExcludesAnotherProcessAndReleases(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "detent.db.lock")

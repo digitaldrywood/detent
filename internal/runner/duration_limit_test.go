@@ -20,6 +20,10 @@ import (
 )
 
 func TestRunnerEnforcesConfiguredDurationLimits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -292,6 +296,10 @@ func TestRunnerReapsWorkerAfterTerminalTurn(t *testing.T) {
 }
 
 func TestRunnerSessionDurationSpansResumeFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	sessionDurationLimit := &controlledDurationLimit{}
@@ -528,6 +536,10 @@ func TestRunAgentBackendTurnPropagatesDurationContextToUpdates(t *testing.T) {
 }
 
 func TestRunnerValidatorUpdatePersistenceUsesSessionDurationContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	sessionDurationLimit := &controlledDurationLimit{}

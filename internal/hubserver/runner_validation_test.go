@@ -149,6 +149,10 @@ func TestRunnerCredentialsAndRejectedProviderDataAreRedacted(t *testing.T) {
 }
 
 func TestRunnerMigrationPreservesLegacyTokens(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "hub.db")
 	db, err := sql.Open("sqlite", path)

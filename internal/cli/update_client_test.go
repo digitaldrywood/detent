@@ -22,6 +22,10 @@ import (
 )
 
 func TestApplyRunningUpdate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name             string
@@ -129,6 +133,10 @@ func (w *drainReportWriter) Write(p []byte) (int, error) {
 }
 
 func TestReportDrainPreservesLegacyRestartProgress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, count := range []int{0, 2} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {

@@ -110,6 +110,10 @@ func requireConversationLogFields(t *testing.T, record map[string]any, want map[
 // It mirrors openTestService, which pins a discarding logger.
 func openConversationLogService(t *testing.T, cfg Config, sink *conversationLogSink) *Service {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	cfg.Logger = slog.New(slog.NewJSONHandler(sink, nil))
 	if len(cfg.InitialAdminToken) == 0 {
 		cfg.InitialAdminToken = []byte(testHubAdminToken)

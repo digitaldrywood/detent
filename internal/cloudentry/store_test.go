@@ -7,6 +7,10 @@ import (
 )
 
 func TestStoreEscapedPaths(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, database := range []struct {
 		name          string

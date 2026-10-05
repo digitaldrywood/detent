@@ -151,6 +151,10 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 }
 
 func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if runtime.GOOS == "windows" {
 		t.Skip("Makefile tooling requires a POSIX shell")
 	}
@@ -376,6 +380,10 @@ func TestScheduledCIJobDependencies(t *testing.T) {
 }
 
 func TestCIRacePartition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 	awk, err := exec.LookPath("awk")
 	if err != nil {
@@ -441,6 +449,10 @@ func TestCIRacePartition(t *testing.T) {
 }
 
 func TestCIRaceShardFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if runtime.GOOS == "windows" {
 		t.Skip("Linux CI runner script uses bash")
 	}

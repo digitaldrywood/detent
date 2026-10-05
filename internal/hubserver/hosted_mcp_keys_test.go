@@ -68,6 +68,10 @@ func newHostedKeyMCPFixture(t *testing.T, deployment, role string) (hostedKeyMCP
 }
 
 func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite hosted credential integration")
+	}
+
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
 			for _, access := range []hostedProjectAccess{hostedProjectsSelected, hostedProjectsAll} {
@@ -310,6 +314,10 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 }
 
 func TestHostedAPIKeyManagement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite hosted credential integration")
+	}
+
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
 			var f hostedSecurityFixture

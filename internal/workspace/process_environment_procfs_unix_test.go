@@ -12,6 +12,10 @@ import (
 )
 
 func TestProcFSScratchEnvironmentProcessIDs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real process or filesystem integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name    string

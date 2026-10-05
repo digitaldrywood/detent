@@ -118,6 +118,10 @@ func TestCompleteTerminalRunningClearsInFlightHeartbeatLease(t *testing.T) {
 }
 
 func TestHeartbeatManagerReportsProcessLivenessWhileRenewingActiveRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	identity := startHeartbeatWorkerProcess(t)
 	exited := startHeartbeatWorkerProcess(t, true)
 
@@ -259,6 +263,10 @@ func TestClaimableChecksLocalWorkerLivenessBeforeReclaim(t *testing.T) {
 }
 
 func TestClaimableChecksPersistedProcessIdentityBeforeReclaim(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	now := time.Now().UTC()
 	identity := startHeartbeatWorkerProcess(t)
 	issue := claimTestIssue("issue-persisted-reclaim-guard")

@@ -31,6 +31,10 @@ import (
 // steered mid-turn; the second attempt continues the conversation and is
 // interrupted.
 func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	useFastConversationTimings(t)
 	for _, ordinary := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ordinary=%t", ordinary), func(t *testing.T) {

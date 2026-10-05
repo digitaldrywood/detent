@@ -166,6 +166,10 @@ func TestRecoverBlockedIssuesLogsDecisionForEveryBlockedIssue(t *testing.T) {
 }
 
 func TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
@@ -2752,6 +2756,10 @@ func (c *blockedReadyPullRequestLookupConnector) LookupBranchHead(_ context.Cont
 }
 
 func TestRetiredAttemptTriageParkRestoresPriorLane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name, priorLane, humanAction string

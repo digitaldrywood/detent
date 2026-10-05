@@ -223,6 +223,10 @@ func TestServiceConnectionForProjectUsesScopedToken(t *testing.T) {
 }
 
 func TestBuildRunnerSupportsClaudeCodeBackendRoutes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	source := initRunnerSourceRepo(t)
@@ -410,6 +414,10 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 }
 
 func TestBuildBudgetDispatchGuards(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	disabled := workflowconfig.Default().Budget
@@ -494,6 +502,10 @@ func TestBuildBudgetDispatchGuards(t *testing.T) {
 }
 
 func TestBuildBudgetDispatchGuardsIsolatesProjectDailySpend(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -615,6 +627,10 @@ func TestWithCodexQuestionFeature(t *testing.T) {
 }
 
 func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	source := initRunnerSourceRepo(t)
@@ -642,6 +658,10 @@ func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
 }
 
 func TestWorkspaceHookGitHubTokenInheritance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if runtime.GOOS == "windows" {
 		t.Skip("hook fixture uses a POSIX shell")
 	}

@@ -23,6 +23,10 @@ import (
 )
 
 func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name, remote, want string
@@ -234,6 +238,10 @@ func executeRegister(t *testing.T, command *cobra.Command, args ...string) (stri
 }
 
 func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build", "prj_ops": "Ops Tools"})
 	root := t.TempDir()
@@ -316,6 +324,10 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 }
 
 func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name            string
@@ -500,6 +512,10 @@ func mustRead(t *testing.T, path string) string {
 }
 
 func TestHubRunnerRegisterReportsBeforeService(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "orders"})
 	root := t.TempDir()

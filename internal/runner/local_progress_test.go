@@ -11,6 +11,10 @@ import (
 )
 
 func TestSessionLocalCommitProgress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

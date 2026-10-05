@@ -12,6 +12,10 @@ import (
 )
 
 func TestDoctorLifetimeLimitsCompareConfiguredCapsToProjectP95(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	path := createDoctorLifetimeHistoryStore(t)

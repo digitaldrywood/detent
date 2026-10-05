@@ -221,6 +221,10 @@ func TestResolveRuntimeSettingsRejectsInvalidLogRotationEnv(t *testing.T) {
 }
 
 func TestResolveRuntimeSettingsUsesWorkflowRefForServerPort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	repo := initRuntimeWorkflowRepo(t)
 	writeRuntimeWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), 4109)
 	commitRuntimeWorkflowRepo(t, repo, "initial workflow")
@@ -675,6 +679,10 @@ func TestRuntimeGitHubTokenRefresherUsesCurrentGlobalConfig(t *testing.T) {
 }
 
 func TestRuntimeGitHubTokenRefresherResolvesConfiguredGHSentinelWithoutActionsToken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	tests := []struct {
 		name      string
 		expire    bool

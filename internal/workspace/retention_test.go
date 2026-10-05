@@ -76,6 +76,10 @@ func TestRetentionHookLogs(t *testing.T) {
 }
 
 func TestRetentionQuarantine(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -104,6 +108,10 @@ func TestRetentionQuarantine(t *testing.T) {
 }
 
 func TestRetentionQuarantineReadOnlyDirectory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -144,6 +152,10 @@ func TestRetentionQuarantineReadOnlyDirectory(t *testing.T) {
 }
 
 func TestRetentionQuarantineDoesNotChmodSymlinkTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	backend := retentionBackend(t)
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -179,6 +191,10 @@ func TestRetentionQuarantineDoesNotChmodSymlinkTarget(t *testing.T) {
 }
 
 func TestRetentionQuarantineUnremovablePath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod on Windows does not deny directory removal; this fixture requires POSIX permissions")
@@ -208,6 +224,10 @@ func TestRetentionQuarantineUnremovablePath(t *testing.T) {
 }
 
 func TestRetentionAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -277,6 +297,10 @@ func TestRetentionAttempts(t *testing.T) {
 }
 
 func TestRetentionCompletedWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
@@ -430,6 +454,10 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 }
 
 func TestRetentionOwnership(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, missing := range []bool{false, true} {
 		t.Run(map[bool]string{false: "exists", true: "missing"}[missing], func(t *testing.T) {
@@ -463,6 +491,10 @@ func TestRetentionOwnership(t *testing.T) {
 }
 
 func TestRetentionArchiveFailureKeepsWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, failure := range []string{"archive destination", "unmanaged git"} {
 		t.Run(failure, func(t *testing.T) {
@@ -499,6 +531,10 @@ func TestRetentionArchiveFailureKeepsWorkspace(t *testing.T) {
 }
 
 func TestRetentionRejectsRedirectedArtifacts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, artifact := range []string{".detent/hook-logs", ".detent/quarantine", "workspace/.detent/worker-tmp"} {
 		t.Run(artifact, func(t *testing.T) {
@@ -525,6 +561,10 @@ func TestRetentionRejectsRedirectedArtifacts(t *testing.T) {
 }
 
 func TestRetentionRemovalFailureDeduplicatesArchives(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, change := range []string{"unchanged", "modified", "partially removed"} {
 		t.Run(change, func(t *testing.T) {
@@ -587,6 +627,10 @@ func TestRetentionRemovalFailureDeduplicatesArchives(t *testing.T) {
 }
 
 func TestRetentionCompletedResidue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {

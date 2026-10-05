@@ -1996,6 +1996,10 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 }
 
 func TestConnectorAttachPullRequestsRotatesAfterRESTFanoutDeferral(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var mu sync.Mutex
@@ -2071,6 +2075,10 @@ func TestConnectorAttachPullRequestsRotatesAfterRESTFanoutDeferral(t *testing.T)
 }
 
 func TestConnectorAttachPullRequestsPrioritizesSkippedBranchCandidate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var mu sync.Mutex
@@ -2317,6 +2325,10 @@ func TestConnectorFetchFreshIssuesByStatesRechecksPullRequestStatusForPromotion(
 }
 
 func TestConnectorFreshPullRequestStatusReconcilesDeletedChecks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -5726,6 +5738,10 @@ func TestConnectorPullRequestDiffFingerprintIsContentStableAndCached(t *testing.
 }
 
 func TestPullRequestValidationDiffConcurrentPRs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	type fixture struct {
 		base, head string
@@ -5808,6 +5824,10 @@ func TestPullRequestValidationDiffConcurrentPRs(t *testing.T) {
 }
 
 func TestPullRequestValidationDiffFetchFailuresAreRetryable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name       string
@@ -5850,6 +5870,10 @@ func TestPullRequestValidationDiffFetchFailuresAreRetryable(t *testing.T) {
 }
 
 func TestPullRequestValidationDiffPreservesFetchFailureClassification(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, failure := range []struct {
 		name      string

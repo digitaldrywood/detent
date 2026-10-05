@@ -16,6 +16,10 @@ import (
 // sorting wide recent scheduler rows into temporary files. Result-only tests
 // would still pass with either regression.
 func TestRefreshHistoryQueriesUseIndexes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	s, err := openSQLite(t.Context(), Config{Path: filepath.Join(t.TempDir(), "refresh.db")})
 	if err != nil {

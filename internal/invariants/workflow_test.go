@@ -69,6 +69,10 @@ func checkWorkflow(data []byte) error {
 }
 
 func TestRepositoryWorkflow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), ".github/workflows/ci.yml"))
 	if err != nil {
 		t.Fatal(err)

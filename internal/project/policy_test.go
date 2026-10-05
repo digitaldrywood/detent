@@ -360,6 +360,10 @@ func TestProjectPolicyReloadAndGateIsolation(t *testing.T) {
 }
 
 func TestTrustedRefIgnoresWorkingBranchPolicyEdits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real Git integration")
+	}
+
 	t.Parallel()
 	root := t.TempDir()
 	for _, args := range [][]string{{"init", "-b", "main"}, {"config", "user.email", "test@example.com"}, {"config", "user.name", "Policy Test"}} {
@@ -418,6 +422,10 @@ func TestTrustedRefIgnoresWorkingBranchPolicyEdits(t *testing.T) {
 }
 
 func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "WORKFLOW.md")

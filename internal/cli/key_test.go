@@ -13,6 +13,10 @@ import (
 )
 
 func TestKeyCommandsManageAPIKeys(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	t.Parallel()
 
 	configPath := filepath.Join(t.TempDir(), "global.yaml")

@@ -33,6 +33,10 @@ func TestBehaviorEvidence(t *testing.T) {
 }
 
 func TestBehaviorCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("repository behavior-command subprocess integration")
+	}
+
 	for _, tt := range []struct {
 		name, body string
 		want       int

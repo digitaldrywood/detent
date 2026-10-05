@@ -30,6 +30,10 @@ import (
 // Replay Cloud retiring a lease on run.finished. The real runner must leave
 // publication and the lane handoff to the orchestrator before that retirement.
 func TestNativePlannerAutomaticHandoff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
 		name    string

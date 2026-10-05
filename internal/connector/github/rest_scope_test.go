@@ -246,6 +246,10 @@ func TestRESTScopeOutcomeClassification(t *testing.T) {
 }
 
 func TestRESTScopeRequestsExcludeLocalDeferrals(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -309,6 +313,10 @@ func TestRESTScopeRequestsExcludeLocalDeferrals(t *testing.T) {
 }
 
 func TestRESTQuotaWindowReportsFullyInstrumentedChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	var calls atomic.Int64
 	resetAt := time.Now().Add(time.Hour).Unix()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

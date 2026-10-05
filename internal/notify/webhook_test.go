@@ -12,6 +12,10 @@ import (
 )
 
 func TestWebhookSend(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	received := make(chan map[string]any, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -48,6 +52,10 @@ func TestWebhookSend(t *testing.T) {
 }
 
 func TestWebhookErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	tests := []struct {
 		name    string

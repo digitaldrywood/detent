@@ -9,6 +9,10 @@ import (
 )
 
 func TestHealthNotificationStatesPersistAcrossReopen(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "runtime.db")

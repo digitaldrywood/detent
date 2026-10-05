@@ -31,6 +31,10 @@ import (
 )
 
 func TestNativeAgentEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, completion := range []string{"Verified the page in a browser.", ""} {
 		t.Run("completion="+completion, func(t *testing.T) {
 			f := newEntryFixture(t)

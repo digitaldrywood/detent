@@ -882,6 +882,10 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 }
 
 func TestDeliverableRecoveryCompletionDeferralSurvivesRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	const (
@@ -1697,6 +1701,10 @@ func terminalRetryMetadataPushed(raw string) bool {
 }
 
 func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name       string
@@ -1849,6 +1857,10 @@ func TestConfiguredTerminalRetryAfterStoreRestart(t *testing.T) {
 }
 
 func TestConsecutiveRetryCycleCountAcrossServiceRestarts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -1948,6 +1960,10 @@ func TestConsecutiveRetryCycleCountAcrossServiceRestarts(t *testing.T) {
 }
 
 func TestStartupDoesNotReclaimLiveWorkAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, count := range []int{1, 2} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
@@ -1981,6 +1997,10 @@ func TestStartupDoesNotReclaimLiveWorkAttempts(t *testing.T) {
 }
 
 func TestRetainedWorkAttemptsExpireOnTick(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name         string

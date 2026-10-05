@@ -23,6 +23,10 @@ import (
 )
 
 func TestAgentBackendRunTurnSuccess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	backend := newTestBackend(t, Options{
@@ -80,6 +84,10 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 }
 
 func TestAgentBackendEmitsLaterAssistantModelChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	fixture := strings.Join([]string{
@@ -189,6 +197,10 @@ func TestClaudeUsageAgentUsageNormalizesCacheTokens(t *testing.T) {
 }
 
 func TestAgentBackendRunTurnErrorResult(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	backend := newTestBackend(t, Options{
@@ -267,6 +279,10 @@ func TestFinalTurnErrorAfterStreamClose(t *testing.T) {
 }
 
 func TestAgentBackendRunTurnSkipsMalformedLines(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	backend := newTestBackend(t, Options{
@@ -291,6 +307,10 @@ func TestAgentBackendRunTurnSkipsMalformedLines(t *testing.T) {
 }
 
 func TestAgentBackendRunTurnReadsOversizedLine(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	longText := strings.Repeat("x", 70*1024)
@@ -322,6 +342,10 @@ func TestAgentBackendRunTurnReadsOversizedLine(t *testing.T) {
 }
 
 func TestAgentBackendRunTurnMissingSessionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	backend := newTestBackend(t, Options{
@@ -351,6 +375,10 @@ func TestAgentBackendRunTurnMissingSessionID(t *testing.T) {
 }
 
 func TestAgentBackendRunTurnPartialMessages(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	backend := newTestBackend(t, Options{
@@ -376,6 +404,10 @@ func TestAgentBackendRunTurnPartialMessages(t *testing.T) {
 }
 
 func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	observedPath := filepath.Join(t.TempDir(), "observed.json")
@@ -465,6 +497,10 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 }
 
 func TestAgentBackendReadOnlyTurnOverridesWritableConfiguration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	observedPath := filepath.Join(t.TempDir(), "observed.json")
@@ -520,6 +556,10 @@ func TestAgentBackendReadOnlyTurnOverridesWritableConfiguration(t *testing.T) {
 }
 
 func TestAgentBackendAddsResumeSessionArgument(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	observedPath := filepath.Join(t.TempDir(), "observed.json")
@@ -569,6 +609,10 @@ func TestAgentBackendAddsResumeSessionArgument(t *testing.T) {
 }
 
 func TestAgentBackendRequestTurnTimeoutOverridesOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	observedPath := filepath.Join(t.TempDir(), "observed.json")

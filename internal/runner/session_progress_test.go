@@ -12,6 +12,10 @@ import (
 )
 
 func TestSessionProgressResume(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	at := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "progress.db")

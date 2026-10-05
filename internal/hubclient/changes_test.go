@@ -30,6 +30,10 @@ func TestChangeClientIdentityValidation(t *testing.T) {
 }
 
 func TestChangeClientFencingAndConnectorRead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	lease := tracker.NativeLease{ID: "lease", WorkItemID: "wi_item", FencingToken: 10}
 	base := "/api/v2/organizations/org_example/projects/prj_example"

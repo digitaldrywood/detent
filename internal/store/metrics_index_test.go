@@ -63,6 +63,10 @@ func TestWorkflowIndexedCorrelationEquivalence(t *testing.T) {
 }
 
 func TestWorkflowHistoryRevision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	backend, err := openSQLite(t.Context(), Config{Path: filepath.Join(t.TempDir(), "history.db")})
 	if err != nil {

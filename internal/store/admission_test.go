@@ -13,6 +13,10 @@ import (
 )
 
 func TestAdmissionCandidateHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	backend := openAdmissionTestStore(t, t.Context())
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
@@ -49,6 +53,10 @@ func TestAdmissionCandidateHistory(t *testing.T) {
 }
 
 func TestAdmissionProposalLifecycleAndIdempotency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -115,6 +123,10 @@ func TestAdmissionProposalLifecycleAndIdempotency(t *testing.T) {
 }
 
 func TestAdmissionDeclineLifecycleAndProposalSupersession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := t.Context()
@@ -161,6 +173,10 @@ func TestAdmissionDeclineLifecycleAndProposalSupersession(t *testing.T) {
 }
 
 func TestAdmissionCriteriaDeclineSupersedesProposalWithCriteriaReason(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := t.Context()
@@ -196,6 +212,10 @@ func TestAdmissionCriteriaDeclineSupersedesProposalWithCriteriaReason(t *testing
 }
 
 func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -273,6 +293,10 @@ func TestAdmissionProposalExpiryAndRunLedger(t *testing.T) {
 }
 
 func TestAdmissionMalformedResultLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := t.Context()
@@ -383,6 +407,10 @@ WHERE project_id = ? AND proposal_fingerprint = ? AND error_fingerprint = ?`, re
 }
 
 func TestAdmissionProposalsAwaitingDecision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	backend := openAdmissionTestStore(t, ctx)
 	reader := backend.(AdmissionProposalDecisionReader)
@@ -443,6 +471,10 @@ func TestAdmissionProposalsAwaitingDecision(t *testing.T) {
 }
 
 func TestAdmissionAcceptanceAttributionAndDownstreamOutcomes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -563,6 +595,10 @@ func TestAdmissionAcceptanceAttributionAndDownstreamOutcomes(t *testing.T) {
 }
 
 func TestAdmissionRejectionIsDistinctFromAcceptance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()

@@ -149,6 +149,10 @@ func TestWorkerServiceEnvironmentIsLimitedToImplementationTurns(t *testing.T) {
 }
 
 func TestWorkerServiceEnvironmentOverridesAmbientServiceCredentials(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Setenv(serviceapi.TokenEnvironment, "ambient-admin-token")
 	t.Setenv(serviceapi.AddressEnvironment, "ambient.example:4000")
 	t.Setenv(serviceapi.DispositionTokenEnvironment, "ambient-worker-token")
@@ -1131,6 +1135,10 @@ func TestDeliverableCommandEvidenceSummarizesCommand(t *testing.T) {
 }
 
 func TestReconcileFailedPushPublicationFromExactRemoteHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	realGit, err := exec.LookPath("git")
@@ -1386,6 +1394,10 @@ exit /b %errorlevel%
 }
 
 func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	const branch = "detent/acme_widgets_18"
@@ -1534,6 +1546,10 @@ func TestRunnerRunRecoversPushedPullRequestDeliverable(t *testing.T) {
 }
 
 func TestRunnerDeliverableRecoveryCountsTurnsAcrossSessionBrake(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	const branch = "detent/acme_widgets_18"
@@ -4688,6 +4704,10 @@ func TestRunnerMergeFallbackModelPermit(t *testing.T) {
 }
 
 func TestRunnerRunAddsGitMetadataExtraRootsForManagedWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initRunnerSourceRepo(t)
@@ -7356,6 +7376,10 @@ func TestRunnerRunTreatsMissingWorkspaceFinalDiffAsCompleted(t *testing.T) {
 }
 
 func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	workspaceBackend := &fakeWorkspaceBackend{
@@ -8138,6 +8162,10 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 }
 
 func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	tests := []struct {
 		name          string

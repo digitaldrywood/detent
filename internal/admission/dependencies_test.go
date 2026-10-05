@@ -22,6 +22,10 @@ import (
 )
 
 func TestAdmissionClosedDependencyEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("dependent", "owner/repo#20", 1, now)
@@ -48,6 +52,10 @@ func TestAdmissionClosedDependencyEvidence(t *testing.T) {
 }
 
 func TestResolveAdmissionDependencies(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name        string
@@ -192,6 +200,10 @@ func (s *dependencyAdmissionTracker) FetchIssueComments(ctx context.Context, iss
 }
 
 func TestAdmissionDependencyChangesInvalidateResults(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, mode := range []string{"pending", "declined", "legacy pending", "legacy decline", "human prerequisite"} {
 		t.Run(mode, func(t *testing.T) {
@@ -270,6 +282,10 @@ func TestAdmissionDependencyChangesInvalidateResults(t *testing.T) {
 }
 
 func TestAdmissionRevalidatesDependenciesDuringEvaluation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, count := range []int{1, 2} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
@@ -374,6 +390,10 @@ func FuzzAdmissionDependencyReadiness(f *testing.F) {
 }
 
 func TestAdmissionDependencyAcceptanceFailsClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name        string
@@ -424,6 +444,10 @@ func TestAdmissionDependencyAcceptanceFailsClosed(t *testing.T) {
 }
 
 func TestAdmissionDependencyResolutionBounds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Now().UTC()
 	issue := connector.Issue{ID: "dependent", Identifier: "owner/repo#1000"}
@@ -463,6 +487,10 @@ func TestAdmissionDependencyParserPreservesNativeAndProse(t *testing.T) {
 }
 
 func TestAdmissionUnchangedDependencyDeclineDoesNotStarveNextCandidate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	first := admissionIssueFixture("first", "owner/repo#20", 1, now)
@@ -494,6 +522,10 @@ func TestAdmissionUnchangedDependencyDeclineDoesNotStarveNextCandidate(t *testin
 }
 
 func TestAdmissionLocalDependencyNumberAlias(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("dependent", "wi-video-20", 1, now)

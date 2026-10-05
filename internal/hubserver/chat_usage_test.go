@@ -211,6 +211,10 @@ func (f chatUsageTransport) RoundTrip(request *http.Request) (*http.Response, er
 }
 
 func TestGenkitCoordinatorPersistsPricedUsage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Done."}]}],"usage":{"input_tokens":1000000,"output_tokens":100000,"total_tokens":1100000,"input_tokens_details":{"cached_tokens":400000},"output_tokens_details":{"reasoning_tokens":30000}}}}

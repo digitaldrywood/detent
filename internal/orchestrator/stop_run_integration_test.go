@@ -21,6 +21,10 @@ import (
 const operatorStopIntegrationWaitTimeout = 10 * time.Second
 
 func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	issue := testIssue("issue-stop", "digitaldrywood/detent#1311", "In Progress")
 	other := testIssue("issue-other", "digitaldrywood/detent#1312", "In Progress")
 	tracker := newFakeConnector(issue, other)
@@ -191,6 +195,10 @@ func TestStopRunPreservesConfiguredCustomDefault(t *testing.T) {
 }
 
 func TestStopRunAppliesTodoPriorityBeforeRedispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	issue := testIssue("issue-stop-priority", "digitaldrywood/detent#1354", "In Progress")
 	tracker := newOperatorStopAtomicConnector(issue)
 	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 2)}
@@ -296,6 +304,10 @@ func TestStopRunAcknowledgesBeforeTrackerTransitionCompletes(t *testing.T) {
 }
 
 func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	synctest.Test(t, func(t *testing.T) {
 		issue := testIssue("issue-stop-recovery", "digitaldrywood/detent#1311", "In Progress")
 		tracker := &operatorStopRecoveryConnector{fakeConnector: newFakeConnector(issue), stateUpdated: make(chan struct{}), releaseStateUpdate: make(chan struct{})}
@@ -376,6 +388,10 @@ func TestStopRunRecoveryReconcilesDurableHoldBeforeDispatch(t *testing.T) {
 }
 
 func TestStopRunRecoveryAppliesTodoPriorityBeforeDispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	issue := testIssue("issue-stop-todo-recovery", "digitaldrywood/detent#1354", "Todo")
 	tracker := newOperatorStopAtomicConnector(issue)
 	close(tracker.releasePriority)
@@ -417,6 +433,10 @@ func TestStopRunRecoveryAppliesTodoPriorityBeforeDispatch(t *testing.T) {
 }
 
 func TestStopRunHoldsItemWhenTrackerTransitionFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	issue := testIssue("issue-stop-failure", "digitaldrywood/detent#1311", "In Progress")
 	tracker := &operatorStopFailingConnector{fakeConnector: newFakeConnector(issue), err: errors.New("tracker unavailable")}
 	runner := &operatorStopBlockingRunner{started: make(chan orchestrator.RunRequest, 1)}

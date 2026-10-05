@@ -10,6 +10,10 @@ import (
 )
 
 func TestConnectorReconcileIssueFetchesOneLabelIssue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

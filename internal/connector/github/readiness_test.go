@@ -954,6 +954,10 @@ func TestReadinessGitHubAppSelectedRepositoriesAreCaseInsensitive(t *testing.T) 
 }
 
 func TestReadinessGitHubAppInstallationReportsMissingPermissions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
@@ -1007,6 +1011,10 @@ func TestReadinessGitHubAppInstallationReportsMissingPermissions(t *testing.T) {
 }
 
 func TestReadinessGitHubAppInstallationIssueFieldModeSkipsProjectsPermission(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
@@ -1061,6 +1069,10 @@ func TestReadinessGitHubAppInstallationIssueFieldModeSkipsProjectsPermission(t *
 }
 
 func TestReadinessGitHubAppInstallationLabelModeSkipsProjectAndIssueFieldPermissions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)

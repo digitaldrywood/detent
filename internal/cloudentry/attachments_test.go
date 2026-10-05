@@ -141,6 +141,10 @@ func (f *spacesFixture) requests() []string {
 }
 
 func TestAttachmentStorageProbe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, true)
@@ -188,6 +192,10 @@ func attachmentRequest(t *testing.T, b *browser, method, target string, body io.
 }
 
 func TestAttachmentRoutesIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, false)
@@ -414,6 +422,10 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 }
 
 func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	store := newSpacesFixture(t, false)
@@ -472,6 +484,10 @@ func TestAttachmentOrphanSweepAndDeprovision(t *testing.T) {
 }
 
 func TestAttachmentRoutesDisabled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	r := attachmentRequest(t, newBrowser(t, f.service.Handler()), http.MethodPost, "/organizations/org_alpha/api/v2/projects/prj_any/attachments", bytes.NewReader(nil), nil)
@@ -493,6 +509,10 @@ func (t attachmentTenantTransport) RoundTrip(request *http.Request) (*http.Respo
 }
 
 func TestAttachmentMetadataSettlement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name        string

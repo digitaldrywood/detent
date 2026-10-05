@@ -74,6 +74,10 @@ func TestParseDiffStat(t *testing.T) {
 }
 
 func TestLocalGitSeedReviewHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, tt := range []struct {
 		name    string
 		advance bool
@@ -138,6 +142,10 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 }
 
 func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	source := initSourceRepo(t)
 	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
@@ -160,6 +168,10 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 }
 
 func TestLocalGitSeedReviewHeadUsesPullRequestRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	source := initSourceRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	runGit(t, t.TempDir(), "clone", "--bare", source, remote)
@@ -195,6 +207,10 @@ func TestLocalGitSeedReviewHeadUsesPullRequestRef(t *testing.T) {
 }
 
 func TestLocalGitSeedReviewHeadUsesPullRequestRepository(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	source := initSourceRepo(t)
 	fork := filepath.Join(t.TempDir(), "fork.git")
 	base := filepath.Join(t.TempDir(), "base.git")
@@ -233,6 +249,10 @@ func TestLocalGitSeedReviewHeadUsesPullRequestRepository(t *testing.T) {
 }
 
 func TestLocalGitDiffStat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
 
@@ -417,6 +437,10 @@ func TestLocalGitDiffStat(t *testing.T) {
 // Diagnostics in linked worktrees must not rewrite their shared exclusions or
 // the worker's real index, and must filter runtime paths even when tracked.
 func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	source := initSourceRepo(t)
 	name := " source whitespace"
@@ -541,6 +565,10 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 }
 
 func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -611,6 +639,10 @@ func TestLocalGitRecoveryStateDetectsStrandedWork(t *testing.T) {
 }
 
 func TestLocalGitRecoveryStateReportsUntrackedPaths(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -647,6 +679,10 @@ func TestLocalGitRecoveryStateReportsUntrackedPaths(t *testing.T) {
 }
 
 func TestLocalGitDeliverableState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -728,6 +764,10 @@ func TestLocalGitDeliverableState(t *testing.T) {
 }
 
 func TestLocalGitRecoveryStateDetectsAmendedCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -778,6 +818,10 @@ func TestLocalGitRecoveryStateDetectsAmendedCommit(t *testing.T) {
 }
 
 func TestLocalGitDiffIsBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -918,6 +962,10 @@ func TestGitDiffStopErrorIgnoresCompletedProcess(t *testing.T) {
 }
 
 func TestLocalGitDiffUsesBaseRefForCleanBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -988,6 +1036,10 @@ func TestGitRecoveryBaseFingerprintUsesConfiguredBase(t *testing.T) {
 }
 
 func TestGitDiffStatMissingWorkspaceIsClassified(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	for _, name := range []string{"missing", "not git", "unborn", "missing index", "canceled"} {
@@ -1041,6 +1093,10 @@ func TestIsMissingWorkspaceErrorIgnoresUnmarkedNotExist(t *testing.T) {
 }
 
 func TestLocalGitRecoveryStateExcludesBaseCommits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, withWork := range []bool{false, true} {
 		t.Run(fmt.Sprintf("unpushed_work_%t", withWork), func(t *testing.T) {

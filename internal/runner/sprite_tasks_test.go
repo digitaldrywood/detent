@@ -13,6 +13,10 @@ import (
 )
 
 func TestHoldSpriteTask(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name        string

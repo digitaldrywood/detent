@@ -10,6 +10,10 @@ import (
 )
 
 func TestRegistryMigrationPreservesOrganizationEvents(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "registry.db")
 	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)")

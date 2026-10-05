@@ -28,6 +28,10 @@ import (
 )
 
 func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	states := append(hubserver.HostedProjectStates(), tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo", "Blocked", "Done"}})
 	for i := range states {
@@ -420,6 +424,10 @@ func intakeSnapshot() tracker.GitHubIssueSnapshot {
 }
 
 func TestNativeSourceIntakeRetryBeforeDispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, failure := range []struct {
 		name    string
@@ -506,6 +514,10 @@ func TestNativeSourceIntakeRetryBeforeDispatch(t *testing.T) {
 }
 
 func TestNativeEditsDuringSourceFetch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	h, issue := newLinkedChangeHub(t)
 	started, proceed := make(chan struct{}), make(chan struct{})

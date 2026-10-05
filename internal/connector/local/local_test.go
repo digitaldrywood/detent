@@ -633,6 +633,10 @@ func TestConnectorUpsertGitHubIdentityAndLocalIssueFields(t *testing.T) {
 }
 
 func TestConnectorBackfillsWorkItemNumbersByProjectCreationOrder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()

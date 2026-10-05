@@ -14,6 +14,10 @@ import (
 )
 
 func TestRefreshProjectCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -189,6 +193,10 @@ func TestRefreshProjectCommand(t *testing.T) {
 }
 
 func TestPlanProjectRefreshRejectsWorkflowRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	fixture := newProjectRefreshTestFixture(t, "manual_intake")

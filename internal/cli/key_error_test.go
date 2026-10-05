@@ -14,6 +14,10 @@ import (
 )
 
 func TestCLIAPIKeyErrorAddsBusyHint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	busyErr := fmt.Errorf("creating api key: %w", generateSQLiteBusyError(t))

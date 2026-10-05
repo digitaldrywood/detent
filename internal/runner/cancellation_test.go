@@ -258,6 +258,10 @@ func TestSleepInhibitorProcess(t *testing.T) {
 }
 
 func TestSleepInhibitorRelease(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, platform := range []string{"darwin", "linux", "windows"} {
 		t.Run(platform, func(t *testing.T) {
 			var process *exec.Cmd

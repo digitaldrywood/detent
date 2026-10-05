@@ -31,6 +31,10 @@ import (
 )
 
 func TestSSHServiceProxyKeepsCentralAuthority(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	central := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RequestURI() != "/workpad?issue=3239" || r.Header.Get("Authorization") != "Bearer project-scoped" {
 			t.Errorf("unexpected service request: %s %v", r.URL, r.Header)
@@ -81,6 +85,10 @@ func TestSSHProbeRequiresProvidedScratch(t *testing.T) {
 }
 
 func TestSSHHelperProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	mode := os.Getenv("DETENT_SSH_TEST_HELPER")
 	if mode == "" {
 		return
@@ -212,6 +220,10 @@ func sshTestProvider(ctx context.Context) error {
 }
 
 func TestSSHWorkerLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, native := range []bool{false, true} {
 		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) { testSSHWorkerLifecycle(t, false, native) })
 	}

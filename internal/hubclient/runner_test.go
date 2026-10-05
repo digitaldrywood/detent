@@ -28,6 +28,10 @@ import (
 )
 
 func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	const adminToken = "runner-client-test-admin"
 	const hubURL = "https://runner-hub.example.test"
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(adminToken), Version: "v1.2.4"})
@@ -526,6 +530,10 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 }
 
 func TestRunnerRequestsDoNotFollowCredentialRedirects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	var forwarded atomic.Int64
 	recipient := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded.Add(1); w.WriteHeader(http.StatusOK) }))
@@ -545,6 +553,10 @@ func TestRunnerRequestsDoNotFollowCredentialRedirects(t *testing.T) {
 }
 
 func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer server.Close()
 	client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }})
@@ -601,6 +613,10 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 }
 
 func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	approved := clientTestPolicy()
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -617,6 +633,9 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 				w.WriteHeader(http.StatusNoContent)
 			case <-r.Context().Done():
 			}
+
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/policy/observed"):
+			w.WriteHeader(http.StatusNoContent)
 
 		case strings.HasSuffix(r.URL.Path, "/policy"):
 			_ = json.NewEncoder(w).Encode(policy.Approval{Policy: approved})

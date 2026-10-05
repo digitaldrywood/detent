@@ -13,6 +13,10 @@ import (
 )
 
 func TestRefreshBoardFilterCost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, tt := range []struct{ total, owned int }{{9, 9}, {1991, 9}, {1991, 109}} {
 		total, owned := tt.total, tt.owned
 		t.Run(fmt.Sprintf("board_%d_owned_%d", total, owned), func(t *testing.T) {
@@ -90,6 +94,10 @@ func TestRefreshProjectFilter(t *testing.T) {
 }
 
 func TestFilteredRefreshExternalBlocker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, tt := range []struct {
 		name, state, lane string
 		human             bool
@@ -178,6 +186,10 @@ func TestFilteredRefreshExternalBlocker(t *testing.T) {
 }
 
 func TestRefreshFilterChangeRestartsInterruptedScan(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	phase := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -226,6 +238,10 @@ func TestRefreshFilterChangeRestartsInterruptedScan(t *testing.T) {
 }
 
 func TestFilteredRefreshBlockerLookupFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, tt := range []struct {
 		name      string
 		status    int
@@ -252,6 +268,10 @@ func TestFilteredRefreshBlockerLookupFailure(t *testing.T) {
 }
 
 func TestLabelRefreshSelectorsExcludeUnownedEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, fallback := range []bool{false, true} {
 		t.Run(fmt.Sprintf("fallback=%t", fallback), func(t *testing.T) {
 			const repo = "fixture/selector"

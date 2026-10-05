@@ -116,6 +116,10 @@ func TestManagerUpdateProjectCandidate(t *testing.T) {
 }
 
 func TestManagerEnforcesOrderingAndAllCapsBeforeWritingComments(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -176,6 +180,10 @@ func TestManagerEnforcesOrderingAndAllCapsBeforeWritingComments(t *testing.T) {
 }
 
 func TestManagerDeclinesNonDeliverableCandidatesBeforeRunningAgent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
@@ -230,6 +238,10 @@ func TestManagerDeclinesNonDeliverableCandidatesBeforeRunningAgent(t *testing.T)
 }
 
 func TestManagerAppliesCandidateCapBeforeDeclineSideEffects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
@@ -292,6 +304,10 @@ func TestManagerAppliesCandidateCapBeforeDeclineSideEffects(t *testing.T) {
 }
 
 func TestManagerPropagatesCandidateDeclineStoreErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
@@ -342,6 +358,10 @@ func TestManagerPropagatesCandidateDeclineStoreErrors(t *testing.T) {
 }
 
 func TestManagerReevaluatesDeclineAfterIssueContentChanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
@@ -372,6 +392,10 @@ func TestManagerReevaluatesDeclineAfterIssueContentChanges(t *testing.T) {
 }
 
 func TestManagerReevaluatesCriteriaDeclineAfterCriteriaChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
@@ -399,6 +423,10 @@ func TestManagerReevaluatesCriteriaDeclineAfterCriteriaChange(t *testing.T) {
 }
 
 func TestManagerDoesNotDuplicateDeclineCommentAfterStoreMarkFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
@@ -428,6 +456,10 @@ func TestManagerDoesNotDuplicateDeclineCommentAfterStoreMarkFailure(t *testing.T
 }
 
 func TestManagerDeclineSupersedesAcceptedOpenProposal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
@@ -467,6 +499,10 @@ func TestManagerDeclineSupersedesAcceptedOpenProposal(t *testing.T) {
 }
 
 func TestManagerAdmissionDeclinePersistenceBoundaries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
@@ -510,6 +546,10 @@ func TestManagerAdmissionDeclinePersistenceBoundaries(t *testing.T) {
 }
 
 func TestManagerRecordsCandidateReaderTruncation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -624,6 +664,10 @@ func TestManagerLogsScheduledAdmissionScan(t *testing.T) {
 }
 
 func TestManagerExpiresProposalAndReproposesUnchangedIssue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -661,6 +705,10 @@ func TestManagerExpiresProposalAndReproposesUnchangedIssue(t *testing.T) {
 }
 
 func TestManagerAuditCommentDoesNotDuplicateProposal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -689,6 +737,10 @@ func TestManagerAuditCommentDoesNotDuplicateProposal(t *testing.T) {
 }
 
 func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	accept, reject := admissionAcceptCommand("proposal-1"), admissionRejectCommand("proposal-1")
 	for _, tt := range []struct {
@@ -778,6 +830,10 @@ func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
 }
 
 func TestManagerReconcilesAcceptanceAfterIssueLeavesTargetState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -851,6 +907,10 @@ func TestManagerReconcilesAcceptanceAfterIssueLeavesTargetState(t *testing.T) {
 }
 
 func TestManagerReconcilesOpenProposalFromIssueState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -973,6 +1033,10 @@ func TestManagerReconcilesOpenProposalFromIssueState(t *testing.T) {
 }
 
 func TestManagerReturnsImplicitTransitionLookupError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -998,6 +1062,10 @@ func TestManagerReturnsImplicitTransitionLookupError(t *testing.T) {
 }
 
 func TestManagerAcceptanceTransitionsOrSupersedes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1089,6 +1157,10 @@ func TestManagerAcceptanceTransitionsOrSupersedes(t *testing.T) {
 }
 
 func TestManagerIgnoresUnauthorizedAdmissionDecision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1134,6 +1206,10 @@ func TestManagerIgnoresUnauthorizedAdmissionDecision(t *testing.T) {
 }
 
 func TestManagerAcceptanceRevalidatesImmediatelyBeforeMutation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1180,6 +1256,10 @@ func TestManagerAcceptanceRevalidatesImmediatelyBeforeMutation(t *testing.T) {
 }
 
 func TestManagerAutoAdmissionModes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1278,6 +1358,10 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 }
 
 func TestManagerAutoAdmissionRequiresEveryConfiguredDimension(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
@@ -1352,6 +1436,10 @@ Child issues decompose the implementation work. Marketing and operations staff m
 }
 
 func TestManagerAutomaticAdmissionRechecksLabelPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1391,6 +1479,10 @@ func TestManagerAutomaticAdmissionRechecksLabelPolicy(t *testing.T) {
 }
 
 func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
@@ -1506,6 +1598,10 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 }
 
 func TestManagerWritesEffortBeforeDispatchResolvesSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
@@ -1565,6 +1661,10 @@ func TestManagerWritesEffortBeforeDispatchResolvesSession(t *testing.T) {
 }
 
 func TestManagerRequiredEffortSupersedesOpenProposalWithoutRecommendation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
@@ -1600,6 +1700,10 @@ func TestManagerRequiredEffortSupersedesOpenProposalWithoutRecommendation(t *tes
 }
 
 func TestManagerRecoversAutoAdmissionAfterResolutionFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1647,6 +1751,10 @@ func TestManagerRecoversAutoAdmissionAfterResolutionFailure(t *testing.T) {
 }
 
 func TestManagerAutoAdmissionRespectsEligibilityAndCaps(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1703,6 +1811,10 @@ func TestManagerAutoAdmissionRespectsEligibilityAndCaps(t *testing.T) {
 }
 
 func TestManagerImplicitAcceptanceReleasesOpenProposalCapacity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1743,6 +1855,10 @@ func TestManagerImplicitAcceptanceReleasesOpenProposalCapacity(t *testing.T) {
 }
 
 func TestManagerAutoAdmissionSupersedesIneligibleOpenProposal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1782,6 +1898,10 @@ func TestManagerAutoAdmissionSupersedesIneligibleOpenProposal(t *testing.T) {
 }
 
 func TestManagerFiltersProposalHistoryBeforeCandidateCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1824,6 +1944,10 @@ func TestManagerFiltersProposalHistoryBeforeCandidateCap(t *testing.T) {
 }
 
 func TestManagerAcceptedDemotionIsSticky(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1871,6 +1995,10 @@ func TestManagerAcceptedDemotionIsSticky(t *testing.T) {
 }
 
 func TestManagerDefersForCapacityAndBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -1926,6 +2054,10 @@ func TestManagerDefersForCapacityAndBudget(t *testing.T) {
 }
 
 func TestManagerScheduledFanoutDeferralResumesWithoutDuplicateAdmission(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	current := now
 	issues := []connector.Issue{
@@ -2011,6 +2143,10 @@ func TestManagerScheduledFanoutDeferralResumesWithoutDuplicateAdmission(t *testi
 }
 
 func TestManagerScheduledEvaluationFanoutDeferralCheckpointsBeforeResume(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	current := now
 	tracker := memory.New(memory.Config{
@@ -2076,6 +2212,10 @@ func TestManagerScheduledEvaluationFanoutDeferralCheckpointsBeforeResume(t *test
 }
 
 func TestManagerCleanupFailureOverridesScheduledFanoutDeferral(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	current := now
 	tracker := memory.New(memory.Config{
@@ -2411,6 +2551,10 @@ func TestAcquireCapacitySafetyBoundaries(t *testing.T) {
 }
 
 func TestManagerCoverageFloorBoundaries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	var nilManager *Manager
@@ -2562,6 +2706,10 @@ func TestManagerCoverageFloorBoundaries(t *testing.T) {
 }
 
 func TestManagerRunOnceBoundaryErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 31, 16, 0, 0, 0, time.UTC)
@@ -2795,6 +2943,10 @@ func TestManagerOrderingAndParsingBoundaries(t *testing.T) {
 }
 
 func TestManagerFiltersLocallyAndRejectsFabricatedCriteria(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -2838,6 +2990,10 @@ func TestManagerFiltersLocallyAndRejectsFabricatedCriteria(t *testing.T) {
 }
 
 func TestManagerUnionsLabelCandidatesAndSkipsIneligibleStates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -2920,6 +3076,10 @@ func TestAllowedAuthorUnion(t *testing.T) {
 }
 
 func TestManagerAuthorRejectionIsAggregateOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -2952,6 +3112,10 @@ func TestManagerAuthorRejectionIsAggregateOnly(t *testing.T) {
 }
 
 func TestManagerUsesAuthorPushdownOnlyWhenUnionSafe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -3026,6 +3190,10 @@ func TestReadAdmissionCandidatesPushesAuthorsOnlyToStates(t *testing.T) {
 }
 
 func TestManagerDeduplicatesPushedAuthorRejectionsAcrossSelectors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -3063,6 +3231,10 @@ func TestManagerDeduplicatesPushedAuthorRejectionsAcrossSelectors(t *testing.T) 
 }
 
 func TestManagerUnionsUntrackedCandidatesBeforeDeduplicationAndExclusions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -3131,6 +3303,10 @@ func TestManagerUnionsUntrackedCandidatesBeforeDeduplicationAndExclusions(t *tes
 }
 
 func TestManagerLocalSQLiteStatesOnlyEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -3170,6 +3346,10 @@ func TestManagerLocalSQLiteStatesOnlyEndToEnd(t *testing.T) {
 }
 
 func TestManagerReservesCommentCapacityBeforeCreatingProposals(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -3219,6 +3399,10 @@ func TestManagerReservesCommentCapacityBeforeCreatingProposals(t *testing.T) {
 }
 
 func TestManagerRejectsMissingConfidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -3243,6 +3427,10 @@ func TestManagerRejectsMissingConfidence(t *testing.T) {
 }
 
 func TestManagerPersistsDeclinedCandidateEvaluation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
@@ -3283,6 +3471,10 @@ func TestManagerPersistsDeclinedCandidateEvaluation(t *testing.T) {
 }
 
 func TestManagerBoundsMalformedAdmissionAcrossRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, legacyBlocked := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy blocked %t", legacyBlocked), func(t *testing.T) {
@@ -3374,6 +3566,10 @@ func TestManagerBoundsMalformedAdmissionAcrossRestart(t *testing.T) {
 }
 
 func TestManagerAcceptsCorrectedAdmissionAfterMalformedOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 9, 4, 12, 30, 0, 0, time.UTC)
@@ -3401,6 +3597,10 @@ func TestManagerAcceptsCorrectedAdmissionAfterMalformedOutput(t *testing.T) {
 }
 
 func TestManagerBoundsVaryingMalformedAdmissionOutputs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 9, 4, 12, 45, 0, 0, time.UTC)
@@ -3435,6 +3635,10 @@ func TestManagerBoundsVaryingMalformedAdmissionOutputs(t *testing.T) {
 }
 
 func TestManagerRecoversAfterRunnerErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, kind := range []string{"authentication", backendcapacity.StartupTimeoutKind, backendcapacity.StartupFailureKind, "usage_limit_exceeded", "server_overloaded"} {
 		t.Run(kind, func(t *testing.T) {
@@ -3505,6 +3709,10 @@ func TestManagerRecoversAfterRunnerErrors(t *testing.T) {
 }
 
 func TestManagerContinuesMixedMalformedAdmissionCandidates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 9, 4, 13, 0, 0, 0, time.UTC)
@@ -3546,6 +3754,10 @@ func TestManagerContinuesMixedMalformedAdmissionCandidates(t *testing.T) {
 }
 
 func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
@@ -3795,6 +4007,10 @@ func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
 }
 
 func TestManagerKeepsValidSemanticEvaluationWhenPeerIsMalformed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
@@ -3865,6 +4081,10 @@ func TestManagerKeepsValidSemanticEvaluationWhenPeerIsMalformed(t *testing.T) {
 }
 
 func TestManagerSkipsCandidateChangedDuringEvaluationAndContinues(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
@@ -4913,6 +5133,10 @@ func TestProposalCommentQuotesCriteriaAndDoesNotUseStatusLabel(t *testing.T) {
 }
 
 func TestAdmissionRequiresLedgerWriter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, injected := range []bool{false, true} {
 		t.Run(fmt.Sprintf("injected=%t", injected), func(t *testing.T) {
@@ -4947,6 +5171,10 @@ func TestAdmissionRequiresLedgerWriter(t *testing.T) {
 }
 
 func TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, state := range []string{"", "Done", "Todo"} {
 		t.Run("candidate state "+state, func(t *testing.T) {
 			now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
@@ -4976,6 +5204,10 @@ func TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity(t *testing.T) {
 }
 
 func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name          string
@@ -5155,6 +5387,10 @@ func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
 }
 
 func TestManagerIntakeOffPreservesBacklogAndSchedule(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("waiting", "DD-1", 1, now)

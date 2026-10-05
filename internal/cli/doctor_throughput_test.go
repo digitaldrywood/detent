@@ -11,6 +11,10 @@ import (
 )
 
 func TestCheckDoctorHistoricalThroughputReportsRecordedFloorAndRedispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 18, 18, 0, 0, 0, time.UTC)

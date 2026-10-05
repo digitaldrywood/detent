@@ -159,6 +159,10 @@ func requireClosed(t *testing.T, frame sseFrame, reason string) {
 }
 
 func TestConversationStreamReplaysAndFollows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	f := newStreamFixture(t)
 	created := f.create(t, f.token, map[string]any{"first_message": map[string]any{"key": "first", "text": "Stream me"}})
 	id := created.Conversation.ID

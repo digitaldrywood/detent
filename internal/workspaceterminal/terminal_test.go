@@ -22,6 +22,10 @@ import (
 // something the platform cannot do.
 func requirePTY(t *testing.T) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("real pseudo-terminal and shell integration")
+	}
+
 	if !Supported {
 		t.Skip("this platform has no pseudo-terminal")
 	}

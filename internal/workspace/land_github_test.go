@@ -27,6 +27,10 @@ type landingHTTPClient func(*http.Request) (*http.Response, error)
 func (f landingHTTPClient) Do(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestLocalGitLandingReplacement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
@@ -202,6 +206,10 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 }
 
 func TestLocalGitLandChangeViaGitHub(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
@@ -720,6 +728,10 @@ func TestGitHubLandingRepository(t *testing.T) {
 }
 
 func TestLocalGitLandChangeViaGitHubAlreadyMerged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {

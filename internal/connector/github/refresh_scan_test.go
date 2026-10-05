@@ -17,6 +17,10 @@ import (
 )
 
 func TestRefreshScanCredentials(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, tt := range []struct {
 		name        string
 		credentials int

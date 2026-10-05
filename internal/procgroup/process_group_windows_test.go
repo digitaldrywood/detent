@@ -11,6 +11,10 @@ import (
 )
 
 func TestWindowsInspectAndTerminate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestWindowsProcessHelper$")
 	cmd.Env = append(os.Environ(), "DETENT_WINDOWS_PROCESS_HELPER=1")
 	Configure(t.Context(), cmd)

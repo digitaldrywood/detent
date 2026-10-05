@@ -10,6 +10,10 @@ import (
 )
 
 func TestCombinedCoveragePublishesOnlyCurrentSuccessfulRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("local Makefile gate requires Bash")

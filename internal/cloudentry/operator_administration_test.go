@@ -50,6 +50,10 @@ func (p *fakeProvider) AcceptInvitationByID(ctx context.Context, id, user string
 // Catches account context switching retaining grants, cross-account selection,
 // staff privilege leakage, and revoked membership/session receipt replay.
 func TestEntryAdministrationContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, scenario := range []string{"transport", "key boundary", "switch", "foreign organization", "revoked membership", "revoked session", "support denied", "support actor", "logout direct", "logout provider failure", "logout revoked session", "logout revoked provider"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newEntryFixture(t)

@@ -44,6 +44,10 @@ func fileDiffByPath(files []FileDiff, path string) (FileDiff, bool) {
 // GitFileDiffs splits the change per file with its status, its counts and its
 // own patch, and reports the base it was taken against and the worktree head.
 func TestGitFileDiffsStatusesAndCounts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	dir, base := fileDiffRepo(t)
 	// A commit after the base so the head is not the base, then worktree
@@ -119,6 +123,10 @@ func TestGitFileDiffsStatusesAndCounts(t *testing.T) {
 // A binary file reports no counts and no patch, so a renderer is never handed
 // bytes it cannot draw.
 func TestGitFileDiffsBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	dir, base := fileDiffRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "blob.bin"), []byte{0, 1, 2, 0, 3, 4}, 0o600); err != nil {
@@ -140,6 +148,10 @@ func TestGitFileDiffsBinary(t *testing.T) {
 // The whole-diff byte cap keeps the file list and its counts and drops every
 // patch, rather than serving a patch set that stops partway through.
 func TestGitFileDiffsTruncatesAtLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	dir, base := fileDiffRepo(t)
 	writeFileDiffFile(t, dir, "large.txt", strings.Repeat("line of text\n", 2000))
@@ -165,6 +177,10 @@ func TestGitFileDiffsTruncatesAtLimit(t *testing.T) {
 // maxBytes zero asks for counts only, which is what a caller that just wants
 // the file list pays for.
 func TestGitFileDiffsCountsOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	dir, base := fileDiffRepo(t)
 	writeFileDiffFile(t, dir, "added.txt", "one\n")
@@ -182,6 +198,10 @@ func TestGitFileDiffsCountsOnly(t *testing.T) {
 
 // A clean worktree answers an empty file list, not an error.
 func TestGitFileDiffsClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	dir, base := fileDiffRepo(t)
 	diffs, err := GitFileDiffs(t.Context(), dir, base, 1<<20)
@@ -197,6 +217,10 @@ func TestGitFileDiffsClean(t *testing.T) {
 // patch is the hub's write-side filter, not the runner's git call, so the
 // runner reports them and the filter decides.
 func TestGitFileDiffsReportsDeniedPathsForTheFilter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	isolateFileDiffGitConfig(t)
 	dir, base := fileDiffRepo(t)
 	writeFileDiffFile(t, dir, ".env", "TOKEN=secret\n")
@@ -298,6 +322,10 @@ func isolateFileDiffGitConfig(t *testing.T) {
 }
 
 func TestAttemptBase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name      string

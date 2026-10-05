@@ -22,6 +22,10 @@ import (
 // This catches a configured Pi route that constructs the wrong backend, drops
 // session/provider identity, or fails to carry final usage into Detent's store.
 func TestBuildRunnerSupportsPiAgentRoute(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	dir := t.TempDir()
 	script := filepath.Join(dir, "pi-fixture")
 	if err := os.WriteFile(script, []byte(`#!/bin/sh

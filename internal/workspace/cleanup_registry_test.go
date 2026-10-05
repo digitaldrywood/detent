@@ -14,6 +14,10 @@ import (
 )
 
 func TestLocalGitCleanupRemovesHookArtifacts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -65,6 +69,10 @@ func TestLocalGitCleanupRemovesHookArtifacts(t *testing.T) {
 }
 
 func TestLocalGitCleanupRetriesAfterGitDeregistration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	enclosing := initSourceRepo(t)
@@ -135,6 +143,10 @@ func TestLocalGitCleanupRetriesAfterGitDeregistration(t *testing.T) {
 }
 
 func TestLocalGitReconcileResiduals(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	tests := []struct {
@@ -222,6 +234,10 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 }
 
 func TestLocalGitReconcileResidualsRejectsInsufficientOwnership(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -308,6 +324,10 @@ func publishCleanupSource(t *testing.T, source string) {
 }
 
 func TestLocalGitReconcileUnrecordedWorkspaces(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	tests := []struct {
 		name          string
@@ -386,6 +406,10 @@ func TestLocalGitReconcileUnrecordedWorkspaces(t *testing.T) {
 }
 
 func TestLocalGitOrphanDiscoveryKeepsSourceRepository(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, nested := range []bool{false, true} {
 		t.Run(strconv.FormatBool(nested), func(t *testing.T) {
@@ -413,6 +437,10 @@ func TestLocalGitOrphanDiscoveryKeepsSourceRepository(t *testing.T) {
 }
 
 func TestLocalGitReconcilePreservesManualWorktrees(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, branch := range []string{"feature/manual-hotfix", "detent/manual-hotfix", ""} {
 		t.Run(branch, func(t *testing.T) {

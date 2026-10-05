@@ -286,6 +286,10 @@ func startSessionOver(
 	configure func(*workspacerunner.Config),
 ) *sessionFixture {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("network relay and runner lifecycle integration")
+	}
+
 	hub := newScriptedHub(t, checkout)
 	hub.actions = actions
 	worktree := &fixedWorktree{path: root}
@@ -357,6 +361,10 @@ func filesFrame(t *testing.T, kind, stream string, request workspacesession.File
 }
 
 func TestSessionServesTheFilesChannel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	root := worktreeWith(t)
 	// This fixture must not inherit the parent worktree's scratch ignore rule.
@@ -507,6 +515,10 @@ func TestSessionDropsAFrameAfterLeaseLoss(t *testing.T) {
 }
 
 func TestSessionStopsWhenTheHubAsksForTheWorkspaceBack(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	f := startSession(t, nil)
 	f.hub.setState(workspacesession.StateClosing)
@@ -523,6 +535,10 @@ func TestSessionStopsWhenTheHubAsksForTheWorkspaceBack(t *testing.T) {
 }
 
 func TestSessionStopsWhenTheHubReportsAStaleLease(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	f := startSession(t, nil)
 	f.hub.mu.Lock()
@@ -769,6 +785,10 @@ func TestSessionRefusesARunAfterLeaseLoss(t *testing.T) {
 // it, not the shell alone -- the grandchild here is what an installer or a
 // build server would be.
 func TestSessionStopsARunWhenTheStreamIsClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	requirePOSIXShell(t)
 	f := startSession(t, nil)
@@ -887,6 +907,10 @@ func TestSessionRefusesAHubDispatchedRunAfterLeaseLoss(t *testing.T) {
 // re-checked while the process runs, and the whole process group goes when it
 // fails -- the grandchild here is what a build server would be.
 func TestSessionStopsAHubDispatchedRunWhenTheLeaseIsLost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	requirePOSIXShell(t)
 	var mu sync.Mutex
@@ -1026,6 +1050,10 @@ func TestSessionRunsFreshWorktreeActionsInOrder(t *testing.T) {
 // the setup already ran when this worktree was created, and running it again
 // would redo that work on a tree someone may be reading.
 func TestSessionRunsNoActionsForARetainedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	requirePOSIXShell(t)
 	reporter := &recordingReporter{}

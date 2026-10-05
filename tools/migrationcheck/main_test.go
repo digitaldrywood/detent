@@ -112,6 +112,10 @@ func TestRun(t *testing.T) {
 }
 
 func TestIndividuallyValidBranchesRejectIntegratedCollision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	attributes, err := os.ReadFile("../../.gitattributes")
 	if err != nil {

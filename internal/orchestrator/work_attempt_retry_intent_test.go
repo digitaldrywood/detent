@@ -21,6 +21,10 @@ import (
 )
 
 func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, boundary := range []string{"request", "intent recorded", "tracker applied", "retry queued"} {
 		t.Run(boundary, func(t *testing.T) {
@@ -136,6 +140,10 @@ func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
 }
 
 func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, condition := range []string{"dependency", "budget", "project outage", "stale tracker", "new invalid override", "multiple causes"} {
 		t.Run(condition, func(t *testing.T) {
@@ -194,6 +202,10 @@ func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
 }
 
 func TestDurableRecoveryPreservesDispatchFailureBackoff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, refusal := range []string{"global admission", "project capacity", "first refill"} {
 		t.Run(refusal, func(t *testing.T) {
@@ -271,6 +283,10 @@ func (s failingRecoveryJournal) RecordWorkflowPhaseEvent(ctx context.Context, ev
 }
 
 func TestRecoveryJournalFailureLeavesHoldsIntact(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	db := openWorkAttemptRecoveryStore(t, t.Context())
 	host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
@@ -290,6 +306,10 @@ func TestRecoveryJournalFailureLeavesHoldsIntact(t *testing.T) {
 }
 
 func TestRecoveryIntentCannotAcknowledgeNewParkGeneration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, cause := range []string{repeatedFailureCircuitBreakerCause, "operator_investigation"} {
 		t.Run(cause, func(t *testing.T) {
@@ -320,6 +340,10 @@ func TestRecoveryIntentCannotAcknowledgeNewParkGeneration(t *testing.T) {
 }
 
 func TestRecoveryIntentDoesNotReplayAfterNewAttempt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	db := openWorkAttemptRecoveryStore(t, t.Context())
 	host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
@@ -348,6 +372,10 @@ func TestRecoveryIntentDoesNotReplayAfterNewAttempt(t *testing.T) {
 }
 
 func TestRecoveryReceiptReportsCurrentState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, status := range []string{"queued", "blocked", "running"} {
 		t.Run(status, func(t *testing.T) {
@@ -394,6 +422,10 @@ func (r recoveryCapacityResolver) DispatchCapacity(context.Context, runpkg.RunRe
 }
 
 func TestRecoveryRevalidatesConfigurationBeforeRecordingIntent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
@@ -430,6 +462,10 @@ func TestRecoveryRevalidatesConfigurationBeforeRecordingIntent(t *testing.T) {
 }
 
 func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, form := range []string{"typed", "wrapped", "restored", "observed lane"} {
 		t.Run(form, func(t *testing.T) {
@@ -468,6 +504,10 @@ func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 }
 
 func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

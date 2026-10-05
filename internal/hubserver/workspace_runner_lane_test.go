@@ -300,6 +300,10 @@ func startCounter(t *testing.T, person *relayClient) string {
 }
 
 func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	f := newWorkspaceLaneFixture(t)
 	id := f.open(t, "lease-subject", []string{workspacesession.CapabilityFiles, workspacesession.CapabilityGit})
@@ -358,6 +362,10 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 }
 
 func TestWorkspaceLaneUnbindsWhenTheWorkspaceIsClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	f := newWorkspaceLaneFixture(t)
 	id := f.open(t, "close-subject", []string{workspacesession.CapabilityFiles})
@@ -421,6 +429,10 @@ func TestNativeCapabilitiesAdvertiseWorkspaceSessionsOnlyWhenServed(t *testing.T
 // lists web/conversation sends (RightPanel's WORKSPACE_REQUIRES, headerGit's
 // GIT_REQUIRES) and with none at all, and expects this runner to claim each.
 func TestWorkspaceLaneClaimsWhatTheClientOpens(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	f := newWorkspaceLaneFixture(t)
 	tests := []struct {
@@ -478,6 +490,10 @@ func (f *workspaceLaneFixture) awaitRun(t *testing.T, action workspacesession.Ac
 // project action: the run-on-worktree-creation set it runs before reporting
 // ready, and a run queued through the API that the hub hands it over the relay.
 func TestWorkspaceLaneRunsProjectActions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	if !terminalAvailable() {
 		t.Skip("the action commands are POSIX shell syntax")

@@ -345,6 +345,10 @@ func nativeChangeDiff(head string, files ...string) runner.AttemptDiffSource {
 // decides: whether a Change Request is opened under the lease and what the run
 // reports for the orchestrator to move the item on.
 func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	base := strings.Repeat("a", 40)
 	head := strings.Repeat("c", 40)
@@ -867,6 +871,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 // expiry re-offers the item, and a retried finish publishes the outcome
 // without opening a second change.
 func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	h := newNativeChangeHub(t, true)
 	issue := h.createInProgress(t, "Native change")
@@ -927,6 +935,10 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 // to review; a run that commits nothing opens none and the item leaves the
 // dispatchable set, so the claim offers it no more.
 func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
 		absorbed       bool
@@ -1787,6 +1799,10 @@ func isolateNativeChangeGit(t *testing.T) {
 // version, not once the policy asks for more, and an error for a change the
 // item does not have.
 func TestNativeConnectorChangeReviewed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	h := newNativeChangeHub(t)
 	issue := h.createInProgress(t, "Native change")

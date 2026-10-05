@@ -48,6 +48,10 @@ func TestMain(m *testing.M) {
 }
 
 func TestRunWorkflowGitBoundsInheritedOutputPipe(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	binDir := installWorkflowGitHelper(t)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv(workflowGitHelperModeEnv, "git")
@@ -211,6 +215,10 @@ func TestLoadWorkflowRejectsRelativeWorkflowWhenWorkflowRefUnset(t *testing.T) {
 }
 
 func TestLoadWorkflowUsesConfiguredGitRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -234,6 +242,10 @@ func TestLoadWorkflowUsesConfiguredGitRef(t *testing.T) {
 }
 
 func TestLoadWorkflowUsesSplitDefinitionFromConfiguredGitRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -273,6 +285,10 @@ func TestLoadWorkflowUsesSplitDefinitionFromConfiguredGitRef(t *testing.T) {
 }
 
 func TestLoadWorkflowUsesAdmissionEffortGuidanceFromConfiguredGitRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -325,6 +341,10 @@ backlog_admission:
 }
 
 func TestLoadWorkflowUsesLocalOverlayWithConfiguredGitRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -356,6 +376,10 @@ func TestLoadWorkflowUsesLocalOverlayWithConfiguredGitRef(t *testing.T) {
 }
 
 func TestLoadWorkflowUsesAbsolutePathUnderWorkdirWithConfiguredGitRef(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -393,6 +417,10 @@ func TestLoadWorkflowRejectsRefPathOutsideWorkdir(t *testing.T) {
 }
 
 func TestGitRefWorkflowWatcherReloadsWhenRefAdvances(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -443,6 +471,10 @@ func TestGitRefWorkflowWatcherReloadsWhenRefAdvances(t *testing.T) {
 }
 
 func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, ref := range []string{"", "origin/main"} {
 		t.Run("ref="+ref, func(t *testing.T) {
 			repo := initWorkflowSourceRepo(t)
@@ -495,6 +527,10 @@ func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
 }
 
 func TestGitRefWorkflowWatcherReloadsLocalOverlayLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	repo := initWorkflowSourceRepo(t)
@@ -871,6 +907,10 @@ func TestReadOptionalWorkflowSourceFileReconcilesPermission(t *testing.T) {
 }
 
 func TestGitRefWorkflowWatcherReconcilesOverlayDeletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	for _, operation := range []string{"seed", "poll"} {
@@ -947,6 +987,10 @@ func TestGitRefWorkflowWatcherReconcilesOverlayDeletion(t *testing.T) {
 }
 
 func TestWorkflowLoadFailureClassification(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, tt := range []struct {
 		name           string
 		ref            string

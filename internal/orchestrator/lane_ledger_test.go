@@ -17,6 +17,10 @@ import (
 )
 
 func TestLaneWritePersistsBeforeTrackerAndRetainsUncertainIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name        string
@@ -73,6 +77,10 @@ func (c ledgerCheckingConnector) UpdateIssueState(ctx context.Context, id, targe
 }
 
 func TestLaneLedgerClassifiesTransitionsWithoutStoppingWorkers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name            string
@@ -159,6 +167,10 @@ func (p lanePeerReader) CompareAndSwap(context.Context, string, string, []byte) 
 }
 
 func TestLaneMoveEntryPointsPreserveWorkerCompletionLane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, entry := range []string{"targeted refresh", "kanban"} {
 		t.Run(entry, func(t *testing.T) {
@@ -217,6 +229,10 @@ func (s notifyingLaneStore) LaneWriteLock() sync.Locker {
 }
 
 func TestLaneWritesSerializeAcrossOrchestratorEntryPoints(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	at := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	issue := laneRevocationIssue("serial", "example/repo#4", "Todo")
@@ -351,6 +367,10 @@ func TestHumanMoveToMergingDoesNotChangeWorkerMode(t *testing.T) {
 }
 
 func TestLaneAcknowledgementDoesNotHideLaterHumanReentry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, peer := range []bool{false, true} {
 		t.Run(strconv.FormatBool(peer), func(t *testing.T) {

@@ -45,6 +45,10 @@ func checkpointWrite(t *testing.T, root, path, content string) {
 }
 
 func TestCheckpointIntendedWork(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, work := range []string{"dirty", "unpushed", "already pushed", "deleted", "unchanged", "literal path"} {
 		t.Run(work, func(t *testing.T) {
@@ -99,6 +103,10 @@ func TestCheckpointIntendedWork(t *testing.T) {
 }
 
 func TestCheckpointRefusesUnsafePublication(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real host integration fixture")
+	}
+
 	t.Parallel()
 	for _, failure := range []string{"unreviewed", "stale head", "different branch", "secret path", "secret content", "secret in old commit", "unapproved commit", "directory", "symlink", "path traversal", "lost lease", "lost lease before commit", "lost lease before push", "cancelled", "network unavailable", "remote advanced", "concurrent push", "hook rejected"} {
 		t.Run(failure, func(t *testing.T) {
@@ -209,6 +217,10 @@ func TestCheckpointRefusesUnsafePublication(t *testing.T) {
 }
 
 func TestCheckpointDurableEvidenceBeforeHardTermination(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	backend, issue, plan, _ := checkpointFixture(t)
 	checkpointWrite(t, plan.Info.Path, "README.md", "work after journal; worker killed without epilogue")
@@ -299,6 +311,10 @@ func TestCheckpointGitReadFailures(t *testing.T) {
 }
 
 func TestCheckpointPreparationRefusesUnownedWork(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, scenario := range []string{"human branch", "other workspace", "not a worktree", "missing remote", "missing base", "invalid root"} {
 		t.Run(scenario, func(t *testing.T) {

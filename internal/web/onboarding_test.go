@@ -861,6 +861,10 @@ func TestOnboardingWriteRunsCloseoutVerifierAfterMutation(t *testing.T) {
 }
 
 func TestOnboardingWriteCloseoutVerifierReportsStalledReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 
 	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")

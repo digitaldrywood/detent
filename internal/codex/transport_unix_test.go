@@ -17,6 +17,10 @@ import (
 const lifecycleWaitTimeout = 10 * time.Second
 
 func TestLocalTransportReapsChildAfterParentExits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	for _, startup := range []struct {
@@ -75,6 +79,10 @@ func TestLocalTransportReapsChildAfterParentExits(t *testing.T) {
 }
 
 func TestLocalTransportCloseKillsChildProcessGroup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	for _, startup := range []struct {

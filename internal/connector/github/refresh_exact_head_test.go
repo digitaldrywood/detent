@@ -13,6 +13,10 @@ import (
 )
 
 func TestRetainedRefreshObservesCompletedCheckOnSameHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	const repo = "fixture/mobile"
 	snapshot := candidatePRFixtureSnapshot(repo, 1)
 	snapshot["mergeStateStatus"] = "UNSTABLE"

@@ -31,6 +31,10 @@ func TestMain(m *testing.M) {
 }
 
 func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -107,6 +111,10 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 }
 
 func TestLocalGitCreateSerializesAfterCreateHooksForSharedSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	source := initSourceRepo(t)
@@ -179,6 +187,10 @@ func TestLocalGitCreateSerializesAfterCreateHooksForSharedSource(t *testing.T) {
 }
 
 func TestLocalGitCreateRunsAfterCreateHooksConcurrentlyForDifferentSources(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	hookState := t.TempDir()
@@ -329,6 +341,10 @@ func TestLocalGitInfoForIssueNamespacesKeysByProjectID(t *testing.T) {
 }
 
 func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -374,6 +390,10 @@ func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
 }
 
 func TestLocalGitCreatePrunesMissingRegisteredWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -415,6 +435,10 @@ func TestLocalGitCreatePrunesMissingRegisteredWorktree(t *testing.T) {
 }
 
 func TestLocalGitCreateClassifiesOccupiedBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -551,6 +575,10 @@ func TestRunWorktreeAddWithPrune(t *testing.T) {
 }
 
 func TestLocalGitCreateBasesNewBranchOnFetchedRemoteDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -610,6 +638,10 @@ func TestLocalGitCreateBasesNewBranchOnFetchedRemoteDefault(t *testing.T) {
 }
 
 func TestLocalGitCreateDoesNotFallBackWhenOriginIsUnavailable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -644,6 +676,10 @@ func TestLocalGitCreateDoesNotFallBackWhenOriginIsUnavailable(t *testing.T) {
 }
 
 func TestLocalGitCreateSerializesRemoteOperations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -706,6 +742,10 @@ func TestLocalGitCreateSerializesRemoteOperations(t *testing.T) {
 }
 
 func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -777,6 +817,10 @@ func TestLocalGitPrepareMergeRebasesAndPushesCleanBranch(t *testing.T) {
 }
 
 func TestLocalGitPrepareMergeUsesDevBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -869,6 +913,10 @@ func testLocalGitPrepareMergeUsesDevBranch(t *testing.T, remoteDefault string, o
 }
 
 func TestLocalGitPrepareMergeAbortsConflictingRebase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -936,6 +984,10 @@ func TestLocalGitPrepareMergeAbortsConflictingRebase(t *testing.T) {
 }
 
 func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1004,6 +1056,10 @@ func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
 }
 
 func TestGitMetadataWritableRootsRejectsEnclosingRepository(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1019,6 +1075,10 @@ func TestGitMetadataWritableRootsRejectsEnclosingRepository(t *testing.T) {
 }
 
 func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	source := initSourceRepo(t)
@@ -1062,6 +1122,10 @@ func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
 }
 
 func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	source := initSourceRepo(t)
@@ -1170,6 +1234,10 @@ func TestRunGitAtWithEnvCancellationReturnsPromptly(t *testing.T) {
 }
 
 func TestLocalGitHookCancellationReturnsPromptly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real process or filesystem integration")
+	}
+
 	skipWindows(t)
 
 	workspacePath := t.TempDir()
@@ -1218,6 +1286,10 @@ func TestLocalGitHookCancellationReturnsPromptly(t *testing.T) {
 }
 
 func TestLocalGitHookAllowsDaemonizedSuccess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real process or filesystem integration")
+	}
+
 	skipWindows(t)
 
 	workspacePath := t.TempDir()
@@ -1245,6 +1317,10 @@ func TestLocalGitHookAllowsDaemonizedSuccess(t *testing.T) {
 }
 
 func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1293,6 +1369,10 @@ func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 }
 
 func TestLocalGitCreateRecoversCleanDetachedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1339,6 +1419,10 @@ func TestLocalGitCreateRecoversCleanDetachedWorktree(t *testing.T) {
 }
 
 func TestLocalGitCreateRecoversCleanWrongBranchWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1387,6 +1471,10 @@ func TestLocalGitCreateRecoversCleanWrongBranchWorktree(t *testing.T) {
 }
 
 func TestLocalGitCreateQuarantinesDirtyDetachedWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1452,6 +1540,10 @@ func TestLocalGitCreateQuarantinesDirtyDetachedWorktree(t *testing.T) {
 }
 
 func TestLocalGitCreateQuarantinesCleanDetachedUnreferencedCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1522,6 +1614,10 @@ func TestLocalGitCreateQuarantinesCleanDetachedUnreferencedCommit(t *testing.T) 
 }
 
 func TestLocalGitCreateRepairsWorkspacePreparationFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	tests := []struct {
@@ -1688,6 +1784,10 @@ func TestLocalGitQuarantineWorkspaceCount(t *testing.T) {
 }
 
 func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1725,6 +1825,10 @@ func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 }
 
 func TestLocalGitHookFailureSurfaces(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -1830,6 +1934,10 @@ func TestLocalGitHookFailureSurfaces(t *testing.T) {
 }
 
 func TestLocalGitPreserveFailedWorkspaceReleasesBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	tests := []struct {
@@ -1925,6 +2033,10 @@ func TestLocalGitPreserveFailedWorkspaceReleasesBranch(t *testing.T) {
 }
 
 func TestLocalGitPreserveFailedWorkspaceSurfacesBranchReleaseFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	source := initSourceRepo(t)
@@ -1963,6 +2075,10 @@ func TestLocalGitPreserveFailedWorkspaceSurfacesBranchReleaseFailure(t *testing.
 }
 
 func TestLocalGitCreateQuarantinesFailedCreationState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	tests := []struct {
@@ -2059,6 +2175,10 @@ func TestLocalGitCreateQuarantinesFailedCreationState(t *testing.T) {
 }
 
 func TestLocalGitBranchHeldByWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 
 	tests := []struct {
@@ -2165,6 +2285,10 @@ func TestHookErrorErrorIncludesBoundedOutputTail(t *testing.T) {
 }
 
 func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -2214,6 +2338,10 @@ func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
 }
 
 func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	skipWindows(t)
 	t.Setenv("GIT_CEILING_DIRECTORIES", os.TempDir())
 
@@ -2268,6 +2396,10 @@ func TestLocalGitCleanupRemediatesGeneratedCachePermissions(t *testing.T) {
 }
 
 func TestLocalGitRepositoryDiscoveryStaysWithinCandidate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	enclosing := initSourceRepo(t)
@@ -2445,6 +2577,10 @@ func TestPrepareWorkerScratchPreservesPriorAttempt(t *testing.T) {
 }
 
 func TestPrepareWorkerScratchPreservesGitExclude(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	workspacePath := initSourceRepo(t)
@@ -2476,6 +2612,10 @@ func TestPrepareWorkerScratchPreservesGitExclude(t *testing.T) {
 }
 
 func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -2516,6 +2656,10 @@ func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
 }
 
 func TestLocalGitRejectsSymlinkEscape(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 
@@ -2552,6 +2696,10 @@ func TestLocalGitRejectsSymlinkEscape(t *testing.T) {
 }
 
 func TestLocalGitRejectsExistingGitRepoFromDifferentSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	source := initSourceRepo(t)
@@ -2833,6 +2981,10 @@ func skipWindows(t *testing.T) {
 }
 
 func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -2942,6 +3094,10 @@ func TestLocalGitPrepareMergeValidatesResolvedHead(t *testing.T) {
 }
 
 func TestLocalGitMergeFallbackRetryRevalidatesAheadHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	for _, tt := range []struct {
@@ -3051,6 +3207,10 @@ func TestLocalGitMergeFallbackRetryRevalidatesAheadHead(t *testing.T) {
 }
 
 func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	skipWindows(t)
 
 	for _, tt := range []struct {
@@ -3160,6 +3320,10 @@ exit %d
 }
 
 func TestGitCommonDirCompletesWhenDescendantRetainsOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	skipWindows(t)
 	for _, tt := range []struct {
 		name  string
@@ -3222,6 +3386,10 @@ printf '%s\n' "$DETENT_COMMON_DIR"
 }
 
 func TestGitCommonDirCleanupFailureDoesNotInvalidateIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess cleanup integration")
+	}
+
 	skipWindows(t)
 
 	commonDir := t.TempDir()
@@ -3257,6 +3425,10 @@ chmod 500 "$TMPDIR"
 }
 
 func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, operation := range []string{"checked-out", "rebase", "am", "merge", "cherry-pick", "detached"} {
 		t.Run(operation, func(t *testing.T) {
@@ -3331,6 +3503,10 @@ func TestLocalGitQuarantineReleasesBranch(t *testing.T) {
 }
 
 func TestLocalGitStaleQuarantineReleasesBranch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, failDetach := range []bool{false, true} {
 		t.Run(fmt.Sprintf("detach_failure=%t", failDetach), func(t *testing.T) {
 			source := initSourceRepo(t)
@@ -3426,6 +3602,10 @@ func TestHookCompletionBudget(t *testing.T) {
 }
 
 func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -3497,6 +3677,10 @@ func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
 }
 
 func TestPrepareWorkerScratchIsOutsideWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real process or filesystem integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -3686,6 +3870,10 @@ func TestRemoveWorkerScratchRootKeepsSharedGroup(t *testing.T) {
 }
 
 func TestPrepareWorkerScratchToleratesConcurrentSiblingCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real process or filesystem integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

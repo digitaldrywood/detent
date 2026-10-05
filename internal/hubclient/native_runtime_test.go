@@ -12,6 +12,10 @@ import (
 )
 
 func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},

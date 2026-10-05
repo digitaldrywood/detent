@@ -413,6 +413,10 @@ func TestActivityRecorderSkipsUnchangedCheckpoints(t *testing.T) {
 // Catches checkpoints that lose the active timeline, completed categories or
 // interrupted tool starts, even though the recorder's final flush succeeds.
 func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, stage := range []string{"planning", "implementation", "rework", "validation", "merging"} {
 		t.Run(stage, func(t *testing.T) {
 			at := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)

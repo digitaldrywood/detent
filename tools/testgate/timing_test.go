@@ -80,6 +80,10 @@ func TestTestTiming(t *testing.T) {
 }
 
 func TestRaceGateDetectsFixtureRace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 	binary := filepath.Join(t.TempDir(), "testgate.exe")
 	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, ".")
@@ -158,6 +162,10 @@ func TestFixture(t *testing.T) {
 }
 
 func TestGatePartitionsSelectDisjointTests(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 	binary := filepath.Join(t.TempDir(), "testgate.exe")
 	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, ".")

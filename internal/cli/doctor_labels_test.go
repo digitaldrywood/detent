@@ -185,6 +185,10 @@ func TestDoctorConfiguredLabelFixTerminatesFlagParsing(t *testing.T) {
 }
 
 func TestCheckDoctorProjectIncludesConfiguredLabelCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	t.Parallel()
 
 	cfg := validDoctorWorkflow("/repo")

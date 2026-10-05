@@ -10,6 +10,10 @@ import (
 )
 
 func TestBoardAttemptCostsLoadsMergedIssueHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "costs.db")})
 	if err != nil {

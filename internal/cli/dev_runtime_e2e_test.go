@@ -22,6 +22,10 @@ import (
 )
 
 func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0})
 	if err != nil {
 		t.Fatalf("devruntime.Build() error = %v", err)
@@ -68,6 +72,10 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 }
 
 func TestStartIsolatedRuntimePublishesBannerBeforeSnapshotLoad(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	for _, tt := range []struct {
 		name string
 		demo string
@@ -188,6 +196,10 @@ func TestDevRuntimeAuthConfig(t *testing.T) {
 }
 
 func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	const projectID = "demo-project"
 
 	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoKanban, DemoProjectID: projectID})
@@ -325,6 +337,10 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 }
 
 func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	for _, outcome := range []string{"complete", "cancel", "required setup failure"} {
 		t.Run(outcome, func(t *testing.T) {
 			runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0})
@@ -456,6 +472,10 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 }
 
 func TestStartRunningWaitsForBoardSnapshotPersistence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoKanban})
 	if err != nil {
 		t.Fatalf("devruntime.Build() error = %v", err)
@@ -526,6 +546,10 @@ func TestStartRunningWaitsForBoardSnapshotPersistence(t *testing.T) {
 }
 
 func TestStartScreenshotsDemoServesScenarioManifestAndUsage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoScreenshots})
 	if err != nil {
 		t.Fatalf("devruntime.Build() error = %v", err)

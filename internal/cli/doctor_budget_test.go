@@ -12,6 +12,10 @@ import (
 )
 
 func TestDoctorBudgetOverridesShowsActiveOverride(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	dir := t.TempDir()

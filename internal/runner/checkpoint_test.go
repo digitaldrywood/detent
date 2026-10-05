@@ -450,6 +450,10 @@ func TestCheckpointAuthorityAndJournalFailures(t *testing.T) {
 }
 
 func TestCheckpointCommandCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

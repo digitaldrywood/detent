@@ -12,6 +12,10 @@ import (
 )
 
 func TestSQLiteSecurityAuditRunRoundTripAndImmutability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -94,6 +98,10 @@ func TestSQLiteSecurityAuditRunRoundTripAndImmutability(t *testing.T) {
 }
 
 func TestSQLiteLatestSecurityAuditRunForPullRequest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()

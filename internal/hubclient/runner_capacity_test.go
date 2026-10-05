@@ -16,6 +16,10 @@ import (
 )
 
 func TestRunnerCapacityHeartbeat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	for _, test := range []struct {
 		name      string
 		supported bool

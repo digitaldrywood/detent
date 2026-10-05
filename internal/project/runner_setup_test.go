@@ -16,6 +16,10 @@ import (
 )
 
 func TestRunnerSetupLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture installs a POSIX CLI")
 	}

@@ -77,6 +77,10 @@ func TestDispatchPlannerBoundsCandidateEvaluation(t *testing.T) {
 }
 
 func TestDispatchPlannerBoundsGitHubIssueReads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	var mu sync.Mutex
 	var reads []int

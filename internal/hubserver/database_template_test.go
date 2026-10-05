@@ -74,6 +74,10 @@ func seedHubDatabaseTemplate(t *testing.T, path string) {
 
 func seedHubDatabaseImage(t *testing.T, path string, native bool) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return

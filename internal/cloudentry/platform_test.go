@@ -68,6 +68,10 @@ func decodeJSON(t *testing.T, body string, target any) {
 }
 
 func TestPlatformAuthorization(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	withClientShell(f.service)
@@ -122,6 +126,10 @@ func TestPlatformAuthorization(t *testing.T) {
 }
 
 func TestPlatformOrganizationsAndHealth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	f.provider.users["user_staff"] = "staff@example.test"
@@ -169,6 +177,10 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 }
 
 func TestPlatformAllowlistAndAdmission(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite tenant provisioning integration")
+	}
+
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) {
 		a.AllowedEmails, a.AllowedDomains = []string{"dana@example.test"}, []string{"example.org"}
@@ -207,6 +219,10 @@ func TestPlatformAllowlistAndAdmission(t *testing.T) {
 }
 
 func TestPlatformStaffLanding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	f.provider.member("user_support", "porg_alpha", "member")
@@ -245,6 +261,10 @@ func TestPlatformStaffLanding(t *testing.T) {
 }
 
 func TestStaffCannotCreateOrJoinOrganizations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	json := map[string]string{"Accept": "application/json"}
 	t.Run("create", func(t *testing.T) {
@@ -299,6 +319,10 @@ func TestStaffCannotCreateOrJoinOrganizations(t *testing.T) {
 }
 
 func TestPlatformSupportStartRequiresCSRFAndReason(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	staff := newBrowser(t, f.service.Handler())
@@ -379,6 +403,10 @@ func (f *fanOutTransport) RoundTrip(request *http.Request) (*http.Response, erro
 }
 
 func TestPlatformTenantFanOutIsBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 	const tenants = 40
 	for _, test := range []struct {

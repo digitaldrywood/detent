@@ -19,6 +19,10 @@ import (
 )
 
 func TestCrossHostParkRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, cause := range []string{spendProgressReason, dispatchLoopDetectedReason, noProgressLimitReason, "operator_investigation"} {
 		t.Run(cause, func(t *testing.T) {
@@ -169,6 +173,10 @@ func (c *crossHostParkConnector) FetchIssueComments(_ context.Context, issue con
 }
 
 func TestCrossHostDependencyRecoveryControls(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name          string
@@ -218,6 +226,10 @@ func TestCrossHostDependencyRecoveryControls(t *testing.T) {
 }
 
 func TestCrossHostParkProtectsVisibleTransition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, delay := range []time.Duration{0, 2 * time.Minute} {
 		t.Run(delay.String(), func(t *testing.T) {
@@ -315,6 +327,10 @@ func TestRecoveryParkMarkerIncludesFingerprint(t *testing.T) {
 }
 
 func TestRecoveryParkAcknowledgementRearmsForNextPark(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	issue := dependencyAutoUnblockIssue("2131", "In Progress")
@@ -352,6 +368,10 @@ func TestRecoveryParkAcknowledgementRearmsForNextPark(t *testing.T) {
 }
 
 func TestRecoveryParkSummaryAcknowledgementConverges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, independent := range []bool{false, true} {
 		t.Run(strconv.FormatBool(independent), func(t *testing.T) {
@@ -417,6 +437,10 @@ func TestRecoveryParkSummaryAcknowledgementConverges(t *testing.T) {
 }
 
 func TestBlockedRecoveryParkSummaryAcknowledgementResetsDispatchLoop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 11, 16, 30, 0, 0, time.UTC)
 	parkedAt := now.Add(-time.Hour)
@@ -455,6 +479,10 @@ func TestBlockedRecoveryParkSummaryAcknowledgementResetsDispatchLoop(t *testing.
 }
 
 func TestAcknowledgedParkClearsDelayedTrackerObservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	db := openWorkAttemptRecoveryStore(t, t.Context())
 	host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
@@ -476,6 +504,10 @@ func TestAcknowledgedParkClearsDelayedTrackerObservation(t *testing.T) {
 }
 
 func TestCrossHostParkPreservesConfiguredCooldownRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, cause := range []string{spendProgressReason, dispatchLoopDetectedReason, noProgressLimitReason} {
 		t.Run(cause, func(t *testing.T) {
@@ -597,6 +629,10 @@ func TestTrackerRecoveryParkOperationSettlement(t *testing.T) {
 }
 
 func TestTrackerRecoveryParkPublicationFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name        string
@@ -644,6 +680,10 @@ func TestTrackerRecoveryParkPublicationFailures(t *testing.T) {
 }
 
 func TestDeliverableRecoveryRetirementAcknowledgement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
@@ -721,6 +761,10 @@ func TestDeliverableRecoveryRetirementAcknowledgement(t *testing.T) {
 }
 
 func TestLegacyRecordedHumanClearanceRetainsNativeAuthority(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	parkedAt := time.Date(2026, 9, 28, 10, 40, 58, 0, time.UTC)
 	answerAt := parkedAt.Add(time.Hour)
 	releasedAt := answerAt.Add(time.Minute)
@@ -834,6 +878,10 @@ func TestLegacyRecordedHumanClearanceRetainsNativeAuthority(t *testing.T) {
 }
 
 func TestLegacyHumanClearanceSurvivesWorkpadOverwrite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, persistence := range []string{"available", "failed", "unsupported"} {
 		t.Run(persistence, func(t *testing.T) {
 			db := openWorkAttemptRecoveryStore(t, t.Context())

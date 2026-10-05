@@ -9,6 +9,10 @@ import (
 )
 
 func TestBoundedState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 	for _, mode := range []string{"ordinary", "nested and oversized value", "total byte budget", "metadata budget"} {
 		t.Run(mode, func(t *testing.T) {

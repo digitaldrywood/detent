@@ -228,6 +228,10 @@ func TestStatusCommandManualStoppedIsSuccessful(t *testing.T) {
 }
 
 func TestStatusServiceRunnerReportsGitHubLookupBackoff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	nextProbeAt := time.Date(2026, 9, 3, 18, 30, 0, 0, time.UTC)

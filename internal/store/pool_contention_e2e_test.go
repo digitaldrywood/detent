@@ -19,6 +19,10 @@ import (
 )
 
 func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	const synchronizationWatchdog = 2 * time.Minute

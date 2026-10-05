@@ -23,6 +23,10 @@ func addHydratedProjectFields(data map[string]any, variables map[string]any) {
 }
 
 func TestActiveProjectFieldsUseBoundedHydration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, count := range []int{1, 25, 26, 51} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			membership, hydration, boards := 0, 0, 0
@@ -94,6 +98,10 @@ func TestActiveProjectFieldsUseBoundedHydration(t *testing.T) {
 }
 
 func TestActiveStatesAndRefreshEnumerateBoardOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, warm := range []bool{false, true} {
 		t.Run(fmt.Sprintf("warm=%t", warm), func(t *testing.T) {
 			boards := 0
@@ -195,6 +203,10 @@ func TestDecodeProjectFields(t *testing.T) {
 }
 
 func TestProjectFieldHydrationRemovedItem(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, removed := range []bool{false, true} {
 		t.Run(strconv.FormatBool(removed), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

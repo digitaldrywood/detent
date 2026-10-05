@@ -11,6 +11,10 @@ import (
 )
 
 func TestRunnerQuarantinedRebaseReachesFirstTurn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	source := initRunnerSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")

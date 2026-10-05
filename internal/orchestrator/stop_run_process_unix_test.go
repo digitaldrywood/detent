@@ -23,6 +23,10 @@ import (
 )
 
 func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	issue := testIssue("issue-stop-process-group", "digitaldrywood/detent#1453", "In Progress")
 	tracker := newFakeConnector(issue)
 	processStore := &operatorStopProcessStore{}
@@ -133,6 +137,10 @@ func TestOperatorStopProcessStateRunning(t *testing.T) {
 }
 
 func TestStopRunRefusesStalePersistedProcessIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	cmd := exec.CommandContext(context.Background(), "sleep", "30")
 	procgroup.Configure(t.Context(), cmd)
 	if err := cmd.Start(); err != nil {

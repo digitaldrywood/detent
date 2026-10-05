@@ -10,6 +10,10 @@ import (
 )
 
 func TestSQLiteScheduledRunLedger(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	backend, err := Open(context.Background(), Config{Backend: BackendSQLite, Path: filepath.Join(t.TempDir(), "detent.db")})

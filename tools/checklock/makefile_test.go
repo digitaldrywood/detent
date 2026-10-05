@@ -22,6 +22,10 @@ import (
 // not run the full suite recursively. Both builds must start before either is
 // released, even while a legacy caller holds the common-directory gate lock.
 func TestMakeCheckFastOverlapsWorktrees(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	if runtime.GOOS == "windows" {
 		t.Skip("Makefile requires POSIX shell commands")
 	}
@@ -211,6 +215,10 @@ func TestMakeCheckFastBuildHelper(t *testing.T) {
 }
 
 func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if runtime.GOOS == "windows" {
 		t.Skip("Makefile requires POSIX shell commands")
 	}

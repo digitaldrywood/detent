@@ -9,6 +9,10 @@ import (
 )
 
 func TestOpenLibrarySQLiteReadOnlyExpandsHomePath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)

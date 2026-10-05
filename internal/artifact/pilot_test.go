@@ -9,6 +9,10 @@ import (
 )
 
 func TestPilotArtifactTraffic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	for _, size := range []int{1024, 64 << 10} {
 		t.Run(fmt.Sprintf("bytes_%d", size), func(t *testing.T) {

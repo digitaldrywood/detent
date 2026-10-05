@@ -23,6 +23,10 @@ import (
 )
 
 func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 	// This is the older supported Hub heartbeat schema: unknown fields are errors.
 	type originalHeartbeat struct {
@@ -304,6 +308,10 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 }
 
 func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	descriptor := clientTestPolicy()
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	lease := tracker.Lease{LeaseSummary: tracker.LeaseSummary{
@@ -465,6 +473,10 @@ func TestIssueFromWorkItemMapsQueuePriorityAndSyncMetadata(t *testing.T) {
 }
 
 func TestSchedulerHubOutageIsUnavailableBeforeClaim(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	tests := []struct {
 		name    string
 		handler http.Handler

@@ -71,6 +71,10 @@ func TestMain(m *testing.M) {
 }
 
 func TestAwaitStartupServerRequiresExpectedBuild(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	expected := buildinfo.Info{
@@ -480,6 +484,10 @@ func TestTerminalDashboardError(t *testing.T) {
 }
 
 func TestResolveBootConfigUsesWorkflowRefForServerHost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	repo := initRuntimeWorkflowRepo(t)
 	writeBootHostWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), "127.0.0.8")
 	commitRuntimeWorkflowRepo(t, repo, "initial workflow")
@@ -766,6 +774,10 @@ func TestRegistryRefresherTargetsBranchOnlyWebhook(t *testing.T) {
 }
 
 func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live dashboard listener and startup integration")
+	}
+
 	port := 0
 	output := newBootOutput()
 	globalPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -805,6 +817,10 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 }
 
 func TestStartRunningRefusesSharedRuntimeDatabase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runtime database and listener integration")
+	}
+
 	port := 0
 	root := t.TempDir()
 	global, err := globalconfig.DefaultAt(filepath.Join(root, "global.yaml"))
@@ -1004,6 +1020,10 @@ func TestAcquireRuntimeInstanceLockReportsLiveHolder(t *testing.T) {
 }
 
 func TestStartRunningBindsBeforeCreatingRuntimeDatabase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runtime database and listener integration")
+	}
+
 	t.Parallel()
 
 	var listenConfig net.ListenConfig
@@ -1041,6 +1061,10 @@ func TestStartRunningBindsBeforeCreatingRuntimeDatabase(t *testing.T) {
 }
 
 func TestStartRunningUsesWorkflowKanbanModeForFleetActions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("dashboard startup integration")
+	}
+
 	port := 0
 	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -1096,6 +1120,10 @@ func TestStartRunningUsesWorkflowKanbanModeForFleetActions(t *testing.T) {
 }
 
 func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service or filesystem watcher integration")
+	}
+
 	port := 0
 	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -1197,6 +1225,10 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 }
 
 func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	tests := []struct {
 		name              string
 		publishSnapshot   bool
@@ -1357,6 +1389,10 @@ func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T)
 }
 
 func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	port := 0
 	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -1422,6 +1458,10 @@ func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 }
 
 func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	port := 0
 	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -1671,6 +1711,10 @@ func TestAwaitBootDashboardURL(t *testing.T) {
 }
 
 func TestAwaitDashboard(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

@@ -15,6 +15,10 @@ import (
 )
 
 func TestDoctorProviderCapacity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Setenv("DETENT_TEST_PROVIDER_TOKEN", "test")
 	for _, test := range []struct {
 		name, state             string

@@ -32,6 +32,10 @@ func (t nativeOnlyTransport) RoundTrip(request *http.Request) (*http.Response, e
 }
 
 func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	const admin = "native-integration-admin"
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(admin)})

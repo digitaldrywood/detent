@@ -95,6 +95,10 @@ func TestAuthenticateRejectsChecksumInvalidTokenWithoutLookup(t *testing.T) {
 }
 
 func TestRotateKeepsOldKeyValidUntilGraceExpires(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -132,6 +136,10 @@ func TestRotateKeepsOldKeyValidUntilGraceExpires(t *testing.T) {
 }
 
 func TestRotateDoesNotExtendOldKeyBeyondOriginalExpiry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -162,6 +170,10 @@ func TestRotateDoesNotExtendOldKeyBeyondOriginalExpiry(t *testing.T) {
 }
 
 func TestRotateRejectsExpiredKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()

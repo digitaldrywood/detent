@@ -11,6 +11,10 @@ import (
 )
 
 func TestLocalGitReconcileRechecksPreservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, record := range []string{"unrecorded", "owned", "preserved", "legacy preserved"} {
 		for _, work := range []string{"published", "merged", "tracked", "staged", "untracked", "unpushed", "detached", "broken", "active issue", "active process"} {
@@ -135,6 +139,10 @@ func TestLocalGitReconcileRechecksPreservation(t *testing.T) {
 }
 
 func TestCleanupVerifiesLiveRemoteCommits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, action := range []string{"residual", "cleanup", "branch"} {
 		for _, remoteState := range []string{"published", "deleted", "rewound", "merged", "unavailable"} {

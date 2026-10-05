@@ -22,6 +22,10 @@ import (
 )
 
 func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -57,6 +61,10 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 }
 
 func TestProvenanceAttributionTrustBoundaryPersistsAcrossRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := t.Context()
@@ -91,6 +99,10 @@ func TestProvenanceAttributionTrustBoundaryPersistsAcrossRestart(t *testing.T) {
 }
 
 func TestCostPerOutcomeIndexesMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {
@@ -140,6 +152,10 @@ func TestCostPerOutcomeIndexesMigrationUpDown(t *testing.T) {
 }
 
 func TestDeliveredLaneRevocationMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := t.Context()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {
@@ -234,6 +250,10 @@ INSERT INTO codex_sessions (id, work_attempt_id, identifier, started_at, complet
 }
 
 func TestLaneRevocationDeliveryReceiptMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := t.Context()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {
@@ -387,6 +407,10 @@ func TestCompleteWorkAttemptFinalizesLinkedSessionOutcome(t *testing.T) {
 }
 
 func TestCachedTokenTelemetryMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -449,6 +473,10 @@ VALUES ('detent', 'agent_session', 'agent_active', '2026-05-31T13:00:00Z', 5, '2
 }
 
 func TestSkillDraftTelemetryMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -495,6 +523,10 @@ func TestSkillDraftTelemetryMigrationUpDown(t *testing.T) {
 }
 
 func TestSessionProjectAttributionMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {
@@ -545,6 +577,10 @@ VALUES (1279, 'digitaldrywood/detent#1279', '2026-07-12T19:00:00Z', '2026-07-12T
 }
 
 func TestAgentResumeStateMigrationUpDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "detent.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -592,6 +628,10 @@ func TestAgentResumeStateMigrationUpDown(t *testing.T) {
 }
 
 func TestRuntimeEvidenceReportsSQLiteTelemetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -670,6 +710,10 @@ func TestRuntimeEvidenceReportsSQLiteTelemetry(t *testing.T) {
 }
 
 func TestSQLiteValidatorVerdictRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -746,6 +790,10 @@ func TestSQLiteValidatorVerdictRoundTrip(t *testing.T) {
 }
 
 func TestSQLiteListValidatorVerdictsFiltersAndSorts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -825,6 +873,10 @@ func TestSQLiteListValidatorVerdictsFiltersAndSorts(t *testing.T) {
 }
 
 func TestSQLiteQueriesRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -3263,6 +3315,10 @@ func TestFairShareStoreRoundTrip(t *testing.T) {
 }
 
 func TestUsageLedgerRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	modelContextWindow := int64(128000)
@@ -3721,6 +3777,10 @@ func seedDigestAttempt(t *testing.T, ctx context.Context, backend Store, issueID
 }
 
 func TestOpenRejectsUnsupportedBackend(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	_, err := Open(context.Background(), Config{
@@ -3733,6 +3793,10 @@ func TestOpenRejectsUnsupportedBackend(t *testing.T) {
 }
 
 func TestOpenUsesSQLiteBackendByDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -3759,6 +3823,10 @@ func TestOpenUsesSQLiteBackendByDefault(t *testing.T) {
 }
 
 func TestOpenSQLiteRejectsMissingPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	_, err := Open(context.Background(), Config{
@@ -3796,6 +3864,9 @@ func TestBusyTimeoutMillis(t *testing.T) {
 
 func openTestStore(t *testing.T, ctx context.Context) Store {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
 
 	database, err := migratedTestDatabase()
 	if err != nil {
@@ -4104,6 +4175,10 @@ func tableIdentifier(t *testing.T, table string) string {
 }
 
 func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	ctx := t.Context()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "detent.db"))
 	if err != nil {

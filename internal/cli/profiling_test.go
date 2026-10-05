@@ -13,6 +13,10 @@ import (
 )
 
 func TestHubProfilingReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	for _, source := range []string{"config flag", "CONFIG", "hosted config"} {
 		t.Run(source, func(t *testing.T) {
 			root := t.TempDir()

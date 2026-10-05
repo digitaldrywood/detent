@@ -12,6 +12,10 @@ import (
 )
 
 func TestLocalGitCleanupChecksEveryWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, record := range []string{"none", "ordinary", "preserved"} {
 		for _, work := range []string{"clean", "tracked", "staged", "untracked", "unpushed", "detached", "missing", "broken", "different branch", "no remote"} {
@@ -101,6 +105,10 @@ func TestLocalGitCleanupChecksEveryWorkspace(t *testing.T) {
 }
 
 func TestLocalGitCleanupRecordedLanding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	tests := []struct {
 		name          string
@@ -200,6 +208,10 @@ func TestLocalGitCleanupRecordedLanding(t *testing.T) {
 }
 
 func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	skipWindows(t)
 	for _, dirty := range []bool{false, true} {
@@ -246,6 +258,10 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 }
 
 func TestLocalGitPreservesRevokedWorkAcrossCleanupAndRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	for _, kind := range []string{"tracked", "staged", "untracked", "unpushed", "pushed", "local only"} {
@@ -338,6 +354,10 @@ func TestLocalGitPreservesRevokedWorkAcrossCleanupAndRestart(t *testing.T) {
 }
 
 func TestLocalGitPreservationVerifiesWorkEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, kind := range []string{"clean base", "dirty", "local commit", "pushed commit", "base branch pushed", "remote branch deleted"} {
 		t.Run(kind, func(t *testing.T) {
@@ -393,6 +413,10 @@ func TestLocalGitPreservationVerifiesWorkEvidence(t *testing.T) {
 }
 
 func TestLocalGitPreservationInspectionFailureKeepsFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: initSourceRepo(t), AutoBranch: true})
 	if err != nil {
@@ -488,6 +512,10 @@ func TestFilesystemPreservationSurvivesRestartAndResumption(t *testing.T) {
 }
 
 func TestLocalGitPublishWorkInProgress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, remoteAvailable := range []bool{true, false} {
 		t.Run(strconv.FormatBool(remoteAvailable), func(t *testing.T) {
 			source := initSourceRepo(t)
@@ -550,6 +578,10 @@ func TestLocalGitPublishWorkInProgress(t *testing.T) {
 }
 
 func TestWorkInProgressRejectsSensitiveContent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, tt := range []struct {
 		name, path, content string
 		committed           bool
@@ -598,6 +630,10 @@ func TestWorkInProgressRejectsSensitiveContent(t *testing.T) {
 }
 
 func TestWorkInProgressRequiresOwnedBranchAndAuthority(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, changedBranch := range []bool{false, true} {
 		t.Run(strconv.FormatBool(changedBranch), func(t *testing.T) {
 			source := initSourceRepo(t)

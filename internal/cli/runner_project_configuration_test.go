@@ -17,6 +17,10 @@ import (
 )
 
 func TestRunnerProjectConfigurationOwner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, scenario := range []string{"read", "intake off", "foreign project", "revoked project grant", "replaced mapping", "foreign binding", "expired identity"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()

@@ -22,6 +22,10 @@ import (
 )
 
 func TestHubPolicyCommandsAndDoctor(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	root := t.TempDir()
 	workflowPath := filepath.Join(root, "WORKFLOW.md")

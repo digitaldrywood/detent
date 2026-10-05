@@ -18,6 +18,10 @@ import (
 )
 
 func TestAuthLinkCommandPrintsLoginURL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	t.Parallel()
 
 	configPath := writeAuthCommandConfig(t)
@@ -40,6 +44,10 @@ func TestAuthLinkCommandPrintsLoginURL(t *testing.T) {
 }
 
 func TestAuthLinkCommandRejectsNonAllowedEmail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	t.Parallel()
 
 	command := cli.NewRootCommand(context.Background())

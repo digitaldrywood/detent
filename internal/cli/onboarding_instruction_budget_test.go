@@ -14,6 +14,10 @@ import (
 )
 
 func TestOnboardingInstructionBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, preset := range []string{"label", "project_v2", "issue_field", "github_local", "non_code_artifact"} {
 		for _, ui := range []bool{false, true} {
@@ -112,6 +116,10 @@ func TestProbeOnboardingUISurfaces(t *testing.T) {
 }
 
 func TestRefreshProjectInstructionTrims(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, ui := range []bool{false, true} {
 		name := "backend"
@@ -307,6 +315,10 @@ func TestRefreshConfiguredLaneMigration(t *testing.T) {
 }
 
 func TestRefreshCustomStatesPreview(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	fixture := newProjectRefreshTestFixture(t, "assisted_intake")
 	replace := strings.NewReplacer("Todo", "Research", "In Progress", "Draft", "Rework", "Revise", "Merging", "Package")

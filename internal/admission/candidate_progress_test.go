@@ -19,6 +19,10 @@ import (
 )
 
 func TestManagerCandidateCoverageAcrossRunsAndRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name                     string
@@ -143,6 +147,10 @@ func (s *budgetCandidateStore) ReadCandidates(ctx context.Context, request conne
 }
 
 func TestManagerCandidateSelectorBudgetFairness(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, partial := range []bool{false, true} {
 		t.Run(fmt.Sprintf("partial=%t", partial), func(t *testing.T) {
@@ -196,6 +204,10 @@ func (s *staleHistoryBudgetStore) FetchIssueStatesByIDs(ctx context.Context, ids
 }
 
 func TestManagerPartialReadWithStaleHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, stale := range []bool{false, true} {
 		t.Run(fmt.Sprintf("still_stale=%t", stale), func(t *testing.T) {
@@ -228,6 +240,10 @@ func TestManagerPartialReadWithStaleHistory(t *testing.T) {
 }
 
 func TestManagerAdmissionUsesAcceptedDependencyFrontier(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name, source, prerequisite, snapshotState                                       string

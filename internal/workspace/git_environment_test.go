@@ -10,6 +10,10 @@ import (
 )
 
 func TestGitFixtureEnvironmentIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	if os.Getenv("DETENT_TEST_GIT_FIXTURE_CHILD") == "1" {
 		fixture := initSourceRepo(t)
 		common := strings.TrimSpace(runGit(t, fixture, "rev-parse", "--path-format=absolute", "--git-common-dir"))

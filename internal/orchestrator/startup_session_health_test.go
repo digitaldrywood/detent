@@ -23,6 +23,10 @@ import (
 )
 
 func TestStartupSessionsAppearInStateAndHealth(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, validator := range []bool{false, true} {
 		name := "orphan resume"
 		if validator {

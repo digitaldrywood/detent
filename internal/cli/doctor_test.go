@@ -2075,6 +2075,10 @@ func TestCheckDoctorConfigReloadReportsSymlinkTarget(t *testing.T) {
 }
 
 func TestCheckDoctorConfigReloadReportsGitStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -3446,6 +3450,10 @@ func TestCheckDoctorLocalWorkflowOverlay(t *testing.T) {
 }
 
 func TestDefaultGitTracked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real Git integration")
+	}
+
 	t.Parallel()
 
 	repo := t.TempDir()
@@ -4009,6 +4017,10 @@ func TestDoctorCommandProjectFlagScopesJSONReport(t *testing.T) {
 }
 
 func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	t.Parallel()
 
 	workflow := validDoctorWorkflow("/repo")
@@ -4149,6 +4161,10 @@ func TestDoctorChecksSuppressConnectorLogsFromProgress(t *testing.T) {
 }
 
 func TestCheckDoctorProjectBuildsGitHubReadinessInventory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	t.Parallel()
 
 	workflow := validDoctorWorkflow("/repo")
@@ -4233,6 +4249,10 @@ func TestCheckDoctorProjectBuildsGitHubReadinessInventory(t *testing.T) {
 }
 
 func TestCheckDoctorProjectBuildsGitHubIssueFieldReadinessInventory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	t.Parallel()
 
 	workflow := validDoctorWorkflow("/repo")
@@ -4986,6 +5006,10 @@ func TestCheckDoctorInstanceLock(t *testing.T) {
 }
 
 func TestCheckDoctorDailyBudgetAccuracy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
@@ -5531,6 +5555,10 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 }
 
 func TestCheckDoctorServerPortRejectsHealthProbeEOF(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

@@ -33,6 +33,10 @@ import (
 )
 
 func TestInstallScriptInstallsBinaryAndRefusesExistingLock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -82,6 +86,10 @@ func TestInstallScriptInstallsBinaryAndRefusesExistingLock(t *testing.T) {
 }
 
 func TestInstallScriptDetectsSupportedTargets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -135,6 +143,10 @@ func TestInstallScriptDetectsSupportedTargets(t *testing.T) {
 }
 
 func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -184,6 +196,10 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 }
 
 func TestInstallScriptAuthenticatesLatestReleaseRequest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -253,6 +269,10 @@ func TestInstallScriptAuthenticatesLatestReleaseRequest(t *testing.T) {
 }
 
 func TestInstallScriptDoesNotForwardTokenAcrossLatestReleaseRedirect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -327,6 +347,10 @@ func TestInstallScriptDoesNotForwardTokenAcrossLatestReleaseRedirect(t *testing.
 }
 
 func TestInstallScriptReportsPathGuidanceWhenInstallDirIsMissingFromPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -362,6 +386,10 @@ func TestInstallScriptReportsPathGuidanceWhenInstallDirIsMissingFromPath(t *test
 }
 
 func TestInstallScriptReportsActiveServiceRestartGuidance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -411,6 +439,10 @@ func TestInstallScriptReportsActiveServiceRestartGuidance(t *testing.T) {
 }
 
 func TestInstallScriptAbortsOnChecksumMismatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -451,6 +483,10 @@ func TestInstallScriptAbortsOnChecksumMismatch(t *testing.T) {
 }
 
 func TestInstallScriptBuildsPreparedSourceWhenReleaseAssetMissing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -543,6 +579,10 @@ chmod 755 "$5"
 }
 
 func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd() error = %v", err)
@@ -841,6 +881,10 @@ func TestInstallerActivityContextCancellation(t *testing.T) {
 }
 
 func TestInstallerCommandActivityRenewsDuringDelayedCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	timer := newControlledInstallerActivityTimer()
@@ -897,6 +941,10 @@ func TestInstallerCommandActivityRenewsDuringDelayedCompletion(t *testing.T) {
 }
 
 func TestRunInstallerCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

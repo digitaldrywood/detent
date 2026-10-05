@@ -60,6 +60,10 @@ func TestRunValidatesArguments(t *testing.T) {
 }
 
 func TestRunSerializesConcurrentSubprocesses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess serialization integration")
+	}
+
 	tempDir := t.TempDir()
 	validationLock := filepath.Join(tempDir, "validation.lock")
 	criticalLock := filepath.Join(tempDir, "critical.lock")
@@ -220,6 +224,10 @@ func waitForPath(t *testing.T, ctx context.Context, path string) {
 }
 
 func TestValidationWaiterCannotBeOvertaken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess queue ordering integration")
+	}
+
 	t.Parallel()
 	for _, arrivals := range []int{1, 8} {
 		t.Run(fmt.Sprintf("%d new arrivals", arrivals), func(t *testing.T) {
@@ -314,6 +322,10 @@ func (w *pausedWriter) release() {
 }
 
 func TestRunCancellationStopsActiveValidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess cancellation integration")
+	}
+
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), validationIntegrationTimeout)
 	defer cancel()
@@ -377,6 +389,10 @@ func TestValidationCancellationHelper(t *testing.T) {
 }
 
 func TestRunBoundsInheritedOutputDrain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("inherited subprocess pipe timeout integration")
+	}
+
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("process group cleanup is Unix-specific")
@@ -404,6 +420,10 @@ func TestRunBoundsInheritedOutputDrain(t *testing.T) {
 }
 
 func TestValidationInheritedOutputHelper(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if len(os.Args) < 3 || os.Args[len(os.Args)-2] != "checklock-inherited-output" {
 		t.Skip("helper process")
 	}
@@ -540,6 +560,10 @@ func TestRunWindowsRetainsInheritedOutputOwnership(t *testing.T) {
 }
 
 func TestRunRetainsWaitAcrossHandoffs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess handoff integration")
+	}
+
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

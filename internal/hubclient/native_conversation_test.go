@@ -48,6 +48,9 @@ type conversationHub struct {
 
 func newConversationHub(t *testing.T) (*conversationHub, *nativeExecution) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("conversation HTTP listener and timeout integration")
+	}
 	hub := &conversationHub{t: t, bindStatus: http.StatusOK, controlsWake: make(chan struct{}, 16), hangEvents: make(chan struct{})}
 	server := httptest.NewServer(hub)
 	t.Cleanup(server.Close)
@@ -846,6 +849,10 @@ func TestNativeConversationTracksLastTurnStatus(t *testing.T) {
 // A hub that accepts the report and never answers must not hold the run's
 // teardown past the deadline the runner gave Close.
 func TestNativeConversationCloseHonoursDeadline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
 	hub.hangReports = true
@@ -989,6 +996,10 @@ func TestNativeConversationPollStopsOnAuthorizationFailure(t *testing.T) {
 // that was still in flight when the turn ended is drained with the rest, so a
 // control its waiter reports unknown is never handed over twice.
 func TestNativeConversationTurnEndLeavesNoControlQueued(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	useFastConversationTimings(t)
 	hub, execution := newConversationHub(t)
 	bound, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")

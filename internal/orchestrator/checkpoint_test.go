@@ -96,6 +96,10 @@ func TestCheckpointValidator(t *testing.T) {
 }
 
 func TestCheckpointRenewsExpiredLease(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, scenario := range []string{"owned", "with progress", "wrong generation", "lane changed"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()

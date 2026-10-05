@@ -26,6 +26,10 @@ const (
 )
 
 func TestServerOpenAPIEndpoint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -71,6 +75,10 @@ func TestServerOpenAPIEndpoint(t *testing.T) {
 }
 
 func TestServerOpenAPIIssueExplanationSchemaVersion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	server := newOpenAPITestServer(t, web.ModeRunning, testDeps(t))
@@ -119,6 +127,10 @@ func TestServerOpenAPIIssueExplanationSchemaVersion(t *testing.T) {
 }
 
 func TestServerOpenAPIIssueProgressCredit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	server := newOpenAPITestServer(t, web.ModeRunning, testDeps(t))
@@ -149,6 +161,10 @@ func assertOpenAPISchemaVersion(t *testing.T, values []any) {
 }
 
 func TestServerOpenAPIDoesNotWeakenAPIAuthentication(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	server := newOpenAPITestServer(t, web.ModeRunning, testDeps(t))
@@ -173,6 +189,10 @@ func TestServerOpenAPIDoesNotWeakenAPIAuthentication(t *testing.T) {
 }
 
 func TestServerOpenAPIBypassesDashboardAuthentication(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -240,6 +260,10 @@ func TestServerOpenAPIBypassesDashboardAuthentication(t *testing.T) {
 }
 
 func TestServerOpenAPIRouteParity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	server := newOpenAPITestServer(t, web.ModeRunning, testDeps(t))
@@ -315,6 +339,10 @@ func TestServerOpenAPIRouteParity(t *testing.T) {
 }
 
 func TestServerOpenAPIRoutePrecedence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	server := newOpenAPITestServer(t, web.ModeRunning, testDeps(t))

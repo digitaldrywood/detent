@@ -16,6 +16,10 @@ import (
 )
 
 func TestPruneCodexLogs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	for _, tt := range []struct {
 		name               string

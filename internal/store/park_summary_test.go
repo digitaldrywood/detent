@@ -322,6 +322,10 @@ project_id, issue_id, identifier, issue_url, worker_type, status, started_at
 
 func openParkTestStore(t *testing.T, path string) *sqliteStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	db, err := openSQLite(context.Background(), Config{Path: path})
 	if err != nil {
 		t.Fatalf("openSQLite() error = %v", err)

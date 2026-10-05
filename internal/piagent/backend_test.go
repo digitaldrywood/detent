@@ -26,6 +26,10 @@ import (
 // missing provider failures, duplicate streamed/final output or usage, and hangs
 // when a peer stops reading or exits without a settled event.
 func TestRunTurnRPC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, test := range []struct {
 		mode      string
 		wantError string

@@ -16,6 +16,10 @@ import (
 )
 
 func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -75,6 +79,10 @@ func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
 }
 
 func TestHandleWorkAttemptRecoveryRejectsUnsupportedStateAndAudits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -104,6 +112,10 @@ func TestHandleWorkAttemptRecoveryRejectsUnsupportedStateAndAudits(t *testing.T)
 }
 
 func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -370,6 +382,10 @@ func (c *recoveryTestConnector) SetField(_ context.Context, issueID string, fiel
 }
 
 func TestRecoveryPreservesIndependentRuntimeHolds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, source := range []BlockedSource{BlockedSourceDependency, BlockedSourceOperatorStop, BlockedSourceOwnership, BlockedSourceMergeDuration} {
 		t.Run(string(source), func(t *testing.T) {
@@ -402,6 +418,10 @@ func TestRecoveryPreservesIndependentRuntimeHolds(t *testing.T) {
 }
 
 func TestRecoveryDoesNotQueueBehindRunningWorker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	runtimeStore := openWorkAttemptRecoveryStore(t, t.Context())
 	issue := recoveryTestIssue()

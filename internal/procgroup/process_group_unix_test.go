@@ -56,6 +56,10 @@ func TestConfigure(t *testing.T) {
 }
 
 func TestGroupID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	tests := []struct {
 		name string
 		cmd  func(t *testing.T) *exec.Cmd
@@ -108,6 +112,10 @@ func TestGroupID(t *testing.T) {
 }
 
 func TestDeprioritize(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	proc := startSleep(t)
 	parentPriority, err := processNice(os.Getpid())
 	if err != nil {
@@ -126,6 +134,10 @@ func TestDeprioritize(t *testing.T) {
 }
 
 func TestDeprioritizeExitedProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	cmd := exec.CommandContext(context.Background(), "true")
 	Configure(t.Context(), cmd)
 	if err := cmd.Run(); err != nil {
@@ -137,6 +149,10 @@ func TestDeprioritizeExitedProcess(t *testing.T) {
 }
 
 func TestAliveRejectsStaleProcessIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	proc := startSleep(t)
 	identity, err := Inspect(proc.cmd)
 	if err != nil {
@@ -167,6 +183,10 @@ func TestAliveRejectsStaleProcessIdentity(t *testing.T) {
 }
 
 func TestObserveMeasuresMatchingProcessGroupAndRejectsStaleIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	proc := startSleepGroup(t)
 	identity, err := Inspect(proc.cmd)
 	if err != nil {
@@ -203,6 +223,10 @@ func TestObserveMeasuresMatchingProcessGroupAndRejectsStaleIdentity(t *testing.T
 }
 
 func TestTerminateTree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	tests := []struct {
 		name string
 		cmd  func(t *testing.T) (*exec.Cmd, int, func(t *testing.T))
@@ -381,6 +405,10 @@ func TestCleanupDisambiguatesEPERM(t *testing.T) {
 }
 
 func TestCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	tests := []struct {
 		name string
 		pgid func(t *testing.T) (int, func(t *testing.T))
@@ -431,6 +459,10 @@ func TestCleanup(t *testing.T) {
 }
 
 func TestCleanupWaitsForOrphanedGroupMembers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	tests := []struct {
 		name    string
 		command string
@@ -468,6 +500,10 @@ func TestCleanupWaitsForOrphanedGroupMembers(t *testing.T) {
 }
 
 func TestCleanupTreatsZombieOnlyGroupAsExited(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	cmd := exec.CommandContext(context.Background(), "sleep", "30")
 	Configure(t.Context(), cmd)
 	if err := cmd.Start(); err != nil {
@@ -558,6 +594,10 @@ func TestConfirmProcessTargetExit(t *testing.T) {
 }
 
 func TestInspectAndTerminate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	tests := []struct {
 		name        string
 		identity    func(Identity) Identity
@@ -642,6 +682,10 @@ func TestInspectAndTerminate(t *testing.T) {
 }
 
 func TestTerminateEscalatesSurvivingProcessGroup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	proc := startIgnoringTerminationGroup(t)
 	identity, err := Inspect(proc.cmd)
 	if err != nil {
