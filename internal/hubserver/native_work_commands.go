@@ -68,6 +68,16 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 AND ws.termi
 		if err != nil {
 			return tracker.NativeIssue{}, err
 		}
+		if request.Priority != nil && (issue.Priority == nil || *request.Priority < *issue.Priority) {
+			if err := requireNativeEdit(issue, issue.Revision); err != nil {
+				return tracker.NativeIssue{}, err
+			}
+			issue.Priority = request.Priority
+			issue, err = persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: []string{"priority"}}, now)
+			if err != nil {
+				return tracker.NativeIssue{}, err
+			}
+		}
 		if _, err := insertNativeComment(ctx, tx, scope, issue, occurrence, nil, now); err != nil {
 			return tracker.NativeIssue{}, err
 		}

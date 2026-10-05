@@ -145,10 +145,18 @@ func nativeMutationKeyForContext(ctx context.Context) tracker.Mutation {
 }
 
 func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.IssueDraft) (connector.Issue, error) {
-	return c.createIssue(ctx, draft, "")
+	return c.createIssue(ctx, intake.IssueDraft{Title: draft.Title, Body: draft.Body, Labels: draft.Labels}, "")
 }
 
-func (c *NativeConnector) createIssue(ctx context.Context, draft connector.IssueDraft, state string) (connector.Issue, error) {
+func (c *NativeConnector) createIssue(ctx context.Context, draft intake.IssueDraft, state string) (connector.Issue, error) {
+	var priority *int
+	if draft.Priority != nil {
+		if *draft.Priority < 1 || *draft.Priority > 4 {
+			return connector.Issue{}, errors.New("priority must be an integer creation rank between 1 and 4")
+		}
+		level := *draft.Priority - 1
+		priority = &level
+	}
 	authority, bound := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
 	hostIntake := state == "Backlog" && bound && authority.scope == c.client.base()
 	if origin, machine := issueorigin.Parse(draft.Body); machine && !hostIntake {
@@ -184,7 +192,7 @@ func (c *NativeConnector) createIssue(ctx context.Context, draft connector.Issue
 		mutation.LeaseID = authority.lease.ID
 		mutation.FencingToken = authority.lease.FencingToken
 	}
-	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: mutation, Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: state})
+	issue, err := c.client.CreateIssue(ctx, tracker.CreateIssue{Mutation: mutation, Title: draft.Title, Body: draft.Body, Labels: draft.Labels, State: state, Priority: priority})
 	result := issueFromNative(issue)
 	result.PublicationReused = issue.PublicationReused
 	return result, err
@@ -230,7 +238,7 @@ func (c *NativeConnector) findIntakeIssue(ctx context.Context, match func(tracke
 }
 
 func (c *NativeConnector) CreateIntakeIssue(ctx context.Context, draft intake.IssueDraft) (intake.Issue, error) {
-	issue, err := c.createIssue(ctx, connector.IssueDraft{Title: draft.Title, Body: draft.Body, Labels: draft.Labels}, "Backlog")
+	issue, err := c.createIssue(ctx, draft, "Backlog")
 	return nativeIntakeIssue(issue), err
 }
 

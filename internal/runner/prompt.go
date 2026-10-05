@@ -706,7 +706,7 @@ func appendFollowupsBlock(prompt string, cfg config.Followups) string {
 	}
 
 	const block = "## Out-of-scope discoveries\n\n" +
-		"File follow-ups only via file_machine_issue in the project's Backlog state; if unavailable, report here. Search open issues; reuse matching fingerprints or a stable problem key (no timestamps/attempt IDs). Include a fenced `detent-agent` block: schema: 1, best-guess `effort` per project rubric. If unavailable, file the issue without a state and say so in the final handoff."
+		"File follow-ups only via file_machine_issue in the project's Backlog state; if unavailable, report here. Search open issues; reuse matching fingerprints or a stable problem key (no timestamps/attempt IDs). The optional priority argument is an integer creation rank: 1=Urgent, 2=High, 3=Normal, 4=Low; omission leaves priority unset. For native follow-ups, reuse raises weaker or unset priority while preserving stronger priority and operator holds; priority never changes lanes or admission. Include a fenced `detent-agent` block: schema: 1, best-guess `effort` per project rubric. If unavailable, file the issue without a state and say so in the final handoff."
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block
 }

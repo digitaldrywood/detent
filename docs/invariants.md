@@ -100,8 +100,19 @@ lease and policy, then creates fixed Backlog work or records a fingerprint
 occurrence. Generic worker creation and lane transitions retain operator-only
 restrictions; source claims do not authorize generic cross-item comments.
 `TestNativeMachineIntakeAuthorityAndFingerprint` exercises operator-only Backlog,
-registered authority, reuse, missing/invalid/released claims and scoped refusals. Only acceptance explicitly requiring the finished
-source to be integrated or released may move to a successfully created or reused
+registered authority, explicit priority, reuse, missing/invalid/released claims
+and scoped refusals. The worker's existing `file_machine_issue` tool accepts an
+optional integer `priority` creation rank: 1=Urgent, 2=High, 3=Normal, 4=Low.
+Native intake maps these to 0–3 through the same creation owner. Omission preserves
+legacy unset creation; body prose supplies no priority. Fingerprint reuse raises
+only unset or weaker priority in the existing fenced transaction, with the
+observed item revision and a priority-only edit event. Stronger priority,
+content, operator-only holds, lane and admission ownership remain unchanged.
+The tool grants no general operator mutation or lane-writing authority.
+Source fixtures establish this contract; the operator owns the subsequent
+installed-worker filing and supported `work_item` read check. Only acceptance
+explicitly requiring the finished source to be integrated or released may move
+to a successfully created or reused
 Backlog follow-up with its exact head, pending criteria, procedure, authorization
 and responsible owner recorded. Explicit instructions to keep the original issue
 open until live acceptance override delegation. Actual unfinished source,
@@ -4520,6 +4531,18 @@ and `TestConnectorFindIntakeIssuePrefersOpenDuplicate` covers duplicate selectio
 including completed and not-planned GitHub issues. Use `file_machine_issue`, with a stable problem key,
 for worker discoveries. Review must ensure a fingerprint describes the problem
 rather than a timestamp, attempt, or wording variation.
+
+Worker follow-ups (native #268) carry explicit optional creation-rank priority
+through the tool schema and intake draft to the native creation owner. Reuse
+records the occurrence on the same item and raises only unset or weaker native
+priority without changing its origin, content or operator hold. Invalid ranks
+and noninteger tool arguments are refused before publication; omission remains
+compatible with existing configured trackers. `TestMachineIssueTool` covers
+schema and decoding, and `TestNativeMachineIntakeAuthorityAndFingerprint` files
+High through a dispatched worker tool and verifies the supported structured
+read, rank mappings, replay, held reuse and scoped authority. Operator
+`file_issue` creation ranks 1–4 and `edit_item` native values 0–3 retain their
+existing mappings. Priority does not authorize lane changes or admission (INV-10).
 
 Scheduled validation (#3625, native #97) reuses `issueorigin.Fingerprint`, `Stamp`,
 `Parse`, and `Occurrence` across the selected destination's paginated open issues

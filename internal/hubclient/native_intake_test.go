@@ -2,10 +2,14 @@ package hubclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,14 +19,22 @@ import (
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	t.Parallel()
-	states := append(hubserver.HostedProjectStates(), tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo", "Done"}})
+	states := append(hubserver.HostedProjectStates(), tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo", "Blocked", "Done"}})
+	for i := range states {
+		if states[i].Name == "Blocked" {
+			states[i].OperatorOnly = true
+		}
+	}
 	h := newNativeChangeHubWithStates(t, "Human Review", states)
 	identityPath := filepath.Join(t.TempDir(), "private", "identity.json")
 	file, err := runnerauth.Initialize(identityPath, h.admin.client.baseURL.String())
@@ -59,8 +71,34 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := h.createInProgress(t, "Complete implementation before delegated acceptance")
-	h.claim(t, source.ID)
-	ctx, stop, err := h.scheduler.RunExecution(source.ID).Guard(t.Context())
+	worker := nativeIntakeWorker{started: make(chan runner.RunRequest, 1)}
+	orch, err := orchestrator.New(orchestrator.Config{
+		Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor,
+		PollInterval: time.Hour, MaxConcurrentAgents: 1,
+		ActiveStates: []string{"In Progress"}, ObservedStates: []string{"Backlog", "Blocked"}, TerminalStates: []string{"Done"},
+	}, orchestrator.Dependencies{Connector: conn, Scheduling: h.scheduler, Runner: worker, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- orch.Run(runCtx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Error(err)
+		}
+	})
+	var workerRequest runner.RunRequest
+	select {
+	case workerRequest = <-worker.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("native source was not dispatched")
+	}
+	if workerRequest.Issue.ID != source.ID {
+		t.Fatalf("dispatched source = %s, want %s", workerRequest.Issue.ID, source.ID)
+	}
+	ctx, stop, err := workerRequest.Execution.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +108,28 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	origin := issueorigin.Origin{Kind: "worker", Source: "attempt-1", Fingerprint: "pool-live-acceptance"}
-	draft := intake.IssueDraft{Title: "Verify integrated pool", Body: issueorigin.Stamp("Pending real two-Sprite acceptance.\n<!-- acceptance-owner -->", origin), Labels: []string{"acceptance"}}
-	created, err := store.CreateIntakeIssue(ctx, draft)
-	if err != nil || created.ID == "" || created.Reused {
-		t.Fatalf("create = %#v, error = %v", created, err)
+	result, err := workerRequest.AgentToolHandler(ctx, runner.AgentToolCall{Name: "file_machine_issue", Arguments: json.RawMessage(`{"title":"Verify integrated pool","body":"Pending real two-Sprite acceptance.\n<!-- acceptance-owner -->","fingerprint":"pool-live-acceptance","labels":["acceptance"],"priority":2}`)})
+	if err != nil || !result.Success {
+		t.Fatalf("worker filing = %+v, %v", result, err)
+	}
+	created, matched, err := store.FindIntakeIssue(t.Context(), "<!-- acceptance-owner -->")
+	if err != nil || !matched || created.ID == "" {
+		t.Fatalf("worker follow-up = %#v, error = %v", created, err)
+	}
+	readTools, readHandler := workerRequest.Execution.(runner.ToolExecution).AgentTools()
+	for _, tool := range readTools {
+		if tool.Name == operatortool.FileIssue || tool.Name == operatortool.EditItem {
+			t.Fatalf("worker gained operator mutation %s", tool.Name)
+		}
+	}
+	readArgs, err := json.Marshal(map[string]string{"project_id": string(h.project), "reference": created.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readResult, err := readHandler(ctx, runner.AgentToolCall{Name: operatortool.WorkItem, Arguments: readArgs})
+	var view operatortool.WorkReadResult[operatortool.NativeItem]
+	if err != nil || !readResult.Success || json.Unmarshal([]byte(readResult.Content), &view) != nil || view.Data.Priority == nil || *view.Data.Priority != 1 || view.Data.ProjectID != h.project || view.Data.State != "Backlog" {
+		t.Fatalf("worker structured High read = %s, %v", readResult.Content, err)
 	}
 	current, err := native.Issue(t.Context(), tracker.NativeWorkItemID(created.ID))
 	if err != nil || current.State != "Backlog" {
@@ -84,8 +139,8 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil || !matched || found.ID != created.ID {
 		t.Fatalf("paginated match = %#v, %t, %v", found, matched, err)
 	}
-	origin.Source = "attempt-2"
-	draft.Body = issueorigin.Stamp("Second occurrence", origin)
+	origin := issueorigin.Origin{Kind: "worker", Source: "attempt-2", Fingerprint: "pool-live-acceptance"}
+	draft := intake.IssueDraft{Title: "Verify integrated pool", Body: issueorigin.Stamp("Second occurrence", origin), Priority: new(4)}
 	reused, err := store.CreateIntakeIssue(ctx, draft)
 	if err != nil || !reused.Reused || reused.ID != created.ID {
 		t.Fatalf("same fingerprint = %#v, %v", reused, err)
@@ -99,12 +154,12 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	updatedOrigin, stamped := issueorigin.Parse(updated.Body)
-	if !stamped || updatedOrigin.Source != "attempt-1" || updatedOrigin.Fingerprint != origin.Fingerprint {
+	if !stamped || updatedOrigin.Source != strconv.FormatInt(workerRequest.WorkAttemptID, 10) || updatedOrigin.Fingerprint != origin.Fingerprint {
 		t.Fatalf("origin replaced: %#v", updatedOrigin)
 	}
 	current, err = native.Issue(t.Context(), tracker.NativeWorkItemID(created.ID))
-	if err != nil || !slices.Equal(current.Labels, []string{"acceptance", "deployment"}) {
-		t.Fatalf("metadata = %#v, %v", current.Labels, err)
+	if err != nil || !slices.Equal(current.Labels, []string{"acceptance", "deployment"}) || current.Priority == nil || *current.Priority != 1 {
+		t.Fatalf("reuse changed metadata or downgraded High = %#v, %v", current, err)
 	}
 	if err := store.SetIntakeIssueState(ctx, created.ID, "Backlog"); err != nil {
 		t.Fatal(err)
@@ -117,7 +172,9 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 			t.Fatal("generic worker creation bypassed operator-only Backlog")
 		}
 	}
+	h.scheduler.mu.Lock()
 	claim := h.scheduler.nativeClaims[source.ID]
+	h.scheduler.mu.Unlock()
 	for _, mutation := range []tracker.Mutation{
 		{IdempotencyKey: "wrong-fence", LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken + 1},
 		{IdempotencyKey: "unknown-lease", LeaseID: "lease_unknown", FencingToken: claim.lease.FencingToken},
@@ -126,7 +183,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 			t.Fatal("invalid source claim reused machine intake")
 		}
 	}
-	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "same-intake-occurrence", LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken}, Title: draft.Title, Body: draft.Body, State: "Backlog"}
+	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "same-intake-occurrence", LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken}, Title: draft.Title, Body: draft.Body, State: "Backlog", Priority: new(0)}
 	imported := request
 	imported.IdempotencyKey = "forbidden-intake-import"
 	imported.Provenance = &tracker.Provenance{Provider: "github", ExternalID: "private-source", AuthorID: "source-author", CreatedAt: time.Now(), UpdatedAt: time.Now(), ObservedAt: time.Now()}
@@ -143,6 +200,113 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil || len(comments.Items) != 2 {
 		t.Fatalf("intake replay repeated occurrence: %#v, %v", comments, err)
 	}
+	current, err = h.admin.Issue(t.Context(), tracker.NativeWorkItemID(created.ID))
+	if err != nil || current.Priority == nil || *current.Priority != 0 {
+		t.Fatalf("intake replay did not retain Urgent: %#v, %v", current, err)
+	}
+	history, err := native.History(t.Context(), current.WorkItemID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorityEdits := 0
+	for _, event := range history.Items {
+		if event.Type == "issue.edited" && slices.Contains(event.Data.Fields, "priority") {
+			priorityEdits++
+			if !slices.Equal(event.Data.Fields, []string{"priority"}) {
+				t.Fatalf("intake priority edit changed other fields: %#v", event)
+			}
+		}
+	}
+	if priorityEdits != 1 {
+		t.Fatalf("replayed intake priority edits = %d, want 1", priorityEdits)
+	}
+	current, err = h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Blocked", Reason: "user_requested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reuseCases := []struct {
+		name     string
+		existing *int
+		rank     *int
+		want     *int
+	}{
+		{name: "raise unset", rank: new(2), want: new(1)},
+		{name: "raise normal", existing: new(2), rank: new(2), want: new(1)},
+		{name: "raise low", existing: new(3), rank: new(2), want: new(1)},
+		{name: "preserve urgent", existing: new(0), rank: new(2), want: new(0)},
+		{name: "preserve high", existing: new(1), rank: new(4), want: new(1)},
+		{name: "same high", existing: new(1), rank: new(2), want: new(1)},
+		{name: "omission preserves urgent", existing: new(0), want: new(0)},
+		{name: "omission preserves unset"},
+	}
+	for _, test := range reuseCases {
+		t.Run(test.name, func(t *testing.T) {
+			priority := tracker.SetPriority(test.existing)
+			if test.existing == nil {
+				priority = tracker.ClearPriority()
+			}
+			before, err := h.admin.UpdateIssue(t.Context(), current.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, Priority: priority})
+			if err != nil {
+				t.Fatal(err)
+			}
+			draft.Priority = test.rank
+			reused, err := store.CreateIntakeIssue(ctx, draft)
+			if err != nil || !reused.Reused || reused.ID != created.ID {
+				t.Fatalf("fingerprint reuse = %#v, %v", reused, err)
+			}
+			current, err = h.admin.Issue(t.Context(), before.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (current.Priority == nil) != (test.want == nil) || test.want != nil && *current.Priority != *test.want {
+				t.Fatalf("priority = %v, want %v", current.Priority, test.want)
+			}
+			if current.State != "Blocked" || current.Title != before.Title || current.Body != before.Body || !slices.Equal(current.Labels, before.Labels) || !slices.Equal(current.Assignees, before.Assignees) || current.Archived != before.Archived {
+				t.Fatalf("reuse changed held item content: before=%#v, after=%#v", before, current)
+			}
+			wantRevision := before.Revision
+			if test.rank != nil && (test.existing == nil || *test.rank-1 < *test.existing) {
+				wantRevision++
+			}
+			if current.Revision != wantRevision {
+				t.Fatalf("reuse revision = %d, want %d", current.Revision, wantRevision)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name string
+		rank *int
+		want *int
+	}{
+		{name: "legacy omission"},
+		{name: "urgent", rank: new(1), want: new(0)},
+		{name: "high", rank: new(2), want: new(1)},
+		{name: "normal", rank: new(3), want: new(2)},
+		{name: "low", rank: new(4), want: new(3)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			draft := intake.IssueDraft{Title: test.name, Body: issueorigin.Stamp("Priority: High.", issueorigin.Origin{Kind: "worker", Fingerprint: "rank-" + test.name}), Priority: test.rank}
+			created, err := store.CreateIntakeIssue(ctx, draft)
+			if err != nil || created.Reused {
+				t.Fatalf("rank creation = %#v, %v", created, err)
+			}
+			issue, err := native.Issue(t.Context(), tracker.NativeWorkItemID(created.ID))
+			if err != nil || issue.State != "Backlog" || issue.ProjectID != h.project || (issue.Priority == nil) != (test.want == nil) || test.want != nil && *issue.Priority != *test.want {
+				t.Fatalf("rank mapping = %#v, %v", issue, err)
+			}
+		})
+	}
+	candidates, err := conn.FetchCandidateIssues(t.Context())
+	if err != nil || len(candidates) != 1 || candidates[0].ID != source.ID {
+		t.Fatalf("priority admitted a Backlog or held follow-up: %#v, %v", candidates, err)
+	}
+	for _, rank := range []int{-1, 0, 5} {
+		draft.Priority = &rank
+		if _, err := store.CreateIntakeIssue(ctx, draft); err == nil {
+			t.Fatalf("native intake accepted creation rank %d", rank)
+		}
+	}
+	draft.Priority = new(2)
 	var foreignProject tracker.NativeProject
 	if err := h.admin.client.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", map[string]any{"name": "foreign", "idempotency_key": "foreign-intake", "states": states}, &foreignProject); err != nil {
 		t.Fatal(err)
@@ -208,7 +372,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		t.Fatal("released source claim reused machine intake")
 	}
 	comments, err = native.Comments(t.Context(), tracker.NativeWorkItemID(created.ID), "")
-	if err != nil || len(comments.Items) != 2 {
+	if err != nil || len(comments.Items) != 2+len(reuseCases) {
 		t.Fatalf("refused intake wrote occurrence: %#v, %v", comments, err)
 	}
 	origin.Fingerprint = "released-new-follow-up"
@@ -216,6 +380,16 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if _, err := store.CreateIntakeIssue(ctx, draft); err == nil {
 		t.Fatal("released source claim created machine intake")
 	}
+}
+
+type nativeIntakeWorker struct {
+	started chan runner.RunRequest
+}
+
+func (w nativeIntakeWorker) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
+	w.started <- request
+	<-ctx.Done()
+	return runner.RunResult{}, ctx.Err()
 }
 
 type intakeRepositoryBackend struct{}
