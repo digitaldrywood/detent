@@ -970,7 +970,7 @@ func (r Release) validate(prefix string, problems *[]string) {
 
 type Hooks struct {
 	Shell        string `yaml:"shell"`
-	RunnerSetup  string `yaml:"runner_setup"`
+	RunnerSetup  string `yaml:"runner_setup" json:"RunnerSetup,omitempty"`
 	AfterCreate  string `yaml:"after_create"`
 	BeforeRun    string `yaml:"before_run"`
 	AfterRun     string `yaml:"after_run"`

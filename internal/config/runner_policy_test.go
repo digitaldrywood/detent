@@ -45,7 +45,8 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		change func(*Workflow)
 		match  bool
 	}{
-		{"unchanged upgrade", func(*Workflow) {}, true},
+		{"unchanged upgrade with default runner setup", func(*Workflow) {}, true},
+		{"configured runner setup", func(w *Workflow) { w.Config.Hooks.RunnerSetup = "scripts/runner-setup.sh" }, false},
 		{"host pacing off", func(w *Workflow) {
 			w.Config.Agent.RateWindowPacing = RateWindowPacing{Mode: RateWindowPacingOff}.Normalized()
 		}, true},
