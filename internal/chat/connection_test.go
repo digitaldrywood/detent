@@ -100,8 +100,8 @@ type connectionIdentityStore struct {
 	state SessionState
 }
 
-func (store *connectionIdentityStore) Load(_ context.Context, id string, _ time.Time, _ time.Duration) (SessionState, bool, error) {
-	return store.state, store.state.ID == id, nil
+func (store *connectionIdentityStore) Load(_ context.Context, id string, now time.Time, ttl time.Duration) (SessionState, bool, error) {
+	return store.state, store.state.ID == id && now.Sub(store.state.LastUsedAt) <= ttl, nil
 }
 func (store *connectionIdentityStore) Save(_ context.Context, state SessionState, _ time.Time, _ time.Duration, _ int) error {
 	store.state = state

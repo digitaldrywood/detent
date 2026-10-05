@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -26,10 +27,25 @@ func WithSessionStore(store SessionStore, resolve func(context.Context, operator
 }
 
 func (s *Service) RestoreConnection(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
 	current := s.session(id)
+	if current != nil {
+		current.mu.Lock()
+		defer current.mu.Unlock()
+		return s.restoreSession(ctx, id, current)
+	}
+	if s.store == nil {
+		return nil
+	}
+	state, found, err := s.store.Load(ctx, id, s.now().UTC(), s.sessionTTL)
+	if err != nil || !found {
+		return err
+	}
+	current = s.ensureSession(id)
 	current.mu.Lock()
 	defer current.mu.Unlock()
-	return s.restoreSession(ctx, id, current)
+	s.restoreSessionState(id, current, state)
+	return nil
 }
 
 func (s *Service) restoreSession(ctx context.Context, id string, current *session) error {
@@ -39,6 +55,14 @@ func (s *Service) restoreSession(ctx context.Context, id string, current *sessio
 	state, found, err := s.store.Load(ctx, id, s.now().UTC(), s.sessionTTL)
 	if err != nil || !found {
 		return err
+	}
+	s.restoreSessionState(id, current, state)
+	return nil
+}
+
+func (s *Service) restoreSessionState(id string, current *session, state SessionState) {
+	if current.connection != nil {
+		return
 	}
 	connection := operatortool.Connection{ID: id, Identity: state.Identity, Client: state.Client}
 	connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
@@ -51,8 +75,8 @@ func (s *Service) restoreSession(ctx context.Context, id string, current *sessio
 
 	s.mu.Lock()
 	current.lastUsedAt = state.LastUsedAt
+	current.lastAccessedAt = s.now().UTC()
 	s.mu.Unlock()
-	return nil
 }
 
 func (s *Service) persistSession(ctx context.Context, current *session) error {
