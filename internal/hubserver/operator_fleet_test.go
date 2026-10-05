@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -30,7 +31,7 @@ const fleetProtocolMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-2
 // principal attribution, and repeat enrollment/credential effects.
 func TestHostedMCPFleetControls(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
-		for _, scenario := range []string{"reads", "enrollment", "revoke enrollment", "revoke identity", "revoke identity heartbeat", "revoke identity revoked runner", "routing", "routing heartbeat", "routing revoked runner", "host", "capacity", "capacity heartbeat", "capacity revoked runner", "capacity reapply", "capacity reapply heartbeat", "capacity revoked grants", "update", "update revoked grants", "update stale", "urgent update", "urgent update revoked grants", "ordinary", "revoked grants", "revoked original grants", "revoked original session", "cross organization", "stale", "viewer", "YOLO", "different approver", "member runner grants"} {
+		for _, scenario := range []string{"reads", "enrollment", "revoke enrollment", "revoke identity", "revoke identity heartbeat", "revoke identity revoked runner", "routing", "routing empty availability", "routing heartbeat", "routing revoked runner", "host", "capacity", "capacity heartbeat", "capacity revoked runner", "capacity reapply", "capacity reapply heartbeat", "capacity revoked grants", "update", "update revoked grants", "update stale", "urgent update", "urgent update revoked grants", "ordinary", "revoked grants", "revoked original grants", "revoked original session", "cross organization", "stale", "viewer", "YOLO", "different approver", "member runner grants"} {
 
 			t.Run(deployment+"/"+scenario, func(t *testing.T) {
 				var f hostedSecurityFixture
@@ -243,7 +244,27 @@ func TestHostedMCPFleetControls(t *testing.T) {
 				}
 				name := operatortool.UpdateRunnerRouting
 				args := map[string]any{"request_id": "fleet-effect", "runner_id": runnerID, "change": map[string]any{"expected_revision": 1, "display_name": "Renamed fixture", "state": "disabled", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project}}}
+				var routingReadback runnerauth.Runner
 				switch scenario {
+				case "routing empty availability":
+					var page struct {
+						Data struct {
+							Runners []runnerauth.Runner `json:"runners"`
+						} `json:"data"`
+					}
+					if err := json.Unmarshal(call(operatortool.ListRunnerRouting, map[string]any{"limit": 1}), &page); err != nil {
+						t.Fatal(err)
+					}
+					if len(page.Data.Runners) != 1 || page.Data.Runners[0].RunnerID != runnerID {
+						t.Fatalf("routing readback=%+v", page.Data.Runners)
+					}
+					routingReadback = page.Data.Runners[0]
+					if routingReadback.State != "active" || routingReadback.Availability.Timezone != "" || routingReadback.Availability.Windows == nil || len(routingReadback.Availability.Windows) != 0 || routingReadback.Availability.HardDeadline != "" {
+						t.Fatalf("unexpected routing readback=%+v", routingReadback.Routing)
+					}
+					change := runnerauth.RoutingChange{Routing: routingReadback.Routing, ExpectedRevision: routingReadback.Revision}
+					change.State = "draining"
+					args["change"] = change
 				case "ordinary":
 					args["change"].(map[string]any)["state"] = "active"
 				case "routing heartbeat":
@@ -458,11 +479,22 @@ func TestHostedMCPFleetControls(t *testing.T) {
 						t.Fatal(err)
 					}
 					expected := "disabled"
+					if scenario == "routing empty availability" {
+						expected = "draining"
+					}
 					if scenario == "ordinary" || scenario == "routing heartbeat" || strings.HasPrefix(scenario, "capacity reapply") {
 						expected = "active"
 					}
 					if revision != 2 || state != expected {
 						t.Fatalf("runner revision/state=%d/%s", revision, state)
+					}
+					if scenario == "routing empty availability" {
+						after, err := readRunner(t.Context(), f.service.database.db, "org_security", runnerID, f.service.config.now())
+						want := routingReadback.Routing
+						want.State = "draining"
+						if err != nil || !reflect.DeepEqual(after.Routing, want) {
+							t.Fatalf("routing readback mutation: got=%+v want=%+v error=%v", after.Routing, want, err)
+						}
 					}
 					if scenario == "routing heartbeat" {
 						var display, settings, projects string
