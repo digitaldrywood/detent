@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -59,10 +61,28 @@ type Result struct {
 }
 
 func Load(workspacePath string, opts Options) (Result, error) {
-	path := opts.Path
-	if strings.TrimSpace(path) == "" {
-		path = DefaultPath
+	relative := opts.Path
+	if strings.TrimSpace(relative) == "" {
+		relative = DefaultPath
 	}
+	skillsDir, err := workspaceRelativePath(workspacePath, relative)
+	if err != nil {
+		return Result{}, err
+	}
+	return load(os.DirFS(skillsDir), ".", opts, func(file string) string {
+		return filepath.Join(skillsDir, file)
+	})
+}
+
+func LoadFS(files fs.FS, opts Options) (Result, error) {
+	directory := opts.Path
+	if strings.TrimSpace(directory) == "" {
+		directory = DefaultPath
+	}
+	return load(files, directory, opts, func(file string) string { return file })
+}
+
+func load(filesystem fs.FS, directory string, opts Options, bodyPath func(string) string) (Result, error) {
 	maxSkills := opts.MaxSkillsInPrompt
 	if maxSkills <= 0 {
 		maxSkills = DefaultMaxSkillsInPrompt
@@ -72,13 +92,8 @@ func Load(workspacePath string, opts Options) (Result, error) {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
-	skillsDir, err := workspaceRelativePath(workspacePath, path)
-	if err != nil {
-		return Result{}, err
-	}
-
-	entries, err := os.ReadDir(skillsDir)
-	if errors.Is(err, os.ErrNotExist) {
+	entries, err := fs.ReadDir(filesystem, directory)
+	if errors.Is(err, fs.ErrNotExist) {
 		return Result{}, nil
 	}
 	if err != nil {
@@ -90,24 +105,24 @@ func Load(workspacePath string, opts Options) (Result, error) {
 		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
 			continue
 		}
-		files = append(files, filepath.Join(skillsDir, entry.Name()))
+		files = append(files, path.Join(directory, entry.Name()))
 	}
 	sort.Strings(files)
 
 	skills := make([]Skill, 0, len(files))
 	dropped := make([]Drop, 0)
 	for _, file := range files {
-		content, err := os.ReadFile(file)
+		content, err := fs.ReadFile(filesystem, file)
 		if err != nil {
 			dropped = append(dropped, Drop{
-				Path:    file,
+				Path:    bodyPath(file),
 				Reason:  DropReasonInvalid,
 				Message: "failed to read skill: " + err.Error(),
 			})
 			continue
 		}
 
-		skill, drop := parseSkill(file, content)
+		skill, drop := parseSkill(bodyPath(file), content)
 		if drop != nil {
 			dropped = append(dropped, *drop)
 			continue

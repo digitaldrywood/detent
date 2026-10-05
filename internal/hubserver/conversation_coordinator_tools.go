@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -61,6 +62,7 @@ func coordinatorTool(name, description, schema string) runner.AgentTool {
 
 func (t *coordinatorToolset) tools() []runner.AgentTool {
 	return append([]runner.AgentTool{
+		coordinatorTool("read_skill", "Read one built-in Detent skill's guidance by name or alias from the Available skills catalog.", `{"type":"object","required":["name"],"properties":{"name":{"type":"string"}},"additionalProperties":false}`),
 		coordinatorTool(coordinatorToolListAttention,
 			"List issues that need attention, grouped as blocked, waiting_for_input, running and review. Scope is this conversation's project or every project the user can read.",
 			`{"type":"object","properties":{"scope":{"type":"string","enum":["project","all_projects"],"description":"project (default) or all_projects"},"limit":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum issues per group, default 20"}},"additionalProperties":false}`),
@@ -121,6 +123,21 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		return nil, errCoordinatorProjectUnreadable
 	}
 	switch call.Name {
+	case "read_skill":
+		var args struct {
+			Name string `json:"name"`
+		}
+		if err := decodeCoordinatorArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.Name) == "" {
+			return nil, errCoordinatorToolArguments
+		}
+		skill, body, err := skills.ReadBuiltin(args.Name)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"name": skill.Name, "body": body}, nil
 	case "get_sprite_pool", "set_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", "get_sprite_bootstrap_log":
 		return t.spriteTool(ctx, record, call)
 	case "read_issue_history":
