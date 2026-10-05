@@ -86,6 +86,7 @@ type NativeIssue struct {
 	Provenance         *Provenance         `json:"provenance,omitempty"`
 	CreatedAt          time.Time           `json:"created_at"`
 	UpdatedAt          time.Time           `json:"updated_at"`
+	LastActivityAt     time.Time           `json:"last_activity_at"`
 	Dependencies       []NativeWorkItemID  `json:"dependencies"`
 	Blockers           []NativeDependency  `json:"blockers"`
 	ExternalReferences []ExternalReference `json:"external_references"`

@@ -49,7 +49,7 @@ func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope
 func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
 	var internalID tracker.WorkItemID
-	var labels, assignees, actor, created, updated, externalID string
+	var labels, assignees, actor, created, updated, activity, externalID string
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
 	var repositoryOwner, repositoryName string
 	var sourceNumber int
@@ -61,7 +61,7 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	}
 	err := query.QueryRowContext(ctx, `SELECT i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
  i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
- i.actor_json, i.provenance_json, i.native_created_at, i.native_updated_at, COALESCE(i.github_node_id, ''),
+ i.actor_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
  COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0)
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
@@ -70,7 +70,7 @@ LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
 WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, id).Scan(
 		&internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
-		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &provenance, &created, &updated, &externalID,
+		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
 		&repositoryOwner, &repositoryName, &sourceNumber)
 	if err != nil {
@@ -115,6 +115,9 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 		return issue, 0, err
 	}
 	if issue.UpdatedAt, err = parseTimeValue(updated); err != nil {
+		return issue, 0, err
+	}
+	if issue.LastActivityAt, err = parseTimeValue(activity); err != nil {
 		return issue, 0, err
 	}
 	if priority.Valid {
@@ -287,7 +290,7 @@ func createNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, reque
 	}
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Revision: 1, Profile: "native"},
 		Title: request.Title, Body: request.Body, State: request.State, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees,
-		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, Dependencies: []tracker.NativeWorkItemID{}}
+		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}}
 	issue.Blockers = []tracker.NativeDependency{}
 	issue.IgnoreDependencies = !project.RequireDependencies
 	issue.ExternalReferences = []tracker.ExternalReference{}
