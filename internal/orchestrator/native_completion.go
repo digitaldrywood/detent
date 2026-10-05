@@ -57,7 +57,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 			return handoff(fmt.Errorf("read native workflow states: %w", err))
 		}
 		review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState()
-		target, allowed := connector.CompletionLane(states, issue.State, review, true)
+		target, allowed := connector.LandingRefusalLane(states, issue.State, review, false)
 		if !allowed {
 			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", issue.State, review))
 		}
@@ -99,6 +99,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	review := cfg.reviewTargetState()
 	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed || needsReview)
+	if change.Changed || needsReview {
+		target, ok = connector.LandingRefusalLane(states, issue.State, review, false)
+	}
 	unfinished := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "" && change.VersionError == ""
 	if unfinished && nativePlanStateExists(states, cfg.ReworkState) && dispatchableState(states, cfg.ReworkState) {
 		if normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
@@ -107,8 +110,17 @@ func (o *Orchestrator) completeNativeChangeRun(
 			target, ok = rework, true
 		}
 	}
-	if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); change.Changed && change.Reviewed && !needsReview && direct && dispatchableState(states, landing) {
-		target, ok = landing, true
+	if change.Changed && change.Reviewed && !needsReview {
+		if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); direct && dispatchableState(states, landing) {
+			target, ok = landing, true
+		} else if _, allowed := connector.CompletionLane(states, issue.State, "", false); allowed {
+			if err := o.continueNativeLandingRun(ctx, state, event, running); err != nil {
+				return handoff(err)
+			}
+			return true
+		} else {
+			return handoff(fmt.Errorf("native workflow allows no landing path from %s", strings.TrimSpace(issue.State)))
+		}
 	}
 	if !ok {
 		if change.Changed || needsReview {
@@ -164,6 +176,52 @@ func (o *Orchestrator) completeNativeChangeRun(
 			"changed", change.Changed, "change_id", change.ChangeID)
 	}
 	return true
+}
+
+func (o *Orchestrator) continueNativeLandingRun(ctx context.Context, state *State, event runpkg.Completion, running Running) error {
+	request := event.Request
+	if request.Execution == nil {
+		if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+			request.Execution = source.RunExecution(event.IssueID)
+		}
+	}
+	if _, ok := request.Execution.(runpkg.LandingExecution); !ok || o.supervisor == nil {
+		return errors.New("native landing execution is unavailable")
+	}
+	slotIssue := cloneIssue(running.Issue)
+	slotIssue.State = autoPromoteMergingState
+	slot, available, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, running.WorkerHost, o.clockNow(), 0)
+	if !available {
+		return fmt.Errorf("native landing capacity unavailable: %s", decision.Reason)
+	}
+	request.Issue = running.Issue
+	request.Mode = runpkg.RunModeMerge
+	request.Attempt = running.Attempt
+	request.WorkAttemptID = running.WorkAttemptID
+	request.Generation = running.Generation
+	request.WorkerHost = running.WorkerHost
+	request.DeferExecutionFinish = true
+	request.AcquireModelPermit = nil
+	runCtx, cancel := context.WithTimeoutCause(ctx, o.cfg.MergeWorkerMaxDuration, runpkg.ErrMergeWorkerDurationExceeded)
+	runCtx, stop := context.WithCancelCause(runCtx)
+	if request.OnUsageUpdate != nil {
+		request.OnUsageUpdate = o.usageUpdateHandler(runCtx, event.IssueID, nil, running.progress)
+	}
+	if request.OnActivityUpdate != nil {
+		request.OnActivityUpdate = o.activityUpdateHandler(runCtx, running.Issue)
+	}
+	running.Mode = runpkg.RunModeMerge
+	running.ModelPermitExempt = true
+	running.globalSlot = slot
+	running.cancel = cancel
+	running.stop = stop
+	running.CompletionOwnershipReleased = false
+	state.Running[event.IssueID] = running
+	o.trackRunningHeartbeat(state, running, state.Claimed[event.IssueID], event.CompletedAt)
+	o.publishRuntimeState(state)
+	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
+	state.Running[event.IssueID] = running
+	return nil
 }
 
 func nativeCompletionReason(comment string, report *workpad.Signal, finalMessage string) string {

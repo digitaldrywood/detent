@@ -194,7 +194,7 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 			metadata.DeliveryTimeSource = "completion_observation"
 		}
 	}
-	if !o.cfg.AutoPromote.humanReviewEnabled() &&
+	if !o.nativeWorkflow() && !o.cfg.AutoPromote.humanReviewEnabled() &&
 		normalizeState(targetState) == normalizeState(normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState) {
 		targetState = blockedStatusState
 	}

@@ -127,8 +127,12 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	} else {
 		event.Result.Tokens = running.Tokens
 	}
-	running.Compute = event.Result.Compute
-	running.TokenUSD = event.Result.TokenUSD
+	if event.Result.NativeLanding == nil || event.Result.Compute != nil {
+		running.Compute = event.Result.Compute
+	}
+	if event.Result.NativeLanding == nil || event.Result.TokenUSD != 0 {
+		running.TokenUSD = event.Result.TokenUSD
+	}
 	if event.Result.TurnCount > 0 {
 		running.TurnCount = event.Result.TurnCount
 	}
@@ -201,6 +205,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if running.CompletionLane != "" && running.Mode != runpkg.RunModeTriage {
+		if event.Err == nil && o.completeNativeLandingRun(ctx, state, event, running) {
+			return
+		}
 		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
 			o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
 			return
