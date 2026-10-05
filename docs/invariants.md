@@ -2005,6 +2005,21 @@ external PR responses, exact identity and missing/non-ancestor commit refusals.
 
 ## INV-3 — Mechanism moratorium
 
+Luna's human-authored Sprites onboarding (native #30) requests pool changes
+through the existing chat approval owner and revision-checked settings write.
+Scale-up and retry invoke the existing project lifecycle within its saved
+floor and ceiling; they add no timer, retry loop or dispatch owner. Current
+owner/admin authority and project runner-management grants apply at preview
+and execution. The write-only token is entered through the existing connector,
+never Luna arguments; reads expose token metadata, safe validation messages,
+connection health and provider readiness without stored customer bootstrap.
+An enrolled or connected member without provider reports is not work-ready.
+`TestCoordinatorSpriteArguments`, `TestCoordinatorProjectActions`,
+`TestSpritePoolLifecycle` and `TestSpritesTokenValidation` cover argument,
+approval, grant, revision, credential and safe failure boundaries. Live staging
+onboarding through a real pushed branch remains acceptance for its authorized
+post-integration owner.
+
 The human-authored Sprite pool scope (native #29) extends that same project
 lifecycle owner. Native mutations and lease finish/release trigger scale-up;
 heartbeats and the existing Hub maintenance cycle trigger idle deletion only.

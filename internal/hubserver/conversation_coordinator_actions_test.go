@@ -17,21 +17,37 @@ import (
 )
 
 func TestCoordinatorProjectActions(t *testing.T) {
-	for _, tool := range []string{"update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment} {
+	for _, tool := range []string{"update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "set_sprite_pool", "scale_up_sprite_pool"} {
 		outcomes := []string{"approve", "reject", "unauthorized", "revoked", "stale", "model approval", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
 		if tool == "update_project_integration" {
 			outcomes = append(outcomes, "transport unavailable")
+		}
+		if coordinatorSpriteMutation(tool) {
+			outcomes = append(outcomes, "no runner grant", "runner grant revoked")
 		}
 		for _, outcome := range outcomes {
 			t.Run(tool+"/"+outcome, func(t *testing.T) {
 				f := newHostedSecurityFixture(t, func(cfg *Config) {
 					cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}
+					if coordinatorSpriteMutation(tool) {
+						cfg.SecretKeys = secretTestKeys(t, "1", "1")
+						cfg.Version = "v0.117.99"
+						cfg.SpritesHTTPClient = &http.Client{Transport: spritesTestTransport(func(r *http.Request) (*http.Response, error) {
+							if r.Method == http.MethodPost {
+								return spritesTestResponse(spritesSecretSentinel, http.StatusPaymentRequired), nil
+							}
+							return spritesTestResponse(`{"sprites":[]}`, http.StatusOK), nil
+						})}
+					}
 					if tool == "update_project_integration" && outcome != "transport unavailable" {
 						cfg.GitHubDisabled = false
 						cfg.ReconcileBackend = &scriptedReconcileBackend{}
 					}
 				})
 				u := f.user(t, "luna-owner", "owner", "luna@example.test", "write", "")
+				if coordinatorSpriteMutation(tool) {
+					f.grant(t, u, true, outcome != "no runner grant")
+				}
 				response := f.request(t, u, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "luna-issue", "title": "Original issue", "body": "Original body", "state": "Todo", "labels": []string{"original"}})
 				requireNativeStatus(t, response, http.StatusOK)
 				var issue tracker.NativeIssue
@@ -64,6 +80,26 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				state := &coordinatorTurnState{coordinator: c, conversationID: record.ID, users: []conversationMessageRecord{user}}
 				tools := newCoordinatorToolset(c, state)
+				if coordinatorSpriteMutation(tool) {
+					envelope, err := f.service.config.SecretKeys.Seal([]byte(spritesSecretSentinel), secretAAD("org_security", string(f.project), flySpritesToken))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := db.ExecContext(t.Context(), `INSERT INTO project_secrets(organization_id,project_id,kind,organization_slug,ciphertext,nonce,wrapped_data_key,master_key_version,updated_at) VALUES('org_security',?,?,'detent-test',?,?,?,?,?)`, f.project, flySpritesToken, envelope.Ciphertext, envelope.Nonce, envelope.WrappedKey, envelope.Version, formatHubTime(f.service.config.now())); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := db.ExecContext(t.Context(), `INSERT INTO project_sprite_pools(organization_id,project_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by) SELECT 'org_security',?,0,1,300,'private-provider-secret',principal_id FROM hosted_members WHERE user_id=?`, f.project, u.identity.Subject); err != nil {
+						t.Fatal(err)
+					}
+					if outcome == "approve" {
+						for _, name := range []string{"get_sprite_pool", "set_sprites_token", "get_sprite_bootstrap_log"} {
+							result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: name, Arguments: json.RawMessage(`{}`)})
+							if err != nil || !result.Success || strings.Contains(result.Content, spritesSecretSentinel) || strings.Contains(result.Content, "private-provider-secret") {
+								t.Fatalf("unsafe or unavailable Sprite read %s: %+v, %v", name, result, err)
+							}
+						}
+					}
+				}
 				arguments := map[string]any{"work_item_id": id}
 				switch tool {
 				case "update_project_integration":
@@ -74,6 +110,10 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					arguments["title"], arguments["body"], arguments["labels"], arguments["priority"] = "Edited by Luna", "", []string{"approved"}, 2
 				case operatortool.AddComment:
 					arguments["body"] = "Comment approved by the owner"
+				case "set_sprite_pool":
+					arguments = map[string]any{"min_runners": 0, "max_runners": 0}
+				case "scale_up_sprite_pool":
+					arguments = map[string]any{}
 				}
 				if outcome == "bad arguments" {
 					arguments["approve"] = true
@@ -114,7 +154,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					assertCoordinatorEffect(t, f, id, tool, false)
 					return
 				}
-				if outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "no write grant" || outcome == "wrong role" && tool == "update_project_integration" {
+				if outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "no write grant" || outcome == "no runner grant" || outcome == "wrong role" && (tool == "update_project_integration" || coordinatorSpriteMutation(tool)) {
 					if result.Success || !strings.Contains(result.Content, "error") {
 						t.Fatalf("unauthorized result: %+v", result)
 					}
@@ -123,6 +163,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				if !result.Success {
 					t.Fatalf("preview: %s", result.Content)
+				}
+				if coordinatorSpriteMutation(tool) && strings.Contains(result.Content, "private-provider-secret") {
+					t.Fatal("preview disclosed the stored customer bootstrap")
 				}
 				var preview struct {
 					ActionID string            `json:"action_id"`
@@ -163,8 +206,13 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if outcome == "revoked" {
 					f.grant(t, u, false, false)
 				}
+				if outcome == "runner grant revoked" {
+					f.grant(t, u, true, false)
+				}
 				if outcome == "stale" {
-					if tool == "update_project_integration" {
+					if coordinatorSpriteMutation(tool) {
+						_, err = db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET revision=revision+1 WHERE project_id=?", f.project)
+					} else if tool == "update_project_integration" {
 						_, err = db.ExecContext(t.Context(), "UPDATE projects SET integration_revision=integration_revision+1 WHERE id=?", f.project)
 					} else if tool != operatortool.AddComment {
 						_, err = db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", id)
@@ -182,9 +230,19 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if outcome == "stale" && tool != operatortool.AddComment {
 					want = http.StatusConflict
 				}
+				if outcome == "runner grant revoked" {
+					want = http.StatusConflict
+				}
 				requireNativeStatus(t, response, want)
+				f.service.spriteWakeWork.Wait()
 				changed := outcome == "approve" || outcome == "wrong role" || outcome == "stale" && tool == operatortool.AddComment
 				assertCoordinatorEffect(t, f, id, tool, changed)
+				if tool == "scale_up_sprite_pool" && changed {
+					result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "get_sprite_bootstrap_log", Arguments: json.RawMessage(`{}`)})
+					if err != nil || !result.Success || !strings.Contains(result.Content, "billing enabled") || !strings.Contains(result.Content, "scale_up_sprite_pool") || strings.Contains(result.Content, spritesSecretSentinel) {
+						t.Fatalf("unsafe or missing bootstrap failure/retry: %+v, %v", result, err)
+					}
+				}
 				resolved, ok := f.service.operatorChat.Action(connectionID, action.ID)
 				if !ok {
 					t.Fatal("decision receipt lost")
@@ -217,6 +275,10 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 	var actual bool
 	var err error
 	switch tool {
+	case "set_sprite_pool":
+		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT max_runners=0 FROM project_sprite_pools WHERE project_id=?", f.project).Scan(&actual)
+	case "scale_up_sprite_pool":
+		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM project_sprite_members WHERE project_id=?)", f.project).Scan(&actual)
 	case "update_project_integration":
 		err = f.service.database.db.QueryRowContext(t.Context(), "SELECT github_repository_enabled FROM projects WHERE id=?", f.project).Scan(&actual)
 	case operatortool.MoveItem:
@@ -265,6 +327,9 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 	backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 		prompt := strings.ToLower(backend.request(t, turn-1).Prompt)
 		call := runner.AgentToolCall{Name: "update_project_integration", Arguments: json.RawMessage(`{"repository_enabled":true}`)}
+		if strings.Contains(prompt, "disable the sprite pool") {
+			call = runner.AgentToolCall{Name: "set_sprite_pool", Arguments: json.RawMessage(`{"min_runners":0,"max_runners":0}`)}
+		}
 		if strings.Contains(prompt, "retry the blocked issue") {
 			raw, err := json.Marshal(map[string]string{"work_item_id": f.workItem, "state": "Todo"})
 			if err != nil {

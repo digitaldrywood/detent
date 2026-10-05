@@ -72,6 +72,10 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			return
 		}
 		if r.URL.Path == "/v1/sprites" {
+			if r.Method == http.MethodGet {
+				_, _ = io.WriteString(w, `{"sprites":[]}`)
+				return
+			}
 			var body struct {
 				Name string `json:"name"`
 			}
@@ -82,6 +86,15 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			provider.mu.Lock()
 			provider.created = append(provider.created, body.Name)
 			provider.mu.Unlock()
+			if provider.fail == "billing" || provider.fail == "invalid token" {
+				status := http.StatusPaymentRequired
+				if provider.fail == "invalid token" {
+					status = http.StatusUnauthorized
+				}
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, spritesSecretSentinel)
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(body)
 			return
@@ -235,6 +248,8 @@ func TestSpritePoolLifecycle(t *testing.T) {
 		{"project heartbeat triggers idle cleanup", "", 2, 2, 2, true},
 		{"bootstrap failure deletes only its member", "bootstrap", 1, 1, 0, false},
 		{"checkpoint failure deletes enrolled member", "checkpoint", 1, 1, 1, false},
+		{"billing failure is retained for onboarding", "billing", 1, 1, 0, false},
+		{"token rejection is retained for onboarding", "invalid token", 1, 1, 0, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, scope, provider := newSpritePoolFixture(t, test.failure)
@@ -258,6 +273,34 @@ func TestSpritePoolLifecycle(t *testing.T) {
 				}
 				if test.failure == "" && (member.State != "enrolled" || member.RunnerID == "") {
 					t.Fatalf("successful member = %+v", member)
+				}
+				if test.failure == "billing" && !strings.Contains(member.BootstrapLog, "billing enabled") || test.failure == "invalid token" && !strings.Contains(member.BootstrapLog, "replace it through") {
+					t.Fatalf("missing safe failure guidance: %s", member.BootstrapLog)
+				}
+			}
+			view.Bootstrap = "private-saved-bootstrap"
+			status, err := f.service.coordinatorSpritePoolStatus(t.Context(), scope, view, "/settings/integrations#sprites")
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(status)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), "private-saved-bootstrap") || strings.Contains(string(encoded), spritesSecretSentinel) || strings.Contains(string(encoded), "private-provider-secret") {
+				t.Fatal("onboarding status exposed private setup or credentials")
+			}
+			projection := status.(map[string]any)
+			wantConnected := 0
+			if test.failure == "" {
+				wantConnected = 2
+			}
+			if projection["connected_runners"] != wantConnected {
+				t.Fatalf("connected=%v, want %d", projection["connected_runners"], wantConnected)
+			}
+			for _, member := range projection["members"].([]map[string]any) {
+				if member["provider_readiness"] != "unavailable" {
+					t.Fatal("enrollment without provider reports was claimed ready")
 				}
 			}
 			if test.failure == "" {

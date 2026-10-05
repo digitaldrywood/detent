@@ -71,7 +71,7 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 		coordinatorTool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
-	}, coordinatorActionTools()...)
+	}, append(coordinatorActionTools(), coordinatorSpriteTools()...)...)
 }
 
 // handle runs one tool call. Errors are returned to the model as
@@ -79,10 +79,10 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
 	result, err := t.execute(ctx, call)
 	if err != nil {
-		if call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" {
+		if coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" {
 			err = coordinatorActionError(err)
 		}
-		if call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" {
+		if coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" {
 			if postErr := t.postActionRefusal(ctx, call.Name, err); postErr != nil {
 				t.coordinator.logger.Warn("coordinator could not persist refusal", "conversation_id", t.state.conversationID, "error", postErr)
 			}
@@ -121,6 +121,8 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		return nil, errCoordinatorProjectUnreadable
 	}
 	switch call.Name {
+	case "get_sprite_pool", "set_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", "get_sprite_bootstrap_log":
+		return t.spriteTool(ctx, record, call)
 	case "read_issue_history":
 		return t.readIssueHistory(ctx, record, call)
 	case "get_project_integration", "update_project_integration", "move_item", "edit_item", "add_comment":

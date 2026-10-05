@@ -65,6 +65,7 @@ func TestSpritesTokenValidation(t *testing.T) {
 		{name: "legacy response", body: `{"sprites":[{"org_slug":"detent-test"}]}`, status: 200, valid: true},
 		{name: "empty organization", body: `{"sprites":[]}`, status: 200, valid: true},
 		{name: "invalid token", body: spritesSecretSentinel, status: 401},
+		{name: "organization billing required", body: spritesSecretSentinel, status: 402},
 		{name: "provider unavailable", body: spritesSecretSentinel, status: 503},
 		{name: "provider error contains value", transportError: true},
 		{name: "bad response contains value", body: spritesSecretSentinel, status: 200},
