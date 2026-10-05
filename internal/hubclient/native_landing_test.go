@@ -29,6 +29,8 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 		ssh          bool
 		batch        bool
 		otherMachine string
+		policyChange func(*policy.Descriptor)
+		wantRework   bool
 	}{
 		{name: "plain git by default"},
 		{name: "approved GitHub PR policy", github: true},
@@ -36,10 +38,21 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 		{name: "landing and coding in one refresh", batch: true},
 		{name: "local reviewed head stays on its source machine", otherMachine: "unpushed"},
 		{name: "published reviewed head remains available across machines", otherMachine: "clean"},
+		{name: "non-gate policy approval preserves landing", policyChange: func(p *policy.Descriptor) {
+			p.ConfigDigest = policy.Digest([]byte("new non-gate configuration"))
+			p.SourceRevision = strings.Repeat("f", 40)
+			p.SourceDigest = policy.Digest([]byte("new source"))
+			p.Profile = "updated"
+		}},
+		{name: "merge method change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.MergeMethod = "merge" }, wantRework: true},
+		{name: "validator change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.Validator = true }, wantRework: true},
+		{name: "required check floor change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.RequiredChecks++ }, wantRework: true},
+		{name: "review change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.HumanReview = true }, wantRework: true},
+		{name: "GitHub landing gate change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.GitHubPullRequest = true }, wantRework: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh, test.batch, test.otherMachine)
+			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh, test.batch, test.otherMachine, test.policyChange, test.wantRework)
 		})
 	}
 }
@@ -57,18 +70,19 @@ func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			testNativeExecutionLandsReviewedVersion(t, true, test.github, test.ssh, false, "")
+			testNativeExecutionLandsReviewedVersion(t, true, test.github, test.ssh, false, "", nil, false)
 		})
 	}
 }
 
-func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string) {
+func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantRework bool) {
 	t.Helper()
 	h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
 		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
-		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "Rework"}},
+		{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}, true, intakeRepositoryBackend{})
 	if batch {
@@ -153,6 +167,29 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if state := h.state(t, issue.ID); state != "Merging" {
 		t.Fatalf("after approval the item is in %s, want Merging", state)
+	}
+	publishedPolicyID := h.descriptor.ID
+	if policyChange != nil {
+		next := h.descriptor
+		policyChange(&next)
+		next = next.WithID()
+		if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
+			t.Fatal(err)
+		}
+		h.descriptor = next
+		if wantRework {
+			if candidates := h.candidatesIn(t, "Merging"); len(candidates) != 0 || len(h.scheduler.nativeClaims) != 0 {
+				t.Fatalf("stale gates were claimed for landing: %+v", candidates)
+			}
+			if state := h.state(t, issue.ID); state != "Rework" {
+				t.Fatalf("after claim evaluation the item is in %s, want Rework", state)
+			}
+			detail, err := h.admin.Change(t.Context(), item, change.ChangeID)
+			if err != nil || detail.Change.CurrentVersion != change.VersionID || detail.Change.Landed != nil || len(detail.Versions) != 1 || detail.Versions[0].HeadSHA != head || detail.Summary.Status != "stale_policy" {
+				t.Fatalf("Rework changed immutable source or landing evidence: %+v, %v", detail, err)
+			}
+			return
+		}
 	}
 	if otherMachine != "" {
 		other, err := NewScheduler(h.scheduler.client, SchedulerConfig{
@@ -264,7 +301,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		}
 	}
 	evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
-	if err != nil || evidence.Attempt == nil || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.LocalAttemptID != 168 || evidence.Attempt.Runtime.Generation != 27 || evidence.Attempt.Runtime.Phase != "merging" || evidence.Attempt.Runtime.Identity.BackendKind != "git" || !evidence.Attempt.Current {
+	if err != nil || evidence.Attempt == nil || evidence.Attempt.PolicyID != h.descriptor.ID || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.LocalAttemptID != 168 || evidence.Attempt.Runtime.Generation != 27 || evidence.Attempt.Runtime.Phase != "merging" || evidence.Attempt.Runtime.Identity.BackendKind != "git" || !evidence.Attempt.Current {
 		t.Fatalf("landing attempt=%#v err=%v", evidence.Attempt, err)
 	}
 	target, err := execution.LandingTarget(guarded)
@@ -333,7 +370,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detail.Change.Landed == nil || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" {
+	if len(detail.Versions) != 1 || detail.Versions[0].PolicyID != publishedPolicyID || detail.Change.Landed == nil || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" {
 		t.Fatalf("landed change = %#v, summary %#v", detail.Change.Landed, detail.Summary)
 	}
 	if otherMachine != "" {
@@ -519,7 +556,13 @@ func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
 	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
 		t.Fatal(err)
 	}
-	h.repolicy(t)
+	next = h.descriptor
+	next.Gates.MergeMethod = "merge"
+	next = next.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
+		t.Fatal(err)
+	}
+	h.descriptor = next
 	if _, err := execution.LandingTarget(t.Context()); !errors.Is(err, runner.ErrLandingNotReviewed) {
 		t.Fatalf("stale policy target error = %v", err)
 	}

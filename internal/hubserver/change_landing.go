@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -273,7 +274,7 @@ func (s *Service) landChange(c echo.Context) error {
 	})
 }
 
-func nativeLandingCandidateReady(ctx context.Context, query nativeQueryer, scope *nativeScope, id tracker.WorkItemID, machine tracker.MachineID, now time.Time) (ready, evaluated bool, err error) {
+func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nativeScope, id tracker.WorkItemID, machine tracker.MachineID, now time.Time, routeStale bool) (ready, evaluated bool, err error) {
 	if scope == nil {
 		return true, false, nil
 	}
@@ -293,6 +294,31 @@ func nativeLandingCandidateReady(ctx context.Context, query nativeQueryer, scope
 	}
 	detail, err := readCurrentChangeDetail(ctx, query, *scope, change, now)
 	if err != nil {
+		return false, true, err
+	}
+	if detail.Summary.Status == "stale_policy" {
+		if !routeStale {
+			return true, true, nil
+		}
+		issue, _, err := readNativeIssue(ctx, query, *scope, item)
+		if err != nil {
+			return false, true, err
+		}
+		project, err := readNativeProject(ctx, query, *scope)
+		if err != nil {
+			return false, true, err
+		}
+		states := make([]connector.WorkflowState, len(project.States))
+		for i, lane := range project.States {
+			states[i] = connector.WorkflowState{Name: lane.Name, Dispatchable: lane.Dispatchable, Terminal: lane.Terminal, OperatorOnly: lane.OperatorOnly, Transitions: lane.Transitions}
+		}
+		target, ok := connector.LandingRefusalLane(states, issue.State, "Rework", true)
+		if !ok {
+			return false, true, nativeInvalid("The workflow allows no move from " + issue.State + " to a landing refusal lane")
+		}
+		from := issue.State
+		issue.State = target
+		_, err = persistNativeIssue(ctx, query, *scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "completed_active_review_transition"}, now)
 		return false, true, err
 	}
 	if !nativeChangeLandingReady(state, &detail) {
