@@ -24,7 +24,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 			outcomes = append(outcomes, "transport unavailable")
 		}
 		if tool == string(chat.ActionIssueSplit) {
-			outcomes = append(outcomes, "child failure", "edge failure", "comment failure", "invalid state", "cycle")
+			outcomes = append(outcomes, "child failure", "edge failure", "comment failure", "invalid state", "cycle", "validation then valid")
 		}
 		if tool == string(chat.ActionArchiveItems) {
 			outcomes = append(outcomes, "running", "merging", "became running", "became merging", "archive failure", "history failure", "already archived", "duplicate", "empty", "outside project")
@@ -213,6 +213,22 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if outcome == "validation then valid" {
+					var invalid map[string]any
+					if err := json.Unmarshal(raw, &invalid); err != nil {
+						t.Fatal(err)
+					}
+					delete(invalid["children"].([]any)[1].(map[string]any), "state")
+					arguments, err := json.Marshal(invalid)
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: arguments})
+					if err != nil || result.Success || !strings.Contains(result.Content, "Each child requires a bounded title, description and target state") {
+						t.Fatalf("validation feedback = %+v, error=%v", result, err)
+					}
+					assertCoordinatorEffect(t, f, id, tool, false)
+				}
 				result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: raw})
 				if err != nil {
 					t.Fatal(err)
@@ -343,7 +359,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
-				changed := outcome == "execute" || outcome == "wrong role" || outcome == "stale" && tool == operatortool.AddComment
+				changed := outcome == "execute" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "stale" && tool == operatortool.AddComment
 				if changed {
 					requireNativeStatus(t, response, http.StatusOK)
 				} else if response.Code < 400 {

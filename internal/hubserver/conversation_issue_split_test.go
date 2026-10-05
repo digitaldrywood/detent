@@ -1,9 +1,13 @@
 package hubserver
 
 import (
-	"github.com/digitaldrywood/detent/internal/chat"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/chat"
 )
 
 func TestValidateCoordinatorIssueSplit(t *testing.T) {
@@ -53,8 +57,25 @@ func TestValidateCoordinatorIssueSplit(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			split := chat.IssueSplit{ParentID: "wi_parent", Children: []chat.IssueSplitChild{{Title: "Storage", Description: "Build storage", State: "Todo"}, {Title: "API", Description: "Build API", State: "Todo"}}}
 			test.change(&split)
-			if err := validateCoordinatorIssueSplit(split); (err == nil) != test.valid {
+			err := validateCoordinatorIssueSplit(split)
+			if (err == nil) != test.valid {
 				t.Fatalf("validation=%v, want valid=%v", err, test.valid)
+			}
+			if err != nil {
+				var native *nativeError
+				if !errors.As(err, &native) {
+					t.Fatalf("validation error = %v, want native validation", err)
+				}
+				result := coordinatorToolError(fmt.Errorf("split arguments: %w", err))
+				var feedback struct {
+					Error string `json:"error"`
+				}
+				if err := json.Unmarshal([]byte(result.Content), &feedback); err != nil {
+					t.Fatal(err)
+				}
+				if result.Success || feedback.Error != native.Message {
+					t.Fatalf("validation feedback = %+v, want %q", result, native.Message)
+				}
 			}
 		})
 	}
