@@ -1490,7 +1490,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 	}
-	freshCheckout := req.Execution != nil && nativeCheckpointPolicyChanged(req.Execution.Recovery())
+	mode := normalizeRunMode(req.Mode)
+	landing, nativeLanding := req.Execution.(LandingExecution)
+	nativeLanding = nativeLanding && mode == RunModeMerge
+	if nativeLanding {
+		req.ResumeState = store.AgentResumeState{}
+		req.RetryMode = RetryModeFresh
+	}
+	freshCheckout := req.Execution != nil && !nativeLanding && nativeCheckpointPolicyChanged(req.Execution.Recovery())
 	if freshCheckout {
 		recovery := req.Execution.Recovery()
 		action, reason := nativeRecoveryAction(recovery, nil, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{}, false, false)
@@ -1500,7 +1507,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		req.ResumeState = store.AgentResumeState{}
 		req.RetryMode = RetryModeFresh
 	}
-	if req.Execution != nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
+	if req.Execution != nil && !nativeLanding && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
 		if !freshCheckout && !req.operatorFreshRetry() {
 			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
 			if err != nil {
@@ -1517,7 +1524,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		return RunResult{}, err
 	}
 	forgeHost := forgeavailability.HostFromEndpoint(workflow.Config.Tracker.Endpoint)
-	mode := normalizeRunMode(req.Mode)
 	if mode == RunModeTriage {
 		return r.runTriage(ctx, req)
 	}
@@ -1550,8 +1556,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.FreshCheckout = freshCheckout
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && runRole(mode, req.Issue) == RoleRework
 	var landingTarget NativeLandingTarget
-	landing, nativeLanding := req.Execution.(LandingExecution)
-	nativeLanding = nativeLanding && mode == RunModeMerge
 	if nativeLanding {
 		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
 			if err := runtime.StartLanding(ctx, req.WorkAttemptID, req.Generation); err != nil {

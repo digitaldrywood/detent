@@ -200,6 +200,11 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 	if reservation := e.claim.lease.ProviderReservation; reservation != nil {
 		identity.Role, identity.Backend, identity.Model = reservation.Role, reservation.Backend, reservation.Model
 	}
+	e.mu.Lock()
+	if e.data.Identity != nil {
+		identity = *e.data.Identity
+	}
+	e.mu.Unlock()
 	if err := e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: time.Now().UTC(), Identity: agentidentity.Identity{Role: "merge", BackendKind: "git"}}); err != nil {
 		return err
 	}

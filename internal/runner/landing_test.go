@@ -97,14 +97,16 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 	})}
 	t.Cleanup(func() { http.DefaultClient = originalClient })
 	for _, test := range []struct {
-		name      string
-		targetErr error
-		createErr error
-		github    bool
-		created   bool
-		quota     bool
-		status    int
+		name        string
+		interrupted bool
+		targetErr   error
+		createErr   error
+		github      bool
+		created     bool
+		quota       bool
+		status      int
 	}{
+		{name: "landing reuses published source without replaying interrupted provider recovery", interrupted: true, github: true, created: true, createErr: errors.New("stop at creation")},
 		{name: "approved external source", github: true, created: true, createErr: errors.New("stop at creation")},
 		{name: "unreviewed source", github: true, targetErr: ErrLandingNotReviewed},
 		{name: "current policy disables PR landing"},
@@ -122,6 +124,9 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 			execution := &landingRunExecution{landingStub: landingStub{targetErr: test.targetErr, target: NativeLandingTarget{
 				ChangeID: "change_1", VersionID: "version_1", HeadSHA: strings.Repeat("c", 40), Repository: "https://github.com/example/repo", GitHubPullRequest: test.github, External: external,
 			}}}
+			if test.interrupted {
+				execution.recovery = tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "current"}, Attempts: []tracker.NativeAttempt{{Status: "interrupted", NativeRunData: tracker.NativeRunData{PolicyID: "previous"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", WorktreeState: "unpushed", HeadSHA: execution.target.HeadSHA}}}}
+			}
 			cfg := config.Config{}
 			cfg.Worker.GitHubToken = test.name
 			cfg.Tracker.Kind = config.TrackerGitHub
