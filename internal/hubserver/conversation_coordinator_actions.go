@@ -52,6 +52,7 @@ func coordinatorActionTools() []runner.AgentTool {
 		coordinatorTool("update_project_integration", "Preview available Hub integration changes. This does not change the runner's approved PR landing policy. The user must approve the exact change in chat before it runs.", `{"type":"object","properties":{"repository_enabled":{"type":"boolean"},"intake":{"type":"string","enum":["disabled","manual"]},"projection":{"type":"string","enum":["disabled","summary"]}},"additionalProperties":false}`),
 		coordinatorTool("move_item", "Preview moving a native issue to a workflow state. Retry a blocked issue by moving it to Todo. Current workflow rules and revision apply; the user must approve in chat.", `{"type":"object","required":["work_item_id","state"],"properties":{"work_item_id":{"type":"string"},"state":{"type":"string"}},"additionalProperties":false}`),
 		coordinatorTool("edit_item", "Preview editing an issue's title, body, labels or priority (0 urgent through 3 low). The user must approve in chat.", `{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":0,"maximum":3}},"additionalProperties":false}`),
+		coordinatorTool(string(chat.ActionArchiveItems), "Preview archiving a set of native issues in this project. Nothing is archived until one explicit chat approval. Running and Merging issues are refused. Archived issues leave the board and dispatch and can be restored.", `{"type":"object","required":["work_item_ids"],"properties":{"work_item_ids":{"type":"array","minItems":1,"maxItems":50,"uniqueItems":true,"items":{"type":"string"}}},"additionalProperties":false}`),
 		coordinatorTool("add_comment", "Preview adding an issue comment. The user must approve the exact comment in chat.", `{"type":"object","required":["work_item_id","body"],"properties":{"work_item_id":{"type":"string"},"body":{"type":"string"}},"additionalProperties":false}`),
 	}
 }
@@ -266,6 +267,9 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 		return chat.ActionExecution{}, err
 	}
 	ctx = mutation.WithContext(ctx, action.Mutation)
+	if action.Kind == chat.ActionArchiveItems {
+		return s.executeCoordinatorIssueArchive(ctx, action)
+	}
 	if action.Kind == chat.ActionIssueSplit {
 		return s.executeCoordinatorIssueSplit(ctx, action)
 	}
@@ -318,6 +322,9 @@ func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Ac
 	requirement := operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: action.ProjectID, ResourceKind: "work_item", ResourceID: action.IssueID}
 	if string(action.Kind) == "update_project_integration" || coordinatorSpriteMutation(string(action.Kind)) {
 		requirement.Scope, requirement.ResourceKind, requirement.ResourceID = apikey.ScopeAdmin, "", ""
+	}
+	if action.Kind == chat.ActionArchiveItems {
+		requirement.ResourceKind = ""
 	}
 	ctx, err := operatortool.AuthorizeCurrent(ctx, requirement)
 	if err != nil {

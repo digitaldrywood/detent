@@ -89,3 +89,49 @@ test("an issue split is reviewed once, cancelled without filing, and confirmed a
   const comment = comments.items.find((item) => item.body.includes("Approved issue split:"));
   for (const child of children) expect(comment.body).toContain(child.work_item_id);
 });
+
+
+test("five issues are archived with one confirmation and cancellation preserves the set", async ({ page }) => {
+  await page.goto(hub.fixture.accounts.owner);
+  await page.goto(`${hub.fixture.chat}/p/${hub.fixture.project_id}`);
+  const active = async () => (await projectRead(page, "work-items")).items;
+  const initial = await active();
+  const targets = initial.filter((item) => /^Seed [0-4]$/.test(item.title));
+  expect(targets).toHaveLength(5);
+
+  await askLuna(page, "Archive the running issue too.");
+  await expect(page.getByText(/Finish or stop the running issue before archiving/).first()).toBeVisible();
+  await expect(page.getByTestId("operator-approval-card")).toHaveCount(0);
+  expect(await active()).toHaveLength(initial.length);
+
+  await askLuna(page, "Archive the test issues.");
+  const cancelled = page.getByTestId("operator-approval-card").last().frameLocator("iframe");
+  const preview = cancelled.getByTestId("issue-archive-proposal");
+  await expect(preview).toBeVisible();
+  await expect(preview.getByRole("listitem")).toHaveCount(5);
+  for (const item of targets) {
+    await expect(preview).toContainText(`#${item.number}: ${item.title}`);
+  }
+  await expect(preview).toContainText("They can be restored.");
+  expect(await active()).toHaveLength(initial.length);
+  await cancelled.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByText(/Archive 5 issues: rejected/).first()).toBeVisible();
+  expect(await active()).toHaveLength(initial.length);
+  expect((await projectRead(page, "work-items?archived=true")).items).toHaveLength(0);
+
+  await askLuna(page, "Archive the test issues now.");
+  const confirmed = page.getByTestId("operator-approval-card").last().frameLocator("iframe");
+  await expect(confirmed.getByTestId("issue-archive-proposal").last()).toBeVisible();
+  await confirmed.getByRole("button", { name: "Confirm action", exact: true }).click();
+  await expect.poll(async () => (await active()).length).toBe(initial.length - 5);
+  await expect(page.getByText(/Archive 5 issues: succeeded/).first()).toBeVisible();
+  const archived = (await projectRead(page, "work-items?archived=true")).items;
+  expect(new Set(archived.map((item) => item.work_item_id))).toEqual(new Set(targets.map((item) => item.work_item_id)));
+  for (const item of archived) expect(item.archived).toBe(true);
+
+  await page.goto(new URL(`/work?project=${hub.fixture.project_id}`, hub.fixture.url).toString());
+  await expect(page.getByTestId("work-board")).toBeVisible();
+  for (const item of targets) await expect(page.getByRole("button", { name: item.title, exact: true })).toHaveCount(0);
+  await page.getByTestId("work-archived").click();
+  for (const item of targets) await expect(page.getByRole("button", { name: item.title, exact: true })).toBeVisible();
+});
