@@ -217,8 +217,11 @@ every full-suite job on that commit, regardless of existing release tags.
 Only the successful full-suite finalizer publishes `scheduled-full-ci`,
 creates an annotated validated patch tag with exact status evidence and
 dispatches release. It does not merge to `main` or deploy production.
-Every `develop` push deploys staging independently; production release
-artifacts use validated tags only.
+Only a newly validated release triggers deployment. Release publishes signed
+artifacts, deploys staging and runs its smoke, then deploys production and runs
+its smoke. A failed smoke stops promotion and reports at least High through the
+selected native owner. An already validated commit receives no new tag or deploy.
+Production release artifacts use validated tags only.
 
 Scheduled Detent failures use the selected native reporting owner and stable
 job fingerprints, preserving commit, run, attempt, job, imported history and

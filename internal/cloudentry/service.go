@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -34,6 +35,7 @@ const (
 )
 
 type Config struct {
+	Build                     buildinfo.Info
 	PublicURL                 string
 	Issuer                    string
 	SigningKey                ed25519.PrivateKey
@@ -212,7 +214,9 @@ func (s *Service) routes() {
 	e := s.echo
 	e.Pre(s.boundary)
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
-	e.GET("/health", func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{"status": "ok"}) })
+	e.GET("/health", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok", "version": s.config.Build.Version, "commit": s.config.Build.Commit})
+	})
 	e.GET("/", s.home)
 	e.GET("/auth/oidc/start", s.startLogin)
 	e.GET("/auth/oidc/callback", s.completeLogin)

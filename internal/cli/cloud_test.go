@@ -157,7 +157,7 @@ func TestCloudRegistryAndKeyCommands(t *testing.T) {
 	t.Parallel()
 	registry := filepath.Join(t.TempDir(), "registry.db")
 	run := func(env map[string]string, args ...string) (string, error) {
-		cmd := newCloudCommand(func(name string) string { return env[name] })
+		cmd := newCloudCommand(options{lookupEnv: func(name string) string { return env[name] }})
 		var output bytes.Buffer
 		cmd.SetOut(&output)
 		cmd.SetErr(&output)

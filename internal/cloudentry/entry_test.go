@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -696,6 +697,13 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 func TestSharedEntryBoundaries(t *testing.T) {
 	t.Parallel()
 	f := newEntryFixture(t)
+	f.service.config.Build = buildinfo.Info{Version: "1.2.4", Commit: strings.Repeat("a", 40)}
+	health := httptest.NewRecorder()
+	f.service.Handler().ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if health.Code != http.StatusOK || !strings.Contains(health.Body.String(), `"version":"1.2.4"`) || !strings.Contains(health.Body.String(), f.service.config.Build.Commit) {
+		t.Fatalf("release health identity=%d %s", health.Code, health.Body)
+	}
+
 	alice := newBrowser(t, f.service.Handler())
 	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	stranger := newBrowser(t, f.service.Handler())

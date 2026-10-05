@@ -36,6 +36,18 @@ fi
 status_id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=scheduled-full-ci -f target_url="$run_url" -f description='Full scheduled validation passed' --jq .id)"
 
 git fetch --tags --force origin
+for existing in $(git tag --points-at "$CI_DEVELOP_SHA" --list 'v*'); do
+  if [[ "$existing" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$(git cat-file -t "refs/tags/$existing")" = tag ]; then
+    existing_message="$(git for-each-ref --format='%(contents)' "refs/tags/$existing")"
+    if [[ "$existing_message" == *'"name":"scheduled-full-ci"'* ]]; then
+      echo "Validated release $existing already contains $CI_DEVELOP_SHA; no new release or deployment."
+      if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
+        go run ./tools/cifailure < "$jobs_file" >> "$evidence_file"
+      fi
+      exit 0
+    fi
+  fi
+done
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 latest="$(git tag --list 'v*' --sort=-v:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')"

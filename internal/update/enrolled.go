@@ -53,7 +53,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		}
 		return s.enrolledObservation(running)
 	}
-	if request.Urgent {
+	if request.Urgent || request.FollowHub {
 		s.operationMu.Lock()
 	} else if !s.operationMu.TryLock() {
 		return s.enrolledObservation(running)
@@ -65,6 +65,9 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	}
 	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "refused", ObservedAt: s.cfg.Now().UTC()}
 	targetMatches := request.ExpectedBuildRevision == observed.Revision && request.Version == observed.AvailableVersion
+	if request.FollowHub {
+		targetMatches = request.ExpectedBuildRevision == observed.Revision && !IsDevelopmentVersion(request.Version) && strings.TrimPrefix(request.Version, "v") != strings.TrimPrefix(running.Version, "v")
+	}
 	if request.Urgent {
 		comparison, err := CompareVersions(request.Version, running.Version)
 		targetMatches = err == nil && comparison > 0
@@ -92,6 +95,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	opts.ExpectedVersion = request.Version
 	opts.FromRelease = request.FromRelease
 	opts.Urgent = request.Urgent
+	opts.FollowHub = request.FollowHub
 	applied, err := s.drainAndApplyWithOptionsLocked(ctx, opts)
 	if err != nil || applied.Action != ActionUpdated {
 		receipt.Status = "refused"

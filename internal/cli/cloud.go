@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
@@ -345,7 +346,8 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	return result, nil
 }
 
-func newCloudCommand(lookupEnv func(string) string) *cobra.Command {
+func newCloudCommand(opts options) *cobra.Command {
+	lookupEnv := opts.lookupEnv
 	if lookupEnv == nil {
 		lookupEnv = os.Getenv
 	}
@@ -356,11 +358,11 @@ func newCloudCommand(lookupEnv func(string) string) *cobra.Command {
 		Long:    "Opt-in operator-hosted functionality: one shared public origin for sign-in, organization selection and authenticated routing to dedicated tenant Hubs. Self-hosted Detent never needs it.",
 		Args:    NoArgs,
 	}
-	cmd.AddCommand(newCloudServeCommand(lookupEnv), newCloudRegistryCommand(), newCloudAssertionKeyCommand(lookupEnv))
+	cmd.AddCommand(newCloudServeCommand(lookupEnv, opts.build), newCloudRegistryCommand(), newCloudAssertionKeyCommand(lookupEnv))
 	return cmd
 }
 
-func newCloudServeCommand(lookupEnv func(string) string) *cobra.Command {
+func newCloudServeCommand(lookupEnv func(string) string, build buildinfo.Info) *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
 		Use:          "serve",
@@ -390,6 +392,7 @@ func newCloudServeCommand(lookupEnv func(string) string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			config.Build = build
 			return cloudentry.Run(cmd.Context(), config)
 		},
 	}

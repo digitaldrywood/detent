@@ -275,7 +275,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err := storeRunnerAdmissionObservation(ctx, tx, scope, request.Admission, now); err != nil {
 				return nil, err
 			}
-			if err := storeRunnerUpdateObservation(ctx, tx, scope, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, now); err != nil {
+			if err := s.storeRunnerUpdateObservation(ctx, tx, scope, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}
 			if request.CapacityConfig != nil {

@@ -175,6 +175,11 @@ func ManagerFromProcessEnvironment(goos string, lookupEnv func(string) (string, 
 	if manager, ok := lookupEnv(ManagerEnvironment); ok && strings.TrimSpace(manager) != "" {
 		return ManagerName(strings.TrimSpace(manager))
 	}
+	if goos == "linux" {
+		if invocation, ok := lookupEnv("INVOCATION_ID"); ok && strings.TrimSpace(invocation) != "" {
+			return ManagerSystemd
+		}
+	}
 	if goos == "darwin" {
 		if serviceName, ok := lookupEnv(launchdServiceEnvironment); ok && strings.HasPrefix(strings.TrimSpace(serviceName), launchdLabelPrefix) {
 			return ManagerLaunchd

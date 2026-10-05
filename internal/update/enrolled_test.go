@@ -23,6 +23,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		applyError  error
 		want        string
 		calls       int
+		follow      bool
 		urgent      bool
 		lastApplied string
 	}{
@@ -31,6 +32,8 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		{name: "restart requested", restart: true, want: "restart_requested", calls: 1},
 		{name: "urgent release bypasses discovery and automatic opt outs", urgent: true, restart: true, want: "restart_requested", calls: 1},
 		{name: "urgent release preserves a newer applied artifact awaiting restart", urgent: true, lastApplied: "1.2.5", want: "refused"},
+		{name: "Hub follows without automatic opt ins or latest discovery", follow: true, restart: true, want: "restart_requested", calls: 1},
+		{name: "Hub follow refuses stale build", follow: true, stale: true, want: "refused"},
 		{name: "stale observed build", stale: true, want: "refused"},
 		{name: "missing restart owner", unavailable: true, want: "refused"},
 		{name: "private refusal redacted", applyError: errors.New("/private/credentials/token=secret"), want: "refused", calls: 1},
@@ -40,7 +43,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "private_patched_source", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 			updater := &schedulerUpdaterStub{checkStatus: Status{UpdateAvailable: true, LatestVersion: "1.2.4"}, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, applyErr: test.applyError}
 			updater.applyStatus.ReplacementPending = test.pending
-			if test.urgent {
+			if test.urgent || test.follow {
 				updater.checkStatus = Status{}
 			}
 			if test.applyError != nil {
@@ -61,7 +64,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			if observed.Validate() != nil || observed.Running.Source != "private_patched_source" || observed.Running.VerifiedRelease {
 				t.Fatalf("initial evidence=%+v", observed)
 			}
-			request := runnerauth.UpdateRequest{RequestedAt: now, ID: "update-test", Service: "detent", ExpectedBuildRevision: observed.Revision, Version: "1.2.4", Release: true}
+			request := runnerauth.UpdateRequest{RequestedAt: now, ID: "update-test", Service: "detent", ExpectedBuildRevision: observed.Revision, Version: "1.2.4", Release: true, FollowHub: test.follow}
 			if test.urgent {
 				request.Urgent = true
 				request.ExpectedBuildRevision = ""
@@ -80,7 +83,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			if test.calls == 1 && test.applyError == nil && restarts != 1 {
 				t.Fatalf("restart owner calls=%d", restarts)
 			}
-			if test.calls == 1 && (updater.applyOptions[0].Urgent != test.urgent || updater.applyOptions[0].ExpectedVersion != request.Version) {
+			if test.calls == 1 && (updater.applyOptions[0].FollowHub != test.follow || updater.applyOptions[0].Urgent != test.urgent || updater.applyOptions[0].ExpectedVersion != request.Version) {
 				t.Fatalf("lost selected release: %+v", updater.applyOptions[0])
 			}
 			raw, err := json.Marshal(observed)

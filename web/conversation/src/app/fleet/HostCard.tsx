@@ -27,6 +27,18 @@ export function HostCard({
     : runner.health === "needs_attention" ? "Needs attention"
     : runner.health === "outside_hours" ? "Outside hours"
     : runner.health;
+  const updateLabels: Record<string, string> = {
+    requested: "Update requested",
+    draining: "Waiting for active work",
+    refused: "Update failed",
+    uncertain: "Update needs attention",
+    applied: "Update installed",
+    restart_requested: "Restart requested",
+    running: "Updated",
+    drifted: "Version changed since update",
+    unavailable: "Update unavailable",
+  };
+  const updateStatus = runner.update?.desired ? updateLabels[runner.update.status] ?? "Update pending" : undefined;
   return (
     <article
       id={`runner-${runner.id}`}
@@ -38,6 +50,7 @@ export function HostCard({
         <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", healthTone(runner.health))} />
         <div className="min-w-0 space-y-1">
           <h3 className="break-words text-sm font-medium">{runner.display_name}</h3>
+          {updateStatus ? <p className="text-xs text-muted-foreground">{updateStatus} · {runner.update?.desired?.version}</p> : null}
           <p className="break-words text-xs text-muted-foreground">{runner.hostname}, {runner.os} {runner.architecture}</p>
           <p className={cn("text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning")}><span>{health}</span> · {runner.state} · Limit {runner.capacity_limit}</p>
         </div>

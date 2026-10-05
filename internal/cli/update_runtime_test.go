@@ -30,77 +30,95 @@ func (u urgentRuntimeUpdater) Apply(ctx context.Context, opts detentupdate.Apply
 	return u.apply(ctx, opts)
 }
 
-func TestUrgentUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
-	runtimeCtx, cancelRuntime := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancelRuntime()
-	requestCtx, cancelRequest := context.WithCancel(t.Context())
-	defer cancelRequest()
-	completed := make(chan struct{})
-	waiting := make(chan int)
-	drains, applies, restarts := 0, 0, 0
-	running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: "none", Source: "unknown", OS: "linux", Architecture: "amd64", ObservedAt: time.Now()}
-	scheduler, err := detentupdate.NewScheduler(detentupdate.SchedulerConfig{
-		Enabled: true, CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: running,
-		Updater: urgentRuntimeUpdater{apply: func(ctx context.Context, opts detentupdate.ApplyOptions) (detentupdate.Status, error) {
-			applies++
-			if ctx.Err() != nil || !opts.Urgent || opts.ExpectedVersion != "1.2.4" {
-				t.Errorf("invalid update context/options: %v %+v", ctx.Err(), opts)
+func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
+	for _, follow := range []bool{false, true} {
+		t.Run(map[bool]string{false: "urgent", true: "follow Hub"}[follow], func(t *testing.T) {
+			runtimeCtx, cancelRuntime := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancelRuntime()
+			requestCtx, cancelRequest := context.WithCancel(t.Context())
+			defer cancelRequest()
+			completed := make(chan struct{})
+			waiting := make(chan int)
+			drains, applies, restarts := 0, 0, 0
+			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: "none", Source: "unknown", OS: "linux", Architecture: "amd64", ObservedAt: time.Now()}
+			scheduler, err := detentupdate.NewScheduler(detentupdate.SchedulerConfig{
+				Enabled: true, CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: running,
+				Updater: urgentRuntimeUpdater{apply: func(ctx context.Context, opts detentupdate.ApplyOptions) (detentupdate.Status, error) {
+					applies++
+					if ctx.Err() != nil || opts.Urgent != !follow || opts.FollowHub != follow || opts.ExpectedVersion != "1.2.4" {
+						t.Errorf("invalid update context/options: %v %+v", ctx.Err(), opts)
+					}
+					return detentupdate.Status{Action: detentupdate.ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, nil
+				}},
+				ReserveDrain: func(ctx context.Context) (func(), error) {
+					drains++
+					for remaining := 2; remaining > 0; remaining-- {
+						waiting <- remaining
+						select {
+						case <-completed:
+						case <-ctx.Done():
+							return nil, ctx.Err()
+						}
+					}
+					return func() {}, nil
+				},
+				RequestRestart: func(string) bool { restarts++; return true },
+			})
+			if err != nil {
+				t.Fatal(err)
 			}
-			return detentupdate.Status{Action: detentupdate.ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, nil
-		}},
-		ReserveDrain: func(ctx context.Context) (func(), error) {
-			drains++
-			for remaining := 2; remaining > 0; remaining-- {
-				waiting <- remaining
+			owner := enrolledUpdateOwner(runtimeCtx, scheduler, running)
+			request := &runnerauth.UpdateRequest{RequestedAt: time.Now(), ID: "urgent-test", Service: "detent", Version: "1.2.4", Release: true, Urgent: !follow, FollowHub: follow}
+			if follow {
+				request.ExpectedBuildRevision = owner(t.Context(), nil).Revision
+			}
+			owner(requestCtx, request)
+			cancelRequest()
+			for range 2 {
 				select {
-				case <-completed:
-				case <-ctx.Done():
-					return nil, ctx.Err()
+				case <-waiting:
+				case <-runtimeCtx.Done():
+					t.Fatal("urgent delivery did not wait for both sessions")
 				}
+				observed := owner(t.Context(), request)
+				if observed.Receipt == nil || observed.Receipt.Status != "draining" || drains != 1 || applies != 0 || restarts != 0 {
+					t.Fatalf("heartbeat during active sessions: %+v drains/applies/restarts=%d/%d/%d", observed, drains, applies, restarts)
+				}
+				completed <- struct{}{}
 			}
-			return func() {}, nil
-		},
-		RequestRestart: func(string) bool { restarts++; return true },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner := enrolledUpdateOwner(runtimeCtx, scheduler, running)
-	request := &runnerauth.UpdateRequest{RequestedAt: time.Now(), ID: "urgent-test", Service: "detent", Version: "1.2.4", Release: true, Urgent: true}
-	owner(requestCtx, request)
-	cancelRequest()
-	for range 2 {
-		select {
-		case <-waiting:
-		case <-runtimeCtx.Done():
-			t.Fatal("urgent delivery did not wait for both sessions")
-		}
-		observed := owner(t.Context(), request)
-		if observed.Receipt == nil || observed.Receipt.Status != "draining" || drains != 1 || applies != 0 || restarts != 0 {
-			t.Fatalf("heartbeat during active sessions: %+v drains/applies/restarts=%d/%d/%d", observed, drains, applies, restarts)
-		}
-		completed <- struct{}{}
-	}
-	if _, err := scheduler.ApplyPending(t.Context()); !errors.Is(err, detentupdate.ErrNoPendingUpdate) {
-		t.Fatalf("pending apply after completed urgent update: %v", err)
-	}
-	observed := owner(t.Context(), nil)
-	if drains != 1 || applies != 1 || restarts != 1 || observed.Receipt.Status != "restart_requested" {
-		t.Fatalf("finished drain: %+v drains/applies/restarts=%d/%d/%d", observed, drains, applies, restarts)
+			if _, err := scheduler.ApplyPending(t.Context()); !errors.Is(err, detentupdate.ErrNoPendingUpdate) {
+				t.Fatalf("pending apply after completed urgent update: %v", err)
+			}
+			observed := owner(t.Context(), nil)
+			if drains != 1 || applies != 1 || restarts != 1 || observed.Receipt.Status != "restart_requested" {
+				t.Fatalf("finished drain: %+v drains/applies/restarts=%d/%d/%d", observed, drains, applies, restarts)
+			}
+		})
 	}
 }
 
 func TestHubRuntimeUpdateSchedule(t *testing.T) {
 	t.Parallel()
+	identityPath := filepath.Join(t.TempDir(), "private", "runner.json")
+	identity, err := runnerauth.Initialize(identityPath, "https://hub.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.Identity.OrganizationID = "org_example"
+	if err := runnerauth.Save(identityPath, identity); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name     string
 		client   globalconfig.HubClient
 		hours    int
 		interval time.Duration
+		enrolled bool
 	}{
 		{name: "Hub heartbeat default", client: globalconfig.HubClient{URL: "https://hub.example.test"}, interval: 30 * time.Second},
 		{name: "Hub configured heartbeat", client: globalconfig.HubClient{URL: "https://hub.example.test", HeartbeatIntervalSeconds: 45}, interval: 45 * time.Second},
 		{name: "Hub explicit check interval", client: globalconfig.HubClient{URL: "https://hub.example.test"}, hours: 2, interval: 2 * time.Hour},
+		{name: "enrolled follows Hub through heartbeat owner", client: globalconfig.HubClient{URL: "https://hub.example.test", IdentityFile: identityPath}, interval: 30 * time.Second, enrolled: true},
 		{name: "standalone default", interval: 6 * time.Hour},
 	}
 	for _, test := range tests {
@@ -118,7 +136,7 @@ func TestHubRuntimeUpdateSchedule(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if status := scheduler.Status(); !status.Enabled || !status.AutoApplyEnabled || status.CheckInterval != test.interval {
+			if status := scheduler.Status(); status.Enabled == test.enrolled || status.AutoApplyEnabled == test.enrolled || status.CheckInterval != test.interval {
 				t.Fatalf("Status() = %#v, want automatic update interval %s", status, test.interval)
 			}
 		})

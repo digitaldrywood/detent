@@ -11,6 +11,10 @@ permissions:
   contents: write
   statuses: read
 
+concurrency:
+  group: validated-release
+  cancel-in-progress: false
+
 jobs:
   release:
     name: GoReleaser
@@ -107,3 +111,31 @@ jobs:
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
           MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+
+      - name: Prepare Hub deployment artifact
+        run: |
+          set -euo pipefail
+          binaries=(tmp/goreleaser/detent_linux_amd64*/detent)
+          test "${#binaries[@]}" -eq 1
+          cp "${binaries[0]}" "$RUNNER_TEMP/detent"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-hub-binary
+          path: ${{ runner.temp }}/detent
+          if-no-files-found: error
+          retention-days: 14
+
+  staging:
+    needs: release
+    uses: ./.github/workflows/deploy-staging.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets: inherit
+
+  production:
+    needs: staging
+    uses: ./.github/workflows/deploy-production.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets: inherit
