@@ -106,8 +106,17 @@ Follow [docs/invariants.md](docs/invariants.md). Start with its headings and
 read the sections governing the touched behavior, including linked prerequisites.
 Read additional sections when the affected boundary requires them; do not dump
 the entire document into startup context. All repository invariants still apply.
-Changes to an invariant or its enforcement must update that document in the same
-PR and identify the invariant in the PR template.
+Only a change to an invariant's rule or its enforcing check edits
+`docs/invariants.md`. Identify affected INV IDs in the Change/PR description;
+per-change rationale, evidence and verification go there or in issue comments.
+
+Follow [INV-16](docs/invariants.md#inv-16--the-tracker-database-is-the-only-shared-knowledge-channel):
+agents, runs and issues share knowledge only through the selected tracker
+database (issue bodies, comments, the Workpad, Change/PR records and run history).
+Never use repository files to pass knowledge between issues or runs. The
+repository holds product source and normative documentation, never shared logs
+or notebooks; no repository file is append-only by convention. The current
+completion contract owns tracker publication and grants workers no extra writes.
 
 ## Validation
 

@@ -53,13 +53,6 @@ Failed or interrupted bootstrap leaves a member for deletion; a later native
 scale-up may provision its replacement. PR publication and landing remain on
 the local runner.
 
-Live acceptance requires an authorized customer token and bootstrap, provider
-and Git authentication, policy approval, and permission for paid provisioning
-and deletion. Verify two Todo issues with `max_runners: 2` produce two connected,
-work-ready members and pushed branches, then verify both provider resources are
-deleted after the idle threshold with `min_runners: 0`. Isolated lifecycle fixtures
-are source verification only and do not substitute for this live acceptance.
-
 ## Approved repository policy
 
 Every API claim requires an approved `policy_id`. Compatibility claims also
@@ -553,7 +546,7 @@ token to native-only access. Such tokens cannot use v1 or instance administratio
 including when their stored role is `admin`. Token rotation preserves grants;
 revocation prevents subsequent authenticated requests. The bootstrap administrator
 cannot be converted to a project token. Instance administration is deliberately
-separate from tenant access; hosted human membership remains owned by #2193.
+separate from tenant access and hosted human membership.
 Enrolled runners use the scoped host identities described above.
 
 Every native project route requires both its organization and project grant.
@@ -817,8 +810,9 @@ The native scheduler hydrates full issue content, paginated discussion, attempts
 and history, including legacy events, before dispatch. Runner prompts receive this
 Hub context without consulting GitHub issue APIs. Checkpoints may carry the last
 reported typed Change/version/head reference; it is not an independently verified
-current Change or a review/merge grant. Native Change registration and authoritative
-version lookup remain the separate #2191 deliverable; absent references are omitted.
+current Change or a review/merge grant. Use the authoritative
+[Change/version reads](#native-change-requests) for current delivery evidence;
+absent checkpoint references are omitted.
 
 Ordered `run.checkpointed` events require a bounded `handoff` object:
 
@@ -835,7 +829,7 @@ Ordered `run.checkpointed` events require a bounded `handoff` object:
 | `change` | Optional typed `change_id`, `version_id`, and immutable `head_sha` |
 
 Customer-store checkpoints require artifact IDs and cannot assert `available`:
-independent durable receipt/integrity/access verification belongs to #2190 and the
+independent durable receipt/integrity/access verification follows the
 [artifact access contract](artifact-access-contract.md). IDs convey neither a
 download capability nor proof of ownership or availability. Hub never receives
 workspace paths, provider session state, manifest contents, source, diffs, raw
@@ -848,8 +842,8 @@ the runner starts a fresh session while retaining recoverable local work, or
 requires explicit recovery for unavailable dirty/unpushed checkpoints and ambiguous
 Git/PR effects. A clean missing checkpoint permits a fresh checkout/session. This
 does not claim that a local workspace survives machine loss. Before epilogue hooks,
-dirty/unpushed work uses the existing workspace retention mechanism from #2138;
-checkpoint publication is metadata only and does not duplicate #2133's push work.
+dirty/unpushed work uses the existing workspace retention mechanism;
+checkpoint publication is metadata only and does not publish source.
 
 Native executions revalidate the pinned policy and current lease before startup,
 provider turns and epilogue hooks. Lease responses include `server_time`; the
@@ -1150,9 +1144,7 @@ A future scoped deletion procedure must use the following contract:
    and their outcomes. Database deletion does not erase a GitHub projection,
    independently hosted artifact, exported file or customer backup.
 
-The implemented tests prove ordinary append-only enforcement, immutable identity,
-scoped revision retrieval, backup-compatible migration and restart persistence.
-They do not claim that a privileged scoped purge command is implemented.
+Privileged scoped purge is not a supported operation.
 The supported full-instance restore revokes copied credentials and releases leases;
 it does not implement scoped erasure or automatically replay a customer deletion
 ledger. Operators must retain backups deliberately and must not disable triggers
