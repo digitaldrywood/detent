@@ -133,6 +133,18 @@ A concise agent handoff is:
 
 ## MCP agent handoff
 
+For native `file_issue` with `github_issue_url`, read `get_project_integration`
+and `get_native_project` for the selected project. The URL must match its
+attached repository or associated runner checkout. A missing association returns
+`invalid_request` with the existing setup owner: an administrator uses
+`bind_native_repository` with the observed integration `expected_revision`,
+`repository` and `source: "runner_checkout"`. This requires a currently enrolled,
+authorized runner reporting that matching checkout; Cloud needs no repository
+credentials and GitHub tracker mode stays disabled. Choose a configured
+nonterminal, non-dispatchable destination such as Backlog. Linked creation
+records pending source context for existing runner intake, and repeated source
+URLs reuse the native work item. Cross-repository requests retain their refusal.
+
 Use **Copy MCP setup prompt** on the same page. It includes the exact endpoint,
 organization/project context, the same private key instructions, supported
 transport, initialization, paginated tool discovery and an authorized read.

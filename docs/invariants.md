@@ -17,6 +17,18 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Hosted linked-issue creation (native #261) retains the native creation command,
+selected-project repository association, source deduplication and runner-owned
+intake. Missing associations and cross-repository links return the existing
+`invalid_request` refusal through MCP with fixed safe messages; the missing
+association points to `get_project_integration` and administrator-owned
+`bind_native_repository`. Other internal failures remain opaque. No association
+is inferred from the requested URL, and no unlinked replacement is created.
+`TestHubMCPWorkCommands` covers checkout-only creation into a non-dispatchable
+destination, replay and repository refusals. `TestToolExecutionErrorIsDistinctFromEmptyResult`
+preserves safe refusals across MCP protocol versions without exposing wrapped
+internal error text. Source evidence does not establish deployed acceptance.
+
 MCP action results advertise `approval_url` only while the existing action is
 pending. Succeeded, failed and rejected receipts retain their genuine status,
 action identity, result tool, safe resource data and replay semantics without
