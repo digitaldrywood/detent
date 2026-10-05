@@ -21,16 +21,21 @@ import (
 
 type resolvingReworkAgent struct {
 	fakeCodexClient
-	unresolved bool
-	staged     bool
-	signer     string
-	beforeHead string
-	afterStage func()
-	t          *testing.T
+	unresolved  bool
+	staged      bool
+	signer      string
+	beforeHead  string
+	beforeStage func()
+	afterStage  func()
+	t           *testing.T
 }
 
 func (a *resolvingReworkAgent) RunTurn(ctx context.Context, req AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
 	a.request = req
+	a.calls++
+	if a.beforeStage != nil {
+		a.beforeStage()
+	}
 	head, err := exec.CommandContext(ctx, "git", "-C", req.Workspace, "rev-parse", "HEAD").Output()
 	if err != nil {
 		return AgentTurnResult{}, err
