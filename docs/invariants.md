@@ -148,8 +148,14 @@ artifacts use validated tags only.
 
 Scheduled Detent failures use the selected native reporting owner and stable
 fingerprints, preserving commit, run, attempt, job, imported history and holds.
-Concrete source or test blockers require at least High priority, preserving
-Urgent. Unknown failures remain instance intake. New diagnostics enter Backlog;
+Under the human-approved Detent scheduled reporting policy, newly reported
+proven source or test blockers with reliable, pinned evidence enter Todo at
+least High priority. The selected workflow must provide dispatchable,
+nonterminal Todo and nondispatchable, nonterminal Backlog, neither operator-only.
+Reused items retain their lanes, human questions, holds and terminal history;
+priority updates preserve High and Urgent. Unknown setup, startup, download,
+network, backend, protocol and authentication failures remain instance intake
+in Backlog. Repair workers verify reported failures on their current base;
 green results append tracker evidence without closing work or changing lanes.
 Failed Cloud publication must not fall back to GitHub issue writes.
 

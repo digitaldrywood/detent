@@ -70,14 +70,20 @@ func (c *cloudDestination) load(ctx context.Context) error {
 		return errors.New("scheduled destination is not the selected native project")
 	}
 	c.organization = string(project.OrganizationID)
-	backlog := false
+	backlog, todo := false, false
 	for _, state := range project.States {
-		if state.Name == "Backlog" && !state.Dispatchable && !state.Terminal {
+		if state.Name == "Backlog" && !state.Dispatchable && !state.Terminal && !state.OperatorOnly {
 			backlog = true
+		}
+		if state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly {
+			todo = true
 		}
 	}
 	if !backlog {
 		return errors.New("scheduled destination has no nondispatchable Backlog")
+	}
+	if !todo {
+		return errors.New("scheduled destination has no dispatchable Todo")
 	}
 	c.issues = nil
 	cursor := ""
@@ -190,6 +196,7 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 		high := 1
 		priority = &high
 		args["priority"] = high + 1
+		args["state"] = "Todo"
 	}
 	var result struct {
 		ResourceID string           `json:"resource_id"`
@@ -201,7 +208,7 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 	if result.ResourceID == "" {
 		return errors.New("scheduled Cloud creation returned no native identity")
 	}
-	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, Priority: priority}, bodies: []string{body}})
+	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, State: args["state"].(string), Priority: priority}, bodies: []string{body}})
 	return nil
 }
 

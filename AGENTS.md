@@ -160,18 +160,25 @@ fall back to host scratch space in a worker.
 
 For `digitaldrywood/detent` and its selected native Cloud project, reproducible
 source or test failures that prevent deployment or the scheduled validated
-release require at least High priority. File new diagnostics in Backlog through
-the existing selected reporting context. Match open fingerprints and imported
+release require at least High priority. Under the human-approved scheduled
+reporting policy, newly reported proven source/test failures with reliable,
+pinned evidence enter Todo through the existing selected native filing owner.
+Validate that the selected workflow has dispatchable, nonterminal Todo and
+nondispatchable, nonterminal Backlog, neither operator-only. Unknown instance
+diagnostics enter Backlog. Match open fingerprints and imported
 occurrences first; raise unset, Normal or Low priority through the existing
 expected-revision priority owner, preserving High and Urgent. Preserve pinned
 commit, run, attempt, job, source, fingerprint and occurrence evidence, stable
 replay identity, and imported history. Do not create duplicates to change priority.
 
-Priority does not authorize admission, remove migration/operator holds, or
-change tracker lanes. Unknown setup, network, backend and protocol failures
+Reused items retain their lanes, human questions, migration/operator holds and
+terminal history; a new occurrence never authorizes moving or reopening them.
+Priority updates alone do not authorize admission. Unknown setup, startup,
+download, network, backend, protocol and authentication failures
 remain instance-owned intake; they authorize no source repair and consume no
 issue failure allowance. A historical pinned failure does not prove that the
-current head fails or staging is down: staging deploys independently on develop
+current head fails or staging is down; repair workers verify the failure on
+their current base. Staging deploys independently on develop
 pushes, while validated release tags require all configured scheduled jobs to
 succeed. Repair guidance must not demand a local-gate status, blocking CI or CI
 waiting in ordinary issue merging. Other projects retain their chosen reporting

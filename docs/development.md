@@ -31,8 +31,10 @@ Follow the repository's [validation policy](../AGENTS.md#validation) and
 [failure reporting policy](../AGENTS.md#deployment-and-release-failure-reporting).
 Focused diagnostics do not become merge gates or local-gate statuses. The
 scheduled suite validates pinned integrated develop commits for release tags;
-genuine Detent source blockers require at least High priority in native Backlog,
-preserving Urgent and operator admission holds.
+new proven, pinned Detent source blockers enter native Todo at least High under
+the human-approved scheduled reporting policy. Reused items preserve Urgent,
+existing lanes, human questions and operator holds; unknown instance diagnostics
+remain in nondispatchable Backlog.
 
 Several worktrees usually run gates on the same host at once. Every `make`
 test, lint, vet, and build target is capped by `TEST_PROCS` (default 4): it
