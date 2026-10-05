@@ -10,11 +10,15 @@ import (
 )
 
 type failingSessionStore struct {
-	fail bool
+	fail  bool
+	state *SessionState
 }
 
-func (*failingSessionStore) Load(context.Context, string, time.Time, time.Duration) (SessionState, bool, error) {
-	return SessionState{}, false, nil
+func (store *failingSessionStore) Load(_ context.Context, id string, now time.Time, ttl time.Duration) (SessionState, bool, error) {
+	if store.state == nil || store.state.ID != id || now.Sub(store.state.LastUsedAt) > ttl {
+		return SessionState{}, false, nil
+	}
+	return *store.state, true, nil
 }
 
 func (store *failingSessionStore) Save(context.Context, SessionState, time.Time, time.Duration, int) error {

@@ -45,13 +45,14 @@ type Service struct {
 }
 
 type session struct {
-	connection *operatortool.Connection
-	mode       ConnectionMode
-	mu         sync.Mutex
-	threadID   string
-	messages   []Message
-	actions    []Action
-	lastUsedAt time.Time
+	connection     *operatortool.Connection
+	mode           ConnectionMode
+	mu             sync.Mutex
+	threadID       string
+	messages       []Message
+	actions        []Action
+	lastUsedAt     time.Time
+	lastAccessedAt time.Time
 }
 
 type Option func(*Service)
@@ -91,6 +92,9 @@ func NewService(provider Provider, tools ToolExecutor, actions ActionExecutor, o
 
 func (s *Service) Conversation(sessionID string) Conversation {
 	current := s.session(sessionID)
+	if current == nil {
+		return s.conversation(&session{})
+	}
 	current.mu.Lock()
 	defer current.mu.Unlock()
 	return s.conversation(current)
@@ -98,6 +102,9 @@ func (s *Service) Conversation(sessionID string) Conversation {
 
 func (s *Service) Action(sessionID string, actionID string) (Action, bool) {
 	current := s.session(sessionID)
+	if current == nil {
+		return Action{}, false
+	}
 	current.mu.Lock()
 	defer current.mu.Unlock()
 	index := actionIndex(current.actions, actionID)
@@ -108,7 +115,7 @@ func (s *Service) Action(sessionID string, actionID string) (Action, bool) {
 }
 
 func (s *Service) Send(ctx context.Context, sessionID string, content string) (Conversation, error) {
-	current := s.session(sessionID)
+	current := s.ensureSession(sessionID)
 	current.mu.Lock()
 	defer current.mu.Unlock()
 
@@ -212,6 +219,9 @@ func (s *Service) Send(ctx context.Context, sessionID string, content string) (C
 
 func (s *Service) Confirm(ctx context.Context, sessionID string, actionID string) (Conversation, error) {
 	current := s.session(sessionID)
+	if current == nil {
+		return s.conversation(&session{}), ErrActionNotFound
+	}
 	current.mu.Lock()
 	defer current.mu.Unlock()
 	index := actionIndex(current.actions, actionID)
@@ -259,6 +269,9 @@ func (s *Service) Confirm(ctx context.Context, sessionID string, actionID string
 
 func (s *Service) Reject(ctx context.Context, sessionID string, actionID string) (Conversation, error) {
 	current := s.session(sessionID)
+	if current == nil {
+		return s.conversation(&session{}), ErrActionNotFound
+	}
 	current.mu.Lock()
 	defer current.mu.Unlock()
 	index := actionIndex(current.actions, actionID)
@@ -357,17 +370,36 @@ func (s *Service) appendAssistant(current *session, content string, isError bool
 }
 
 func (s *Service) session(sessionID string) *session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lookupSession(strings.TrimSpace(sessionID), s.now().UTC())
+}
+
+func (s *Service) ensureSession(sessionID string) *session {
 	sessionID = strings.TrimSpace(sessionID)
 	now := s.now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if current := s.lookupSession(sessionID, now); current != nil {
+		return current
+	}
 	s.prune(now)
+	current := &session{lastUsedAt: now, lastAccessedAt: now}
+	s.sessions[sessionID] = current
+	return current
+}
+
+func (s *Service) lookupSession(sessionID string, now time.Time) *session {
 	current := s.sessions[sessionID]
-	if current == nil {
-		current = &session{lastUsedAt: now}
-		s.sessions[sessionID] = current
-	} else if s.store == nil {
-		current.lastUsedAt = now
+	if current != nil && now.Sub(current.lastUsedAt) > s.sessionTTL {
+		delete(s.sessions, sessionID)
+		return nil
+	}
+	if current != nil {
+		current.lastAccessedAt = now
+		if s.store == nil {
+			current.lastUsedAt = now
+		}
 	}
 	return current
 }
@@ -382,9 +414,9 @@ func (s *Service) prune(now time.Time) {
 		oldestID := ""
 		var oldest time.Time
 		for id, current := range s.sessions {
-			if oldestID == "" || current.lastUsedAt.Before(oldest) {
+			if oldestID == "" || current.lastAccessedAt.Before(oldest) {
 				oldestID = id
-				oldest = current.lastUsedAt
+				oldest = current.lastAccessedAt
 			}
 		}
 		delete(s.sessions, oldestID)

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 func TestServicePersistsConversationAndProviderThreadPerSession(t *testing.T) {
@@ -45,6 +47,80 @@ func TestServicePersistsConversationAndProviderThreadPerSession(t *testing.T) {
 	if tools.calls != 2 {
 		t.Fatalf("tool calls = %d, want 2", tools.calls)
 	}
+	for index := 0; index < service.sessionLimit-1; index++ {
+		if _, err := service.Send(t.Context(), fmt.Sprintf("other-%d", index), "hello"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, lookup := range []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{name: "conversation", run: func(t *testing.T) { service.Conversation("unknown") }},
+		{name: "action", run: func(t *testing.T) { service.Action("unknown", "missing") }},
+		{name: "confirm", run: func(t *testing.T) {
+			if _, err := service.Confirm(t.Context(), "unknown", "missing"); !errors.Is(err, ErrActionNotFound) {
+				t.Fatalf("unknown Confirm() error = %v", err)
+			}
+		}},
+		{name: "reject", run: func(t *testing.T) {
+			if _, err := service.Reject(t.Context(), "unknown", "missing"); !errors.Is(err, ErrActionNotFound) {
+				t.Fatalf("unknown Reject() error = %v", err)
+			}
+		}},
+		{name: "restore", run: func(t *testing.T) {
+			if err := service.RestoreConnection(t.Context(), "unknown"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "stored restore", run: func(t *testing.T) {
+			service.store = &failingSessionStore{}
+			if err := service.RestoreConnection(t.Context(), "unknown"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "mode", run: func(t *testing.T) {
+			if err := service.SetConnectionMode(t.Context(), "unknown", YOLOMode); !errors.Is(err, operatortool.ErrAccessDenied) {
+				t.Fatalf("unknown mode error = %v", err)
+			}
+		}},
+		{name: "connection reject", run: func(t *testing.T) {
+			if _, err := service.RejectConnectionAction(t.Context(), "unknown", "missing"); !errors.Is(err, operatortool.ErrAccessDenied) {
+				t.Fatalf("unknown connection reject error = %v", err)
+			}
+		}},
+	} {
+		t.Run(lookup.name, func(t *testing.T) {
+			lookup.run(t)
+			if len(service.sessions) != service.sessionLimit || service.sessions["unknown"] != nil {
+				t.Fatalf("unknown lookup changed sessions: count=%d unknown=%v", len(service.sessions), service.sessions["unknown"])
+			}
+			if got := service.Conversation("browser-session"); len(got.Messages) != 4 {
+				t.Fatalf("lookup evicted existing conversation: %+v", got)
+			}
+		})
+	}
+	t.Run("restored session retains recency and expiry", func(t *testing.T) {
+		state := SessionState{ID: "restored", Mode: ConfirmationMode, LastUsedAt: service.now().Add(-5 * time.Minute), Actions: []Action{{ID: "proposal", Status: ActionPending}}}
+		service.store = &failingSessionStore{state: &state}
+		if err := service.RestoreConnection(t.Context(), state.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Send(t.Context(), "next-session", "hello"); err != nil {
+			t.Fatal(err)
+		}
+		got := service.Conversation(state.ID)
+		if got.ConnectionID != state.ID || len(got.Actions) != 1 || got.Actions[0].ID != "proposal" {
+			t.Fatalf("new session evicted restored approval: %+v", got)
+		}
+		service.now = func() time.Time { return state.LastUsedAt.Add(service.sessionTTL + time.Second) }
+		if err := service.RestoreConnection(t.Context(), state.ID); err != nil {
+			t.Fatal(err)
+		}
+		if got := service.Conversation(state.ID); got.ConnectionID != "" || service.sessions[state.ID] != nil {
+			t.Fatalf("access extended restored lifetime: %+v", got)
+		}
+	})
 }
 
 func TestServiceRequiresConfirmationBeforeExecutingProposal(t *testing.T) {

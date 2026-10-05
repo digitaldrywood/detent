@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"html"
 	"net/http"
 	"net/url"
@@ -21,7 +22,7 @@ import (
 )
 
 func TestOperatorApprovalSurvivesHubReopen(t *testing.T) {
-	for _, scenario := range []string{"pending", "YOLO", "revoked grant", "stale revision", "expired"} {
+	for _, scenario := range []string{"pending", "session pressure", "YOLO", "revoked grant", "stale revision", "expired"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			user := f.user(t, "owner", "owner", "operator@example.test", "write", "")
@@ -62,24 +63,26 @@ func TestOperatorApprovalSurvivesHubReopen(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			cfg := f.service.config
-			if err := f.service.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if scenario == "expired" {
-				now := cfg.now().Add(25 * time.Hour)
-				cfg.now = func() time.Time { return now }
-			}
-			var err error
-			f.service, err = Open(t.Context(), cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
+			if scenario != "session pressure" {
+				cfg := f.service.config
 				if err := f.service.Close(); err != nil {
-					t.Error(err)
+					t.Fatal(err)
 				}
-			})
+				if scenario == "expired" {
+					now := cfg.now().Add(25 * time.Hour)
+					cfg.now = func() time.Time { return now }
+				}
+				var err error
+				f.service, err = Open(t.Context(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := f.service.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+			}
 			if scenario == "expired" {
 				if err := f.service.operatorChat.RestoreConnection(t.Context(), "durable-connection"); err != nil {
 					t.Fatal(err)
@@ -141,6 +144,16 @@ func TestOperatorApprovalSurvivesHubReopen(t *testing.T) {
 					t.Fatalf("revoked grant executed error=%v issue=%+v", err, read())
 				}
 				return
+			}
+			if scenario == "session pressure" {
+				operatorSQL(t, f, "UPDATE operator_chat_sessions SET last_used_at=? WHERE connection_id=?", f.service.config.now().Add(-5*time.Minute).UTC().Format("2006-01-02T15:04:05.000000000Z"), "durable-connection")
+				for index := 0; index < 256; index++ {
+					connection := operatortool.CurrentConnection(ctx)
+					connection.ID = fmt.Sprintf("pressure-%d", index)
+					if err := f.service.operatorChat.AttachConnection(operatortool.WithConnection(ctx, connection)); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			page := f.request(t, user, http.MethodGet, "/chat/approval?connection_id=durable-connection", nil)
 			requireNativeStatus(t, page, http.StatusOK)
