@@ -149,7 +149,7 @@ Repeat diagnostics only to verify changed behavior or resolve a concrete remaini
 risk. Ordinary submission, completion, admission, and merge do not wait for a
 coverage percentage, fuzz duration, local status, or scheduled run. The scheduled
 full suite validates pinned `develop` commits and tags only green commits.
-Every `develop` push still deploys to staging.
+A new validated release deploys staging and passes its smoke before deploying production.
 
 Other projects using Detent choose their own validation commands, required
 checks, workflow triggers, and release policies. Do not introduce a product-wide
@@ -183,8 +183,8 @@ Scheduled infrastructure reporting does not authorize source repair without a
 reproducible test or source diagnostic and does not consume issue failure
 allowance. A historical pinned failure does not prove that the current head
 fails or staging is down; repair workers verify the failure on their current
-base. Staging deploys independently on develop pushes, while validated release
-tags require every configured scheduled job to succeed; no release is tagged
+base. Staging and production deploy sequentially from newly validated release tags,
+which require every configured scheduled job to succeed; no release is tagged
 for a red suite. Repair guidance must not demand a local-gate status, blocking
 CI or CI waiting in ordinary issue merging. Other projects retain their chosen
 reporting priority and validation policy.

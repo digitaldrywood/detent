@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/update"
 )
 
 type runnerUpdateChange struct {
@@ -132,7 +133,7 @@ func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScop
 	return view, nil
 }
 
-func storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, report *runnerauth.UpdateObservation, protocol int, version, platform, architecture string, now time.Time) error {
+func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, report *runnerauth.UpdateObservation, protocol int, version, platform, architecture string, now time.Time) error {
 	if report != nil {
 		if report.Validate() != nil || protocol != 2 || strings.TrimPrefix(report.Running.Version, "v") != strings.TrimPrefix(version, "v") || report.Running.OS != platform || report.Running.Architecture != architecture {
 			return nativeInvalid("Update observation must identify this runner's actual process and supported protocol")
@@ -161,6 +162,52 @@ func storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, scope nativeS
 		return err
 	}
 	_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET update_observation_json = ? WHERE organization_id = ? AND id = ?", string(raw), scope.organization, scope.credential.Runner.RunnerID)
+	if err != nil || report == nil || !report.Supported {
+		return err
+	}
+	return s.followHubRunnerUpdate(ctx, tx, scope, *report, now)
+}
+
+func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope nativeScope, report runnerauth.UpdateObservation, now time.Time) error {
+	version := minimumRunnerVersion(s.config.Version)
+	if version == "" || strings.TrimPrefix(version, "v") == strings.TrimPrefix(report.Running.Version, "v") {
+		return nil
+	}
+	if _, err := update.CompareVersions(version, version); err != nil {
+		return nil
+	}
+	var raw string
+	if err := tx.QueryRowContext(ctx, "SELECT routing_settings_json FROM runner_identities WHERE organization_id = ? AND id = ?", scope.organization, scope.credential.Runner.RunnerID).Scan(&raw); err != nil {
+		return err
+	}
+	var settings runnerSettings
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+		return err
+	}
+	if current := settings.UpdateRequest; current != nil {
+		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") {
+			return nil
+		}
+		if report.Receipt == nil || report.Receipt.Request != *current || report.Receipt.Status != "running" && !(current.FollowHub && report.Receipt.Status == "refused") {
+			return nil
+		}
+	}
+	urgent, err := readUrgentRunnerUpdate(ctx, tx, scope.organization)
+	if err != nil {
+		return err
+	}
+	if urgent.Request != nil {
+		comparison, err := update.CompareVersions(urgent.Request.Version, report.Running.Version)
+		if err == nil && comparison > 0 {
+			return nil
+		}
+	}
+	settings.UpdateRequest = &runnerauth.UpdateRequest{ID: newNativeID("update"), RequestedAt: now, Service: "detent", Version: strings.TrimPrefix(version, "v"), Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: report.Revision}
+	raw, err = marshalNative(settings)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, revision = revision + 1 WHERE organization_id = ? AND id = ?", raw, scope.organization, scope.credential.Runner.RunnerID)
 	return err
 }
 

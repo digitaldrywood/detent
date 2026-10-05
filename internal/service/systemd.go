@@ -180,6 +180,7 @@ func systemdUnit(cfg Config) string {
 		"[Service]",
 		"Type=simple",
 		"Environment=\"PATH=" + systemdEscape(cfg.Path) + "\"",
+		"Environment=" + systemdQuote(ManagerEnvironment+"="+string(ManagerSystemd)),
 		"ExecStart=" + strings.Join(execStartParts, " "),
 		"Restart=on-failure",
 		"RestartSec=5",

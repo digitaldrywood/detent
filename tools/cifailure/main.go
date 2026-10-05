@@ -34,7 +34,11 @@ func main() {
 	defer cancel()
 	destination, err := reportingDestination(ctx, os.Getenv)
 	if err == nil {
-		err = reportTo(ctx, os.Stdin, runGH, os.Getenv, destination)
+		if os.Getenv("DETENT_RELEASE_ENVIRONMENT") != "" {
+			err = reportReleaseFailure(ctx, os.Stdin, os.Getenv, destination)
+		} else {
+			err = reportTo(ctx, os.Stdin, runGH, os.Getenv, destination)
+		}
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

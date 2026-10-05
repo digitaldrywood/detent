@@ -79,6 +79,10 @@ func newRuntimeUpdateScheduler(
 			RecoveryStatePath: detentupdate.RecoveryStatePath(cfg.Global.Path),
 		},
 	}
+	if cfg.Global.Client.IdentityFile != "" {
+		schedulerConfig.Enabled = false
+		schedulerConfig.AutoApplyEnabled = false
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		if !schedulerConfig.Enabled {
@@ -300,7 +304,7 @@ func runnerRunningBuild(info buildinfo.Info, version string) runnerauth.BuildEvi
 
 func enrolledUpdateOwner(runtimeCtx context.Context, scheduler *detentupdate.Scheduler, running runnerauth.BuildEvidence) func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
 	return func(ctx context.Context, request *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
-		if request != nil && request.Urgent {
+		if request != nil && (request.Urgent || request.FollowHub) {
 			copy := *request
 			go scheduler.EnrolledUpdate(runtimeCtx, running, &copy)
 			return scheduler.EnrolledUpdate(ctx, running, nil)

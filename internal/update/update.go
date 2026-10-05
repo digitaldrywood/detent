@@ -324,6 +324,7 @@ type Service struct {
 type ApplyOptions struct {
 	ExpectedVersion       string
 	Urgent                bool
+	FollowHub             bool
 	AssumeYes             bool
 	FromRelease           bool
 	Confirm               func(Status) (bool, error)
@@ -407,13 +408,13 @@ func (s *Service) Check(ctx context.Context) (Status, error) {
 
 func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) {
 	target := ""
-	if opts.Urgent {
+	if opts.Urgent || opts.FollowHub {
 		if opts.ExpectedVersion == "" {
 			return Status{Action: ActionRefused}, ErrRefused
 		}
 		target = opts.ExpectedVersion
 	}
-	status, release, err := s.planForVersion(ctx, target)
+	status, release, err := s.planForVersion(ctx, target, opts.FollowHub)
 	if err != nil {
 		return status, err
 	}
@@ -429,6 +430,9 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 
 	switch status.InstallSource {
 	case InstallSourceHomebrew:
+		if opts.FollowHub {
+			return s.applyReleaseUpdate(ctx, status, release, opts, true, false)
+		}
 		status.Action = ActionDelegate
 		status.Command = homebrewUpdateCommand
 		status.Message = "Homebrew-managed Detent install detected. Run the Homebrew upgrade command."
@@ -649,10 +653,10 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 }
 
 func (s *Service) plan(ctx context.Context) (Status, Release, error) {
-	return s.planForVersion(ctx, "")
+	return s.planForVersion(ctx, "", false)
 }
 
-func (s *Service) planForVersion(ctx context.Context, target string) (Status, Release, error) {
+func (s *Service) planForVersion(ctx context.Context, target string, exact bool) (Status, Release, error) {
 	info := DetectInstallSource(DetectionOptions{
 		CurrentVersion: s.cfg.CurrentVersion,
 		ExecutablePath: s.cfg.ExecutablePath,
@@ -668,7 +672,7 @@ func (s *Service) planForVersion(ctx context.Context, target string) (Status, Re
 		Binary:         s.cfg.ExecutablePath,
 	}
 
-	if IsDevelopmentVersion(s.cfg.CurrentVersion) {
+	if IsDevelopmentVersion(s.cfg.CurrentVersion) && !(exact && (info.Source == InstallSourceRelease || info.Source == InstallSourceGoInstall || info.Source == InstallSourceHomebrew)) {
 		status.Action = ActionRefused
 		switch info.Source {
 		case InstallSourceGoInstall:
@@ -680,7 +684,7 @@ func (s *Service) planForVersion(ctx context.Context, target string) (Status, Re
 		return status, Release{}, ErrRefused
 	}
 
-	release, ok, err := s.targetRelease(ctx, target)
+	release, ok, err := s.targetRelease(ctx, target, exact)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -696,12 +700,12 @@ func (s *Service) planForVersion(ctx context.Context, target string) (Status, Re
 	status.LatestVersion = displayVersion(release.TagName)
 	status.Critical = releaseCritical(release)
 	cmp, err := CompareVersions(release.TagName, s.cfg.CurrentVersion)
-	if err != nil {
+	if err != nil && !(exact && IsDevelopmentVersion(s.cfg.CurrentVersion)) {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, Release{}, err
 	}
-	status.UpdateAvailable = cmp > 0
+	status.UpdateAvailable = cmp > 0 || exact && (cmp != 0 || err != nil)
 	if status.UpdateAvailable {
 		status.Action = ActionAvailable
 		status.Message = fmt.Sprintf("Detent %s can be updated to %s.", status.CurrentVersion, status.LatestVersion)
@@ -712,7 +716,7 @@ func (s *Service) planForVersion(ctx context.Context, target string) (Status, Re
 	return status, release, nil
 }
 
-func (s *Service) targetRelease(ctx context.Context, target string) (Release, bool, error) {
+func (s *Service) targetRelease(ctx context.Context, target string, exact bool) (Release, bool, error) {
 	if target == "" && s.cfg.TargetVersion == nil {
 		releases, err := s.cfg.Client.ListReleases(ctx)
 		if err != nil {
@@ -729,11 +733,11 @@ func (s *Service) targetRelease(ctx context.Context, target string) (Release, bo
 	}
 	target = strings.TrimSpace(target)
 	cmp, err := CompareVersions(target, s.cfg.CurrentVersion)
-	if err != nil {
-		return Release{}, false, fmt.Errorf("invalid Hub update target: %w", err)
+	if _, targetErr := CompareVersions(target, target); targetErr != nil || err != nil && !exact {
+		return Release{}, false, fmt.Errorf("invalid Hub update target: %w", errors.Join(err, targetErr))
 	}
 	tag := "v" + strings.TrimPrefix(target, "v")
-	if cmp <= 0 {
+	if !exact && cmp <= 0 || exact && err == nil && cmp == 0 {
 		return Release{TagName: tag}, true, nil
 	}
 	release, err := s.cfg.Client.GetRelease(ctx, tag)

@@ -17,11 +17,13 @@ func TestScheduledFinalizer(t *testing.T) {
 	for _, tt := range []struct {
 		name, repository    string
 		failed, unavailable bool
+		unchanged           bool
 	}{
-		{"native green evidence", "digitaldrywood/detent", false, false},
-		{"native failure evidence", "digitaldrywood/detent", true, false},
-		{"native publication unavailable", "digitaldrywood/detent", false, true},
-		{"GitHub green closure", "owner/other", false, false},
+		{"native unchanged validated commit", "digitaldrywood/detent", false, false, true},
+		{"native green evidence", "digitaldrywood/detent", false, false, false},
+		{"native failure evidence", "digitaldrywood/detent", true, false, false},
+		{"native publication unavailable", "digitaldrywood/detent", false, true, false},
+		{"GitHub green closure", "owner/other", false, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -62,6 +64,9 @@ set -euo pipefail
 printf 'repository %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
   'tag --list '*) printf 'v1.2.3\n' ;;
+  'tag --points-at '*) if [ "$FIXTURE_UNCHANGED" = true ]; then printf 'v1.2.3\n'; fi ;;
+  'cat-file -t '*) printf 'tag\n' ;;
+  'for-each-ref '*) printf '%s\n' '{"name":"scheduled-full-ci"}' ;;
 esac
 `,
 				"go": `#!/usr/bin/env bash
@@ -83,7 +88,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 			}
 			command := exec.CommandContext(t.Context(), "bash", "scripts/scheduled-ci-finish.sh")
 			command.Dir = root
-			command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+dir, "GITHUB_REPOSITORY="+tt.repository, "GITHUB_SERVER_URL=https://github.com", "GITHUB_RUN_ID=123", "GITHUB_RUN_ATTEMPT=1", "CI_DEVELOP_SHA="+scheduledEnv("CI_DEVELOP_SHA"), "FIXTURE_LOG="+filepath.Join(dir, "calls"), "FIXTURE_JOBS="+filepath.Join(dir, "jobs"), "FIXTURE_REPORTS="+filepath.Join(dir, "reports"), "FIXTURE_UNAVAILABLE="+map[bool]string{true: "true", false: "false"}[tt.unavailable])
+			command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+dir, "GITHUB_REPOSITORY="+tt.repository, "GITHUB_SERVER_URL=https://github.com", "GITHUB_RUN_ID=123", "GITHUB_RUN_ATTEMPT=1", "CI_DEVELOP_SHA="+scheduledEnv("CI_DEVELOP_SHA"), "FIXTURE_LOG="+filepath.Join(dir, "calls"), "FIXTURE_JOBS="+filepath.Join(dir, "jobs"), "FIXTURE_REPORTS="+filepath.Join(dir, "reports"), "FIXTURE_UNCHANGED="+map[bool]string{true: "true", false: "false"}[tt.unchanged], "FIXTURE_UNAVAILABLE="+map[bool]string{true: "true", false: "false"}[tt.unavailable])
 			output, err := command.CombinedOutput()
 			if (err != nil) != (tt.failed || tt.unavailable) {
 				t.Fatalf("finalizer = %v: %s", err, output)
@@ -104,7 +109,11 @@ test "$FIXTURE_UNAVAILABLE" = false
 			} else if !strings.Contains(text, "forge issue close 42") || strings.Contains(text, "native run") {
 				t.Fatalf("GitHub behavior changed: %s", text)
 			}
-			if tt.failed {
+			if tt.unchanged {
+				if strings.Contains(text, "tag -a ") || strings.Contains(text, "/dispatches") {
+					t.Fatal("unchanged validated commit released again")
+				}
+			} else if tt.failed {
 				if strings.Contains(text, "repository tag -a") || strings.Contains(text, "/statuses/") {
 					t.Fatal("failed suite published green evidence")
 				}

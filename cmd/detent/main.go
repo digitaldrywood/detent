@@ -8,12 +8,14 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
 
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/cli"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/shadow"
 )
 
@@ -37,6 +39,10 @@ func main() {
 	}
 	exitCode, restartBinary := runCLIResult(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
 	if exitCode == cli.ExitSuccess && restartBinary != "" {
+		manager := service.ManagerFromProcessEnvironment(runtime.GOOS, os.LookupEnv)
+		if manager == service.ManagerLaunchd || manager == service.ManagerSystemd {
+			os.Exit(cli.ExitGeneral)
+		}
 		if err := restartProcess(restartBinary, os.Args, os.Environ()); err != nil {
 			slog.Error("restart updated Detent process", "binary", restartBinary, "error", err)
 			os.Exit(cli.ExitGeneral)

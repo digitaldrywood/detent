@@ -23,6 +23,7 @@ func TestSystemdUnitIncludesRuntimeAndShutdownSettings(t *testing.T) {
 		`Environment="PATH=/home/user/bin:/usr/bin:%%h/bin"`,
 		"After=network-online.target",
 		"Wants=network-online.target",
+		`Environment="DETENT_SERVICE_MANAGER=systemd"`,
 		"Restart=on-failure",
 		"KillMode=mixed",
 		"TimeoutStopSec=infinity",

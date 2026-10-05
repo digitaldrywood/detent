@@ -31,6 +31,15 @@ function renderSection(fleet: FleetResponse = FLEET) {
 }
 
 describe("runner rows", () => {
+  it.each([
+    ["draining", "Waiting for active work"],
+    ["refused", "Update failed"],
+    ["restart_requested", "Restart requested"],
+    ["running", "Updated"],
+  ])("shows the enrolled update outcome %s", (status, label) => {
+    renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, update: { status, desired: { version: "1.2.4" } } }] });
+    expect(screen.getByText(`${label} · 1.2.4`)).toBeTruthy();
+  });
   it("keeps a removed runner's name for historical attempts without a fleet row", async () => {
     const id = FLEET.runners[0]!.id;
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...EMPTY, runner_names: { [id]: { display_name: "Retired Mac", hostname: "retired.local" } } }))));

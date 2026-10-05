@@ -516,170 +516,199 @@ func (*contextBlockingBody) Close() error {
 }
 
 func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
-	tmp := t.TempDir()
-	binary := filepath.Join(tmp, "bin", "detent")
-	lockPath := filepath.Join(tmp, "state", "install.lock")
-	recoveryStatePath := filepath.Join(tmp, "state", startupRecoveryStateName)
-	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
-		t.Fatalf("MkdirAll(binary dir) error = %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		t.Fatalf("MkdirAll(lock dir) error = %v", err)
-	}
-	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
-		t.Fatalf("WriteFile(binary) error = %v", err)
-	}
-	if err := os.WriteFile(lockPath, []byte("binary="+binary+"\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(lock) error = %v", err)
-	}
-
-	archiveName := "detent_1.2.4_linux_amd64.tar.gz"
-	checksumName := "detent_1.2.4_checksums.txt"
-	signatureName := checksumName + ".minisig"
-	archive := detentUpdateArchive(t, "updated")
-	provenanceBytes := testReleaseProvenance(t, "v1.2.4", testUpdatedCommit)
-	archiveSum := sha256.Sum256(archive)
-	provenanceSum := sha256.Sum256(provenanceBytes)
-	checksums := fmt.Sprintf("%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
-	publicKey, privateKey, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatalf("GenerateKey() error = %v", err)
-	}
-	keyID := []byte("12345678")
-	signature := testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v1.2.4")
-
-	previous := defaultChecksumMinisignPublicKey
-	defaultChecksumMinisignPublicKey = testMinisignPublicKey(publicKey, keyID)
-	t.Cleanup(func() {
-		defaultChecksumMinisignPublicKey = previous
-	})
-
-	const releaseURL = "https://releases.example.test"
-	release := Release{TagName: "v1.2.4", Assets: []Asset{
-		{Name: archiveName, BrowserDownloadURL: releaseURL + "/archive"},
-		{Name: checksumName, BrowserDownloadURL: releaseURL + "/checksums"},
-		{Name: signatureName, BrowserDownloadURL: releaseURL + "/checksums.minisig"},
-		{Name: provenanceAssetName, BrowserDownloadURL: releaseURL + "/provenance"},
-	}}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/releases":
-			if err := json.NewEncoder(w).Encode([]Release{release}); err != nil {
-				t.Fatal(err)
+	for _, test := range []struct {
+		name    string
+		current string
+		follow  bool
+		brew    bool
+	}{
+		{name: "selected release", current: "1.2.3"},
+		{name: "follow Hub below latest", current: "1.2.3", follow: true},
+		{name: "runner ahead of Hub", current: "1.2.5", follow: true},
+		{name: "installed development build", current: "operator-landed-abcdef123456", follow: true},
+		{name: "Homebrew enrolled runner", current: "1.2.3", follow: true, brew: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			binary := filepath.Join(tmp, "bin", "detent")
+			lockPath := filepath.Join(tmp, "state", "install.lock")
+			recoveryStatePath := filepath.Join(tmp, "state", startupRecoveryStateName)
+			if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+				t.Fatalf("MkdirAll(binary dir) error = %v", err)
 			}
-		case "/releases/tags/v1.2.4":
-			if err := json.NewEncoder(w).Encode(release); err != nil {
-				t.Fatal(err)
+			if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+				t.Fatalf("MkdirAll(lock dir) error = %v", err)
 			}
-		case "/archive":
-			_, _ = w.Write(archive)
-		case "/checksums":
-			fmt.Fprint(w, checksums)
-		case "/checksums.minisig":
-			_, _ = w.Write(signature)
-		case "/provenance":
-			_, _ = w.Write(provenanceBytes)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, request)
-		return recorder.Result(), nil
-	})}
+			if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+				t.Fatalf("WriteFile(binary) error = %v", err)
+			}
+			if err := os.WriteFile(lockPath, []byte("binary="+binary+"\n"), 0o600); err != nil {
+				t.Fatalf("WriteFile(lock) error = %v", err)
+			}
 
-	service := NewService(Config{
-		CurrentVersion: "1.2.3",
-		CurrentCommit:  testPreviousCommit,
-		ExecutablePath: binary,
-		GOOS:           "linux",
-		GOARCH:         "amd64",
-		Client: NewGitHubClient(GitHubClientConfig{
-			APIBase:    releaseURL,
-			HTTPClient: httpClient,
-		}),
-		Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
-		BinaryVerifier: func(context.Context, string) (string, error) {
-			return "version: v1.2.4\ncommit: " + testUpdatedCommit + "\n", nil
-		},
-	})
-
-	if _, err := service.Check(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	service.cfg.TargetVersion = func(context.Context) (string, error) { return "v1.2.4", nil }
-	stale, staleErr := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.5"})
-	if !errors.Is(staleErr, ErrRefused) || stale.Action != ActionRefused {
-		t.Fatalf("changed selected release = %+v, %v", stale, staleErr)
-	}
-	var preflightPath string
-	status, err := service.Apply(context.Background(), ApplyOptions{
-		AssumeYes:         true,
-		RecoveryStatePath: recoveryStatePath,
-		Preflight: func(_ context.Context, path string) error {
-			preflightPath = path
-			raw, err := os.ReadFile(path)
+			archiveName := "detent_1.2.4_linux_amd64.tar.gz"
+			checksumName := "detent_1.2.4_checksums.txt"
+			signatureName := checksumName + ".minisig"
+			archive := detentUpdateArchive(t, "updated")
+			provenanceBytes := testReleaseProvenance(t, "v1.2.4", testUpdatedCommit)
+			archiveSum := sha256.Sum256(archive)
+			provenanceSum := sha256.Sum256(provenanceBytes)
+			checksums := fmt.Sprintf("%x  %s\n%x  %s\n", archiveSum, archiveName, provenanceSum, provenanceAssetName)
+			publicKey, privateKey, err := ed25519.GenerateKey(nil)
 			if err != nil {
-				return err
+				t.Fatalf("GenerateKey() error = %v", err)
+			}
+			keyID := []byte("12345678")
+			signature := testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v1.2.4")
+
+			previous := defaultChecksumMinisignPublicKey
+			defaultChecksumMinisignPublicKey = testMinisignPublicKey(publicKey, keyID)
+			t.Cleanup(func() {
+				defaultChecksumMinisignPublicKey = previous
+			})
+
+			const releaseURL = "https://releases.example.test"
+			release := Release{TagName: "v1.2.4", Assets: []Asset{
+				{Name: archiveName, BrowserDownloadURL: releaseURL + "/archive"},
+				{Name: checksumName, BrowserDownloadURL: releaseURL + "/checksums"},
+				{Name: signatureName, BrowserDownloadURL: releaseURL + "/checksums.minisig"},
+				{Name: provenanceAssetName, BrowserDownloadURL: releaseURL + "/provenance"},
+			}}
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/releases":
+					if err := json.NewEncoder(w).Encode([]Release{release}); err != nil {
+						t.Fatal(err)
+					}
+				case "/releases/tags/v1.2.4":
+					if err := json.NewEncoder(w).Encode(release); err != nil {
+						t.Fatal(err)
+					}
+				case "/archive":
+					_, _ = w.Write(archive)
+				case "/checksums":
+					fmt.Fprint(w, checksums)
+				case "/checksums.minisig":
+					_, _ = w.Write(signature)
+				case "/provenance":
+					_, _ = w.Write(provenanceBytes)
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, request)
+				return recorder.Result(), nil
+			})}
+
+			service := NewService(Config{
+				CurrentVersion: test.current,
+				CurrentCommit:  testPreviousCommit,
+				ExecutablePath: binary,
+				GOOS:           "linux",
+				GOARCH:         "amd64",
+				Client: NewGitHubClient(GitHubClientConfig{
+					APIBase:    releaseURL,
+					HTTPClient: httpClient,
+				}),
+				Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+				BinaryVerifier: func(context.Context, string) (string, error) {
+					return "version: v1.2.4\ncommit: " + testUpdatedCommit + "\n", nil
+				},
+			})
+
+			if !test.follow {
+				if _, err := service.Check(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				service.cfg.TargetVersion = func(context.Context) (string, error) { return "1.2.99", nil }
+			}
+			if test.brew {
+				service.cfg.EvalSymlinks = func(string) (string, error) { return "/opt/homebrew/Cellar/detent/1.2.3/bin/detent", nil }
+			}
+			if !test.follow {
+				service.cfg.TargetVersion = func(context.Context) (string, error) { return "v1.2.4", nil }
+			}
+			if !test.follow {
+				stale, staleErr := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.5"})
+				if !errors.Is(staleErr, ErrRefused) || stale.Action != ActionRefused {
+					t.Fatalf("changed selected release = %+v, %v", stale, staleErr)
+				}
+			}
+			var preflightPath string
+			status, err := service.Apply(context.Background(), ApplyOptions{
+				AssumeYes:         true,
+				FollowHub:         test.follow,
+				FromRelease:       test.follow,
+				ExpectedVersion:   "1.2.4",
+				RecoveryStatePath: recoveryStatePath,
+				Preflight: func(_ context.Context, path string) error {
+					preflightPath = path
+					raw, err := os.ReadFile(path)
+					if err != nil {
+						return err
+					}
+					if strings.TrimSpace(string(raw)) != "updated" {
+						return fmt.Errorf("candidate content = %q", raw)
+					}
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("Apply() error = %v", err)
+			}
+			if status.Action != ActionUpdated {
+				t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
+			}
+			if !status.UpdateAvailable {
+				t.Fatal("UpdateAvailable = false, want true")
+			}
+			expectedBinarySum := sha256.Sum256([]byte("updated"))
+			if status.BinarySHA256 != hex.EncodeToString(expectedBinarySum[:]) || !status.VerifiedRelease || status.LatestCommit != testUpdatedCommit {
+				t.Fatalf("applied provenance = %+v", status)
+			}
+			raw, err := os.ReadFile(binary)
+			if err != nil {
+				t.Fatalf("ReadFile(binary) error = %v", err)
 			}
 			if strings.TrimSpace(string(raw)) != "updated" {
-				return fmt.Errorf("candidate content = %q", raw)
+				t.Fatalf("updated binary = %q, want updated", raw)
 			}
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("Apply() error = %v", err)
-	}
-	if status.Action != ActionUpdated {
-		t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
-	}
-	if !status.UpdateAvailable {
-		t.Fatal("UpdateAvailable = false, want true")
-	}
-	expectedBinarySum := sha256.Sum256([]byte("updated"))
-	if status.BinarySHA256 != hex.EncodeToString(expectedBinarySum[:]) || !status.VerifiedRelease || status.LatestCommit != testUpdatedCommit {
-		t.Fatalf("applied provenance = %+v", status)
-	}
-	raw, err := os.ReadFile(binary)
-	if err != nil {
-		t.Fatalf("ReadFile(binary) error = %v", err)
-	}
-	if strings.TrimSpace(string(raw)) != "updated" {
-		t.Fatalf("updated binary = %q, want updated", raw)
-	}
-	if preflightPath == "" || preflightPath == binary {
-		t.Fatalf("preflight path = %q, want staged candidate", preflightPath)
-	}
-	previousPath := PreviousBinaryPath(binary)
-	previousRaw, err := os.ReadFile(previousPath)
-	if err != nil {
-		t.Fatalf("ReadFile(previous) error = %v", err)
-	}
-	if string(previousRaw) != "old" {
-		t.Fatalf("previous binary = %q, want old", previousRaw)
-	}
-	recoveryState := readTestStartupRecoveryState(t, recoveryStatePath)
-	if recoveryState.PendingUpdate == nil {
-		t.Fatal("PendingUpdate = nil, want rollback metadata")
-	}
-	if got := recoveryState.PendingUpdate; got.FromVersion != "1.2.3" || got.FromCommit != testPreviousCommit || got.ToVersion != "1.2.4" || got.ToCommit != testUpdatedCommit || got.PreviousBinaryPath != previousPath {
-		t.Fatalf("PendingUpdate = %#v, want 1.2.3 to 1.2.4 with previous binary", got)
-	}
-	if got := recoveryState.PendingUpdate; got.InstallLockPath != lockPath || !got.PreviousInstallLockFound || got.PreviousInstallLock != "binary="+binary+"\n" {
-		t.Fatalf("PendingUpdate install lock = %#v, want preserved pre-update metadata", got)
-	}
-	if got := InstalledReleaseVersion(DetectionOptions{
-		ExecutablePath: binary,
-		GOOS:           "linux",
-		Env:            map[string]string{"DETENT_INSTALL_LOCK": lockPath},
-	}); got != "1.2.4" {
-		t.Fatalf("InstalledReleaseVersion() = %q, want 1.2.4", got)
-	}
-	metadata, ok := readInstallLock(lockPath)
-	if !ok || metadata.commit != testUpdatedCommit {
-		t.Fatalf("install lock = %#v, found = %t, want updated full commit", metadata, ok)
+			if preflightPath == "" || preflightPath == binary {
+				t.Fatalf("preflight path = %q, want staged candidate", preflightPath)
+			}
+			previousPath := PreviousBinaryPath(binary)
+			previousRaw, err := os.ReadFile(previousPath)
+			if err != nil {
+				t.Fatalf("ReadFile(previous) error = %v", err)
+			}
+			if string(previousRaw) != "old" {
+				t.Fatalf("previous binary = %q, want old", previousRaw)
+			}
+			recoveryState := readTestStartupRecoveryState(t, recoveryStatePath)
+			if recoveryState.PendingUpdate == nil {
+				t.Fatal("PendingUpdate = nil, want rollback metadata")
+			}
+			if got := recoveryState.PendingUpdate; got.FromVersion != test.current || got.FromCommit != testPreviousCommit || got.ToVersion != "1.2.4" || got.ToCommit != testUpdatedCommit || got.PreviousBinaryPath != previousPath {
+				t.Fatalf("PendingUpdate = %#v, want 1.2.3 to 1.2.4 with previous binary", got)
+			}
+			if got := recoveryState.PendingUpdate; got.InstallLockPath != lockPath || !got.PreviousInstallLockFound || got.PreviousInstallLock != "binary="+binary+"\n" {
+				t.Fatalf("PendingUpdate install lock = %#v, want preserved pre-update metadata", got)
+			}
+			if got := InstalledReleaseVersion(DetectionOptions{
+				ExecutablePath: binary,
+				GOOS:           "linux",
+				Env:            map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+			}); got != "1.2.4" {
+				t.Fatalf("InstalledReleaseVersion() = %q, want 1.2.4", got)
+			}
+			metadata, ok := readInstallLock(lockPath)
+			if !ok || metadata.commit != testUpdatedCommit {
+				t.Fatalf("install lock = %#v, found = %t, want updated full commit", metadata, ok)
+			}
+		})
 	}
 }
 

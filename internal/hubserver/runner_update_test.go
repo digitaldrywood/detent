@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,87 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
+	for _, test := range []struct {
+		name, hub, runner string
+		supported, manual bool
+		want              bool
+	}{
+		{name: "older runner", hub: "v1.2.4", runner: "1.2.3", supported: true, want: true},
+		{name: "runner ahead", hub: "v1.2.4", runner: "1.2.5", supported: true, want: true},
+		{name: "installed operator build", hub: "v1.2.4", runner: "operator-landed-abcdef123456", supported: true, want: true},
+		{name: "matching release", hub: "v1.2.4", runner: "1.2.4", supported: true},
+		{name: "development Hub", hub: "dev", runner: "1.2.3", supported: true},
+		{name: "missing update owner", hub: "v1.2.4", runner: "1.2.3"},
+		{name: "operator request retained", hub: "v1.2.4", runner: "1.2.3", supported: true, manual: true, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Version: "dev"})
+			f := newNativeFixture(t, service, "", "follow-hub")
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			r.enroll(t)
+			now := service.config.now()
+			build := runnerauth.BuildEvidence{Version: test.runner, Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+			report := &runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: test.supported, Running: build, ObservedAt: now}
+			report.Revision = report.BuildRevision()
+			send := func() runnerauth.RoutingSnapshot {
+				response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": report.Running.Version, "os": "linux", "architecture": "amd64", "protocol_major": 2, "update": report, "backend_isolation": r.redemption.BackendIsolation})
+				requireNativeStatus(t, response, http.StatusOK)
+				var snapshot runnerauth.RoutingSnapshot
+				decodeHubResponse(t, response, &snapshot)
+				return snapshot
+			}
+			if test.manual {
+				report.Discovery = "available"
+				report.AvailableVersion = "1.2.5"
+				report.AvailableObservedAt = now
+				report.Revision = report.BuildRevision()
+				snapshot := send()
+				request := runnerUpdateChange{ExpectedRevision: snapshot.Revision, ExpectedBuildRevision: report.Revision, Service: "detent", Version: "1.2.5", Release: true, Confirm: true, IdempotencyKey: "operator-selection"}
+				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, request), http.StatusAccepted)
+			}
+			service.config.Version = test.hub
+			snapshot := send()
+			request := snapshot.Routing.UpdateRequest
+			if (request != nil) != test.want || snapshot.Routing.State != "active" {
+				t.Fatalf("routing=%+v", snapshot)
+			}
+			if !test.want {
+				return
+			}
+			if request.FollowHub == test.manual || !test.manual && (request.Version != "1.2.4" || request.ExpectedBuildRevision != report.Revision || request.Validate() != nil) {
+				t.Fatalf("request=%+v", request)
+			}
+			repeated := send()
+			if *repeated.Routing.UpdateRequest != *request || repeated.Revision != snapshot.Revision {
+				t.Fatal("heartbeat changed the update identity")
+			}
+			applied := build
+			applied.Version = request.Version
+			applied.Commit = strings.Repeat("c", 40)
+			applied.SHA256 = strings.Repeat("d", 64)
+			applied.VerifiedRelease = true
+			report.Receipt = &runnerauth.UpdateReceipt{Request: *request, Status: "restart_requested", Applied: &applied, ObservedAt: now}
+			send()
+			report.Running = applied
+			report.Receipt.Status = "running"
+			report.Revision = report.BuildRevision()
+			send()
+			observedAt := service.config.now()
+			stored, err := readRunner(t.Context(), service.database.db, f.project.OrganizationID, r.binding.RunnerID, observedAt)
+			if test.manual {
+				if err != nil || stored.UpdateRequest == nil || !stored.UpdateRequest.FollowHub || stored.UpdateRequest.Version != "1.2.4" {
+					t.Fatalf("completed operator request suppressed Hub following: %+v %v", stored.UpdateRequest, err)
+				}
+				return
+			}
+			if err != nil || stored.UpdateView(observedAt).Status != "running" || !stored.Update.Running.VerifiedRelease {
+				t.Fatalf("running receipt=%+v error=%v", stored.Update, err)
+			}
+		})
+	}
+}
 
 func TestRunnerUpdateApplication(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "runner-update")
