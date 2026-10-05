@@ -131,7 +131,7 @@ type coordinatorFixture struct {
 func newCoordinatorFixture(t *testing.T, name string) *coordinatorFixture {
 	t.Helper()
 	backend := newFakeCoordinatorBackend()
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}})
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), GitHubDisabled: true, Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}})
 	var organization tracker.OrganizationID
 	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM organizations WHERE local = 1").Scan(&organization); err != nil {
 		t.Fatal(err)
@@ -420,7 +420,7 @@ func TestConversationCoordinatorAnswersPendingMessages(t *testing.T) {
 	for _, tool := range f.backend.tools[0] {
 		names[tool.Name] = true
 	}
-	for _, name := range []string{"list_attention", "explain_issue", "propose_issue"} {
+	for _, name := range []string{"list_attention", "explain_issue", "propose_issue", "read_skill"} {
 		if !names[name] {
 			t.Fatalf("tools = %v, missing %s", names, name)
 		}
@@ -470,6 +470,9 @@ func TestConversationCoordinatorPromptTranscriptOnlyWithoutThread(t *testing.T) 
 			f.backend.waitStarted(t)
 			f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
 			request := f.backend.request(t, 0)
+			if !strings.Contains(request.Prompt, "## Available skills") || !strings.Contains(request.Prompt, "split-issue: Break one large Detent issue") || !strings.Contains(request.Prompt, "decompose-issue") || strings.Contains(request.Prompt, "# Split a large issue into dependent issues") {
+				t.Fatalf("prompt should list built-in metadata without the skill body: %q", request.Prompt)
+			}
 			if got := strings.Contains(request.Prompt, "earlier answer"); got != test.want {
 				t.Fatalf("prompt transcript present = %v, want %v: %q", got, test.want, request.Prompt)
 			}
@@ -774,6 +777,12 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 		{name: "explain foreign issue denied", tool: "explain_issue", arguments: `{"work_item_id":"` + string(foreign.WorkItemID) + `"}`, success: false, contains: `"error"`},
 		{name: "unknown field rejected", tool: "list_attention", arguments: `{"scope":"project","bogus":1}`, success: false, contains: `"error"`},
 		{name: "unknown tool", tool: "delete_everything", arguments: `{}`, success: false, contains: `"error"`},
+		{name: "read built-in skill by name", tool: "read_skill", arguments: `{"name":"split-issue"}`, success: true, contains: `# Split a large issue into dependent issues`},
+		{name: "read built-in skill by alias", tool: "read_skill", arguments: `{"name":"decompose-issue"}`, success: true, contains: `# Split a large issue into dependent issues`},
+		{name: "read built-in skill by second alias", tool: "read_skill", arguments: `{"name":"break-down-issue"}`, success: true, contains: `# Split a large issue into dependent issues`},
+		{name: "unknown built-in skill", tool: "read_skill", arguments: `{"name":"unknown"}`, success: false, contains: `unknown built-in skill`},
+		{name: "missing skill name", tool: "read_skill", arguments: `{}`, success: false, contains: `invalid tool arguments`},
+		{name: "unknown skill field", tool: "read_skill", arguments: `{"name":"split-issue","path":"/etc/passwd"}`, success: false, contains: `invalid tool arguments`},
 		{name: "all projects lists only granted", tool: "list_attention", arguments: `{"scope":"all_projects"}`, success: true, contains: `"blocked"`},
 	}
 	for index, test := range tests {
@@ -789,6 +798,16 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 			result := results[index]
 			if result.Success != test.success || !strings.Contains(result.Content, test.contains) {
 				t.Fatalf("result = %#v, want success=%v containing %s", result, test.success, test.contains)
+			}
+			if test.tool == "read_skill" && test.success {
+				var skill struct {
+					Name string `json:"name"`
+					Body string `json:"body"`
+				}
+				decodeToolResult(t, result, &skill)
+				if skill.Name != "split-issue" || !strings.Contains(skill.Body, "Read the graph back and confirm every child") {
+					t.Fatalf("skill result = %#v", skill)
+				}
 			}
 			if test.tool == "explain_issue" && test.success {
 				var explained struct {
@@ -1215,6 +1234,11 @@ func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
 		contains string
 		absent   bool
 	}{
+		{
+			name: "built-in skill requires current project read access",
+			tool: "read_skill", args: func(tracker.NativeWorkItemID) string { return `{"name":"split-issue"}` }, revoke: "grant",
+			contains: "can no longer read this project",
+		},
 		{
 			name: "a blocker in the owner's project is named",
 			tool: "list_attention", args: func(tracker.NativeWorkItemID) string { return `{"scope":"project"}` },
