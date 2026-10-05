@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -758,6 +760,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		staged       bool
 		signingFail  bool
 		lateConflict bool
+		baseMoved    bool
 		dirty        bool
 		wantNone     bool
 		wantChanged  bool
@@ -768,6 +771,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "initial interactive code stays conversation owned", interactive: true, staged: true, wantNone: true, wantState: "In Progress"},
 		{name: "host commits staged code", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "ordinary staged code reaches landing", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "successful base moved wait reclaims the reviewed unlanded version", staged: true, land: true, baseMoved: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "hosted template commits reach Human Review", hosted: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "hosted template without commits ends", hosted: true, wantState: "Done"},
 		{name: "no commits", wantState: "Done"},
@@ -1200,9 +1204,106 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				landing := h.scheduler.RunExecution(issue.ID)
+				if test.baseMoved {
+					guarded, stop, err := landing.Guard(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer stop()
+					if err := landing.(runner.LandingRuntimeExecution).StartLanding(guarded, 655, 0); err != nil {
+						t.Fatal(err)
+					}
+					target, err := landing.(runner.LandingExecution).LandingTarget(guarded)
+					if err != nil {
+						t.Fatal(err)
+					}
+					info, err := backend.Create(guarded, workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier, Landing: &workspace.LandOptions{HeadSHA: target.HeadSHA, Repository: target.Repository}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					mergeRequests := 0
+					client, err := github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(issue.ID), DisableConditionalRequests: true, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						response := httptest.NewRecorder()
+						response.Header().Set("X-RateLimit-Remaining", "4991")
+						switch request.Method {
+						case http.MethodGet:
+							response.WriteString("[]")
+						case http.MethodPost:
+							response.WriteString(fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":%q,"ref":%q},"base":{"ref":"main"}}`, target.HeadSHA, info.Branch))
+						case http.MethodPut:
+							var body map[string]string
+							if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["sha"] != target.HeadSHA || body["merge_method"] != target.Method || !strings.HasSuffix(request.URL.Path, "/pulls/7/merge") {
+								t.Fatalf("merge mutation lost reviewed identity: %s, %v, %v", request.URL.Path, body, err)
+							}
+							mergeRequests++
+							response.WriteHeader(http.StatusMethodNotAllowed)
+							response.WriteString(`{"message":"Base branch was modified. Review and try the merge again."}`)
+						default:
+							t.Fatalf("unexpected fixture request: %s %s", request.Method, request.URL.Path)
+						}
+						return response.Result(), nil
+					})}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = backend.(workspace.GitHubPRLander).LandChangeViaGitHub(guarded, info, workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier}, workspace.LandOptions{HeadSHA: target.HeadSHA, Repository: target.Repository, Method: target.Method, GitHubClient: client})
+					var refusal *workspace.LandRefusal
+					var status *github.StatusError
+					if !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalBaseMoved || !errors.As(err, &status) || status.StatusCode != http.StatusMethodNotAllowed || mergeRequests != 1 {
+						t.Fatalf("merge HTTP405 did not produce the typed base wait: %v", err)
+					}
+					if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, RefusalKind: refusal.Kind, Refusal: refusal.Reason}); err != nil {
+						t.Fatal(err)
+					}
+					if err := landing.Checkpoint(guarded, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: target.HeadSHA, ExternalEffect: "none", EffectState: "none"}); err != nil {
+						t.Fatal(err)
+					}
+					if err := landing.Finish(guarded, "succeeded"); err != nil {
+						t.Fatal(err)
+					}
+					previousLease := landing.Recovery().Lease
+					if err := h.scheduler.ReleaseClaim(guarded, issue.ID, "waiting"); err != nil {
+						t.Fatal(err)
+					}
+					stop()
+					item := tracker.NativeWorkItemID(issue.ID)
+					evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+					if err != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" || evidence.Attempt.WorkItemRevision != 3 || evidence.Attempt.DispatchGeneration != 0 || evidence.Attempt.Checkpoint == nil || evidence.Attempt.Checkpoint.WorktreeState != "unpushed" || evidence.Attempt.Checkpoint.HeadSHA != target.HeadSHA || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Landing == nil || evidence.Attempt.Runtime.Landing.Landed || evidence.Attempt.Runtime.Landing.RefusalKind != workspace.LandRefusalBaseMoved || evidence.Change == nil || evidence.Change.Change.CurrentVersion != target.VersionID || evidence.Change.Change.Landed != nil || h.state(t, issue.ID) != "Merging" {
+						t.Fatalf("waiting attempt lost truthful revision3 landing evidence: %+v, %v", evidence, err)
+					}
+					candidates = h.candidatesIn(t, "Merging")
+					if len(candidates) != 1 || candidates[0].ID != issue.ID {
+						t.Fatalf("successful unlanded wait disappeared from normal claim: %+v", candidates)
+					}
+					if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+						t.Fatal(err)
+					}
+					landing = h.scheduler.RunExecution(issue.ID)
+					currentLease := landing.Recovery().Lease
+					if currentLease.FencingToken <= previousLease.FencingToken {
+						t.Fatal("landing continuation reused terminal authority")
+					}
+					for _, test := range []struct {
+						name    string
+						lease   tracker.NativeLease
+						version string
+					}{
+						{name: "released lease", lease: previousLease, version: target.VersionID},
+						{name: "stale fencing", lease: tracker.NativeLease{ID: currentLease.ID, FencingToken: previousLease.FencingToken}, version: target.VersionID},
+						{name: "foreign lease", lease: tracker.NativeLease{ID: "foreign-lease", FencingToken: currentLease.FencingToken}, version: target.VersionID},
+						{name: "stale version", lease: currentLease, version: "version_stale"},
+					} {
+						if _, err := h.native.LandChangeVersion(t.Context(), item, target.ChangeID, test.version, tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name, LeaseID: test.lease.ID, FencingToken: test.lease.FencingToken}, MergeSHA: target.HeadSHA, BaseRef: "main", Method: target.Method}); err == nil {
+							t.Fatalf("landing accepted %s", test.name)
+						}
+					}
+				}
 				result, err := agent.Run(t.Context(), runner.RunRequest{Execution: landing, ProjectID: "local", Issue: candidates[0], Mode: runner.RunModeMerge})
 				if err != nil || result.NativeLanding == nil || !result.NativeLanding.Landed || result.NativeLanding.VersionID != change.VersionID || result.NativeLanding.HeadSHA != change.HeadSHA || h.state(t, issue.ID) != "Done" {
 					t.Fatalf("preserved head was not genuinely landed: %+v, %v", result.NativeLanding, err)
+				}
+				if candidates := h.candidatesIn(t, "Merging"); len(candidates) != 0 {
+					t.Fatalf("landed version was reclaimed: %+v", candidates)
 				}
 				path, expectedContent := "CHANGE.md", "changed\n"
 				if test.rework && !test.lateConflict {
