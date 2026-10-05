@@ -125,6 +125,8 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"linked_issue_sources",
 		"project_secrets",
 		"project_secret_audit",
+		"project_sprite_pools",
+		"project_sprite_members",
 		"provider_reservations",
 		"machines",
 		"native_attempts",

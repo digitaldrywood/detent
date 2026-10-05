@@ -22555,7 +22555,7 @@
     },
     {
       "id": "hubserver.set_project_secret",
-      "summary": "Set project secret",
+      "summary": "Project secret and Sprite pool setup",
       "audience": "operator",
       "sources": [
         {
@@ -22589,6 +22589,56 @@
           "definition": "send(ProjectSecretStatus,\"PUT\",`${project(projectId)}/secrets/fly_sprites_token`,{ token })",
           "occurrence": 1,
           "line": 261
+        },
+        {
+          "source": "internal/hubserver/project_sprite_pool.go",
+          "kind": "route",
+          "definition": "e.GET(nativeBase+\"/sprite-pool\", s.getSpritePool, read) [route=\"/api/v2/organizations/:organization/projects/:project/sprite-pool\"]",
+          "occurrence": 1,
+          "line": 62,
+          "method": "GET",
+          "path": "nativeBase + \"/sprite-pool\"",
+          "handler": "s.getSpritePool",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/sprite-pool"
+        },
+        {
+          "source": "internal/hubserver/project_sprite_pool.go",
+          "kind": "route",
+          "definition": "e.PUT(nativeBase+\"/sprite-pool\", s.setSpritePool, read) [route=\"/api/v2/organizations/:organization/projects/:project/sprite-pool\"]",
+          "occurrence": 1,
+          "line": 63,
+          "method": "PUT",
+          "path": "nativeBase + \"/sprite-pool\"",
+          "handler": "s.setSpritePool",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/sprite-pool"
+        },
+        {
+          "source": "web/conversation/src/app/account/SpritePoolCard.tsx",
+          "kind": "attribute",
+          "definition": "onSubmit={(event) => { event.preventDefault(); void save(); }}",
+          "occurrence": 1,
+          "line": 50
+        },
+        {
+          "source": "web/conversation/src/app/account/SpritePoolCard.tsx",
+          "kind": "form",
+          "definition": "<form className=\"space-y-3\" onSubmit={(event) => { event.preventDefault(); void save(); }}>",
+          "occurrence": 1,
+          "line": 50
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(SpritePool,\"GET\",`${project(projectId)}/sprite-pool`)",
+          "occurrence": 1,
+          "line": 262
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(SpritePool,\"PUT\",`${project(projectId)}/sprite-pool`,settings)",
+          "occurrence": 1,
+          "line": 264
         }
       ],
       "availability": [
@@ -22631,7 +22681,8 @@
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
         "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
-        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments."
+        "Mutations reuse the shared audit/retry contract (#3338); authentication and YOLO belong to connection authority (#3336/#3337), never arguments.",
+        "Sprite pool routes require current native operator/admin scope and project grants; settings writes additionally require owner/admin authority and the current pool revision. Enabling provisioning requires installed hosted configuration and the project secret store."
       ],
       "confirmation": [
         {
@@ -22655,8 +22706,8 @@
       },
       "owner": "digitaldrywood/detent#3342",
       "status": "implemented",
-      "coverage": "TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending.",
-      "decision": "Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools."
+      "coverage": "TestHostedProjectTools (dedicated/shared), TestHostedOperatorCurrentAuthority, TestProjectImportToolReceipts, TestNativeProjectRepositoryBindingAndIntake, TestProjectArgumentBounds, TestProjectSecretLifecycle; isolated Chrome exact approval/YOLO verification; project/budget transport cases in TestMCPActionApprovalBoundary and TestActionConfirmationClassification. Parent parity remains pending. TestSpritePoolLifecycle and TestSpritePoolFreshAuthority cover existing pool behavior and authority; TestDashboardCapabilityCoverage covers these six source sites.",
+      "decision": "Implemented through named typed project tools and shared dashboard application commands (#3342). Interactive credentials, workflow-file writes and browser forms return the existing setup URL and required steps; secret values never enter tools. Sprite pool GET/PUT and browser settings remain in the authenticated setup flow; project_setup returns its existing URL and requirements, not pool/bootstrap data or mutation authority. Pool bounds and customer bootstrap are configured through the existing browser form or project conversation approval owner."
     },
     {
       "id": "hubserver.start_git_hub_import",
