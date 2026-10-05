@@ -38,6 +38,7 @@ export interface WorkspacePanel {
   readonly open: boolean;
   readonly maximized: boolean;
   readonly openAsk: () => void;
+  readonly askFocusRequest: number;
   readonly openConversation: () => void;
   readonly conversationAvailable: boolean;
   readonly openPullRequest: () => void;
@@ -126,11 +127,18 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
     title: props.title,
   });
 
+  const [askFocusRequest, setAskFocusRequest] = React.useState(0);
+  const openAsk = React.useCallback(() => {
+    workspace.openAsk();
+    setAskFocusRequest((request) => request + 1);
+  }, [workspace.openAsk]);
+
   const panelContext = React.useMemo<WorkspacePanel>(
     () => ({
       open: workspace.open,
       maximized: workspace.maximized,
-      openAsk: workspace.openAsk,
+      openAsk,
+      askFocusRequest,
       openConversation: workspace.openConversation,
       conversationAvailable: workspace.conversationAvailable,
       openPullRequest: workspace.openPullRequest,
@@ -143,7 +151,8 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
       workspace.pullRequestAvailable,
       workspace.maximized,
       workspace.open,
-      workspace.openAsk,
+      openAsk,
+      askFocusRequest,
       workspace.openConversation,
       workspace.toggleRightPanel,
     ],
@@ -156,11 +165,11 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
       if (event.key.toLowerCase() !== "a" || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
       if (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, textarea, select, [role='textbox']"))) return;
       event.preventDefault();
-      workspace.openAsk();
+      openAsk();
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [props.askPanel, workspace.openAsk]);
+  }, [props.askPanel, openAsk]);
 
   const openIssue = React.useCallback(() => {
     if (props.workItemId === null) return;
@@ -437,7 +446,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
                 availableEditors={OPEN_IN_EDITORS}
                 rightPanelOpen={workspace.open}
                 gitCwd={git.worktreePath}
-                onAsk={props.askPanel == null ? undefined : workspace.openAsk}
+                onAsk={props.askPanel == null ? undefined : openAsk}
                 onNewThreadInProject={props.onNewThreadInProject}
                 onRunProjectScript={runScript}
                 onAddProjectScript={actions.add}
@@ -470,7 +479,9 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
               </WorkspacePanelContext.Provider>
             </div>
           </div>
-          {workspace.panel}
+          <WorkspacePanelContext.Provider value={panelContext}>
+            {workspace.panel}
+          </WorkspacePanelContext.Provider>
         </div>
       </ConversationActionsProvider>
     </HeaderActionsProvider>

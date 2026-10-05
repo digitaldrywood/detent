@@ -8,6 +8,8 @@ import type {
   Conversation,
   ConversationListResponse,
 } from "../../contracts/conversation.ts";
+import { DEFAULT_TURN_PREFERENCES } from "../../contracts/index.ts";
+import { Composer } from "../components/Composer.tsx";
 import { ConversationView } from "../App.tsx";
 import { newCommandKey, useClient } from "../client.ts";
 import { useWorkspacePanel } from "../components/ChatWorkspace.tsx";
@@ -155,71 +157,6 @@ export function useIssueAsk(
   return { threads, selected, select, loading, pending, error, start };
 }
 
-export function IssueAskEntry({
-  ask,
-  canWrite,
-}: {
-  readonly ask: IssueAsk;
-  readonly canWrite: boolean;
-}): React.ReactElement {
-  const panel = useWorkspacePanel();
-  const [question, setQuestion] = React.useState("");
-  const submit = async (text: string) => {
-    panel?.openAsk();
-    if (await ask.start(text)) setQuestion("");
-  };
-  return (
-    <section
-      data-testid="issue-ask-inline"
-      className="rounded-lg border border-border bg-muted/30 p-3"
-    >
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit(question);
-        }}
-        className="flex items-center gap-2"
-      >
-        <input
-          aria-label="Ask about this issue"
-          placeholder="Ask about this issue…"
-          value={question}
-          disabled={!canWrite || ask.pending || ask.loading}
-          onFocus={() => panel?.openAsk()}
-          onChange={(event) => setQuestion(event.target.value)}
-          className="min-w-0 flex-1 bg-transparent text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        />
-        <Button
-          size="sm"
-          variant="outline"
-          type="submit"
-          disabled={
-            !canWrite || ask.pending || ask.loading || question.trim() === ""
-          }
-        >
-          Ask
-        </Button>
-      </form>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Private · Never posted to the issue
-      </p>
-      <div className="mt-2 flex flex-wrap gap-2">
-        {ISSUE_QUESTIONS.map(({ label, prompt }) => (
-          <Button
-            key={label}
-            size="xs"
-            variant="ghost"
-            disabled={!canWrite || ask.pending || ask.loading}
-            onClick={() => void submit(prompt)}
-          >
-            {label}
-          </Button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 export function IssueAskPanel({
   ask,
   projectId,
@@ -232,7 +169,23 @@ export function IssueAskPanel({
   readonly canWrite: boolean;
 }): React.ReactElement {
   const navigate = useNavigate();
+  const panel = useWorkspacePanel();
   const [question, setQuestion] = React.useState("");
+  const composer = {
+    label: "Ask message",
+    placeholder: `Ask about ${identifier}…`,
+    promptClassName: "min-h-[3lh] max-h-[12lh]",
+    promptContext: (
+      <span className="mb-2 inline-block rounded-md border border-border bg-muted px-2 py-0.5 text-xs">
+        {identifier}
+      </span>
+    ),
+    sendLabel: "Ask",
+    focusRequest: panel?.askFocusRequest ?? 0,
+    footerControls: "none" as const,
+    attachControl: "none" as const,
+    disabled: !canWrite,
+  };
   return (
     <section
       data-testid="issue-ask-panel"
@@ -240,55 +193,43 @@ export function IssueAskPanel({
       className="flex min-h-0 flex-1 flex-col [&_a[href*='#issue-']]:rounded-md [&_a[href*='#issue-']]:bg-muted [&_a[href*='#issue-']]:px-1.5 [&_a[href*='#issue-']]:py-0.5"
     >
       <div className="space-y-3 border-b border-border p-4">
-        <div className="flex items-center gap-2">
-          <select
-            aria-label="Issue chats"
-            value={ask.selected ?? ""}
-            onChange={(event) => ask.select(event.target.value || null)}
-            className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
-          >
-            <option value="">New question</option>
-            {ask.threads.map((thread) => (
-              <option key={thread.id} value={thread.id}>
-                {thread.title}
-              </option>
-            ))}
-          </select>
-          <Button size="xs" variant="ghost" onClick={() => ask.select(null)}>
-            New chat
+        <div className="flex flex-wrap items-center gap-2">
+          {ask.threads.length === 0 ? null : (
+            <select
+              aria-label="Issue chats"
+              value={ask.selected ?? ""}
+              onChange={(event) => ask.select(event.target.value || null)}
+              className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
+            >
+              <option value="">New question</option>
+              {ask.threads.map((thread) => (
+                <option key={thread.id} value={thread.id}>
+                  {thread.title}
+                </option>
+              ))}
+            </select>
+          )}
+          <Button size="xs" variant="ghost" onClick={() => {
+            ask.select(null);
+            panel?.openAsk();
+          }}>
+            New question
           </Button>
           {ask.selected === null ? null : (
             <Button
               size="xs"
               variant="outline"
-              onClick={() =>
-                void navigate({
-                  to: "/chat/c/$conversationId",
-                  params: { conversationId: ask.selected! },
-                })
-              }
+              onClick={() => void navigate({
+                to: "/chat/c/$conversationId",
+                params: { conversationId: ask.selected! },
+              })}
             >
               Open in Chat
             </Button>
           )}
         </div>
-        <div
-          className="rounded-lg border border-border bg-muted/30 p-3"
-          data-testid="issue-ask-context"
-        >
-          <p className="text-sm font-medium">Context loaded from this issue</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Body · Comments · Lane history · Attempts · Latest workpad ·
-            Dependencies · Pull request
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Refreshed on every turn. Private · Never posted to the issue.
-          </p>
-        </div>
         {ask.error === null ? null : (
-          <p role="alert" className="text-sm text-destructive">
-            {ask.error}
-          </p>
+          <p role="alert" className="text-sm text-destructive">{ask.error}</p>
         )}
       </div>
       {ask.loading ? (
@@ -301,54 +242,44 @@ export function IssueAskPanel({
           conversationId={ask.selected}
           projectId={projectId}
           header={false}
+          issueAskComposer={composer}
         />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-          {ISSUE_QUESTIONS.map(({ label, prompt }) => (
-            <Button
-              key={label}
-              variant="outline"
-              disabled={!canWrite || ask.pending || ask.loading}
-              onClick={() => void ask.start(prompt)}
-            >
-              {label}
-            </Button>
-          ))}
-          <form
-            className="mt-auto space-y-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void ask.start(question).then((sent) => {
-                if (sent) setQuestion("");
-              });
-            }}
-          >
-            <span className="inline-block rounded-md border border-border px-2 py-1 text-xs">
-              {identifier} attached
-            </span>
-            <textarea
-              aria-label="Ask message"
-              placeholder="Ask about this issue…"
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-              disabled={!canWrite || ask.pending || ask.loading}
-              className="min-h-24 w-full rounded-lg border border-border bg-background p-3 text-sm focus-visible:ring-2 focus-visible:ring-ring"
-            />
-            <Button
-              type="submit"
-              size="sm"
-              disabled={
-                !canWrite ||
-                ask.pending ||
-                ask.loading ||
-                question.trim() === ""
-              }
-            >
-              Ask
-            </Button>
-          </form>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {ask.threads.length === 0 ? (
+            <div className="flex min-h-0 flex-1 flex-col items-start gap-1 overflow-y-auto p-4">
+              {ISSUE_QUESTIONS.map(({ label, prompt }) => (
+                <button
+                  key={label}
+                  type="button"
+                  className="w-full rounded-md px-2 py-2 text-left text-sm font-normal text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  disabled={!canWrite || ask.pending}
+                  onClick={() => void ask.start(prompt)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          ) : <div className="min-h-0 flex-1" />}
+          <Composer
+            {...composer}
+            value={question}
+            onChange={setQuestion}
+            onSend={() => void ask.start(question).then((sent) => {
+              if (sent) setQuestion("");
+            })}
+            sending={ask.pending}
+            streaming={false}
+            autoFocus
+            preferences={DEFAULT_TURN_PREFERENCES}
+            onPreferencesChange={() => {}}
+            domId="dc-issue-ask-composer"
+          />
         </div>
       )}
+      <p data-testid="issue-ask-context" className="px-4 pb-3 text-xs text-muted-foreground">
+        Luna reads this issue's body, comments, history, runs and pull request on every turn. Only you see this chat.
+      </p>
     </section>
   );
 }

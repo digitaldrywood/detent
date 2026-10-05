@@ -38,7 +38,7 @@ import {
 } from "../runtime/state/conversationState.ts";
 import { newCommandKey, readLastProject, useClient, writeLastProject } from "./client.ts";
 import { Button } from "../components/ui/button.tsx";
-import { Composer } from "./components/Composer.tsx";
+import { Composer, type ComposerProps } from "./components/Composer.tsx";
 import { ComposerContextStrip } from "./components/ComposerContextStrip.tsx";
 import { useIssuePullRequest } from "./adapters/issuePullRequest.ts";
 import { DraftHeroHeadline } from "./components/DraftHeroHeadline.tsx";
@@ -712,6 +712,7 @@ export function ConversationView({
   conversationId,
   projectId,
   header = true,
+  issueAskComposer,
 }: {
   conversationId: string;
   projectId: string;
@@ -722,6 +723,7 @@ export function ConversationView({
    * else about the view is unchanged.
    */
   header?: boolean;
+  issueAskComposer?: Pick<ComposerProps, "label" | "placeholder" | "promptClassName" | "promptContext" | "sendLabel" | "focusRequest" | "footerControls" | "attachControl" | "disabled">;
 }): React.ReactElement {
   const client = useClient();
   const shell = useShell();
@@ -1270,7 +1272,6 @@ export function ConversationView({
               autoFocus={!closed}
               label="Message"
               blockedReason={composerBlockedReason}
-              disabled={closed}
               preferences={linked ? turnPreferences(detail.conversation) : generalChatPreferences(turnPreferences(detail.conversation), client.bootstrap.preferences)}
               preferenceChoices={linked ? linkedChatChoices(client.bootstrap.preferences) : generalChatChoices(client.bootstrap.preferences)}
               onPreferencesChange={(next) =>
@@ -1286,6 +1287,8 @@ export function ConversationView({
               // where a send goes (Michael, September 12: "Queued for the next
               // attempt, why is this showing if we have the top banner").
               describedBy={null}
+              {...issueAskComposer}
+              disabled={closed || issueAskComposer?.disabled === true}
               // The chat's own slash commands. Everything else the menu offers
               // — the three pickers, the paperclip, the draft, the interrupt —
               // the composer supplies from its own handles.
@@ -1315,7 +1318,7 @@ export function ConversationView({
                 },
               ]}
               contextStrip={
-                detail.conversation.subject_work_item_id != null ? (
+                issueAskComposer !== undefined ? undefined : detail.conversation.subject_work_item_id != null ? (
                   <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
                     <button type="button" onClick={() => openIssue(detail.conversation.subject_work_item_id as string)} className="rounded-md border border-border px-2 py-1 hover:bg-muted">
                       {detail.conversation.title.match(/^#\d+/)?.[0] ?? "Issue"} attached
