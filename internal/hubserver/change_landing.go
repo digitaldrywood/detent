@@ -273,7 +273,7 @@ func (s *Service) landChange(c echo.Context) error {
 	})
 }
 
-func nativeLandingCandidateReady(ctx context.Context, query nativeQueryer, scope *nativeScope, id tracker.WorkItemID, now time.Time) (ready, evaluated bool, err error) {
+func nativeLandingCandidateReady(ctx context.Context, query nativeQueryer, scope *nativeScope, id tracker.WorkItemID, machine tracker.MachineID, now time.Time) (ready, evaluated bool, err error) {
 	if scope == nil {
 		return true, false, nil
 	}
@@ -295,7 +295,25 @@ func nativeLandingCandidateReady(ctx context.Context, query nativeQueryer, scope
 	if err != nil {
 		return false, true, err
 	}
-	return nativeChangeLandingReady(state, &detail), true, nil
+	if !nativeChangeLandingReady(state, &detail) {
+		return false, true, nil
+	}
+	version, err := readChangeVersion(ctx, query, change.ID, change.CurrentVersion)
+	if err != nil {
+		return false, true, err
+	}
+	if version.External != nil || version.AttemptID == "" {
+		return true, true, nil
+	}
+	attempt, err := readNativeAttempt(ctx, query, *scope, item, version.AttemptID, now)
+	if err != nil {
+		return false, true, err
+	}
+	checkpoint := attempt.Checkpoint
+	if checkpoint == nil || checkpoint.Storage != "local_only" || checkpoint.WorktreeState != "unpushed" || checkpoint.HeadSHA != version.HeadSHA {
+		return true, true, nil
+	}
+	return attempt.MachineID == machine && (attempt.RunnerID == "" || attempt.RunnerID == scope.credential.Runner.RunnerID), true, nil
 }
 
 func nativeChangeLandingReady(state string, detail *tracker.ChangeDetail) bool {
