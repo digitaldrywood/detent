@@ -249,8 +249,11 @@ func insertHostedComplimentaryGrant(ctx context.Context, tx *sql.Tx, command hos
 }
 
 func hostedRunnerTransactionMetrics(path string) []string {
-	if path == nativeBase+"/leases/:lease/validate" {
+	switch path {
+	case nativeBase + "/leases/:lease/validate", nativeBase + "/claims/preview":
 		return []string{"events_total", "usage_windows"}
+	case nativeBase + "/machines/:machine/heartbeat":
+		return []string{"connected_runners", "events_total", "usage_windows"}
 	}
 	return nil
 }

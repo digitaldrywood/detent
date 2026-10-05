@@ -80,11 +80,21 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 		}
 	}
 	metrics := hostedRunnerTransactionMetrics(c.Path())
+	heartbeat := strings.HasSuffix(c.Path(), "/heartbeat")
+	scope := nativeRequestScope(c)
+	if heartbeat && s.database.hostedPlans != nil && scope.credential.Runner.RunnerID != "" {
+		var configurationReceipt bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM runner_identities WHERE organization_id = ? AND id = ? AND json_extract(routing_settings_json, '$.project_configuration_request.request.project_id') = ?)", scope.organization, scope.credential.Runner.RunnerID, scope.project).Scan(&configurationReceipt); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		if configurationReceipt {
+			metrics = append(metrics, "collaboration_bytes")
+		}
+	}
 	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	heartbeat := strings.HasSuffix(c.Path(), "/heartbeat")
 	var dispatchBefore string
 	if heartbeat {
 		dispatchBefore, err = runnerDispatchFingerprint(ctx, tx, nativeRequestScope(c), c.Param("machine"), now)
