@@ -612,7 +612,7 @@ function IssueSurface({
       onNewThreadInProject={() => void navigate({ to: "/chat" })}
       attempts={data?.attempts ?? []}
       history={data?.history ?? []}
-      askPanel={projectId === null ? null : <IssueAskPanel ask={ask} projectId={projectId} identifier={item === null ? workItemId : issueNumber(item.identifier, item.number)} canWrite={canWrite} />}
+      askPanel={projectId === null ? null : <IssueAskPanel ask={ask} projectId={projectId} identifier={item === null ? workItemId : issueNumber(item.identifier, item.number)} title={item?.title ?? ""} canWrite={canWrite} />}
       conversationPanel={conversationPanel}
     >
       <PanelIntent wanted={search.panel === "conversation"} />
