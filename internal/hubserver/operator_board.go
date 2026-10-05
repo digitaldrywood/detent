@@ -82,18 +82,21 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 			result.Truncated = true
 			break
 		}
-		ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(project.ID)})
+		projectCtx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(project.ID)})
 		if err != nil {
 			return operatortool.Result{}, err
 		}
-		resolve = ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
-		scope, err = resolve(ctx)
+		projectResolve, ok := projectCtx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+		if !ok {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		projectScope, err := projectResolve(projectCtx)
 		if err != nil {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}
-		scope.project = project.ID
+		projectScope.project = project.ID
 		params := (operatortool.WorkReadRequest{Limit: remaining, State: request.State, Include: []string{"work"}}).NativeWorkQuery()
-		page, err := s.readIssues(ctx, scope, params)
+		page, err := s.readIssues(projectCtx, projectScope, params)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}

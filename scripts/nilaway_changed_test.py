@@ -86,6 +86,17 @@ class ReverseDependentAuditTests(unittest.TestCase):
             self.assertIn("1 reviewed legacy diagnostics", output)
 
             reviewed = f'{importer}:{line}:{diagnostic["column"]}: Potential nil panic detected\n'
+            related = f'(Same nil source could also cause potential nil panic(s) at 1 other place(s): "importer/importer.go:{line}:{diagnostic["column"]}".)\n'
+            with mock.patch.object(
+                audit.subprocess, "run", side_effect=[
+                    subprocess.CompletedProcess([], 0, ""),
+                    subprocess.CompletedProcess([], 1, reviewed + related),
+                ],
+            ):
+                code, output = run_audit()
+                self.assertEqual(code, 0, output)
+                self.assertIn("1 reviewed legacy diagnostics", output)
+
             for returncode, failure in ((1, "nilaway: signal: killed\n"), (-9, ""), (2, "")):
                 with self.subTest(returncode=returncode, failure=failure), mock.patch.object(
                     audit.subprocess, "run", side_effect=[

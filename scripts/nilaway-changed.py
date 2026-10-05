@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "scripts" / "nilaway-baseline.json"
 DIAGNOSTIC = re.compile(r"^(?P<path>\S+\.go):(?P<line>\d+):(?P<column>\d+):\s*(?:error:\s*)?(?P<message>.*)")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
+RELATED_DIAGNOSTIC = re.compile(r"^\(Same nil source could also cause potential nil panic\(s\) at \d+ other place\(s\): .+\.\)$")
 
 
 def main():
@@ -45,7 +46,7 @@ def main():
         line = ANSI.sub("", raw)
         match = DIAGNOSTIC.search(line)
         if not match:
-            if line.strip() and not line.startswith(("# ", "\t", " ")):
+            if line.strip() and not line.startswith(("# ", "\t", " ")) and not RELATED_DIAGNOSTIC.fullmatch(line):
                 unexpected.append(line)
             continue
         diagnostics += 1

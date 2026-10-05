@@ -17,7 +17,7 @@ import (
 
 var errSpritesValidation = errors.New("sprites rejected the token or could not validate its organization")
 
-var errSpritesTokenRejected = errors.New("Sprites rejected the organization token; replace it through the Sprites connector")
+var errSpritesTokenRejected = errors.New("sprites rejected the organization token; replace it through the Sprites connector")
 var errSpritesBilling = errors.New("the Fly organization needs Sprites billing enabled; open the Sprites account page, enable billing, then retry")
 
 func spritesResponseError(status int) error {
