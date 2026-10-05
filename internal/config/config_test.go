@@ -1775,6 +1775,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Agent.Skills.Path != ".detent/skills" {
 		t.Fatalf("Agent.Skills.Path = %q", cfg.Agent.Skills.Path)
 	}
+	if cfg.Agent.Skills.MaxSkillsInPrompt != 100 {
+		t.Fatalf("Agent.Skills.MaxSkillsInPrompt = %d, want 100", cfg.Agent.Skills.MaxSkillsInPrompt)
+	}
 	if !cfg.Agent.Knowledge.Enabled {
 		t.Fatal("Agent.Knowledge.Enabled = false, want true default")
 	}

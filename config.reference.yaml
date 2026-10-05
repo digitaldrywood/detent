@@ -806,8 +806,8 @@
 #     enabled: true
 #     # agent.skills.path | type: string | default: ".detent/skills" | required: No | validation: must be a relative path inside the workspace
 #     path: ".detent/skills"
-#     # agent.skills.max_skills_in_prompt | type: integer | default: 50 | required: No | validation: must be greater than 0
-#     max_skills_in_prompt: 50
+#     # agent.skills.max_skills_in_prompt | type: integer | default: 100 | required: No | validation: must be greater than 0
+#     max_skills_in_prompt: 100
 #     # agent.skills.creation | type: object | default: see child fields | required: No | validation: None
 #     creation:
 #       # agent.skills.creation.enabled | type: boolean | default: true | required: No | validation: None

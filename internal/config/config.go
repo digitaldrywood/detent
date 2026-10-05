@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/skills"
 )
 
 const (
@@ -3494,7 +3495,7 @@ func defaultSkills() Skills {
 	return Skills{
 		Enabled:           true,
 		Path:              ".detent/skills",
-		MaxSkillsInPrompt: 50,
+		MaxSkillsInPrompt: skills.DefaultMaxSkillsInPrompt,
 		Creation: SkillCreation{
 			Enabled:         true,
 			MaxDraftsPerRun: 1,

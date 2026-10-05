@@ -1223,7 +1223,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agent.skills.creation.enabled` | `boolean` | `true` | No | None |
 | `agent.skills.creation.max_drafts_per_run` | `integer` | `1` | No | must be greater than 0 |
 | `agent.skills.enabled` | `boolean` | `true` | No | None |
-| `agent.skills.max_skills_in_prompt` | `integer` | `50` | No | must be greater than 0 |
+| `agent.skills.max_skills_in_prompt` | `integer` | `100` | No | must be greater than 0 |
 | `agent.skills.path` | `string` | `".detent/skills"` | No | must be a relative path inside the workspace |
 | `agent.stop_run` | `object` | `see child fields` | No | None |
 | `agent.stop_run.target_state` | `string` | `"Blocked"` | No | must be included in tracker.observed_states |

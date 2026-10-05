@@ -1721,7 +1721,7 @@ func TestCheckDoctorProjectSkills(t *testing.T) {
 			},
 			available:  true,
 			wantStatus: doctorOK,
-			wantDetail: []string{"enabled=true", "path=.detent/skills", "max_skills_in_prompt=50", "files=1", "loaded=1", "dropped=0"},
+			wantDetail: []string{"enabled=true", "path=.detent/skills", "max_skills_in_prompt=100", "files=1", "loaded=1", "dropped=0"},
 		},
 		{
 			name: "within limit reports all files",

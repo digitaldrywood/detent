@@ -546,7 +546,7 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("  skills:\n")
 	b.WriteString("    enabled: true\n")
 	b.WriteString("    path: .detent/skills\n")
-	b.WriteString("    max_skills_in_prompt: 50\n")
+	writeScalar(&b, "    ", "max_skills_in_prompt", strconv.Itoa(config.Default().Agent.Skills.MaxSkillsInPrompt))
 	b.WriteString("    creation:\n")
 	b.WriteString("      enabled: true\n")
 	b.WriteString("      max_drafts_per_run: 1\n")
