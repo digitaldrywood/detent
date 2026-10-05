@@ -133,25 +133,9 @@ func Prepare(reader io.Reader, name, declared, scratch string) (upload *Upload, 
 	if err != nil {
 		return nil, err
 	}
-	media := conversation.NormalizeMediaType(declared)
-	detected := conversation.NormalizeMediaType(http.DetectContentType(content))
-	if detected == "application/pdf" && (media == "" || media == "application/pdf") {
-		media = "application/pdf"
-	} else {
-		if detected == "text/html" || detected == "text/xml" {
-			return nil, ErrInvalid
-		}
-		media, err = conversation.SniffAttachment(declared, content)
-		if err != nil {
-			return nil, ErrInvalid
-		}
-		if !strings.HasPrefix(media, "image/") {
-			trimmed := bytes.TrimSpace(bytes.TrimPrefix(content, []byte{0xef, 0xbb, 0xbf}))
-			detected := conversation.NormalizeMediaType(http.DetectContentType(trimmed))
-			if detected == "text/html" || detected == "text/xml" || strings.HasPrefix(strings.ToLower(string(trimmed[:min(len(trimmed), 512)])), "<svg") {
-				return nil, ErrInvalid
-			}
-		}
+	media, err := Sniff(declared, content)
+	if err != nil {
+		return nil, err
 	}
 	if strings.HasPrefix(media, "image/") {
 		cfg, _, err := image.DecodeConfig(bytes.NewReader(content))
@@ -195,4 +179,27 @@ func Prepare(reader io.Reader, name, declared, scratch string) (upload *Upload, 
 		return nil, err
 	}
 	return u, nil
+}
+
+func Sniff(declared string, content []byte) (string, error) {
+	media := conversation.NormalizeMediaType(declared)
+	detected := conversation.NormalizeMediaType(http.DetectContentType(content))
+	if detected == "application/pdf" && (media == "" || media == "application/pdf") {
+		return "application/pdf", nil
+	}
+	if detected == "text/html" || detected == "text/xml" {
+		return "", ErrInvalid
+	}
+	media, err := conversation.SniffAttachment(declared, content)
+	if err != nil {
+		return "", ErrInvalid
+	}
+	if !strings.HasPrefix(media, "image/") {
+		trimmed := bytes.TrimSpace(bytes.TrimPrefix(content, []byte{0xef, 0xbb, 0xbf}))
+		detected := conversation.NormalizeMediaType(http.DetectContentType(trimmed))
+		if detected == "text/html" || detected == "text/xml" || strings.HasPrefix(strings.ToLower(string(trimmed[:min(len(trimmed), 512)])), "<svg") {
+			return "", ErrInvalid
+		}
+	}
+	return media, nil
 }
