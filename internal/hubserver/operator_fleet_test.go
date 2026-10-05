@@ -466,11 +466,11 @@ func TestHostedMCPFleetControls(t *testing.T) {
 						t.Fatal("enrollment was not revoked")
 					}
 				case operatortool.RevokeRunnerIdentity:
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM api_tokens t JOIN runner_identities r ON r.token_id=t.id WHERE r.id=? AND t.revoked_at IS NOT NULL", runnerID).Scan(&effects); err != nil {
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM api_tokens t JOIN runner_identities r ON r.token_id=t.id WHERE r.id=? AND t.revoked_at IS NOT NULL AND r.removed_at IS NOT NULL", runnerID).Scan(&effects); err != nil {
 						t.Fatal(err)
 					}
 					if effects != 1 {
-						t.Fatal("runner credential was not revoked")
+						t.Fatal("runner was not removed and its credential revoked")
 					}
 				case operatortool.UpdateRunnerRouting:
 					var revision int

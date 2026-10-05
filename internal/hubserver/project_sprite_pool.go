@@ -175,7 +175,7 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 		return input, nil, err
 	}
 	ids := []string{}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r JOIN token_grants g ON g.token_id=r.token_id WHERE r.organization_id=? AND g.organization_id=? AND g.project_id=? ORDER BY r.id`, scope.organization, scope.organization, scope.project)
+	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r JOIN token_grants g ON g.token_id=r.token_id WHERE r.organization_id=? AND r.removed_at IS NULL AND g.organization_id=? AND g.project_id=? ORDER BY r.id`, scope.organization, scope.organization, scope.project)
 	if err != nil {
 		return input, nil, err
 	}

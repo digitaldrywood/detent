@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
 import type { FleetResponse, RunnerRouting } from "../../src/contracts/account.ts";
-import { AccountError } from "../../src/app/account/api.ts";
+import { AccountError, makeAccountApi } from "../../src/app/account/api.ts";
+import { ClientContext } from "../../src/app/client.ts";
+import { resetRunnerNamesForTests, runnerDisplay, useRunnerNames } from "../../src/app/work/lib/runnerNames.ts";
 import { parseRunnerWindow, serializeRunnerWindow } from "../../src/app/fleet/runnerSchedule.ts";
 import emptyFixture from "../../src/contracts/fixtures/account-fleet-empty.json";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 
-afterEach(() => { cleanup(); window.history.replaceState(null, "", "/"); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); resetRunnerNamesForTests(); window.history.replaceState(null, "", "/"); });
 
 const FLEET = fleetFixture as unknown as FleetResponse;
 const EMPTY = emptyFixture as unknown as FleetResponse;
@@ -29,6 +31,47 @@ function renderSection(fleet: FleetResponse = FLEET) {
 }
 
 describe("runner rows", () => {
+  it("keeps a removed runner's name for historical attempts without a fleet row", async () => {
+    const id = FLEET.runners[0]!.id;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...EMPTY, runner_names: { [id]: { display_name: "Retired Mac", hostname: "retired.local" } } }))));
+    const client = { http: { origin: "https://hub.test", apiBase: "/api/v2/organizations/org_test", csrfToken: "test" } } as React.ContextType<typeof ClientContext>;
+    const { result } = renderHook(() => useRunnerNames(), { wrapper: ({ children }) => <ClientContext.Provider value={client}>{children}</ClientContext.Provider> });
+    await waitFor(() => expect(runnerDisplay(result.current, id)).toBe("Retired Mac"));
+  });
+
+  it("removes through the existing DELETE API and accepts its empty response", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const api = makeAccountApi({ origin: "https://hub.test", apiBase: "/api/v2/organizations/org_test", csrfToken: "test", fetch });
+    await api.removeRunner("runner/a");
+    expect(fetch.mock.calls[0]).toEqual([
+      "https://hub.test/api/v2/organizations/org_test/runners/runner%2Fa",
+      expect.objectContaining({ method: "DELETE" }),
+    ]);
+  });
+  it.each([false, true])("confirms removal and keeps refusal visible (refused=%s)", async (refused) => {
+    const remove = vi.fn(async () => {
+      if (refused) throw new Error("This runner has active work. Drain it first.");
+    });
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true }} onRemoveRunner={remove} />);
+    fireEvent.click(screen.getByRole("button", { name: `Remove runner ${FLEET.runners[0]!.display_name}` }));
+    expect(remove).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    expect(remove).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: `Remove runner ${FLEET.runners[0]!.display_name}` }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove runner" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(FLEET.runners[0]));
+    if (refused) {
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("active work"));
+      expect(screen.getAllByTestId("host-card")).toHaveLength(FLEET.runners.length);
+    } else {
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    }
+  });
+
+  it("hides removal from a read-only fleet", () => {
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: false }} onRemoveRunner={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /Remove runner/ })).toBeNull();
+  });
   it("shows sleeping Sprites without capacity or attention warnings", () => {
     renderSection({ ...FLEET, runners: [{ ...FLEET.runners[1]!, state: "active", reported_capacity: 2, health: "asleep", claim_refusal_reason: "", problems: [], sprite: { name: "build-host", status: "warm", can_wake: true, wake_failed: false } }] });
     expect(screen.getByText("Asleep, wakes on new work")).toBeTruthy();

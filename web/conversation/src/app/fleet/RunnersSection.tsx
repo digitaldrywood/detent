@@ -3,6 +3,7 @@ import React from "react";
 import { SpritePoolCard } from "../account/SpritePoolCard.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
+import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "../../components/ui/dialog.tsx";
 import type { FleetResponse, FleetRunner, ProviderCapacity, RunnerRouting } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
@@ -169,7 +170,7 @@ function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[
 }
 
 export function RunnersSectionView({
-  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting, projects = [], onReloadRunner,
+  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting, projects = [], onReloadRunner, onRemoveRunner,
 }: {
   readonly fleet: FleetResponse;
   readonly projects?: readonly RunnerProject[];
@@ -179,6 +180,7 @@ export function RunnersSectionView({
   readonly onEnroll?: (name?: string) => void;
   readonly enrollments?: readonly PendingEnrollment[];
   readonly onSaveRouting?: (runner: FleetRunner, routing: RunnerRouting) => Promise<void>;
+  readonly onRemoveRunner?: (runner: FleetRunner) => Promise<void>;
 }): React.ReactElement {
   const [attentionOnly, setAttentionOnly] = React.useState(() => new URLSearchParams(window.location.search).get("health") === "needs_attention");
   const attentionCount = fleet.runners.filter((runner) => runner.health === "needs_attention").length;
@@ -201,6 +203,22 @@ export function RunnersSectionView({
     return () => window.removeEventListener("popstate", update);
   }, []);
   const [runnerToOpen, setRunnerToOpen] = React.useState<string | null>(null);
+  const [runnerToRemove, setRunnerToRemove] = React.useState<FleetRunner | null>(null);
+  const [removing, setRemoving] = React.useState(false);
+  const [removeError, setRemoveError] = React.useState<string | null>(null);
+  async function removeRunner(): Promise<void> {
+    if (!runnerToRemove || !onRemoveRunner || removing) return;
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      await onRemoveRunner(runnerToRemove);
+      setRunnerToRemove(null);
+    } catch (error) {
+      setRemoveError(error instanceof Error ? error.message : "Could not remove the runner.");
+    } finally {
+      setRemoving(false);
+    }
+  }
   function openRunner(runner: FleetRunner): void {
     if (attentionOnly && runner.health !== "needs_attention") {
       window.history.replaceState(window.history.state, "", filterUrl(false));
@@ -211,6 +229,19 @@ export function RunnersSectionView({
   const selectedRunner = fleet.runners.find((runner) => runner.id === runnerToOpen);
   return (
     <>
+      <Dialog open={runnerToRemove !== null} onOpenChange={(open) => { if (!open && !removing) setRunnerToRemove(null); }}>
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Remove runner {runnerToRemove?.display_name}?</DialogTitle>
+            <DialogDescription>This revokes its credentials and removes it from the fleet. Historical runs keep the runner's name. Runners with active work must finish their attempts before removal.</DialogDescription>
+          </DialogHeader>
+          {removeError ? <DialogPanel><p role="alert" className="text-sm text-destructive">{removeError}</p></DialogPanel> : null}
+          <DialogFooter>
+            <Button variant="outline" disabled={removing} onClick={() => setRunnerToRemove(null)}>Cancel</Button>
+            <Button variant="destructive" disabled={removing} onClick={() => void removeRunner()}>{removing ? "Removing…" : "Remove runner"}</Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
       {selectedRunner ? <RunnerDetailSheet key={selectedRunner.id} runner={selectedRunner} projects={projects} editable={fleet.editable !== false && onSaveRouting !== undefined} now={now} onClose={() => setRunnerToOpen(null)} onSave={onSaveRouting} onReload={onReloadRunner} /> : null}
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div className="min-w-0 space-y-2">
@@ -246,9 +277,9 @@ export function RunnersSectionView({
               ))}
             </nav>
             <div className="overflow-hidden rounded-xl border border-border/60 bg-card/40">
-              <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7rem_auto] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground sm:grid"><span>Runner</span><span>Running</span><span>Last check-in</span><span className="w-14" /></div>
+              <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7rem_11rem] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground sm:grid"><span>Runner</span><span>Running</span><span>Last check-in</span><span /></div>
               <div className="divide-y divide-border/50">
-                {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} onOpen={() => openRunner(runner)} />)}
+                {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} onOpen={() => openRunner(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRemoveError(null); setRunnerToRemove(runner); } } : {})} />)}
                 {runners.length === 0 ? <p className="px-4 py-6 text-[13px] text-muted-foreground">No runners need attention.</p> : null}
               </div>
             </div>
@@ -316,6 +347,11 @@ export function RunnersSettings(): React.ReactElement {
           organizationName={bootstrap?.organization.name}
           projects={bootstrap?.projects ?? []}
           onReloadRunner={reloadRunner}
+          {...(canEnroll && fleet.value.editable ? { onRemoveRunner: async (runner: FleetRunner) => {
+            await api.removeRunner(runner.id);
+            fleet.set({ ...fleet.value!, runners: fleet.value!.runners.filter((entry) => entry.id !== runner.id) });
+            await fleet.refresh();
+          } } : {})}
           enrollments={enrollments}
           {...(canEnroll ? { onEnroll: (name = "") => { setEnrollmentName(name); setOpen(true); } } : {})}
           {...(canEnroll && fleet.value.editable ? { onSaveRouting: async (runner: FleetRunner, routing: RunnerRouting) => {

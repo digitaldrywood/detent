@@ -1,10 +1,3 @@
-// Runner display names.
-//
-// The hub stamps a runner's actions with its principal id — `runner_be4a…` —
-// and serves no name with them. The one place it does name runners is the
-// fleet (`GET /fleet`), which any member can read, so the work surfaces read
-// that once and resolve ids through it, falling back to a short id when the
-// fleet has no entry (a runner since removed) or could not be read.
 import React from "react";
 
 import { makeAccountApi } from "../../account/api.ts";
@@ -70,6 +63,9 @@ export function useRunnerNames(): RunnerNames {
         .fleet()
         .then((fleet) => {
           const next = new Map<string, RunnerName>();
+          for (const [id, runner] of Object.entries(fleet.runner_names ?? {})) {
+            next.set(id, { display: runner.display_name, host: runner.hostname });
+          }
           for (const runner of fleet.runners) {
             next.set(runner.id, { display: runner.display_name, host: runner.hostname });
           }

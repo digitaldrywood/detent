@@ -163,7 +163,35 @@ func (s *Service) revokeRunnerIdentity(c echo.Context) error {
 
 func (s *Service) revokeRunnerIdentityCommand(ctx context.Context, scope nativeScope, resource string) (any, error) {
 	return s.runnerAdminTransaction(ctx, scope, true, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		return struct{}{}, revokeRunnerIdentityInTx(ctx, tx, scope, resource, now)
+		var token string
+		var removed bool
+		if err := tx.QueryRowContext(ctx, "SELECT token_id, removed_at IS NOT NULL FROM runner_identities WHERE id = ? AND organization_id = ?", resource, scope.organization).Scan(&token, &removed); err != nil {
+			return nil, err
+		}
+		if removed {
+			return struct{}{}, nil
+		}
+		var busy bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+SELECT 1 FROM leases l JOIN lease_runners lr ON lr.lease_id = l.lease_id
+LEFT JOIN native_attempts a ON a.lease_id = l.lease_id
+WHERE lr.runner_id = ? AND (a.status = 'running' OR (l.released_at IS NULL AND julianday(l.expires_at) > julianday(?))))`, resource, formatHubTime(now)).Scan(&busy); err != nil {
+			return nil, err
+		}
+		if busy {
+			return nil, nativeInvalid("This runner has active work. Drain it and wait for its attempts to finish before removing it.")
+		}
+		var revoked bool
+		if err := tx.QueryRowContext(ctx, "SELECT revoked_at IS NOT NULL FROM api_tokens WHERE id = ?", token).Scan(&revoked); err != nil {
+			return nil, err
+		}
+		if !revoked {
+			if err := revokeRunnerIdentityInTx(ctx, tx, scope, resource, now); err != nil {
+				return nil, err
+			}
+		}
+		_, err := tx.ExecContext(ctx, "UPDATE runner_identities SET removed_at = ?, revision = revision + 1 WHERE id = ? AND organization_id = ?", formatHubTime(now), resource, scope.organization)
+		return struct{}{}, err
 	})
 }
 

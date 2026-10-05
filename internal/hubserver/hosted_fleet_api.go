@@ -99,15 +99,39 @@ type hostedSpend struct {
 }
 
 type hostedFleetResponse struct {
-	Runners  []hostedFleetRunner `json:"runners"`
-	Editable bool                `json:"editable"`
-	Usage    hostedFleetUsage    `json:"usage"`
-	Spend    *hostedSpend        `json:"spend"`
+	RunnerNames map[string]hostedRunnerName `json:"runner_names,omitempty"`
+	Runners     []hostedFleetRunner         `json:"runners"`
+	Editable    bool                        `json:"editable"`
+	Usage       hostedFleetUsage            `json:"usage"`
+	Spend       *hostedSpend                `json:"spend"`
 	// Current is the Detent build this hub runs, which is the version a runner
 	// is expected to be on: the hub and the runner are the same binary, and an
 	// operator upgrades a host to match the hub it enrolled against.
 	Current              string `json:"current"`
 	MinimumRunnerVersion string `json:"minimum_runner_version"`
+}
+
+type hostedRunnerName struct {
+	DisplayName string `json:"display_name"`
+	Hostname    string `json:"hostname"`
+}
+
+func readHostedRunnerNames(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID) (map[string]hostedRunnerName, error) {
+	rows, err := query.QueryContext(ctx, `SELECT r.id, r.display_name, m.hostname FROM runner_identities r JOIN machines m ON m.id = r.machine_id WHERE r.organization_id = ? AND r.removed_at IS NOT NULL`, organization)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	names := make(map[string]hostedRunnerName)
+	for rows.Next() {
+		var id string
+		var name hostedRunnerName
+		if err := rows.Scan(&id, &name.DisplayName, &name.Hostname); err != nil {
+			return nil, err
+		}
+		names[id] = name
+	}
+	return names, rows.Err()
 }
 
 // hostedFleet answers GET /fleet for any member of the organization.
@@ -156,13 +180,17 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
-	return hostedFleetResponse{Runners: runners, Editable: editable, Usage: usage, Current: detentVersion(s.config.Version), MinimumRunnerVersion: minimumRunnerVersion(s.config.Version)}, nil
+	names, err := readHostedRunnerNames(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+	if err != nil {
+		return hostedFleetResponse{}, err
+	}
+	return hostedFleetResponse{Runners: runners, RunnerNames: names, Editable: editable, Usage: usage, Current: detentVersion(s.config.Version), MinimumRunnerVersion: minimumRunnerVersion(s.config.Version)}, nil
 }
 
 func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool, editable bool) ([]hostedFleetRunner, error) {
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
 	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, '') FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
-WHERE r.organization_id = ? ORDER BY r.display_name, r.id`, organization)
+WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.id`, organization)
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
