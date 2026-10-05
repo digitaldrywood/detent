@@ -1,24 +1,30 @@
 ---
 identity:
   name: non-code-artifact-demo
-
 tracker:
   kind: local_sqlite
   local_sqlite:
     path: .detent/non-code-artifact-demo.db
     project_id: content-production-demo
-  active_states: []
-  observed_states:
-    - Intake
-    - Research
-    - Draft
-    - Review
-    - Rework
-    - Package
-    - Blocked
-  terminal_states:
-    - Publish
-    - Cancelled
+  lanes:
+    - name: Intake
+      role: holding
+    - name: Research
+      role: holding
+    - name: Draft
+      role: holding
+    - name: Review
+      role: holding
+    - name: Rework
+      role: holding
+    - name: Package
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Publish
+      role: terminal
+    - name: Cancelled
+      role: terminal
   issues:
     - id: content-demo-001
       identifier: content-demo-001
@@ -200,18 +206,15 @@ tracker:
           artifact_gate: render_status
           expected_format: directory-manifest
           output_directory: output/publish-package-handoff
-
 workspace:
   kind: filesystem
   root: .detent/workspaces
   source_root: .
   output_root: output
-
 deliverable:
   kind: artifact
   output_root: output
   review_url: http://127.0.0.1:4101/review
-
 agent:
   auto_promote:
     enabled: true
@@ -222,7 +225,6 @@ agent:
     rework_state: Rework
     rework_limit: 3
     no_progress_limit: 0
-
 gate:
   kind: artifact
   ci_failure_action: skip
@@ -241,7 +243,6 @@ gate:
       - recut
       - invalid
       - missing_assets
-
 server:
   kanban:
     mode: integration

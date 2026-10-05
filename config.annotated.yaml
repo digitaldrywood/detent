@@ -6,18 +6,25 @@ tracker:
   github_status_source: label
   repository: example/example
   status_label_prefix: "detent:"
-  active_states:
-    - Todo
-    - In Progress
-    - Rework
-    - Merging
-  observed_states:
-    - Backlog
-    - Human Review
-    - Blocked
-  terminal_states:
-    - Done
-    - Cancelled
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Rework
+      role: active
+    - name: Merging
+      role: active
+    - name: Done
+      role: terminal
+    - name: Cancelled
+      role: terminal
   state_map:
     Backlog: Backlog
     Todo: Todo
@@ -27,21 +34,18 @@ tracker:
     Merging: Merging
     Done: Done
     Cancelled: Done
-
 # Keep worktrees outside the source checkout. The isolated cache strategy
 # prevents mutable build state from leaking between concurrent agents.
 workspace:
   kind: local_git
   root: /var/tmp/detent-workspaces
   auto_branch: true
-
 # Reuse ambient gh authentication through an isolated worker config directory.
 # When principals match, workers brake above the 1000-request dispatch floor.
 worker:
   github_token: gh
   github_rest_min_remaining_reserve: 1250
   github_rest_poll_interval_ms: 60000
-
 # Bound fleet concurrency globally and serialize only the merge lane.
 review:
   human: false
@@ -61,14 +65,12 @@ agent:
     pass_state: Merging
     rework_state: Rework
     quiet_seconds: 600
-
 # The command gate runs in the isolated worktree. Automated review remains a
 # required independent signal before automatic promotion.
 gate:
   kind: command
   run: make check
   automated_review: required
-
 # Hooks are trusted commands. This example only installs dependencies after a
 # new worktree is created.
 hooks:

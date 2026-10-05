@@ -209,6 +209,7 @@ func (r Recovery) TerminalAttemptFailureLimit() int {
 }
 
 type Tracker struct {
+	legacyStates                bool
 	Kind                        string                `yaml:"kind"`
 	Endpoint                    string                `yaml:"endpoint"`
 	APIKey                      string                `yaml:"api_key"`
@@ -234,9 +235,10 @@ type Tracker struct {
 	StatusLabelPrefix           string                `yaml:"status_label_prefix,omitempty"`
 	WriteProbeIssue             string                `yaml:"write_probe_issue,omitempty"`
 	Assignee                    string                `yaml:"assignee"`
-	ActiveStates                []string              `yaml:"active_states"`
-	ObservedStates              []string              `yaml:"observed_states"`
-	TerminalStates              []string              `yaml:"terminal_states"`
+	Lanes                       []Lane                `yaml:"lanes"`
+	ActiveStates                []string              `yaml:"-"`
+	ObservedStates              []string              `yaml:"-"`
+	TerminalStates              []string              `yaml:"-"`
 	StateMap                    StringOrMap           `yaml:"state_map"`
 	PriorityMap                 StringOrMap           `yaml:"priority_map"`
 	DependencyAutoUnblock       DependencyAutoUnblock `yaml:"dependency_auto_unblock"`
@@ -602,6 +604,9 @@ func (c Config) USDBrakes() USDBrakes {
 func (c Config) ValidationWarnings() []string {
 	var warnings []string
 	warnings = append(warnings, c.Agents.ModelSelectionWarnings()...)
+	if c.Tracker.legacyStates {
+		warnings = append(warnings, LegacyLaneWarning)
+	}
 	if c.Workspace.legacyCacheStrategy {
 		warnings = append(warnings, "workspace.cache_strategy is unknown and ignored; remove it before the next release, which will reject it")
 	}
@@ -1994,6 +1999,12 @@ func (c *Config) normalize() {
 	c.Plan = gate.EffectivePlan(c.Plan)
 	if c.Plan.Enabled {
 		c.Tracker.ObservedStates = appendStateUnique(c.Tracker.ObservedStates, c.Plan.Stop)
+		if c.Tracker.legacyStates {
+			c.Tracker.Lanes = nil
+			c.Tracker.Lanes = c.Tracker.WorkflowLanes()
+		} else if c.Tracker.Lanes != nil && !stateListContains(c.KanbanStateNames(), c.Plan.Stop) {
+			c.Tracker.Lanes = append(c.Tracker.Lanes, Lane{Name: c.Plan.Stop, Role: LaneHolding})
+		}
 	}
 	c.Server.Normalize()
 	c.Observability.Normalize()
@@ -2059,18 +2070,23 @@ func (c *Config) validateTracker(problems *[]string) {
 		*problems = append(*problems, "tracker.kind must be one of github, github_local, hub_native, linear, memory, local_sqlite")
 	}
 
-	validateStateList("tracker.active_states", c.Tracker.ActiveStates, problems)
-	validateStateList("tracker.observed_states", c.Tracker.ObservedStates, problems)
-	validateStateList("tracker.terminal_states", c.Tracker.TerminalStates, problems)
+	if c.Tracker.Lanes != nil {
+		if err := validateLanes(c.Tracker.Lanes); err != nil {
+			*problems = append(*problems, err.Error())
+		}
+	}
+	validateStateList(c.Tracker.roleField(LaneActive), c.Tracker.ActiveStates, problems)
+	validateStateList(c.Tracker.roleField(LaneHolding), c.Tracker.ObservedStates, problems)
+	validateStateList(c.Tracker.roleField(LaneTerminal), c.Tracker.TerminalStates, problems)
 	validateStateMap("tracker.state_map", c.Tracker.StateMap, problems)
 	validatePriorityMap("tracker.priority_map", c.Tracker.PriorityMap, problems)
 	*problems = append(*problems, c.Tracker.DependencyAutoUnblock.Validate("tracker.dependency_auto_unblock")...)
 	if c.Tracker.DependencyAutoUnblock.Enabled && !stateListContains(c.Tracker.ActiveStates, "Rework") {
-		*problems = append(*problems, "tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true")
+		*problems = append(*problems, c.Tracker.roleField(LaneActive)+" must include Rework when tracker.dependency_auto_unblock.enabled is true")
 	}
 	*problems = append(*problems, c.Tracker.BlockedRecovery.Validate("tracker.blocked_recovery")...)
 	if c.Tracker.BlockedRecovery.Enabled && !stateListContains(c.Tracker.ActiveStates, c.Tracker.BlockedRecovery.TargetState) {
-		*problems = append(*problems, "tracker.active_states must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true")
+		*problems = append(*problems, c.Tracker.roleField(LaneActive)+" must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true")
 	}
 	*problems = append(*problems, c.Tracker.BlockerAutoPromote.Validate("tracker.blocker_auto_promote")...)
 	validatePositive("tracker.http_max_idle_conns", c.Tracker.HTTPMaxIdleConns, problems)
@@ -2130,7 +2146,7 @@ func (c *Config) validateStopRun(problems *[]string) {
 		*problems = append(*problems, "agent.stop_run.target_state must not be a terminal state")
 	}
 	if !stateListContains(c.Tracker.ObservedStates, target) {
-		*problems = append(*problems, "agent.stop_run.target_state must be included in tracker.observed_states")
+		*problems = append(*problems, "agent.stop_run.target_state must be included in "+c.Tracker.roleField(LaneHolding))
 	}
 }
 
@@ -3071,9 +3087,9 @@ func (c Config) KanbanStateNames() []string {
 			states = append(states, value)
 		}
 	}
-	add(c.Tracker.ObservedStates...)
-	add(c.Tracker.ActiveStates...)
-	add(c.Tracker.TerminalStates...)
+	for _, lane := range c.Tracker.WorkflowLanes() {
+		add(lane.Name)
+	}
 	return states
 }
 

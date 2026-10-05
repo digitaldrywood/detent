@@ -15,18 +15,25 @@ tracker:
   github_rest_debug_logging: false
   # github_webhook_secret: $DETENT_GITHUB_WEBHOOK_SECRET
   auto_provision: true
-  active_states:
-    - Todo
-    - In Progress
-    - Rework
-    - Merging
-  observed_states:
-    - Backlog
-    - Human Review
-    - Blocked
-  terminal_states:
-    - Done
-    - Cancelled
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Rework
+      role: active
+    - name: Merging
+      role: active
+    - name: Done
+      role: terminal
+    - name: Cancelled
+      role: terminal
   state_map:
     Cancelled: Done
   priority_map:

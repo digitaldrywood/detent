@@ -18,6 +18,16 @@ func TestStateNamesIgnoreCompletedSessionStates(t *testing.T) {
 		want []string
 	}{
 		{
+			name: "interleaved lanes preserve order",
+			cfg: workflowconfig.Config{Tracker: workflowconfig.Tracker{Lanes: []workflowconfig.Lane{
+				{Name: "Backlog", Role: workflowconfig.LaneHolding},
+				{Name: "Todo", Role: workflowconfig.LaneActive},
+				{Name: "Blocked", Role: workflowconfig.LaneHolding},
+				{Name: "Done", Role: workflowconfig.LaneTerminal},
+			}}},
+			want: []string{"Backlog", "Todo", "Blocked", "Done", "Needs Triage"},
+		},
+		{
 			name: "unconfigured completed handoff ignored",
 			cfg: workflowconfig.Config{
 				Tracker: workflowconfig.Tracker{

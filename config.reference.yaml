@@ -90,19 +90,20 @@
 #   write_probe_issue: null
 #   # tracker.assignee | type: string | default: none | required: No | validation: None
 #   assignee: null
-#   # tracker.active_states | type: list<string> | default: ["Todo","In Progress"] | required: No | validation: must include Rework when tracker.dependency_auto_unblock.enabled is true; must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true; state names must be unique; state names must not be blank
-#   active_states: ["Todo","In Progress"]
-#   # tracker.observed_states | type: list<string> | default: ["Backlog","Human Review","Blocked"] | required: No | validation: agent.stop_run.target_state must be included in tracker.observed_states; state names must be unique; state names must not be blank
-#   observed_states: ["Backlog","Human Review","Blocked"]
-#   # tracker.terminal_states | type: list<string> | default: ["Closed","Cancelled","Canceled","Duplicate","Done"] | required: No | validation: state names must be unique; state names must not be blank
-#   terminal_states: ["Closed","Cancelled","Canceled","Duplicate","Done"]
+#   # tracker.lanes | type: list<object> | default: [{"name":"Backlog","role":"holding"},{"name":"Human Review","role":"holding"},{"name":"Blocked","role":"holding"},{"name":"Todo","role":"active"},{"name":"In Progress","role":"active"},{"name":"Closed","role":"terminal"},{"name":"Cancelled","role":"terminal"},{"name":"Canceled","role":"terminal"},{"name":"Duplicate","role":"terminal"},{"name":"Done","role":"terminal"}] | required: No | validation: agent.stop_run.target_state must be included in tracker.lanes with role holding; with role active must include Rework when tracker.dependency_auto_unblock.enabled is true; with role active must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true; with role holding state names must not be blank
+#   lanes:
+#     -
+#       # tracker.lanes[].name | type: string | default: none | required: Conditional | validation: must not be blank
+#       name: null
+#       # tracker.lanes[].role | type: string | default: none | required: No | validation: must be active, holding or terminal
+#       role: null
 #   # tracker.state_map | type: string or mapping | default: {} | required: No | validation: state names must not be blank
 #   state_map: {}
 #   # tracker.priority_map | type: string or mapping | default: {"High":2,"Low":4,"Medium":3,"No priority":null,"Urgent":1} | required: No | validation: option names must not be blank; ranks must be integers 1 through 4 or null
 #   priority_map: {"High":2,"Low":4,"Medium":3,"No priority":null,"Urgent":1}
 #   # tracker.dependency_auto_unblock | type: object | default: see child fields | required: No | validation: None
 #   dependency_auto_unblock:
-#     # tracker.dependency_auto_unblock.enabled | type: boolean | default: false | required: Conditional | validation: tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true; tracker.dependency_auto_unblock.source_states must not be empty when tracker.dependency_auto_unblock.enabled is true; tracker.dependency_auto_unblock.target_state is required when tracker.dependency_auto_unblock.enabled is true
+#     # tracker.dependency_auto_unblock.enabled | type: boolean | default: false | required: Conditional | validation: tracker.dependency_auto_unblock.source_states must not be empty when tracker.dependency_auto_unblock.enabled is true; tracker.dependency_auto_unblock.target_state is required when tracker.dependency_auto_unblock.enabled is true; tracker.lanes with role active must include Rework when tracker.dependency_auto_unblock.enabled is true
 #     enabled: false
 #     # tracker.dependency_auto_unblock.source_states | type: list<string> | default: ["blocked"] | required: No | validation: must not be empty when tracker.dependency_auto_unblock.enabled is true; state names must be unique; state names must not be blank
 #     source_states: ["blocked"]
@@ -112,11 +113,11 @@
 #     readiness: "terminal_or_merged"
 #   # tracker.blocked_recovery | type: object | default: see child fields | required: No | validation: None
 #   blocked_recovery:
-#     # tracker.blocked_recovery.enabled | type: boolean | default: false | required: Conditional | validation: tracker.active_states must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true; tracker.blocked_recovery.reason_codes must not be empty when tracker.blocked_recovery.enabled is true; tracker.blocked_recovery.source_states must not be empty when tracker.blocked_recovery.enabled is true; tracker.blocked_recovery.target_state is required when tracker.blocked_recovery.enabled is true
+#     # tracker.blocked_recovery.enabled | type: boolean | default: false | required: Conditional | validation: tracker.blocked_recovery.reason_codes must not be empty when tracker.blocked_recovery.enabled is true; tracker.blocked_recovery.source_states must not be empty when tracker.blocked_recovery.enabled is true; tracker.blocked_recovery.target_state is required when tracker.blocked_recovery.enabled is true; tracker.lanes with role active must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true
 #     enabled: false
 #     # tracker.blocked_recovery.source_states | type: list<string> | default: ["blocked"] | required: No | validation: must not be empty when tracker.blocked_recovery.enabled is true; state names must be unique; state names must not be blank
 #     source_states: ["blocked"]
-#     # tracker.blocked_recovery.target_state | type: string | default: "Rework" | required: Conditional | validation: is required when tracker.blocked_recovery.enabled is true; tracker.active_states must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true
+#     # tracker.blocked_recovery.target_state | type: string | default: "Rework" | required: Conditional | validation: is required when tracker.blocked_recovery.enabled is true; tracker.lanes with role active must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true
 #     target_state: "Rework"
 #     # tracker.blocked_recovery.reason_codes | type: list<string> | default: ["merge_conflict","stale_base","missing_current_head_ci"] | required: No | validation: must contain only merge_conflict, stale_base, missing_current_head_ci; must not be empty when tracker.blocked_recovery.enabled is true
 #     reason_codes: ["merge_conflict","stale_base","missing_current_head_ci"]
@@ -711,7 +712,7 @@
 #     drain_timeout_ms: 75000
 #   # agent.stop_run | type: object | default: see child fields | required: No | validation: None
 #   stop_run:
-#     # agent.stop_run.target_state | type: string | default: "Blocked" | required: No | validation: must be included in tracker.observed_states
+#     # agent.stop_run.target_state | type: string | default: "Blocked" | required: No | validation: must be included in tracker.lanes with role holding
 #     target_state: "Blocked"
 #   # agent.max_concurrent_agents_by_state | type: mapping<string, integer> | default: {} | required: No | validation: limits must be positive integers
 #   max_concurrent_agents_by_state: {}

@@ -28,6 +28,7 @@ type nativeBehavior struct {
 	Operator                   Operator
 	BacklogAdmission           BacklogAdmission
 	Repository                 string
+	Lanes                      []Lane `json:",omitempty"`
 	ActiveStates               []string
 	ObservedStates             []string
 	TerminalStates             []string
@@ -52,7 +53,7 @@ func nativeProjectBehavior(cfg Config) nativeBehavior {
 		Deliverable: cfg.Deliverable, Dependencies: cfg.Dependencies, Recovery: cfg.Recovery,
 		Agent: cfg.Agent, Gate: cfg.Gate, Plan: cfg.Plan, Budget: cfg.Budget,
 		Release: cfg.Release, Retro: cfg.Retro, Operator: cfg.Operator, BacklogAdmission: cfg.BacklogAdmission,
-		Repository: cfg.Tracker.Repository, ActiveStates: cfg.Tracker.ActiveStates,
+		Lanes: cfg.Tracker.Lanes, Repository: cfg.Tracker.Repository, ActiveStates: cfg.Tracker.ActiveStates,
 		ObservedStates: cfg.Tracker.ObservedStates, TerminalStates: cfg.Tracker.TerminalStates,
 		AllowedTransitions: cfg.Server.Kanban.AllowedTransitions,
 		StateMap:           cfg.Tracker.StateMap, PriorityMap: cfg.Tracker.PriorityMap,
@@ -61,6 +62,11 @@ func nativeProjectBehavior(cfg Config) nativeBehavior {
 		ExtraNetworkDomains: cfg.Worker.ExtraNetworkDomains, AllowLocalBinding: cfg.Worker.AllowLocalBinding,
 		BudgetDayConfigured: cfg.Budget.perDayMaxUSDConfigured, BudgetIssueConfigured: cfg.Budget.perIssueMaxUSDConfigured,
 		AgentBudgetDayConfigured: cfg.Agent.Budget.perDayMaxUSDConfigured, AgentBudgetIssueConfigured: cfg.Agent.Budget.perIssueMaxUSDConfigured,
+	}
+	legacyTracker := cfg.Tracker
+	legacyTracker.Lanes = nil
+	if slices.Equal(behavior.Lanes, legacyTracker.WorkflowLanes()) {
+		behavior.Lanes = nil
 	}
 	behavior.Deliverable.OutputRoot = ""
 	behavior.Deliverable.ReviewURL = ""
@@ -106,6 +112,7 @@ func (b nativeBehavior) apply(local Config) Config {
 	local.Release, local.Operator, local.BacklogAdmission = b.Release, b.Operator, b.BacklogAdmission
 	local.Retro = b.Retro
 	local.Tracker.Kind, local.Tracker.Repository = TrackerHubNative, b.Repository
+	local.Tracker.Lanes = b.Lanes
 	local.Tracker.ActiveStates, local.Tracker.ObservedStates, local.Tracker.TerminalStates = b.ActiveStates, b.ObservedStates, b.TerminalStates
 	local.Server.Kanban.AllowedTransitions = b.AllowedTransitions
 	local.Tracker.StateMap, local.Tracker.PriorityMap = b.StateMap, b.PriorityMap
