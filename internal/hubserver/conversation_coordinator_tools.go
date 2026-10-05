@@ -106,7 +106,12 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 }
 
 func coordinatorToolError(err error) runner.AgentToolResult {
-	encoded, encodeErr := json.Marshal(map[string]string{"error": boundRunes(err.Error(), coordinatorErrorRunes)})
+	message := err.Error()
+	var native *nativeError
+	if errors.As(err, &native) && native.Code == "invalid_request" {
+		message = native.Message
+	}
+	encoded, encodeErr := json.Marshal(map[string]string{"error": boundRunes(message, coordinatorErrorRunes)})
 	if encodeErr != nil {
 		encoded = []byte(`{"error":"tool failed"}`)
 	}
