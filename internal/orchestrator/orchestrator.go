@@ -358,6 +358,7 @@ type Orchestrator struct {
 	hydrationWarned         bool
 	ownershipStartupLogged  bool
 	dispatchStartMu         sync.Mutex
+	dispatchLifecycleMu     sync.Mutex
 	capacityClearMu         sync.Mutex
 	dispatchStarts          int
 	dispatchStartsDone      chan struct{}
@@ -1428,12 +1429,12 @@ func (o *Orchestrator) BeginDrain() {
 		return
 	}
 
-	o.dispatchStartMu.Lock()
+	o.dispatchLifecycleMu.Lock()
 	if o.dispatchClosed.Swap(true) {
-		o.dispatchStartMu.Unlock()
+		o.dispatchLifecycleMu.Unlock()
 		return
 	}
-	o.dispatchStartMu.Unlock()
+	o.dispatchLifecycleMu.Unlock()
 	if o.globalDispatchGate != nil {
 		o.globalDispatchGate.MarkIdle(scheduler.ProjectCandidate{ID: o.projectID})
 	}
@@ -1447,9 +1448,9 @@ func (o *Orchestrator) WaitForDispatchQuiesced(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	o.dispatchStartMu.Lock()
+	o.dispatchLifecycleMu.Lock()
 	done := o.dispatchStartsDone
-	o.dispatchStartMu.Unlock()
+	o.dispatchLifecycleMu.Unlock()
 	if done == nil {
 		return nil
 	}
@@ -1463,8 +1464,8 @@ func (o *Orchestrator) WaitForDispatchQuiesced(ctx context.Context) error {
 }
 
 func (o *Orchestrator) beginDispatchStart() bool {
-	o.dispatchStartMu.Lock()
-	defer o.dispatchStartMu.Unlock()
+	o.dispatchLifecycleMu.Lock()
+	defer o.dispatchLifecycleMu.Unlock()
 	if o.dispatchQuiesced() {
 		return false
 	}
@@ -1476,8 +1477,8 @@ func (o *Orchestrator) beginDispatchStart() bool {
 }
 
 func (o *Orchestrator) finishDispatchStart() {
-	o.dispatchStartMu.Lock()
-	defer o.dispatchStartMu.Unlock()
+	o.dispatchLifecycleMu.Lock()
+	defer o.dispatchLifecycleMu.Unlock()
 	o.dispatchStarts--
 	if o.dispatchStarts == 0 {
 		close(o.dispatchStartsDone)
