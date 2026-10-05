@@ -25,8 +25,9 @@ type ConversationConfig struct {
 	// Backend runs coordinator turns for conversations without a linked
 	// issue. When nil ordinary chat reports the coordinator as unavailable
 	// and messages in unlinked conversations are saved until a link.
-	Backend   runner.AgentBackend
-	UsageSink ConversationUsageSink
+	Backend      runner.AgentBackend
+	UsageSink    ConversationUsageSink
+	ModelBackend func() (runner.AgentBackend, string, error)
 	// Workspace is the directory coordinator turns run in. It must exist
 	// when Backend is set.
 	Workspace string

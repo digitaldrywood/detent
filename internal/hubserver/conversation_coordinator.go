@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -440,6 +441,7 @@ type coordinatorTurnState struct {
 	// preferences are the conversation's turn preferences as they stood when
 	// the turn started.
 	preferences  conversation.Preferences
+	modelChoice  bool
 	toolMessages map[string]conversationMessageRecord
 }
 
@@ -503,6 +505,21 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 					}
 				}
 				refusal = errors.New(message)
+			}
+		}
+		if refusal == nil && c.service.server.hasLunaCoordinator() {
+			state.modelChoice, err = c.service.server.conversationModelChoiceGranted(ctx, tx, record.OrganizationID, now)
+			if err != nil {
+				return err
+			}
+			if model := record.Preferences.ModelValue(); model != "" {
+				models, err := c.service.server.conversationModelChoices(ctx, tx, record.OrganizationID, []string{string(record.ProjectID)}, now)
+				if err != nil {
+					return err
+				}
+				if !slices.ContainsFunc(models, func(choice conversationModel) bool { return choice.ID == model }) {
+					refusal = fmt.Errorf("preferences: model %q is not one of the available choices", model)
+				}
 			}
 		}
 		if record.ProviderThreadID == "" {
@@ -584,7 +601,8 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	}
 	// An explicit turn preference overrides the hub's configured default;
 	// "auto" leaves it alone.
-	if c.service.server.hasLunaCoordinator() {
+	backend := c.service.config.Backend
+	if c.service.server.hasLunaCoordinator() && (!state.modelChoice || state.preferences.ModelValue() == "" || state.preferences.ModelValue() == genkitbackend.Model) {
 		if state.preferences.ModelValue() == genkitbackend.Model {
 			request.Model = genkitbackend.Model
 		}
@@ -598,9 +616,19 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		if effort := state.preferences.EffortValue(); effort != "" {
 			request.ReasoningEffort = effort
 		}
+		if c.service.server.hasLunaCoordinator() && runErr == nil {
+			if c.service.config.ModelBackend == nil {
+				runErr = errors.New("conversation coordinator model backend is unavailable")
+			} else {
+				backend, request.Workspace, runErr = c.service.config.ModelBackend()
+				if runErr == nil && backend == nil {
+					runErr = errors.New("conversation coordinator model backend is unavailable")
+				}
+			}
+		}
 	}
 	state.model = request.Model
-	_, genkit := c.service.config.Backend.(*genkitbackend.Backend)
+	_, genkit := backend.(*genkitbackend.Backend)
 	state.normalizeUsage = runner.NewTokenUsageNormalizer(request.Resume.ThreadID != "" && !genkit)
 	var result runner.AgentTurnResult
 	if runErr == nil {
@@ -608,7 +636,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		// the same completion as a provider failure, so its messages and
 		// execution never stay in flight.
 		stopFlusher := state.startFlusher(turnCtx)
-		result, runErr = c.callBackend(turnCtx, request, state)
+		result, runErr = c.callBackend(turnCtx, backend, request, state)
 		stopFlusher()
 	}
 	// The final writes use a fresh context: cancellation must persist its
@@ -628,7 +656,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	var usage *ConversationUsage
 	if state.usage.InputTokens > 0 || state.usage.OutputTokens > 0 {
 		provider := "codex"
-		if _, ok := c.service.config.Backend.(*genkitbackend.Backend); ok {
+		if genkit {
 			provider = "openai"
 		}
 		usage = &ConversationUsage{OrganizationID: state.organizationID, ProjectID: state.projectID, ConversationID: conversationID, TurnID: state.assistant.ID, Provider: provider, Model: state.model, Tokens: state.usage, Outcome: outcome, OccurredAt: state.assistant.CreatedAt}
@@ -654,12 +682,11 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 
 // callBackend runs the turn with coordination tools when the backend
 // supports them and with a plain turn otherwise.
-func (c *conversationTurnCoordinator) callBackend(ctx context.Context, request runner.AgentTurnRequest, state *coordinatorTurnState) (runner.AgentTurnResult, error) {
+func (c *conversationTurnCoordinator) callBackend(ctx context.Context, backend runner.AgentBackend, request runner.AgentTurnRequest, state *coordinatorTurnState) (runner.AgentTurnResult, error) {
 	onUpdate := func(update runner.AgentUpdate) error {
 		state.handleUpdate(ctx, update)
 		return nil
 	}
-	backend := c.service.config.Backend
 	if toolBackend, ok := backend.(runner.AgentToolBackend); ok {
 		toolset := newCoordinatorToolset(c, state)
 		return toolBackend.RunTurnWithTools(ctx, request, toolset.tools(), toolset.handle, onUpdate)
