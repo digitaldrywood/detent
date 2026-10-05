@@ -1112,9 +1112,9 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 		previous = retained
 		f.service.config.Hosted = &HostedConfig{}
 		d.hostedOrganization = f.project.OrganizationID
-		hostedTestPlans(t, f.service, nil)
+		plans := hostedTestPlans(t, f.service, nil)
 		f.service.config.Hosted = nil
-		window := now.Unix() / d.hostedPlans.WindowSeconds * d.hostedPlans.WindowSeconds
+		window := now.Unix() / plans.WindowSeconds * plans.WindowSeconds
 		if _, err := d.db.ExecContext(t.Context(), "INSERT OR REPLACE INTO hosted_usage_windows(window_start,metric,amount) VALUES(?,'api_mutations',7),(?,'ingested_events',3)", window, window); err != nil {
 			t.Fatal(err)
 		}

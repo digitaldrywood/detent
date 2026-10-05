@@ -124,7 +124,7 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 func TestOperatorNativeWorkListBytePages(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "bounded-list")
 	const needle = "body-only-list-match"
-	var expected []tracker.NativeIssue
+	expected := make([]tracker.NativeIssue, 0, 61)
 	for i := range 61 {
 		body := needle
 		if i < 60 {

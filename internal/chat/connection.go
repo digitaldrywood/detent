@@ -31,42 +31,46 @@ func authorizeAction(ctx context.Context, connection operatortool.Connection, ac
 // AttachConnection stores the original authority in the existing bounded chat
 // session. Reusing its ID with a different authenticated identity is denied.
 func (s *Service) AttachConnection(ctx context.Context) error {
+	_, err := s.attachConnection(ctx)
+	return err
+}
+
+func (s *Service) attachConnection(ctx context.Context) (*session, error) {
 	connection := operatortool.CurrentConnection(ctx)
 	if connection.ID == "" || len(connection.ID) > 256 || !connection.Identity.Valid() || connection.Resolve == nil {
-		return operatortool.ErrAccessDenied
+		return nil, operatortool.ErrAccessDenied
 	}
 	current := s.ensureSession(connection.ID)
 	current.mu.Lock()
 	defer current.mu.Unlock()
 	if err := s.restoreSession(ctx, connection.ID, current); err != nil {
-		return err
+		return nil, err
 	}
 	if current.connection != nil {
 		if current.connection.Identity != connection.Identity {
-			return operatortool.ErrAccessDenied
+			return nil, operatortool.ErrAccessDenied
 		}
 		connection.Client = current.connection.Client
 		current.connection = &connection
-		return nil
+		return current, nil
 	}
 	current.connection = &connection
 	if err := s.persistSession(ctx, current); err != nil {
 		current.connection = nil
-		return err
+		return nil, err
 	}
-	return nil
+	return current, nil
 }
 
 func (s *Service) connectionSession(ctx context.Context) (*session, error) {
 	connection := operatortool.CurrentConnection(ctx)
 	current := s.session(connection.ID)
 	if current == nil {
-		if err := s.AttachConnection(ctx); err != nil {
+		var err error
+		current, err = s.attachConnection(ctx)
+		if err != nil {
 			return nil, err
 		}
-		s.mu.Lock()
-		current = s.sessions[connection.ID]
-		s.mu.Unlock()
 	}
 	current.mu.Lock()
 	valid := current.connection != nil && current.connection.Identity == connection.Identity

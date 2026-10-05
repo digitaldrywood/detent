@@ -78,6 +78,9 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 			t.Fatal(err)
 		}
 		execution := h.scheduler.RunExecution(issue.ID)
+		if execution == nil {
+			t.Fatal("claimed issue has no native execution")
+		}
 		execution.(runner.DiffExecution).SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
 			diff, err := workspace.GitFileDiffs(ctx, info.Path, workspace.AttemptBase(ctx, source), tracker.MaxDiffBytes)
 			if err != nil {
@@ -234,6 +237,9 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	}
 	changes := h.changes(t, issue.ID)
 	if failure == "recovery" {
+		if preserved == nil {
+			t.Fatal("recovery fixture has no preserved checkpoint")
+		}
 		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
 		if err != nil || len(current.Attempts) != 1 || current.Attempts[0].Status != "interrupted" || current.Attempts[0].Checkpoint == nil || *current.Attempts[0].Checkpoint != *preserved || provider.calls.Load() != 0 || len(changes) != 0 {
 			t.Fatalf("recovery refusal fabricated or replaced a receipt: attempts=%+v changes=%v calls=%d error=%v", current.Attempts, changes, provider.calls.Load(), err)

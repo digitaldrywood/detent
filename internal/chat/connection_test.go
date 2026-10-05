@@ -21,6 +21,7 @@ func TestConnectionActions(t *testing.T) {
 		scope                           apikey.Scope
 		revoked, expired, foreign, idle bool
 		restored                        bool
+		evicted                         bool
 		denied                          bool
 	}{
 		{name: "write", scope: apikey.ScopeWrite}, {name: "admin", scope: apikey.ScopeAdmin},
@@ -28,6 +29,7 @@ func TestConnectionActions(t *testing.T) {
 		{name: "expired", scope: apikey.ScopeWrite, expired: true, denied: true}, {name: "foreign project", scope: apikey.ScopeWrite, foreign: true, denied: true},
 		{name: "idle", scope: apikey.ScopeWrite, idle: true},
 		{name: "restored identity", scope: apikey.ScopeWrite, restored: true},
+		{name: "evicted during attachment", scope: apikey.ScopeWrite, evicted: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			executor := &actionExecutorStub{result: "completed"}
@@ -52,6 +54,15 @@ func TestConnectionActions(t *testing.T) {
 					return operatortool.Authority{}, operatortool.ErrAccessDenied
 				}
 				return connection.Resolve(ctx)
+			}
+			if scenario.evicted {
+				WithSessionStore(store, resolve)(service)
+				service.sessionLimit = 1
+				store.onSave = func() { service.ensureSession("replacement") }
+				if err := service.CheckConnection(ctx); err != nil {
+					t.Fatal(err)
+				}
+				return
 			}
 			if scenario.restored {
 				WithSessionStore(store, resolve)(service)
@@ -97,7 +108,8 @@ func TestConnectionActions(t *testing.T) {
 }
 
 type connectionIdentityStore struct {
-	state SessionState
+	state  SessionState
+	onSave func()
 }
 
 func (store *connectionIdentityStore) Load(_ context.Context, id string, now time.Time, ttl time.Duration) (SessionState, bool, error) {
@@ -105,5 +117,8 @@ func (store *connectionIdentityStore) Load(_ context.Context, id string, now tim
 }
 func (store *connectionIdentityStore) Save(_ context.Context, state SessionState, _ time.Time, _ time.Duration, _ int) error {
 	store.state = state
+	if store.onSave != nil {
+		store.onSave()
+	}
 	return nil
 }

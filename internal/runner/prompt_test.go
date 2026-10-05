@@ -322,11 +322,11 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"## Available skills",
 		"- migrate (includes: schema-migration)",
 		"## Skill creation loop",
-		"Draft only reusable methods",
-		"Rerun validation after drafting; PR review approves it.",
+		"Only reusable multi-step methods, debugging recipes or learned conventions",
+		"Revalidate; PR review approves.",
 		"Skill draft: yes",
 		"Skill draft: no",
-		"Draft at most 1 candidate skill file under `.detent/skills/`",
+		"Draft at most 1 skill file under `.detent/skills/`",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

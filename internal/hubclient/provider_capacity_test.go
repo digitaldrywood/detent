@@ -355,6 +355,9 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		used := make(map[string]int)
 		for _, issue := range issues {
 			execution := scheduler.RunExecution(issue.ID)
+			if execution == nil {
+				t.Fatal("claimed issue has no native execution")
+			}
 			reservation := execution.(runner.ProviderCapacityExecution).ProviderCapacity()
 			if reservation == nil || scheduler.nativeClaims[issue.ID].lease.PolicyID != descriptor.ID {
 				t.Fatal("batch lost provider reservation or immutable policy")
