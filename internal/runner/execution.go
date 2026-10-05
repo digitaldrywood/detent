@@ -133,6 +133,10 @@ type RepositoryExecution interface {
 	SetRepository(string)
 }
 
+type IntegrationSourceExecution interface {
+	SetIntegrationSource(func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error))
+}
+
 // attemptDiffSource returns the source for one run's worktree. A diff is
 // best-effort: a failure is logged and reported as "nothing to post", so a
 // worktree the runner cannot read never fails the run it is describing.
@@ -234,6 +238,17 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			if err := r.validateNativeChange(guarded, req); err != nil {
 				runErr = errors.Join(runErr, err)
 				outcome = "failed"
+			}
+		}
+	}
+	if changes, ok := req.Execution.(ChangeExecution); ok && runErr == nil {
+		change := changes.NativeChange()
+		if change != nil && change.Landing != nil {
+			result.NativeLanding = change.Landing
+			if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
+				if err := runtime.ObserveLanding(finishCtx, *result.NativeLanding); err != nil {
+					runErr = errors.Join(runErr, err)
+				}
 			}
 		}
 	}

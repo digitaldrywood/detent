@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // A hub-native item has no pull request, so a successful work run's commits
@@ -69,14 +70,43 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 			return nil
 		}
 		for _, version := range detail.Versions {
-			if version.ID == detail.Change.CurrentVersion && version.HeadSHA == diff.HeadSHA {
-				change.Changed, change.ChangeID, change.BaseSHA = true, detail.Change.ID, version.BaseSHA
+			if version.ID != detail.Change.CurrentVersion {
+				continue
+			}
+			change.Changed, change.ChangeID, change.BaseSHA, change.HeadSHA = true, detail.Change.ID, version.BaseSHA, version.HeadSHA
+			if version.HeadSHA == diff.HeadSHA {
 				if err := e.publishVersion(ctx, diff, change); err != nil {
 					return err
 				}
 				e.settled = true
 				return nil
 			}
+			change.VersionError = "the final attempt diff does not identify the current Change Request head"
+			if version.PolicyID != e.data.PolicyID || detail.Summary.Status == "stale_policy" {
+				change.VersionCode = "policy_mismatch"
+			} else if detail.Summary.Status == "reviewed" && detail.Change.Landed == nil &&
+				diff.BaseSHA == diff.HeadSHA && len(diff.Files) == 0 && e.integrationSource != nil &&
+				e.preparedDisposition != nil && e.preparedDisposition.Status == "complete" && !e.preparedDisposition.Blockers && !e.preparedDisposition.HumanAction {
+				result, err := e.integrationSource(ctx, version, diff.BaseSHA)
+				if err != nil {
+					var refusal *workspace.LandRefusal
+					if !errors.As(err, &refusal) {
+						change.Error = err.Error()
+						return err
+					}
+					change.VersionError += ": " + err.Error()
+				} else {
+					landing := runner.NativeLanding{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method}
+					if err := e.RecordLanding(ctx, landing); err != nil {
+						change.Error = err.Error()
+						return err
+					}
+					change.VersionID, change.Reviewed, change.VersionError = version.ID, true, ""
+					change.Landing = &landing
+				}
+			}
+			e.settled = true
+			return nil
 		}
 		change.Error = "the final attempt diff does not identify the current Change Request head"
 		return errors.New(change.Error)
@@ -113,6 +143,12 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		return errors.New(change.Error)
 	}
 	return err
+}
+
+func (e *nativeExecution) SetIntegrationSource(source func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.integrationSource = source
 }
 
 func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.AttemptDiffRequest, change *runner.NativeChange) error {

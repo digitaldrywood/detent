@@ -18,7 +18,7 @@ import (
 func (e *nativeExecution) ValidatorVersion(ctx context.Context) (runner.NativeValidation, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.change == nil || e.change.VersionID == "" || e.lastDiff == nil {
+	if e.change == nil || e.change.Landing != nil || e.change.VersionID == "" || e.lastDiff == nil {
 		return runner.NativeValidation{}, nil
 	}
 	detail, err := e.claim.source.client.Change(ctx, e.claim.lease.WorkItemID, e.change.ChangeID)

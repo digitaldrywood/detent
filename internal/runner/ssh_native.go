@@ -11,15 +11,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // SSHExecutionSources exposes only the checkout bound by the remote runner.
 // Upload credentials, journals, producer tuples and lease ownership stay central.
 type SSHExecutionSources struct {
-	mu        sync.Mutex
-	diff      AttemptDiffSource
-	directory string
-	evidence  func(context.Context, string) (ValidationEvidence, error)
+	mu          sync.Mutex
+	diff        AttemptDiffSource
+	directory   string
+	evidence    func(context.Context, string) (ValidationEvidence, error)
+	integration func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)
 }
 
 type sshDiff struct {
@@ -29,9 +31,14 @@ type sshDiff struct {
 
 func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 	s.mu.Lock()
-	diff, directory, evidence := s.diff, s.directory, s.evidence
+	diff, directory, evidence, integration := s.diff, s.directory, s.evidence, s.integration
 	s.mu.Unlock()
 	switch method {
+	case "source.integration":
+		if integration == nil {
+			return nil, errors.New("SSH integration workspace is unavailable")
+		}
+		return invokeSSHMethod(ctx, integration, "", args)
 	case "source.evidence":
 		if evidence == nil {
 			return nil, errors.New("SSH evidence workspace is unavailable")
@@ -63,6 +70,13 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 // interpreted as a local path. Finish can use the last checkpoint diff once the
 // channel closes, just as it does after a local checkout is removed.
 func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
+	if source, ok := c.execution.(IntegrationSourceExecution); ok {
+		source.SetIntegrationSource(func(ctx context.Context, version tracker.ChangeVersion, base string) (workspace.LandResult, error) {
+			var result workspace.LandResult
+			err := peer.Call(ctx, "source.integration", &result, version, base)
+			return result, err
+		})
+	}
 	if source, ok := c.execution.(EvidenceSourceExecution); ok {
 		source.SetEvidenceSource(func(ctx context.Context, path string) (ValidationEvidence, error) {
 			var result ValidationEvidence
@@ -106,6 +120,12 @@ func (e *sshNativeExecution) SetDiffSource(source AttemptDiffSource) {
 	e.sources.mu.Lock()
 	defer e.sources.mu.Unlock()
 	e.sources.diff = source
+}
+
+func (e *sshNativeExecution) SetIntegrationSource(source func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)) {
+	e.sources.mu.Lock()
+	defer e.sources.mu.Unlock()
+	e.sources.integration = source
 }
 
 func (e *sshNativeExecution) SetRepository(repository string) {

@@ -17,17 +17,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type nativeExecution struct {
-	artifacts      nativeArtifacts
-	scheduler      *Scheduler
-	claim          nativeClaim
-	mu             sync.Mutex
-	data           tracker.NativeRunData
-	evidenceSource func(context.Context, string) (runner.ValidationEvidence, error)
-	pending        *tracker.NativeRunEvent
-	cancel         context.CancelCauseFunc
+	artifacts         nativeArtifacts
+	scheduler         *Scheduler
+	claim             nativeClaim
+	mu                sync.Mutex
+	data              tracker.NativeRunData
+	evidenceSource    func(context.Context, string) (runner.ValidationEvidence, error)
+	integrationSource func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)
+	pending           *tracker.NativeRunEvent
+	cancel            context.CancelCauseFunc
 	// diffSource computes the stored attempt diff the execution posts before
 	// every checkpoint and before the finish (decisions section 18.5). It is
 	// nil for a run with no worktree to describe.
