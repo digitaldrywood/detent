@@ -146,6 +146,9 @@ func projectSchema(t reflect.Type) map[string]any {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+	if t == reflect.TypeFor[json.RawMessage]() {
+		return map[string]any{"type": "object"}
+	}
 	switch t.Kind() {
 	case reflect.Struct:
 		props := map[string]any{}
@@ -195,8 +198,15 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 	if json.Unmarshal(raw, &value) != nil {
 		return ErrInvalidArguments
 	}
-	var bounded func(any, string) bool
-	bounded = func(v any, key string) bool {
+	var bounded func(any, string, reflect.Type) bool
+	bounded = func(v any, key string, t reflect.Type) bool {
+		if t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		if t == reflect.TypeFor[json.RawMessage]() {
+			_, object := v.(map[string]any)
+			return object
+		}
 		switch x := v.(type) {
 		case string:
 			maximum := projectStringLimit(key)
@@ -206,13 +216,15 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 				return false
 			}
 			for _, item := range x {
-				if !bounded(item, key) {
+				if !bounded(item, key, t.Elem()) {
 					return false
 				}
 			}
 		case map[string]any:
-			for k, item := range x {
-				if !bounded(item, k) {
+			for i := range t.NumField() {
+				field := t.Field(i)
+				name := strings.Split(field.Tag.Get("json"), ",")[0]
+				if item, present := x[name]; present && !bounded(item, name, field.Type) {
 					return false
 				}
 			}
@@ -226,7 +238,7 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 		}
 		return true
 	}
-	if !bounded(value, "") {
+	if !bounded(value, "", reflect.TypeOf(target)) {
 		return ErrInvalidArguments
 	}
 	return nil
@@ -234,6 +246,10 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 
 func projectStringLimit(key string) int {
 	switch key {
+	case "prompt", "shared_prompt", "agents_prompt":
+		return MaxArgumentBytes
+	case "source":
+		return 1024
 	case "request_id":
 		return 128
 	case "body":
