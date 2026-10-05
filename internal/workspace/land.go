@@ -31,6 +31,7 @@ type GitHubRESTClient interface {
 }
 
 type LandOptions struct {
+	SourceIssues []tracker.ExternalReference
 	GitHubClient GitHubRESTClient
 	External     *tracker.ChangeExternalReference
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:

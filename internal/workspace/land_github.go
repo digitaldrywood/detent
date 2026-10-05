@@ -18,6 +18,7 @@ import (
 
 type githubLandingPull struct {
 	Number   int    `json:"number"`
+	Body     string `json:"body"`
 	State    string `json:"state"`
 	Merged   bool   `json:"merged"`
 	MergedAt string `json:"merged_at"`
@@ -101,6 +102,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	}
 	baseBefore = strings.TrimSpace(baseBefore)
 	var pull githubLandingPull
+	createdPull := false
 	if opts.External != nil {
 		pull, err = readExternalLandingPull(ctx, opts.GitHubClient, opts.Repository, opts.External, head, base)
 		if err != nil {
@@ -144,10 +146,11 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		if pull.Number == 0 {
 			title, _, _ := strings.Cut(opts.Message, "\n")
 			if err := githubLandingAPI(ctx, opts.GitHubClient, &pull, "POST", "repos/"+repository+"/pulls",
-				"title="+title, "body="+opts.Message,
+				"title="+title, "body="+tracker.AppendGitHubIssueClosingReferences(opts.Message, opts.SourceIssues),
 				"head="+owner+":"+branch, "base="+base); err != nil {
 				return LandResult{}, err
 			}
+			createdPull = true
 		}
 	}
 	var mergeSHA string
@@ -159,6 +162,15 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	} else {
 		if pull.State != "open" {
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the GitHub pull request no longer names the reviewed head")
+		}
+		body := tracker.AppendGitHubIssueClosingReferences(pull.Body, opts.SourceIssues)
+		if !createdPull && body != pull.Body {
+			if pull.Head.SHA != head || pull.Head.Ref != githubLandingBranch(normalized, opts) || pull.Head.Repo.FullName != repository || pull.Base.Ref != base || pull.Base.Repo.FullName != repository {
+				return LandResult{}, refuse(LandRefusalHeadMoved, "the GitHub pull request differs from the reviewed delivery source")
+			}
+			if err := githubLandingAPI(ctx, opts.GitHubClient, nil, "PATCH", fmt.Sprintf("repos/%s/pulls/%d", repository, pull.Number), "body="+body); err != nil {
+				return LandResult{}, err
+			}
 		}
 		var merged githubLandingMerge
 		if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", fmt.Sprintf("repos/%s/pulls/%d/merge", repository, pull.Number),

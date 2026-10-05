@@ -43,7 +43,20 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 
 func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 	t.Parallel()
-	testNativeExecutionLandsReviewedVersion(t, true, false, false, false)
+	for _, test := range []struct {
+		name   string
+		github bool
+		ssh    bool
+	}{
+		{name: "source persists without PR"},
+		{name: "source persists with PR", github: true},
+		{name: "SSH carries source identity", github: true, ssh: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			testNativeExecutionLandsReviewedVersion(t, true, test.github, test.ssh, false)
+		})
+	}
 }
 
 func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool) {
@@ -215,6 +228,13 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != head || target.Method != "squash" || target.Number != 1 || target.Title != "Land me" || target.Repository != nativeChangeRepository || target.GitHubPullRequest != github {
 		t.Fatalf("landing target = %#v", target)
+	}
+	if linked {
+		if len(target.SourceIssues) != 1 || target.SourceIssues[0].Repository != "acme/orders" || target.SourceIssues[0].Number != 12 || sourceCalls != 1 {
+			t.Fatalf("landing lost durable source identity or polled GitHub: sources=%+v calls=%d", target.SourceIssues, sourceCalls)
+		}
+	} else if len(target.SourceIssues) != 0 {
+		t.Fatalf("native item acquired source issues: %+v", target.SourceIssues)
 	}
 	if err := execution.RecordLanding(guarded, runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, RefusalKind: "conflict"}); err == nil {
 		t.Fatal("a refusal was recorded as a landing")

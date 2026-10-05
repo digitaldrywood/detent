@@ -55,7 +55,16 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		wantOutage     bool
 		gitReadFailure string
 		gitReadClass   string
+		sourceIssues   bool
+		existingBody   string
+		wantPatch      bool
 	}{
+		{name: "creates the exact source closing payload", method: "squash", sourceIssues: true},
+		{name: "reuse preserves human delivery attribution", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses example/repo#44", wantPatch: true},
+		{name: "reuse retains source lines without duplication", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses digitaldrywood/detent#3410"},
+		{name: "external PR retains human attribution", method: "squash", external: true, sourceIssues: true, existingBody: "Human attribution", wantPatch: true},
+		{name: "merged PR attribution is historical", method: "squash", pullState: "merged", sourceIssues: true, existingBody: "Historical attribution"},
+		{name: "source attribution refuses a stale PR head", method: "squash", pullState: "stale", sourceIssues: true, existingBody: "Human attribution", wantRefusal: LandRefusalHeadMoved},
 		{name: "merges the reviewed head", method: "merge"},
 		{name: "uses the policy squash method", method: "squash"},
 		{name: "uses the policy rebase method", method: "rebase"},
@@ -170,11 +179,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						}
 						methods = append(methods, req.Method)
 						var body map[string]string
-						if req.Method == http.MethodPut {
+						if strings.Contains(req.URL.Path, "/issues") {
+							t.Fatalf("landing polled source issues: %s", req.URL)
+						}
+						if req.Method == http.MethodPut || req.Method == http.MethodPost || req.Method == http.MethodPatch {
 							if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 								t.Fatal(err)
 							}
-							if body["sha"] != fixture.head || body["merge_method"] != test.method {
+							if req.Method == http.MethodPut && (body["sha"] != fixture.head || body["merge_method"] != test.method) {
 								t.Fatalf("merge body = %#v", body)
 							}
 						}
@@ -183,7 +195,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						headers.Set("X-RateLimit-Limit", "5000")
 						headers.Set("X-RateLimit-Remaining", "4990")
 						headers.Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
-						pull := fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s"},"base":{"ref":"main"}}`, fixture.head)
+						pull := fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":%q,"repo":{"full_name":"example/repo"}},"base":{"ref":"main","repo":{"full_name":"example/repo"}}}`, fixture.head, fixture.info.Branch)
 						var response string
 						if test.external {
 							pullHead, headRef, baseRef, headRepo, baseRepo := externalHead, fixture.info.Branch, "main", "example/repo", "example/repo"
@@ -199,6 +211,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 							}
 							pull = fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}},"base":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}}}`, pullHead, headRef, headRepo, base, baseRef, baseRepo)
 						}
+						pull = strings.Replace(pull, `"number":7,`, fmt.Sprintf(`"number":7,"body":%q,`, test.existingBody), 1)
 						if !healthy && req.Method == test.failureMethod {
 							status = test.status
 							if test.advanceOnMerge {
@@ -285,7 +298,20 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 									response = "[]"
 								}
 							case "POST":
+								wantBody := "Native Change Request"
+								if test.sourceIssues {
+									wantBody += "\n\nCloses digitaldrywood/detent#3410"
+								}
+								if body["body"] != wantBody || body["title"] != "Native Change Request" || body["base"] != "main" || body["head"] != "example:"+fixture.info.Branch {
+									t.Fatalf("PR creation payload = %+v, want body %q", body, wantBody)
+								}
 								createdPull = true
+								response = pull
+							case "PATCH":
+								wantBody := test.existingBody + "\n\nCloses digitaldrywood/detent#3410"
+								if !test.wantPatch || body["body"] != wantBody || len(body) != 1 || req.URL.Path != "/repos/example/repo/pulls/7" {
+									t.Fatalf("reused PR payload = %+v, want body %q", body, wantBody)
+								}
 								response = pull
 							case "PUT":
 								published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
@@ -308,6 +334,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			}
 			client := newClient(false)
 			opts := LandOptions{HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client}
+			if test.sourceIssues {
+				source := tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410")
+				opts.SourceIssues = []tracker.ExternalReference{source, source}
+			}
 			if test.external {
 				opts.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
 			}
@@ -370,6 +400,12 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						t.Fatalf("base race lost its original atomic refusal: %v", err)
 					}
 				}
+				if test.sourceIssues && test.pullState == "stale" {
+					if strings.Join(methods, ",") != "GET" {
+						t.Fatalf("stale delivery attribution mutated the PR: %v", methods)
+					}
+					return
+				}
 				if !test.external && (!strings.Contains(strings.Join(methods, ","), "PUT") || !strings.Contains(refusal.Reason, "GitHub refused")) {
 					t.Fatalf("refusal did not come from the atomic merge: %v, %v", err, methods)
 				}
@@ -420,6 +456,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			wantCreate := !test.external && test.pullState != "open" && test.pullState != "stale" && test.pullState != "merged" && (!test.rate || test.failureMethod != "PUT")
 			wantMerge := test.pullState != "merged"
 			calls := strings.Join(methods, ",")
+			if strings.Contains(calls, "PATCH") != test.wantPatch {
+				t.Fatalf("source attribution operations = %v", methods)
+			}
 			if strings.Contains(calls, "POST") != wantCreate || strings.Contains(calls, "PUT") != wantMerge {
 				t.Fatalf("operations = %v", methods)
 			}

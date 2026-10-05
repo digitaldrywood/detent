@@ -44,6 +44,9 @@ func TestLinkedIssueCreation(t *testing.T) {
 	t.Parallel()
 	f := linkedFixture(t)
 	first := f.link(t, "link")
+	if len(first.ExternalReferences) != 1 || first.ExternalReferences[0].Repository != "acme/orders" || first.ExternalReferences[0].Number != 12 {
+		t.Fatalf("linked issue lost source reference: %+v", first.ExternalReferences)
+	}
 	if first.LinkedSource == nil || first.LinkedSource.Status != "pending" || first.LinkedSource.URL != "https://github.com/acme/orders/issues/12" {
 		t.Fatalf("linked issue = %#v", first)
 	}

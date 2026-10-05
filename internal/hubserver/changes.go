@@ -243,6 +243,10 @@ func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScop
 	if err != nil {
 		return result, err
 	}
+	result.SourceIssues, err = readChangeSourceIssues(ctx, query, scope, id)
+	if err != nil {
+		return result, err
+	}
 	result.Versions, err = changeRows[tracker.ChangeVersion](ctx, query, "SELECT record_json FROM change_versions WHERE change_id = ? ORDER BY number", id)
 	if err != nil {
 		return result, err
