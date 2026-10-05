@@ -69,11 +69,23 @@ func configureProjectPolicy(ctx context.Context, cfg globalconfig.Project, workf
 		}
 		*workflow = resolved
 	}
+	var provenance *policy.RepositorySource
+	sourceChecker, hasSourceChecker := scheduling.(interface {
+		CheckProjectPolicyWithSource(context.Context, string, string, policy.Descriptor, *policy.RepositorySource) error
+	})
+	if hasSourceChecker && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+		*workflow, provenance = repositoryPolicySource(ctx, cfg, *workflow)
+	}
 	descriptor, err := ResolvePolicy(cfg, *workflow)
 	if err != nil {
 		return fmt.Errorf("resolve repository policy: %w", err)
 	}
-	if err := checker.CheckProjectPolicy(ctx, cfg.ID, workflow.Config.Tracker.Repository, descriptor); err != nil {
+	if hasSourceChecker {
+		err = sourceChecker.CheckProjectPolicyWithSource(ctx, cfg.ID, workflow.Config.Tracker.Repository, descriptor, provenance)
+	} else {
+		err = checker.CheckProjectPolicy(ctx, cfg.ID, workflow.Config.Tracker.Repository, descriptor)
+	}
+	if err != nil {
 		return err
 	}
 	workflow.Config.Policy = descriptor

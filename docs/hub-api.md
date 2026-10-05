@@ -63,15 +63,15 @@ organization/project scope. Policies are resolved on the customer host. See
 | Endpoint suffix | Method | Authority and payload |
 | --- | --- | --- |
 | `/api/v1/repositories/{owner}/{repo}/policy` | `GET` | Read current descriptor and approval provenance with a compatibility credential |
-| `/api/v2/organizations/{organization}/projects/{project}/policy` | `GET` | Read current descriptor and approval provenance within native project grants |
+| `/api/v2/organizations/{organization}/projects/{project}/policy` | `GET` | Read current descriptor, approval provenance and workflow apply history within native project grants (`limit`, `after`) |
 | Either policy endpoint | `PUT` | Instance administrator only; `policy` descriptor and `expected_policy_id` (empty for first approval). Exact retries are idempotent; concurrent distinct replacements have one winner. |
 | Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
-| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. Reports grant no authority. |
+| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. An enrolled runner may include `repository_source` alongside the descriptor: `repository`, `commit`, `default_branch`, `default_branch_head` and `default_branch_reachable`. A committed workflow definition reachable from the bound repository's default branch is applied through the existing atomic policy approval path. Other reports remain pending. |
 
 Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
 (owner or admin); the generic `PUT .../policy` above stays instance-administrator
 only and is not served in hosted mode. Runners report each distinct resolved
-descriptor once, including successful matches that replace earlier mismatches.
+descriptor/provenance combination once, including successful matches that replace earlier mismatches.
 Only the latest observations from currently authorized runners are actionable.
 Previously approved descriptors retain their history; they are reported as
 configuration conflicts rather than newly generated policies.
@@ -86,23 +86,34 @@ configuration/source digests and revisions identify the portable behavior and
 instructions rather than raw host-specific file bytes. Repository compatibility
 policies retain their original file/revision approval semantics.
 
-To change native behavior, inspect the intended definition on one host and
-approve that exact descriptor once through `detent hub policy approve` or the
+For repository-controlled native workflows, enrolled runners compare the loaded
+definition with committed contents and verify ancestry against the configured
+origin's advertised default-branch HEAD. The Hub automatically applies eligible
+reports whose repository matches the project's checkout or integration binding.
+Feature-branch commits, uncommitted definition edits and reports without this
+provenance retain explicit approval through `detent hub policy approve` or the
 existing policy endpoint. Authenticated native inspection consumes the same
 approved shared definition as runtime; offline inspection describes the local
 proposal. The approval command explicitly proposes the selected local
 definition. The existing workflow refresh applies approved changes to idle
 runners without synchronizing files or pausing the project. Active leases keep
 their exact approved identity and prevent a replacement approval. No descriptor
-is automatically approved.
+from another ref is automatically approved.
 
 Descriptors reject unknown JSON fields and validate all metadata, hashes and
 content-derived identities. Worker/operator tokens cannot approve or revoke a
 policy. Native cross-project and cross-organization reads follow existing grant
 checks. Native shared configuration is validated against its exact descriptor
 and gate metadata before storage or application. Host configuration and
-credentials are excluded from that payload. Approval remains explicit;
-conflicting runner reports alone do not change the shared definition.
+credentials are excluded from that payload. Conflicting runner reports without
+verified default-branch provenance do not change the shared definition.
+
+Every workflow application records repository, commit, previous and new
+`definition_digest`, `runner_id`, applying principal and timestamp atomically.
+`GET .../policy` and MCP `get_project_policy` return newest-first `history`;
+`history_next` supplies the next `after` cursor, with `limit` bounded to 1–200.
+Exact retries add no history. Manual approvals without a runner observation or
+Git revision retain empty values for unavailable provenance.
 
 Claim allocation checks approval and requirements in the lease transaction and
 persists the identity with the lease. Responses include `policy_id`; native run

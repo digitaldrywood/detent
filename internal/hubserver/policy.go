@@ -50,7 +50,11 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	approval, err := readProjectPolicy(c.Request().Context(), s.database.db, scope)
+	limit, err := parsePageLimit(c.QueryParam("limit"))
+	if err != nil {
+		return s.nativeAPIError(c, nativeInvalid(err.Error()))
+	}
+	approval, err := readProjectPolicyWithHistory(c.Request().Context(), s.database.db, scope, limit, c.QueryParam("after"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -81,10 +85,11 @@ func (s *Service) approveProjectPolicy(c echo.Context) error {
 }
 
 func (s *Service) observeProjectPolicy(c echo.Context) error {
-	var descriptor policy.Descriptor
-	if err := decodeAPIJSON(c, &descriptor); err != nil {
+	var observation policy.Observation
+	if err := decodeAPIJSON(c, &observation); err != nil {
 		return invalidAPIRequest(c, err)
 	}
+	descriptor := observation.Descriptor
 	if err := workflowconfig.ValidateSharedPolicy(descriptor); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
@@ -104,10 +109,19 @@ func (s *Service) observeProjectPolicy(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at) VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at`,
-		scope, descriptor.ID, string(encoded), reporter, formatHubTime(s.config.now())); err != nil {
+	source, err := json.Marshal(observation.Source)
+	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	if _, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at, source_json) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at, source_json = excluded.source_json`,
+		scope, descriptor.ID, string(encoded), reporter, formatHubTime(s.config.now()), string(source)); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if credential.Runner.RunnerID != "" {
+		if err := s.database.applyObservedDefaultBranchPolicy(c.Request().Context(), scope, reporter, observation); err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -121,7 +135,7 @@ AND (t.expires_at IS NULL OR julianday(t.expires_at) > julianday(?))
 JOIN token_grants g ON g.token_id = t.id AND g.organization_id || '/' || g.project_id = o.scope
 WHERE i.removed_at IS NULL
 )
-SELECT o.descriptor_json, o.runner_id, o.observed_at, o.policy_id,
+SELECT o.descriptor_json, o.source_json, o.runner_id, o.observed_at, o.policy_id,
 EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = o.policy_id),
 (SELECT count(DISTINCT policy_id) FROM current_reports WHERE scope = o.scope),
 EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = ? AND json_type(r.metadata_json, '$.configuration') = 'object')
@@ -133,11 +147,11 @@ FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observe
 	result := []policy.ObservedPolicy{}
 	seen := map[string]int{}
 	for rows.Next() {
-		var raw, id string
+		var raw, source, id string
 		var observed policy.ObservedPolicy
 		var distinct int
 		var shared bool
-		if err := rows.Scan(&raw, &observed.RunnerID, &observed.ObservedAt, &id, &observed.PreviouslyApproved, &distinct, &shared); err != nil {
+		if err := rows.Scan(&raw, &source, &observed.RunnerID, &observed.ObservedAt, &id, &observed.PreviouslyApproved, &distinct, &shared); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		if index, ok := seen[id]; ok {
@@ -146,6 +160,9 @@ FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observe
 		}
 		seen[id] = len(result)
 		if err := json.Unmarshal([]byte(raw), &observed.Policy); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		if err := json.Unmarshal([]byte(source), &observed.Source); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		observed.Conflict = distinct > 1 || shared || observed.PreviouslyApproved
@@ -267,6 +284,11 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 			}
 		}
 	}
+	if current != change.Policy.ID && change.Policy.Workflow != nil {
+		if err := recordWorkflowApply(ctx, tx, scope, actor, current, change.Policy, now); err != nil {
+			return result, err
+		}
+	}
 	raw, err := json.Marshal(change.Policy)
 	if err != nil {
 		return result, err
@@ -280,7 +302,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	if err := followDefaultChangeReviewPolicy(ctx, tx, scope, change.Policy); err != nil {
 		return result, err
 	}
-	result, err = readProjectPolicy(ctx, tx, scope)
+	result, err = readProjectPolicyWithHistory(ctx, tx, scope, 0, "")
 	if err != nil {
 		return result, err
 	}

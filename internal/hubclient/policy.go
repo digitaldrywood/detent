@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -56,7 +57,11 @@ func (c *NativeClient) ApproveProjectPolicy(ctx context.Context, change policy.C
 }
 
 func (c *NativeClient) ReportObservedPolicy(ctx context.Context, descriptor policy.Descriptor) error {
-	return c.client.request(ctx, http.MethodPost, c.base()+"/policy/observed", descriptor, nil)
+	return c.reportPolicyObservation(ctx, policy.Observation{Descriptor: descriptor})
+}
+
+func (c *NativeClient) reportPolicyObservation(ctx context.Context, observation policy.Observation) error {
+	return c.client.request(ctx, http.MethodPost, c.base()+"/policy/observed", observation, nil)
 }
 
 func (s *Scheduler) ProjectWorkflowMarkdown(ctx context.Context, project string) (string, error) {
@@ -69,6 +74,10 @@ func (s *Scheduler) ProjectWorkflowMarkdown(ctx context.Context, project string)
 }
 
 func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository string, descriptor policy.Descriptor) error {
+	return s.CheckProjectPolicyWithSource(ctx, project, repository, descriptor, nil)
+}
+
+func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, repository string, descriptor policy.Descriptor, provenance *policy.RepositorySource) error {
 	if err := descriptor.Validate(); err != nil {
 		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()}
 	}
@@ -89,7 +98,7 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 		}
 		err = descriptor.Match(approval.Policy)
 		if err == nil {
-			return s.reportObservedPolicy(ctx, project, source, descriptor)
+			return s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance})
 		}
 		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()})
 	case errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch":
@@ -97,7 +106,17 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 	default:
 		return fmt.Errorf("check approved repository policy: %w", err)
 	}
-	return errors.Join(err, s.reportObservedPolicy(ctx, project, source, descriptor))
+	if reportErr := s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance}); reportErr != nil {
+		return errors.Join(err, reportErr)
+	}
+	if provenance != nil && provenance.DefaultBranchReachable {
+		applied, readErr := source.client.ProjectPolicy(ctx)
+		if readErr == nil && descriptor.Match(applied.Policy) == nil {
+			return nil
+		}
+		return errors.Join(err, readErr)
+	}
+	return err
 }
 
 func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, workflow workflowconfig.Workflow) (workflowconfig.Workflow, error) {
@@ -123,9 +142,14 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 	return workflowconfig.ApplyNativePolicy(workflow, approval.Policy)
 }
 
-func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, source *NativeConnector, descriptor policy.Descriptor) error {
+func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, source *NativeConnector, observation policy.Observation) error {
+	raw, err := json.Marshal(observation)
+	if err != nil {
+		return err
+	}
+	reportID := policy.Digest(raw)
 	s.mu.Lock()
-	if s.reportedPolicies[project] == descriptor.ID {
+	if s.reportedPolicies[project] == reportID {
 		s.mu.Unlock()
 		return nil
 	}
@@ -133,11 +157,11 @@ func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, so
 		s.reportedPolicies = map[string]string{}
 	}
 	previous := s.reportedPolicies[project]
-	s.reportedPolicies[project] = descriptor.ID
+	s.reportedPolicies[project] = reportID
 	s.mu.Unlock()
-	if err := source.client.ReportObservedPolicy(ctx, descriptor); err != nil {
+	if err := source.client.reportPolicyObservation(ctx, observation); err != nil {
 		s.mu.Lock()
-		if s.reportedPolicies[project] == descriptor.ID {
+		if s.reportedPolicies[project] == reportID {
 			s.reportedPolicies[project] = previous
 		}
 		s.mu.Unlock()

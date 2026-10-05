@@ -176,7 +176,7 @@ Configuration precedence and authorization are applied in this order:
 | 2 | Project definition anchor | `projects[].workflow` selects the definition directory, including an external root. `detent.yaml` plus prompt-only `WORKFLOW.md` use schema 1; legacy frontmatter remains supported. Mixed structured authority is rejected. No competing checkout file is searched. |
 | 3 | Machine overlays | Existing `detent.local.yaml` and `WORKFLOW.local.md` rules apply: mappings merge, explicit scalars/sequences replace, supported empty/false values clear, and local prose appends. |
 | 4 | Host configuration | Existing flags/environment/global precedence, identity, paths, authorization filters, pool/backend limits, budgets and host ceilings remain enforced on customer infrastructure. Repository requirements cannot increase host permissions or capacity. |
-| 5 | Explicit Hub approval | Native runners consume the approved shared behavior and instructions while retaining host configuration. Compatibility runners must resolve the approved effective files and local overrides. Both require an exact descriptor match; missing, stale or contradictory policy denies dispatch. |
+| 5 | Hub policy approval | Native runners consume the approved shared behavior and instructions while retaining host configuration. Compatibility runners must resolve the approved effective files and local overrides. Both require an exact descriptor match; missing, stale or contradictory policy denies dispatch. |
 | 6 | Run pin | Claims atomically pin the approved policy. The customer runner rechecks approval before dispatch, claim adoption and renewal, and checks its loaded workflow before credentials or workspace creation. |
 
 Use an administrator-selected `workflow_ref` to read shared files from a trusted
@@ -205,12 +205,17 @@ The command reads `DETENT_HUB_ADMIN_TOKEN` (or `--admin-token-env`), resolves th
 selected local definition and uploads its descriptor. Replacement requires
 `--expected-policy-id policy_...` to prevent a stale approval from overwriting
 another administrator's decision.
-Changing native shared behavior or instructions requires one reviewed approval
+For repository-controlled native workflows, an enrolled runner automatically
+applies definitions committed on the bound repository's default-branch history
+through the same Hub approval transaction. It verifies the configured origin,
+committed contents and Git ancestry before reporting provenance. Feature-branch
+commits and uncommitted edits still require explicit administrator approval.
+Other native shared behavior or instruction changes require one reviewed approval
 for the project. Planning, validation and automatic promotion can be enabled
 together; the existing workflow refresh applies the approved combination to
 idle runners without copying files. Host configuration changes do not produce
 competing native approvals. Existing native approvals without shared
-configuration require an explicit replacement approval to adopt this model.
+configuration adopt this model through the same replacement approval path.
 Compatibility projects still require new approval for effective file, permitted
 local adjustment, environment or trusted source revision changes on each host.
 
