@@ -5,6 +5,12 @@ when writing `WORKFLOW.md`, `AGENTS.md`, and skills.
 
 [Back to README](../README.md#documentation)
 
+For Detent Cloud, a runner is the host that runs agents and works on your local
+project checkout. Enroll it through Hub **Settings > Runners**. Follow
+[Cloud runners on Fly Sprites](sprite-runners.md) to set up a runner that sleeps
+between jobs and wakes when the Hub receives new work; see
+[Cloud onboarding](cloud-onboarding.md#customer-host-enrollment) for other hosts.
+
 Choose a GitHub status source and a local repository checkout. Prefer
 repository label mode for boards beyond a few hundred items or instances
 running several projects on one GitHub token. Detent can also read and write
