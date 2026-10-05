@@ -60,6 +60,18 @@ func (o *Orchestrator) evaluateRecordedBlockers(
 	referencesAttempted ...bool,
 ) recordedBlockerEvaluation {
 	signal, _ := rawIssueWorkpadSignal(issue)
+	return o.evaluateRecordedBlockerSignal(ctx, state, issue, signal, resolvedReferences, now, referencesAttempted...)
+}
+
+func (o *Orchestrator) evaluateRecordedBlockerSignal(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	signal *workpad.Signal,
+	resolvedReferences map[string]connector.Issue,
+	now time.Time,
+	referencesAttempted ...bool,
+) recordedBlockerEvaluation {
 	if signal == nil {
 		return recordedBlockerEvaluation{}
 	}
@@ -747,7 +759,7 @@ func recordedBlockerRecoveryComment(
 
 // completeRecordedInstanceBlockers leaves cause-based dispatch to the existing
 // live Workpad evaluator. Reporting an instance blocker is not issue no-progress.
-func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
+func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, state *State, event runpkg.Completion, running Running, reports ...*workpad.Signal) bool {
 	if event.Err != nil || running.Mode == runpkg.RunModePlan || event.Result.FinalState != "" && event.Result.FinalState != FinalStateCompleted {
 		return false
 	}
@@ -756,6 +768,18 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 		return false
 	}
 	signal := issue.WorkpadSignal
+	if len(reports) > 0 {
+		signal = workpad.CloneSignal(reports[0])
+		if signal == nil || signal.HumanAction != "" || signal.ReasonCode != "" {
+			return false
+		}
+		signal.RecordedAt = &event.CompletedAt
+		for _, blocker := range signal.Blockers {
+			if blocker.Owner != workpad.BlockerOwnerInstance {
+				return false
+			}
+		}
+	}
 	if signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusBlocked {
 		return false
 	}
@@ -766,7 +790,7 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 	if !instance {
 		return false
 	}
-	evidence := o.evaluateRecordedBlockers(ctx, state, issue, nil, event.CompletedAt)
+	evidence := o.evaluateRecordedBlockerSignal(ctx, state, issue, signal, nil, event.CompletedAt)
 	running.Issue = issue
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
@@ -776,7 +800,11 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 	}
 	o.recordCompletionUsage(ctx, state, event, issue)
 	detail := workpad.Reason(signal)
-	if o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, map[string]any{"blocker_evidence": evidence.Evidence}) {
+	metadata := map[string]any{"blocker_evidence": evidence.Evidence}
+	if len(reports) > 0 && event.Result.NativeChange != nil {
+		metadata = mergeWorkAttemptMetadata(metadata, nativeChangeMetadata(event.Result.NativeChange))
+	}
+	if o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, metadata) {
 		o.releaseCompletedAttemptClaim(ctx, state, issue)
 		delete(state.mergeReservations, issue.ID)
 	}

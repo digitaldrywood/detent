@@ -85,12 +85,15 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if change.Changed && change.VersionID == "" && change.VersionError == "" {
 		return handoff(errors.New("the native change has no published current version"))
 	}
+	report, reported := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
+	if change.VersionError == "" && o.completeRecordedInstanceBlockers(ctx, state, event, running, report) {
+		return true
+	}
 	states, err := reader.WorkflowStates(ctx)
 	if err != nil {
 		return handoff(fmt.Errorf("read native workflow states: %w", err))
 	}
 	change = o.refreshNativeChangeReview(ctx, issueID, change)
-	report, reported := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
 	accepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusComplete && len(report.Blockers) == 0 && report.HumanAction == ""
 	needsReview := !change.Changed && !accepted || reported && !accepted
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)

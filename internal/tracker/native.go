@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/workpad"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 )
@@ -434,9 +435,11 @@ type NativeLeaseMutation struct {
 }
 
 type NativeDisposition struct {
-	Status      string `json:"status"`
-	Blockers    bool   `json:"blockers"`
-	HumanAction bool   `json:"human_action"`
+	Status          string            `json:"status"`
+	Blockers        bool              `json:"blockers"`
+	HumanAction     bool              `json:"human_action"`
+	ReasonCode      string            `json:"reason_code,omitempty"`
+	BlockerEvidence []workpad.Blocker `json:"blocker_evidence,omitempty"`
 }
 
 type NativeRunData struct {

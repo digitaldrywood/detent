@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 // dispatchGuardFixture is the conversation worker fixture with the few
@@ -54,6 +56,12 @@ func (f dispatchGuardFixture) candidate(t *testing.T) bool {
 // item.
 func (f dispatchGuardFixture) succeed(t *testing.T, disposition ...*tracker.NativeDisposition) {
 	t.Helper()
+	f.finish(t, disposition...)
+	f.release(t)
+}
+
+func (f dispatchGuardFixture) finish(t *testing.T, disposition ...*tracker.NativeDisposition) {
+	t.Helper()
 	event := tracker.NativeRunEvent{
 		Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1,
 		Data: tracker.NativeRunData{
@@ -64,8 +72,14 @@ func (f dispatchGuardFixture) succeed(t *testing.T, disposition ...*tracker.Nati
 	if len(disposition) > 0 {
 		event.Data.Disposition = disposition[0]
 	}
+	checkpoint := event
+	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", newNativeID("checkpoint"), ""
+	checkpoint.Data.Disposition = nil
+	checkpoint.Data.Handoff = nativeTestCheckpoint()
+	checkpoint.Data.Handoff.WorktreeState = "clean"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, checkpoint), http.StatusOK)
+	event.Data.Sequence++
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
-	f.release(t)
 }
 
 // reload re-reads the item so the next mutation carries its current revision.
@@ -112,11 +126,21 @@ func (f dispatchGuardFixture) continueConversation(t *testing.T, key string) {
 // it again" brings it back.
 func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	t.Parallel()
+	instanceReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```"
 	for _, test := range []struct {
 		name          string
 		disposition   *tracker.NativeDisposition
+		finalMessage  string
+		manualHold    bool
 		wantCandidate bool
 	}{
+		{name: "native272 instance report remains runnable", finalMessage: instanceReport, wantCandidate: true},
+		{name: "instance report respects manual workflow hold", finalMessage: instanceReport, manualHold: true},
+		{name: "instance and human action remain held", finalMessage: strings.Replace(instanceReport, "human_action: null", "human_action: Approve the exception", 1)},
+		{name: "instance and external blocker remain held", finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1)},
+		{name: "reason only human blocker remains held", finalMessage: strings.Replace(instanceReport, "  - ref: instance:worker-loopback\n", "", 1)},
+		{name: "instance and reason code remain held", finalMessage: strings.Replace(instanceReport, "status: blocked", "status: blocked\nreason_code: permission_wait", 1)},
+		{name: "native273 malformed predicate remains held", finalMessage: strings.Replace(instanceReport, "    reason:", "    predicate: instance_available\n    reason:", 1)},
 		{name: "unfinished custom Rework remains runnable", disposition: &tracker.NativeDisposition{Status: "in_progress"}, wantCandidate: true},
 		{name: "completed custom Rework is answered", disposition: &tracker.NativeDisposition{Status: "complete"}},
 		{name: "explicit blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}},
@@ -127,7 +151,12 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newDispatchGuardFixture(t)
-			_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,0,1,?,?)`, f.project.ID, "Fixing", "Fixing", formatHubTime(f.now), formatHubTime(f.now))
+			if test.finalMessage != "" {
+				if signal, reported := workpad.SignalFromComment(test.finalMessage, "", ""); reported && signal != nil && signal.Invalid == nil {
+					test.disposition = &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, BlockerEvidence: signal.Blockers}
+				}
+			}
+			_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,0,?,?,?)`, f.project.ID, "Fixing", "Fixing", !test.manualHold, formatHubTime(f.now), formatHubTime(f.now))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -136,7 +165,17 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				t.Fatal(err)
 			}
 			revision := f.reload(t).Revision
-			f.succeed(t, test.disposition)
+			f.finish(t, test.disposition)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/attempts/"+f.attempt, f.worker, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var attempt tracker.NativeAttempt
+			decodeHubResponse(t, response, &attempt)
+			if attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != "clean" || attempt.WorkItemRevision != revision || attempt.DispatchGeneration != 0 {
+				t.Fatalf("completion lost clean successful current-revision evidence: %#v", attempt)
+			}
+			claim := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
+			f.release(t)
 			if f.reload(t).Revision != revision {
 				t.Fatal("completion fabricated an item edit")
 			}
@@ -144,7 +183,14 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				t.Fatalf("candidate=%t, want %t", got, test.wantCandidate)
 			}
 			if test.wantCandidate {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.nativeFixture.worker(t, "other-worker"), claim), http.StatusNotFound)
+				var generation int64
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE native_id = ?", f.issue.WorkItemID).Scan(&generation); err != nil || generation != 0 {
+					t.Fatalf("completion manufactured dispatch request: generation=%d, error=%v", generation, err)
+				}
 				f.claim(t)
+			} else {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
 			}
 		})
 	}
