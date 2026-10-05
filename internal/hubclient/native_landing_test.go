@@ -169,12 +169,19 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			if err := h.scheduler.RunExecution(candidate.ID).Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+			coding := h.scheduler.RunExecution(candidate.ID)
+			if coding == nil {
+				t.Fatal("claimed issue has no coding execution")
+			}
+			if err := coding.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
 			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(candidate.ID))
-			if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "running" || recovery.Attempts[0].Identity.Role != runner.RoleCode {
-				t.Fatalf("parallel coding event missing: %+v, %v", recovery.Attempts, err)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "running" || recovery.Attempts[0].Identity.Role != runner.RoleCode {
+				t.Fatalf("parallel coding event missing: %+v", recovery.Attempts)
 			}
 		}
 	} else {
@@ -195,6 +202,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatal(err)
 	}
 	defer stop()
+	nativeLanding := landing
 	if ssh {
 		landing, _ = nativeSSHExecution(t, guarded, landing, t.TempDir())
 	}
@@ -207,8 +215,11 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if batch {
 		recovery, err := h.admin.Recovery(t.Context(), item)
-		if err != nil || len(recovery.Attempts) != 2 {
-			t.Fatalf("parallel merge event missing: %+v, %v", recovery.Attempts, err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recovery.Attempts) != 2 {
+			t.Fatalf("parallel merge event missing: %+v", recovery.Attempts)
 		}
 		started := false
 		for _, attempt := range recovery.Attempts {
@@ -271,7 +282,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, landed); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.scheduler.RunExecution(issue.ID).Finish(guarded, "succeeded"); err != nil {
+	if err := nativeLanding.Finish(guarded, "succeeded"); err != nil {
 		t.Fatal(err)
 	}
 	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
