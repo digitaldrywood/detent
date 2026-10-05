@@ -55,6 +55,7 @@ func (t *coordinatorToolset) issueContext(ctx context.Context, record conversati
 
 func (t *coordinatorToolset) readIssueHistory(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
 	var args struct {
+		WorkItemID      string `json:"work_item_id"`
 		Section         string `json:"section"`
 		Cursor          string `json:"cursor"`
 		Offset          int    `json:"offset"`
@@ -64,8 +65,16 @@ func (t *coordinatorToolset) readIssueHistory(ctx context.Context, record conver
 	if err := decodeCoordinatorArguments(call.Arguments, &args); err != nil {
 		return nil, err
 	}
-	if record.SubjectWorkItemID == "" {
+	reference := args.WorkItemID
+	if reference == "" {
+		reference = record.SubjectWorkItemID
+	}
+	if reference == "" {
 		return nil, errors.New("this conversation has no issue subject")
+	}
+	reference, err := t.resolveIssueReference(ctx, record, reference)
+	if err != nil {
+		return nil, err
 	}
 	allowed := []string{operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkRuns, operatortool.WorkRelationships, operatortool.WorkReferences, operatortool.WorkAttemptReceipt}
 	if !slices.Contains(allowed, args.Section) {
@@ -77,7 +86,7 @@ func (t *coordinatorToolset) readIssueHistory(ctx context.Context, record conver
 	if args.Section == operatortool.WorkItem || args.Section == operatortool.WorkRelationships || args.Section == operatortool.WorkAttemptReceipt {
 		args.Limit = 0
 	}
-	raw, err := json.Marshal(operatortool.WorkReadRequest{ProjectID: string(record.ProjectID), Reference: record.SubjectWorkItemID, Cursor: args.Cursor, Offset: args.Offset, Limit: args.Limit, NativeAttemptID: args.NativeAttemptID})
+	raw, err := json.Marshal(operatortool.WorkReadRequest{ProjectID: string(record.ProjectID), Reference: reference, Cursor: args.Cursor, Offset: args.Offset, Limit: args.Limit, NativeAttemptID: args.NativeAttemptID})
 	if err != nil {
 		return nil, err
 	}

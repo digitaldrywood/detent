@@ -27,7 +27,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 			outcomes = append(outcomes, "child failure", "edge failure", "comment failure", "invalid state", "cycle", "validation then valid")
 		}
 		if tool == string(chat.ActionArchiveItems) {
-			outcomes = append(outcomes, "running", "merging", "became running", "became merging", "archive failure", "history failure", "already archived", "duplicate", "empty", "outside project")
+			outcomes = append(outcomes, "running", "merging", "became running", "became merging", "archive failure", "history failure", "already archived", "duplicate", "empty", "outside project", "number resolution")
 		}
 		if coordinatorSpriteMutation(tool) {
 			outcomes = append(outcomes, "no runner grant", "runner grant revoked")
@@ -54,6 +54,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				u := f.user(t, "luna-owner", "owner", "luna@example.test", "write", "")
 				if coordinatorSpriteMutation(tool) {
 					f.grant(t, u, true, outcome != "no runner grant")
+				}
+				if outcome == "number resolution" {
+					seedArchiveIssues(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}, 18, "Todo")
 				}
 				response := f.request(t, u, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "luna-issue", "title": "Original issue", "body": "Original body", "state": "Todo", "labels": []string{"original"}})
 				requireNativeStatus(t, response, http.StatusOK)
@@ -114,8 +117,40 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						t.Fatal(err)
 					}
 					scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-					for _, item := range seedArchiveIssues(t, f.service, scope, 4, "Todo") {
+					children := 4
+					if outcome == "number resolution" {
+						if _, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Blocked','Blocked',?,?)", f.project, now, now); err != nil {
+							t.Fatal(err)
+						}
+						seedArchiveIssues(t, f.service, scope, 4, "Todo")
+						children = 6
+					}
+					for _, item := range seedArchiveIssues(t, f.service, scope, children, "Todo") {
 						archiveIDs = append(archiveIDs, string(item.WorkItemID))
+					}
+					if outcome == "number resolution" {
+						resolvedIDs := make([]string, 0, len(archiveIDs))
+						for index, workItemID := range archiveIDs {
+							number, state := 23+index, "Blocked"
+							if index == 0 {
+								number, state = 19, "Done"
+							}
+							if _, err := db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state=?) WHERE native_id=?", f.project, state, workItemID); err != nil {
+								t.Fatal(err)
+							}
+							raw := json.RawMessage(fmt.Sprintf(`{"work_item_id":"#%d"}`, number))
+							result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: coordinatorToolExplainIssue, Arguments: raw})
+							if err != nil || !result.Success {
+								t.Fatalf("resolve #%d: %+v, %v", number, result, err)
+							}
+							var explained coordinatorIssue
+							decodeToolResult(t, result, &explained)
+							if explained.WorkItemID != workItemID || explained.Number != int64(number) || explained.State != state {
+								t.Fatalf("resolved #%d: %+v", number, explained)
+							}
+							resolvedIDs = append(resolvedIDs, explained.WorkItemID)
+						}
+						archiveIDs = resolvedIDs
 					}
 					if outcome == "running" {
 						seedCoordinatorArchiveLease(t, f.service, archiveIDs[4])
@@ -247,7 +282,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					assertCoordinatorEffect(t, f, id, tool, false)
 					return
 				}
-				if (tool == string(chat.ActionIssueSplit) || tool == string(chat.ActionArchiveItems)) && result.Success {
+				if (tool == string(chat.ActionIssueSplit) || tool == string(chat.ActionArchiveItems)) && result.Success && outcome != "number resolution" {
 					replay, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: raw})
 					if err != nil || replay.Content != result.Content {
 						t.Fatalf("proposal replay=%+v error=%v, want %s", replay, err, result.Content)
@@ -288,6 +323,34 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				if action.RequestID == "" {
 					t.Fatal("inline proposal missing")
+				}
+				if outcome == "number resolution" {
+					var archive chat.IssueArchive
+					if err := json.Unmarshal(action.Arguments, &archive); err != nil {
+						t.Fatal(err)
+					}
+					if len(archive.Items) != 7 {
+						t.Fatalf("archive has %d items, want seven", len(archive.Items))
+					}
+					for index, item := range archive.Items {
+						if item.WorkItemID != archiveIDs[index] {
+							t.Fatalf("archive item %d = %+v", index, item)
+						}
+					}
+					var proposals, archived int
+					for _, message := range messages {
+						var data map[string]json.RawMessage
+						if json.Unmarshal(message.Data, &data) == nil && data["operator_action"] != nil {
+							proposals++
+						}
+					}
+					if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=? AND archived=1", f.project).Scan(&archived); err != nil {
+						t.Fatal(err)
+					}
+					if proposals != 1 || archived != 0 {
+						t.Fatalf("proposals=%d archived=%d, want one unsubmitted proposal", proposals, archived)
+					}
+					return
 				}
 				for _, stored := range f.service.operatorChat.Conversation(connectionID).Actions {
 					if stored.Status == chat.ActionPending {

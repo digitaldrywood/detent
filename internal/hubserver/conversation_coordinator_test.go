@@ -858,7 +858,13 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "scope")
 	own := f.create(t, "own issue")
+	done := f.create(t, "done issue")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?", f.project.ID, done.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
 	other := newNativeFixture(t, f.service, "", "other-project")
+	other.create(t, "foreign first")
+	other.create(t, "foreign second")
 	foreign := other.create(t, "foreign issue")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(own.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "first comment"}), http.StatusOK)
 
@@ -868,8 +874,19 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 		arguments string
 		success   bool
 		contains  string
+		issue     *tracker.NativeIssue
 	}{
-		{name: "explain own issue", tool: "explain_issue", arguments: `{"work_item_id":"` + string(own.WorkItemID) + `"}`, success: true, contains: `"first comment"`},
+		{name: "explain own issue", tool: "explain_issue", arguments: `{"work_item_id":"` + string(own.WorkItemID) + `"}`, success: true, contains: `"first comment"`, issue: &own},
+		{name: "resolve open issue number", tool: "explain_issue", arguments: `{"work_item_id":"#1"}`, success: true, contains: `"first comment"`, issue: &own},
+		{name: "resolve bare issue number", tool: "explain_issue", arguments: `{"work_item_id":"1"}`, success: true, contains: `"first comment"`, issue: &own},
+		{name: "resolve Done issue number", tool: "explain_issue", arguments: `{"work_item_id":"#2"}`, success: true, contains: `"terminal":true`, issue: &done},
+		{name: "unknown issue number", tool: "explain_issue", arguments: `{"work_item_id":"#999"}`, contains: `no issue #999 in this project`},
+		{name: "number exists only in foreign project", tool: "explain_issue", arguments: `{"work_item_id":"#3"}`, contains: `no issue #3 in this project`},
+		{name: "invalid issue number", tool: "explain_issue", arguments: `{"work_item_id":"#0"}`, contains: `no issue #0 in this project`},
+		{name: "read open issue history by number", tool: "read_issue_history", arguments: `{"work_item_id":"#1","section":"work_comments"}`, success: true, contains: `"first comment"`},
+		{name: "read Done issue by number", tool: "read_issue_history", arguments: `{"work_item_id":"#2","section":"work_item"}`, success: true, contains: string(done.WorkItemID)},
+		{name: "read unknown issue number", tool: "read_issue_history", arguments: `{"work_item_id":"#999","section":"work_item"}`, contains: `no issue #999 in this project`},
+		{name: "read foreign issue denied", tool: "read_issue_history", arguments: `{"work_item_id":"` + string(foreign.WorkItemID) + `","section":"work_item"}`, contains: `"error"`},
 		{name: "explain foreign issue denied", tool: "explain_issue", arguments: `{"work_item_id":"` + string(foreign.WorkItemID) + `"}`, success: false, contains: `"error"`},
 		{name: "unknown field rejected", tool: "list_attention", arguments: `{"scope":"project","bogus":1}`, success: false, contains: `"error"`},
 		{name: "unknown tool", tool: "delete_everything", arguments: `{}`, success: false, contains: `"error"`},
@@ -890,6 +907,11 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 			record := f.seed(t, test.name, nil)
 			f.say(t, &record, "go")
 			f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+			select {
+			case <-f.backend.started:
+			default:
+				t.Fatal("backend turn did not start")
+			}
 			results := f.backend.toolResults()
 			if len(results) != index+1 {
 				t.Fatalf("tool results = %d, want %d", len(results), index+1)
@@ -923,16 +945,13 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 				}
 			}
 			if test.tool == "explain_issue" && test.success {
-				var explained struct {
-					Title          string `json:"title"`
-					State          string `json:"state"`
-					ConversationID any    `json:"conversation_id"`
-					Comments       []struct {
-						Body string `json:"body"`
-					} `json:"comments"`
-				}
+				var explained coordinatorIssue
 				decodeToolResult(t, result, &explained)
-				if explained.Title != "own issue" || explained.State != "Todo" || len(explained.Comments) != 1 || explained.ConversationID != nil {
+				wantState, wantComments := "Todo", 1
+				if test.issue.WorkItemID == done.WorkItemID {
+					wantState, wantComments = "Done", 0
+				}
+				if explained.WorkItemID != string(test.issue.WorkItemID) || explained.Number != int64(test.issue.Number) || explained.ProjectID != f.project.ID || explained.Title != test.issue.Title || explained.State != wantState || len(explained.Comments) != wantComments || explained.ConversationID != nil {
 					t.Fatalf("explained = %#v", explained)
 				}
 			}
