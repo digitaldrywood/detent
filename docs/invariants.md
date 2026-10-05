@@ -74,6 +74,11 @@ shipped work. A GitHub HTTP 405 mergeability refusal requires current source
 conflict verification before selecting a conflict destination. Clean or
 unproven source retains the existing item-local landing continuation.
 
+A terminal successful merge wait does not answer an unlanded current Change
+version. Merging claim eligibility belongs to the existing Change landing
+readiness owner, which requires a reviewed current version without a Landed
+receipt. Successful unchanged Code and Rework answers remain suppressed.
+
 Landing refusal destinations belong to the workflow owner. Conflicts prefer
 configured Rework, then the first allowed dispatchable non-terminal lane.
 Other refusals prefer the configured review lane, then the first allowed
@@ -91,6 +96,7 @@ remain excluded; unreachable destinations retain the existing error handoff.
 in `internal/orchestrator`;
 `TestNativeExecutionSettlesFinishedRun` in `internal/hubclient`;
 `TestClaimCandidatesRequireUnansweredWorkItem` in `internal/hubserver`;
+`TestNativeRunnerOpensChangeAndLeavesDispatch` in `internal/hubclient`;
 `TestLocalGitLandChangeViaGitHub` in `internal/workspace`;
 `TestWorkerCredentialBlockerError` in `internal/runner`;
 `TestIssueSpendSinceExcludesInstanceInfrastructureAttempts`

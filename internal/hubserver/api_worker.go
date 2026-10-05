@@ -583,7 +583,7 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 // native projects only: on a github_compatible project the issues row is a
 // projection whose writes never bump revision, so the clause would strand an
 // item whose lane moved on GitHub.
-const notAlreadyAnsweredClause = `(p.profile <> 'native' OR NOT EXISTS (SELECT 1 FROM native_attempts answered
+const notAlreadyAnsweredClause = `(p.profile <> 'native' OR lower(trim(ws.detent_state)) = 'merging' OR NOT EXISTS (SELECT 1 FROM native_attempts answered
  WHERE answered.organization_id = i.organization_id
    AND answered.project_id = i.project_id
    AND answered.work_item_id = i.native_id
