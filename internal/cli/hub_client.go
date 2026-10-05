@@ -62,7 +62,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			}
 		}
 		machineID = string(file.Identity.MachineID)
-		runnerID = string(file.Identity.RunnerID)
+		runnerID = file.Identity.RunnerID
 	}
 	displayName := firstNonBlankString(clientConfig.DisplayName, cfg.Global.Identity.Name, cfg.InstanceName, machineID)
 	capacity := clientConfig.Capacity

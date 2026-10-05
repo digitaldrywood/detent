@@ -190,13 +190,16 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 		runes := []rune(title)
 		title = string(runes[:len(runes)-1])
 	}
-	args := map[string]any{"project_id": c.project, "request_id": "scheduled-create-" + key, "title": title, "description": body, "state": "Backlog", "labels": []string{"ci-scheduled-failure"}}
+	state := "Backlog"
 	var priority *int
 	if sourceFailure {
 		high := 1
 		priority = &high
-		args["priority"] = high + 1
-		args["state"] = "Todo"
+		state = "Todo"
+	}
+	args := map[string]any{"project_id": c.project, "request_id": "scheduled-create-" + key, "title": title, "description": body, "state": state, "labels": []string{"ci-scheduled-failure"}}
+	if priority != nil {
+		args["priority"] = *priority + 1
 	}
 	var result struct {
 		ResourceID string           `json:"resource_id"`
@@ -208,7 +211,7 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 	if result.ResourceID == "" {
 		return errors.New("scheduled Cloud creation returned no native identity")
 	}
-	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, State: args["state"].(string), Priority: priority}, bodies: []string{body}})
+	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, State: state, Priority: priority}, bodies: []string{body}})
 	return nil
 }
 
