@@ -198,14 +198,28 @@ GitHub intake) is already handled: create no issue, comment, content update or
 state change. Occurrence evidence identifies runs, attempts, commits and jobs
 without changing problem identity.
 
+The worker's existing `file_machine_issue` tool accepts optional integer
+`priority` creation ranks: 1=Urgent, 2=High, 3=Normal, 4=Low. Native intake maps
+these to priorities 0–3; omission leaves new work unset, and body prose never
+supplies priority. Fingerprint reuse may raise unset or weaker priority through
+the existing mutation owner, with the observed revision and a priority-only
+edit. It never lowers stronger priority, replaces origin or content, removes
+operator holds, changes lanes or authorizes admission.
+
+Host-owned native worker intake requires the current registered runner's scoped
+source lease and fencing token. Its existing creation transaction creates
+Backlog work or records an occurrence on matching open work. Filing priority
+grants no general operator mutation or worker lane-writing authority.
+
 **Enforcement:** `TestMachineIssueTool` in `internal/orchestrator`;
 `TestMachineIssueDuplicate`, `TestMachineIssueSeparateConnectors`,
 `TestMachineOriginSurvivesBodyUpdates`,
 `TestConnectorFindIntakeIssueSearchesDurableMarker`, and
 `TestConnectorFindIntakeIssuePrefersOpenDuplicate` in
 `internal/connector/github`; `TestManagerPreservesClosedFinding` in
-`internal/intake`; `TestParseProblems`, `TestReport`, and
-`TestCloudReport` in `tools/cifailure`. Review checks fingerprint stability.
+`internal/intake`; `TestNativeMachineIntakeAuthorityAndFingerprint` in
+`internal/hubclient`; `TestParseProblems`, `TestReport`, and `TestCloudReport`
+in `tools/cifailure`. Review checks fingerprint stability.
 
 ## INV-8 — No strict freshness protection
 
