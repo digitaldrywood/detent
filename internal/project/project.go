@@ -606,13 +606,21 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 	p.mu.Lock()
 	workflow := p.workflow
 	workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget).WithWorkerDefaults(cfg.GlobalWorker)
+	if workflow.Config.Policy.Configuration != nil {
+		resolved, err := workflowconfig.ApplyNativePolicy(workflow, workflow.Config.Policy)
+		if err != nil {
+			p.mu.Unlock()
+			return err
+		}
+		workflow = resolved
+	}
 	if err := workflow.Config.Validate(); err != nil {
 		p.mu.Unlock()
 		return fmt.Errorf("validate inherited agent configuration: %w", err)
 	}
 	workflow.Config.ActiveHours = EffectiveActiveHours(cfg, p.workflowActiveHours)
 	workflow.Config.Agent.RateWindowPacing = effectiveRateWindowPacing(cfg, workflow.Config)
-	if workflow.Config.Policy.ID != "" && (!reflect.DeepEqual(workflow.Config.ActiveHours, p.workflow.Config.ActiveHours) || !reflect.DeepEqual(workflow.Config.Agents, p.workflow.Config.Agents) || workflow.Config.Budget.PricingPath != p.workflow.Config.Budget.PricingPath) {
+	if workflow.Config.Policy.ID != "" && workflow.Config.Policy.Configuration == nil && (!reflect.DeepEqual(workflow.Config.ActiveHours, p.workflow.Config.ActiveHours) || !reflect.DeepEqual(workflow.Config.Agents, p.workflow.Config.Agents) || workflow.Config.Budget.PricingPath != p.workflow.Config.Budget.PricingPath) {
 		p.mu.Unlock()
 		return errors.New("policy_mismatch: host execution overrides changed; approve the effective descriptor and restart Detent before applying them")
 	}
@@ -1461,6 +1469,8 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 	p.mu.Lock()
 	projectConfig := p.cfg
 	loadedHash := p.workflowSource.Hash
+	scheduling := p.policyScheduling
+	loadedPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 
 	workflow, err := LoadWorkflowContext(ctx, projectConfig)
@@ -1474,7 +1484,14 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 		}
 		return fmt.Errorf("load workflow: %w", err)
 	}
-	if workflow.SourceHash == "" || workflow.SourceHash == loadedHash {
+	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
+	if workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+		if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
+			return p.workflowReloadError("repository policy reload rejected", workflowSourceDisplayPath(projectConfig), err)
+		}
+	}
+	policyChanged := workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative && workflow.Config.Policy.ID != loadedPolicy.ID
+	if (workflow.SourceHash == "" || workflow.SourceHash == loadedHash) && !policyChanged {
 		p.clearWorkflowReloadError()
 		return nil
 	}
@@ -1522,10 +1539,16 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
 	}
 	if previousPolicy.ID != "" && previousPolicy.ID != workflow.Config.Policy.ID {
-		if !managed {
+		if !managed && workflow.Config.Policy.Configuration == nil {
 			return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("policy_mismatch: effective policy changed; apply the approved revision through the selected configuration owner after current work finishes"))
 		}
-		if err := p.requireSettledWork(ctx); err != nil {
+		var err error
+		if !managed && workflow.Config.Policy.Configuration != nil {
+			err = p.requireSettledAttempts(ctx)
+		} else {
+			err = p.requireSettledWork(ctx)
+		}
+		if err != nil {
 			return err
 		}
 	}

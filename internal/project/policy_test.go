@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,6 +31,7 @@ type policyTestScheduling struct {
 }
 
 type mappedPolicyScheduling struct {
+	mu sync.Mutex
 	testSchedulingSource
 	approved policy.Descriptor
 	observed policy.Descriptor
@@ -39,8 +42,19 @@ func (s *mappedPolicyScheduling) ConnectorForProject(string) (connector.Connecto
 }
 
 func (s *mappedPolicyScheduling) CheckProjectPolicy(_ context.Context, _, _ string, descriptor policy.Descriptor) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.observed = descriptor
 	return descriptor.Match(s.approved)
+}
+
+func (s *mappedPolicyScheduling) ResolveProjectWorkflow(_ context.Context, _ string, workflow workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.approved.Configuration == nil {
+		return workflow, nil
+	}
+	return workflowconfig.ApplyNativePolicy(workflow, s.approved)
 }
 
 func TestMappedNativeStartupUsesInspectedPolicy(t *testing.T) {
@@ -307,5 +321,74 @@ func TestTrustedRefIgnoresWorkingBranchPolicyEdits(t *testing.T) {
 	}
 	if actual.Match(approved) == nil {
 		t.Fatal("untrusted local overlay relaxed active policy")
+	}
+}
+
+func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := filepath.Join(root, "WORKFLOW.md")
+	raw := []byte("---\ntracker:\n  kind: hub_native\nworker:\n  ssh_hosts: [local]\ngate:\n  run: true\n---\nKeep human review holds.\n")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := globalconfig.Project{ID: "shared", Workdir: root, Workflow: path}
+	workflow, err := LoadWorkflow(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := ResolvePolicy(cfg, workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduling := &mappedPolicyScheduling{approved: approved}
+	attempts, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(root, "runtime.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := attempts.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	p, err := New(Config{Project: cfg, Workflow: workflow}, Dependencies{Scheduling: scheduling, Runner: orchestrator.FakeRunner{}, WorkAttempts: attempts, WorkflowReconcileInterval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := p.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := p.start(t.Context(), startOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	changed := workflow
+	changed.Config.Plan.Enabled, changed.Config.Gate.Validator.Enabled, changed.Config.Agent.AutoPromote.Enabled = true, true, true
+	replacement, err := ResolvePolicy(cfg, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduling.mu.Lock()
+	scheduling.approved = replacement
+	scheduling.mu.Unlock()
+	if err := p.reconcileWorkflow(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	current := p.Workflow()
+	if current.SourceHash != workflow.SourceHash {
+		t.Fatal("cloud update changed the local source identity")
+	}
+	if current.Config.Policy.ID != replacement.ID || !current.Config.Plan.Enabled || !current.Config.Gate.Validator.Enabled || !current.Config.Agent.AutoPromote.Enabled || !p.Running() {
+		t.Fatalf("shared policy was not reloaded in the running project: %+v", current.Config.Policy)
+	}
+	host := cfg
+	host.GlobalWorker.AllowLocalBinding = new(true)
+	host.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}
+	if err := p.updateLiveConfig(t.Context(), host); err != nil {
+		t.Fatal(err)
+	}
+	if p.Workflow().Config.Policy.ID != replacement.ID || p.Workflow().Config.Worker.EffectiveAllowLocalBinding() {
+		t.Fatal("host reload changed shared permissions or policy identity")
 	}
 }

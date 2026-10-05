@@ -71,15 +71,16 @@ func TestWorkspaceSessionIDsAreUniqueAndDistinct(t *testing.T) {
 	}
 }
 
-// newWorkspaceLaneTestScheduler builds a scheduler over a hub that is never
-// called: newWorkspaceLanes talks to no one, it only wires.
 func newWorkspaceLaneTestScheduler(t *testing.T, projects map[string]string) orchestrator.SchedulingSource {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(server.Close)
-	client, err := hubclient.New(hubclient.Config{URL: server.URL, TokenSource: func() string { return "test" }, HTTPClient: server.Client()})
+	transport := readinessRoundTripper(func(request *http.Request) (*http.Response, error) {
+		response := httptest.NewRecorder()
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusConflict)
+		_, _ = response.WriteString(`{"code":"policy_mismatch","message":"No approved project policy"}`)
+		return response.Result(), nil
+	})
+	client, err := hubclient.New(hubclient.Config{URL: "https://hub.test", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatal(err)
 	}

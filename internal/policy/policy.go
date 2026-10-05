@@ -37,14 +37,22 @@ type Gates struct {
 }
 
 type Descriptor struct {
-	Schema         int          `json:"schema"`
-	ID             string       `json:"policy_id"`
-	SourceRevision string       `json:"source_revision"`
-	SourceDigest   string       `json:"source_digest"`
-	ConfigDigest   string       `json:"config_digest"`
-	Profile        string       `json:"profile,omitempty"`
-	Requirements   Requirements `json:"requirements"`
-	Gates          Gates        `json:"gates"`
+	Schema         int            `json:"schema"`
+	ID             string         `json:"policy_id"`
+	SourceRevision string         `json:"source_revision"`
+	SourceDigest   string         `json:"source_digest"`
+	ConfigDigest   string         `json:"config_digest"`
+	Profile        string         `json:"profile,omitempty"`
+	Requirements   Requirements   `json:"requirements"`
+	Gates          Gates          `json:"gates"`
+	Configuration  *Configuration `json:"configuration,omitempty"`
+}
+
+type Configuration struct {
+	Behavior     json.RawMessage `json:"behavior"`
+	Prompt       string          `json:"prompt"`
+	SharedPrompt string          `json:"shared_prompt,omitempty"`
+	AgentsPrompt string          `json:"agents_prompt,omitempty"`
 }
 
 type Approval struct {
@@ -53,13 +61,13 @@ type Approval struct {
 	ApprovedAt string     `json:"approved_at"`
 }
 
-// ObservedPolicy is the descriptor a runner resolved for a project and reported
-// because it could not run it: nothing was approved, or the approved policy
-// differs.
 type ObservedPolicy struct {
-	Policy     Descriptor `json:"policy"`
-	RunnerID   string     `json:"runner_id"`
-	ObservedAt string     `json:"observed_at"`
+	Policy             Descriptor `json:"policy"`
+	RunnerID           string     `json:"runner_id"`
+	RunnerIDs          []string   `json:"runner_ids,omitempty"`
+	ObservedAt         string     `json:"observed_at"`
+	Conflict           bool       `json:"conflict"`
+	PreviouslyApproved bool       `json:"previously_approved"`
 }
 
 type Change struct {

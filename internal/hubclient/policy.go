@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -54,8 +55,6 @@ func (c *NativeClient) ApproveProjectPolicy(ctx context.Context, change policy.C
 	return approval, err
 }
 
-// ReportObservedPolicy tells the Hub which descriptor this runner resolved and
-// could not run, so an owner can approve it without pasting it.
 func (c *NativeClient) ReportObservedPolicy(ctx context.Context, descriptor policy.Descriptor) error {
 	return c.client.request(ctx, http.MethodPost, c.base()+"/policy/observed", descriptor, nil)
 }
@@ -81,7 +80,7 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 		}
 		err = descriptor.Match(approval.Policy)
 		if err == nil {
-			return nil
+			return s.reportObservedPolicy(ctx, project, source, descriptor)
 		}
 		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()})
 	case errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch":
@@ -92,9 +91,26 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 	return errors.Join(err, s.reportObservedPolicy(ctx, project, source, descriptor))
 }
 
-// reportObservedPolicy sends each new unapproved descriptor once per project,
-// not on every candidate poll. The descriptor is claimed before the request
-// so concurrent checks send it once, and released if the request fails.
+func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, workflow workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+	source := s.nativeProjects[project]
+	if source == nil {
+		return workflow, nil
+	}
+	return source.client.ResolveProjectWorkflow(ctx, workflow)
+}
+
+func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+	approval, err := c.ProjectPolicy(ctx)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch" {
+		return workflow, nil
+	}
+	if err != nil {
+		return workflowconfig.Workflow{}, fmt.Errorf("load approved shared project configuration: %w", err)
+	}
+	return workflowconfig.ApplyNativePolicy(workflow, approval.Policy)
+}
+
 func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, source *NativeConnector, descriptor policy.Descriptor) error {
 	s.mu.Lock()
 	if s.reportedPolicies[project] == descriptor.ID {

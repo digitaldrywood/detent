@@ -7,8 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectSettingsView, draftOf } from "../../src/app/account/ProjectSettings.tsx";
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
 import { SettingsHelp } from "../../src/app/settings/SettingsHelp.tsx";
-import type { FleetResponse, ProjectIntegration, RunnerRouting } from "../../src/contracts/account.ts";
+import type { FleetResponse, ProjectIntegration, RunnerRouting, PolicyApproval } from "../../src/contracts/account.ts";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
+import policyFixture from "../../src/contracts/fixtures/account-policy.json";
 import integrationFixture from "../../src/contracts/fixtures/account-integration.json";
 
 // nwsapi in jsdom 26 recurses when Floating UI checks :fullscreen.
@@ -52,6 +53,24 @@ function renderProject(canManage = true, overrides: Partial<React.ComponentProps
 }
 
 describe("settings help interactions", () => {
+  it.each(["conflict", "historical", "resolved"] as const)("shows shared policy %s without another approval action", async (state) => {
+    const policy: PolicyApproval = { ...policyFixture, policy: { ...policyFixture.policy, configuration: { behavior: {}, prompt: "Run the work." } } };
+    renderProject(true, { policy, observedPolicies: state === "resolved" ? [] : [{
+      policy: { ...policy.policy, policy_id: "policy_old" }, runner_id: "runner_air", runner_ids: ["runner_air", "runner_pro"], observed_at: "2026-10-05T17:00:00Z",
+      conflict: state === "conflict", previously_approved: state === "historical",
+    }] });
+    await screen.findByText("Shared project configuration");
+    expect(screen.queryByRole("button", { name: /Approve updated policy/ })).toBeNull();
+    if (state === "resolved") {
+      expect(screen.queryByText("Runners have conflicting project configurations.")).toBeNull();
+      expect(screen.getByText("Authorized runners consume this approved project configuration.")).toBeTruthy();
+    } else {
+      expect(screen.getByText("Runners have conflicting project configurations.")).toBeTruthy();
+      expect(screen.getByText("runner_air, runner_pro")).toBeTruthy();
+      expect(screen.getByText(/Load the approved shared configuration on the reported runners/)).toBeTruthy();
+    }
+  });
+
   it.each(["", "Acme/Private"])("uses runner checkout settings when Hub transport is unavailable (%s)", async (repository) => {
     const onOpenSetup = vi.fn();
     renderProject(true, {
