@@ -143,7 +143,7 @@ case $(uname -m) in
     *) die "unsupported CPU architecture" ;;
 esac
 command -v sprite-env >/dev/null || die "sprite-env is missing; run inside a Fly Sprite"
-for tool in curl tar sha256sum npm; do
+for tool in curl tar sha256sum npm node; do
     command -v "$tool" >/dev/null || die "$tool is required (preinstalled in fresh Sprites)"
 done
 
@@ -269,6 +269,7 @@ npm_prefix="$HOME/.local/share/detent-runner/npm"
 codex_version=0.160.0
 claude_version=2.1.289
 playwright_version=1.63.0
+yaml_version=2.8.3
 npm_packages=()
 if [[ $("$npm_prefix/bin/codex" --version 2>/dev/null || true) != "codex-cli $codex_version" ]]; then
     npm_packages+=("@openai/codex@$codex_version")
@@ -278,6 +279,9 @@ if [[ $("$npm_prefix/bin/claude" --version 2>/dev/null || true) != "$claude_vers
 fi
 if [[ $("$npm_prefix/bin/playwright" --version 2>/dev/null || true) != "Version $playwright_version" ]]; then
     npm_packages+=("playwright@$playwright_version")
+fi
+if [[ $(node -p 'require(process.argv[1]).version' "$npm_prefix/lib/node_modules/yaml/package.json" 2>/dev/null || true) != "$yaml_version" ]]; then
+    npm_packages+=("yaml@$yaml_version")
 fi
 if [[ ${#npm_packages[@]} -gt 0 ]]; then
     npm install --global --prefix "$npm_prefix" --allow-scripts=@anthropic-ai/claude-code "${npm_packages[@]}"
@@ -357,6 +361,46 @@ else
     printf 'Reusing the registered runner in %s\n' "$config_path"
 fi
 
+pressure_status=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" <<'NODE'
+const fs = require('node:fs');
+const YAML = require(process.argv[2]);
+const configPath = process.argv[3];
+const original = fs.readFileSync(configPath, 'utf8');
+const config = YAML.parseDocument(original);
+if (config.errors.length) throw config.errors[0];
+if (!YAML.isMap(config.contents)) throw new Error('Runner configuration must be a YAML mapping');
+let changed = false;
+for (const path of [['global'], ['global', 'io'], ['global', 'cpu']]) {
+    const value = config.getIn(path, true);
+    if (value === undefined || (YAML.isScalar(value) && value.value === null)) {
+        config.setIn(path, config.createNode({}));
+        changed = true;
+    } else if (!YAML.isMap(value)) {
+        throw new Error(`${path.join('.')} must be a YAML mapping`);
+    }
+}
+for (const signal of ['io', 'cpu']) {
+    const path = ['global', signal, 'degraded_max_concurrent_agents'];
+    if (!config.hasIn(path)) {
+        config.setIn(path, 1);
+        changed = true;
+    }
+}
+if (changed) {
+    const temporary = `${configPath}.sprite-bootstrap-${process.pid}`;
+    try {
+        const mode = fs.statSync(configPath).mode & 0o777;
+        fs.writeFileSync(temporary, config.toString(), { mode, flag: 'wx' });
+        fs.chmodSync(temporary, mode);
+        fs.renameSync(temporary, configPath);
+    } finally {
+        fs.rmSync(temporary, { force: true });
+    }
+}
+console.log(`Sprite pressure capacity: io=${config.getIn(['global', 'io', 'degraded_max_concurrent_agents'])}, cpu=${config.getIn(['global', 'cpu', 'degraded_max_concurrent_agents'])} (missing floors default to 1; operator values preserved).`);
+NODE
+)
+
 mkdir -p "$workspace_root/.tmp"
 launcher="$lib_dir/start"
 {
@@ -375,6 +419,7 @@ if [[ $existing_service == true ]]; then
     sprite-env curl -X POST 'http://sprite/v1/services/detent-runner/restart?duration=1s'
 fi
 
+printf '\n%s\n' "$pressure_status"
 printf '\nManual setup still required before dispatch:\n'
 if ! claude auth status >/dev/null 2>&1; then
     printf '  Claude: run claude auth login, or configure a Sprites Anthropic connector.\n'
