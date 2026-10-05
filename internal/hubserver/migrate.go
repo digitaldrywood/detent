@@ -14,10 +14,7 @@ import (
 	goosedb "github.com/pressly/goose/v3/database"
 )
 
-const (
-	hubSchemaTable         = "hub_schema_version"
-	supportedSchemaVersion = int64(71)
-)
+const hubSchemaTable = "hub_schema_version"
 
 //go:embed migrations/*.sql migration_steps/*.sql
 var migrationFiles embed.FS
@@ -27,41 +24,56 @@ func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64,
 	if err != nil {
 		return 0, fmt.Errorf("open hub migrations: %w", err)
 	}
+	return runMigrationsFromFS(ctx, db, migrations, logger)
+}
+
+func runMigrationsFromFS(ctx context.Context, db *sql.DB, migrations fs.FS, logger *slog.Logger) (int64, error) {
 	store, err := goosedb.NewStore(goosedb.DialectSQLite3, hubSchemaTable)
 	if err != nil {
 		return 0, fmt.Errorf("create hub migration store: %w", err)
 	}
+	migrationStore := &hubMigrationStore{Store: store, verifyVersion: -1}
 	provider, err := goose.NewProvider(
 		goose.DialectCustom,
 		db,
 		migrations,
 		goose.WithDisableGlobalRegistry(true),
-		goose.WithStore(hubMigrationStore{Store: store}),
+		goose.WithStore(migrationStore),
+		goose.WithAllowOutofOrder(true),
 		goose.WithSlog(logger),
 		goose.WithGoMigrations(hubGoMigrations()...),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create hub migration provider: %w", err)
 	}
-	return applyHubMigrations(ctx, db, provider)
+	return applyHubMigrations(ctx, db, provider, migrationStore)
 }
 
-func applyHubMigrations(ctx context.Context, db *sql.DB, provider *goose.Provider) (version int64, resultErr error) {
+func applyHubMigrations(ctx context.Context, db *sql.DB, provider *goose.Provider, store *hubMigrationStore) (version int64, resultErr error) {
 	current, target, err := provider.GetVersions(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("read hub schema versions: %w", err)
 	}
-	if target != supportedSchemaVersion {
-		return 0, fmt.Errorf("embedded hub schema version is %d, want %d", target, supportedSchemaVersion)
-	}
 	if current > target {
 		return 0, fmt.Errorf("%w: database=%d supported=%d", ErrUnsupportedSchema, current, target)
 	}
-	pending, err := provider.HasPending(ctx)
+	applied, err := store.ListMigrations(ctx, db)
 	if err != nil {
 		return 0, fmt.Errorf("read pending hub migrations: %w", err)
 	}
-	if !pending {
+	store.verifyVersion = -1
+	versions := make(map[int64]bool, len(applied))
+	for _, migration := range applied {
+		if _, exists := versions[migration.Version]; !exists {
+			versions[migration.Version] = migration.IsApplied
+		}
+	}
+	for _, source := range provider.ListSources() {
+		if !versions[source.Version] {
+			store.verifyVersion = source.Version
+		}
+	}
+	if store.verifyVersion == -1 {
 		return current, nil
 	}
 	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
@@ -87,10 +99,11 @@ func applyHubMigrations(ctx context.Context, db *sql.DB, provider *goose.Provide
 
 type hubMigrationStore struct {
 	goosedb.Store
+	verifyVersion int64
 }
 
 func (s hubMigrationStore) Insert(ctx context.Context, db goosedb.DBTxConn, request goosedb.InsertRequest) error {
-	if request.Version == supportedSchemaVersion {
+	if request.Version == s.verifyVersion {
 		var violations int
 		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_foreign_key_check").Scan(&violations); err != nil {
 			return fmt.Errorf("validate hub foreign keys: %w", err)
@@ -100,6 +113,25 @@ func (s hubMigrationStore) Insert(ctx context.Context, db goosedb.DBTxConn, requ
 		}
 	}
 	return s.Store.Insert(ctx, db, request)
+}
+
+func latestHubSchemaVersion() (int64, error) {
+	files, err := migrationFiles.ReadDir("migrations")
+	if err != nil {
+		return 0, fmt.Errorf("read embedded hub migrations: %w", err)
+	}
+	var latest int64
+	for _, file := range files {
+		version, err := goose.NumericComponent(file.Name())
+		if err != nil {
+			return 0, err
+		}
+		latest = max(latest, version)
+	}
+	for _, migration := range hubGoMigrations() {
+		latest = max(latest, migration.Version)
+	}
+	return latest, nil
 }
 
 func currentSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {

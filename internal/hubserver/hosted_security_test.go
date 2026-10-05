@@ -225,8 +225,8 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 					Provider:             newHostedSecurityProvider(),
 				},
 			})
-			if service.database.schemaVersion != supportedSchemaVersion {
-				t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion)
+			if service.database.schemaVersion != supportedSchemaVersion(t) {
+				t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
 			}
 			var boundOrganization string
 			if err := service.database.db.QueryRowContext(t.Context(), "SELECT organization_id FROM hosted_tenant").Scan(&boundOrganization); err != nil {

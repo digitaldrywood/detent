@@ -62,7 +62,7 @@ func TestRecoveryPreservesCollaborationAndFencesAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.SchemaVersion != supportedSchemaVersion || result.AdministratorID == "" {
+	if result.SchemaVersion != supportedSchemaVersion(t) || result.AdministratorID == "" {
 		t.Fatalf("restore result = %+v", result)
 	}
 	restored := openTestService(t, Config{DatabasePath: destination})
@@ -144,7 +144,7 @@ func TestRecoveryRejectsUnsafeSourcesAndDestinations(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				statement := fmt.Sprintf("INSERT INTO hub_schema_version(version_id,is_applied) VALUES (%d,1)", supportedSchemaVersion+1)
+				statement := fmt.Sprintf("INSERT INTO hub_schema_version(version_id,is_applied) VALUES (%d,1)", supportedSchemaVersion(t)+1)
 				if test == "foreign database" {
 					statement = "PRAGMA application_id = 123"
 				}

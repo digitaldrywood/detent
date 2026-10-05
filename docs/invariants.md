@@ -215,8 +215,10 @@ Detent honors their branch rules. Code changes do not authorize live settings
 changes.
 
 Concurrent migration and generated-output collisions use ordinary Git conflict
-handling. New SQL migrations use one `NNNNN_migration.sql` path per version;
-historical names and fixed migration-checker cutovers remain unchanged.
+handling. New Hub and store SQL migrations use UTC Goose
+`YYYYMMDDHHMMSS_name.sql` versions; historical names and fixed migration-checker
+cutovers remain unchanged. Adding a SQL migration requires only its new file,
+with no shared version-count edit or landing-time renumbering.
 Regenerate tracked sqlc, Templ and Tailwind output from combined source inputs
 instead of text-merging generated conflicts. Conversation bundles remain
 build-owned ignored output.

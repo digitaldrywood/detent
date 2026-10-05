@@ -97,7 +97,9 @@ source of incidents.
 - `make generate` runs `go generate`, Templ, sqlc, and Tailwind when their inputs exist.
 - `make setup` installs Air, Templ, sqlc, goose, and golangci-lint v2.
 - `make sqlc` uses `sqlc/sqlc.yaml` by default.
-- `make db-migrate` uses goose against `internal/store/migrations` by default.
+- `make db-create NAME=description` creates a UTC timestamp Goose SQL migration in `internal/store/migrations`; set `MIGRATIONS_DIR=internal/hubserver/migrations` for Hub changes. Keep existing numbered migrations unchanged; do not use Goose sequential mode or renumber at landing.
+- `make db-migrate` uses goose against `internal/store/migrations` by default and applies missing timestamp migrations that land after newer versions. Hub migrations run on startup.
+- sqlc reads the store migration directory from `sqlc/sqlc.yaml`; a new timestamp migration needs no schema registry edit. Regenerate sqlc output when changing its schema or queries.
 
 ## Repository invariants
 
