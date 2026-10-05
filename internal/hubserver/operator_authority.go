@@ -33,8 +33,6 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 		e.Any("/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	}
 	if s.config.Hosted != nil {
-		e.GET("/chat/approval", s.hostedOperatorApproval, s.operatorProjectBrowser)
-		e.POST("/chat/approval", s.hostedOperatorDecision, s.operatorProjectBrowser)
 	}
 }
 

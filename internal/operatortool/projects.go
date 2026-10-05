@@ -136,7 +136,7 @@ func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 		schema["required"] = []string{"request_id", "input"}
 	}
 	raw, _ := json.Marshal(schema) //nolint:errcheck // Generated schemas contain only JSON primitives, slices and maps.
-	return Definition{Name: name, Description: "Use the shared dashboard application command: " + strings.ReplaceAll(name, "_", " ") + ". Material arguments require browser operator approval; request_id is the business retry key.", InputSchema: raw, Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: openWorld}, Meta: ToolMetadata{Toolset: "projects"}}
+	return Definition{Name: name, Description: "Use the shared dashboard application command: " + strings.ReplaceAll(name, "_", " ") + ". Current scoped authority is required; request_id is the business retry key.", InputSchema: raw, Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: openWorld}, Meta: ToolMetadata{Toolset: "projects"}}
 }
 
 // Fixed application DTOs define discovery schemas; no map or arbitrary JSON
@@ -181,51 +181,6 @@ func projectSchema(t reflect.Type) map[string]any {
 		return map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1e9}
 	default:
 		return map[string]any{"type": "string", "maxLength": 256}
-	}
-}
-
-// ProjectConfirmation is argument policy, independent of annotations. Default
-// action handling remains fail closed for unknown tools.
-func ProjectConfirmation(name string, raw json.RawMessage) (bool, bool) {
-	switch name {
-	case "create_native_project", "save_onboarding", "advance_git_hub_import":
-		return false, true
-	case "start_git_hub_import":
-		var r ProjectRequest[ImportStartInput]
-		if DecodeProjectArguments(raw, &r) != nil {
-			return true, true
-		}
-		return r.Input.Restart, true
-	case "cutover_project":
-		var r ProjectRequest[CutoverInput]
-		if DecodeProjectArguments(raw, &r) != nil {
-			return true, true
-		}
-		return !r.Input.DryRun, true
-	case "update_project_integration":
-		var r ProjectRequest[IntegrationInput]
-		if DecodeProjectArguments(raw, &r) != nil {
-			return true, true
-		}
-		return r.Input.States != nil || r.Input.Projection != "disabled" || r.Input.RepositoryEnabled, true
-	case "command_git_hub_batch":
-		var r ProjectRequest[GitHubBatchInput]
-		if DecodeProjectArguments(raw, &r) != nil {
-			return true, true
-		}
-		switch r.Input.Action {
-		case "discover", "more":
-			return false, true
-		case "apply":
-			return r.Input.AllowDispatch, true
-		default:
-			// Retry can resume an already approved dispatchable intake.
-			return true, true
-		}
-	case "create_hosted_project", "bind_native_repository", "approve_project_policy", "revoke_project_policy", "project_native_summary", "remove_project_secret":
-		return true, true
-	default:
-		return false, false
 	}
 }
 

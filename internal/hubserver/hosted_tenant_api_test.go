@@ -505,7 +505,7 @@ func TestHostedInvitationIdempotency(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		m := mutation.Metadata{PrincipalID: "untrusted-actor", OrganizationID: "untrusted-org", ProjectID: f.project, ResourceID: first.ID, Action: "invite_member", Source: "mcp", Mode: "confirmation", Confirmation: "approved", CorrelationID: "audit-correlation"}
+		m := mutation.Metadata{PrincipalID: "untrusted-actor", OrganizationID: "untrusted-org", ProjectID: f.project, ResourceID: first.ID, Action: "invite_member", Source: "mcp", Confirmation: "approved", CorrelationID: "audit-correlation"}
 		m, err = m.Bind("secret-business-key", map[string]string{"body": "credential-invitation-support-billing-sensitive-sentinel"})
 		if err != nil {
 			t.Fatal(err)

@@ -260,11 +260,9 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		}
 		conversation := s.operatorChat.Conversation(operatortool.CurrentConnection(ctx).ID)
 		return billingResult(struct {
-			ConnectionID   string              `json:"connection_id"`
-			OrganizationID string              `json:"organization_id"`
-			Mode           chat.ConnectionMode `json:"mode"`
-			URL            string              `json:"setup_url"`
-		}{conversation.ConnectionID, conversation.OrganizationID, conversation.Mode, s.billingApprovalURL(conversation.ConnectionID)})
+			ConnectionID   string `json:"connection_id"`
+			OrganizationID string `json:"organization_id"`
+		}{conversation.ConnectionID, conversation.OrganizationID})
 	case operatortool.BillingStatus, operatortool.BillingUsage, operatortool.BillingExport, operatortool.HostedPlan, operatortool.HostedUsage:
 		kind := "billing"
 		var request struct {
@@ -590,7 +588,7 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 	identity := operatortool.ConnectionIdentity(ctx)
 	m := action.Mutation
 	bound, err := m.Bind(action.RequestID, action.Arguments)
-	if err != nil || request.RequestID != action.RequestID || m.Source != "mcp" || m.PrincipalID != identity.PrincipalID || m.OrganizationID != identity.OrganizationID || m.Action != string(action.Kind) || m.CorrelationID == "" || bound.RetryIdentity != m.RetryIdentity || bound.InputHash != m.InputHash || m.Confirmation != "approved" && m.Confirmation != "yolo" && (action.Kind != chat.ActionKind(operatortool.CreditAutoFund) || *request.Enabled || m.Confirmation != "none") {
+	if err != nil || request.RequestID != action.RequestID || m.Source != "mcp" || m.PrincipalID != identity.PrincipalID || m.OrganizationID != identity.OrganizationID || m.Action != string(action.Kind) || m.CorrelationID == "" || bound.RetryIdentity != m.RetryIdentity || bound.InputHash != m.InputHash && (action.Kind != chat.ActionKind(operatortool.CreditAutoFund) || *request.Enabled || m.Confirmation != "none") {
 		return execution, operatortool.ErrAccessDenied
 	}
 	ctx = mutation.WithContext(ctx, m)
@@ -669,10 +667,6 @@ func (e hostedOperatorExecutor) AuditAction(ctx context.Context, action chat.Act
 	}
 }
 
-func (s *Service) billingApprovalURL(id string) string {
-	return s.operatorDashboardURL() + s.hostedPath("/chat/approval") + "?connection_id=" + id
-}
-
 func (s *Service) billingActionResult(action chat.Action) (operatortool.Result, error) {
 	var settings *creditFundingInput
 	if action.Kind == chat.ActionKind(operatortool.CreditAutoFund) && action.Status == chat.ActionSucceeded {
@@ -686,9 +680,8 @@ func (s *Service) billingActionResult(action chat.Action) (operatortool.Result, 
 		Status        chat.ActionStatus   `json:"status"`
 		ResourceID    string              `json:"resource_id,omitempty"`
 		URL           string              `json:"url,omitempty"`
-		ApprovalURL   string              `json:"approval_url,omitempty"`
 		ResultTool    string              `json:"result_tool"`
 		CorrelationID string              `json:"correlation_id"`
 		Settings      *creditFundingInput `json:"settings,omitempty"`
-	}{action, action.ID, action.Status, action.IssueID, action.ResourceURL, action.PendingApprovalURL(s.billingApprovalURL(action.ConnectionID)), operatortool.ActionResult, action.Mutation.CorrelationID, settings})
+	}{action, action.ID, action.Status, action.IssueID, action.ResourceURL, operatortool.ActionResult, action.Mutation.CorrelationID, settings})
 }

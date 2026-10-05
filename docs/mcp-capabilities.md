@@ -15,7 +15,7 @@ work search and attempt cursors, selected-workspace events, current key/routing/
 composer forms and Cloud issue attachments. Original imported child owners in
 the fixture retain their provenance. Native #234 delivered credit checkout and
 automatic funding adapters; native #235 delivered invitation grants/edit/resend.
-Their current implemented decisions retain the actual approval, retry and
+Their current implemented decisions retain the actual authority, retry and
 deployment restrictions. Those children do not depend on this inventory repair
 or on their acceptance parent. The parent completes typed conversation subject
 create/list and native work-list filters and projections through the same
@@ -50,7 +50,7 @@ attachment maintenance cycle.
 
 Each stable operation ID has exact source-site decisions, deployment and tracker
 availability, current role/scope/grant/ownership restrictions, preconditions,
-argument-dependent confirmation classes, the application read/command and
+client confirmation ownership, the application read/command and
 required extraction, a bounded typed tool proposal, child owner, implementation
 status and coverage evidence. Proposed annotations conservatively describe the
 whole operation, including risky argument variants. Reads are retry-safe; mutations
@@ -83,7 +83,7 @@ Shared entry plus the tenant Hub supports `upload_attachment`,
 and at most 32 KiB of base64 content per call, within the 256 KiB result bound.
 The existing 60,000-character base64 upload bound remains unchanged. Item/comment
 binding reuses the same-project reference owner. Destructive deletion uses the
-existing exact browser action approval or human-selected connection YOLO; its
+current write authority; its
 receipt distinguishes pending and confirmed object deletion. All calls resolve
 current project grants and credential scope. Read-only credentials discover only
 reads; local and dedicated deployments omit these shared-storage operations.
@@ -158,7 +158,7 @@ credentials or private configuration values. A Cloud project, runner source
 association and local board registration remain separate authorities.
 
 `apply_local_project_policy`, `drain_local_project` and `detach_local_project`
-require current admin scope for the exact project, existing operator approval,
+require current admin scope for the exact project, current application authority,
 `request_id`, `expected_config_revision` and `expected_policy_id`. They reuse
 durable operator command receipts; retries reauthorize and return the original
 receipt without repeating the effect. Policy application additionally requires
@@ -208,7 +208,7 @@ and organization binding before delegating scope, project and resource ownership
 to the application adapter. Approval/audit children must invoke it again with
 the current authenticated connection when an approved action executes. Never
 persist a resolved authority or derive permission from discovery, annotations,
-approval or YOLO. Unknown resource kinds deny until their shared application
+client confirmation settings. Unknown resource kinds deny until their shared application
 ownership check is implemented. Tool arguments cannot select credentials,
 principals or organization authority.
 
@@ -262,8 +262,8 @@ flow only to configured support actors.
 Self-hosted dashboard API-key commands use its existing browser approver. Hosted
 membership/account commands use the originating browser session and its existing
 CSRF boundary. Native hubs expose credential metadata and context selection;
-material native administration is unavailable through MCP because those deployments
-have no browser approver. Their existing API commands remain available. Providers
+native administration uses its installed application adapters and current key scope.
+Unavailable services remain unavailable through MCP. Their existing API commands remain available. Providers
 without invitation-by-ID administration do not advertise invitation acceptance.
 Absent services return opaque unavailable errors. No new approval credentials or
 platform powers are installed.
@@ -273,25 +273,21 @@ pending-invitation grant replacement and resend through their existing hosted
 commands. Edit requires a complete grants list; an empty list removes project
 access. Edit/resend discovery requires provider invitation-by-ID administration,
 and resend also requires delivery support. Current organization, role, pending
-status, expiry and grant authority are rechecked at approval and execution.
+status, expiry and grant authority are rechecked at execution.
 Selected bearer keys cannot grant or remove access beyond their own project scope.
-Exact browser previews include the invitation and grants; durable command receipts
-prevent repeated provider delivery. Only pending actions advertise approval URLs.
+Typed requests include the invitation and grants; durable command receipts
+prevent repeated provider delivery.
 Dedicated/shared and stdio/HTTP fixture coverage uses no live mail. Parent #26
 retains strict final conformance and unconditional zero-pending acceptance.
 
-Access-changing and destructive commands require an exact preview and a real
-browser decision by default. YOLO is a human connection decision and still checks
-current authority. Durable application receipts omit credential material; deliberate
+Access-changing and destructive commands execute directly after current authority checks. Durable application receipts omit credential material; deliberate
 credential results stay on their originating connection, recheck current authority
 and the delivered credential's validity, and are never restored from durable retry
 receipts. A fresh connection retry returns the resource receipt without its secret.
 `organization_session` returns account/onboarding facts and a semantic destination
 without browser form secrets. `session_logout` ends the originating account session
 through the same command as browser sign-out, including shared-entry tenant
-propagation. It requires a real browser decision by default; a human may select
-YOLO for that exact connection. The executing YOLO call or confirming browser
-receives a safe sign-out outcome, including whether provider sign-out was
+propagation. It executes directly with current account authority. The calling client receives a safe sign-out outcome, including whether provider sign-out was
 confirmed. Provider failure leaves local access ended. Later tool reads, action
 results and retries are denied, so response loss never repeats the effect; sign
 in and open a fresh connection to continue. Shared tenant hubs leave account
@@ -314,8 +310,7 @@ Implementing children update `status`, shared command/extraction, typed tool
 proposal and execution coverage when their behavior actually ships. Keep
 operator rows pending until implemented; do not relabel a missing service as an
 excluded capability. Reassess role, scope, grant, ownership and confirmation
-when application arguments or authorization change. Authentication and YOLO
-are connection authority; tools cannot accept them as permission switches.
+when application arguments or authorization change. Authentication binds connection authority; tools cannot supply permission switches.
 Mutations use the shared audit/idempotency contract. Lane requests go through
 the orchestrator (INV-1). The matrix grants no execution permission.
 
@@ -371,73 +366,46 @@ It calls `capability.RenderMarkdown(matrix)` on the loaded fixture. The source-c
 text of the documentation. Regenerate the view after editing the fixture; no
 templates, queries or CSS inputs are changed by this inventory.
 
-## Operator confirmation and connection YOLO
+## Client confirmation and current authority
 
-Native form submission uses existing commands: `file_issue` for creation,
-`edit_item`, `move_item`, `set_dependency`, `add_comment`, `edit_comment`, and
-`create_change`. A native `file_issue` request may supply `github_issue_url`
-without title or description; the native owner validates the attached repository,
-canonicalizes the link and retains duplicate/retry identity. Native descriptions
-may be empty. Creation priority ranks 1–4 map to native values 0–3; `edit_item`
-uses native values 0–3 and the expected issue revision, and `edit_comment` uses
-the expected comment revision. `create_change` accepts up to 32 `linked_issues`
-owned by the same project. Content remains subject to the tools' bounded schemas.
-Moves retain the existing orchestrator command and material/destructive actions
-retain current browser approval or operator-selected connection YOLO.
+Every authorized MCP call executes directly, including terminal workflow moves,
+deletion, credential revocation, billing and repository policy approval. The Hub
+checks the API key's scope, project access, current membership and grants on every
+call, including retries. Read keys cannot write; write keys cannot perform admin
+operations. Revoked and expired keys fail even on an existing connection.
 
-Board issue discussion is available through `work_comments` (native cursors or
-connector offsets) and `list_comments`. `work_pr_comments` reads the work item's
-linked PR discussion using `project_id`, `reference`, `offset`, and `limit`
-(1–200). The application selects the linked repository and PR; callers cannot
-select an arbitrary forge resource. Only deployments with the existing PR comment
-reader advertise it. Direct calls recheck current authority and ownership, and
-missing services or provider failures return opaque unavailable errors. Both
-transports use the same application adapter.
+`connection_info` returns the authenticated connection and organization identity.
+It has no mode or setup URL. Connection age, reconnects and idle session pruning
+never select an approval policy. There are no server-side pending approvals or
+`approval_url` responses. The retired `/chat/approval` URL returns 404.
 
-`move_item`, `set_priority`, `stop_run`, and `file_issue` use the same application
-validation and commands as dashboard chat. Arguments are typed and bounded; a
-`request_id` is an explicit business retry key for an exact command across
-connections; it is independent of the JSON-RPC request ID. Changed arguments
-with the same actor/organization/project/operation/key conflict. Expired or
-revoked authority cannot replay a receipt.
-`action_result` returns the original preview/outcome and never approves it. The
-preview includes exact arguments, resolved project/resource and run identity,
-organization, originating client, creation/resolution timestamps and a portable
-dashboard approval URL. The application revalidates authority and target context
-before executing the stored action. Tracker lane writes still use the orchestrator.
+Tool annotations remain descriptive: `readOnlyHint` and `destructiveHint` let the
+client decide when to prompt. Claude Code, Codex and other clients own their local
+confirmation policy. Use a narrower API key to limit a client's authority.
 
-Ordinary writes execute directly. Moving Backlog to Todo differs from moving to
-Cancelled/Done, resetting a terminal item, or moving an active item; stop/cancel
-and unknown material actions require confirmation. Approval and rejection use the
-existing chat preview in a browser form, with the dashboard's session/private
-access session, same-origin form secret and browser cookie. An unprotected
-dashboard UI cookie cannot approve actions: configure the existing dashboard
-login or private access authentication before using approval or YOLO setup. API credentials,
-MCP annotations, initialize metadata and repeated tool calls cannot approve.
+Luna's browser client shows proposed changes inline in the conversation and asks
+for confirmation by default. **Ask me to confirm chat changes** is a per-user,
+per-browser preference. Turning it off makes that client submit proposed calls
+directly. The server stores conversation messages, not pending approval actions;
+submitted calls are checked against current authority and expected revisions.
 
-`connection_info` returns a setup URL. Open it in the dashboard and explicitly
-choose **YOLO · skip confirmations** for the displayed client and connection.
-The same setup works for remote `/mcp` sessions and authenticated `detent mcp`
-stdio bridges. The bridge registers one server-generated connection in default
-confirmation mode; its setup identity stays fixed for discovery and calls. Mode
-is server-side connection state, never a tool argument or mode header. YOLO
-suppresses only confirmation: scope, grants, organization/resource ownership,
-current credential validity, rate limits and workflow policy still apply. Audit
-metadata records the connection mode, client, organization, action and retry ID.
-Connections start in confirmation mode again after a new setup or server restart.
+`action_result` remains a bounded read of completed connection receipts for
+credential delivery and attachment object-deletion status. It never executes a
+call or approves an action. Durable application receipts retain business retry
+identity across reconnects; credential material stays out of conversation and
+audit records.
 
-Hosted hubs with no dashboard command service return opaque unavailable results.
-Native `dashboard` and `board_state` reads use the existing board projection;
-see [native board inventory semantics](api-mcp-setup.md).
-Conversation, access and billing commands use the same human approval and
-connection authority boundary.
-
+Native form submission uses `file_issue`, `edit_item`, `move_item`,
+`set_dependency`, `add_comment`, `edit_comment` and `create_change` through their
+existing application owners. A `request_id` is a business retry key, independent
+of JSON-RPC IDs. Changed arguments under the same actor, organization, project,
+operation and key conflict. Tracker lane requests retain the orchestrator owner.
 
 ## Shared mutation audit and retries (#3338)
 
 Application adapters carry trusted `mutation.Metadata`: principal, organization,
-project/resource, action, source, actual connection mode/confirmation decision,
-correlation and bound retry/input hashes. Authentication, mode and confirmation
+project/resource, action, source, client source and call outcome,
+correlation and bound retry/input hashes. Authentication and authority
 are never tool arguments. Every current MCP command provides this context;
 future mutation children must forward it through their shared application command.
 A fresh correlation identifies each submission; approved execution and rejection
@@ -446,7 +414,7 @@ secrets, prompt/comment/body content, support tokens, billing secrets and raw
 provider errors are absent from audit summaries and protocol errors.
 
 Dashboard commands reuse `workflow_phase_events` operator records to bind the
-first authorized submission, including pending previews and rejected actions.
+first authorized submission.
 Only its server-created action can start that operation; a unique bound identity
 permits only one execution across concurrent
 connections, disconnects and daemon restarts. Receipts contain identifiers/URLs
@@ -466,10 +434,7 @@ billing intents and stable provider keys. Portal completion replays its stored
 URL; an uncertain portal attempt cannot repeat its provider effect. Hosted audit
 rows and billing audit JSON accept the same content-free context.
 
-Lost pending approval previews return a safe pending error after reconnect or
-restart; no replacement action takes over their record. Rejected commands replay
-the rejected outcome. Uncertain dashboard effects, invitation sends and portal
-creates retain their
+Uncertain dashboard effects, invitation sends and portal creates retain their
 pending application receipt and return a safe error. Their providers cannot
 prove a negative outcome or accept a business retry key, so there is no automatic
 repeat. Inspect the resource/provider records before choosing a new key. Checkout
@@ -547,25 +512,13 @@ and [HTTP binding](https://modelcontextprotocol.io/specification/2026-07-28/basi
    cursor: restart discovery. Permissions are resolved on every discovery and
    invocation. Discovery is optional before a direct call and grants no authority.
    Only available typed application tools are advertised.
-4. Call `connection_info` when available to get the application connection ID,
-   current mode and dashboard setup URL. Stdio uses the authenticated bridge's
-   server-issued handle; legacy HTTP uses its bound connection; modern HTTP binds
-   the existing application approval conversation to the authenticated identity
-   tuple. That application handle persists across POSTs and reconnects with the
-   same credential/organization. Changing a credential or organization cannot
-   retrieve another identity's pending actions. It is not an MCP protocol session.
-5. Reads and ordinary non-destructive writes execute without a Detent confirmation.
-   Material/destructive actions return an exact preview, `action_id`, approval URL
-   and `result_tool`. Open the URL in an authenticated operator browser and confirm
-   or reject the preview, then call `action_result` for the same action ID. This is
-   portable across clients and needs no client-specific approval integration.
-   Metadata, annotations, repeated calls and MCP input responses cannot approve.
-6. YOLO requires the operator to explicitly enable it on the authenticated dashboard
-   setup page for that application connection. It suppresses confirmation only;
-   current authorization, ownership, exact targets, audits and retries still apply.
-   It cannot be set in tool arguments, initialize/request metadata or mode headers.
-   Modern HTTP callers using the same credential/organization share this existing
-   application mode; use separate existing credentials to separate authority.
+4. Call `connection_info` when available to read the authenticated connection ID
+   and organization. It carries no confirmation mode or setup URL.
+5. Calls execute directly after scope, project access and current grant checks.
+   Clients decide whether to prompt for sensitive operations using their local
+   configuration and tool annotations.
+6. Limit a client's authority with a read, write or admin API key and the
+   appropriate project access. Connecting or confirming locally never adds grants.
 7. Mutations use a bounded explicit `request_id` business retry key, independent
    of JSON-RPC IDs. Reuse it only for identical arguments/operation/resource.
    The shared application command returns the receipt or a safe conflict/uncertain
@@ -603,9 +556,7 @@ and arguments are bounded, result objects are capped at 256 KiB, and encoded
 response frames at 832 KiB on both transports, allowing the serialized text and
 structured copies of a bounded result. Supported optional capabilities
 are advertised accurately: this server exposes tools, not subscriptions, sampling,
-roots, tasks, logging, caching or MRTR elicitation. Operator approval uses the
-existing dashboard flow; no new revocation/recovery mechanism or lane writer is
-introduced.
+roots, tasks, logging, caching or MRTR elicitation. Confirmation belongs to clients; Hub access control and application owners remain authoritative.
 
 ## Project settings and onboarding
 
@@ -619,21 +570,15 @@ clients never choose an unrelated owner/repository. Mutations take a typed
 remain application preconditions. A completed retry returns the original receipt
 after current authority checks, without another approval or provider fetch.
 Batch discovery, additional preview pages and non-dispatchable apply use the
-existing intake command directly. Dispatchable apply and batch retry require
-exact approval; selecting a destination retains the application's lane and
+existing intake command directly. Dispatchable apply and batch retry execute with current authority;
+selecting a destination retains the application's lane and
 runner checks. Batch reads and receipts redact runner/provider diagnostics and
 return at most 200 preview issues/items with a cursor for subsequent reads.
 
-Local daemon tools expose project settings, setup navigation and temporary
-budget overrides. Reads and ordinary writes (including initial imports, progress,
-import advance, disabled projection configuration and budget clear) execute
-directly. Import restart, live cutover, policy changes, access grants, secret
-removal, budget override and external projection/binding require exact browser
-approval, unless the authenticated operator chose YOLO for that connection.
-Dry-run cutover does not require confirmation. An unhosted hub has no hosted
-browser approval service and returns opaque unavailable for material variants;
-the local daemon and hosted dedicated/shared paths use their existing browser
-authority. Hosted role, project grant and entitlement checks still apply in YOLO.
+Project mutations, including repository policy approval, execute directly when
+the key has the required admin or write scope and current project grants.
+Deployment service availability, revision checks and policy provenance still apply.
+
 
 `project_setup` returns the existing authenticated setup URL and required steps.
 `demo_setup_scenarios` reads the shared browser scenario manifest when demo
@@ -658,20 +603,14 @@ Attachment uploads accept at most 32 KiB per MCP request and retain the applicat
 attachment ownership, MIME, expiry and size checks.
 
 Create/post/edit commands require a business `request_id`, reused unchanged across
-retries and reconnects. Completed requests return their original application receipt
-without another approval or action-definition lookup, including deleted actions,
-after current project authority is checked. Workspace/attachment/action deletion, conversation linking,
-execution controls and action command or automatic-run changes return a pending
-preview in confirmation mode. A configured action run takes `action_id`,
-`workspace_id` and `expected_revision`; its browser preview shows the command, and
-editing the definition invalidates that run request. Ordinary messages and metadata
-edits execute directly. Results include shared action status, application data and
-an approval URL; `action_result` reads the current connection's outcome and never
-approves it. Hosted operators use their existing login and CSRF-protected form at
-`/chat/approval`. Only the originating hosted browser principal can select its session connection's YOLO, and
-current grants are still enforced on every execution. Standalone native hubs without
-an authenticated browser approval service return an opaque unavailable result for
-material operations; reads and ordinary commands retain their application boundaries.
+retries and reconnects. Completed requests return their original application
+receipt after current project authority is checked. Workspace, attachment and
+action deletion, conversation linking and execution controls execute directly.
+A configured action run takes `action_id`, `workspace_id` and `expected_revision`;
+editing the definition invalidates that request. Results include action status and
+application data. `action_result` reads completed receipts and object-deletion
+status; it never approves or executes a call.
+
 
 `workspace_file_list` lists one relative directory (empty `path` means the root),
 with at most 500 entries and an opaque `next_cursor`; pass that cursor back for the
@@ -705,10 +644,9 @@ headless action execution using the existing runner dispatch.
 The daemon's `get_operator_chat` reads only the current connection's history;
 `post_operator_chat` sends a bounded message to its configured provider using the
 same durable audit/retry contract. The nested provider receives authorized read
-tools. Operator mutations use the named MCP tools and existing approval surface,
-never model-generated conversation confirmation. An absent provider or native
+tools. Operator mutations use the named MCP tools after current authority checks. An absent provider or native
 workspace/runtime service returns an opaque unavailable result. No browser cookie,
-authentication context, arbitrary session ID or YOLO setting is a tool argument.
+authentication context, arbitrary session ID or approval setting is a tool argument.
 
 This child implements #3346, not the final deployment/tracker/transport parity
 acceptance on #3259. The legacy board conversation panel reads tracker/PR comments,
@@ -723,7 +661,7 @@ An authenticated live-capable worker's existing bind creates an empty shared
 conversation when needed; historical comments remain issue comments.
 Use `post_conversation_command` with the returned conversation ID and current
 expected attempt/turn to steer, or request interrupt through its existing
-material-action approval. Existing accepted/delivered/error receipts remain
+current application authority. Existing accepted/delivered/error receipts remain
 authoritative; a conversation or running issue alone does not prove a provider
 supports live control. Private conversation visibility and current grants apply
 to lookup and command execution. Already-running workers that skipped binding
@@ -742,8 +680,7 @@ denied scope remains an authorization refusal.
 
 Hosted `update_apply` requires `request_id`, `runner_id`, and `change` containing
 `expected_revision`, `expected_build_revision`, `service: "detent"`, `version`,
-and optional `release`/`from_release`. Its existing browser confirmation or
-operator-selected connection YOLO is required. The local daemon retains its
+and optional `release`/`from_release`. Current runner administration authority is required. The local daemon retains its
 existing `release`/`from_release` contract and refuses enrolled-runner selectors.
 
 The corresponding authenticated API routes are

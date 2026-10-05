@@ -46,7 +46,6 @@ type Service struct {
 
 type session struct {
 	connection *operatortool.Connection
-	mode       ConnectionMode
 	mu         sync.Mutex
 	threadID   string
 	messages   []Message
@@ -221,26 +220,6 @@ func (s *Service) Confirm(ctx context.Context, sessionID string, actionID string
 	if current.actions[index].Status != ActionPending {
 		return s.conversation(current), ErrActionNotPending
 	}
-	if current.connection != nil {
-		if err := authorizeHuman(ctx, current.connection.Identity.OrganizationID); err != nil {
-			return s.conversation(current), err
-		}
-		var err error
-		ctx, err = authorizeAction(ctx, *current.connection, current.actions[index])
-		if err != nil {
-			s.auditAction(ctx, current.actions[index], "denied")
-			return s.resolveAction(ctx, current, index, "Operator access is unavailable.", err)
-		}
-		previous := current.actions[index]
-		current.actions[index].Mode = current.mode
-		current.actions[index].Mutation.Mode = string(current.mode)
-		current.actions[index].Mutation.Confirmation = "approved"
-		if err := s.persistSession(ctx, current); err != nil {
-			current.actions[index] = previous
-			return s.conversation(current), err
-		}
-		s.auditAction(ctx, current.actions[index], "approved")
-	}
 	if s.actions == nil {
 		return s.resolveAction(ctx, current, index, "Action execution is unavailable.", ErrUnavailable)
 	}
@@ -392,13 +371,12 @@ func (s *Service) prune(now time.Time) {
 }
 
 func (s *Service) conversation(current *session) Conversation {
-	conversation := Conversation{Mode: current.mode,
+	conversation := Conversation{
 		Messages:    append([]Message(nil), current.messages...),
 		Actions:     cloneActions(current.actions),
 		Unavailable: s.provider == nil && current.connection == nil,
 	}
 	if current.connection != nil {
-		conversation.RequireConfirmation = current.connection.RequireConfirmation
 		conversation.PrincipalID = current.connection.Identity.PrincipalID
 		conversation.ConnectionID = current.connection.ID
 		conversation.ApprovalBaseURL = current.connection.DashboardURL

@@ -36,7 +36,7 @@ func TestNativeMutationRetryAfterResponseLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	metadata := mutation.Metadata{PrincipalID: "operator", OrganizationID: string(h.organization), ProjectID: string(h.project), Action: "file_issue", Source: "mcp", Mode: "confirmation", Confirmation: "none", CorrelationID: "first-call"}
+	metadata := mutation.Metadata{PrincipalID: "operator", OrganizationID: string(h.organization), ProjectID: string(h.project), Action: "file_issue", Source: "mcp", Confirmation: "none", CorrelationID: "first-call"}
 	metadata, err = metadata.Bind("reconnect-key", map[string]string{"title": "issue", "body": "sensitive-body-sentinel"})
 	if err != nil {
 		t.Fatal(err)

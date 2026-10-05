@@ -4,14 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/labstack/echo/v4"
-
-	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -46,116 +41,6 @@ func (a *administrationFixture) Execute(_ context.Context, _ string, _ Input, _ 
 func (a *administrationFixture) Audit(_ context.Context, m mutation.Metadata, outcome string) {
 	raw, _ := json.Marshal(m)
 	a.audit = append(a.audit, string(raw)+outcome)
-}
-
-// Catches administration-specific stale preview and secret-delivery regressions
-// across the real shared approval service, including bypassed discovery.
-func TestAdministrationExecution(t *testing.T) {
-	for _, scenario := range []string{"approval", "YOLO", "stale preview", "revoked authority", "revoked resource", "different actor", "retry conflict", "safe error", "other browser session"} {
-		t.Run(scenario, func(t *testing.T) {
-			app := &administrationFixture{}
-			e := New(app, operatortool.CredentialCreate, operatortool.CredentialList)
-			identity := operatortool.Identity{PrincipalID: "owner", OrganizationID: "org", CredentialID: "credential", SessionID: "owner-session"}
-			connection := operatortool.Connection{ID: "connection", Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
-				return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error {
-					if app.revoked {
-						return operatortool.ErrAccessDenied
-					}
-					return nil
-				}}, nil
-			}}
-			ctx := operatortool.WithConnection(t.Context(), connection)
-			human := chat.WithOperatorApproval(t.Context(), identity)
-			if err := e.OpenConnection(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if scenario == "other browser session" {
-				connection.Identity.SessionID = "viewer-session"
-				request := httptest.NewRequest(http.MethodGet, "/chat/approval?connection_id="+connection.ID, nil).WithContext(operatortool.WithConnection(t.Context(), connection))
-				c := echo.New().NewContext(request, httptest.NewRecorder())
-				if err := e.Approval(c, "csrf"); err == nil {
-					t.Fatal("another browser could manage the connection")
-				}
-				return
-			}
-			if scenario == "YOLO" {
-				if err := e.Chat.SetConnectionMode(human, connection.ID, chat.YOLOMode); err != nil {
-					t.Fatal(err)
-				}
-			}
-			call := operatortool.Call{Name: operatortool.CredentialCreate, Arguments: json.RawMessage(`{"request_id":"retry","name":"exact name","scopes":["read"],"project_ids":["project"]}`)}
-			initial, err := e.Execute(ctx, call)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var reply struct {
-				Action chat.Action `json:"action"`
-			}
-			if err = json.Unmarshal(initial.Content, &reply); err != nil {
-				t.Fatal(err)
-			}
-			if scenario != "YOLO" {
-				if app.calls != 0 || reply.Action.Status != chat.ActionPending {
-					t.Fatal("access changed before approval")
-				}
-			}
-			if _, err := e.Chat.Confirm(ctx, connection.ID, reply.Action.ID); scenario != "YOLO" && !errors.Is(err, operatortool.ErrAccessDenied) {
-				t.Fatalf("model approved: %v", err)
-			}
-			if scenario == "stale preview" {
-				app.revision++
-			}
-			if scenario == "revoked authority" {
-				app.revoked = true
-			}
-			if scenario != "YOLO" {
-				_, err = e.Chat.Confirm(human, connection.ID, reply.Action.ID)
-				if scenario == "stale preview" || scenario == "revoked authority" {
-					if err == nil || app.calls != 0 {
-						t.Fatalf("stale action executed: %v", err)
-					}
-					return
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			if app.calls != 1 {
-				t.Fatalf("calls=%d", app.calls)
-			}
-			if raw, _ := json.Marshal(e.Chat.Conversation(connection.ID)); strings.Contains(string(raw), "secret-value-sentinel") {
-				t.Fatal("browser conversation leaked credential")
-			}
-			for _, audit := range app.audit {
-				if strings.Contains(audit, "secret-value-sentinel") {
-					t.Fatal("audit leaked credential")
-				}
-			}
-			if scenario == "revoked resource" {
-				app.resourceRevoked = true
-			}
-			if scenario == "different actor" {
-				connection.Identity.PrincipalID = "other"
-				ctx = operatortool.WithConnection(ctx, connection)
-			}
-			if scenario == "retry conflict" {
-				call.Arguments = json.RawMessage(`{"request_id":"retry","name":"changed","scopes":["read"]}`)
-			}
-			retry, err := e.Execute(ctx, call)
-			if scenario == "revoked resource" || scenario == "different actor" || scenario == "retry conflict" {
-				if err == nil {
-					t.Fatal("forbidden replay delivered")
-				}
-				return
-			}
-			if err != nil || !strings.Contains(string(retry.Content), "secret-value-sentinel") || app.calls != 1 {
-				t.Fatalf("bound replay=%s %v calls=%d", retry.Content, err, app.calls)
-			}
-			if scenario == "safe error" && !errors.Is(safe(errors.New("secret-value-sentinel")), ErrUnavailable) {
-				t.Fatal("raw error exposed")
-			}
-		})
-	}
 }
 
 func TestAdministrationInputBounds(t *testing.T) {
@@ -200,6 +85,63 @@ func TestAdministrationInputBounds(t *testing.T) {
 				if _, err := Decode(test.tool, raw); err != nil {
 					t.Fatalf("action input lost required fields: %s: %v", raw, err)
 				}
+			}
+		})
+	}
+}
+
+func TestAdministrationExecution(t *testing.T) {
+	for _, scenario := range []string{"direct", "revoked authority", "revoked resource", "different actor", "retry conflict", "safe error"} {
+		t.Run(scenario, func(t *testing.T) {
+			app := &administrationFixture{}
+			e := New(app, operatortool.CredentialCreate)
+			identity := operatortool.Identity{PrincipalID: "owner", OrganizationID: "org", CredentialID: "credential"}
+			connection := operatortool.Connection{ID: "connection", Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
+				return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error {
+					if app.revoked {
+						return operatortool.ErrAccessDenied
+					}
+					return nil
+				}}, nil
+			}}
+			ctx := operatortool.WithConnection(t.Context(), connection)
+			if err := e.OpenConnection(ctx); err != nil {
+				t.Fatal(err)
+			}
+			call := operatortool.Call{Name: operatortool.CredentialCreate, Arguments: json.RawMessage(`{"request_id":"retry","name":"exact name","scopes":["read"],"project_ids":["project"]}`)}
+			first, err := e.Execute(ctx, call)
+			if err != nil || app.calls != 1 || !strings.Contains(string(first.Content), "secret-value-sentinel") {
+				t.Fatalf("direct=%s %v calls=%d", first.Content, err, app.calls)
+			}
+			if raw, _ := json.Marshal(e.Chat.Conversation(connection.ID)); strings.Contains(string(raw), "secret-value-sentinel") {
+				t.Fatal("conversation leaked credential")
+			}
+			for _, audit := range app.audit {
+				if strings.Contains(audit, "secret-value-sentinel") {
+					t.Fatal("audit leaked credential")
+				}
+			}
+			switch scenario {
+			case "revoked authority":
+				app.revoked = true
+			case "revoked resource":
+				app.resourceRevoked = true
+			case "different actor":
+				connection.Identity.PrincipalID = "other"
+				ctx = operatortool.WithConnection(ctx, connection)
+			case "retry conflict":
+				call.Arguments = json.RawMessage(`{"request_id":"retry","name":"changed","scopes":["read"]}`)
+			}
+			replay, err := e.Execute(ctx, call)
+			denied := scenario != "direct" && scenario != "safe error"
+			if denied != (err != nil) || app.calls != 1 {
+				t.Fatalf("replay=%s %v calls=%d", replay.Content, err, app.calls)
+			}
+			if !denied && !strings.Contains(string(replay.Content), "secret-value-sentinel") {
+				t.Fatal("missing credential output")
+			}
+			if scenario == "safe error" && !errors.Is(safe(errors.New("secret-value-sentinel")), ErrUnavailable) {
+				t.Fatal("raw error exposed")
 			}
 		})
 	}

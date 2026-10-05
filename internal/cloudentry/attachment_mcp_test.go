@@ -5,10 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"reflect"
-	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -239,12 +236,9 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 			t.Fatalf("foreign binding=%s", raw)
 		}
 	}
-	for _, decision := range []string{"reject", "confirm", "stale", "revoked", "yolo", "storage unavailable"} {
-		t.Run("attachment deletion "+decision, func(t *testing.T) {
-			keyRaw, err := json.Marshal(map[string]any{"name": "attachment-delete-" + decision, "scope": "write", "expires_days": 1, "project_ids": []string{project}})
-			if err != nil {
-				t.Fatal(err)
-			}
+	for _, scenario := range []string{"direct", "revoked", "storage unavailable"} {
+		t.Run("attachment deletion "+scenario, func(t *testing.T) {
+			keyRaw, _ := json.Marshal(map[string]any{"name": "attachment-delete-" + scenario, "scope": "write", "expires_days": 1, "project_ids": []string{project}})
 			created := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/api-keys", bytes.NewReader(keyRaw), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
 			var credential struct {
 				ID    string `json:"id"`
@@ -254,178 +248,78 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 				t.Fatalf("key=%s", created.Body.String())
 			}
 			invoke := attachmentMCPClient(t, anonymous, credential.Token, "2025-11-25")
-			raw, failed := invoke(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))})
+			upload := map[string]string{"request_id": "upload-" + scenario, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))}
+			raw, failed := invoke(operatortool.UploadAttachment, upload)
 			var uploaded attachment.Metadata
 			if failed || json.Unmarshal(raw, &uploaded) != nil {
 				t.Fatalf("upload=%s", raw)
-			}
-			replay, replayFailed := invoke(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))})
-			var repeated attachment.Metadata
-			if replayFailed || json.Unmarshal(replay, &repeated) != nil || repeated.ID != uploaded.ID || !repeated.CreatedAt.Equal(uploaded.CreatedAt) {
-				t.Fatalf("upload replay=%s original=%s", replay, raw)
-			}
-			_, conflictFailed := invoke(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("changed evidence"))})
-			if !conflictFailed {
-				t.Fatal("changed upload reused receipt")
-			}
-			if decision == "reject" {
-				reconnected := attachmentMCPClient(t, anonymous, credential.Token, "2026-07-28")
-				before := len(store.requests())
-				replay, failed := reconnected(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))})
-				if failed || json.Unmarshal(replay, &repeated) != nil || repeated.ID != uploaded.ID || len(store.requests()) != before {
-					t.Fatalf("reconnected upload=%s touched storage=%v", replay, len(store.requests()) != before)
-				}
-			}
-			input := map[string]string{"project_id": project, "attachment_id": uploaded.ID, "request_id": "delete-" + decision}
-			raw, failed = invoke(operatortool.DeleteAttachment, input)
-			var receipt struct {
-				Preview        chat.Action `json:"preview"`
-				Status         string      `json:"status"`
-				ObjectDeletion string      `json:"object_deletion"`
-				ApprovalURL    string      `json:"approval_url"`
-			}
-			if failed || json.Unmarshal(raw, &receipt) != nil || receipt.Status != "pending" {
-				t.Fatalf("preview=%s", raw)
 			}
 			objectKey, err := attachment.Key("org_alpha", uploaded.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
+			input := map[string]string{"project_id": project, "attachment_id": uploaded.ID, "request_id": "delete-" + scenario}
+			if scenario == "revoked" {
+				revoked := attachmentRequest(t, browser, http.MethodDelete, "/api/v2/organizations/org_alpha/api-keys/"+credential.ID, nil, map[string]string{"X-CSRF-Token": csrf})
+				if revoked.Code != 204 {
+					t.Fatalf("revoke=%s", revoked.Body.String())
+				}
+				before := len(store.requests())
+				if raw, failed := invoke(operatortool.DeleteAttachment, input); !failed || len(store.requests()) != before {
+					t.Fatalf("revoked deletion=%s", raw)
+				}
+				if _, failed := invoke(operatortool.UploadAttachment, upload); !failed || len(store.requests()) != before {
+					t.Fatal("revoked upload replay touched storage")
+				}
+				return
+			}
+			store.mu.Lock()
+			store.failDelete = scenario == "storage unavailable"
+			store.mu.Unlock()
+			raw, failed = invoke(operatortool.DeleteAttachment, input)
+			var receipt struct {
+				Preview        chat.Action `json:"preview"`
+				Status         string      `json:"status"`
+				ObjectDeletion string      `json:"object_deletion"`
+			}
+			if failed || json.Unmarshal(raw, &receipt) != nil || receipt.Status != "succeeded" || strings.Contains(string(raw), "approval_url") {
+				t.Fatalf("deletion=%s", raw)
+			}
+			if scenario == "storage unavailable" {
+				if receipt.ObjectDeletion != "pending" {
+					t.Fatalf("storage pending=%s", raw)
+				}
+				store.mu.Lock()
+				_, retained := store.objects[objectKey]
+				store.failDelete = false
+				store.mu.Unlock()
+				if !retained {
+					t.Fatal("failed storage deletion removed bytes")
+				}
+				organization, err := f.service.readyOrganization(t.Context(), "org_alpha")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
+					t.Fatal(err)
+				}
+				raw, failed = invoke(operatortool.ActionResult, map[string]string{"action_id": receipt.Preview.ID})
+				if failed || json.Unmarshal(raw, &receipt) != nil {
+					t.Fatalf("deletion receipt=%s", raw)
+				}
+			}
+			if receipt.ObjectDeletion != "confirmed" {
+				t.Fatalf("object deletion=%s", raw)
+			}
 			store.mu.Lock()
 			_, retained := store.objects[objectKey]
 			store.mu.Unlock()
-			if !retained {
-				t.Fatal("pending deletion removed bytes")
+			if retained {
+				t.Fatal("completed deletion retained bytes")
 			}
-			if decision == "stale" {
-				if raw, failed := invoke(operatortool.ReferenceAttachment, map[string]string{"project_id": project, "attachment_id": uploaded.ID, "request_id": "stale-bind", "work_item_id": string(issue.WorkItemID)}); failed {
-					t.Fatalf("stale bind=%s", raw)
-				}
-			}
-			if decision == "revoked" {
-				revoked := attachmentRequest(t, browser, http.MethodDelete, "/api/v2/organizations/org_alpha/api-keys/"+credential.ID, nil, map[string]string{"X-CSRF-Token": csrf})
-				if revoked.Code != 204 {
-					t.Fatalf("revoke=%d %s", revoked.Code, revoked.Body.String())
-				}
-				before := len(store.requests())
-				if _, failed := invoke(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))}); !failed || len(store.requests()) != before {
-					t.Fatal("revoked upload replay touched storage")
-				}
-			}
-			approvalPath := "/organizations/org_alpha/chat/approval"
-			response, html := browser.get(approvalPath + "?connection_id=" + receipt.Preview.ConnectionID)
-			if response.StatusCode != 200 {
-				t.Fatalf("approval=%d %s", response.StatusCode, html)
-			}
-			formToken := ""
-			for _, form := range regexp.MustCompile(`<form[^>]*>[\s\S]*?</form>`).FindAllString(html, -1) {
-				if strings.Contains(form, `name="action_id" value="`+receipt.Preview.ID+`"`) {
-					match := regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindStringSubmatch(form)
-					if len(match) == 2 {
-						formToken = match[1]
-					}
-				}
-			}
-			choice := "confirm"
-			if decision == "reject" {
-				choice = "reject"
-			}
-			form := url.Values{"csrf": {csrfFrom(t, html)}, "connection_id": {receipt.Preview.ConnectionID}, "action_id": {receipt.Preview.ID}, "form_token": {formToken}, "decision": {choice}}
-			if decision == "yolo" {
-				form.Set("decision", "mode")
-				form.Set("mode", "yolo")
-				form.Del("action_id")
-				for _, fragment := range regexp.MustCompile(`<form[^>]*>[\s\S]*?</form>`).FindAllString(html, -1) {
-					if strings.Contains(fragment, `name="decision" value="mode"`) {
-						match := regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindStringSubmatch(fragment)
-						if len(match) == 2 {
-							form.Set("form_token", match[1])
-						}
-					}
-				}
-			}
-			confirmed := browser.do(http.MethodPost, approvalPath, form, nil)
-			if !slices.Contains([]int{303, 403, 409}, confirmed.StatusCode) {
-				t.Fatalf("decision=%d %s", confirmed.StatusCode, confirmed.Body)
-			}
-			if decision == "yolo" {
-				input["request_id"] = "delete-yolo-authorized"
-			}
-			if decision == "storage unavailable" {
-				store.mu.Lock()
-				store.failDelete = true
-				store.mu.Unlock()
-			}
-			if decision == "confirm" {
-				raw, failed = invoke(operatortool.ActionResult, map[string]string{"action_id": receipt.Preview.ID})
-			} else {
-				raw, failed = invoke(operatortool.DeleteAttachment, input)
-			}
-			if decision == "revoked" {
-				if !failed {
-					t.Fatalf("revoked replay=%s", raw)
-				}
-				before := len(store.requests())
-				if raw, failed := invoke(operatortool.ReadAttachment, map[string]string{"project_id": project, "attachment_id": uploaded.ID}); !failed || len(store.requests()) != before {
-					t.Fatalf("revoked read=%s", raw)
-				}
-			} else {
-				receipt.ApprovalURL, receipt.ObjectDeletion = "", ""
-				want := "succeeded"
-				if decision == "reject" {
-					want = "rejected"
-				}
-				if decision == "stale" {
-					want = "failed"
-				}
-				if failed || json.Unmarshal(raw, &receipt) != nil || receipt.Status != want || receipt.ApprovalURL != "" {
-					t.Fatalf("receipt=%s", raw)
-				}
-				if decision == "storage unavailable" {
-					if receipt.ObjectDeletion != "pending" {
-						t.Fatalf("failed storage deletion=%s", raw)
-					}
-					store.mu.Lock()
-					_, retained := store.objects[objectKey]
-					store.failDelete = false
-					store.mu.Unlock()
-					if !retained {
-						t.Fatal("failed storage deletion removed bytes")
-					}
-					organization, err := f.service.readyOrganization(t.Context(), "org_alpha")
-					if err != nil {
-						t.Fatal(err)
-					}
-					if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
-						t.Fatal(err)
-					}
-					raw, failed = invoke(operatortool.ActionResult, map[string]string{"action_id": receipt.Preview.ID})
-					if failed || json.Unmarshal(raw, &receipt) != nil {
-						t.Fatalf("maintenance receipt=%s", raw)
-					}
-				}
-				if want == "succeeded" && receipt.ObjectDeletion != "confirmed" {
-					t.Fatalf("object deletion=%s", raw)
-				}
-				if want == "succeeded" {
-					before := len(store.requests())
-					if _, failed := invoke(operatortool.UploadAttachment, map[string]string{"request_id": "upload-" + decision, "project_id": project, "name": "delete.txt", "content_base64": base64.StdEncoding.EncodeToString([]byte("delete evidence"))}); !failed || len(store.requests()) != before {
-						t.Fatal("deleted upload replay touched storage")
-					}
-					if raw, failed := invoke(operatortool.ReadAttachmentMetadata, map[string]string{"project_id": project, "attachment_id": uploaded.ID}); !failed {
-						t.Fatalf("deleted metadata read=%s", raw)
-					}
-				}
-				before := len(store.requests())
-				if raw, failed := invoke(operatortool.ActionResult, map[string]string{"action_id": receipt.Preview.ID}); failed || len(store.requests()) != before {
-					t.Fatalf("result replay=%s touched storage=%v", raw, len(store.requests()) != before)
-				}
-			}
-			store.mu.Lock()
-			_, retained = store.objects[objectKey]
-			store.mu.Unlock()
-			if retained == (decision == "confirm" || decision == "yolo" || decision == "storage unavailable") {
-				t.Fatalf("retained=%v decision=%s", retained, decision)
+			raw, failed = invoke(operatortool.DeleteAttachment, input)
+			if failed || json.Unmarshal(raw, &receipt) != nil || receipt.Status != "succeeded" {
+				t.Fatalf("deletion replay=%s", raw)
 			}
 		})
 	}

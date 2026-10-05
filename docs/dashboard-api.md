@@ -455,7 +455,7 @@ The complete authorized catalog is returned by default. Each definition's
 Unavailable application services return safe opaque errors. Structured results
 also have serialized JSON text for older clients. See
 [generic MCP setup](mcp-capabilities.md#generic-client-setup) for portable
-operator approval, connection mode, organization selection and retries.
+current key authority, client-side confirmation, organization selection and retries.
 
 Use HTTPS for remote MCP, terminating TLS at Detent or a trusted reverse proxy;
 plain HTTP is appropriate only for loopback testing. Configure Detent's existing

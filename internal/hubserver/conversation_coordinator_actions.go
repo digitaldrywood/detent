@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -29,14 +32,13 @@ func (s *Service) bindCoordinatorConnection(ctx context.Context, key string) (co
 	digest := sha256.Sum256([]byte(connection.Identity.SessionID + ":" + connection.Identity.PrincipalID + ":" + key))
 	connection.ID = "luna_" + hex.EncodeToString(digest[:])
 	connection.Client = "Luna"
-	connection.RequireConfirmation = true
 	ctx = operatortool.WithConnection(ctx, connection)
 	return ctx, s.operatorChat.AttachConnection(ctx)
 }
 
 func coordinatorConnectionData(ctx context.Context) json.RawMessage {
 	connection := operatortool.CurrentConnection(ctx)
-	if !connection.RequireConfirmation {
+	if connection.Client != "Luna" {
 		return nil
 	}
 	raw, err := json.Marshal(map[string]string{"operator_connection": connection.ID, "operator_principal": connection.Identity.PrincipalID})
@@ -49,10 +51,10 @@ func coordinatorConnectionData(ctx context.Context) json.RawMessage {
 func coordinatorActionTools() []runner.AgentTool {
 	return []runner.AgentTool{
 		coordinatorTool("get_project_integration", "Read this project's integration settings and GitHub transport availability. Runner PR landing is selected by the approved repository policy.", `{"type":"object","properties":{},"additionalProperties":false}`),
-		coordinatorTool("update_project_integration", "Preview available Hub integration changes. This does not change the runner's approved PR landing policy. The user must approve the exact change in chat before it runs.", `{"type":"object","properties":{"repository_enabled":{"type":"boolean"},"intake":{"type":"string","enum":["disabled","manual"]},"projection":{"type":"string","enum":["disabled","summary"]}},"additionalProperties":false}`),
-		coordinatorTool("move_item", "Preview moving a native issue to a workflow state. Retry a blocked issue by moving it to Todo. Current workflow rules and revision apply; the user must approve in chat.", `{"type":"object","required":["work_item_id","state"],"properties":{"work_item_id":{"type":"string"},"state":{"type":"string"}},"additionalProperties":false}`),
-		coordinatorTool("edit_item", "Preview editing an issue's title, body, labels or priority (0 urgent through 3 low). The user must approve in chat.", `{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":0,"maximum":3}},"additionalProperties":false}`),
-		coordinatorTool("add_comment", "Preview adding an issue comment. The user must approve the exact comment in chat.", `{"type":"object","required":["work_item_id","body"],"properties":{"work_item_id":{"type":"string"},"body":{"type":"string"}},"additionalProperties":false}`),
+		coordinatorTool("update_project_integration", "Preview available Hub integration changes. This does not change the runner's approved PR landing policy. The client controls confirmation and submits the proposed call.", `{"type":"object","properties":{"repository_enabled":{"type":"boolean"},"intake":{"type":"string","enum":["disabled","manual"]},"projection":{"type":"string","enum":["disabled","summary"]}},"additionalProperties":false}`),
+		coordinatorTool("move_item", "Preview moving a native issue to a workflow state. Retry a blocked issue by moving it to Todo. Current workflow rules and revision apply; the client controls confirmation and submission.", `{"type":"object","required":["work_item_id","state"],"properties":{"work_item_id":{"type":"string"},"state":{"type":"string"}},"additionalProperties":false}`),
+		coordinatorTool("edit_item", "Preview editing an issue's title, body, labels or priority (0 urgent through 3 low). The client controls confirmation and submission.", `{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":0,"maximum":3}},"additionalProperties":false}`),
+		coordinatorTool("add_comment", "Preview adding an issue comment. The client controls confirmation and submits the exact comment.", `{"type":"object","required":["work_item_id","body"],"properties":{"work_item_id":{"type":"string"},"body":{"type":"string"}},"additionalProperties":false}`),
 	}
 }
 
@@ -80,7 +82,11 @@ func (t *coordinatorToolset) actionContext(ctx context.Context, record conversat
 	if json.Unmarshal(message.Data, &data) != nil || data.ConnectionID == "" {
 		return nil, operatortool.ErrAccessDenied
 	}
-	return t.coordinator.service.server.operatorChat.OriginatingContext(ctx, data.ConnectionID, data.PrincipalID, string(record.OrganizationID))
+	service := t.coordinator.service.server.operatorChat
+	if err := service.RestoreConnection(ctx, data.ConnectionID); err != nil {
+		return nil, err
+	}
+	return service.OriginatingContext(ctx, data.ConnectionID, data.PrincipalID, string(record.OrganizationID))
 }
 
 func (t *coordinatorToolset) projectAction(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -212,6 +218,9 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 			return nil, err
 		}
 		action.Description = fmt.Sprintf("Issue %s: %s (revision %d).", current.Title, current.State, current.Revision)
+		if call.Name == operatortool.MoveItem {
+			action.Description = fmt.Sprintf("Move %s from %s to %s.", current.Title, current.State, args.State)
+		}
 	}
 	return t.submitCoordinatorAction(ctx, record, call, action)
 }
@@ -221,7 +230,6 @@ func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record
 		digest := sha256.Sum256([]byte(t.state.users[len(t.state.users)-1].ID + ":" + call.Name + ":" + string(call.Arguments)))
 		action.RequestID = "luna_" + hex.EncodeToString(digest[:])
 	}
-	s := t.coordinator.service.server
 	identity := operatortool.ConnectionIdentity(ctx)
 	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: call.Name, Source: "chat", CorrelationID: newNativeID("luna")}
 	var err error
@@ -229,36 +237,24 @@ func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record
 	if err != nil {
 		return nil, err
 	}
-	previous, replay, err := s.operatorChat.RetryResult(ctx, action.Kind, action.RequestID, action.Arguments)
-	if err != nil {
-		return nil, err
-	}
-	if replay {
-		action = previous
-	} else {
-		action, err = s.operatorChat.Submit(ctx, action)
-	}
-	if err != nil {
-		return nil, err
-	}
-	approvalURL := s.hostedPath("/chat/approval") + "?connection_id=" + action.ConnectionID
-	if !replay {
-		if err := t.coordinator.write(ctx, record.ID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
-			data, err := json.Marshal(map[string]any{"operator_approval": map[string]string{"url": approvalURL, "action_id": action.ID}})
-			if err != nil {
-				return err
-			}
-			message := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: "Review and approve this change.", Data: data, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
-			return t.coordinator.service.appendMessage(ctx, tx, record, &message, now)
-		}); err != nil {
-			return nil, err
+	action.OrganizationID = string(record.OrganizationID)
+	action.ConversationID = record.ID
+	action.ID = action.RequestID
+	if err := t.coordinator.write(ctx, record.ID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
+		data, err := json.Marshal(map[string]any{"operator_action": map[string]any{"action": action, "conversation_id": record.ID}})
+		if err != nil {
+			return err
 		}
+		message := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: action.Description, Data: data, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
+		return t.coordinator.service.appendMessage(ctx, tx, record, &message, now)
+	}); err != nil {
+		return nil, err
 	}
-	return map[string]any{"action_id": action.ID, "status": action.Status, "preview": action.Arguments, "approval": "The approval form is shown in chat. Wait for the user's decision; never claim the change has run before approval."}, nil
+	return map[string]any{"action_id": action.ID, "preview": action.Arguments, "status": "proposed", "message": "The client received the proposed call. It controls confirmation and submits the call; do not claim execution succeeded."}, nil
 }
 
 func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
-	if action.Mutation.Confirmation != "approved" || action.ConversationID == "" {
+	if action.ConversationID == "" {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
 	ctx, err := s.authorizeCoordinatorAction(ctx, action)
@@ -270,15 +266,11 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 		return s.executeCoordinatorSpriteAction(ctx, action)
 	}
 	if string(action.Kind) == "update_project_integration" {
-		raw, err := (hubProjectExecutor{s}).command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
+		_, err := (hubProjectExecutor{s}).command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
 		if err != nil {
 			return chat.ActionExecution{}, coordinatorActionError(err)
 		}
-		raw, err = safeProjectCommandResult(string(action.Kind), raw)
-		if err != nil {
-			return chat.ActionExecution{}, err
-		}
-		return chat.ActionExecution{Message: "Integration updated: " + string(raw)}, nil
+		return chat.ActionExecution{Message: "Integration updated."}, nil
 	}
 	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
 	if !ok {
@@ -296,19 +288,24 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 	if request.ProjectID != action.ProjectID || request.Identifier != action.IssueID {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
-	var raw json.RawMessage
 	if action.Kind == chat.ActionMoveItem {
-		raw, err = s.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, action.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.State, Reason: "user_requested"})
+		_, err = s.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, action.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.State, Reason: "user_requested"})
 	} else {
 		if _, err := operatortool.DecodeWorkArguments(string(action.Kind), action.Arguments); err != nil {
 			return chat.ActionExecution{}, err
 		}
-		raw, err = s.operatorNativeWork(ctx, scope, string(action.Kind), request)
+		_, err = s.operatorNativeWork(ctx, scope, string(action.Kind), request)
 	}
 	if err != nil {
 		return chat.ActionExecution{}, coordinatorActionError(err)
 	}
-	return chat.ActionExecution{Message: strings.ReplaceAll(string(action.Kind), "_", " ") + " succeeded: " + string(raw), ResourceID: action.IssueID}, nil
+	message := "Issue updated."
+	if action.Kind == chat.ActionMoveItem {
+		message = "Moved issue to " + request.State + "."
+	} else if string(action.Kind) == operatortool.AddComment {
+		message = "Comment added."
+	}
+	return chat.ActionExecution{Message: message, ResourceID: action.IssueID}, nil
 }
 
 func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Action) (context.Context, error) {
@@ -375,4 +372,40 @@ func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Ac
 		message := conversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: text, Data: data, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
 		return s.conversations.appendMessage(ctx, tx, record, &message, now)
 	})
+}
+
+func (s *Service) postConversationAction(c echo.Context) error {
+	var action chat.Action
+	if err := decodeAPIJSON(c, &action); err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	scope := nativeRequestScope(c)
+	ctx := c.Request().Context()
+	record, err := s.conversations.store.readConversation(ctx, s.database.db, scope.organization, scope.project, c.Param("conversation"))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if err := s.conversations.authorizeWrite(ctx, s.database.db, scope, record); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if !slices.Contains([]string{operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_sprite_pool", "scale_up_sprite_pool"}, string(action.Kind)) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
+		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
+	}
+	identity := operatortool.ConnectionIdentity(ctx)
+	action.ConversationID, action.OrganizationID = record.ID, string(scope.organization)
+	action.ID = action.RequestID
+	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: action.ProjectID, ResourceID: action.IssueID, Action: string(action.Kind), Source: "chat", CorrelationID: newNativeID("luna")}
+	action.Mutation, err = action.Mutation.Bind(action.RequestID, action.Arguments)
+	if err != nil {
+		return invalidAPIRequest(c, err)
+	}
+	result, err := s.executeCoordinatorAction(ctx, action)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	action.Status, action.Result = chat.ActionSucceeded, result.Message
+	if err := s.publishCoordinatorDecision(ctx, action); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, result)
 }

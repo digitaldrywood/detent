@@ -463,8 +463,6 @@ func (s *httpProtocolSession) sessionContext(request context.Context) context.Co
 	connection.ID = s.id
 	if s.modern {
 		connection.ID = s.connectionID
-		// Approval outlives this POST. Retain the application's current-authority
-		// resolver, not the transient protocol request's closed/idle predicate.
 		return operatortool.WithConnection(request, connection)
 	}
 	connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {

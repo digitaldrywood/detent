@@ -42,6 +42,7 @@ func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/work-items/:item/conversation", s.getWorkItemConversation, scope)
 	e.GET(nativeBase+"/conversations/:conversation/messages", s.listConversationMessages, scope)
 	e.GET(nativeBase+"/conversations/:conversation/events", s.streamConversationEvents, scope)
+	e.POST(nativeBase+"/conversations/:conversation/actions", s.postConversationAction, scope, s.operatorAuthority)
 	e.POST(nativeBase+"/conversations/:conversation/commands", s.postConversationCommand, scope, s.operatorAuthority)
 	e.POST(nativeBase+"/conversations/:conversation/link", s.linkConversation, scope)
 	e.PATCH(nativeBase+"/conversations/:conversation", s.patchConversation, scope)

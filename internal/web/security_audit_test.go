@@ -127,7 +127,7 @@ func TestSecurityAuditDispositionAcceptsProjectScopedWorkerCredential(t *testing
 	mcpHeaders["X-Detent-Connection-ID"] = setup.ID
 	for _, tt := range []struct {
 		name, head string
-		pending    bool
+		success    bool
 	}{{"untrusted head", "other", false}, {"exact trusted head", key.HeadSHA, true}} {
 		t.Run(tt.name, func(t *testing.T) {
 			input := map[string]any{"project_id": "detent", "identifier": "digitaldrywood/detent#2005", "request_id": tt.name, "repository": key.Repository, "pull_request": key.PRNumber, "base_sha": key.BaseSHA, "head_sha": tt.head, "finding_id": "auth-2", "evidence": "Verified false positive"}
@@ -136,11 +136,11 @@ func TestSecurityAuditDispositionAcceptsProjectScopedWorkerCredential(t *testing
 				t.Fatal(err)
 			}
 			response := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/dispose_security_finding", string(raw), mcpHeaders)
-			if strings.Contains(response.Body.String(), `"status":"pending"`) != tt.pending {
+			if strings.Contains(response.Body.String(), `"status":"succeeded"`) != tt.success {
 				t.Fatalf("disposition=%d %s", response.Code, response.Body)
 			}
-			if dispositions, err := deps.Store.ListSecurityAuditDispositions(t.Context(), run.ID); err != nil || len(dispositions) != 0 {
-				t.Fatalf("unapproved effect=%+v %v", dispositions, err)
+			if dispositions, err := deps.Store.ListSecurityAuditDispositions(t.Context(), run.ID); err != nil || len(dispositions) != map[bool]int{true: 1, false: 0}[tt.success] {
+				t.Fatalf("authority outcome=%+v %v", dispositions, err)
 			}
 		})
 	}
@@ -185,7 +185,7 @@ func TestSecurityAuditDispositionAcceptsProjectScopedWorkerCredential(t *testing
 	if err != nil {
 		t.Fatalf("ListSecurityAuditDispositions() error = %v", err)
 	}
-	if len(dispositions) != 2 || dispositions[0].ServiceIdentity != "detent:detent" || dispositions[1].ServiceIdentity != "detent:detent" {
+	if len(dispositions) != 3 || dispositions[0].ServiceIdentity != "detent:detent" || dispositions[1].ServiceIdentity != "detent:detent" {
 		t.Fatalf("dispositions = %#v", dispositions)
 	}
 	if evaluation := securityaudit.Evaluate(run, dispositions, key, "detent:detent", []string{"p1", "p2"}); !evaluation.Allowed {

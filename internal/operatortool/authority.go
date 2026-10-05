@@ -61,12 +61,11 @@ type Authority struct {
 }
 
 type Connection struct {
-	RequireConfirmation bool
-	DashboardURL        string
-	ID                  string
-	Client              string
-	Identity            Identity
-	Resolve             func(context.Context) (Authority, error)
+	DashboardURL string
+	ID           string
+	Client       string
+	Identity     Identity
+	Resolve      func(context.Context) (Authority, error)
 }
 
 type connectionKey struct{}
@@ -93,9 +92,6 @@ func ProjectSnapshot(ctx context.Context, snapshot telemetry.Snapshot) (telemetr
 	return snapshot, nil
 }
 
-// AuthorizeCurrent must also be called when executing an approved action, using
-// its original connection identity and a freshly resolved authority. Approval,
-// discovery and YOLO never grant access; callers cannot cache this context.
 func AuthorizeCurrent(ctx context.Context, requirement Requirement) (context.Context, error) {
 	connection, ok := ctx.Value(connectionKey{}).(Connection)
 	if !ok || !connection.Identity.Valid() || connection.Resolve == nil {
@@ -212,8 +208,6 @@ func CurrentConnection(ctx context.Context) Connection {
 	return connection
 }
 
-// BindConnection identifies the authenticated protocol connection; it does not
-// select confirmation mode or grant authority.
 func BindConnection(ctx context.Context, id, client string) context.Context {
 	connection := CurrentConnection(ctx)
 	connection.ID, connection.Client = id, client

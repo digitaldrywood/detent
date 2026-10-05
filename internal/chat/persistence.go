@@ -8,13 +8,10 @@ import (
 )
 
 type SessionState struct {
-	ID                  string
-	Identity            operatortool.Identity
-	Client              string
-	RequireConfirmation bool
-	Mode                ConnectionMode
-	Actions             []Action
-	LastUsedAt          time.Time
+	ID         string
+	Identity   operatortool.Identity
+	Client     string
+	LastUsedAt time.Time
 }
 
 type SessionStore interface {
@@ -43,15 +40,15 @@ func (s *Service) restoreSession(ctx context.Context, id string, current *sessio
 	if err != nil || !found {
 		return err
 	}
-	connection := operatortool.Connection{ID: id, Identity: state.Identity, Client: state.Client, RequireConfirmation: state.RequireConfirmation}
+	connection := operatortool.Connection{ID: id, Identity: state.Identity, Client: state.Client}
 	connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
 		if s.resolve == nil {
 			return operatortool.Authority{}, operatortool.ErrAccessDenied
 		}
 		return s.resolve(ctx, state.Identity)
 	}
-	current.connection, current.mode = &connection, state.Mode
-	current.actions = cloneActions(state.Actions)
+	current.connection = &connection
+
 	s.mu.Lock()
 	current.lastUsedAt = state.LastUsedAt
 	s.mu.Unlock()
@@ -63,7 +60,7 @@ func (s *Service) persistSession(ctx context.Context, current *session) error {
 		return nil
 	}
 	now := s.now().UTC()
-	if err := s.store.Save(ctx, SessionState{ID: current.connection.ID, Identity: current.connection.Identity, Client: current.connection.Client, RequireConfirmation: current.connection.RequireConfirmation, Mode: current.mode, Actions: cloneActions(current.actions), LastUsedAt: now}, now, s.sessionTTL, s.sessionLimit); err != nil {
+	if err := s.store.Save(ctx, SessionState{ID: current.connection.ID, Identity: current.connection.Identity, Client: current.connection.Client, LastUsedAt: now}, now, s.sessionTTL, s.sessionLimit); err != nil {
 		return err
 	}
 	s.mu.Lock()
