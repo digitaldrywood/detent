@@ -1567,7 +1567,7 @@ Approve project policy
 - Availability: credential_maintenance / github,native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: authorized call; the client controls user confirmation → none
 
-Sources: [PUT /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L61), [PUT /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L113), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/policy](../internal/hubserver/onboarding.go#L29), [web/conversation/src/app/account/ProjectSettings.tsx:321](../web/conversation/src/app/account/ProjectSettings.tsx#L321), [web/conversation/src/app/account/api.ts:307](../web/conversation/src/app/account/api.ts#L307)
+Sources: [PUT /api/v1/repositories/:owner/:repo/policy](../internal/hubserver/api_http.go#L61), [PUT /api/v2/organizations/:organization/projects/:project/policy](../internal/hubserver/native_api.go#L113), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/policy](../internal/hubserver/onboarding.go#L29), [web/conversation/src/app/account/ProjectSettings.tsx:344](../web/conversation/src/app/account/ProjectSettings.tsx#L344), [web/conversation/src/app/account/api.ts:309](../web/conversation/src/app/account/api.ts#L309)
 ## hubserver.archive_native_issue
 
 Archive native issue
@@ -5132,7 +5132,7 @@ Update project integration
 - Availability: credential_maintenance / native / hub application service — unavailable: No operator browser/project application service in credential-maintenance mode; opaque unavailable.
 - Confirmation: authorized call; the client controls user confirmation → none
 
-Sources: [PUT /api/v2/organizations/:organization/projects/:project/integration](../internal/hubserver/integration.go#L181), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/integration](../internal/hubserver/onboarding.go#L25), [web/conversation/src/app/account/api.ts:286](../web/conversation/src/app/account/api.ts#L286)
+Sources: [PUT /api/v2/organizations/:organization/projects/:project/integration](../internal/hubserver/integration.go#L181), [PUT /api/v2/organizations/:organization/projects/:project/onboarding/integration](../internal/hubserver/onboarding.go#L25), [web/conversation/src/app/account/api.ts:287](../web/conversation/src/app/account/api.ts#L287)
 ## hubserver.update_runner_host
 
 Update runner host
