@@ -29,6 +29,7 @@ func TestGlobalConfigReloaderApply(t *testing.T) {
 	}
 	reconcileErr := errors.New("reconcile failed")
 	current := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	current.Global.LocalIntakeEnabled = new(false)
 	next := reloadTestConfig("global.yaml", 4, []globalconfig.Project{
 		{ID: "alpha", Weight: 1},
 		{ID: "bravo", Weight: 2},
@@ -487,6 +488,7 @@ func TestChangedGlobalConfigFieldsReloadClassification(t *testing.T) {
 		requiresRestart bool
 		mutate          func(*globalconfig.Config)
 	}{
+		{name: "local intake", field: "global.local_intake_enabled", mutate: func(cfg *globalconfig.Config) { cfg.Global.LocalIntakeEnabled = new(false) }},
 		{name: "environment", field: "env", requiresRestart: true, mutate: func(cfg *globalconfig.Config) { cfg.Env = "dev" }},
 		{name: "log level", field: "log_level", mutate: func(cfg *globalconfig.Config) { cfg.LogLevel = "debug" }},
 		{name: "profiling", field: "profiling", mutate: func(cfg *globalconfig.Config) { cfg.Profiling.ListenAddr = "127.0.0.1:0" }},

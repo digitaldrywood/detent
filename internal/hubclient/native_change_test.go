@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -774,25 +775,27 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
-		name         string
-		interactive  bool
-		hosted       bool
-		rework       bool
-		formal       bool
-		failDetail   bool
-		failVersion  bool
-		land         bool
-		commit       bool
-		staged       bool
-		signingFail  bool
-		lateConflict bool
-		baseMoved    bool
-		dirty        bool
-		wantNone     bool
-		wantChanged  bool
-		wantState    string
-		wantChanges  int
+		name           string
+		localIntakeOff bool
+		interactive    bool
+		hosted         bool
+		rework         bool
+		formal         bool
+		failDetail     bool
+		failVersion    bool
+		land           bool
+		commit         bool
+		staged         bool
+		signingFail    bool
+		lateConflict   bool
+		baseMoved      bool
+		dirty          bool
+		wantNone       bool
+		wantChanged    bool
+		wantState      string
+		wantChanges    int
 	}{
+		{name: "enrolled runner executes beside intake-off local runtime", localIntakeOff: true, staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "commits", commit: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "initial interactive code stays conversation owned", interactive: true, staged: true, wantNone: true, wantState: "In Progress"},
 		{name: "host commits staged code", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
@@ -845,6 +848,20 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: transitions})
 			}
 			h := newNativeChangeHubTransport(t, review, states, true)
+			if test.localIntakeOff {
+				local, err := orchestrator.New(orchestrator.Config{LocalIntakeDisabled: true, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}}, orchestrator.Dependencies{Connector: memory.New(memory.Config{Issues: []connector.Issue{{ID: "local-queued", State: "Todo"}}}), Runner: orchestrator.FakeRunner{}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				done := make(chan error, 1)
+				go func() { done <- local.Run(ctx) }()
+				t.Cleanup(func() { cancel(); <-done })
+				state, err := local.State(t.Context())
+				if err != nil || state.LocalIntake.Enabled || len(state.Running) != 0 {
+					t.Fatalf("local intake state: %+v, %v", state.LocalIntake, err)
+				}
+			}
 			var issue connector.Issue
 			if test.interactive {
 				var created struct {

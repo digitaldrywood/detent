@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -167,7 +168,18 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	if repository := strings.TrimSpace(request.Repository); repository != "" {
 		claimRequest.Repositories = []string{repository}
 	}
+	var releaseAdmission func()
+	if request.CandidateAdmission != nil {
+		var allowed bool
+		releaseAdmission, allowed = request.CandidateAdmission(connector.Issue{})
+		if !allowed {
+			return s.fetchLegacyContinuation(ctx, request, claimRequest)
+		}
+	}
 	lease, err := s.client.Claim(ctx, claimRequest)
+	if releaseAdmission != nil {
+		releaseAdmission()
+	}
 	if errors.Is(err, ErrNoClaimableWork) {
 		return []connector.Issue{}, nil
 	}
@@ -186,6 +198,9 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	s.claims[issue.ID] = lease
 	s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
 	s.mu.Unlock()
+	if request.CandidateAdmitted != nil {
+		request.CandidateAdmitted(issue)
+	}
 	return []connector.Issue{issue}, nil
 }
 
@@ -507,4 +522,65 @@ func (s *Scheduler) SetProjectConfigurationOwner(owner func(context.Context, str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.projectConfiguration = owner
+}
+
+func (s *Scheduler) fetchLegacyContinuation(ctx context.Context, request orchestrator.SchedulingRequest, claim ClaimRequest) ([]connector.Issue, error) {
+	query := url.Values{"limit": {"200"}}
+	if request.Repository != "" {
+		query.Set("repository", request.Repository)
+	}
+	for _, state := range request.WorkflowStates {
+		query.Add("workflow_state", state)
+	}
+	for {
+		var page struct {
+			Items      []tracker.WorkItem `json:"items"`
+			NextCursor string             `json:"next_cursor"`
+		}
+		if err := s.client.request(ctx, http.MethodGet, "/api/v1/work-items?"+query.Encode(), nil, &page); err != nil {
+			return nil, schedulingError(err)
+		}
+		for _, item := range page.Items {
+			issue := issueFromWorkItem(WorkItem{WorkItem: item})
+			if request.CandidateKnownWait != nil && request.CandidateKnownWait(issue) {
+				continue
+			}
+			if request.CandidateReady != nil && !request.CandidateReady(ctx, issue) {
+				continue
+			}
+			release, allowed := request.CandidateAdmission(issue)
+			if !allowed {
+				continue
+			}
+			claim.WorkItemID = item.ID
+			lease, err := s.client.Claim(ctx, claim)
+			release()
+			if errors.Is(err, ErrNoClaimableWork) {
+				continue
+			}
+			if err != nil {
+				return nil, schedulingError(err)
+			}
+			current, err := s.client.WorkItem(ctx, lease.WorkItemID)
+			if err != nil {
+				return nil, s.releaseAfterCandidateFailure(ctx, lease, "work_item_hydration_failed", schedulingError(err))
+			}
+			issue = issueFromWorkItem(current)
+			if issue.ID == "" {
+				return nil, s.releaseAfterCandidateFailure(ctx, lease, "work_item_identity_missing", errors.New("hub work item has no GitHub node ID"))
+			}
+			s.mu.Lock()
+			s.claims[issue.ID] = lease
+			s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
+			s.mu.Unlock()
+			if request.CandidateAdmitted != nil {
+				request.CandidateAdmitted(issue)
+			}
+			return []connector.Issue{issue}, nil
+		}
+		if page.NextCursor == "" || page.NextCursor == query.Get("cursor") {
+			return []connector.Issue{}, nil
+		}
+		query.Set("cursor", page.NextCursor)
+	}
 }

@@ -3356,6 +3356,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    | Project list and project settings | Live reload |
    | Credentials: `github_token`, `trust_loopback_peer_read`, and project credentials | Live reload |
    | `global.startup` | Live reload |
+   | `global.local_intake_enabled`, `projects[].local_intake_enabled` | Live reload before the next local first admission; active workers continue |
    | `instance_name` | Live reload |
    | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
    | `global.max_concurrent_agents`, `global.scheduling`, `global.fair_share` | Live reload at the next dispatch decision; lowering capacity drains to the new limit without interrupting active workers |
@@ -3642,3 +3643,41 @@ instructions are limited to configured active states, and legacy lane migration
 is limited to the Required Execution Flow section.
 Review the proposal; only `--yes` applies it. Custom project sections and CI
 stage mappings remain available for review and are preserved.
+
+### Stop local intake while admitted work finishes
+
+Set `global.local_intake_enabled: false` in the selected instance `global.yaml`
+to stop first admission across local project runtimes:
+
+```yaml
+global:
+  local_intake_enabled: false
+```
+
+A project entry can set
+`local_intake_enabled` explicitly to override the global setting. Omission
+defaults to enabled. This is host-local configuration, never a shared
+`detent.yaml` or Cloud project policy. The validating writer and file watcher
+apply it live without cancelling workers or restarting projects. Invalid
+configuration retains the last applied state.
+
+Already admitted issues continue implementation, review, rework, retries and
+landing, including deferred completions and work between turns. Local attempt
+provenance restores that cohort after restart. Existing ownership, authorization
+and human holds still apply. Untouched Todo items receive no new local claim;
+Backlog admission and automatic dependency promotion do not feed execution
+while intake is off. Schedule definitions and unrelated project overrides stay
+configured. Blocked cohort members may remain held.
+
+The setting persists across restart. Explicitly set it back to `true` to resume
+normal admission without moving queued issues. It differs from project pause,
+which stops the project, shutdown drain, which stops all dispatch, and enrolled
+runner draining, which controls Cloud execution. This setting never drains
+Cloud scheduling, enrolled runners, provider pools or worker capacity and does
+not detach or cut over a project automatically.
+
+Authenticated `/api/v1/state` project snapshots expose `local_intake` with
+`enabled`, `remaining` issue IDs and `blocked` issue IDs. Managed local project
+configuration reads expose the same effective policy and cohort. Blocked IDs
+are excluded from the remaining count; terminal issues no longer count.
+Configuration application also logs the effective local intake state.

@@ -537,3 +537,48 @@ func TestSchedulerRoutingDeferralsRemainQueued(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyIntakeOffClaimsOnlyAdmittedContinuation(t *testing.T) {
+	t.Parallel()
+	queued := tracker.WorkItem{ID: 1, GitHub: tracker.GitHubIssueReference{NodeID: "queued"}, WorkflowState: &tracker.WorkflowState{Name: "Todo"}}
+	cohort := tracker.WorkItem{ID: 2, GitHub: tracker.GitHubIssueReference{NodeID: "admitted"}, WorkflowState: &tracker.WorkflowState{Name: "Rework"}}
+	claims := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/work-items":
+			if r.URL.Query().Get("repository") != "example/local" {
+				t.Error("lost repository scope")
+			}
+			if r.URL.Query().Get("cursor") == "" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"items": []tracker.WorkItem{queued}, "next_cursor": "next"})
+			} else {
+				_ = json.NewEncoder(w).Encode(map[string]any{"items": []tracker.WorkItem{cohort}})
+			}
+		case "/api/v1/claims":
+			var claim ClaimRequest
+			if err := json.NewDecoder(r.Body).Decode(&claim); err != nil {
+				t.Error(err)
+			}
+			if claim.WorkItemID != cohort.ID || claim.PolicyID != "approved" || len(claim.LabelExclude) != 1 {
+				t.Fatalf("unscoped claim: %+v", claim)
+			}
+			claims++
+			_ = json.NewEncoder(w).Encode(tracker.Lease{LeaseSummary: tracker.LeaseSummary{ID: "lease"}, WorkItemID: cohort.ID})
+		case "/api/v1/work-items/2":
+			_ = json.NewEncoder(w).Encode(WorkItem{WorkItem: cohort})
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	client, err := New(Config{URL: "https://hub.test", TokenSource: func() string { return "test" }, HTTPClient: providerHandlerClient(handler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := &Scheduler{client: client, claims: make(map[string]tracker.Lease), claimPolicies: make(map[string]claimPolicy)}
+	request := orchestrator.SchedulingRequest{Repository: "example/local", WorkflowStates: []string{"Todo", "Rework"}, CandidateKnownWait: func(issue connector.Issue) bool { return issue.ID != "admitted" }, CandidateAdmission: func(issue connector.Issue) (func(), bool) { return func() {}, issue.ID == "admitted" }}
+	issues, err := scheduler.fetchLegacyContinuation(t.Context(), request, ClaimRequest{PolicyID: "approved", LabelExclude: []string{"held"}})
+	if err != nil || claims != 1 || len(issues) != 1 || issues[0].ID != "admitted" {
+		t.Fatalf("cohort claims = %v, claims=%d, err=%v", issues, claims, err)
+	}
+}

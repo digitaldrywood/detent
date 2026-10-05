@@ -5153,3 +5153,39 @@ func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
 		})
 	}
 }
+
+func TestManagerIntakeOffPreservesBacklogAndSchedule(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	issue := admissionIssueFixture("waiting", "DD-1", 1, now)
+	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	backend := openManagerTestStore(t)
+	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+	settings := admissionTestSettings(tracker, agent)
+	enabled := false
+	settings.IntakeEnabled = func() bool { return enabled }
+	manager := newAdmissionTestManager(t, settings, backend, func() time.Time { return now })
+	next, scheduled, err := manager.nextScheduled(t.Context())
+	if err != nil || scheduled || !next.IsZero() {
+		t.Fatalf("intake-off schedule = %v, %t, %v", next, scheduled, err)
+	}
+	if _, err := manager.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(tracker.Events()) != 0 || len(agent.candidateIDs) != 0 {
+		t.Fatal("intake-off admission touched backlog")
+	}
+	if !manager.Enabled() || manager.settings.Config.Schedule != settings.Config.Schedule {
+		t.Fatal("intake policy rewrote schedule configuration")
+	}
+	enabled = true
+	if _, scheduled, err := manager.nextScheduled(t.Context()); err != nil || !scheduled {
+		t.Fatalf("resumed schedule = %t, %v", scheduled, err)
+	}
+	if _, err := manager.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.candidateIDs) == 0 {
+		t.Fatal("explicit resume did not evaluate backlog")
+	}
+}

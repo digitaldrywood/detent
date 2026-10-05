@@ -101,16 +101,17 @@ type WorkItem struct {
 }
 
 type ClaimRequest struct {
-	PolicyID      string            `json:"policy_id"`
-	MachineID     tracker.MachineID `json:"machine_id"`
-	SessionID     string            `json:"session_id"`
-	TTLSeconds    int64             `json:"ttl_seconds"`
-	Repositories  []string          `json:"repositories,omitempty"`
-	WorkflowState []string          `json:"workflow_states,omitempty"`
-	Authors       []string          `json:"authors,omitempty"`
-	Assignees     []string          `json:"assignees,omitempty"`
-	LabelInclude  []string          `json:"label_include,omitempty"`
-	LabelExclude  []string          `json:"label_exclude,omitempty"`
+	WorkItemID    tracker.WorkItemID `json:"work_item_id,omitempty"`
+	PolicyID      string             `json:"policy_id"`
+	MachineID     tracker.MachineID  `json:"machine_id"`
+	SessionID     string             `json:"session_id"`
+	TTLSeconds    int64              `json:"ttl_seconds"`
+	Repositories  []string           `json:"repositories,omitempty"`
+	WorkflowState []string           `json:"workflow_states,omitempty"`
+	Authors       []string           `json:"authors,omitempty"`
+	Assignees     []string           `json:"assignees,omitempty"`
+	LabelInclude  []string           `json:"label_include,omitempty"`
+	LabelExclude  []string           `json:"label_exclude,omitempty"`
 }
 
 type LeaseRequest struct {

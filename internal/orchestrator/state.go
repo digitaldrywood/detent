@@ -30,6 +30,9 @@ import (
 )
 
 type State struct {
+	LocalIntake              telemetry.LocalIntake
+	localAdmitted            map[string]struct{}
+	localAdmissionRecovered  bool
 	nativeAdmission          *tracker.NativeAdmissionContext
 	RuntimeObservation       telemetry.SnapshotSection
 	PollInterval             time.Duration
@@ -410,6 +413,8 @@ type DependencyAutoUnblockRecord struct {
 
 func newState(cfg Config) State {
 	return State{
+		LocalIntake:             telemetry.LocalIntake{Enabled: !cfg.LocalIntakeDisabled},
+		localAdmitted:           map[string]struct{}{},
 		PollInterval:            cfg.PollInterval,
 		RefreshFailureThreshold: cfg.RefreshFailureThreshold,
 		MaxConcurrentAgents:     cfg.MaxConcurrentAgents,
@@ -487,6 +492,9 @@ func newState(cfg Config) State {
 
 func (s State) clone() State {
 	cloned := State{
+		LocalIntake:              telemetry.LocalIntake{Enabled: s.LocalIntake.Enabled, Remaining: append([]string(nil), s.LocalIntake.Remaining...), Blocked: append([]string(nil), s.LocalIntake.Blocked...)},
+		localAdmitted:            maps.Clone(s.localAdmitted),
+		localAdmissionRecovered:  s.localAdmissionRecovered,
 		RuntimeObservation:       s.RuntimeObservation,
 		PollInterval:             s.PollInterval,
 		RefreshFailureThreshold:  s.RefreshFailureThreshold,

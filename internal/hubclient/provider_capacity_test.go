@@ -40,7 +40,7 @@ var hubDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path st
 
 func TestProviderSchedulerEndToEnd(t *testing.T) {
 	t.Parallel()
-	for _, unavailable := range []string{"fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "quota reset"} {
+	for _, unavailable := range []string{"intake off during admission", "fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "quota reset"} {
 		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })
 	}
 }
@@ -250,6 +250,14 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			}
 			return localRunner.DispatchCapacity(ctx, runner.RunRequest{Issue: issue, ProviderReports: reports})
 		}}
+	if unavailable == "intake off during admission" {
+		request.CandidateAdmission = func(connector.Issue) (func(), bool) { return nil, false }
+		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+		if err != nil || len(issues) != 0 || len(scheduler.nativeClaims) != 0 {
+			t.Fatalf("intake-off preview claimed work: %v, %v", issues, err)
+		}
+		return
+	}
 	if batch {
 		request.AdmissionLimit, request.CandidateLimit = 6, 14
 		admittedRework := 0

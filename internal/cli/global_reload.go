@@ -402,6 +402,9 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 
 func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Settings) []globalConfigChange {
 	fields := []globalConfigChange{}
+	if !reflect.DeepEqual(previous.LocalIntakeEnabled, next.LocalIntakeEnabled) {
+		fields = append(fields, globalConfigChange{Field: "global.local_intake_enabled", Old: previous.LocalIntakeEnabled, New: next.LocalIntakeEnabled})
+	}
 	if previous.MaxConcurrentAgents != next.MaxConcurrentAgents {
 		fields = append(fields, globalConfigChange{Field: "global.max_concurrent_agents", Old: previous.MaxConcurrentAgents, New: next.MaxConcurrentAgents})
 	}

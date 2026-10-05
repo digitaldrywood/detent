@@ -17,7 +17,7 @@ import (
 )
 
 func TestRunnerProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"read", "foreign project", "revoked project grant", "replaced mapping", "foreign binding", "expired identity"} {
+	for _, scenario := range []string{"read", "intake off", "foreign project", "revoked project grant", "replaced mapping", "foreign binding", "expired identity"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.Chmod(root, 0700); err != nil {
@@ -44,6 +44,9 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 			cfg, err := globalconfig.DefaultAt(filepath.Join(root, "global.yaml"), globalconfig.WithProjectPathLiterals())
 			if err != nil {
 				t.Fatal(err)
+			}
+			if scenario == "intake off" {
+				cfg.Global.LocalIntakeEnabled = new(false)
 			}
 			cfg.Client = globalconfig.HubClient{URL: identity.HubURL, IdentityFile: identityPath, OrganizationID: "org_test", NativeProjects: map[string]string{"local-name": "prj_test"}, Capacity: 2}
 			cfg.Projects = []globalconfig.Project{{ID: "local-name", Workflow: workflow, Workdir: root, Paused: true, Weight: 1}}
@@ -111,9 +114,12 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 			if view.ProjectID != id {
 				t.Fatalf("foreign identity in receipt=%+v", view)
 			}
-			if scenario == "read" {
+			if scenario == "read" || scenario == "intake off" {
 				if view.Constraint != "" || !view.Registered || view.EffectivePolicy == nil || view.LocalBindingPolicy == nil || view.AllowLocalBinding {
 					t.Fatalf("selected owner=%+v", view)
+				}
+				if view.LocalIntakeEnabled != (scenario != "intake off") {
+					t.Fatalf("effective intake read = %t", view.LocalIntakeEnabled)
 				}
 				if strings.Contains(view.Constraint, root) {
 					t.Fatal("private path escaped owner")

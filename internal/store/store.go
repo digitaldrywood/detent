@@ -178,6 +178,10 @@ type ProvenanceStore interface {
 	ProvenanceAttributionTrustBoundary(context.Context) (time.Time, error)
 }
 
+type LocalAdmissionStore interface {
+	ListLocalAdmittedIssueIDs(context.Context, string) ([]string, error)
+}
+
 type WorkAttemptStore interface {
 	StartWorkAttempt(context.Context, WorkAttemptStart) (int64, error)
 	WorkAttempt(context.Context, int64) (WorkAttempt, error)
