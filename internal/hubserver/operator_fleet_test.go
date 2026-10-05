@@ -12,7 +12,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -206,6 +208,110 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 								t.Fatalf("%s lost routing audit facts", name)
 							}
 							t.Logf("%s: full runner=%d bytes, bounded result=%d bytes, leases=%d", name, len(raw), len(result.Content), len(got.Leases))
+						}
+						arguments, err := json.Marshal(map[string]any{
+							"request_id": policyCase.name, "runner_id": r.binding.RunnerID,
+							"change": map[string]any{"expected_revision": full.Revision, "display_name": full.DisplayName, "tags": full.Tags,
+								"state": "draining", "capacity_limit": full.CapacityLimit, "project_ids": full.ProjectIDs},
+						})
+						if err != nil {
+							t.Fatal(err)
+						}
+						call := operatortool.Call{Name: operatortool.UpdateRunnerRouting, Arguments: arguments}
+						initial, err := executor.Execute(ctx, call)
+						if err != nil {
+							t.Fatalf("routing mutation failed at eight slots: %v", err)
+						}
+						type routingReceipt struct {
+							Preview chatpkg.Action       `json:"preview"`
+							ID      string               `json:"action_id"`
+							Status  chatpkg.ActionStatus `json:"status"`
+							Receipt runnerauth.Runner    `json:"receipt"`
+						}
+						var applied routingReceipt
+						if err := json.Unmarshal(initial.Content, &applied); err != nil {
+							t.Fatal(err)
+						}
+						if applied.ID == "" || applied.Preview.ID != applied.ID || applied.Preview.RequestID != policyCase.name || applied.Status != chatpkg.ActionSucceeded {
+							t.Fatal("routing mutation lost action or request identity")
+						}
+						action, found := f.service.operatorChat.Action(operatortool.CurrentConnection(ctx).ID, applied.ID)
+						if !found {
+							t.Fatal("routing mutation returned an unusable action ID")
+						}
+						command := hostedCommand{actor: action.Mutation.PrincipalID, operation: "mcp " + call.Name, key: action.RequestID, input: action.Arguments}
+						durableCtx := mutation.WithContext(ctx, action.Mutation)
+						stored, found, err := f.service.readHostedOperation(durableCtx, command)
+						if err != nil || !found || len(stored) <= operatortool.MaxResultBytes {
+							t.Fatalf("complete durable receipt missing: found=%t bytes=%d error=%v", found, len(stored), err)
+						}
+						var committed runnerauth.Runner
+						if err := json.Unmarshal(stored, &committed); err != nil {
+							t.Fatal(err)
+						}
+						current, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+						if err != nil || committed.Revision != full.Revision+1 || committed.State != "draining" || committed.Used != 8 || committed.HostUsed != 8 || len(committed.Leases) != 8 || !reflect.DeepEqual(current, committed) {
+							t.Fatalf("routing mutation receipt did not describe the committed revision: %v", err)
+						}
+						want := committed
+						want.Leases = slices.Clone(committed.Leases)
+						for i, lease := range committed.Leases {
+							if !reflect.DeepEqual(lease.Policy, descriptor) {
+								t.Fatal("durable mutation receipt lost complete pinned policy")
+							}
+							want.Leases[i].Policy.Configuration = nil
+							want.Leases[i].Policy.Workflow = nil
+						}
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken,
+							map[string]any{"expected_revision": committed.Revision, "display_name": committed.DisplayName, "tags": committed.Tags,
+								"state": "active", "capacity_limit": committed.CapacityLimit, "project_ids": committed.ProjectIDs}), http.StatusOK)
+						reconnect := operatortool.BindConnection(ctx, "fleet-reconnect-"+policyCase.name, "direct-test")
+						if err := executor.OpenConnection(reconnect); err != nil {
+							t.Fatal(err)
+						}
+						for _, receiptCase := range []struct {
+							name    string
+							ctx     context.Context
+							call    operatortool.Call
+							durable bool
+						}{
+							{name: "initial response"},
+							{name: "action result", ctx: ctx, call: operatortool.Call{Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + applied.ID + `"}`)}},
+							{name: "idempotent retry", ctx: ctx, call: call},
+							{name: "durable reconnect replay", ctx: reconnect, call: call, durable: true},
+						} {
+							t.Run(receiptCase.name, func(t *testing.T) {
+								result := initial
+								if receiptCase.ctx != nil {
+									var err error
+									result, err = executor.Execute(receiptCase.ctx, receiptCase.call)
+									if err != nil {
+										t.Fatalf("receipt failed: %v", err)
+									}
+								}
+								if len(result.Content) > operatortool.MaxResultBytes || strings.Contains(string(result.Content), `"configuration"`) || strings.Contains(string(result.Content), `"workflow"`) {
+									t.Fatalf("receipt leaked full policy or overflowed: bytes=%d", len(result.Content))
+								}
+								var got routingReceipt
+								if err := json.Unmarshal(result.Content, &got); err != nil {
+									t.Fatal(err)
+								}
+								if got.Status != chatpkg.ActionSucceeded || !reflect.DeepEqual(got.Receipt, want) {
+									t.Fatal("receipt changed the applied revision or lost routing audit facts")
+								}
+								if !receiptCase.durable && (got.ID != applied.ID || !reflect.DeepEqual(got.Preview, applied.Preview)) {
+									t.Fatal("retry changed action or request identity")
+								}
+								t.Logf("bounded receipt=%d bytes, revision=%d, leases=%d", len(result.Content), got.Receipt.Revision, len(got.Receipt.Leases))
+							})
+						}
+						current, err = readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+						if err != nil || current.Revision != committed.Revision+1 || current.State != "active" {
+							t.Fatalf("replay repeated the routing mutation: %v", err)
+						}
+						replayed, found, err := f.service.readHostedOperation(durableCtx, command)
+						if err != nil || !found || string(replayed) != string(stored) {
+							t.Fatalf("public replay changed durable authority evidence: %v", err)
 						}
 					})
 				}
