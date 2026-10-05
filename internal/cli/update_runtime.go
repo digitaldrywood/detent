@@ -113,7 +113,6 @@ func runtimeUpdateIdle(ctx context.Context, registry *project.Registry) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	now := time.Now()
 	for _, trackedProject := range registry.List() {
 		if !trackedProject.Running() {
 			continue
@@ -123,7 +122,7 @@ func runtimeUpdateIdle(ctx context.Context, registry *project.Registry) bool {
 			return false
 		}
 		state, err := orchestrator.State(ctx)
-		if err != nil || len(state.Snapshot(now).Running) > 0 {
+		if err != nil || state.UnsettledWork() > 0 {
 			return false
 		}
 	}

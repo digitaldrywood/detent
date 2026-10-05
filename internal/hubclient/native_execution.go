@@ -430,8 +430,11 @@ func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
 }
 
 func (e *nativeExecution) captureDiff(ctx context.Context) error {
-	if e.diffSource == nil {
+	if e.diffSource == nil && e.lastDiff == nil {
 		return errors.New("the run's final attempt diff source is unavailable")
+	}
+	if e.diffSource == nil {
+		return nil
 	}
 	request, ok := e.diffSource(ctx)
 	switch {

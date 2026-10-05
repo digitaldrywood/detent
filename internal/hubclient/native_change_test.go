@@ -217,10 +217,11 @@ func (h *nativeChangeHub) claim(t *testing.T, issueID string) connector.Issue {
 	if len(candidates) != 1 || candidates[0].ID != issueID {
 		t.Fatalf("candidates = %#v, want %s", candidates, issueID)
 	}
-	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+	claim, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
+	if err != nil {
 		t.Fatal(err)
 	}
-	return candidates[0]
+	return claim.Issue
 }
 
 func (h *nativeChangeHub) candidates(t *testing.T) []connector.Issue {
@@ -350,6 +351,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		worktree       string
 		source         runner.AttemptDiffSource
 		loseLease      bool
+		restart        bool
+		legacyRestart  bool
+		restoreRefusal string
 		failCreate     bool
 		failDiff       bool
 		failDetail     bool
@@ -375,6 +379,13 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
 	}{
+		{name: "deferred publication survives restart", restart: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "installed deferred publication restores tracker authority", restart: true, legacyRestart: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "restart refuses released authority", restart: true, restoreRefusal: "released", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "restart refuses another machine", restart: true, restoreRefusal: "machine", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "restart refuses stale fencing", restart: true, restoreRefusal: "fence", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "existing valid different fence cannot inherit deferred completion", restart: true, restoreRefusal: "existing", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "existing same lease renewal preserves deferred completion", restart: true, restoreRefusal: "renewed", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "reviewed source lands with its coding lease in the four lane workflow", land: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "blocked reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "merge_conflict", FinalSummary: "Source conflicts remain unresolved."}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "human action reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait", HumanAction: true, FinalSummary: "The operator must approve the migration."}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
@@ -462,7 +473,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			h.claim(t, issue.ID)
+			candidate := h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
 			guarded, stop, err := execution.Guard(t.Context())
 			if err != nil {
@@ -613,6 +624,84 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					h.failChanges.failDiffs.Store(false)
 					h.failChanges.failDetails.Store(false)
 					h.failChanges.failVersions.Store(false)
+					if test.restart {
+						stop()
+						before := execution.(*nativeExecution)
+						saved := before.CompletionState()
+						if test.legacyRestart {
+							saved = nil
+						}
+						machine := h.scheduler.machine
+						if test.restoreRefusal == "machine" {
+							machine.ID = "another-machine"
+						}
+						if test.restoreRefusal == "released" {
+							if err := h.native.Release(t.Context(), before.claim.lease, "released"); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if test.restoreRefusal == "fence" {
+							var state nativeCompletionState
+							if err := json.Unmarshal(saved, &state); err != nil {
+								t.Fatal(err)
+							}
+							state.Lease.FencingToken++
+							saved, err = json.Marshal(state)
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+						if err != nil {
+							t.Fatal(err)
+						}
+						if test.restoreRefusal == "existing" {
+							if err := h.native.Release(t.Context(), before.claim.lease, "released"); err != nil {
+								t.Fatal(err)
+							}
+							current := h.claim(t, issue.ID)
+							if current.Metadata["hub_fencing_token"] == candidate.Metadata["hub_fencing_token"] {
+								t.Fatal("replacement did not advance fencing")
+							}
+							currentExecution := h.scheduler.RunExecution(issue.ID)
+							if err := currentExecution.Validate(t.Context()); err != nil {
+								t.Fatal(err)
+							}
+							if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+								t.Fatalf("different valid claim inherited completed result: %v", err)
+							}
+							if h.scheduler.RunExecution(issue.ID) != currentExecution || currentExecution.(*nativeExecution).lastDiff != nil || currentExecution.(*nativeExecution).preparedOutcome != "" {
+								t.Fatal("refused completion mutated the replacement execution")
+							}
+							return
+						}
+						_, err = h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved)
+						if test.restoreRefusal != "" && test.restoreRefusal != "renewed" {
+							if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || len(h.scheduler.nativeClaims) != 0 {
+								t.Fatalf("invalid authority restored: claims=%v err=%v", h.scheduler.nativeClaims, err)
+							}
+							return
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						if test.restoreRefusal == "renewed" {
+							if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
+								t.Fatal(err)
+							}
+							if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved); err != nil {
+								t.Fatal(err)
+							}
+						}
+						execution = h.scheduler.RunExecution(issue.ID)
+						if got := execution.(*nativeExecution); got.data.RunID != before.data.RunID || got.data.AttemptID != before.data.AttemptID || got.claim.lease.ID != before.claim.lease.ID || got.claim.lease.FencingToken != before.claim.lease.FencingToken || got.diffSource != nil || got.lastDiff == nil || got.storedSeq != before.storedSeq {
+							t.Fatalf("restoration changed execution identity or lost stored diff: %+v", got.data)
+						}
+						guarded = t.Context()
+						if err := execution.Validate(guarded); err != nil {
+							t.Fatal(err)
+						}
+					}
 					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, ""); err != nil {
 						t.Fatal(err)
 					}

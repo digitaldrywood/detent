@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -11,10 +12,12 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -134,6 +137,66 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 	if !runtimeUpdateIdle(context.Background(), project.NewRegistry()) {
 		t.Fatal("runtimeUpdateIdle() with empty registry = false, want true")
 	}
+	t.Run("restored completion still owns pending work", func(t *testing.T) {
+		now := time.Now()
+		runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = runtimeStore.Close() })
+		issue := connector.Issue{ID: "completed-provider", State: "In Progress"}
+		attemptID, err := runtimeStore.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "fixture", IssueID: issue.ID, WorkerType: "implement", Lane: issue.State, AttemptNumber: 1, StartedAt: now, LeaseExpiresAt: now.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata, err := json.Marshal(map[string]any{"deferred_completion": map[string]any{"schema": 1, "running": orchestrator.Running{Issue: issue, WorkAttemptID: attemptID, Attempt: 1}, "completed_at": now, "deferred_at": now, "fence_retry_at": now.Add(time.Hour)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtimeStore.RecordWorkAttemptHeartbeat(t.Context(), store.WorkAttemptHeartbeat{AttemptID: attemptID, HeartbeatAt: now, Phase: "completion_deferred", WorkerMetadataJSON: string(metadata)}); err != nil {
+			t.Fatal(err)
+		}
+		cfg := workflowconfig.Default()
+		cfg.Tracker.Kind = workflowconfig.TrackerMemory
+		tracked, err := project.New(project.Config{Project: globalconfig.Project{ID: "fixture", Workdir: t.TempDir(), Weight: 1}, Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."}}, project.Dependencies{WorkAttempts: runtimeStore})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tracked.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := tracked.Stop(ctx); err != nil {
+				t.Error(err)
+			}
+		})
+		registry := project.NewRegistry()
+		if err := registry.Set(tracked); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		var state orchestrator.State
+		for {
+			state, err = tracked.Orchestrator().State(ctx)
+			if err != nil || state.UnsettledWork() > 0 {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatal("completion owner was not restored")
+			case <-time.After(time.Millisecond):
+			}
+		}
+		if err != nil || len(state.Snapshot(now).Running) != 0 || state.UnsettledWork() != 1 {
+			t.Fatalf("completion owner unavailable: unsettled=%d err=%v", state.UnsettledWork(), err)
+		}
+		if runtimeUpdateIdle(t.Context(), registry) {
+			t.Fatal("updater treated pending completion as idle")
+		}
+	})
 }
 
 func TestRuntimeUpdateIdleReservationBlocksDispatch(t *testing.T) {
