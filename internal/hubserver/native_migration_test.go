@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/pressly/goose/v3"
 
@@ -83,6 +84,94 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if len(after.Items) != 4 || after.Items[0].ID != before.Items[0].ID || after.Items[1].Type != "scheduler.decision" || after.Items[2].Type != "run.started" || after.Items[3].Type != "run.observed" {
 		t.Fatalf("failed rollback changed evidence: %#v", after)
 	}
+	t.Run("activity backfill", func(t *testing.T) {
+		f := newPullRequestFixture(t, true)
+		version := f.publishExternal(t, "activity-version")
+		worker := f.worker(t, "activity-migration-worker")
+		lease := claimNativeAttempt(t, f.nativeFixture, worker, "activity-machine", "activity-session", f.issue.WorkItemID)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
+		for _, body := range []string{"Comment", "## Codex Workpad"} {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: body}, Body: body}), http.StatusOK)
+		}
+		const file = "20261005174814_native_issue_activity.sql"
+		data, err := migrationFiles.ReadFile("migrations/" + file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const ledger = "activity_migration_test_version"
+		provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, fstest.MapFS{file: &fstest.MapFile{Data: data}}, goose.WithDisableGlobalRegistry(true), goose.WithTableName(ledger), goose.WithSlog(discardLogger()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := provider.GetVersions(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+ledger+" (version_id,is_applied) VALUES (20261005174814,1)"); err != nil {
+			t.Fatal(err)
+		}
+		for index, test := range []struct{ name, query string }{
+			{"updated_at fallback", ""},
+			{"issue edit", "UPDATE issues SET native_updated_at = :at WHERE native_id = :issue"},
+			{"comment", "UPDATE native_comments SET updated_at = :at WHERE work_item_id = :issue AND body = 'Comment'"},
+			{"Workpad", "UPDATE native_comments SET updated_at = :at WHERE work_item_id = :issue AND body = '## Codex Workpad'"},
+			{"run start", "UPDATE native_attempts SET started_at = :at WHERE work_item_id = :issue"},
+			{"run finish", "UPDATE native_attempts SET updated_at = :at, status = 'succeeded' WHERE work_item_id = :issue"},
+			{"history", "INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at) SELECT 'activity-history', organization_id, project_id, native_id, (SELECT max(sequence) + 1 FROM collaboration_events WHERE work_item_id = :issue), 'run.finished', 1, actor_json, '{}', :at FROM issues WHERE native_id = :issue"},
+			{"legacy event", "INSERT INTO work_events (issue_id, fencing_token, kind, payload_json, occurred_at, recorded_at) SELECT id, 1, 'activity-event', '{}', :at, :at FROM issues WHERE native_id = :issue"},
+			{"change version", "INSERT INTO change_versions (id, change_id, number, record_json) VALUES ('activity-version', :change, 2, json_object('created_at', :at))"},
+			{"change review", "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (:change, :version, 'review', json_object('created_at', :at))"},
+			{"change check", "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (:change, :version, 'check', json_object('received_at', :at, 'completed_at', '2020-01-01T00:00:00Z'))"},
+			{"change discussion", "INSERT INTO change_evidence (change_id, kind, record_json) VALUES (:change, 'discussion', json_object('created_at', :at))"},
+			{"change landing", "UPDATE change_requests SET record_json = json_set(record_json, '$.updated_at', :at) WHERE id = :change"},
+			{"linked PR", "UPDATE pull_requests SET updated_at = :at WHERE repository_id = :repository"},
+			{"external PR", "UPDATE pull_requests SET issue_id = NULL, synchronized_at = :at WHERE repository_id = :repository"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				if _, err := provider.DownTo(t.Context(), 0); err != nil {
+					t.Fatal(err)
+				}
+				stamp := f.now.Add(time.Duration(index) * time.Nanosecond)
+				if test.query != "" {
+					var args []any
+					for _, arg := range []sql.NamedArg{
+						sql.Named("at", formatHubTime(stamp)),
+						sql.Named("issue", f.issue.WorkItemID),
+						sql.Named("change", f.change.ID),
+						sql.Named("version", version.ID),
+						sql.Named("repository", f.repositoryID),
+					} {
+						if strings.Contains(test.query, ":"+arg.Name) {
+							args = append(args, arg)
+						}
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), test.query, args...); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var updated string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT native_updated_at FROM issues WHERE native_id = ?", f.issue.WorkItemID).Scan(&updated); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := provider.Up(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				issue := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+				if !issue.LastActivityAt.Equal(stamp) || formatHubTime(issue.UpdatedAt) != updated {
+					t.Fatalf("backfill activity = %s, updated = %s; want %s, %s", issue.LastActivityAt, issue.UpdatedAt, stamp, updated)
+				}
+				var missing, violations int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE last_activity_at IS NULL OR last_activity_at = ''").Scan(&missing); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM pragma_foreign_key_check").Scan(&violations); err != nil {
+					t.Fatal(err)
+				}
+				if missing != 0 || violations != 0 {
+					t.Fatalf("backfill left %d missing timestamps, %d foreign key violations", missing, violations)
+				}
+			})
+		}
+	})
 }
 
 func TestHubMigrationPreservesExistingData(t *testing.T) {
@@ -328,6 +417,19 @@ func TestNativeMigrationPreservesCompatibilityIdentity(t *testing.T) {
 	}
 	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_id = 'changed' WHERE id = ?", issueID); err == nil {
 		t.Fatal("native identity was mutable")
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_updated_at = ?, updated_at = ?, last_activity_at = ? WHERE id = ?", testTimestamp, testTimestamp, testTimestamp, issueID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = 'Imported edit' WHERE id = ?", issueID); err != nil {
+		t.Fatal(err)
+	}
+	var activity, updated, sourceUpdated string
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT last_activity_at, native_updated_at, updated_at FROM issues WHERE id = ?", issueID).Scan(&activity, &updated, &sourceUpdated); err != nil {
+		t.Fatal(err)
+	}
+	if activity != updated || activity == testTimestamp || sourceUpdated != testTimestamp {
+		t.Fatalf("import edit activity = %s, native updated = %s, projection updated = %s", activity, updated, sourceUpdated)
 	}
 	if err := service.Close(); err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -306,6 +308,156 @@ func TestNativeIssueMutationConcurrencyAndHistory(t *testing.T) {
 			t.Errorf("event = %#v", event)
 		}
 	}
+	t.Run("activity", func(t *testing.T) {
+		f := newPullRequestFixture(t, true)
+		path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+		linked := f.create(t, "activity-linked")
+		unrelated := f.create(t, "activity-unrelated")
+		worker := f.worker(t, "activity-worker")
+		lease := claimNativeAttempt(t, f.nativeFixture, worker, "activity-machine", "activity-session", f.issue.WorkItemID)
+		start := nativeStartedEvent(lease)
+		var comment, workpad tracker.NativeComment
+		var version tracker.ChangeVersion
+		changePath := f.changeFixture.path
+		if !f.issue.LastActivityAt.Equal(f.now) {
+			t.Fatalf("creation activity = %s, want %s", f.issue.LastActivityAt, f.now)
+		}
+		for index, test := range []struct {
+			name        string
+			editsIssue  bool
+			linkedEvent bool
+			apply       func(*testing.T, tracker.NativeIssue)
+		}{
+			{"issue edit", true, false, func(t *testing.T, issue tracker.NativeIssue) {
+				title := "Activity edit"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, ExpectedRevision: issue.Revision, Title: &title}), http.StatusOK)
+			}},
+			{"lane move", true, false, func(t *testing.T, issue tracker.NativeIssue) {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, ExpectedRevision: issue.Revision, State: "In Progress", Reason: "user_requested"}), http.StatusOK)
+			}},
+			{"comment", false, false, func(t *testing.T, _ tracker.NativeIssue) {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, Body: "Activity comment"})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &comment)
+			}},
+			{"comment edit", false, false, func(t *testing.T, _ tracker.NativeIssue) {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path+"/comments/"+comment.ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, ExpectedRevision: comment.Revision, Body: "Edited activity comment"}), http.StatusOK)
+			}},
+			{"Workpad creation", false, false, func(t *testing.T, _ tracker.NativeIssue) {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, Body: "## Codex Workpad\nPlan: implement activity"})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &workpad)
+			}},
+			{"Workpad update", false, false, func(t *testing.T, _ tracker.NativeIssue) {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path+"/comments/"+workpad.ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, ExpectedRevision: workpad.Revision, Body: "## Codex Workpad\nValidation: activity verified"}), http.StatusOK)
+			}},
+			{"run start", false, false, func(t *testing.T, _ tracker.NativeIssue) {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
+			}},
+			{"run finish", false, false, func(t *testing.T, _ tracker.NativeIssue) {
+				finish := start
+				finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "activity-finish", 2, "succeeded"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, finish), http.StatusOK)
+			}},
+			{"change creation", false, true, func(t *testing.T, _ tracker.NativeIssue) {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/changes", f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, Title: "Activity change", LinkedIssues: []tracker.NativeWorkItemID{linked.WorkItemID}})
+				requireNativeStatus(t, response, http.StatusOK)
+				var change tracker.ChangeRequest
+				decodeHubResponse(t, response, &change)
+				changePath = path + "/changes/" + change.ID
+			}},
+			{"change version", false, true, func(t *testing.T, _ tracker.NativeIssue) {
+				input := changeTestInput()
+				input.External = &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: pullRequestTestURL}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, ChangeVersionInput: input})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &version)
+			}},
+			{"change discussion", false, true, func(t *testing.T, _ tracker.NativeIssue) {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/discussion", f.token, tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, Body: "Activity discussion"}), http.StatusOK)
+			}},
+			{"change review", false, true, func(t *testing.T, _ tracker.NativeIssue) {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, Decision: "approved"}), http.StatusOK)
+			}},
+			{"change check", false, true, func(t *testing.T, _ tracker.NativeIssue) {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions/"+version.ID+"/checks", f.token, changeTestResult(version)), http.StatusOK)
+			}},
+			{"PR event", false, true, func(t *testing.T, _ tracker.NativeIssue) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE pull_requests SET issue_id = NULL, updated_at = ?, synchronized_at = ? WHERE repository_id = ?", formatHubTime(f.now), formatHubTime(f.now), f.repositoryID); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"change landing", true, true, func(t *testing.T, _ tracker.NativeIssue) {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/versions/"+version.ID+"/landing", f.token, tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: t.Name()}, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}), http.StatusOK)
+			}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				before := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+				f.now = f.now.Add(time.Duration(index+1) * 10 * time.Millisecond)
+				test.apply(t, before)
+				after := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+				wantUpdated := before.UpdatedAt
+				if test.editsIssue {
+					wantUpdated = f.now
+				}
+				if !after.LastActivityAt.Equal(f.now) || !after.UpdatedAt.Equal(wantUpdated) {
+					t.Fatalf("activity = %s, updated = %s; want %s, %s", after.LastActivityAt, after.UpdatedAt, f.now, wantUpdated)
+				}
+				linkedAfter := readWorkItem(t, f.nativeFixture, linked.WorkItemID, "")
+				if test.linkedEvent && (!linkedAfter.LastActivityAt.Equal(f.now) || !linkedAfter.UpdatedAt.Equal(linked.UpdatedAt)) {
+					t.Fatalf("linked issue activity = %s, updated = %s", linkedAfter.LastActivityAt, linkedAfter.UpdatedAt)
+				}
+				if got := readWorkItem(t, f.nativeFixture, unrelated.WorkItemID, ""); !got.LastActivityAt.Equal(unrelated.LastActivityAt) {
+					t.Fatalf("unrelated activity moved to %s", got.LastActivityAt)
+				}
+				var page tracker.NativeIssuePage
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work", f.token, nil), &page)
+				found := false
+				for _, item := range page.Items {
+					if item.WorkItemID == after.WorkItemID {
+						found = true
+						if !item.LastActivityAt.Equal(after.LastActivityAt) {
+							t.Fatalf("list activity = %s, item activity = %s", item.LastActivityAt, after.LastActivityAt)
+						}
+					}
+				}
+				if !found || page.Work == nil {
+					t.Fatal("list omitted the issue or work projection")
+				}
+				for _, item := range page.Work.Items {
+					if item.WorkItemID == after.WorkItemID && !item.LastActivityAt.Equal(after.LastActivityAt) {
+						t.Fatalf("compact activity = %s, item activity = %s", item.LastActivityAt, after.LastActivityAt)
+					}
+				}
+				for _, item := range []operatortool.NativeItem{operatortool.NativeItemView(string(f.project.ID), after), operatortool.NativeItemPage(string(f.project.ID), tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{after}}).Items[0]} {
+					raw, err := json.Marshal(item)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var fields map[string]json.RawMessage
+					if err := json.Unmarshal(raw, &fields); err != nil || string(fields["last_activity_at"]) != strconv.Quote(formatHubTime(f.now)) {
+						t.Fatalf("operator activity = %s, error = %v", fields["last_activity_at"], err)
+					}
+				}
+			})
+		}
+		latest := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "").LastActivityAt
+		for _, stamp := range []time.Time{latest.Add(-time.Nanosecond), latest.Truncate(time.Second), latest.Add(-time.Hour), latest} {
+			before := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+			f.now = stamp
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "older-" + formatHubTime(stamp)}, Body: "Older activity"}), http.StatusOK)
+			after := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+			if !after.LastActivityAt.Equal(before.LastActivityAt) || !after.UpdatedAt.Equal(before.UpdatedAt) {
+				t.Fatalf("older event changed activity %s -> %s or updated %s -> %s", before.LastActivityAt, after.LastActivityAt, before.UpdatedAt, after.UpdatedAt)
+			}
+			title := "Older edit"
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "older-edit-" + formatHubTime(stamp)}, ExpectedRevision: after.Revision, Title: &title}), http.StatusOK)
+			edited := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+			if !edited.LastActivityAt.Equal(latest) || !edited.UpdatedAt.Equal(stamp) {
+				t.Fatalf("older edit activity = %s, updated = %s; want %s, %s", edited.LastActivityAt, edited.UpdatedAt, latest, stamp)
+			}
+		}
+	})
 }
 
 func TestNativeCommentsProvenanceAndIdempotency(t *testing.T) {
