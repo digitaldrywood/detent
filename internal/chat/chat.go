@@ -52,7 +52,6 @@ type Action struct {
 	Client            string                      `json:"client"`
 	RequestID         string                      `json:"request_id"`
 	Arguments         json.RawMessage             `json:"arguments"`
-	Mode              ConnectionMode              `json:"mode"`
 	ID                string                      `json:"id"`
 	Kind              ActionKind                  `json:"kind"`
 	ProjectID         string                      `json:"project_id"`
@@ -81,24 +80,15 @@ type Action struct {
 	ResolvedAt        *time.Time                  `json:"resolved_at,omitempty"`
 }
 
-func (a Action) PendingApprovalURL(destination string) string {
-	if a.Status != ActionPending {
-		return ""
-	}
-	return destination
-}
-
 type Conversation struct {
-	RequireConfirmation bool
-	PrincipalID         string `json:"-"`
-	ApprovalBaseURL     string
-	ConnectionID        string
-	OrganizationID      string
-	Client              string
-	Mode                ConnectionMode
-	Messages            []Message
-	Actions             []Action
-	Unavailable         bool
+	PrincipalID     string `json:"-"`
+	ApprovalBaseURL string
+	ConnectionID    string
+	OrganizationID  string
+	Client          string
+	Messages        []Message
+	Actions         []Action
+	Unavailable     bool
 }
 
 type Tool struct {

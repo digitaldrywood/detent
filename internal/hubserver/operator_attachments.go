@@ -55,7 +55,7 @@ func attachmentBinding(record attachment.Metadata) (string, error) {
 
 func (e nativeOperatorExecutor) attachmentOperation(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
 	i := operatortool.ConnectionIdentity(ctx)
-	m := mutation.Metadata{PrincipalID: i.PrincipalID, OrganizationID: i.OrganizationID, Action: call.Name, Source: "mcp", Mode: "confirmation", Confirmation: "none", CorrelationID: newNativeID("mcp")}
+	m := mutation.Metadata{PrincipalID: i.PrincipalID, OrganizationID: i.OrganizationID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: newNativeID("mcp")}
 	outcome := "failed"
 	if call.Name == operatortool.ReferenceAttachment || call.Name == operatortool.DeleteAttachment {
 		defer func() {
@@ -126,7 +126,7 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 	}
 	i, m := operatortool.ConnectionIdentity(ctx), action.Mutation
 	bound, err := m.Bind(action.RequestID, action.Arguments)
-	if err != nil || r.RequestID != action.RequestID || m.Source != "mcp" || m.PrincipalID != i.PrincipalID || m.OrganizationID != i.OrganizationID || m.ProjectID != r.ProjectID || m.ResourceID != r.AttachmentID || m.Action != operatortool.DeleteAttachment || m.CorrelationID == "" || bound.InputHash != m.InputHash || bound.RetryIdentity != m.RetryIdentity || m.Confirmation != "approved" && m.Confirmation != "yolo" {
+	if err != nil || r.RequestID != action.RequestID || m.Source != "mcp" || m.PrincipalID != i.PrincipalID || m.OrganizationID != i.OrganizationID || m.ProjectID != r.ProjectID || m.ResourceID != r.AttachmentID || m.Action != operatortool.DeleteAttachment || m.CorrelationID == "" || bound.InputHash != m.InputHash || bound.RetryIdentity != m.RetryIdentity {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
 	tx, err := e.service.database.db.BeginTx(ctx, nil)
@@ -176,8 +176,7 @@ func (e nativeOperatorExecutor) attachmentActionResult(ctx context.Context, acti
 		Preview        chat.Action       `json:"preview"`
 		ActionID       string            `json:"action_id"`
 		Status         chat.ActionStatus `json:"status"`
-		ApprovalURL    string            `json:"approval_url,omitempty"`
 		ResultTool     string            `json:"result_tool"`
 		ObjectDeletion string            `json:"object_deletion,omitempty"`
-	}{action, action.ID, action.Status, action.PendingApprovalURL(e.service.billingApprovalURL(action.ConnectionID)), operatortool.ActionResult, state})
+	}{action, action.ID, action.Status, operatortool.ActionResult, state})
 }

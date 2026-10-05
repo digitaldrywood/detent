@@ -13,8 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Catches hub adapters bypassing native replay/revisions or exposing destructive
-// commands when no operator approval or orchestrator service is installed.
 func TestHubMCPWorkCommands(t *testing.T) {
 	f := linkedFixture(t)
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
@@ -148,7 +146,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	}{
 		{"edit", "edit_item", map[string]any{"title": "Edited", "priority": 2, "expected_revision": 1}, false},
 		{"stale", "edit_item", map[string]any{"title": "Stale", "expected_revision": 1}, true},
-		{"destructive clear needs service", "edit_item", map[string]any{"body": "", "expected_revision": 2}, true},
+		{"direct body clear", "edit_item", map[string]any{"body": "", "expected_revision": 2}, false},
 		{"comment edit", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Edited comment", "expected_revision": 1}, false},
 		{"stale comment", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Stale", "expected_revision": 1}, true},
 		{"foreign item", "add_comment", map[string]any{"identifier": "wi_foreign", "body": "Foreign"}, true},
@@ -168,8 +166,8 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		})
 	}
 	current := readWorkItem(t, f, created.WorkItemID, "")
-	if current.Title != "Edited" || current.Revision != 2 || current.Body != "Keep body" || current.Priority == nil || *current.Priority != 2 {
-		t.Fatalf("refused mutation changed item=%+v", current)
+	if current.Title != "Edited" || current.Revision != 3 || current.Body != "" || current.Priority == nil || *current.Priority != 2 {
+		t.Fatalf("mutation result=%+v", current)
 	}
 	for _, reference := range []string{identifier, strconv.Itoa(created.Number), id} {
 		raw, failed = call("list_comments", "", map[string]any{"identifier": reference, "limit": 1})
@@ -225,20 +223,20 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		{identifier, string(f.project.ID) + "#" + strconv.Itoa(blocker.Number)},
 		{id, string(blocker.WorkItemID)},
 	} {
-		raw, failed = call("set_dependency", "dependency", map[string]any{"identifier": dependency.identifier, "related": dependency.related, "operation": "add", "expected_revision": 3})
+		raw, failed = call("set_dependency", "dependency", map[string]any{"identifier": dependency.identifier, "related": dependency.related, "operation": "add", "expected_revision": 4})
 		var item tracker.NativeIssue
-		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 4 || len(item.Dependencies) != 1 || item.Dependencies[0] != blocker.WorkItemID {
+		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Revision != 5 || len(item.Dependencies) != 1 || item.Dependencies[0] != blocker.WorkItemID {
 			t.Fatalf("dependency alias/replay=%s %v", raw, err)
 		}
 	}
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "ungranted")
 	foreign := other.create(t, "foreign")
 	for _, related := range []string{"prj_foreign#" + strconv.Itoa(blocker.Number), string(foreign.WorkItemID)} {
-		if _, failed := call("set_dependency", "foreign-"+related, map[string]any{"identifier": identifier, "related": related, "operation": "add", "expected_revision": 4}); !failed {
+		if _, failed := call("set_dependency", "foreign-"+related, map[string]any{"identifier": identifier, "related": related, "operation": "add", "expected_revision": 5}); !failed {
 			t.Fatalf("foreign dependency accepted: %s", related)
 		}
 	}
-	if current := readWorkItem(t, f, created.WorkItemID, ""); current.Revision != 4 || len(current.Dependencies) != 1 {
+	if current := readWorkItem(t, f, created.WorkItemID, ""); current.Revision != 5 || len(current.Dependencies) != 1 {
 		t.Fatalf("foreign dependency changed item=%+v", current)
 	}
 	for _, test := range []struct {
@@ -250,13 +248,13 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		{"foreign alias stale revision", "prj_foreign#" + strconv.Itoa(created.Number), ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			raw, failed := call(operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "title": "Correction", "expected_revision": 3})
+			raw, failed := call(operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "title": "Correction", "expected_revision": 4})
 			var conflict operatortool.ConflictError
 			if !failed {
 				t.Fatal("stale edit succeeded")
 			}
 			if test.code != "" {
-				if err := json.Unmarshal(raw, &conflict); err != nil || conflict.Code != test.code || conflict.CurrentRevision != 4 {
+				if err := json.Unmarshal(raw, &conflict); err != nil || conflict.Code != test.code || conflict.CurrentRevision != 5 {
 					t.Fatalf("conflict=%s %v", raw, err)
 				}
 			} else if len(raw) != 0 {
@@ -265,9 +263,9 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		})
 	}
 	for range 2 {
-		raw, failed := call(operatortool.EditItem, "fresh correction", map[string]any{"identifier": identifier, "title": "Correction", "expected_revision": 4})
+		raw, failed := call(operatortool.EditItem, "fresh correction", map[string]any{"identifier": identifier, "title": "Correction", "expected_revision": 5})
 		var corrected tracker.NativeIssue
-		if err := json.Unmarshal(raw, &corrected); err != nil || failed || corrected.Revision != 5 || corrected.Title != "Correction" {
+		if err := json.Unmarshal(raw, &corrected); err != nil || failed || corrected.Revision != 6 || corrected.Title != "Correction" {
 			t.Fatalf("fresh edit/replay=%s %v", raw, err)
 		}
 	}

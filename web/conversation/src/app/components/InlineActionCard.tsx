@@ -1,0 +1,60 @@
+import React from "react";
+import { Button } from "../../components/ui/button.tsx";
+import { useClient } from "../client.ts";
+
+export function InlineActionCard({ proposal, text }: {
+  proposal: { readonly action: Record<string, unknown>; readonly conversation_id: string };
+  text: string;
+}): React.ReactElement {
+  const client = useClient();
+  const preferenceKey = `detent:chat-confirmation:${client.bootstrap.actor.principal_id}`;
+  const resultKey = `${preferenceKey}:${String(proposal.action.request_id)}`;
+  const [confirm, setConfirm] = React.useState(() => {
+    try { return localStorage.getItem(preferenceKey) !== "off"; } catch { return true; }
+  });
+  const [status, setStatus] = React.useState(() => {
+    try { return localStorage.getItem(resultKey) ?? "proposed"; } catch { return "proposed"; }
+  });
+  const [error, setError] = React.useState("");
+  const submitting = React.useRef(false);
+  const execute = React.useCallback(async () => {
+    if (submitting.current || status !== "proposed") return;
+    submitting.current = true;
+    setStatus("running");
+    try {
+      const response = await fetch(`${client.bootstrap.api_base}/projects/${encodeURIComponent(String(proposal.action.project_id))}/conversations/${encodeURIComponent(proposal.conversation_id)}/actions`, {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": client.bootstrap.csrf_token },
+        body: JSON.stringify(proposal.action),
+      });
+      if (!response.ok) throw new Error(`The change could not be applied (${response.status}).`);
+      setStatus("completed");
+      try { localStorage.setItem(resultKey, "completed"); } catch { }
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "The change could not be applied.");
+      setStatus("failed");
+    } finally { submitting.current = false; }
+  }, [client, proposal, resultKey, status]);
+  React.useEffect(() => { if (!confirm && status === "proposed") void execute(); }, [confirm, status, execute]);
+  const argumentsValue = proposal.action.arguments;
+  const change = typeof argumentsValue === "object" && argumentsValue !== null
+    ? Object.fromEntries(Object.entries(argumentsValue).filter(([key]) => !["project_id", "request_id", "identifier", "expected_revision"].includes(key)))
+    : argumentsValue;
+  return <section className="rounded-lg border p-3 space-y-3" data-testid="operator-action-card">
+    <p className="text-sm">{text}</p>
+    <details><summary className="text-xs cursor-pointer">Proposed change</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(change, null, 2)}</pre></details>
+    <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={confirm} onChange={(event) => {
+      const enabled = event.target.checked;
+      setConfirm(enabled);
+      try { localStorage.setItem(preferenceKey, enabled ? "on" : "off"); } catch { }
+    }} />Ask me to confirm chat changes</label>
+    {error === "" ? null : <p role="alert" className="text-xs">{error}</p>}
+    {status === "proposed" ? <div className="flex justify-end gap-2">
+      <Button variant="outline" size="sm" onClick={() => {
+        setStatus("cancelled");
+        try { localStorage.setItem(resultKey, "cancelled"); } catch { }
+      }}>Cancel</Button>
+      <Button size="sm" onClick={() => { void execute(); }}>Confirm change</Button>
+    </div> : <p role="status" className="text-xs">{status === "running" ? "Applying change…" : status === "completed" ? "Change completed." : status === "cancelled" ? "Cancelled." : "Change failed. Request a fresh proposal."}</p>}
+  </section>;
+}

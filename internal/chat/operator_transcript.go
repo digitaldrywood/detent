@@ -11,14 +11,13 @@ import (
 // OperatorTranscript reads only the transport-bound conversation. It cannot
 // select an unrelated browser session or approve any pending proposal.
 type OperatorTranscript struct {
-	Freshness      string         `json:"freshness"`
-	ConnectionID   string         `json:"connection_id"`
-	OrganizationID string         `json:"organization_id"`
-	Client         string         `json:"client"`
-	Mode           ConnectionMode `json:"mode"`
-	Messages       []Message      `json:"messages"`
-	HasMore        bool           `json:"has_more"`
-	GeneratedAt    time.Time      `json:"generated_at"`
+	Freshness      string    `json:"freshness"`
+	ConnectionID   string    `json:"connection_id"`
+	OrganizationID string    `json:"organization_id"`
+	Client         string    `json:"client"`
+	Messages       []Message `json:"messages"`
+	HasMore        bool      `json:"has_more"`
+	GeneratedAt    time.Time `json:"generated_at"`
 }
 
 func (s *Service) OperatorTranscript(ctx context.Context, limit int) (OperatorTranscript, error) {
@@ -37,7 +36,7 @@ func (s *Service) OperatorTranscript(ctx context.Context, limit int) (OperatorTr
 	if more {
 		current.Messages = current.Messages[len(current.Messages)-limit:]
 	}
-	return OperatorTranscript{"live", current.ConnectionID, current.OrganizationID, current.Client, current.Mode, current.Messages, more, s.now().UTC()}, nil
+	return OperatorTranscript{"live", current.ConnectionID, current.OrganizationID, current.Client, current.Messages, more, s.now().UTC()}, nil
 }
 
 // HasProvider reflects an injected application dependency, not a tool argument.

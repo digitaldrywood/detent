@@ -517,7 +517,7 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 
 func (s *Server) executeChatMove(ctx context.Context, action chatpkg.Action) (string, error) {
 	source := provenance.SourceHumanSession
-	if action.ConnectionID != "" && (action.Mode == chatpkg.YOLOMode || !chatpkg.RequiresConfirmation(action)) {
+	if action.ConnectionID != "" {
 		source = provenance.SourceExternalAutomation
 	}
 	if action.Work != nil {
@@ -572,7 +572,7 @@ func (s *Server) recordChatAction(ctx context.Context, action chatpkg.Action, re
 		return nil
 	}
 	now := time.Now().UTC()
-	metadata, err := json.Marshal(map[string]string{"source": "chat", "action_id": action.ID, "result": result, "connection_mode": string(action.Mode), "connection_id": action.ConnectionID, "client": action.Client, "organization_id": action.OrganizationID, "request_id": action.RequestID})
+	metadata, err := json.Marshal(map[string]string{"source": "chat", "action_id": action.ID, "result": result, "connection_id": action.ConnectionID, "client": action.Client, "organization_id": action.OrganizationID, "request_id": action.RequestID})
 	if err != nil {
 		return err
 	}

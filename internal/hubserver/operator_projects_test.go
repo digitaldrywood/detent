@@ -5,20 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
-	"github.com/digitaldrywood/detent/internal/cloudassert"
-	"github.com/digitaldrywood/detent/internal/mutation"
-	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func projectCall[T any](t *testing.T, name, project, key string, input T) operatortool.Call {
@@ -40,188 +33,6 @@ func projectAction(t *testing.T, e hubProjectExecutor, ctx context.Context, call
 		t.Fatal(err)
 	}
 	return action
-}
-
-// Exercise the real hosted resolver and shared entry rather than granting a test principal.
-func TestHostedProjectTools(t *testing.T) {
-	for _, deployment := range []string{"dedicated", "shared"} {
-		t.Run(deployment, func(t *testing.T) {
-			var f hostedSecurityFixture
-			var shared hostedSharedFixture
-			if deployment == "shared" {
-				shared = newHostedSharedFixture(t)
-				f = shared.hostedSecurityFixture
-			} else {
-				f = newHostedSecurityFixture(t)
-			}
-			owner := f.user(t, "owner-tools", "owner", "owner-tools@example.test", "write", "")
-			captureds := make(chan context.Context, 1)
-			f.service.echo.GET("/operator-project-test", func(c echo.Context) error { captureds <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
-			connect := func(id string) context.Context {
-				t.Helper()
-				if deployment == "shared" {
-					r := shared.serve(t, hostedSharedRequest{user: &owner, method: http.MethodGet, target: "/organizations/org_security/operator-project-test"})
-					requireNativeStatus(t, r, http.StatusOK)
-				} else {
-					requireNativeStatus(t, f.request(t, owner, http.MethodGet, "/operator-project-test", nil), http.StatusOK)
-				}
-				ctx := operatortool.BindConnection(<-captureds, id, "project fixture")
-				if err := (hubProjectExecutor{f.service}).OpenConnection(ctx); err != nil {
-					t.Fatal(err)
-				}
-				return ctx
-			}
-			ctx := connect("project-tools")
-			e := hubProjectExecutor{f.service}
-			id := string(f.project)
-			read := func(name string) operatortool.Call {
-				return operatortool.Call{Name: name, Arguments: json.RawMessage(`{"project_id":"` + id + `"}`)}
-			}
-			for _, name := range []string{operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup"} {
-				result, err := e.Execute(ctx, read(name))
-				if err != nil || !strings.Contains(string(result.Content), `"observed_at"`) {
-					t.Fatalf("%s=%s %v", name, result.Content, err)
-				}
-				if name == operatortool.LocalProjectConfiguration && (!strings.Contains(string(result.Content), "not installed or is stopped") || strings.Contains(string(result.Content), `"applied":true`)) {
-					t.Fatalf("Cloud fabricated local application: %s", result.Content)
-				}
-			}
-			ordinary := projectCall(t, "save_onboarding", id, "progress", operatortool.OnboardingInput{Progress: onboarding.Progress{Repository: "existing"}})
-			a := projectAction(t, e, ctx, ordinary)
-			if a.Status != chatpkg.ActionSucceeded {
-				t.Fatalf("ordinary=%+v", a)
-			}
-			reconnect := connect("project-reconnect")
-			if replay := projectAction(t, e, reconnect, ordinary); replay.Status != chatpkg.ActionSucceeded || replay.Result != a.Result {
-				t.Fatalf("replay=%+v", replay)
-			}
-			changed := projectCall(t, "save_onboarding", id, "progress", operatortool.OnboardingInput{Progress: onboarding.Progress{Repository: "generate"}})
-			if _, err := e.Execute(connect("changed-retry"), changed); !errors.Is(err, mutation.ErrConflict) {
-				t.Fatalf("changed retry=%v", err)
-			}
-			stale := projectCall(t, "save_onboarding", id, "stale-progress", operatortool.OnboardingInput{Progress: onboarding.Progress{Repository: "generate"}})
-			if _, err := e.Execute(ctx, stale); !errors.Is(err, mutation.ErrConflict) {
-				t.Fatalf("stale=%v", err)
-			}
-			approve := projectCall(t, "approve_project_policy", id, "approve", policy.Change{Policy: hubTestPolicy()})
-			a = projectAction(t, e, ctx, approve)
-			if a.Status != chatpkg.ActionPending {
-				t.Fatalf("material=%+v", a)
-			}
-			if _, err := f.service.operatorChat.Confirm(ctx, a.ConnectionID, a.ID); !errors.Is(err, operatortool.ErrAccessDenied) {
-				t.Fatalf("model approval=%v", err)
-			}
-			viewer := f.user(t, "viewer-tools", "viewer", "viewer-tools@example.test", "", "")
-			if deployment == "shared" {
-				r := shared.serve(t, hostedSharedRequest{user: &viewer, method: http.MethodGet, target: "/organizations/org_security/chat/approval?connection_id=" + a.ConnectionID})
-				requireNativeStatus(t, r, http.StatusForbidden)
-			} else {
-				requireNativeStatus(t, f.request(t, viewer, http.MethodGet, "/chat/approval?connection_id="+a.ConnectionID, nil), http.StatusForbidden)
-			}
-			// Only the existing authenticated browser page supplies an exact form token.
-			approver := f.user(t, "policy-approver", "admin", "approver@example.test", "write", "")
-			target := "/chat/approval?connection_id=" + a.ConnectionID
-			var page string
-			if deployment == "shared" {
-				r := shared.serve(t, hostedSharedRequest{user: &approver, method: http.MethodGet, target: "/organizations/org_security" + target})
-				requireNativeStatus(t, r, http.StatusOK)
-				page = r.Body.String()
-			} else {
-				r := f.request(t, approver, http.MethodGet, target, nil)
-				requireNativeStatus(t, r, http.StatusOK)
-				page = r.Body.String()
-			}
-			if !strings.Contains(page, `action="`+f.service.hostedPath("/chat/approval")+`"`) {
-				t.Fatal("approval form lost organization path")
-			}
-			tokens := regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindAllStringSubmatch(page, -1)
-			if len(tokens) < 2 {
-				t.Fatalf("approval page lacks tokens: %s", page)
-			}
-			form := url.Values{"connection_id": {a.ConnectionID}, "action_id": {a.ID}, "decision": {"confirm"}, "form_token": {tokens[len(tokens)-1][1]}}
-			if deployment == "shared" {
-				r := shared.serve(t, hostedSharedRequest{user: &approver, method: http.MethodPost, target: "/organizations/org_security/chat/approval", csrf: cloudassert.CSRFToken("shared-"+approver.identity.Subject, "org_security"), body: form.Encode(), form: true})
-				requireNativeStatus(t, r, http.StatusSeeOther)
-			} else {
-				requireNativeStatus(t, f.request(t, approver, http.MethodPost, "/chat/approval", form), http.StatusSeeOther)
-			}
-			approved, ok := f.service.operatorChat.Action(a.ConnectionID, a.ID)
-			if !ok || approved.Status != chatpkg.ActionSucceeded {
-				t.Fatalf("approved=%+v", approved)
-			}
-			var attribution policy.Approval
-			if json.Unmarshal([]byte(approved.Result), &attribution) != nil || attribution.ApprovedBy != operatortool.ConnectionIdentity(ctx).PrincipalID {
-				t.Fatalf("project command lost originating principal: approval=%+v requester=%s", attribution, operatortool.ConnectionIdentity(ctx).PrincipalID)
-			}
-			if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read("get_change_review_policy")); err != nil {
-				t.Fatal(err)
-			}
-			// YOLO suppresses only confirmation; shared policy provenance validation remains.
-			human := chatpkg.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx))
-			if err := f.service.operatorChat.SetConnectionMode(human, "project-tools", chatpkg.YOLOMode); err != nil {
-				t.Fatal(err)
-			}
-			rules, err := readChangePolicy(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project})
-			if err != nil {
-				t.Fatal(err)
-			}
-			changeExecutor := hostedOperatorExecutor{f.service}
-			reviewInput := operatortool.ChangeArguments{ProjectID: id, RequestID: "foreign-check", ExpectedPolicyID: rules.ID, Policy: &rules}
-			reviewInput.Policy.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "ci", PrincipalID: "foreign-principal", Source: "independent"}}
-			raw, _ := json.Marshal(reviewInput)
-			if _, err := changeExecutor.Execute(ctx, operatortool.Call{Name: operatortool.ApproveChangeReviewPolicy, Arguments: raw}); err == nil {
-				t.Fatal("unowned CI principal accepted")
-			}
-			reviewInput.RequestID = "review-policy"
-			reviewInput.Policy.RequiredChecks = []tracker.ChangeCheckSpec{}
-			raw, _ = json.Marshal(reviewInput)
-			if _, err := changeExecutor.Execute(ctx, operatortool.Call{Name: operatortool.ApproveChangeReviewPolicy, Arguments: raw}); err != nil {
-				t.Fatalf("review policy=%v", err)
-			}
-			create := projectCall(t, "create_hosted_project", "", "create-hosted", operatortool.HostedProjectCreateInput{Name: "new MCP project", GrantAccess: true})
-			created := projectAction(t, e, ctx, create)
-			if created.Status != chatpkg.ActionSucceeded || !strings.Contains(created.Result, "new MCP project") {
-				t.Fatalf("create=%+v", created)
-			}
-			if replay := projectAction(t, e, connect("create-reconnect"), create); replay.Result != created.Result {
-				t.Fatalf("create replay=%+v", replay)
-			}
-			var newProject tracker.NativeProject
-			if err := json.Unmarshal([]byte(created.Result), &newProject); err != nil {
-				t.Fatal(err)
-			}
-			operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", owner.identity.Subject, newProject.ID)
-			for _, retryCtx := range []context.Context{ctx, connect("create-revoked")} {
-				if _, err := e.Execute(retryCtx, create); !errors.Is(err, operatortool.ErrAccessDenied) {
-					t.Fatalf("created resource revoked replay=%v", err)
-				}
-			}
-			if _, err := e.Execute(ctx, operatortool.Call{Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + created.ID + `"}`)}); !errors.Is(err, operatortool.ErrAccessDenied) {
-				t.Fatalf("created resource revoked action result=%v", err)
-			}
-			// Restore confirmation before exercising revoked original authority.
-			if err := f.service.operatorChat.SetConnectionMode(human, "project-tools", chatpkg.ConfirmationMode); err != nil {
-				t.Fatal(err)
-			}
-			// Revoke applies the expected policy identity, requires approval, and does not grant authority.
-			revoke := projectCall(t, "revoke_project_policy", id, "revoke", operatortool.PolicyRevokeInput{ExpectedID: hubTestPolicy().ID})
-			a = projectAction(t, e, ctx, revoke)
-			if a.Status != chatpkg.ActionPending {
-				t.Fatalf("revoke=%+v", a)
-			}
-			operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", owner.identity.Subject)
-			if _, err := f.service.operatorChat.Confirm(human, a.ConnectionID, a.ID); !errors.Is(err, operatortool.ErrAccessDenied) {
-				t.Fatalf("downgraded approval=%v", err)
-			}
-			if _, err := e.Execute(ctx, ordinary); !errors.Is(err, operatortool.ErrAccessDenied) {
-				t.Fatalf("downgraded replay=%v", err)
-			}
-			operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=?", owner.identity.Subject)
-			if _, err := e.Execute(ctx, read("get_native_project")); !errors.Is(err, operatortool.ErrAccessDenied) {
-				t.Fatalf("revoked direct read=%v", err)
-			}
-		})
-	}
 }
 
 // Import page retries must reuse the durable receipt and never expose transport errors.

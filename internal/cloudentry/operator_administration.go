@@ -13,7 +13,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
@@ -34,8 +33,6 @@ func (s *Service) registerAdministration() {
 	s.administration = operatoradmin.New(entryAdministration{s}, names...)
 	handler := mcp.NewHTTPHandler(s.administration, "", mcp.HTTPConfig{Principal: func(r *http.Request) operatortool.Identity { return operatortool.ConnectionIdentity(r.Context()) }})
 	s.echo.Any("/api/cloud/mcp", echo.WrapHandler(handler), s.administrationAuthority)
-	s.echo.GET("/chat/approval", s.administrationApproval, s.administrationAuthority)
-	s.echo.POST("/chat/approval", s.administrationApproval, s.administrationAuthority)
 }
 
 // Account commands remain bound to the original account session. A destination
@@ -77,14 +74,6 @@ func (s *Service) currentAdministrationSession(ctx context.Context, id operatort
 		return accountSession{}, operatortool.ErrAccessDenied
 	}
 	return session, nil
-}
-
-func (s *Service) administrationApproval(c echo.Context) error {
-	session, err := s.currentAdministrationSession(c.Request().Context(), operatortool.ConnectionIdentity(c.Request().Context()))
-	if err != nil {
-		return c.NoContent(http.StatusForbidden)
-	}
-	return s.administration.Approval(c, cloudassert.CSRFToken(session.CSRFSecret, ""), func() { s.setCookie(c, "session", "", time.Unix(1, 0)) })
 }
 
 func (a entryAdministration) Authorize(ctx context.Context, name string, in operatoradmin.Input, resource string) error {

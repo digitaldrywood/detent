@@ -246,7 +246,7 @@ curl --fail --silent --show-error --header "Authorization: Bearer $DETENT_API_KE
 curl --fail --silent --show-error --header "Authorization: Bearer $DETENT_API_KEY" "$DETENT_API_BASE/projects/$DETENT_PROJECT_ID/work-items?limit=20"
 Check returned project/organization IDs before reporting success; report no secret values. These are implemented GET routes. Use the native endpoint tables and request schemas at https://github.com/digitaldrywood/detent/blob/develop/docs/hub-api.md (Native collaboration and Changes); hosted API keys do not grant worker, runner or instance-admin endpoints. Do not invent /api/v1/state, an OpenAPI route, or unrestricted organization enumeration on Cloud.
 
-Before mutations, consult that operation's documented payload, revisions, idempotency and approval requirements. Ordinary writes require Write scope and current write grants. Material/destructive operations retain the existing exact-action browser approval boundary: present the preview/approval URL when supplied and have me review it in my signed-in Detent browser. If the direct route has no approved preview flow, stop and ask me to perform the operation in Detent; do not substitute a raw mutation to bypass approval. API keys cannot approve operations or write orchestrator lane state.`;
+Before mutations, consult that operation's documented payload, revisions, idempotency and approval requirements. Ordinary writes require Write scope and current write grants. Authorized operations execute directly after current scope, project and grant checks. Confirmation is controlled by your client's local permission settings. Use narrower API keys to limit authority. Workflow requests retain the orchestrator lane owner.`;
 }
 
 export function mcpSetupPrompt(endpoint: string, organization: string, project: string, access = "As listed for your key: All projects, including future projects, or Selected projects"): string {
@@ -261,7 +261,7 @@ url = "${endpoint}"
 bearer_token_env_var = "DETENT_API_KEY"
 For another client, use its documented private header/secret configuration. If it cannot send bearer headers with MCP JSON POSTs or requires SSE/OAuth, explicitly report that client as unsupported and stop.
 
-Initialize MCP, retain the returned Mcp-Session-Id and negotiated protocol version, send notifications/initialized, then discover every tools/list page. Call the discovered work_list tool with {"project_id":"${project}","limit":20}, using a granted project selected on the same page. Verify the result belongs to this organization/project and report success without the key. Material/destructive actions return a preview and approval URL: I must review and approve the exact operation in my signed-in Detent browser. You and the API key cannot approve on my behalf; connecting never expands authority.`;
+Initialize MCP, retain the returned Mcp-Session-Id and negotiated protocol version, send notifications/initialized, then discover every tools/list page. Call the discovered work_list tool with {"project_id":"${project}","limit":20}, using a granted project selected on the same page. Verify the result belongs to this organization/project and report success without the key. Authorized calls execute directly. Configure sensitive-operation confirmation in your client; connecting never expands authority.`;
 }
 
 export function MCPSettings(): React.ReactElement {
@@ -379,7 +379,7 @@ export function MCPSettings(): React.ReactElement {
 
       <SettingsSection id="settings-mcp-permissions" title="Permissions and tools">
         <SettingsRow title="Access follows your current permissions" description="Viewers can read permitted projects. Writes require a role and project grant that allow the operation; administration requires owner or admin authority. Billing requires an owner without a support session. Support access keeps its existing restrictions." />
-        <SettingsRow title="Confirm material actions" description="Material or destructive actions return a preview and approval URL. Open it in an authenticated Detent browser, review the exact action, then confirm or reject it. Connection approval never expands your permissions." />
+        <SettingsRow title="Client confirmation" description="Authorized calls execute directly. Your client’s permission settings control confirmation for sensitive operations. Use narrower API key scopes and project access to limit what it can do." />
         <SettingsRow title="Tool availability" description="Clients discover only tools available to their identity and deployment. Follow all tools/list pages. A tool can be absent because of permissions, a missing service, or capability work still in progress.">
           <p className="pb-3 text-[13px] text-muted-foreground">
             <a className="underline underline-offset-4" href="https://github.com/digitaldrywood/detent/issues/3259" target="_blank" rel="noreferrer">MCP capability coverage (#3259)</a>

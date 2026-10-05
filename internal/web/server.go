@@ -514,8 +514,6 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries, apiReadAuth, apiReadScope)
 	s.echo.POST("/api/v1/operator-connections", s.apiOperatorConnection, apiReadAuth, apiReadScope, s.operatorAuthority)
-	s.echo.GET("/chat/approval", s.operatorApprovalPage, s.operatorBrowserReadAuth)
-	s.echo.POST("/chat/approval", s.operatorApprovalDecision, s.operatorBrowserFormAuth)
 	s.echo.GET("/api/v1/operator-tools", s.apiOperatorTools, apiReadAuth, apiReadScope, s.operatorAuthority)
 	s.echo.POST("/api/v1/operator-tools/:tool_name", s.apiOperatorTool, apiReadAuth, apiReadScope, s.operatorAuthority)
 	s.echo.Any("/mcp", echo.WrapHandler(s.mcpHTTP), mcpReadAuth, s.operatorAuthority)

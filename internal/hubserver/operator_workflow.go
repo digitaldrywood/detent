@@ -84,23 +84,13 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
 	action.RequestID, action.Arguments = request.RequestID, arguments
-	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: request.ProjectID, ResourceID: action.IssueID, Action: call.Name, Source: "mcp", Mode: "confirmation", Confirmation: "none", CorrelationID: newNativeID("mcp")}
+	action.Mutation = mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: request.ProjectID, ResourceID: action.IssueID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: newNativeID("mcp")}
 	action.Mutation, err = action.Mutation.Bind(request.RequestID, arguments)
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	outcome := "failed"
 	defer func() { e.service.hubChangeAudit(ctx, action.Mutation, outcome) }()
-	if e.service.config.Hosted != nil {
-		previous, replay, err := e.service.operatorChat.RetryResult(ctx, action.Kind, action.RequestID, action.Arguments)
-		if err != nil {
-			return operatortool.Result{}, err
-		}
-		if replay {
-			outcome = "replayed"
-			return e.service.hubActionResult(previous)
-		}
-	}
 	mutationContext := mutation.WithContext(ctx, action.Mutation)
 	transition := tracker.Transition{Mutation: tracker.MutationForContext(mutationContext, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested"}
 	replay, found, err := e.service.nativeCommandReplay(mutationContext, scope, nativeOperation(scope, "POST", "/work-items/"+request.Identifier+"/workflow"), transition.IdempotencyKey, transition)
@@ -118,23 +108,12 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	}
 	proposal.RequestID, proposal.Arguments, proposal.Mutation = action.RequestID, action.Arguments, action.Mutation
 	action = proposal
-	if e.service.config.Hosted == nil {
-		if chat.RequiresConfirmation(action) {
-			return operatortool.Result{}, operatortool.ErrServiceUnavailable
-		}
-		execution, err := e.executeWorkflowTransition(ctx, action)
-		if err != nil {
-			return operatortool.Result{}, err
-		}
-		outcome = "succeeded"
-		return e.workflowReceipt(json.RawMessage(execution.Message))
-	}
-	action, err = e.service.operatorChat.Submit(ctx, action)
+	execution, err := e.executeWorkflowTransition(ctx, action)
 	if err != nil {
-		return operatortool.Result{}, hubSafeChangeError(err)
+		return operatortool.Result{}, err
 	}
-	outcome = string(action.Status)
-	return e.service.hubActionResult(action)
+	outcome = "succeeded"
+	return e.workflowReceipt(json.RawMessage(execution.Message))
 }
 
 func (e nativeOperatorExecutor) workflowReceipt(raw json.RawMessage) (operatortool.Result, error) {
@@ -161,12 +140,9 @@ func (e nativeOperatorExecutor) executeWorkflowTransition(ctx context.Context, a
 	if err != nil || request.RequestID != action.RequestID || m.Source != "mcp" || m.PrincipalID != identity.PrincipalID || m.OrganizationID != identity.OrganizationID || m.ProjectID != request.ProjectID || m.Action != operatortool.MoveItem || m.CorrelationID == "" || bound.RetryIdentity != m.RetryIdentity || bound.InputHash != m.InputHash {
 		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
-	current, err := e.workflowProposal(ctx, scope, request)
+	_, err = e.workflowProposal(ctx, scope, request)
 	if err != nil {
 		return workflowExecutionFailure(err)
-	}
-	if current.Material && m.Confirmation != "approved" && m.Confirmation != "yolo" {
-		return chat.ActionExecution{}, operatortool.ErrAccessDenied
 	}
 	ctx = mutation.WithContext(ctx, m)
 	raw, err := e.service.transitionNativeIssueCommand(ctx, scope, request.Identifier, tracker.Transition{Mutation: tracker.MutationForContext(ctx, request.RequestID), ExpectedRevision: tracker.Revision(request.ExpectedRevision), State: request.TargetState, Reason: "user_requested"})

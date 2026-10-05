@@ -337,7 +337,7 @@ func (s *Server) executeOperatorArtifactAccess(ctx context.Context, app operator
 		return operatortool.Result{}, errOperatorCommandUnavailable
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
-	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: args.ProjectID, ResourceID: args.ItemID, Action: operatortool.ArtifactAccess, Source: "mcp", Mode: "confirmation", Confirmation: "none", CorrelationID: correlation}
+	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: args.ProjectID, ResourceID: args.ItemID, Action: operatortool.ArtifactAccess, Source: "mcp", Confirmation: "none", CorrelationID: correlation}
 	m, err = m.Bind(args.RequestID, raw)
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments

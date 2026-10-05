@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
-	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -286,9 +285,6 @@ func (s *Service) nativeWorkComments(ctx context.Context, scope nativeScope, ite
 	return s.readComments(ctx, scope, item, params)
 }
 
-// operatorCreateNativeWork uses the native application command. Hub-only
-// deployments have no operator confirmation surface, so terminal creation is
-// unavailable there; a daemon deployment uses its existing approval service.
 func (s *Service) operatorCreateNativeWork(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	project, err := readNativeProject(ctx, s.database.db, scope)
 	if err != nil {
@@ -296,11 +292,6 @@ func (s *Service) operatorCreateNativeWork(ctx context.Context, scope nativeScop
 	}
 	if request.State == "" && len(project.States) > 0 {
 		request.State = project.States[0].Name
-	}
-	for _, state := range project.States {
-		if state.Name == request.State && state.Terminal {
-			return nil, nativeInvalid("operator approval service is unavailable")
-		}
 	}
 	return s.createNativeIssueCommand(ctx, scope, request)
 }
@@ -319,22 +310,6 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 	}
 	switch name {
 	case operatortool.EditItem:
-		current, err := s.nativeWorkObservation(ctx, scope, request.Identifier)
-		if err != nil {
-			return nil, err
-		}
-		metadata, approved := mutation.FromContext(ctx)
-		approved = approved && metadata.Source == "chat" && metadata.Confirmation == "approved"
-		if !approved && request.Body != nil && strings.TrimSpace(*request.Body) == "" && current.Body != "" {
-			return nil, nativeInvalid("operator approval service is unavailable")
-		}
-		if request.Labels != nil {
-			for _, label := range current.Labels {
-				if !approved && !slices.Contains(*request.Labels, label) {
-					return nil, nativeInvalid("operator approval service is unavailable")
-				}
-			}
-		}
 		return s.updateNativeIssueCommand(ctx, scope, request.Identifier, tracker.UpdateIssue{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Title: request.Title, Body: request.Body, Labels: request.Labels, Priority: tracker.SetPriority(request.Priority)})
 	case operatortool.AddComment:
 		return s.createNativeCommentCommand(ctx, scope, request.Identifier, tracker.CreateComment{Mutation: command, Body: *request.Body})

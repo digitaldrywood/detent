@@ -484,8 +484,6 @@ func (f dashboardHTTPClientFunc) Do(request *http.Request) (*http.Response, erro
 	return f(request)
 }
 
-// OpenConnection establishes an authenticated stdio connection in default
-// confirmation mode. YOLO selection remains a browser operator action.
 func (c *DashboardReadClient) OpenConnection(ctx context.Context) error {
 	if c == nil || c.baseURL == nil {
 		return errors.New("dashboard API client is not configured")
@@ -497,8 +495,6 @@ func (c *DashboardReadClient) OpenConnection(ctx context.Context) error {
 	}
 	status, err := c.requestJSON(ctx, http.MethodPost, requestURL, &result)
 	if status == http.StatusNotFound || status == http.StatusNotImplemented {
-		// Read adapters without application commands preserve the existing
-		// read bridge. They expose no confirmation mode or write authority.
 		return nil
 	}
 	if err != nil {
