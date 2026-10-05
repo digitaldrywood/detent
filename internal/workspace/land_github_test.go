@@ -29,8 +29,18 @@ func (f landingHTTPClient) Do(req *http.Request) (*http.Response, error) { retur
 func TestLocalGitLandingReplacement(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, cleanupFailure := range []bool{false, true} {
-		t.Run(fmt.Sprintf("cleanup failure=%t", cleanupFailure), func(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		cleanupFailure bool
+		supersededHead string
+	}{
+		{name: "closes the superseded head"},
+		{name: "retries failed cleanup", cleanupFailure: true},
+		{name: "retains a force pushed superseded PR", supersededHead: "moved"},
+		{name: "retains a superseded PR without head evidence", supersededHead: "missing"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cleanupFailure := test.cleanupFailure
 			f := newLandingFixture(t)
 			repository := "https://github.com/example/repo"
 			runGit(t, f.source, "config", "url.file://"+f.remote+".insteadOf", repository+".git")
@@ -161,6 +171,18 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 			}
 			tree := strings.TrimSpace(runGit(t, f.source, "rev-parse", f.head+"^{tree}"))
 			opts.HeadSHA = strings.TrimSpace(runGit(t, f.source, "commit-tree", tree, "-p", base, "-m", "Resolved rebased head"))
+			wantState := "closed"
+			if test.supersededHead != "" {
+				wantState, wantComments = "open", 0
+				pull := pulls[17]
+				if test.supersededHead == "moved" {
+					pull.Head.SHA = opts.HeadSHA
+					runGit(t, f.source, "push", "--force", "origin", opts.HeadSHA+":refs/heads/"+pull.Head.Ref)
+				} else {
+					pull.Head.SHA = ""
+				}
+				pulls[17] = pull
+			}
 			info, err = f.backend.Create(t.Context(), issue)
 			if err != nil {
 				t.Fatal(err)
@@ -172,7 +194,7 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 				}
 				_, err = f.backend.LandChangeViaGitHub(t.Context(), info, issue, opts)
 			}
-			if err != nil || !pulls[18].Merged || pulls[17].State != "closed" || len(comments) != wantComments || !strings.Contains(comments[0], repository+"/pull/18") {
+			if err != nil || !pulls[18].Merged || pulls[17].State != wantState || len(comments) != wantComments || wantComments > 0 && !strings.Contains(comments[0], repository+"/pull/18") {
 				t.Fatalf("replacement leaked conflicted pull: err=%v pulls=%v comments=%v", err, pulls, comments)
 			}
 		})

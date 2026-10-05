@@ -224,7 +224,7 @@ func closeSupersededLandingPulls(ctx context.Context, client GitHubRESTClient, r
 		for _, pull := range pulls {
 			if pull.Number <= 0 || pull.Number >= mergedNumber || pull.State != "open" || pull.Merged || pull.MergedAt != "" ||
 				pull.Head.Repo.FullName != repository || pull.Base.Repo.FullName != repository || pull.Base.Ref != base ||
-				!strings.HasPrefix(pull.Head.Ref, prefix) || !validLandingHead(strings.TrimPrefix(pull.Head.Ref, prefix)) {
+				!validLandingHead(pull.Head.SHA) || pull.Head.Ref != prefix+pull.Head.SHA {
 				continue
 			}
 			superseded = append(superseded, pull)
