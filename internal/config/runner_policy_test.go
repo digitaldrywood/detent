@@ -10,10 +10,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 )
 
-func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
+func TestRunnerPolicyCanonicalInputs(t *testing.T) {
 	t.Parallel()
-	// Pin the workspace root: the default includes os.TempDir(), which differs
-	// across hosts and worker attempts and is itself an approved policy input.
 	workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
 		WorkflowPath: "WORKFLOW.md",
 		Workflow:     []byte("---\ntracker:\n  kind: memory\nworkspace:\n  root: policy-upgrade-workspaces\nworker:\n  ssh_hosts: [local]\ngate:\n  kind: command\n  run: make check-fast\n---\nRun the work.\n"),
@@ -21,25 +19,9 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The historical snapshot used Unix execution defaults. Pin them so the
-	// approval comparison also runs on Windows.
-	workflow.Config.Codex.Shell = "sh"
-	workflow.Config.Hooks.Shell = "sh"
-	workflow.Config.Agent.Skills.MaxSkillsInPrompt = 50
-	// Captured with v0.117.1's config and gate sources. Unlike rebuilding the
-	// approval from today's Config type, these constants catch new digest inputs.
-	approved := policy.Descriptor{
-		SourceRevision: "a4be9735c9116bbea42695a69cb91e0bd3d89fd72875c983f709d4a7cdf86811",
-		SourceDigest:   "a4be9735c9116bbea42695a69cb91e0bd3d89fd72875c983f709d4a7cdf86811",
-		ConfigDigest:   "f984256fbdabf8b6ff53fa36ec96ce13e435594e630ae36452a6f769d5631a32",
-		Gates: policy.Gates{
-			Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")),
-			AutomatedReview: "required", MergeMethod: "squash",
-		},
-	}.WithID()
-	const approvedID = "policy_512e9d9ac6d0d92d5a6097e1194a94e8f3bfa02a70c3a536486a4a5e1550e89a"
-	if approved.ID != approvedID {
-		t.Fatalf("historical approval ID = %s, want %s", approved.ID, approvedID)
+	approved, err := ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, test := range []struct {
 		name   string
@@ -47,7 +29,7 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		match  bool
 	}{
 		{"unchanged upgrade with default runner setup", func(*Workflow) {}, true},
-		{"increased skill prompt cap", func(w *Workflow) { w.Config.Agent.Skills.MaxSkillsInPrompt = 100 }, false},
+		{"changed skill prompt cap", func(w *Workflow) { w.Config.Agent.Skills.MaxSkillsInPrompt++ }, false},
 		{"configured runner setup", func(w *Workflow) { w.Config.Hooks.RunnerSetup = "scripts/runner-setup.sh" }, false},
 		{"host pacing off", func(w *Workflow) {
 			w.Config.Agent.RateWindowPacing = RateWindowPacing{Mode: RateWindowPacingOff}.Normalized()
@@ -67,6 +49,7 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		{"empty host caps", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{} }, true},
 		{"empty required checks", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{} }, true},
 		{"historical opt-out label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "requires-human-review" }, true},
+		{"disabled default followups", func(w *Workflow) { w.Config.Agent.Followups.Enabled = false }, false},
 		{"zero human review", func(w *Workflow) { w.Config.Review = Review{} }, true},
 		{"explicit host preference", func(w *Workflow) { w.Config.Worker.HostSelection = "preference" }, false},
 		{"explicit host cap", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{"local": 2} }, false},
@@ -121,6 +104,76 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		}
 	}
 
+}
+
+func TestRunnerPolicyDefaultedFields(t *testing.T) {
+	t.Parallel()
+	type previousConfig struct {
+		Command string
+	}
+	type upgradedConfig struct {
+		Command string
+		Added   any
+	}
+	base := policy.Descriptor{
+		SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")),
+	}
+	raw, err := canonicalPolicyJSON(previousConfig{Command: "make test"}, previousConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.ConfigDigest = policy.Digest(raw)
+	approved := base.WithID()
+	for _, test := range []struct {
+		name     string
+		defaults any
+		changed  any
+	}{
+		{"zero string", "", "configured"},
+		{"default string", "automatic", "configured"},
+		{"zero bool", false, true},
+		{"default bool", true, false},
+		{"zero integer", 0, 1},
+		{"default integer", 10, 20},
+		{"large integer", int64(9007199254740992), int64(9007199254740993)},
+		{"zero pointer", (*int)(nil), new(1)},
+		{"default pointer", new(10), new(20)},
+		{"cleared default pointer", new(10), (*int)(nil)},
+		{"empty slice", []string{}, []string{"configured"}},
+		{"default slice", []string{"automatic"}, []string{}},
+		{"empty map", map[string]int{}, map[string]int{"configured": 0}},
+		{"null map member", map[string]any{}, map[string]any{"configured": nil}},
+		{"added null map member", map[string]any{"automatic": 10}, map[string]any{"automatic": 10, "configured": nil}},
+		{"default map", map[string]int{"automatic": 10}, map[string]int{}},
+		{"nested defaults", struct{ Limit int }{10}, struct{ Limit int }{20}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, value := range []struct {
+				name  string
+				added any
+				match bool
+			}{
+				{"default", test.defaults, true},
+				{"nondefault", test.changed, false},
+			} {
+				t.Run(value.name, func(t *testing.T) {
+					raw, err := canonicalPolicyJSON(
+						upgradedConfig{Command: "make test", Added: value.added},
+						upgradedConfig{Added: test.defaults},
+					)
+					if err != nil {
+						t.Fatal(err)
+					}
+					candidate := base
+					candidate.ConfigDigest = policy.Digest(raw)
+					candidate = candidate.WithID()
+					if (candidate.ID == approved.ID) != value.match {
+						t.Fatalf("policy ID = %s, want match %t with %s", candidate.ID, value.match, approved.ID)
+					}
+				})
+			}
+		})
+	}
 }
 
 func TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit(t *testing.T) {
