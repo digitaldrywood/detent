@@ -628,6 +628,49 @@ func TestWorkspaceOperatorHistoryBudget(t *testing.T) {
 			}
 		}
 	}
+	t.Run("oversized worker message preserves controls", func(t *testing.T) {
+		f := newConversationWorkerFixture(t)
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
+			t.Fatal(err)
+		}
+		operator, _ := conversationOperatorToken(t, f.nativeFixture, "snapshot-operator")
+		ctx := workspaceOperatorContext(t, f.service, operator, string(f.project.OrganizationID), "snapshot")
+		args := map[string]any{"project_id": f.project.ID, "work_item_id": f.issue.WorkItemID}
+		result, err := workspaceOperatorCall(t, f.service, ctx, "get_work_item_conversation", args)
+		if err != nil || !strings.Contains(string(result.Content), f.attempt) || !strings.Contains(string(result.Content), `"status":"unavailable"`) {
+			t.Fatalf("missing binding diagnostic=%s %v", result.Content, err)
+		}
+		var count int
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversations WHERE work_item_id = ?", f.issue.WorkItemID).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("read created a substitute conversation: count=%d err=%v", count, err)
+		}
+		var bound workerBindResponse
+		body := f.bindBody()
+		body["thread_id"] = "old-resume-thread"
+		response := f.bind(t, body)
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &bound)
+		f.record.ID = bound.ConversationID
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "actual-fresh-thread", "turn_id": "actual-turn"}), http.StatusAccepted)
+		for range 5 {
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "large-message", "text": strings.Repeat("x", 60000)}), http.StatusAccepted)
+		}
+		result, err = workspaceOperatorCall(t, f.service, ctx, "get_work_item_conversation", args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var snapshot struct {
+			conversationSnapshot
+			HistoryOmitted bool `json:"history_omitted"`
+		}
+		if err := json.Unmarshal(workspaceOperatorData(t, result), &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		current := snapshot.Conversation.Execution
+		if snapshot.Conversation.ID != bound.ConversationID || current.Status != conversation.ExecutionRunning || current.AttemptID == nil || *current.AttemptID != f.attempt || current.ThreadID == nil || *current.ThreadID != "actual-fresh-thread" || current.TurnID == nil || *current.TurnID != "actual-turn" || !current.Capabilities.Steer || !snapshot.HistoryOmitted || len(snapshot.Messages) != 0 || snapshot.Cursor == 0 {
+			t.Fatalf("canonical snapshot lost execution or history evidence: %+v", snapshot)
+		}
+	})
 }
 
 // Catches missing services accidentally falling through to nil runtimes or raw

@@ -484,7 +484,7 @@ func (s *Service) readWorkspaceTool(ctx context.Context, scope nativeScope, name
 		}
 		return s.readConversationsPage(ctx, scope, filter)
 	case "get_work_item_conversation":
-		raw, err := s.readWorkItemConversationSnapshot(ctx, scope, r.WorkItemID)
+		raw, err := s.readConversationSnapshotFor(ctx, scope, "", r.WorkItemID, true)
 		return boundedOperatorHistory(raw, true, err)
 	case "get_conversation":
 		raw, err := s.readConversationSnapshot(ctx, scope, r.ConversationID)
@@ -680,13 +680,24 @@ func boundedOperatorHistory(raw json.RawMessage, snapshot bool, err error) (json
 		return raw, nil
 	}
 	if snapshot {
-		var page conversationSnapshot
+		var page struct {
+			conversationSnapshot
+			HistoryOmitted bool `json:"history_omitted,omitempty"`
+		}
 		if err := json.Unmarshal(raw, &page); err != nil {
 			return nil, err
 		}
 		for len(page.Messages) > 1 && len(raw) > budget {
 			page.Messages = page.Messages[1:]
 			page.HasMore, _ = conversationOlderCursor(page.Messages)
+			raw, err = json.Marshal(page)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if len(raw) > budget && len(page.Messages) == 1 {
+			page.Messages = []conversationMessageResource{}
+			page.HasMore, page.HistoryOmitted = true, true
 			raw, err = json.Marshal(page)
 			if err != nil {
 				return nil, err

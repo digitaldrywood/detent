@@ -622,7 +622,7 @@ func (s *Service) getWorkItemConversation(c echo.Context) error {
 }
 
 func (s *Service) readWorkItemConversationSnapshot(ctx context.Context, scope nativeScope, item string) (json.RawMessage, error) {
-	return s.readConversationSnapshotFor(ctx, scope, "", item)
+	return s.readConversationSnapshotFor(ctx, scope, "", item, false)
 }
 
 // getConversation implements GET /conversations/:conversation. The record,
@@ -1312,13 +1312,14 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) readConversationSnapshot(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
-	return s.readConversationSnapshotFor(ctx, scope, id, "")
+	return s.readConversationSnapshotFor(ctx, scope, id, "", false)
 }
 
-func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeScope, id, item string) (json.RawMessage, error) {
+func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeScope, id, item string, diagnoseMissing bool) (json.RawMessage, error) {
 	service := s.conversations
 	var snapshot conversationSnapshot
-	err := service.transact(ctx, func(tx *sql.Tx, _ time.Time) error {
+	var diagnostic json.RawMessage
+	err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		var record conversationRecord
 		var err error
 		if item != "" {
@@ -1326,6 +1327,19 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 				return err
 			}
 			record, err = service.readLinkedConversation(ctx, tx, scope, item)
+			var failure *nativeError
+			if diagnoseMissing && record.ID == "" && errors.As(err, &failure) && failure.Code == "not_found" {
+				runtime, err := readNativeRuntime(ctx, tx, scope, item, "", now)
+				if err != nil {
+					return err
+				}
+				diagnostic, err = json.Marshal(struct {
+					Status       string                        `json:"status"`
+					Conversation *conversationResource         `json:"conversation"`
+					Runtime      tracker.NativeRuntimeEvidence `json:"runtime"`
+				}{Status: "unavailable", Runtime: runtime})
+				return err
+			}
 			if err == nil {
 				record, err = service.loadConversation(ctx, tx, scope, record.ID)
 			}
@@ -1352,6 +1366,9 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 	})
 	if err != nil {
 		return nil, err
+	}
+	if diagnostic != nil {
+		return diagnostic, nil
 	}
 	return json.Marshal(snapshot)
 }
