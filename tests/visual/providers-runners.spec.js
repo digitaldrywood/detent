@@ -1,6 +1,7 @@
 const { test, expect } = require("@playwright/test");
 const { providersRunnersPreview } = require("./providers-runners-preview");
 const fleetFixture = require("../../web/conversation/src/contracts/fixtures/account-fleet.json");
+const spritePool = require("./providers-runners-sprite-pool.json");
 
 let html;
 const origin = "https://runners.detent.test";
@@ -19,6 +20,9 @@ test.beforeAll(async () => { html = await providersRunnersPreview(); });
 async function openFleet(page, data = fleet, search = "", spritesPresent = false) {
   await page.clock.setFixedTime(new Date("2026-09-10T12:09:31Z"));
   await page.route(origin + "/**", (route) => {
+    if (new URL(route.request().url()).pathname === "/api/v2/organizations/org_preview/projects/proj_preview/sprite-pool") {
+      return route.fulfill({ json: spritePool });
+    }
     if (new URL(route.request().url()).pathname.endsWith("/secrets/fly_sprites_token")) {
       return route.fulfill({ json: { kind: "fly_sprites_token", present: spritesPresent } });
     }
@@ -123,6 +127,16 @@ for (const width of [1440, 390]) {
     await expect(providers.getByRole("columnheader")).toHaveText(["Provider", "Accounts", "In use", "Models", "Status"]);
     await expect(providers.getByText("Rate limited until Sep 10, 5:00 PM")).toBeVisible();
     await expect(page.getByTestId("host-card")).toHaveCount(3);
+    await expect(page.getByText("Sprite pool · Preview project", { exact: true })).toBeVisible();
+    await expect(page.getByText("1 members", { exact: true })).toBeVisible();
+    await expect(page.getByText("Could not load the pool.", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("Minimum runners", { exact: true })).toHaveValue(String(spritePool.min_runners));
+    await expect(page.getByLabel("Maximum runners", { exact: true })).toHaveValue(String(spritePool.max_runners));
+    await expect(page.getByLabel("Idle seconds", { exact: true })).toHaveValue(String(spritePool.idle_seconds));
+    await expect(page.getByLabel(/^Customer bootstrap/)).toHaveValue(spritePool.bootstrap);
+    await expect(page.getByText("preview-build-sprite · enrolled", { exact: true })).toBeVisible();
+    await page.getByText("Last bootstrap log", { exact: true }).click();
+    await expect(page.getByText(spritePool.members[0].bootstrap_log, { exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     expect(await page.locator("[data-settings-page-scroll]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
     if (width === 390) {
@@ -133,8 +147,11 @@ for (const width of [1440, 390]) {
       await providers.evaluate((element) => { element.scrollLeft = 0; });
     }
     await page.evaluate(() => document.fonts.ready);
-    await page.setViewportSize({ width, height: 2400 });
-    await page.locator("[data-settings-page-scroll]").evaluate((element) => { element.scrollTop = 0; });
+    const scroll = page.locator("[data-settings-page-scroll]");
+    const height = await scroll.evaluate((element) => Math.ceil(element.scrollHeight + element.getBoundingClientRect().top));
+    await page.setViewportSize({ width, height: Math.max(2400, height) });
+    await scroll.evaluate((element) => { element.scrollTop = 0; });
+    await expect(page.getByText(spritePool.members[0].bootstrap_log, { exact: true })).toBeInViewport();
     await expect(page.locator("[data-settings-page-scroll] > div")).toHaveScreenshot("providers-runners-" + width + ".png");
     await page.setViewportSize({ width, height: 1100 });
     await page.getByRole("link", { name: "Needs attention 1" }).click();
