@@ -288,6 +288,10 @@ func (o *Orchestrator) reapPendingOperatorStop(ctx context.Context, state *State
 }
 
 func (o *Orchestrator) completeOperatorStopCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running, result StopRunResult) (StopRunResult, error) {
+	defer func() {
+		o.heartbeats.remove(event.IssueID)
+		o.publishRuntimeState(state)
+	}()
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	tokens := event.Result.Tokens
 	if tokens == (TokenTotals{}) {

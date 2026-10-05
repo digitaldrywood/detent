@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -212,6 +213,10 @@ func TestStopRunRefusesStalePersistedProcessIdentity(t *testing.T) {
 }
 
 func TestStopRunRetriesWorkerReapAfterSessionCompletion(t *testing.T) {
+	synctest.Test(t, testStopRunRetriesWorkerReapAfterSessionCompletion)
+}
+
+func testStopRunRetriesWorkerReapAfterSessionCompletion(t *testing.T) {
 	identity := procgroup.Identity{PID: 41453, GroupID: 41453, StartedAt: time.Unix(1453, 0).UTC()}
 	issue := testIssue("issue-stop-reap-retry", "digitaldrywood/detent#1453", "In Progress")
 	tracker := newFakeConnector(issue)
@@ -275,21 +280,23 @@ func TestStopRunRetriesWorkerReapAfterSessionCompletion(t *testing.T) {
 		t.Fatalf("StopRun() = %#v, %v", result, err)
 	}
 	<-runner.returned
-	waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
-		blocked := state.Blocked[issue.ID]
-		_, stillRunning := state.Running[issue.ID]
-		return stillRunning && strings.Contains(blocked.Reason, "persist reap outcome")
-	})
+	synctest.Wait()
+	state, err = orch.State(t.Context())
+	if err != nil {
+		t.Fatalf("State() after session completion error = %v", err)
+	}
+	if _, stillRunning := state.Running[issue.ID]; !stillRunning {
+		t.Fatal("running worker removed before reap outcome was persisted")
+	}
+	if blocked := state.Blocked[issue.ID]; !strings.Contains(blocked.Reason, "persist reap outcome") {
+		t.Fatalf("Blocked[%q] = %#v, want reap outcome persistence failure", issue.ID, blocked)
+	}
+	if len(tracker.stateUpdateCalls()) != 0 {
+		t.Fatalf("tracker state updates = %#v, want none before reap outcome persistence", tracker.stateUpdateCalls())
+	}
 	processStore.clearProcesses()
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		result, err = orch.StopRun(t.Context(), request)
-		if err == nil && result.Outcome == "succeeded" {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	result, err = orch.StopRun(t.Context(), request)
 	if err != nil || result.Outcome != "succeeded" || !result.AlreadyStopped {
 		t.Fatalf("retry StopRun() = %#v, %v", result, err)
 	}
@@ -302,6 +309,14 @@ func TestStopRunRetriesWorkerReapAfterSessionCompletion(t *testing.T) {
 	reaped := processStore.reapedSnapshot()
 	if len(reaped) != 1 || reaped[0].sessionID != runner.sessionID || reaped[0].reap.Outcome != store.WorkerProcessOutcomeAlreadyExited {
 		t.Fatalf("reaped worker processes = %#v", reaped)
+	}
+	synctest.Wait()
+	state, err = orch.State(t.Context())
+	if err != nil {
+		t.Fatalf("State() after reap retry error = %v", err)
+	}
+	if _, stillRunning := state.Running[issue.ID]; stillRunning {
+		t.Fatal("running worker retained after reap retry succeeded")
 	}
 }
 

@@ -115,14 +115,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
-	defer func() {
-		current, active := state.Running[event.IssueID]
-		if _, deferred := state.deferredCompletions[event.IssueID]; !deferred && (!active || current.done == running.done) {
-			o.heartbeats.remove(event.IssueID)
-			delete(state.Running, event.IssueID)
-			o.publishRuntimeState(state)
-		}
-	}()
 	o.captureNativeLandingRESTUsage(state, event.Result, event.CompletedAt)
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
@@ -179,6 +171,14 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleOperatorStopCompletion(ctx, state, event, running) {
 		return
 	}
+	defer func() {
+		current, active := state.Running[event.IssueID]
+		if _, deferred := state.deferredCompletions[event.IssueID]; !deferred && (!active || current.done == running.done) {
+			o.heartbeats.remove(event.IssueID)
+			delete(state.Running, event.IssueID)
+			o.publishRuntimeState(state)
+		}
+	}()
 	if !running.CompletionOwnershipReleased {
 		o.releaseGlobalDispatchSlot(running.globalSlot)
 		o.logWorkerLifecycle(running.Issue, "worker_capacity_released",
