@@ -237,9 +237,6 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 	// Standalone hubs have no authenticated operator browser. Connection
 	// setup supplies this authority; tool arguments cannot invent an approval
 	// service. Completed receipts above remain readable without confirmation.
-	if chat.RequiresConfirmation(proposal) && operatortool.CurrentConnection(ctx).DashboardURL == "" {
-		return operatortool.Result{}, errWorkspaceOperationUnavailable
-	}
 	action, err := e.server.operatorChat.Submit(ctx, proposal)
 	if err != nil {
 		return operatortool.Result{}, safeWorkspaceError(err)
@@ -379,7 +376,6 @@ func (e workspaceOperatorExecutor) AuditAction(ctx context.Context, action chat.
 
 	m := action.Mutation
 	m.ResourceID = action.IssueID
-	m.Mode = string(action.Mode)
 	e.auditMutation(ctx, m, outcome)
 }
 func (e workspaceOperatorExecutor) auditMutation(ctx context.Context, m mutation.Metadata, outcome string) {
@@ -406,9 +402,8 @@ func (e workspaceOperatorExecutor) actionResult(action chat.Action, data json.Ra
 		ID         string            `json:"action_id"`
 		Status     chat.ActionStatus `json:"status"`
 		Data       json.RawMessage   `json:"data,omitempty"`
-		URL        string            `json:"approval_url,omitempty"`
 		ResultTool string            `json:"result_tool"`
-	}{action, action.ID, action.Status, data, action.PendingApprovalURL(e.server.billingApprovalURL(action.ConnectionID)), operatortool.ActionResult})
+	}{action, action.ID, action.Status, data, operatortool.ActionResult})
 }
 func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	var request struct {
@@ -431,12 +426,9 @@ func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call op
 	}
 	id := operatortool.CurrentConnection(ctx).ID
 	if call.Name == operatortool.ConnectionInfo {
-		c := e.server.operatorChat.Conversation(id)
 		return operatortool.WorkspaceResult(struct {
-			ID   string              `json:"connection_id"`
-			Mode chat.ConnectionMode `json:"mode"`
-			URL  string              `json:"setup_url"`
-		}{id, c.Mode, e.server.billingApprovalURL(id)})
+			ID string `json:"connection_id"`
+		}{id})
 	}
 	action, ok := e.server.operatorChat.Action(id, request.ActionID)
 	if !ok {

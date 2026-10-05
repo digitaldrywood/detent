@@ -58,15 +58,6 @@ func chatActionPath(action chatpkg.Action, decision string) string {
 	return "/api/v1/chat/actions/" + action.ID + "/" + strings.TrimSpace(decision)
 }
 
-func chatApprovalPath(data ChatData) string {
-	if data.ApprovalPath != "" {
-		return data.ApprovalPath
-	}
-	return "/chat/approval"
-}
-
-func (d ChatData) approvalStylesheet() string { return d.ApprovalBasePath + "/static/css/output.css" }
-
 func splitPriority(priority *int) string {
 	if priority == nil {
 		return "No priority"

@@ -1,5 +1,3 @@
-// Package operatoradmin connects typed administration tools to the existing
-// application commands and bounded chat approval sessions. It owns no storage.
 package operatoradmin
 
 import (
@@ -9,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -20,7 +17,6 @@ import (
 var ErrUnavailable = errors.New("administration operation is unavailable")
 
 // Input is an application input, decoded against each individual tool schema.
-// Authority and confirmation mode never appear here.
 type Input struct {
 	Grants         []ProjectGrant `json:"grants,omitzero"`
 	RequestID      string         `json:"request_id,omitempty"`
@@ -155,11 +151,9 @@ func (e *Executor) Execute(ctx context.Context, call operatortool.Call) (operato
 		}
 		c := operatortool.CurrentConnection(ctx)
 		return result(struct {
-			ID           string              `json:"connection_id"`
-			Organization string              `json:"organization_id"`
-			Mode         chat.ConnectionMode `json:"mode"`
-			URL          string              `json:"setup_url"`
-		}{c.ID, c.Identity.OrganizationID, e.Chat.Conversation(c.ID).Mode, approvalURL(ctx)})
+			ID           string `json:"connection_id"`
+			Organization string `json:"organization_id"`
+		}{c.ID, c.Identity.OrganizationID})
 	}
 	if call.Name == operatortool.ActionResult {
 		var req struct {
@@ -268,7 +262,7 @@ func (e *Executor) ExecuteAction(ctx context.Context, action chat.Action) (chat.
 	if err != nil || preview.ResourceID != action.IssueID || hex.EncodeToString(hash[:]) != action.CurrentState {
 		return chat.ActionExecution{}, ErrUnavailable
 	}
-	m.Mode, m.Confirmation = string(action.Mode), action.Mutation.Confirmation
+	m.Confirmation = action.Mutation.Confirmation
 	output, err := e.App.Execute(mutation.WithContext(ctx, m), name, in, m)
 	if err != nil {
 		return chat.ActionExecution{}, safe(err)
@@ -313,18 +307,13 @@ func (e *Executor) actionResult(ctx context.Context, action chat.Action) (operat
 		}
 	}
 	return result(struct {
-		Action      chat.Action     `json:"action"`
-		ApprovalURL string          `json:"approval_url"`
-		ResultTool  string          `json:"result_tool"`
-		FreshAt     time.Time       `json:"fresh_at"`
-		Output      json.RawMessage `json:"output,omitempty"`
-	}{action, action.PendingApprovalURL(approvalURL(ctx)), operatortool.ActionResult, time.Now().UTC(), data})
+		Action     chat.Action     `json:"action"`
+		ResultTool string          `json:"result_tool"`
+		FreshAt    time.Time       `json:"fresh_at"`
+		Output     json.RawMessage `json:"output,omitempty"`
+	}{action, operatortool.ActionResult, time.Now().UTC(), data})
 }
 
-func approvalURL(ctx context.Context) string {
-	c := operatortool.CurrentConnection(ctx)
-	return strings.TrimRight(c.DashboardURL, "/") + "/chat/approval?connection_id=" + c.ID
-}
 func result(value any) (operatortool.Result, error) {
 	raw, err := json.Marshal(value)
 	if err != nil || len(raw) > operatortool.MaxResultBytes {

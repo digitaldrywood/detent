@@ -24,7 +24,6 @@ type Metadata struct {
 	ResourceID     string `json:"resource_id,omitempty"`
 	Action         string `json:"action"`
 	Source         string `json:"source"`
-	Mode           string `json:"mode"`
 	Confirmation   string `json:"confirmation"`
 	CorrelationID  string `json:"correlation_id"`
 	RetryIdentity  string `json:"retry_identity,omitempty"`

@@ -6,16 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
-	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -44,7 +41,6 @@ func projectAction(t *testing.T, e hubProjectExecutor, ctx context.Context, call
 	return action
 }
 
-// Exercise the real hosted resolver and shared entry rather than granting a test principal.
 func TestHostedProjectTools(t *testing.T) {
 	for _, deployment := range []string{"dedicated", "shared"} {
 		t.Run(deployment, func(t *testing.T) {
@@ -107,60 +103,14 @@ func TestHostedProjectTools(t *testing.T) {
 			}
 			approve := projectCall(t, "approve_project_policy", id, "approve", policy.Change{Policy: hubTestPolicy()})
 			a = projectAction(t, e, ctx, approve)
-			if a.Status != chatpkg.ActionPending {
-				t.Fatalf("material=%+v", a)
-			}
-			if _, err := f.service.operatorChat.Confirm(ctx, a.ConnectionID, a.ID); !errors.Is(err, operatortool.ErrAccessDenied) {
-				t.Fatalf("model approval=%v", err)
-			}
-			viewer := f.user(t, "viewer-tools", "viewer", "viewer-tools@example.test", "", "")
-			if deployment == "shared" {
-				r := shared.serve(t, hostedSharedRequest{user: &viewer, method: http.MethodGet, target: "/organizations/org_security/chat/approval?connection_id=" + a.ConnectionID})
-				requireNativeStatus(t, r, http.StatusForbidden)
-			} else {
-				requireNativeStatus(t, f.request(t, viewer, http.MethodGet, "/chat/approval?connection_id="+a.ConnectionID, nil), http.StatusForbidden)
-			}
-			// Only the existing authenticated browser page supplies an exact form token.
-			approver := f.user(t, "policy-approver", "admin", "approver@example.test", "write", "")
-			target := "/chat/approval?connection_id=" + a.ConnectionID
-			var page string
-			if deployment == "shared" {
-				r := shared.serve(t, hostedSharedRequest{user: &approver, method: http.MethodGet, target: "/organizations/org_security" + target})
-				requireNativeStatus(t, r, http.StatusOK)
-				page = r.Body.String()
-			} else {
-				r := f.request(t, approver, http.MethodGet, target, nil)
-				requireNativeStatus(t, r, http.StatusOK)
-				page = r.Body.String()
-			}
-			if !strings.Contains(page, `action="`+f.service.hostedPath("/chat/approval")+`"`) {
-				t.Fatal("approval form lost organization path")
-			}
-			tokens := regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindAllStringSubmatch(page, -1)
-			if len(tokens) < 2 {
-				t.Fatalf("approval page lacks tokens: %s", page)
-			}
-			form := url.Values{"connection_id": {a.ConnectionID}, "action_id": {a.ID}, "decision": {"confirm"}, "form_token": {tokens[len(tokens)-1][1]}}
-			if deployment == "shared" {
-				r := shared.serve(t, hostedSharedRequest{user: &approver, method: http.MethodPost, target: "/organizations/org_security/chat/approval", csrf: cloudassert.CSRFToken("shared-"+approver.identity.Subject, "org_security"), body: form.Encode(), form: true})
-				requireNativeStatus(t, r, http.StatusSeeOther)
-			} else {
-				requireNativeStatus(t, f.request(t, approver, http.MethodPost, "/chat/approval", form), http.StatusSeeOther)
-			}
-			approved, ok := f.service.operatorChat.Action(a.ConnectionID, a.ID)
-			if !ok || approved.Status != chatpkg.ActionSucceeded {
-				t.Fatalf("approved=%+v", approved)
+			if a.Status != chatpkg.ActionSucceeded {
+				t.Fatalf("policy=%+v", a)
 			}
 			var attribution policy.Approval
-			if json.Unmarshal([]byte(approved.Result), &attribution) != nil || attribution.ApprovedBy != operatortool.ConnectionIdentity(ctx).PrincipalID {
+			if json.Unmarshal([]byte(a.Result), &attribution) != nil || attribution.ApprovedBy != operatortool.ConnectionIdentity(ctx).PrincipalID {
 				t.Fatalf("project command lost originating principal: approval=%+v requester=%s", attribution, operatortool.ConnectionIdentity(ctx).PrincipalID)
 			}
 			if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read("get_change_review_policy")); err != nil {
-				t.Fatal(err)
-			}
-			// YOLO suppresses only confirmation; shared policy provenance validation remains.
-			human := chatpkg.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx))
-			if err := f.service.operatorChat.SetConnectionMode(human, "project-tools", chatpkg.YOLOMode); err != nil {
 				t.Fatal(err)
 			}
 			rules, err := readChangePolicy(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project})
@@ -227,19 +177,10 @@ func TestHostedProjectTools(t *testing.T) {
 			if _, err := e.Execute(ctx, operatortool.Call{Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + created.ID + `"}`)}); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("created resource revoked action result=%v", err)
 			}
-			// Restore confirmation before exercising revoked original authority.
-			if err := f.service.operatorChat.SetConnectionMode(human, "project-tools", chatpkg.ConfirmationMode); err != nil {
-				t.Fatal(err)
-			}
-			// Revoke applies the expected policy identity, requires approval, and does not grant authority.
 			revoke := projectCall(t, "revoke_project_policy", id, "revoke", operatortool.PolicyRevokeInput{ExpectedID: hubTestPolicy().ID})
-			a = projectAction(t, e, ctx, revoke)
-			if a.Status != chatpkg.ActionPending {
-				t.Fatalf("revoke=%+v", a)
-			}
 			operatorSQL(t, f, "UPDATE hosted_members SET role='viewer' WHERE user_id=?", owner.identity.Subject)
-			if _, err := f.service.operatorChat.Confirm(human, a.ConnectionID, a.ID); !errors.Is(err, operatortool.ErrAccessDenied) {
-				t.Fatalf("downgraded approval=%v", err)
+			if _, err := e.Execute(ctx, revoke); !errors.Is(err, operatortool.ErrAccessDenied) {
+				t.Fatalf("downgraded revoke=%v", err)
 			}
 			if _, err := e.Execute(ctx, ordinary); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("downgraded replay=%v", err)

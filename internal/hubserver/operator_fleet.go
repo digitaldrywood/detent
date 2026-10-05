@@ -110,11 +110,9 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		}
 		c := s.operatorChat.Conversation(operatortool.CurrentConnection(ctx).ID)
 		return hubOperatorResult(struct {
-			ID           string                 `json:"connection_id"`
-			Organization string                 `json:"organization_id"`
-			Mode         chatpkg.ConnectionMode `json:"mode"`
-			URL          string                 `json:"setup_url"`
-		}{c.ConnectionID, c.OrganizationID, c.Mode, s.billingApprovalURL(c.ConnectionID)})
+			ID           string `json:"connection_id"`
+			Organization string `json:"organization_id"`
+		}{c.ConnectionID, c.OrganizationID})
 	}
 	if call.Name == operatortool.ActionResult {
 		var r struct {
@@ -247,8 +245,6 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 			URL        string    `json:"url"`
 		}{value, s.config.now(), resourceURL})
 	}
-	// The hub's real approval browser is the hosted dashboard. Other deployment
-	// modes return safely unavailable rather than treating an API token as a human.
 	if s.config.CredentialMaintenance {
 		return operatortool.Result{}, errHubOperatorUnavailable
 	}
@@ -269,9 +265,9 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		return e.actionResult(ctx, prior)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
-	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: r.ProjectID, Action: call.Name, Source: "mcp", Mode: string(s.operatorChat.Conversation(operatortool.CurrentConnection(ctx).ID).Mode), Confirmation: "pending", CorrelationID: newNativeID("mcp")}
+	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: r.ProjectID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: newNativeID("mcp")}
 	defer func() {
-		s.config.Logger.InfoContext(ctx, "operator mutation request", "principal_id", m.PrincipalID, "organization_id", m.OrganizationID, "action", m.Action, "mode", m.Mode, "correlation_id", m.CorrelationID)
+		s.config.Logger.InfoContext(ctx, "operator mutation request", "principal_id", m.PrincipalID, "organization_id", m.OrganizationID, "action", m.Action, "correlation_id", m.CorrelationID)
 	}()
 	m, err = m.Bind(r.RequestID, arguments)
 	if err != nil {
@@ -301,9 +297,6 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 	action, err := e.proposal(ctx, call.Name, arguments)
 	if err != nil {
 		return operatortool.Result{}, err
-	}
-	if s.config.Hosted == nil && chatpkg.RequiresConfirmation(action) {
-		return operatortool.Result{}, errHubOperatorUnavailable
 	}
 	m.ResourceID = action.IssueID
 	action.RequestID, action.Arguments, action.Mutation = r.RequestID, arguments, m
@@ -551,15 +544,13 @@ func (e hubFleetExecutor) actionResult(ctx context.Context, a chatpkg.Action) (o
 		Action     chatpkg.Action       `json:"preview"`
 		ID         string               `json:"action_id"`
 		Status     chatpkg.ActionStatus `json:"status"`
-		URL        string               `json:"approval_url,omitempty"`
 		ResultTool string               `json:"result_tool"`
 		Receipt    json.RawMessage      `json:"receipt,omitempty"`
-	}{a, a.ID, a.Status, a.PendingApprovalURL(e.service.billingApprovalURL(a.ConnectionID)), operatortool.ActionResult, receipt})
+	}{a, a.ID, a.Status, operatortool.ActionResult, receipt})
 }
 func (e hubFleetExecutor) AuditAction(ctx context.Context, a chatpkg.Action, outcome string) {
 	m := a.Mutation
 	m.ResourceID = a.IssueID
-	m.Mode = string(a.Mode)
 	m.RetryIdentity = ""
 	m.InputHash = ""
 	if outcome == "approved" || outcome == "rejected" {

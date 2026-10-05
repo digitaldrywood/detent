@@ -37,7 +37,6 @@ type operatorActionResult struct {
 	Arguments      json.RawMessage      `json:"arguments"`
 	Preview        chatpkg.Action       `json:"preview"`
 	Status         chatpkg.ActionStatus `json:"status"`
-	ApprovalURL    string               `json:"approval_url,omitempty"`
 	ResultTool     string               `json:"result_tool"`
 }
 
@@ -197,12 +196,10 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		connection := operatortool.CurrentConnection(ctx)
 		conversation := s.chat.Conversation(connection.ID)
 		return operatorResult(struct {
-			ID           string                 `json:"connection_id"`
-			Organization string                 `json:"organization_id"`
-			Client       string                 `json:"client"`
-			Mode         chatpkg.ConnectionMode `json:"mode"`
-			URL          string                 `json:"setup_url"`
-		}{connection.ID, connection.Identity.OrganizationID, conversation.Client, conversation.Mode, s.operatorApprovalURL(connection.ID)})
+			ID           string `json:"connection_id"`
+			Organization string `json:"organization_id"`
+			Client       string `json:"client"`
+		}{connection.ID, connection.Identity.OrganizationID, conversation.Client})
 	case operatortool.ActionResult:
 		var request struct {
 			ActionID string `json:"action_id"`
@@ -244,7 +241,7 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 	if err != nil {
 		return operatortool.Result{}, errOperatorCommandUnavailable
 	}
-	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, Action: call.Name, Source: "mcp", Mode: string(s.chat.Conversation(operatortool.CurrentConnection(ctx).ID).Mode), Confirmation: "none", CorrelationID: correlation}
+	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: correlation}
 	outcome := "failed"
 	defer func() { s.auditMutation(ctx, m, outcome) }()
 	requestID, arguments, projectID, err := operatorActionArguments(call.Arguments, dashboardFleetTool(call.Name))
@@ -303,12 +300,6 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 		return operatortool.Result{}, errOperatorCommandUnavailable
 	}
 	m.ResourceID = proposal.IssueID
-	if chatpkg.RequiresConfirmation(proposal) {
-		m.Confirmation = "pending"
-		if m.Mode == string(chatpkg.YOLOMode) {
-			m.Confirmation = "yolo"
-		}
-	}
 	records, ok := s.store.(store.OperatorMutations)
 	if !ok {
 		return operatortool.Result{}, errOperatorCommandUnavailable
@@ -322,6 +313,7 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 		return replay, err
 	}
 	proposal.RequestID, proposal.Arguments, proposal.Mutation = requestID, arguments, m
+
 	action, err := s.chat.Submit(ctx, proposal)
 	if err != nil {
 		return operatortool.Result{}, safeMutationError(err)
@@ -450,7 +442,7 @@ func (s *Server) validateOperatorAction(ctx context.Context, action chatpkg.Acti
 	expected := action
 	expected.ID, expected.ConnectionID, expected.OrganizationID, expected.Client, expected.RequestID = "", "", "", "", ""
 	expected.Mutation = current.Mutation
-	expected.Arguments, expected.Mode, expected.Status, expected.Result = nil, "", "", ""
+	expected.Arguments, expected.Status, expected.Result = nil, "", ""
 	expected.CreatedAt, expected.ResolvedAt = current.CreatedAt, nil
 	if !reflect.DeepEqual(current, expected) {
 		return errOperatorCommandUnavailable
@@ -458,13 +450,8 @@ func (s *Server) validateOperatorAction(ctx context.Context, action chatpkg.Acti
 	return nil
 }
 
-func (s *Server) operatorApprovalURL(id string) string {
-	conversation := s.chat.Conversation(id)
-	return strings.TrimRight(conversation.ApprovalBaseURL, "/") + "/chat/approval?connection_id=" + id
-}
-
 func (s *Server) operatorActionResult(action chatpkg.Action) (operatortool.Result, error) {
-	return operatorResult(operatorActionResult{action.Revision, action.CommentID, action.Mutation.CorrelationID, action.ID, action.ConnectionID, action.OrganizationID, action.ProjectID, action.IssueID, action.Identifier, action.ResourceURL, action.Client, action.Kind, action.Arguments, action, action.Status, action.PendingApprovalURL(s.operatorApprovalURL(action.ConnectionID)), operatortool.ActionResult})
+	return operatorResult(operatorActionResult{action.Revision, action.CommentID, action.Mutation.CorrelationID, action.ID, action.ConnectionID, action.OrganizationID, action.ProjectID, action.IssueID, action.Identifier, action.ResourceURL, action.Client, action.Kind, action.Arguments, action, action.Status, operatortool.ActionResult})
 }
 
 func operatorResult(value any) (operatortool.Result, error) {
@@ -503,14 +490,13 @@ func (s *Server) operatorMutationReplay(ctx context.Context, m mutation.Metadata
 		CommentID     string    `json:"comment_id,omitempty"`
 		CorrelationID string    `json:"correlation_id"`
 		CompletedAt   time.Time `json:"completed_at"`
-		Mode          string    `json:"mode"`
 		Confirmation  string    `json:"confirmation"`
 		Status        string    `json:"status"`
 		ProjectID     string    `json:"project_id"`
 		ResourceID    string    `json:"resource_id,omitempty"`
 		Identifier    string    `json:"identifier,omitempty"`
 		URL           string    `json:"url,omitempty"`
-	}{receipt.Revision, receipt.CommentID, receipt.CorrelationID, receipt.CompletedAt, receipt.Mode, receipt.Confirmation, receipt.Outcome, receipt.ProjectID, receipt.ResourceID, receipt.Identifier, receipt.URL})
+	}{receipt.Revision, receipt.CommentID, receipt.CorrelationID, receipt.CompletedAt, receipt.Confirmation, receipt.Outcome, receipt.ProjectID, receipt.ResourceID, receipt.Identifier, receipt.URL})
 	return result, true, err
 }
 
@@ -531,7 +517,7 @@ func (s *Server) AuditAction(ctx context.Context, action chatpkg.Action, outcome
 	if m.Source != "mcp" {
 		return
 	}
-	m.Mode, m.ResourceID = string(action.Mode), action.IssueID
+	m.ResourceID = action.IssueID
 	if outcome == "approved" || outcome == "rejected" {
 		m.Confirmation = outcome
 	}

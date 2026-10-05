@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -156,27 +155,8 @@ func TestSharedBillingJourney(t *testing.T) {
 			} `json:"structuredContent"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(preview.Body.Bytes(), &reply) != nil || reply.Result.Structured.Preview.Status != chat.ActionPending || stripe.creates != 0 || stripe.checkouts != 0 {
+	if json.Unmarshal(preview.Body.Bytes(), &reply) != nil || reply.Result.Structured.Preview.Status != chat.ActionSucceeded || stripe.creates != 1 || stripe.checkouts != 1 {
 		t.Fatalf("shared preview=%s", preview.Body.String())
-	}
-	action := reply.Result.Structured.Preview
-	approvalPath := "/organizations/" + id + "/chat/approval"
-	approval, html := dana.get(approvalPath + "?connection_id=" + action.ConnectionID)
-	if approval.StatusCode != http.StatusOK {
-		t.Fatalf("shared approval=%d %s", approval.StatusCode, html)
-	}
-	var formToken string
-	for _, form := range regexp.MustCompile(`<form[^>]*>[\s\S]*?</form>`).FindAllString(html, -1) {
-		if strings.Contains(form, `name="action_id" value="`+action.ID+`"`) {
-			match := regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindStringSubmatch(form)
-			if len(match) == 2 {
-				formToken = match[1]
-			}
-		}
-	}
-	confirmed := dana.do(http.MethodPost, approvalPath, url.Values{"csrf": {csrfFrom(t, html)}, "connection_id": {action.ConnectionID}, "action_id": {action.ID}, "form_token": {formToken}, "decision": {"confirm"}}, nil)
-	if confirmed.StatusCode != http.StatusSeeOther || stripe.creates != 1 || stripe.checkouts != 1 {
-		t.Fatalf("shared confirmation=%d %s effects=%d/%d", confirmed.StatusCode, confirmed.Body, stripe.creates, stripe.checkouts)
 	}
 	replayed := mcpCall(checkoutCall)
 	if !strings.Contains(replayed.Body.String(), `"status":"succeeded"`) || stripe.checkouts != 1 {

@@ -27,7 +27,7 @@ func TestOperatorMutationDurableRetry(t *testing.T) {
 		}
 	}()
 	records := backend.(OperatorMutations)
-	base := mutation.Metadata{PrincipalID: "actor", OrganizationID: "org", ProjectID: "project", Action: "file_issue", Source: "mcp", Mode: "confirmation", Confirmation: "none", CorrelationID: "correlation"}
+	base := mutation.Metadata{PrincipalID: "actor", OrganizationID: "org", ProjectID: "project", Action: "file_issue", Source: "mcp", Confirmation: "none", CorrelationID: "correlation"}
 	const sentinel = "credential-invitation-prompt-comment-body-support-billing-sensitive-sentinel"
 	m, err := base.Bind("business-key", map[string]string{"body": sentinel})
 	if err != nil {

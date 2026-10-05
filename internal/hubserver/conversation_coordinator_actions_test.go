@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -21,7 +19,7 @@ import (
 
 func TestCoordinatorProjectActions(t *testing.T) {
 	for _, tool := range []string{"update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, string(chat.ActionIssueSplit), string(chat.ActionArchiveItems), "set_sprite_pool", "scale_up_sprite_pool"} {
-		outcomes := []string{"approve", "reject", "unauthorized", "revoked", "stale", "model approval", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
+		outcomes := []string{"execute", "reject", "unauthorized", "revoked", "stale", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
 		if tool == "update_project_integration" {
 			outcomes = append(outcomes, "transport unavailable")
 		}
@@ -100,7 +98,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					if _, err := db.ExecContext(t.Context(), `INSERT INTO project_sprite_pools(organization_id,project_id,min_runners,max_runners,idle_seconds,bootstrap,configured_by) SELECT 'org_security',?,0,1,300,'private-provider-secret',principal_id FROM hosted_members WHERE user_id=?`, f.project, u.identity.Subject); err != nil {
 						t.Fatal(err)
 					}
-					if outcome == "approve" {
+					if outcome == "execute" {
 						for _, name := range []string{"get_sprite_pool", "set_sprites_token", "get_sprite_bootstrap_log"} {
 							result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: name, Arguments: json.RawMessage(`{}`)})
 							if err != nil || !result.Success || strings.Contains(result.Content, spritesSecretSentinel) || strings.Contains(result.Content, "private-provider-secret") {
@@ -184,7 +182,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				if outcome == "bad arguments" {
-					arguments["approve"] = true
+					arguments["execute"] = true
 				}
 				if outcome == "wrong role" {
 					if _, err := db.ExecContext(t.Context(), "UPDATE hosted_members SET role='member' WHERE user_id=?", u.identity.Subject); err != nil {
@@ -246,10 +244,10 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					t.Fatal("preview disclosed the stored customer bootstrap")
 				}
 				var preview struct {
-					ActionID string            `json:"action_id"`
-					Status   chat.ActionStatus `json:"status"`
+					ActionID string `json:"action_id"`
+					Status   string `json:"status"`
 				}
-				if err := json.Unmarshal([]byte(result.Content), &preview); err != nil || preview.Status != chat.ActionPending {
+				if err := json.Unmarshal([]byte(result.Content), &preview); err != nil || preview.Status != "proposed" {
 					t.Fatalf("preview=%s error=%v", result.Content, err)
 				}
 				ctx, err := tools.actionContext(t.Context(), record)
@@ -257,29 +255,32 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					t.Fatal(err)
 				}
 				connectionID := operatortool.CurrentConnection(ctx).ID
-				action, ok := f.service.operatorChat.Action(connectionID, preview.ActionID)
-				if !ok {
-					t.Fatal("preview action missing")
+				messages, err = f.service.conversations.store.listMessages(t.Context(), db, record.ID, 0, 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var action chat.Action
+				for _, message := range messages {
+					var data struct {
+						Proposal struct {
+							Action chat.Action `json:"action"`
+						} `json:"operator_action"`
+					}
+					if json.Unmarshal(message.Data, &data) == nil && data.Proposal.Action.ID == preview.ActionID {
+						action = data.Proposal.Action
+					}
+				}
+				if action.RequestID == "" {
+					t.Fatal("inline proposal missing")
+				}
+				for _, stored := range f.service.operatorChat.Conversation(connectionID).Actions {
+					if stored.Status == chat.ActionPending {
+						t.Fatal("pending action stored")
+					}
 				}
 				assertCoordinatorEffect(t, f, id, tool, false)
-				if outcome == "model approval" {
-					if _, err := f.service.operatorChat.Confirm(ctx, connectionID, action.ID); err == nil {
-						t.Fatal("model approved its own action")
-					}
-					if err := f.service.operatorChat.SetConnectionMode(chat.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx)), connectionID, chat.YOLOMode); err == nil {
-						t.Fatal("chat bypassed approval with YOLO")
-					}
-					return
-				}
-				page := f.request(t, u, http.MethodGet, "/chat/approval?connection_id="+connectionID, nil)
-				requireNativeStatus(t, page, http.StatusOK)
-				tokens := regexp.MustCompile(`name="form_token" value="([^"]+)"`).FindAllStringSubmatch(page.Body.String(), -1)
-				if len(tokens) == 0 {
-					t.Fatalf("missing approval form: %s", page.Body.String())
-				}
-				decision := "confirm"
 				if outcome == "reject" {
-					decision = "reject"
+					return
 				}
 				if outcome == "revoked" {
 					f.grant(t, u, false, false)
@@ -341,24 +342,14 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						}
 					}
 				}
-				form := url.Values{"connection_id": {connectionID}, "action_id": {action.ID}, "decision": {decision}, "form_token": {tokens[len(tokens)-1][1]}}
-				response = f.request(t, u, http.MethodPost, "/chat/approval", form)
-				want := http.StatusSeeOther
-				if outcome == "revoked" {
-					want = http.StatusForbidden
+				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
+				changed := outcome == "execute" || outcome == "wrong role" || outcome == "stale" && tool == operatortool.AddComment
+				if changed {
+					requireNativeStatus(t, response, http.StatusOK)
+				} else if response.Code < 400 {
+					t.Fatalf("refused call=%d %s", response.Code, response.Body.String())
 				}
-				if outcome == "stale" && tool != operatortool.AddComment {
-					want = http.StatusConflict
-				}
-				if strings.HasSuffix(outcome, " failure") || outcome == "became running" || outcome == "became merging" {
-					want = http.StatusConflict
-				}
-				if outcome == "runner grant revoked" {
-					want = http.StatusConflict
-				}
-				requireNativeStatus(t, response, want)
 				f.service.spriteWakeWork.Wait()
-				changed := outcome == "approve" || outcome == "wrong role" || outcome == "stale" && tool == operatortool.AddComment
 				assertCoordinatorEffect(t, f, id, tool, changed)
 				if tool == "scale_up_sprite_pool" && changed {
 					result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "get_sprite_bootstrap_log", Arguments: json.RawMessage(`{}`)})
@@ -366,17 +357,8 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						t.Fatalf("unsafe or missing bootstrap failure/retry: %+v, %v", result, err)
 					}
 				}
-				resolved, ok := f.service.operatorChat.Action(connectionID, action.ID)
-				if !ok {
-					t.Fatal("decision receipt lost")
-				}
-				if outcome == "reject" && resolved.Status != chat.ActionRejected || changed && resolved.Status != chat.ActionSucceeded {
-					t.Fatalf("decision=%+v", resolved)
-				}
 				if changed && tool == string(chat.ActionIssueSplit) {
-					if _, err := f.service.executeCoordinatorAction(ctx, resolved); err != nil {
-						t.Fatalf("confirmation replay failed: %v", err)
-					}
+					requireNativeStatus(t, f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action), http.StatusOK)
 					var count int
 					if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE title LIKE 'Split %'").Scan(&count); err != nil {
 						t.Fatal(err)
@@ -386,9 +368,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				if changed && tool == string(chat.ActionArchiveItems) {
-					if _, err := f.service.executeCoordinatorAction(ctx, resolved); err != nil {
-						t.Fatalf("archive replay failed: %v", err)
-					}
+					requireNativeStatus(t, f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action), http.StatusOK)
 					assertCoordinatorArchiveEffect(t, f, true)
 					for _, archived := range []string{"", "true"} {
 						result, err := (operatorWorkReads{service: f.service, scope: nativeScope{organization: "org_security", project: f.project}}).ReadWork(ctx, operatortool.WorkList, operatortool.WorkReadRequest{ProjectID: string(f.project), Archived: archived, Limit: 100})
@@ -408,14 +388,14 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						}
 					}
 				}
-				if outcome != "revoked" {
+				if changed {
 					messages, err = f.service.conversations.store.listMessages(t.Context(), db, record.ID, 0, 100)
 					if err != nil {
 						t.Fatal(err)
 					}
 					found := false
 					for _, message := range messages {
-						if strings.Contains(message.Text, string(resolved.Status)+".") {
+						if strings.Contains(message.Text, string(chat.ActionSucceeded)+".") {
 							found = true
 						}
 					}

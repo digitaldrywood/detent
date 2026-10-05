@@ -20,7 +20,7 @@ For a selected local board, discover the `local_projects` toolset on its
 authenticated `/mcp` connection. `local_project_configuration` reads the actual
 local revision and redacted selected/effective policy. Its admin commands apply
 an approved committed policy, drain current work or detach one settled migrated
-project. They use the existing operator command API and approval/receipt owner;
+project. They use the existing operator command API and authority and receipt owner;
 see [managed local project configuration](mcp-capabilities.md#managed-local-project-configuration-native-94)
 for exact revision, policy and handoff requirements. Cloud also reaches the
 enrolled runner's configuration owner through its existing heartbeat transport,
@@ -82,14 +82,15 @@ selected key never changes its mode or widens its access.
 
 The hosted MCP `credential_create` tool uses the same `project_access` and
 `project_ids` contract through the shared key owner. Its existing scope, expiry,
-browser approval and connection-bound secret delivery requirements still apply.
+current authority and connection-bound secret delivery requirements still apply.
 
 Key management requires the issuing user's browser session and CSRF state.
 API and MCP client connections require only `Authorization: Bearer`, without
-browser cookies, sessions or CSRF. The browser approval surface still requires
-its existing signed-in session, CSRF and exact-action token. A key cannot approve
-its own material/destructive operation. Approval rechecks the originating key's
-current authority, so revocation before confirmation prevents execution.
+browser cookies, sessions or CSRF. The server executes calls directly after checking key scope, project access and
+current grants. The MCP client owns user confirmation through its local settings;
+there is no server confirmation mode, pending approval or approval URL. Revoked
+or expired keys fail every later call and retry. Use narrower keys to limit clients.
+
 
 ## Organization URLs
 
@@ -135,11 +136,10 @@ Verify returned project/organization IDs before reporting success. An empty
 work-item list is valid after the project read verifies the context. Direct API
 use needs no MCP client. Ordinary writes need Write scope and current write
 access; consult each operation's documented payload, revision and idempotency
-requirements. For material/destructive operations, present the supplied
-preview/approval URL for the user to review in their signed-in browser. When a
-direct route has no approved preview flow, stop and ask the user to perform that
-operation in Detent; do not substitute an unapproved mutation. Keys cannot write
-orchestrator lane state.
+requirements. Sensitive operations execute directly when authorized. Configure confirmation in
+the client and choose the key scope and project access accordingly. Workflow
+requests still use the application's orchestrator lane owner.
+
 
 A concise agent handoff is:
 
@@ -149,9 +149,8 @@ A concise agent handoff is:
 > store/environment as DETENT_API_KEY, never this conversation. Send
 > Authorization: Bearer privately with no cookies or CSRF. Run the two documented
 > project/work-item GETs above for a granted project and verify the context.
-> Follow Hub API request schemas and current authorization. Present existing
-> material-action browser approvals; if no approved direct flow exists, ask me
-> to do the operation in Detent. Report success or an access error without secrets.
+> Follow Hub API request schemas and current authorization. Configure sensitive-operation confirmation in the client;
+> authorized calls execute directly. Report success or an access error without secrets.
 
 ## MCP agent handoff
 
@@ -203,8 +202,8 @@ A concise agent handoff is:
 > with no cookies, CSRF or OAuth. If your client cannot do this, say it is
 > unsupported and stop. Use the lifecycle supported by your client, discover
 > tools/list and call work_list for a project granted to that key. Verify the context
-> and report success without secrets. Present material/destructive previews for
-> my signed-in browser approval; you and the key cannot approve them.
+> and report success without secrets. Use local client permissions for sensitive-operation confirmation;
+> the Hub executes authorized calls directly.
 
 The official TypeScript SDK client used for verification was
 `@modelcontextprotocol/sdk` **1.31.0**. In a private client directory containing
@@ -250,7 +249,7 @@ and `work_list` returned the authorized project. The copied API prompt's actual
 curl examples also passed without browser state. Revoking the key denied the
 next API GET and MCP request on the established session. Focused tests cover
 current roles and grants, organization isolation, expiry, revocation, membership
-removal/replacement, machine rejection, redaction and browser approval.
+removal/replacement, machine rejection, redaction and current authority.
 
 Isolated Chromium verified the generated page at the existing bookmark,
 key creation/revocation, masked one-time secret, complete API/MCP URLs, both

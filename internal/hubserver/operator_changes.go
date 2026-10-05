@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net/url"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -65,11 +64,9 @@ func (e hubOperatorExecutor) Execute(ctx context.Context, call operatortool.Call
 			}
 			c := s.operatorChat.Conversation(id)
 			return hubChangeResult(struct {
-				ID           string              `json:"connection_id"`
-				Organization string              `json:"organization_id"`
-				Mode         chat.ConnectionMode `json:"mode"`
-				URL          string              `json:"setup_url"`
-			}{id, c.OrganizationID, c.Mode, s.hubApprovalURL(id)})
+				ID           string `json:"connection_id"`
+				Organization string `json:"organization_id"`
+			}{id, c.OrganizationID})
 		}
 		var args struct {
 			ID string `json:"action_id"`
@@ -110,32 +107,6 @@ func (e hubOperatorExecutor) Execute(ctx context.Context, call operatortool.Call
 			return result, hubSafeChangeError(err)
 		}
 		return operatortool.BoundedChangeResult(value)
-	}
-	action := chat.Action{Kind: chat.ActionKind(call.Name), ProjectID: args.ProjectID, IssueID: args.ItemID, Title: args.ChangeID, Description: args.Body, Arguments: call.Arguments, RequestID: args.RequestID, Mutation: m}
-	if call.Name == operatortool.ApproveChangeReviewPolicy {
-		current, err := app.ReadChange(ctx, operatortool.GetChangeReviewPolicy, args)
-		if err != nil {
-			return result, hubSafeChangeError(err)
-		}
-		if current.Policy != nil {
-			action.CurrentState = current.Policy.ID
-		}
-		action.Title = args.Policy.PolicyID
-	}
-	if chat.RequiresConfirmation(action) {
-		if s.config.Hosted == nil {
-			return result, operatortool.ErrServiceUnavailable
-		}
-		if err := s.operatorChat.CheckConnection(ctx); err != nil {
-			return result, err
-		}
-		action, err = s.operatorChat.Submit(ctx, action)
-		if err != nil {
-			return result, hubSafeChangeError(err)
-		}
-		m = action.Mutation
-		outcome = string(action.Status)
-		return s.hubActionResult(action)
 	}
 	value, err := app.MutateChange(mutation.WithContext(ctx, m), call.Name, args)
 	if err != nil {
@@ -203,7 +174,7 @@ func changeMutationMetadata(ctx context.Context, name string, args operatortool.
 		return mutation.Metadata{}, operatortool.ErrServiceUnavailable
 	}
 	i := operatortool.ConnectionIdentity(ctx)
-	m := mutation.Metadata{PrincipalID: i.PrincipalID, OrganizationID: i.OrganizationID, ProjectID: args.ProjectID, ResourceID: args.ItemID, Action: name, Source: "mcp", Mode: "confirmation", Confirmation: "none", CorrelationID: hex.EncodeToString(b[:])}
+	m := mutation.Metadata{PrincipalID: i.PrincipalID, OrganizationID: i.OrganizationID, ProjectID: args.ProjectID, ResourceID: args.ItemID, Action: name, Source: "mcp", Confirmation: "none", CorrelationID: hex.EncodeToString(b[:])}
 	return m.Bind(args.RequestID, raw)
 }
 func (s *Service) hubChangeAudit(ctx context.Context, m mutation.Metadata, outcome string) {
@@ -235,21 +206,14 @@ func (e hubOperatorExecutor) ExecuteAction(ctx context.Context, action chat.Acti
 	}
 	return chat.ActionExecution{Message: "Change command completed.", ResourceID: args.ItemID, Identifier: value.ChangeID, URL: value.URL}, nil
 }
-func (s *Service) hubApprovalURL(id string) string {
-	base := ""
-	if s.config.Hosted != nil {
-		base = s.config.Hosted.PublicURL
-	}
-	return base + "/chat/approval?connection_id=" + url.QueryEscape(id)
-}
+
 func (s *Service) hubActionResult(action chat.Action) (operatortool.Result, error) {
 	return hubChangeResult(struct {
 		Action     chat.Action       `json:"preview"`
 		ID         string            `json:"action_id"`
 		Status     chat.ActionStatus `json:"status"`
-		URL        string            `json:"approval_url,omitempty"`
 		ResultTool string            `json:"result_tool"`
-	}{action, action.ID, action.Status, action.PendingApprovalURL(s.hubApprovalURL(action.ConnectionID)), operatortool.ActionResult})
+	}{action, action.ID, action.Status, operatortool.ActionResult})
 }
 func hubChangeResult(value any) (operatortool.Result, error) {
 	raw, err := json.Marshal(value)
