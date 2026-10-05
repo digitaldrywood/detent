@@ -10,9 +10,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -115,6 +117,34 @@ func TestHostedBillingMCP(t *testing.T) {
 					}
 					if name == operatortool.BillingExport && (!strings.Contains(string(reply.Result.Structured), `"export_id"`) || !strings.Contains(string(reply.Result.Structured), `"url"`)) {
 						t.Fatal("missing export identity")
+					}
+				}
+				for _, step := range []struct {
+					action string
+					on     bool
+				}{{"", false}, {"grant", true}, {"revoke", false}} {
+					before, err := f.service.database.hostedPlanUsage(t.Context(), time.Now())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if step.action != "" {
+						command := hostedPlanCommand{ID: "model_" + step.action, Action: step.action, ExpectedRevision: before.Revision, GrantID: "model_choice", Plan: before.Base, Scope: []string{"model_choice"}, Reason: "approved model access"}
+						if err := f.service.database.applyHostedPlanCommand(t.Context(), "operator", command); err != nil {
+							t.Fatal(err)
+						}
+					}
+					api := f.billingAPI(t, "owner", http.MethodGet, "/plan", "")
+					requireNativeStatus(t, api, http.StatusOK)
+					var plan HostedEntitlement
+					if err := json.Unmarshal(api.Body.Bytes(), &plan); err != nil || slices.Contains(plan.Features, "model_choice") != step.on {
+						t.Fatalf("%s API plan = %+v (%v)", step.action, plan, err)
+					}
+					reply := f.billingTool(t, "owner", operatortool.HostedPlan, `{}`)
+					var report struct {
+						Plan HostedEntitlement `json:"plan"`
+					}
+					if reply.Result.IsError || len(reply.Error) > 0 || json.Unmarshal(reply.Result.Structured, &report) != nil || slices.Contains(report.Plan.Features, "model_choice") != step.on {
+						t.Fatalf("%s MCP plan = %s", step.action, reply.Result.Structured)
 					}
 				}
 				for _, account := range []string{"viewer", "support-viewer", "wrong-organization", "staff"} {

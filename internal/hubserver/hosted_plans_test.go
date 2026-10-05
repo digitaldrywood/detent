@@ -134,15 +134,22 @@ func TestHostedPlanResolutionBoundaries(t *testing.T) {
 		want         string
 		projects     int64
 		feature      bool
+		modelChoice  bool
+		modelEnabled bool
 	}{
-		{"free without payment", false, false, false, 0, "base", 2, false},
-		{"paid base", true, false, false, 0, "subscription", 20, true},
-		{"scoped grant", false, true, false, 0, "base", 20, false},
-		{"before grant expiry", false, true, false, time.Minute - time.Nanosecond, "base", 20, false},
-		{"exact grant expiry", false, true, false, time.Minute, "base", 2, false},
-		{"expiry returns to paid", true, true, false, time.Minute, "subscription", 20, true},
-		{"subscription deadline", true, false, false, 2 * time.Minute, "base", 2, false},
-		{"revocation", false, true, true, 0, "base", 2, false},
+		{"free without payment", false, false, false, 0, "base", 2, false, false, false},
+		{"paid base", true, false, false, 0, "subscription", 20, true, false, false},
+		{"scoped grant", false, true, false, 0, "base", 20, false, false, false},
+		{"before grant expiry", false, true, false, time.Minute - time.Nanosecond, "base", 20, false, false, false},
+		{"exact grant expiry", false, true, false, time.Minute, "base", 2, false, false, false},
+		{"expiry returns to paid", true, true, false, time.Minute, "subscription", 20, true, false, false},
+		{"subscription deadline", true, false, false, 2 * time.Minute, "base", 2, false, false, false},
+		{"revocation", false, true, true, 0, "base", 2, false, false, false},
+		{"model choice only", false, true, false, 0, "base", 2, false, true, true},
+		{"model choice on paid", true, true, false, 0, "subscription", 20, true, true, true},
+		{"model choice before expiry", false, true, false, time.Minute - time.Nanosecond, "base", 2, false, true, true},
+		{"model choice at expiry", false, true, false, time.Minute, "base", 2, false, true, false},
+		{"model choice revoked on paid", true, true, true, 0, "subscription", 20, true, true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSecurityFixture(t)
@@ -164,7 +171,11 @@ func TestHostedPlanResolutionBoundaries(t *testing.T) {
 			}
 			if test.grant {
 				until := now.Add(time.Minute)
-				apply(hostedPlanCommand{ID: "grant", Action: "grant", GrantID: "pilot_grant", Plan: config.Plans[1].PlanReference, Scope: []string{"projects"}, ExpiresAt: &until})
+				plan, scope := config.Plans[1].PlanReference, []string{"projects"}
+				if test.modelChoice {
+					plan, scope = config.Base, []string{"model_choice"}
+				}
+				apply(hostedPlanCommand{ID: "grant", Action: "grant", GrantID: "pilot_grant", Plan: plan, Scope: scope, ExpiresAt: &until})
 			}
 			if test.revoke {
 				apply(hostedPlanCommand{ID: "revoke", Action: "revoke", GrantID: "pilot_grant"})
@@ -173,7 +184,7 @@ func TestHostedPlanResolutionBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Source != test.want || got.Allowances["projects"] != test.projects || slices.Contains(got.Features, "hosted_artifacts") != test.feature {
+			if got.Source != test.want || got.Allowances["projects"] != test.projects || slices.Contains(got.Features, "hosted_artifacts") != test.feature || slices.Contains(got.Features, "model_choice") != test.modelEnabled {
 				t.Fatalf("unexpected entitlement: %+v", got)
 			}
 			if got.Usage["projects"] != 1 {
@@ -847,7 +858,7 @@ func TestCapacityCatalog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if plan.Allowances["projects"] != test.projects || plan.Allowances["unarchived_issues"] != test.issues || slices.Contains(plan.Features, "native_execution") != test.execution {
+			if plan.Allowances["projects"] != test.projects || plan.Allowances["unarchived_issues"] != test.issues || slices.Contains(plan.Features, "native_execution") != test.execution || slices.Contains(plan.Features, "model_choice") {
 				t.Fatalf("catalog = %#v", plan)
 			}
 		})

@@ -107,12 +107,21 @@ export const OrganizationEntitlements = Schema.Struct({
   effective_base: PlanReference,
   source: Schema.String,
   revision: Schema.Number,
+  features: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   grants: Schema.Array(EntitlementGrant),
   plans: Schema.Array(EntitlementPlan),
 });
 export type OrganizationEntitlements = typeof OrganizationEntitlements.Type;
 
 export type EntitlementChange =
+  | {
+      readonly action: "grant";
+      readonly feature: "model_choice";
+      readonly idempotency_key: string;
+      readonly expected_revision: number;
+      readonly expires_at: string | null;
+      readonly reason: string;
+    }
   | {
       readonly action: "grant";
       readonly idempotency_key: string;
