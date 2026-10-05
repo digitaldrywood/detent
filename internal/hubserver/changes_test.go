@@ -190,9 +190,30 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	t.Parallel()
 	f := newChangeFixture(t, nil)
 	other := newNativeFixture(t, f.service, "", "other")
-	linked := f.create(t, "linked")
+	repositoryID, _ := seedProjection(t, f.service.database.db)
+	for _, statement := range []struct {
+		query string
+		args  []any
+	}{
+		{"UPDATE projects SET repository_id = NULL WHERE repository_id = ?", []any{repositoryID}},
+		{"UPDATE projects SET repository_id = ? WHERE id = ?", []any{repositoryID, f.project.ID}},
+		{"UPDATE issues SET repository_id = ?, github_node_id = 'I_original', github_number = 3410, url = 'https://github.com/wrong/repo/issues/29', source_updated_at = ?, synchronized_at = ? WHERE native_id = ?", []any{repositoryID, testTimestamp, testTimestamp, f.issue.WorkItemID}},
+	} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	migrated := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+	wantImported := tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410")
+	if migrated.Number == 3410 || !reflect.DeepEqual(migrated.ExternalReferences, []tracker.ExternalReference{wantImported}) {
+		t.Fatalf("migration lost source identity: %+v", migrated)
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "linked-source"}, GitHubIssueURL: "https://github.com/digitaldrywood/detent/issues/12", Title: "linked", State: f.issue.State})
+	requireNativeStatus(t, response, http.StatusOK)
+	var linked tracker.NativeIssue
+	decodeHubResponse(t, response, &linked)
 	create := tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "linked-change"}, Title: "Linked change", LinkedIssues: []tracker.NativeWorkItemID{linked.WorkItemID}}
-	response := performHubAPIRequest(t, f.service, http.MethodPost, strings.TrimSuffix(f.path, "/"+f.change.ID), f.token, create)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, strings.TrimSuffix(f.path, "/"+f.change.ID), f.token, create)
 	requireNativeStatus(t, response, http.StatusOK)
 	var change tracker.ChangeRequest
 	decodeHubResponse(t, response, &change)
@@ -202,6 +223,13 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	decodeHubResponse(t, response, &changes)
 	if len(changes) != 1 || changes[0].ID != change.ID {
 		t.Fatalf("linked changes = %#v", changes)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, strings.TrimSuffix(f.path, "/"+f.change.ID)+"/"+change.ID, f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var delivery tracker.ChangeDetail
+	decodeHubResponse(t, response, &delivery)
+	if len(delivery.SourceIssues) != 2 || tracker.AppendGitHubIssueClosingReferences("Delivery", delivery.SourceIssues) != "Delivery\n\nCloses digitaldrywood/detent#12\nCloses digitaldrywood/detent#3410" {
+		t.Fatalf("delivered issue sources = %+v", delivery.SourceIssues)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.path, other.token, nil), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", other.token, tracker.PublishChangeVersion{}), http.StatusNotFound)

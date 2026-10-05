@@ -926,6 +926,19 @@ record. A version the Hub refuses (no https remote, a stale review policy) is
 reported on the run's completion comment and the Change Request stays a draft
 until the next successful run publishes one.
 
+Native issue `external_references` and `work_relationships` preserve provider
+`id` provenance and include `url`, `repository` and `number` when durable GitHub
+source identity is available. Imported identities use the source repository and
+GitHub number, independently of the native issue number. Linked identities use
+the canonical linked source URL.
+
+Change detail includes optional `source_issues`, deduplicated from the Change
+Request's canonical issue delivery links. The runner uses these references for
+fully qualified `Closes owner/repository#number` lines in landing PRs, without
+querying upstream issues. Reusing an open PR preserves its body and appends
+missing references; already merged PRs retain their historical attribution.
+Native-only changes have no synthetic source references.
+
 All paths below follow `/api/v2/organizations/{organization}/projects/{project}`.
 Mutations require the existing `idempotency_key`; workers publishing versions
 also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id`.

@@ -82,7 +82,7 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 		return tracker.NativeIssue{}, err
 	}
 	issue.LinkedSource = &tracker.LinkedIssueSource{URL: canonical, Status: "pending"}
-	issue.ExternalReferences = append(issue.ExternalReferences, tracker.ExternalReference{Provider: "github", Kind: "issue", ID: canonical})
+	issue.ExternalReferences = append(issue.ExternalReferences, tracker.GitHubIssueSourceReference(canonical, canonical))
 	return issue, nil
 }
 

@@ -819,6 +819,7 @@ type RunResult struct {
 // base branch: the Change Request, the version, its head, and the merge
 // method the approved policy names.
 type NativeLandingTarget struct {
+	SourceIssues      []tracker.ExternalReference
 	External          *tracker.ChangeExternalReference
 	ChangeID          string
 	VersionID         string

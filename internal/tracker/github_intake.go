@@ -4,9 +4,49 @@ import (
 	"errors"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
+
+func GitHubIssueSourceReference(id, sourceURL string) ExternalReference {
+	reference := ExternalReference{Provider: "github", Kind: "issue", ID: id}
+	canonical, repository, number, err := ParseGitHubIssueURL(sourceURL)
+	if err == nil {
+		reference.URL, reference.Repository, reference.Number = canonical, repository, number
+	}
+	return reference
+}
+
+func AppendGitHubIssueClosingReferences(body string, sources []ExternalReference) string {
+	var lines []string
+	for _, source := range sources {
+		if source.Provider != "github" || source.Kind != "issue" {
+			continue
+		}
+		_, repository, number, err := ParseGitHubIssueURL(source.URL)
+		if err != nil || source.Repository != repository || source.Number != number {
+			continue
+		}
+		line := "Closes " + repository + "#" + strconv.Itoa(number)
+		found := false
+		for existing := range strings.SplitSeq(body, "\n") {
+			if strings.EqualFold(strings.TrimSpace(existing), line) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			lines = append(lines, line)
+		}
+	}
+	slices.Sort(lines)
+	lines = slices.Compact(lines)
+	if len(lines) == 0 {
+		return body
+	}
+	return strings.TrimRight(body, "\r\n") + "\n\n" + strings.Join(lines, "\n")
+}
 
 var githubIssuePath = regexp.MustCompile(`^/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)/?$`)
 

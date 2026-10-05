@@ -139,9 +139,12 @@ type NativeIssueChange struct {
 }
 
 type ExternalReference struct {
-	Provider string `json:"provider"`
-	Kind     string `json:"kind"`
-	ID       string `json:"id"`
+	Provider   string `json:"provider"`
+	Kind       string `json:"kind"`
+	ID         string `json:"id"`
+	URL        string `json:"url,omitempty"`
+	Repository string `json:"repository,omitempty"`
+	Number     int    `json:"number,omitempty"`
 }
 
 type NativeDependency struct {

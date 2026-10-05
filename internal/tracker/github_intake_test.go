@@ -34,3 +34,30 @@ func TestParseGitHubIssueURL(t *testing.T) {
 		})
 	}
 }
+
+func TestAppendGitHubIssueClosingReferences(t *testing.T) {
+	t.Parallel()
+	imported := GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410")
+	linked := GitHubIssueSourceReference("https://github.com/acme/orders/issues/12", "https://github.com/acme/orders/issues/12")
+	mismatch := imported
+	mismatch.Number = 29
+	for _, test := range []struct {
+		name    string
+		body    string
+		sources []ExternalReference
+		want    string
+	}{
+		{name: "native only", body: "Native #29\n\nMention Closes acme/orders#99 in the source body", want: "Native #29\n\nMention Closes acme/orders#99 in the source body"},
+		{name: "imported number", body: "Native #29", sources: []ExternalReference{imported}, want: "Native #29\n\nCloses digitaldrywood/detent#3410"},
+		{name: "linked and imported duplicates", body: "Change", sources: []ExternalReference{imported, linked, imported}, want: "Change\n\nCloses acme/orders#12\nCloses digitaldrywood/detent#3410"},
+		{name: "preserves existing attribution", body: "Human attribution\n\nCloses acme/orders#12", sources: []ExternalReference{linked, imported}, want: "Human attribution\n\nCloses acme/orders#12\n\nCloses digitaldrywood/detent#3410"},
+		{name: "same reference is unchanged", body: "Human attribution\n\ncloses ACME/ORDERS#12", sources: []ExternalReference{linked}, want: "Human attribution\n\ncloses ACME/ORDERS#12"},
+		{name: "opaque or contradictory metadata", body: "Change", sources: []ExternalReference{GitHubIssueSourceReference("I_only", ""), mismatch, {Provider: "github", Kind: "pull_request", URL: imported.URL, Repository: imported.Repository, Number: imported.Number}}, want: "Change"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := AppendGitHubIssueClosingReferences(test.body, test.sources); got != test.want {
+				t.Fatalf("body = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

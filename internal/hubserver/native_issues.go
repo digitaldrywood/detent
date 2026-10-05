@@ -87,9 +87,9 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	if err != nil {
 		return issue, 0, err
 	}
-	issue.ExternalReferences = []tracker.ExternalReference{}
-	if issue.LinkedSource != nil {
-		issue.ExternalReferences = append(issue.ExternalReferences, tracker.ExternalReference{Provider: "github", Kind: "issue", ID: issue.LinkedSource.URL})
+	issue.ExternalReferences, err = readNativeSourceReferences(ctx, query, scope, id)
+	if err != nil {
+		return issue, 0, err
 	}
 	if externalID != "" && issue.Provenance == nil {
 		issue.Provenance = &tracker.Provenance{Provider: "github", ExternalID: externalID, AuthorID: sourceAuthor}
@@ -102,9 +102,6 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 		if issue.Provenance.ObservedAt, err = parseTimeValue(sourceObserved); err != nil {
 			return issue, 0, err
 		}
-		issue.ExternalReferences = append(issue.ExternalReferences, tracker.ExternalReference{Provider: "github", Kind: "issue", ID: externalID})
-	} else if issue.Provenance != nil {
-		issue.ExternalReferences = append(issue.ExternalReferences, tracker.ExternalReference{Provider: issue.Provenance.Provider, Kind: "issue", ID: issue.Provenance.ExternalID})
 	}
 	if issue.CreatedAt, err = parseTimeValue(created); err != nil {
 		return issue, 0, err

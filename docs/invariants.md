@@ -17,6 +17,18 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+Native GitHub source references retain their imported repository and issue
+number, or their durable linked source URL, alongside provider node identity.
+Change detail projects source issues only from its canonical delivery links.
+The runner carries those identities into fully qualified PR closing references;
+native issue numbers, titles, bodies and terminal state do not identify upstream
+issues. Reusing an open PR preserves its existing attribution and appends missing
+source references for the reviewed head without creating another PR. Already
+merged PRs retain their historical body. No upstream issue lookup or closure
+writer is added; GitHub closure follows actual default-branch PR integration.
+The native landing, source projection and PR payload fixtures cover this path;
+the operator owns subsequent live closure verification.
+
 MCP action results advertise `approval_url` only while the existing action is
 pending. Succeeded, failed and rejected receipts retain their genuine status,
 action identity, result tool, safe resource data and replay semantics without

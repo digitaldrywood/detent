@@ -204,13 +204,14 @@ type DiscussChange struct {
 }
 
 type ChangeDetail struct {
-	External   *PullRequestSummary `json:"external_snapshot,omitempty"`
-	Change     ChangeRequest       `json:"change"`
-	Versions   []ChangeVersion     `json:"versions"`
-	Reviews    []ChangeReview      `json:"reviews"`
-	Checks     []ChangeCheck       `json:"checks"`
-	Discussion []ChangeDiscussion  `json:"discussion"`
-	Summary    ChangeSummary       `json:"summary"`
+	SourceIssues []ExternalReference `json:"source_issues,omitempty"`
+	External     *PullRequestSummary `json:"external_snapshot,omitempty"`
+	Change       ChangeRequest       `json:"change"`
+	Versions     []ChangeVersion     `json:"versions"`
+	Reviews      []ChangeReview      `json:"reviews"`
+	Checks       []ChangeCheck       `json:"checks"`
+	Discussion   []ChangeDiscussion  `json:"discussion"`
+	Summary      ChangeSummary       `json:"summary"`
 }
 
 type ChangeSummary struct {

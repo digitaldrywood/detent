@@ -326,6 +326,14 @@ func TestLandNativeChange(t *testing.T) {
 	head := strings.Repeat("c", 40)
 	merge := strings.Repeat("e", 40)
 	target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "merge", Title: "Add a sign-in link", Number: 2}
+	githubTarget := target
+	githubTarget.Repository, githubTarget.GitHubPullRequest = "https://github.com/digitaldrywood/detent", true
+	githubTarget.SourceIssues = []tracker.ExternalReference{
+		tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410"),
+		tracker.GitHubIssueSourceReference("https://github.com/acme/orders/issues/12", "https://github.com/acme/orders/issues/12"),
+		tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410"),
+	}
+	wantMessage := "Add a sign-in link\n\nChange Request change_1, round 2, head " + head + "."
 	for _, test := range []struct {
 		name           string
 		stub           landingStub
@@ -338,11 +346,14 @@ func TestLandNativeChange(t *testing.T) {
 		quota          bool
 		prepared       *NativeLandingTarget
 		infrastructure bool
+		wantMessage    string
 	}{
 		{name: "lands and records", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
-			wantOutput: RunOutputNativeLanded, wantRecorded: 1},
+			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantMessage: wantMessage},
+		{name: "GitHub source issues retain their original numbers without duplicate closing lines", stub: landingStub{target: githubTarget}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
+			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: wantMessage + "\n\nCloses acme/orders#12\nCloses digitaldrywood/detent#3410"},
 		{name: "opted-in project uses GitHub PR landing", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
-			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true},
+			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: "Land " + head + "\n\nChange Request change_1, round 0, head " + head + "."},
 		{name: "quota retains reviewed identity and actual metrics", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{githubRequest: true}, wantErr: "github rate limited", quota: true},
 		{name: "a refusal is reported, not recorded", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "the base branch main refused the push"}},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalProtected},
@@ -427,6 +438,9 @@ func TestLandNativeChange(t *testing.T) {
 			}
 			if backend.githubCalled != test.wantGitHub {
 				t.Fatalf("GitHub landing called = %t, want %t", backend.githubCalled, test.wantGitHub)
+			}
+			if test.wantMessage != "" && backend.received.Message != test.wantMessage {
+				t.Fatalf("PR message = %q, want %q", backend.received.Message, test.wantMessage)
 			}
 			if test.wantRecorded == 1 {
 				if backend.received.HeadSHA != head || backend.received.Method != "merge" || !backend.received.PushAttemptBranch || (!test.wantGitHub && (!strings.Contains(backend.received.Message, "Add a sign-in link") || !strings.Contains(backend.received.Message, "round 2"))) {
