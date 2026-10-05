@@ -1,10 +1,12 @@
 package hubserver
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -222,6 +224,86 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	decodeHubResponse(t, response, &snapshot)
 	if len(snapshot.Routing.ProjectIDs) != 0 || snapshot.Revision != stored.Revision {
 		t.Fatalf("unassigned runner heartbeat routing = %#v", snapshot)
+	}
+
+	for _, test := range []struct {
+		name    string
+		elapsed time.Duration
+		expired bool
+		revoked bool
+		want    string
+	}{
+		{name: "heartbeat committed while read waits", elapsed: 1338 * time.Millisecond, want: "online"},
+		{name: "stale heartbeat", elapsed: runnerauth.HeartbeatTimeout, want: "offline"},
+		{name: "future heartbeat", elapsed: -time.Nanosecond, want: "offline"},
+		{name: "expired credential", expired: true, want: "expired"},
+		{name: "revoked credential", revoked: true, want: "revoked"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before := f.service.config.now()
+			heartbeatAt := before.Add(time.Second)
+			observedAt := heartbeatAt.Add(test.elapsed)
+			var clock atomic.Int64
+			clock.Store(before.UnixNano())
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			db := f.service.database.db
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			waits := db.Stats().WaitCount
+			var result runnerauth.Runner
+			var readErr error
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				result, readErr = readRunnerWithClock(ctx, db, f.project.OrganizationID, r.binding.RunnerID, func() time.Time {
+					return time.Unix(0, clock.Load()).UTC()
+				})
+			}()
+			defer func() {
+				cancel()
+				_ = tx.Rollback()
+				<-done
+			}()
+			ticker := time.NewTicker(time.Millisecond)
+			defer ticker.Stop()
+			for db.Stats().WaitCount == waits {
+				select {
+				case <-done:
+					t.Fatalf("runner read did not wait for the heartbeat transaction: %v", readErr)
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				case <-ticker.C:
+				}
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET last_heartbeat_at = ? WHERE id = ?", formatHubTime(heartbeatAt), r.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			expiresAt := r.identity.ExpiresAt
+			if test.expired {
+				expiresAt = observedAt
+			}
+			var revokedAt any
+			if test.revoked {
+				revokedAt = formatHubTime(heartbeatAt)
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE api_tokens SET expires_at = ?, revoked_at = ? WHERE id = ?", formatHubTime(expiresAt), revokedAt, r.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			clock.Store(observedAt.UnixNano())
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			<-done
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if result.Health != test.want || result.ConnectionHealth != test.want || !result.LastHeartbeatAt.Equal(heartbeatAt) {
+				t.Fatalf("runner observed at %s: health=%s connection_health=%s heartbeat=%s, want %s at %s", observedAt, result.Health, result.ConnectionHealth, result.LastHeartbeatAt, test.want, heartbeatAt)
+			}
+		})
 	}
 }
 

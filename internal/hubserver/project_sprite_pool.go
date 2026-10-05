@@ -198,7 +198,7 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 		slots  int
 	}
 	for _, id := range ids {
-		runner, err := readRunner(ctx, s.database.db, scope.organization, id, now)
+		runner, err := readRunnerWithClock(ctx, s.database.db, scope.organization, id, s.config.now)
 		if err != nil {
 			return input, nil, err
 		}
@@ -275,7 +275,7 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 		if member.RunnerID == "" {
 			continue
 		}
-		runner, err := readRunner(ctx, s.database.db, scope.organization, member.RunnerID, now)
+		runner, err := readRunnerWithClock(ctx, s.database.db, scope.organization, member.RunnerID, s.config.now)
 		if err != nil {
 			return input, nil, err
 		}

@@ -657,7 +657,7 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL AND g.project_id = ?`, s.co
 	}
 	now := s.config.now()
 	for _, id := range ids {
-		runner, err := readRunner(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, now)
+		runner, err := readRunnerWithClock(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now)
 		if err != nil {
 			return result, err
 		}

@@ -211,7 +211,7 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 	spriteContext, cancelSprites := context.WithTimeout(ctx, 5*time.Second)
 	defer cancelSprites()
 	for _, entry := range runners {
-		runner, err := readRunner(ctx, s.database.db, organization, entry.id, s.config.now())
+		runner, err := readRunnerWithClock(ctx, s.database.db, organization, entry.id, s.config.now)
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}

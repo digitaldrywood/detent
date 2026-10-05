@@ -393,7 +393,7 @@ func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCap
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	for _, id := range ids {
-		runner, err := readRunner(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now())
+		runner, err := readRunnerWithClock(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now)
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", id, err)
 		}
