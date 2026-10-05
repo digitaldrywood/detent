@@ -52,6 +52,9 @@ func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state 
 }
 
 func preTurnFailureClass(event runpkg.Completion, running Running) string {
+	if errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired) {
+		return ""
+	}
 	if (errors.Is(event.Err, runpkg.ErrWorkerProcessReap) || errors.Is(event.Err, runpkg.ErrWorkspacePreparation)) && !errors.Is(event.Err, context.Canceled) && running.Cancellation == nil && !issueConfigurationFailure(event.Err, "", "") {
 		return workAttemptErrorWorkspace
 	}

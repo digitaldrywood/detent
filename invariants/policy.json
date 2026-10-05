@@ -83,7 +83,11 @@
       "TestSSHHostLossClearsResumeOnSpillover",
       "TestSSHQueuedPreferenceAndHostCaps"
     ],
+    "./internal/hubclient": [
+      "TestNativePlannerAutomaticHandoff"
+    ],
     "./internal/runner": [
+      "TestNativeInterruptedCodeRecoversPersistedSession",
       "TestNativeReworkFinalizesBeforeImmutableEvidence",
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
       "TestWorkerCredentialBlockerError",

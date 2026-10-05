@@ -41,6 +41,7 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		{name: "provider failure settles before lease retirement", failure: "provider"},
 		{name: "owned cleanup failure settles instance outcome", failure: "cleanup"},
 		{name: "completed provider with exited process preserves staged finalization", failure: "exited"},
+		{name: "permanent pre-provider recovery refusal settles claim", failure: "recovery"},
 	} {
 		t.Run(test.name, func(t *testing.T) { testNativePlannerHandoff(t, test.abandon, test.failure) })
 	}
@@ -59,6 +60,49 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
+	}
+	var preserved *tracker.NativeCheckpoint
+	if failure == "recovery" {
+		candidate := h.claim(t, issue.ID)
+		info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier, BranchName: candidate.BranchName})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("preserved source\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		nativeChangeGit(t, info.Path, "add", "README.md")
+		nativeChangeGit(t, info.Path, "commit", "-m", "preserved source")
+		state, err := backend.(workspace.RecoveryStateProvider).RecoveryState(t.Context(), info, workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
+		if err != nil {
+			t.Fatal(err)
+		}
+		execution := h.scheduler.RunExecution(issue.ID)
+		execution.(runner.DiffExecution).SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+			diff, err := workspace.GitFileDiffs(ctx, info.Path, workspace.AttemptBase(ctx, source), tracker.MaxDiffBytes)
+			if err != nil {
+				return tracker.AttemptDiffRequest{}, false
+			}
+			request := tracker.AttemptDiffRequest{BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA}
+			for _, file := range diff.Files {
+				request.Files = append(request.Files, tracker.AttemptDiffFile{Path: file.Path, OldPath: file.OldPath, Status: file.Status, Additions: file.Additions, Deletions: file.Deletions, Binary: file.Binary, Patch: file.Patch})
+			}
+			return request, true
+		})
+		if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "provider_default"}); err != nil {
+			t.Fatal(err)
+		}
+		checkpoint := tracker.NativeCheckpoint{Resume: "manual_recovery", Availability: "available", Storage: "local_only", WorktreeState: "unpushed", HeadSHA: state.HeadSHA, WorkspaceDigest: state.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}
+		preserved = &checkpoint
+		if err := execution.Checkpoint(t.Context(), checkpoint); err != nil {
+			t.Fatal(err)
+		}
+		if err := execution.Finish(t.Context(), "interrupted"); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "interrupted"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	plan := gate.PlanConfig{Enabled: failure == "", Review: gate.PlanReviewAutomated}
 	provider := &nativePlanningAgent{failure: failure}
@@ -88,6 +132,16 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	transport := &nativePlanTransport{next: h.failChanges, native: h.native, finished: finished, blocked: make(chan struct{}, 1)}
 	transport.failWorkflow.Store(abandon)
 	h.native.client.httpClient.Transport = transport
+	if failure == "recovery" {
+		h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			response, err := transport.RoundTrip(request)
+			if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/release") {
+				current, readErr := h.native.Issue(request.Context(), tracker.NativeWorkItemID(issue.ID))
+				finished <- nativePlanFinish{state: current.State, err: errors.Join(err, readErr)}
+			}
+			return response, err
+		})
+	}
 	orchCfg := orchestrator.Config{
 		Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, Plan: plan,
 		PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1,
@@ -179,6 +233,26 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 		}
 	}
 	changes := h.changes(t, issue.ID)
+	if failure == "recovery" {
+		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || len(current.Attempts) != 1 || current.Attempts[0].Status != "interrupted" || current.Attempts[0].Checkpoint == nil || *current.Attempts[0].Checkpoint != *preserved || provider.calls.Load() != 0 || len(changes) != 0 {
+			t.Fatalf("recovery refusal fabricated or replaced a receipt: attempts=%+v changes=%v calls=%d error=%v", current.Attempts, changes, provider.calls.Load(), err)
+		}
+		for range 2 {
+			if candidates := h.candidates(t); len(candidates) != 0 {
+				t.Fatalf("permanent recovery refusal reclaimed: %+v", candidates)
+			}
+		}
+		state, err := orch.State(t.Context())
+		if err != nil || state.FailureBreaker.Count != 0 || len(state.Retry) != 0 {
+			t.Fatalf("recovery refusal charged failures or queued retry: %+v, %v", state.FailureBreaker, err)
+		}
+		attempt, err := runtimeStore.WorkAttempt(t.Context(), 1)
+		if err != nil || attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalCancelled || attempt.ErrorClass != "runner_interrupted" {
+			t.Fatalf("recovery refusal lost instance accounting: %+v, %v", attempt, err)
+		}
+		return
+	}
 	if failure == "provider" || failure == "cleanup" {
 		if len(changes) != 0 || provider.calls.Load() != 1 {
 			t.Fatalf("failed native run created a Change or repeated coding: changes=%v calls=%d", changes, provider.calls.Load())

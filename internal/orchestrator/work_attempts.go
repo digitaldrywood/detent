@@ -1191,7 +1191,7 @@ func terminalStateForRun(err error, finalState string) store.WorkAttemptTerminal
 	switch {
 	case err == nil && strings.TrimSpace(finalState) != runpkg.FinalStateFailed:
 		return store.WorkAttemptTerminalSuccess
-	case errors.Is(err, context.Canceled):
+	case errors.Is(err, context.Canceled), errors.Is(err, runpkg.ErrNativeRecoveryRequired):
 		return store.WorkAttemptTerminalCancelled
 	case errors.Is(err, context.DeadlineExceeded):
 		return store.WorkAttemptTerminalTimedOut
@@ -1201,6 +1201,9 @@ func terminalStateForRun(err error, finalState string) store.WorkAttemptTerminal
 }
 
 func runnerWorkAttemptErrorClass(err error) string {
+	if errors.Is(err, runpkg.ErrNativeRecoveryRequired) {
+		return workAttemptErrorInterrupted
+	}
 	var deliverableErr *runpkg.DeliverableCommandError
 	if errors.As(err, &deliverableErr) && deliverableErr != nil && deliverableErr.OperationClass == "post_push" {
 		return workAttemptErrorPostPushCommand
