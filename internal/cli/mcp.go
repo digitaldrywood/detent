@@ -15,7 +15,8 @@ func newMCPCommand(configPath *string, host *string, port *int, opts options) *c
 		Long: strings.TrimSpace(`Serve the shared Detent operator catalog over MCP stdio.
 
 The command connects to the already-running Detent daemon through its authenticated
-HTTP application API. Destructive actions use dashboard operator approval.
+HTTP application API. Authorized calls execute directly after checking key scope,
+project access and current grants. The MCP client owns user confirmation.
 It never opens the runtime database or starts a daemon. Standard
 output is reserved for newline-delimited MCP JSON-RPC frames; diagnostics use
 standard error.`),
