@@ -84,7 +84,7 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		return result, err
 	}
 	for _, id := range ids {
-		runner, err := readRunner(ctx, s.database.db, scope.organization, id, s.config.now())
+		runner, err := readRunnerWithClock(ctx, s.database.db, scope.organization, id, s.config.now)
 		if err != nil {
 			return result, err
 		}

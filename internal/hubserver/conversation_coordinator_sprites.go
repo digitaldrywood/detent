@@ -267,7 +267,7 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 	for _, member := range view.Members {
 		item := map[string]any{"name": member.Name, "state": member.State, "runner_id": member.RunnerID, "connected": false, "provider_readiness": "unavailable"}
 		if member.RunnerID != "" && member.State == "enrolled" {
-			r, err := readRunner(ctx, s.database.db, scope.organization, member.RunnerID, s.config.now())
+			r, err := readRunnerWithClock(ctx, s.database.db, scope.organization, member.RunnerID, s.config.now)
 			if err != nil {
 				return nil, err
 			}

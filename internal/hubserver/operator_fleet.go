@@ -366,7 +366,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		a.CurrentState = strconv.FormatInt(urgent.Revision, 10)
 		a.MaterialChange = true
 	case operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.RevokeRunnerIdentity:
-		runner, err := readRunner(ctx, e.service.database.db, tracker.OrganizationID(org), r.RunnerID, e.service.config.now())
+		runner, err := readRunnerWithClock(ctx, e.service.database.db, tracker.OrganizationID(org), r.RunnerID, e.service.config.now)
 		if err != nil {
 			return a, errHubOperatorUnavailable
 		}

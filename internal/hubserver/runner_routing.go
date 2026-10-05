@@ -24,7 +24,7 @@ m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expi
 r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id`
 
-func scanRunnerIdentity(row interface{ Scan(...any) error }, now time.Time) (runnerauth.Runner, []providercapacity.Report, error) {
+func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.Time) (runnerauth.Runner, []providercapacity.Report, time.Time, error) {
 	var r runnerauth.Runner
 	var tags, operations, heartbeat, created, expires, token, settings string
 	var projects, problems, isolationRaw, capacityRaw, providerRaw, updateRaw string
@@ -35,20 +35,21 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, now time.Time) (run
 		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings, &dry,
 		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw)
 	if err != nil {
-		return r, nil, err
+		return r, nil, time.Time{}, err
 	}
+	now := clock()
 	if err := json.Unmarshal([]byte(tags), &r.Tags); err != nil {
-		return r, nil, err
+		return r, nil, time.Time{}, err
 	}
 	if err := unmarshalRunnerSettings(settings, &r.Routing); err != nil {
-		return r, nil, err
+		return r, nil, time.Time{}, err
 	}
 	if err := json.Unmarshal([]byte(operations), &r.Operations); err != nil {
-		return r, nil, err
+		return r, nil, time.Time{}, err
 	}
 	r.LastHeartbeatAt, err = parseTimeValue(heartbeat)
 	if err != nil {
-		return r, nil, err
+		return r, nil, time.Time{}, err
 	}
 	r.Health = "online"
 	switch {
@@ -61,35 +62,39 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, now time.Time) (run
 	}
 	r.ConnectionHealth = r.Health
 	if err := json.Unmarshal([]byte(projects), &r.ProjectIDs); err != nil {
-		return r, nil, err
+		return r, nil, time.Time{}, err
 	}
 	r.Routing = r.Normalized()
 	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected); err != nil {
-		return r, nil, err
+		return r, nil, time.Time{}, err
 	}
 	if dry.Valid {
 		since, err := parseTimeValue(dry.String)
 		if err != nil {
-			return r, nil, err
+			return r, nil, time.Time{}, err
 		}
 		r.HomeDrySince = &since
 	}
 	r.HomeStatus = r.HomeWorkStatus(now)
 	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
-		return r, nil, err
+		return r, nil, time.Time{}, err
 	}
 	var reports []providercapacity.Report
 	if err := json.Unmarshal([]byte(capacityRaw), &r.CapacityConfig); err != nil {
-		return r, nil, err
+		return r, nil, time.Time{}, err
 	}
 	if err := json.Unmarshal([]byte(providerRaw), &reports); err != nil {
-		return r, nil, err
+		return r, nil, time.Time{}, err
 	}
-	return r, reports, nil
+	return r, reports, now, nil
 }
 
 func readRunner(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time) (runnerauth.Runner, error) {
-	r, reports, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), now)
+	return readRunnerWithClock(ctx, db, organization, id, func() time.Time { return now })
+}
+
+func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, clock func() time.Time) (runnerauth.Runner, error) {
+	r, reports, now, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), clock)
 	if err != nil {
 		return r, err
 	}
@@ -190,7 +195,7 @@ func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
 }
 
 func readRunnerRoutingSnapshot(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time) (runnerauth.RoutingSnapshot, error) {
-	runner, _, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), now)
+	runner, _, _, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), func() time.Time { return now })
 	if err == nil {
 		err = applyUrgentRunnerRouting(ctx, db, &runner)
 	}
@@ -222,7 +227,7 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 	if !visible {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
-	return readRunner(ctx, s.database.db, scope.organization, runnerID, s.config.now())
+	return readRunnerWithClock(ctx, s.database.db, scope.organization, runnerID, s.config.now)
 }
 
 type runnerRoutingRequest struct {
@@ -415,7 +420,7 @@ func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracke
 	}
 	result := []runnerauth.Runner{}
 	for _, id := range ids {
-		r, err := readRunner(ctx, s.database.db, organization, id, s.config.now())
+		r, err := readRunnerWithClock(ctx, s.database.db, organization, id, s.config.now)
 		if err != nil {
 			return nil, err
 		}

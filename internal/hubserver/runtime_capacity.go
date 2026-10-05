@@ -28,7 +28,7 @@ ORDER BY CASE WHEN r.id = ? THEN 0 ELSE 1 END, r.id LIMIT 101`, scope.organizati
 			truncated = true
 			break
 		}
-		r, providerReports, err := scanRunnerIdentity(rows, now)
+		r, providerReports, _, err := scanRunnerIdentity(rows, func() time.Time { return now })
 		if err != nil {
 			return nil, false, err
 		}
