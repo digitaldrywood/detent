@@ -64,7 +64,7 @@ for (const surface of ["Chat", "Ask"]) {
     await openIssue(page);
     if (surface === "Chat") await sidebarChat(page);
     else await page.getByTestId("issue-ask-button").click();
-    await page.getByRole("button", { name: "Remove #2 context" }).click();
+    await page.getByTestId("composer-context-attachment").getByRole("button", { name: /^Remove #2.* context$/ }).click();
     await expect(page.getByTestId("composer-context-attachment")).toHaveCount(0);
     await send(page, surface === "Ask" ? "Ask message" : "Message");
     await expect(page.getByText("This is a project-wide chat.", { exact: true })).toBeVisible();

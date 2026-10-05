@@ -60,6 +60,11 @@ test("header and keyboard open the private Ask tab", async ({ page }) => {
 for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844 }]) {
   test(`Ask composer grows and sends multiline questions at ${viewport.width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize(viewport);
+    const title = "Renew the lease before the handoff completes while preserving the earlier questions and attached issue context across the entire conversation";
+    await page.route(`**/work-items/${hub.fixture.work_item}`, async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({ response, json: { ...await response.json(), title } });
+    });
     await openIssue(page);
     await expect(page.getByTestId("issue-ask-inline")).toHaveCount(0);
     await page.getByTestId("issue-ask-button").click();
@@ -69,6 +74,26 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
     await expect(ask.getByRole("combobox", { name: "Issue chats" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Add panel surface" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Split into smaller issues", exact: true })).toHaveCount(1);
+    const chip = ask.getByTestId("composer-context-attachment");
+    await expect(chip).toHaveText(`#2 ${title}`);
+    await expect(chip).toHaveAttribute("title", title);
+    const chipLayout = await chip.locator("span").evaluate((node) => ({
+      whiteSpace: getComputedStyle(node).whiteSpace,
+      overflow: getComputedStyle(node).overflow,
+      ellipsis: getComputedStyle(node).textOverflow,
+      height: node.clientHeight,
+      line: parseFloat(getComputedStyle(node).lineHeight),
+      width: node.closest("[data-testid=composer-context-attachment]").getBoundingClientRect().width,
+      composerWidth: node.closest("form").getBoundingClientRect().width,
+      visibleWidth: node.clientWidth,
+      fullWidth: node.scrollWidth,
+    }));
+    expect(chipLayout.whiteSpace).toBe("nowrap");
+    expect(chipLayout.overflow).toBe("hidden");
+    expect(chipLayout.ellipsis).toBe("ellipsis");
+    expect(chipLayout.height).toBeCloseTo(chipLayout.line, 0);
+    expect(chipLayout.width).toBeLessThanOrEqual(chipLayout.composerWidth);
+    expect(chipLayout.fullWidth).toBeGreaterThan(chipLayout.visibleWidth);
     await expect(editor).toHaveAttribute("aria-placeholder", "Ask about #2…");
     const size = () => editor.evaluate((node) => ({ height: node.clientHeight, scroll: node.scrollHeight, line: parseFloat(getComputedStyle(node).lineHeight), overflow: getComputedStyle(node).overflowY }));
     const empty = await size();
@@ -109,6 +134,23 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
     const detail = await read(page, `conversations/${chats.conversations[0].id}`);
     expect(detail.messages.find((message) => message.role === "user").text).toBe("Why is this Blocked?\nPlease summarize the history.");
     await page.screenshot({ path: testInfo.outputPath(`issue-ask-thread-${viewport.width}.png`) });
+    await ask.getByRole("button", { name: "New question", exact: true }).click();
+    for (const name of ["Why is this Blocked?", "Summarize the history", "What is left before it can start?", "Split into smaller issues"]) {
+      await expect(ask.getByRole("button", { name, exact: true })).toBeVisible();
+    }
+    const picker = ask.getByRole("combobox", { name: "Issue chats" });
+    await expect(picker).toHaveValue("");
+    await expect(picker.locator("option:checked")).toHaveText("Earlier questions");
+    await expect(picker.getByRole("option", { name: "New question", exact: true })).toHaveCount(0);
+    await expect(chip).toHaveText(`#2 ${title}`);
+    await page.screenshot({ path: testInfo.outputPath(`issue-ask-new-question-${viewport.width}.png`) });
+    await ask.getByRole("button", { name: "Summarize the history", exact: true }).click();
+    await expect(ask.getByText(/lane history records/)).toBeVisible();
+    await expect(ask.getByRole("button", { name: "Summarize the history", exact: true })).toHaveCount(0);
+    await expect(chip).toHaveText(`#2 ${title}`);
+    await expect(chip.getByRole("button")).toHaveCount(0);
+    await picker.selectOption(chats.conversations[0].id);
+    await expect(ask.getByText("Why is this Blocked?\nPlease summarize the history.", { exact: true })).toBeVisible();
   });
 }
 

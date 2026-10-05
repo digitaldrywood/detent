@@ -57,7 +57,7 @@ const thread = (id: string, created_at: string): Conversation =>
   }) as Conversation;
 function View() {
   const ask = useIssueAsk("project", "wi_subject");
-  return <IssueAskPanel ask={ask} projectId="project" identifier="#28" canWrite />;
+  return <IssueAskPanel ask={ask} projectId="project" identifier="#28" title="Renew the lease before the handoff completes" canWrite />;
 }
 afterEach(cleanup);
 beforeEach(() => {
@@ -72,7 +72,7 @@ beforeEach(() => {
   mock.refresh.mockResolvedValue(undefined);
 });
 
-it("shows suggestions only before the first question and sends the split prompt", async () => {
+it("shows suggestions for an empty question and sends the split prompt", async () => {
   render(<View />);
   await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
   const suggestions = within(screen.getByTestId("issue-ask-panel"));
@@ -84,9 +84,12 @@ it("shows suggestions only before the first question and sends the split prompt"
   ];
   expect(
     suggestions.getAllByRole("button")
-      .filter((button) => button.textContent !== "Ask" && button.textContent !== "New question")
+      .filter((button) => labels.includes(button.textContent ?? ""))
       .map((button) => button.textContent),
   ).toEqual(labels);
+  const chip = suggestions.getByTestId("composer-context-attachment");
+  expect(chip.textContent).toBe("#28 Renew the lease before the handoff completes");
+  expect(chip.getAttribute("title")).toBe("Renew the lease before the handoff completes");
   fireEvent.click(
     suggestions.getByRole("button", { name: "Split into smaller issues" }),
   );
@@ -150,7 +153,7 @@ it("sorts all subject pages newest first and opens the same thread in Chat", asy
   });
 });
 
-it("starts a fresh subject thread without suggestions while keeping prior threads selectable", async () => {
+it("restores suggestions for a fresh question while keeping prior threads selectable", async () => {
   mock.list.mockImplementation(() =>
     Effect.succeed({
       conversations: [thread("conv_old", "2026-09-01T00:00:00Z")],
@@ -159,21 +162,29 @@ it("starts a fresh subject thread without suggestions while keeping prior thread
   );
   render(<View />);
   await screen.findByTestId("selected-chat");
+  expect(screen.queryByRole("button", { name: "Summarize the history" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "New question" }));
   const panel = screen.getByTestId("issue-ask-panel");
-  expect(within(panel).queryByRole("button", { name: "Summarize the history" })).toBeNull();
-  const input = within(panel).getByRole("textbox", { name: "Ask message" });
-  await typeInComposer(input, "Summarize the history");
-  fireEvent.submit(input.closest("form")!);
+  for (const name of ["Why is this Blocked?", "Summarize the history", "What is left before it can start?", "Split into smaller issues"]) {
+    expect(within(panel).getByRole("button", { name })).toBeTruthy();
+  }
+  const picker = screen.getByRole("combobox", { name: "Issue chats" }) as HTMLSelectElement;
+  expect(picker.selectedOptions[0]?.textContent).toBe("Earlier questions");
+  expect(within(picker).queryByRole("option", { name: "New question" })).toBeNull();
+  expect(within(panel).getByTestId("composer-context-attachment").textContent).toBe("#28 Renew the lease before the handoff completes");
+  fireEvent.click(within(panel).getByRole("button", { name: "Summarize the history" }));
   await waitFor(() =>
     expect(screen.getByTestId("selected-chat").textContent).toBe("conv_new"),
   );
   expect(mock.create.mock.calls[0]?.[0].firstMessage.text).toBe(
     "Summarize the history",
   );
+  expect(screen.queryByRole("button", { name: "Summarize the history" })).toBeNull();
   expect(
     within(screen.getByRole("combobox", { name: "Issue chats" })).getAllByRole(
       "option",
     ),
   ).toHaveLength(3);
+  fireEvent.change(picker, { target: { value: "conv_old" } });
+  await waitFor(() => expect(screen.getByTestId("selected-chat").textContent).toBe("conv_old"));
 });

@@ -170,11 +170,13 @@ export function IssueAskPanel({
   ask,
   projectId,
   identifier,
+  title,
   canWrite,
 }: {
   readonly ask: IssueAsk;
   readonly projectId: string;
   readonly identifier: string;
+  readonly title: string;
   readonly canWrite: boolean;
 }): React.ReactElement {
   const navigate = useNavigate();
@@ -187,7 +189,8 @@ export function IssueAskPanel({
     promptClassName: "min-h-[3lh] max-h-[12lh]",
     promptContext: (
       ask.selected === null && !attached ? null : <ComposerContextAttachment
-        label={identifier}
+        label={title ? `${identifier} ${title}` : identifier}
+        title={title}
         onRemove={ask.selected === null ? () => setAttached(false) : undefined}
         disabled={ask.pending}
       />
@@ -213,7 +216,7 @@ export function IssueAskPanel({
               onChange={(event) => ask.select(event.target.value || null)}
               className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
             >
-              <option value="">New question</option>
+              <option value="">Earlier questions</option>
               {ask.threads.map((thread) => (
                 <option key={thread.id} value={thread.id}>
                   {thread.title}
@@ -259,21 +262,19 @@ export function IssueAskPanel({
         />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
-          {ask.threads.length === 0 ? (
-            <div className="flex min-h-0 flex-1 flex-col items-start gap-1 overflow-y-auto p-4">
-              {ISSUE_QUESTIONS.map(({ label, prompt }) => (
-                <button
-                  key={label}
-                  type="button"
-                  className="w-full rounded-md px-2 py-2 text-left text-sm font-normal text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-                  disabled={!canWrite || ask.pending}
-                  onClick={() => void ask.start(prompt, attached)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          ) : <div className="min-h-0 flex-1" />}
+          <div className="flex min-h-0 flex-1 flex-col items-start gap-1 overflow-y-auto p-4">
+            {ISSUE_QUESTIONS.map(({ label, prompt }) => (
+              <button
+                key={label}
+                type="button"
+                className="w-full rounded-md px-2 py-2 text-left text-sm font-normal text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                disabled={!canWrite || ask.pending}
+                onClick={() => void ask.start(prompt, attached)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <Composer
             {...composer}
             value={question}

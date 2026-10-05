@@ -3,16 +3,19 @@ import React from "react";
 
 export function ComposerContextAttachment({
   label,
+  title,
   onRemove,
   disabled = false,
 }: {
   readonly label: string;
+  readonly title?: string;
   readonly onRemove?: () => void;
   readonly disabled?: boolean;
 }): React.ReactElement {
   return (
     <span
       data-testid="composer-context-attachment"
+      title={title}
       className="mb-2 inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-xs"
     >
       <span className="truncate">{label}</span>
