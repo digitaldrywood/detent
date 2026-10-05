@@ -135,6 +135,21 @@ func hubRunnerRoutingProjection(runner runnerauth.Runner) hubRunnerRouting {
 	return result
 }
 
+func hubFleetReceiptProjection(name string, raw json.RawMessage) (json.RawMessage, error) {
+	if name != operatortool.UpdateRunnerRouting {
+		return raw, nil
+	}
+	var runner runnerauth.Runner
+	if err := json.Unmarshal(raw, &runner); err != nil {
+		return nil, errHubOperatorUnavailable
+	}
+	projected, err := json.Marshal(hubRunnerRoutingProjection(runner))
+	if err != nil {
+		return nil, errHubOperatorUnavailable
+	}
+	return projected, nil
+}
+
 func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.service
 	if call.Name == operatortool.ConnectionInfo {
@@ -329,6 +344,11 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		status := "succeeded"
 		if outcome.Status == "rejected" {
 			status = "rejected"
+		} else {
+			raw, err = hubFleetReceiptProjection(call.Name, raw)
+			if err != nil {
+				return operatortool.Result{}, err
+			}
 		}
 		return hubOperatorResult(struct {
 			Status        string          `json:"status"`
@@ -580,7 +600,10 @@ func (e hubFleetExecutor) actionResult(ctx context.Context, a chatpkg.Action) (o
 		if !found {
 			return operatortool.Result{}, errHubOperatorUnavailable
 		}
-		receipt = raw
+		receipt, err = hubFleetReceiptProjection(string(a.Kind), raw)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
 	}
 	return hubOperatorResult(struct {
 		Action     chatpkg.Action       `json:"preview"`
