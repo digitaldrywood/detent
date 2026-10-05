@@ -39,6 +39,9 @@ import {
 import { newCommandKey, readLastProject, useClient, writeLastProject } from "./client.ts";
 import { Button } from "../components/ui/button.tsx";
 import { Composer, type ComposerProps } from "./components/Composer.tsx";
+import { ComposerContextAttachment } from "./components/ComposerContextAttachment.tsx";
+import { useWorkHttp } from "./work/lib/useWork.ts";
+import type { NativeIssue } from "../contracts/work.ts";
 import { ComposerContextStrip } from "./components/ComposerContextStrip.tsx";
 import { useIssuePullRequest } from "./adapters/issuePullRequest.ts";
 import { DraftHeroHeadline } from "./components/DraftHeroHeadline.tsx";
@@ -125,6 +128,7 @@ export interface ConnectionChip {
 
 export interface ShellState {
   readonly projectId: string;
+  readonly newChatSubjectId: string | null;
   readonly setProjectId: (id: string) => void;
   readonly conversations: readonly Conversation[];
   readonly connection: ConnectionChip;
@@ -213,11 +217,18 @@ function ShellBody(): React.ReactElement {
   const list = useListState(client);
   const search = useAtomSet(client.searchConversations, { mode: "promise" });
   const refreshList = useAtomSet(client.refreshList, { mode: "promise" });
-  const params = useParams({ strict: false }) as { conversationId?: string; projectId?: string };
+  const params = useParams({ strict: false }) as { conversationId?: string; projectId?: string; workItemId?: string };
   // The Work destination and the Browse group need to know where they are.
   // `useRouterState` is the only source of the current path that stays correct
   // through a redirect; `params` alone cannot tell `/work` from `/work/changes`.
   const activePath = useRouterState({ select: (state) => withoutBasePath(state.location.pathname) });
+
+  const [newChatSubjectId, setNewChatSubjectId] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (activePath !== "/chat") {
+      setNewChatSubjectId(params.workItemId ?? null);
+    }
+  }, [activePath, params.workItemId]);
 
   const projects = client.bootstrap.projects;
   const [selectedProjectId, setProjectIdState] = React.useState(
@@ -292,6 +303,7 @@ function ShellBody(): React.ReactElement {
 
   const shell: ShellState = {
     projectId,
+    newChatSubjectId,
     setProjectId,
     conversations,
     connection,
@@ -420,7 +432,27 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
   const navigate = useNavigate();
   const create = useAtomSet(client.createConversation, { mode: "promise" });
   const sendFirst = useAtomSet(client.sendMessage, { mode: "promise" });
-  const requestedProjectId = projectId ?? shell.projectId;
+  const http = useWorkHttp();
+  const subjectId = projectId === undefined ? shell.newChatSubjectId : null;
+  const [loadedSubject, setSubject] = React.useState<NativeIssue | null>(null);
+  const subject = loadedSubject?.work_item_id === subjectId ? loadedSubject : null;
+  const [contextError, setContextError] = React.useState<string | null>(null);
+  const [removedContext, setRemovedContext] = React.useState(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    setSubject(null);
+    setContextError(null);
+    setRemovedContext(false);
+    if (subjectId !== null) {
+      void http.getWorkItemById(subjectId).then((issue) => {
+        if (!cancelled) setSubject(issue);
+      }).catch((cause) => {
+        if (!cancelled) setContextError(cause instanceof Error ? cause.message : String(cause));
+      });
+    }
+    return () => { cancelled = true; };
+  }, [http, subjectId, projectId]);
+  const requestedProjectId = subject?.project_id ?? projectId ?? shell.projectId;
   const writableProjects = client.bootstrap.projects.filter((candidate) => candidate.can_write);
   const active = requestedProjectId || (writableProjects.length === 1 ? writableProjects[0]!.id : "");
   const project = client.bootstrap.projects.find((candidate) => candidate.id === active);
@@ -465,7 +497,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
   };
 
   const send = async () => {
-    if (project === undefined) return;
+    if (project === undefined || (subjectId !== null && subject === null)) return;
     if (project.can_write === false) {
       setError("You have read-only access to this project.");
       return;
@@ -487,6 +519,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
     const withFiles = attachments.staged.length > 0;
     const result = await create({
       projectId: active,
+      ...(removedContext || subject === null ? {} : { subjectWorkItemId: subject.work_item_id }),
       key: createKey.current,
       ...(withFiles ? {} : { firstMessage: { key: commandKey.current, text: draft } }),
     });
@@ -566,12 +599,12 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
               }}
             />
           </div>
-          {error === null ? null : (
+          {(error ?? contextError) === null ? null : (
             <div
               className="mx-auto mb-2 w-full max-w-3xl rounded-md bg-error-surface px-3 py-2 text-error-foreground text-sm"
               role="alert"
             >
-              {error}
+              {error ?? contextError}
             </div>
           )}
           <Composer
@@ -583,8 +616,15 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             autoFocus
             label="Message"
             placeholder="Ask for changes, send follow-ups, or describe the work"
+            promptContext={removedContext || project === undefined || (subjectId !== null && subject === null) ? undefined : (
+              <ComposerContextAttachment
+                label={subject === null ? project.name : `#${subject.number}`}
+                onRemove={() => setRemovedContext(true)}
+                disabled={sending}
+              />
+            )}
             blockedReason={
-              project === undefined ? "Choose a project first" : project.can_write === false ? "Read-only project" : null
+              subjectId !== null && subject === null ? "Loading issue context" : project === undefined ? "Choose a project first" : project.can_write === false ? "Read-only project" : null
             }
             attachments={attachments}
             preferences={preferences}
@@ -608,7 +648,7 @@ export function NewChat({ projectId }: { projectId?: string }): React.ReactEleme
             contextStrip={
               <ComposerContextStrip
                 projectName={project?.name ?? null}
-                issueIdentifier={null}
+                issueIdentifier={removedContext || subject === null ? null : `#${subject.number}`}
                 onCreateIssue={null}
                 draft
               />

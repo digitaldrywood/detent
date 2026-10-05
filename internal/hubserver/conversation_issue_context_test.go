@@ -141,7 +141,10 @@ func (f *browserHostedFixture) seedIssueAsk(t *testing.T) {
 	backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
 	backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 		request := backend.request(t, turn-1)
-		if !strings.Contains(request.Prompt, f.workItem) || !strings.Contains(request.Prompt, "<issue_context>") {
+		if !strings.Contains(request.Prompt, "<issue_context>") {
+			return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "This is a project-wide chat."})
+		}
+		if !strings.Contains(request.Prompt, f.workItem) {
 			return runner.AgentTurnResult{}, errors.New("issue subject missing")
 		}
 		prompt, _, _ := strings.Cut(request.Prompt, "\n\n## Available skills")

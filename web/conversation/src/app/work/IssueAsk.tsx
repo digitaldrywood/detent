@@ -9,6 +9,7 @@ import type {
   ConversationListResponse,
 } from "../../contracts/conversation.ts";
 import { DEFAULT_TURN_PREFERENCES } from "../../contracts/index.ts";
+import { ComposerContextAttachment } from "../components/ComposerContextAttachment.tsx";
 import { Composer } from "../components/Composer.tsx";
 import { ConversationView } from "../App.tsx";
 import { newCommandKey, useClient } from "../client.ts";
@@ -35,7 +36,7 @@ export interface IssueAsk {
   readonly loading: boolean;
   readonly pending: boolean;
   readonly error: string | null;
-  readonly start: (question: string) => Promise<boolean>;
+  readonly start: (question: string, attachIssue?: boolean) => Promise<boolean>;
 }
 
 export function useIssueAsk(
@@ -43,6 +44,7 @@ export function useIssueAsk(
   workItemId: string,
 ): IssueAsk {
   const client = useClient();
+  const navigate = useNavigate();
   const create = useAtomSet(client.createConversation, { mode: "promise" });
   const refreshList = useAtomSet(client.refreshList, { mode: "promise" });
   const [threads, setThreads] = React.useState<readonly Conversation[]>([]);
@@ -52,6 +54,7 @@ export function useIssueAsk(
   const [error, setError] = React.useState<string | null>(null);
   const intent = React.useRef<{
     question: string;
+    attachIssue: boolean;
     key: string;
     messageKey: string;
   } | null>(null);
@@ -99,7 +102,7 @@ export function useIssueAsk(
   }, [client, projectId, workItemId]);
   const starting = React.useRef(false);
   const start = React.useCallback(
-    async (question: string): Promise<boolean> => {
+    async (question: string, attachIssue = true): Promise<boolean> => {
       if (
         projectId === null ||
         starting.current ||
@@ -108,16 +111,17 @@ export function useIssueAsk(
         return false;
       starting.current = true;
       setPending(true);
-      if (intent.current?.question !== question)
+      if (intent.current?.question !== question || intent.current?.attachIssue !== attachIssue)
         intent.current = {
           question,
+          attachIssue,
           key: newCommandKey(),
           messageKey: newCommandKey(),
         };
       try {
         const result = await create({
           projectId,
-          subjectWorkItemId: workItemId,
+          ...(attachIssue ? { subjectWorkItemId: workItemId } : {}),
           key: intent.current.key,
           firstMessage: {
             key: intent.current.messageKey,
@@ -129,6 +133,11 @@ export function useIssueAsk(
           return false;
         }
         const conversation = result.success.conversation;
+        if (!attachIssue) {
+          intent.current = null;
+          await navigate({ to: "/chat/c/$conversationId", params: { conversationId: conversation.id } });
+          return true;
+        }
         setThreads((current) => [
           conversation,
           ...current.filter((thread) => thread.id !== conversation.id),
@@ -152,7 +161,7 @@ export function useIssueAsk(
         setPending(false);
       }
     },
-    [create, projectId, refreshList, workItemId],
+    [create, navigate, projectId, refreshList, workItemId],
   );
   return { threads, selected, select, loading, pending, error, start };
 }
@@ -171,14 +180,17 @@ export function IssueAskPanel({
   const navigate = useNavigate();
   const panel = useWorkspacePanel();
   const [question, setQuestion] = React.useState("");
+  const [attached, setAttached] = React.useState(true);
   const composer = {
     label: "Ask message",
     placeholder: `Ask about ${identifier}…`,
     promptClassName: "min-h-[3lh] max-h-[12lh]",
     promptContext: (
-      <span className="mb-2 inline-block rounded-md border border-border bg-muted px-2 py-0.5 text-xs">
-        {identifier}
-      </span>
+      ask.selected === null && !attached ? null : <ComposerContextAttachment
+        label={identifier}
+        onRemove={ask.selected === null ? () => setAttached(false) : undefined}
+        disabled={ask.pending}
+      />
     ),
     sendLabel: "Ask",
     focusRequest: panel?.askFocusRequest ?? 0,
@@ -210,6 +222,7 @@ export function IssueAskPanel({
             </select>
           )}
           <Button size="xs" variant="ghost" onClick={() => {
+            setAttached(true);
             ask.select(null);
             panel?.openAsk();
           }}>
@@ -254,7 +267,7 @@ export function IssueAskPanel({
                   type="button"
                   className="w-full rounded-md px-2 py-2 text-left text-sm font-normal text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
                   disabled={!canWrite || ask.pending}
-                  onClick={() => void ask.start(prompt)}
+                  onClick={() => void ask.start(prompt, attached)}
                 >
                   {label}
                 </button>
@@ -265,7 +278,7 @@ export function IssueAskPanel({
             {...composer}
             value={question}
             onChange={setQuestion}
-            onSend={() => void ask.start(question).then((sent) => {
+            onSend={() => void ask.start(question, attached).then((sent) => {
               if (sent) setQuestion("");
             })}
             sending={ask.pending}
@@ -278,7 +291,9 @@ export function IssueAskPanel({
         </div>
       )}
       <p data-testid="issue-ask-context" className="px-4 pb-3 text-xs text-muted-foreground">
-        Luna reads this issue's body, comments, history, runs and pull request on every turn. Only you see this chat.
+        {ask.selected !== null || attached
+          ? "Luna reads this issue's body, comments, history, runs and pull request on every turn. Only you see this chat."
+          : "Only you see this project-wide chat."}
       </p>
     </section>
   );
