@@ -13,6 +13,7 @@ import (
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -99,6 +100,41 @@ func hubOperatorResult(value any) (operatortool.Result, error) {
 	}
 	return operatortool.Result{Content: raw}, nil
 }
+
+type hubRunnerRouting struct {
+	runnerauth.Runner
+	Leases []hubRunnerLease `json:"leases"`
+}
+
+type hubRunnerLease struct {
+	runnerauth.RunnerLease
+	Policy hubRoutingPolicy `json:"policy"`
+}
+
+type hubRoutingPolicy struct {
+	Schema         int                 `json:"schema"`
+	ID             string              `json:"policy_id"`
+	SourceRevision string              `json:"source_revision"`
+	SourceDigest   string              `json:"source_digest"`
+	ConfigDigest   string              `json:"config_digest"`
+	Profile        string              `json:"profile,omitempty"`
+	Requirements   policy.Requirements `json:"requirements"`
+	Gates          policy.Gates        `json:"gates"`
+}
+
+func hubRunnerRoutingProjection(runner runnerauth.Runner) hubRunnerRouting {
+	result := hubRunnerRouting{Runner: runner, Leases: make([]hubRunnerLease, len(runner.Leases))}
+	for i, lease := range runner.Leases {
+		pinned := lease.Policy
+		result.Leases[i] = hubRunnerLease{RunnerLease: lease, Policy: hubRoutingPolicy{
+			Schema: pinned.Schema, ID: pinned.ID, SourceRevision: pinned.SourceRevision,
+			SourceDigest: pinned.SourceDigest, ConfigDigest: pinned.ConfigDigest, Profile: pinned.Profile,
+			Requirements: pinned.Requirements, Gates: pinned.Gates,
+		}}
+	}
+	return result
+}
+
 func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.service
 	if call.Name == operatortool.ConnectionInfo {
@@ -202,7 +238,9 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		case operatortool.GetRunnerCapacity:
 			value, err = s.readRunnerCapacity(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID, r.Backend)
 		case operatortool.GetRunnerRouting:
-			value, err = s.readRunnerRouting(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID)
+			var runner runnerauth.Runner
+			runner, err = s.readRunnerRouting(ctx, nativeScope{organization: tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), credential: credential}, r.RunnerID)
+			value = hubRunnerRoutingProjection(runner)
 		case operatortool.ListRunnerRouting:
 			runners, readErr := s.listRunnerRoutingData(ctx, tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID), r.Limit+1, r.Offset)
 			if readErr != nil {
@@ -212,11 +250,15 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 			if more {
 				runners = runners[:r.Limit]
 			}
+			projected := make([]hubRunnerRouting, len(runners))
+			for i, runner := range runners {
+				projected[i] = hubRunnerRoutingProjection(runner)
+			}
 			value = struct {
-				Runners    []runnerauth.Runner `json:"runners"`
-				HasMore    bool                `json:"has_more"`
-				ObservedAt time.Time           `json:"observed_at"`
-			}{runners, more, s.config.now()}
+				Runners    []hubRunnerRouting `json:"runners"`
+				HasMore    bool               `json:"has_more"`
+				ObservedAt time.Time          `json:"observed_at"`
+			}{projected, more, s.config.now()}
 		case operatortool.GitHubRequestCounts:
 			if s.config.Hosted != nil || credential.NativeOnly || credential.Scope != apiScopeAdmin {
 				return operatortool.Result{}, operatortool.ErrAccessDenied
