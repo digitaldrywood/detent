@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -163,8 +164,18 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		authorityLost    bool
 		lateConflict     bool
 		followOnConflict bool
+		refusal          string
+		historical       bool
+		laterRefusal     string
+		resume           bool
 	}{
 		{name: "resolved source"},
+		{name: "conflict refusal in code lane", normal: true, refusal: workspace.LandRefusalConflict},
+		{name: "conflict refusal clean replay resumes", normal: true, staged: true, refusal: workspace.LandRefusalConflict, resume: true},
+		{name: "conflict refusal conflicting replay restarts", normal: true, refusal: workspace.LandRefusalConflict, resume: true},
+		{name: "non-conflict refusal preserves code session", normal: true, staged: true, refusal: workspace.LandRefusalHeadMoved, resume: true},
+		{name: "historical conflict preserves code session", normal: true, staged: true, refusal: workspace.LandRefusalConflict, historical: true, resume: true},
+		{name: "latest landing supersedes conflict", normal: true, staged: true, refusal: workspace.LandRefusalConflict, laterRefusal: workspace.LandRefusalBaseMoved, resume: true},
 		{name: "unresolved source", unresolved: true},
 		{name: "unpaused staged repair", staged: true},
 		{name: "preserved staged work with late host conflict", staged: true, lateConflict: true},
@@ -217,6 +228,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			runRunnerGit(t, source, "commit", "-m", "base")
 			runRunnerGit(t, source, "push", "origin", "main")
+			target := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
 			if !test.staged || test.signingFail {
 				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
 				runRunnerGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-personal-signer"))
@@ -258,6 +270,54 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			agent := &resolvingReworkAgent{unresolved: test.unresolved, staged: test.staged, signer: signer, t: t}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
+			request := RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution}
+			prepareConflict := test.refusal == workspace.LandRefusalConflict && !test.historical && test.laterRefusal == ""
+			if test.refusal != "" {
+				local, err := backend.(workspace.RecoveryStateProvider).RecoveryState(t.Context(), info, workspaceIssue("default", issue))
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkpoint := executionCheckpoint(&local)
+				change := &tracker.NativeChangeReference{ChangeID: "change_1", VersionID: "version_1", HeadSHA: original}
+				execution.recovery.Change = change
+				execution.recovery.Lease.MachineID = "host"
+				landing := &tracker.NativeLandingReceipt{ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: original, RefusalKind: test.refusal}
+				if test.historical {
+					landing.VersionID = "previous_version"
+				}
+				execution.recovery.Attempts = []tracker.NativeAttempt{{Status: "succeeded", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: "unchanged-policy", Runtime: &tracker.NativeRuntimeObservation{Landing: landing}}, Checkpoint: &checkpoint}}
+				if test.laterRefusal != "" {
+					later := *landing
+					later.RefusalKind = test.laterRefusal
+					execution.recovery.Attempts = append(execution.recovery.Attempts, tracker.NativeAttempt{Status: "succeeded", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: "unchanged-policy", Runtime: &tracker.NativeRuntimeObservation{Landing: &later}}, Checkpoint: &checkpoint})
+				}
+				if test.resume {
+					checkpoint.Resume = "resume_session"
+					execution.recovery.Attempts = append(execution.recovery.Attempts, tracker.NativeAttempt{Status: "succeeded", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: "unchanged-policy", Identity: &tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex", Model: "provider_default"}}, Checkpoint: &checkpoint})
+					request.RetryMode = RetryModeResume
+					request.ResumeState = store.AgentResumeState{ProviderThreadID: "source-thread", ProviderSessionID: "source-session"}
+				}
+				agent.beforeStage = func() {
+					wantBase := base
+					if prepareConflict {
+						wantBase = target
+					}
+					if got := strings.TrimSpace(runRunnerGit(t, info.Path, "merge-base", "HEAD", target)); got != wantBase {
+						t.Fatalf("agent starts on wrong base: merge-base=%s want=%s", got, wantBase)
+					}
+					wantResume := test.resume && (!prepareConflict || test.staged)
+					if resumed := !agentResumeEmpty(agent.request.Resume); resumed != wantResume {
+						t.Fatalf("provider resumed=%v, want %v", resumed, wantResume)
+					}
+					wantCheckpoint := "fresh_checkout"
+					if wantResume {
+						wantCheckpoint = "resume_session"
+					}
+					if execution.checkpoint == nil || execution.checkpoint.Resume != wantCheckpoint {
+						t.Fatalf("prepared checkpoint=%+v, want %s", execution.checkpoint, wantCheckpoint)
+					}
+				}
+			}
 			var priorCheckpoint *tracker.NativeCheckpoint
 			if test.authorityLost {
 				agent.afterStage = func() {
@@ -269,7 +329,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution})
+			_, err = r.Run(t.Context(), request)
 			if test.signingFail || test.authorityLost {
 				want := ErrWorkspacePreparation
 				if test.authorityLost {
@@ -334,6 +394,11 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 			}
 			head := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+			if prepareConflict {
+				if got := strings.TrimSpace(runRunnerGit(t, info.Path, "merge-base", info.Branch, target)); got != target {
+					t.Fatalf("finalized branch retains stale ancestry: merge-base=%s target=%s", got, target)
+				}
+			}
 			if head == original || execution.head != head || execution.diffHead != head || execution.checkpoint == nil || execution.checkpoint.HeadSHA != head || execution.finish != "succeeded" {
 				t.Fatalf("immutable evidence missed final head %s: %#v", head, execution)
 			}
