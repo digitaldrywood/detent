@@ -98,6 +98,9 @@ func (o *Orchestrator) completeNativeLandingRun(
 	if err := o.connector.CreateComment(ctx, issueID, nativeLandingComment(landing, issue.State, target)); err != nil {
 		o.warnNativeCompletion(issue, fmt.Errorf("comment on the landing: %w", err))
 	}
+	if err := o.abandonClaim(ctx, issueID); err != nil {
+		return handoff(err)
+	}
 	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker completed", nativeLandingMetadata(landing))
 	completed := Completed{
 		Issue:                      cloneIssue(issue),
@@ -109,9 +112,8 @@ func (o *Orchestrator) completeNativeLandingRun(
 		Tokens:                     event.Result.Tokens,
 		RuntimeIdentity:            running.RuntimeIdentity,
 	}
-	state.Completed[issueID] = completed
 	o.recordCompletionUsage(ctx, state, event, issue)
-	o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, target)
+	o.recordCompletedActiveReviewTransition(state, issue, completed, target)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "completed_native_landing",

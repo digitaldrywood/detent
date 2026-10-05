@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -116,8 +117,9 @@ func TestCompleteTerminalRunningClearsInFlightHeartbeatLease(t *testing.T) {
 	}
 }
 
-func TestHeartbeatManagerRequiresMatchingLiveProcessIdentity(t *testing.T) {
+func TestHeartbeatManagerReportsProcessLivenessWhileRenewingActiveRun(t *testing.T) {
 	identity := startHeartbeatWorkerProcess(t)
+	exited := startHeartbeatWorkerProcess(t, true)
 
 	tests := []struct {
 		name        string
@@ -128,7 +130,8 @@ func TestHeartbeatManagerRequiresMatchingLiveProcessIdentity(t *testing.T) {
 	}{
 		{name: "startup before process identity", wantRenewed: true},
 		{name: "matching live process", identity: identity, wantRenewed: true, wantChecked: true, wantAlive: true},
-		{name: "reused pid identity", identity: procgroup.Identity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt.Add(time.Second)}, wantChecked: true},
+		{name: "reused pid identity", identity: procgroup.Identity{PID: identity.PID, GroupID: identity.GroupID, StartedAt: identity.StartedAt.Add(time.Second)}, wantRenewed: true, wantChecked: true},
+		{name: "normally exited provider", identity: exited, wantRenewed: true, wantChecked: true},
 	}
 
 	for _, tt := range tests {
@@ -151,6 +154,9 @@ func TestHeartbeatManagerRequiresMatchingLiveProcessIdentity(t *testing.T) {
 
 			if result.workAttemptRenewed != tt.wantRenewed || result.workerChecked != tt.wantChecked || result.workerAlive != tt.wantAlive {
 				t.Fatalf("heartbeat result = %#v, want renewed=%v checked=%v alive=%v", result, tt.wantRenewed, tt.wantChecked, tt.wantAlive)
+			}
+			if tt.wantChecked && manager.protects(tt.name) != tt.wantAlive {
+				t.Fatal("claim renewal changed provider process liveness")
 			}
 			if got := len(attempts.heartbeats); got != boolCount(tt.wantRenewed) {
 				t.Fatalf("durable heartbeat count = %d, want %d", got, boolCount(tt.wantRenewed))
@@ -193,9 +199,7 @@ func TestHeartbeatWorkerProcessHelper(t *testing.T) {
 	if os.Getenv("DETENT_HEARTBEAT_PROCESS_HELPER") != "1" {
 		return
 	}
-	for {
-		time.Sleep(time.Hour)
-	}
+	_, _ = io.Copy(io.Discard, os.Stdin)
 }
 
 func TestWorkHeartbeatInterval(t *testing.T) {
@@ -325,11 +329,15 @@ func boolCount(value bool) int {
 	return 0
 }
 
-func startHeartbeatWorkerProcess(t *testing.T) procgroup.Identity {
+func startHeartbeatWorkerProcess(t *testing.T, exitNormally ...bool) procgroup.Identity {
 	t.Helper()
 	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestHeartbeatWorkerProcessHelper$")
 	cmd.Env = append(os.Environ(), "DETENT_HEARTBEAT_PROCESS_HELPER=1")
 	procgroup.Configure(t.Context(), cmd)
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -339,10 +347,20 @@ func startHeartbeatWorkerProcess(t *testing.T) procgroup.Identity {
 		_ = cmd.Wait()
 		t.Fatalf("Inspect() error = %v", err)
 	}
-	t.Cleanup(func() {
-		_ = procgroup.TerminateTree(cmd, identity.GroupID)
-		_ = cmd.Wait()
-	})
+	if len(exitNormally) > 0 && exitNormally[0] {
+		if err := input.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("normal provider exit: %v", err)
+		}
+	} else {
+		t.Cleanup(func() {
+			_ = input.Close()
+			_ = procgroup.TerminateTree(cmd, identity.GroupID)
+			_ = cmd.Wait()
+		})
+	}
 	return identity
 }
 

@@ -13,14 +13,14 @@ func (o *Orchestrator) finishAcceptedCompletionLaneRun(
 	state *State,
 	running Running,
 	completedAt time.Time,
-) {
+) error {
 	issueID := strings.TrimSpace(running.Issue.ID)
 	if completed, ok := state.Completed[issueID]; ok {
 		completed.Issue = cloneIssue(running.Issue)
 		state.Completed[issueID] = completed
 	}
-	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
-		o.logger.Warn("accepted completion lane claim release failed", "issue_id", issueID, "error", err)
+	if err := o.abandonClaim(ctx, issueID); err != nil {
+		return err
 	}
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
@@ -31,4 +31,5 @@ func (o *Orchestrator) finishAcceptedCompletionLaneRun(
 		Event:   "agent_completion_lane_finished",
 		Message: "finished accepted current-attempt completion for " + issueLabel(running.Issue) + " in " + running.CompletionLane,
 	})
+	return nil
 }

@@ -156,7 +156,7 @@ func (f executionRoundTrip) RoundTrip(request *http.Request) (*http.Response, er
 }
 
 func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
-	for _, name := range []string{"expire", "renew", "renewal outage"} {
+	for _, name := range []string{"expire", "renew", "renewal outage", "renew during native finish"} {
 		renew := name == "renew"
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -190,11 +190,92 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 				scheduler.nativeClaims[id] = nativeClaim{source: source, lease: tracker.NativeLease{WorkItemID: tracker.NativeWorkItemID(id), ID: "lease", FencingToken: 1, PolicyID: descriptor.ID}, deadline: time.Now().Add(time.Minute)}
 				scheduler.claimPolicies[id] = claimPolicy{project: "project", descriptor: descriptor}
 				execution := scheduler.RunExecution(id)
-				guarded, stop, err := execution.Guard(t.Context())
-				if err != nil {
-					t.Fatal(err)
+				guarded := t.Context()
+				if name != "renew during native finish" {
+					var stop func()
+					guarded, stop, err = execution.Guard(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer stop()
 				}
-				defer stop()
+				if name == "renew during native finish" {
+					claim := scheduler.nativeClaims[id]
+					scheduler.claims[id] = nativeTrackerLease(claim.lease)
+					scheduler.nativeHeartbeats[native.project] = time.Now()
+					nativeExecution := execution.(*nativeExecution)
+					nativeExecution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+					nativeExecution.preparedOutcome = "failed"
+					started, allowFinish := make(chan struct{}), make(chan struct{})
+					defer func() {
+						select {
+						case <-allowFinish:
+						default:
+							close(allowFinish)
+						}
+					}()
+					original := client.httpClient.Transport
+					finishedEvents := 0
+					client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						if strings.HasSuffix(request.URL.Path, "/renew") {
+							lease := claim.lease
+							lease.ServerTime, lease.RenewedAt = time.Now(), time.Now()
+							lease.ExpiresAt = time.Now().Add(time.Minute)
+							body, err := json.Marshal(lease)
+							if err != nil {
+								return nil, err
+							}
+							return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, nil
+						}
+						if strings.HasSuffix(request.URL.Path, "/events") {
+							var event tracker.NativeRunEvent
+							if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
+								return nil, err
+							}
+							if event.Type == "run.finished" {
+								finishedEvents++
+								close(started)
+								<-allowFinish
+							}
+						}
+						return original.RoundTrip(request)
+					})
+					finished := make(chan error, 1)
+					go func() { finished <- scheduler.ReleaseClaim(guarded, id, "released") }()
+					<-started
+					for range 7 {
+						time.Sleep(20 * time.Second)
+						renewed := make(chan error, 1)
+						go func() {
+							_, err := scheduler.RenewClaim(guarded, id, time.Now())
+							renewed <- err
+						}()
+						synctest.Wait()
+						select {
+						case err := <-renewed:
+							if err != nil {
+								t.Fatalf("renew existing native lease during Finish: %v", err)
+							}
+						default:
+							t.Fatal("renewal waited for completion publication")
+						}
+						current := scheduler.nativeClaims[id]
+						if current.lease.ID != claim.lease.ID || current.lease.FencingToken != claim.lease.FencingToken {
+							t.Fatal("slow Finish replaced existing lease authority")
+						}
+						if guarded.Err() != nil || nativeExecution.remaining() <= 0 {
+							t.Fatal("slow Finish lost the existing fenced owner")
+						}
+					}
+					close(allowFinish)
+					if err := <-finished; err != nil || finishedEvents != 1 {
+						t.Fatalf("Finish publication: events=%d error=%v", finishedEvents, err)
+					}
+					if nativeExecution.remaining() != 0 || len(scheduler.nativeClaims) != 0 || len(scheduler.claims) != 0 {
+						t.Fatal("terminal acknowledgement retained lease ownership")
+					}
+					return
+				}
 				time.Sleep(30 * time.Second)
 				if name == "renewal outage" {
 					client.httpClient.Transport = executionRoundTrip(func(*http.Request) (*http.Response, error) { return nil, errors.New("renewal disconnected") })

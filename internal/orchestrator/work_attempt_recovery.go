@@ -504,6 +504,7 @@ func (o *Orchestrator) clearLiveWorkAttemptState(state *State, attempt telemetry
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	if deferred, ok := state.deferredCompletions[issueID]; ok && deferred.Running.WorkAttemptID == attempt.AttemptID {
+		o.heartbeats.remove(issueID)
 		delete(state.deferredCompletions, issueID)
 	}
 	delete(state.BudgetRefusals, issueID)

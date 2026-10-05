@@ -402,11 +402,6 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 	s.nativeClaims[issueID] = claim
 	s.claims[issueID] = nativeTrackerLease(lease)
 	s.mu.Unlock()
-	if claim.execution != nil {
-		if err := claim.execution.FlushRuntime(ctx); err != nil {
-			slog.WarnContext(ctx, "native runtime observation unavailable", "issue_id", issueID, "error", err)
-		}
-	}
 	return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), nil
 }
 

@@ -1280,7 +1280,7 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 		if issueID == "" || stateIn(issue.State, o.cfg.TerminalStates) {
 			continue
 		}
-		if _, running := state.Running[issueID]; running {
+		if running, active := state.Running[issueID]; active && !running.CompletionOwnershipReleased {
 			continue
 		}
 		if resolved, ok := o.resolveMergedCompletionPullRequest(ctx, issue); ok {

@@ -304,10 +304,6 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 	}
 	result.workerAlive, result.workerChecked, result.livenessError = heartbeatWorkerLiveness(target.workerProcess)
 	result.workspaceModifiedAt, result.workspaceAdvanced = heartbeatWorkspaceActivity(target.workspacePath, target.workspaceModifiedAt)
-	if result.workerChecked && !result.workerAlive && result.livenessError == nil {
-		m.finish(target, result)
-		return
-	}
 	now := m.now().UTC()
 	result.heartbeat, result.workAttemptError = m.persistHeartbeat(operationCtx, target, settings, now)
 	result.workAttemptRenewed = result.workAttemptError == nil && settings.workAttempts != nil && result.heartbeat.AttemptID > 0
@@ -327,17 +323,23 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 }
 
 func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbeatTarget, settings heartbeatSettings, now time.Time) (store.WorkAttemptHeartbeat, error) {
-	heartbeat := target.workAttemptHeartbeat
-	heartbeat.HeartbeatAt = now
-	heartbeat.LeaseExpiresAt = now.Add(settings.leaseTTL)
 	if target.progress != nil {
 		target.progress.mu.Lock()
 		defer target.progress.mu.Unlock()
 		if target.progress.closed {
-			return heartbeat, context.Canceled
+			return target.workAttemptHeartbeat, context.Canceled
 		}
-		now = m.now().UTC()
-		heartbeat.LeaseExpiresAt = now.Add(settings.leaseTTL)
+	}
+	m.mu.Lock()
+	if current, ok := m.targets[target.issueID]; ok && current.sequence == target.sequence {
+		target.workAttemptHeartbeat = current.workAttemptHeartbeat
+	}
+	m.mu.Unlock()
+	now = m.now().UTC()
+	heartbeat := target.workAttemptHeartbeat
+	heartbeat.HeartbeatAt = now
+	heartbeat.LeaseExpiresAt = now.Add(settings.leaseTTL)
+	if target.progress != nil && heartbeat.Phase != deferredCompletionPhase {
 		heartbeat = target.progress.heartbeat(heartbeat, now)
 	}
 	if settings.workAttempts != nil && heartbeat.AttemptID > 0 {
@@ -586,8 +588,12 @@ func (o *Orchestrator) handleHeartbeatResult(state *State, result heartbeatResul
 	if o == nil || state == nil || o.heartbeats == nil || !o.heartbeats.current(result.issueID, result.sequence) {
 		return
 	}
-	running, ok := state.Running[result.issueID]
-	if !ok {
+	running, active := state.Running[result.issueID]
+	deferred, waiting := state.deferredCompletions[result.issueID]
+	if waiting {
+		running = deferred.Running
+	}
+	if !active && !waiting {
 		o.heartbeats.remove(result.issueID)
 		return
 	}
@@ -620,5 +626,10 @@ func (o *Orchestrator) handleHeartbeatResult(state *State, result heartbeatResul
 	}
 	state.Claimed[result.issueID] = claimed
 	running.Issue = mergeIssueTrackerFields(running.Issue, result.claimIssue)
-	state.Running[result.issueID] = running
+	if waiting {
+		deferred.Running = running
+		state.deferredCompletions[result.issueID] = deferred
+	} else {
+		state.Running[result.issueID] = running
+	}
 }

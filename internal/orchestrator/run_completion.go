@@ -115,6 +115,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
+	defer func() {
+		if _, deferred := state.deferredCompletions[event.IssueID]; !deferred {
+			o.heartbeats.remove(event.IssueID)
+			delete(state.Running, event.IssueID)
+			o.publishRuntimeState(state)
+		}
+	}()
 	o.captureNativeLandingRESTUsage(state, event.Result, event.CompletedAt)
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
@@ -161,7 +168,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			}
 		}
 	}
-	o.heartbeats.remove(event.IssueID)
 	if o.retrospector != nil {
 		defer o.retrospector.Trigger("completion")
 	}
@@ -193,7 +199,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	running.WorkProductPushed = running.WorkProductPushed || event.Result.PullRequestHeadPushed || event.Result.PullRequestUpdated
 	running.ArtifactEvidence = event.Result.ArtifactEvidence
 	running.ForgeWriteCompleted = event.Result.ForgeWriteCompleted
-	delete(state.Running, event.IssueID)
+	state.Running[event.IssueID] = running
 	o.publishRuntimeState(state)
 	event.Err = classifyWorkspaceForgeReadFailure(event.Err, o.cfg.ForgeHost)
 	event.Err = o.classifyWorkerGitHubCredentialUnavailable(event.Err, running)
@@ -202,7 +208,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	if running.CompletionLane != "" && running.Mode != runpkg.RunModeTriage {
 		if o.handleForgeUnavailableCompletion(ctx, state, event, running) {
-			o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
+			if err := o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt); err != nil {
+				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			}
 			return
 		}
 		if o.handleWorkerGitHubTokenResolutionCompletion(ctx, state, event, running) {
@@ -368,7 +376,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			"worker_host", strings.TrimSpace(running.WorkerHost),
 			"final_state", strings.TrimSpace(running.Issue.State),
 		)
-		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt)
+		if err := o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt); err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		}
 		return
 	}
 	if (!nativeCompletion || !errors.Is(event.Err, runpkg.ErrWorkerProcessReap)) && o.handlePreTurnFailure(ctx, state, event, running) {
@@ -828,7 +838,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if running.CompletionLane != "" {
-		o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
+		if err := o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt); err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		}
 		return
 	}
 	if terminalState == store.WorkAttemptTerminalSuccess {
@@ -1517,7 +1529,9 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		}
 		running.Issue = issue
 		o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-		o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt)
+		if err := o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt); err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		}
 		if event.Result.RateLimits != nil {
 			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 		}
@@ -1770,7 +1784,9 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		Message: "programmatically merged " + issueLabel(mergedIssue) + " and moved it to " + targetState,
 	})
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
-	o.completeTerminalRunning(ctx, state, issueID, running, deliveredAt, tokens, event.CompletedAt)
+	if err := o.completeTerminalRunning(ctx, state, issueID, running, deliveredAt, tokens, event.CompletedAt); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+	}
 	mergeTiming := o.recordMergeCompleted(state, mergeTimingIssue, deliveredAt, targetState)
 	if completed, ok := state.Completed[issueID]; ok {
 		completed.MergeTiming = mergeTiming
@@ -2918,6 +2934,7 @@ func (o *Orchestrator) releaseClaim(state *State, issueID string) {
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
+	delete(state.deferredCompletions, issueID)
 }
 
 func (o *Orchestrator) completeTerminalRunning(
@@ -2928,9 +2945,12 @@ func (o *Orchestrator) completeTerminalRunning(
 	completedAt time.Time,
 	tokens TokenTotals,
 	workerCompletedAt time.Time,
-) {
-	o.heartbeats.remove(issueID)
+) error {
 	o.clearMergeRequiredCheckStreaks(ctx, running.Issue)
+	if err := o.abandonClaim(ctx, issueID); err != nil {
+		return err
+	}
+	o.heartbeats.remove(issueID)
 	o.completeDurableWorkAttempt(ctx, state, running, workerCompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker reached terminal state")
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	if running.cancel != nil {
@@ -2943,13 +2963,6 @@ func (o *Orchestrator) completeTerminalRunning(
 	delete(state.PriorAttempts, issueID)
 	delete(state.InstantFailures, issueID)
 	delete(state.RepeatedFailures, issueID)
-	if err := o.abandonClaim(ctx, issueID); err != nil {
-		recordStateEvent(state, telemetry.ActivityEvent{
-			At:      cleanupEventAt(completedAt),
-			Event:   "claim_release_failed",
-			Message: fmt.Sprintf("claim lease release failed for %s: %v", issueLabel(running.Issue), err),
-		})
-	}
 	issue := o.ensureClosedCompletedRunningIssueDone(ctx, state, issueID, running.Issue, completedAt)
 	finalState := strings.TrimSpace(issue.State)
 	if finalState == "" {
@@ -2982,6 +2995,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	} else {
 		o.startWorkspaceCleanup(ctx, state, completedAt)
 	}
+	return nil
 }
 
 func (o *Orchestrator) recordEfficiencyReceipt(ctx context.Context, issue connector.Issue, completedAt time.Time) {
@@ -3080,6 +3094,7 @@ func (o *Orchestrator) cancelRunning(state *State, issueID string, source ...str
 	running.globalSlot = scheduler.Slot{}
 	state.Running[issueID] = running
 	cancelRunning(state, issueID, source...)
+	o.heartbeats.remove(issueID)
 }
 
 func cancelRunning(state *State, issueID string, source ...string) {
