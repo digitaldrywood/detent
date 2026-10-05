@@ -349,6 +349,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	s.ready.Store(false)
 	s.notifications.closeAll()
+	if s.conversations != nil {
+		s.conversations.stop()
+	}
 	var mcpErr error
 	if s.mcpHTTP != nil {
 		mcpErr = s.mcpHTTP.Shutdown(ctx)

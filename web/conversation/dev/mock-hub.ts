@@ -3144,8 +3144,9 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           case "/__mock/drop-open-streams":
             for (const entry of store.values()) {
               for (const subscriber of [...entry.subscribers]) {
-                if (body.reason === "server_error") {
-                  writeFrame(entry, subscriber, null, { type: "closed", data: { reason: "server_error" } });
+                if (body.reason === "server_error" || body.reason === "server_shutdown") {
+                  writeFrame(entry, subscriber, null, { type: "closed", data: { reason: body.reason } });
+                  subscriber.response.end();
                 } else {
                   subscriber.response.destroy();
                 }

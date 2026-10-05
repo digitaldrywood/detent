@@ -90,9 +90,7 @@ Answer concisely in Markdown. When you are unsure, say so instead of guessing.`
 type conversationTurnCoordinator struct {
 	service *conversationService
 	logger  *slog.Logger
-	// stop is closed by Stop; every turn context ends with it.
-	stop chan struct{}
-
+	stop    chan struct{}
 	mu      sync.Mutex
 	stopped bool
 	// passes holds every conversation that is running or queued.
@@ -115,7 +113,7 @@ type coordinatorPass struct {
 }
 
 // coordinatorTurn is a running turn. cancelled distinguishes an operator
-// cancel (interrupted) from a process stop (unknown); done closes once the
+// cancel (interrupted) from a process stop (failed); done closes once the
 // turn's final writes are over.
 type coordinatorTurn struct {
 	cancel    context.CancelFunc
@@ -136,20 +134,6 @@ func newConversationCoordinator(service *conversationService) conversationCoordi
 		held:    map[string]int{},
 		turns:   map[string]*coordinatorTurn{},
 	}
-}
-
-// turnContext returns a context that ends when the turn is cancelled or
-// the coordinator stops.
-func (c *conversationTurnCoordinator) turnContext() (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		select {
-		case <-c.stop:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-	return ctx, cancel
 }
 
 func (c *conversationTurnCoordinator) Available() bool {
@@ -233,14 +217,9 @@ func (c *conversationTurnCoordinator) Hold(conversationID string) (func(), error
 	}
 }
 
-// Stop cancels every running turn, drops the queue and waits, bounded, for
-// the final writes so that closing the service does not leak goroutines.
 func (c *conversationTurnCoordinator) Stop() {
 	c.mu.Lock()
-	if !c.stopped {
-		c.stopped = true
-		close(c.stop)
-	}
+	c.stopped = true
 	for _, id := range c.queue {
 		delete(c.passes, id)
 	}
@@ -251,6 +230,24 @@ func (c *conversationTurnCoordinator) Stop() {
 		c.wg.Wait()
 		close(done)
 	}()
+	timer := time.NewTimer(coordinatorStopTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return
+	case <-timer.C:
+	}
+
+	c.mu.Lock()
+	for _, turn := range c.turns {
+		turn.cancel()
+	}
+	select {
+	case <-c.stop:
+	default:
+		close(c.stop)
+	}
+	c.mu.Unlock()
 	select {
 	case <-done:
 	case <-time.After(coordinatorStopTimeout):
@@ -301,7 +298,7 @@ func (c *conversationTurnCoordinator) loop(conversationID string) {
 // pass runs one turn when the conversation is unlinked, active and has
 // pending user messages. It reports whether a turn ran.
 func (c *conversationTurnCoordinator) pass(conversationID string) (bool, error) {
-	ctx, cancel := c.turnContext()
+	ctx, cancel := context.WithTimeout(context.Background(), coordinatorWriteTimeout)
 	defer cancel()
 	record, err := c.readConversation(ctx, c.service.store.db, conversationID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -458,7 +455,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		c.mu.Unlock()
 		return false, nil
 	}
-	turnCtx, cancelTurn := c.turnContext()
+	turnCtx, cancelTurn := context.WithCancel(context.Background())
 	turn := &coordinatorTurn{cancel: cancelTurn, done: make(chan struct{})}
 	c.turns[conversationID] = turn
 	c.mu.Unlock()
@@ -658,9 +655,11 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 
 	c.mu.Lock()
 	cancelled := turn.cancelled
-	stopping := c.stopped
 	c.mu.Unlock()
-	outcome := coordinatorOutcome(runErr, cancelled, stopping)
+	if runErr == nil {
+		runErr = turnCtx.Err()
+	}
+	outcome := coordinatorOutcome(runErr, cancelled)
 	var usage *ConversationUsage
 	if state.usage.InputTokens > 0 || state.usage.OutputTokens > 0 {
 		provider := "codex"
@@ -714,26 +713,53 @@ func coordinatorSkillsPrompt(prompt string) (string, error) {
 // callBackend runs the turn with coordination tools when the backend
 // supports them and with a plain turn otherwise.
 func (c *conversationTurnCoordinator) callBackend(ctx context.Context, backend runner.AgentBackend, request runner.AgentTurnRequest, state *coordinatorTurnState) (runner.AgentTurnResult, error) {
+	var updateMu sync.Mutex
+	finished := false
 	onUpdate := func(update runner.AgentUpdate) error {
+		updateMu.Lock()
+		defer updateMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if finished {
+			return context.Canceled
+		}
 		state.handleUpdate(ctx, update)
 		return nil
 	}
-	if toolBackend, ok := backend.(runner.AgentToolBackend); ok {
-		toolset := newCoordinatorToolset(c, state)
-		return toolBackend.RunTurnWithTools(ctx, request, toolset.tools(), toolset.handle, onUpdate)
+	defer func() {
+		updateMu.Lock()
+		finished = true
+		updateMu.Unlock()
+	}()
+	type completion struct {
+		result runner.AgentTurnResult
+		err    error
 	}
-	return backend.RunTurn(ctx, request, onUpdate)
+	done := make(chan completion, 1)
+	go func() {
+		var result runner.AgentTurnResult
+		var err error
+		if toolBackend, ok := backend.(runner.AgentToolBackend); ok {
+			toolset := newCoordinatorToolset(c, state)
+			result, err = toolBackend.RunTurnWithTools(ctx, request, toolset.tools(), toolset.handle, onUpdate)
+		} else {
+			result, err = backend.RunTurn(ctx, request, onUpdate)
+		}
+		done <- completion{result: result, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.result, result.err
+	case <-c.stop:
+		return runner.AgentTurnResult{}, ctx.Err()
+	}
 }
 
-// coordinatorOutcome maps the end of a backend call to the assistant
-// delivery: completed, interrupted (operator cancel), unknown (process stop)
-// or failed.
-func coordinatorOutcome(runErr error, cancelled, stopping bool) conversation.Delivery {
+func coordinatorOutcome(runErr error, cancelled bool) conversation.Delivery {
 	switch {
 	case cancelled:
 		return conversation.DeliveryInterrupted
-	case stopping:
-		return conversation.DeliveryUnknown
 	case runErr != nil:
 		return conversation.DeliveryFailed
 	default:

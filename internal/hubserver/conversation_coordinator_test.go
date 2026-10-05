@@ -592,36 +592,131 @@ func TestConversationCoordinatorCancel(t *testing.T) {
 	}
 }
 
-func TestConversationCoordinatorStopPersistsUnknown(t *testing.T) {
+func TestConversationCoordinatorStop(t *testing.T) {
 	t.Parallel()
-	f := newCoordinatorFixture(t, "stop")
-	release := make(chan struct{})
-	f.backend.setRun(blockingRun(release, ""))
-	record := f.seed(t, "stop", nil)
-	f.say(t, &record, "hang")
-	f.backend.waitStarted(t)
-	done := make(chan struct{})
-	go func() {
-		f.coordinator().Stop()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Stop() did not return")
+	for _, test := range []struct {
+		name              string
+		finish            bool
+		ignoreCancelError bool
+		ignoreCancel      bool
+	}{
+		{name: "finishes during grace", finish: true},
+		{name: "fails after grace"},
+		{name: "backend ignores cancellation", ignoreCancel: true},
+		{name: "cancelled backend returns success", ignoreCancelError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, test.name)
+			release := make(chan struct{})
+			backendDone := make(chan struct{})
+			run := blockingRun(release, "partial answer")
+			f.backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+				defer close(backendDone)
+				result, err := run(ctx, turn, handle, update)
+				if test.ignoreCancel {
+					<-release
+					if late := update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "too late"}); !errors.Is(late, context.Canceled) {
+						t.Errorf("late update error = %v, want cancellation", late)
+					}
+				}
+				if test.ignoreCancelError {
+					return result, nil
+				}
+				return result, err
+			})
+			record := f.seed(t, "stop", nil)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/commands", f.token,
+				conversation.Command{Key: "first-turn", Kind: conversation.CommandMessage, Text: "hang"})
+			requireNativeStatus(t, response, http.StatusOK)
+			f.backend.waitStarted(t)
+			done := make(chan error, 1)
+			go func() {
+				ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+				defer cancel()
+				done <- f.service.Shutdown(ctx)
+			}()
+			waitUntil(t, "coordinator draining", func() bool {
+				c := f.coordinator().(*conversationTurnCoordinator)
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				return c.stopped
+			})
+			f.coordinator().Wake(record.ID)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/commands", f.token,
+				conversation.Command{Key: "during-shutdown", Kind: conversation.CommandMessage, Text: "Do not start a new turn"})
+			requireNativeStatus(t, response, http.StatusServiceUnavailable)
+			if test.finish {
+				close(release)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(12 * time.Second):
+				t.Fatal("Shutdown() did not return")
+			}
+			wantAssistant, wantUser, wantExecution := conversation.DeliveryFailed, conversation.DeliveryFailed, conversation.ExecutionFailed
+			if test.finish {
+				wantAssistant, wantUser, wantExecution = conversation.DeliveryCompleted, conversation.DeliveryDelivered, conversation.ExecutionIdle
+			}
+			messages := f.messages(t, record.ID)
+			assistant, ok := lastReply(messages)
+			if !ok || assistant.Delivery != wantAssistant || assistant.Text != "partial answer" {
+				t.Fatalf("assistant = %#v, want %s with partial answer", assistant, wantAssistant)
+			}
+			if messages[0].Delivery != wantUser {
+				t.Fatalf("user message = %s, want %s", messages[0].Delivery, wantUser)
+			}
+			if got := f.conversation(t, record.ID).Execution.Status; got != wantExecution {
+				t.Fatalf("execution = %s, want %s", got, wantExecution)
+			}
+			if !test.finish {
+				var encoded string
+				err := f.service.database.db.QueryRowContext(t.Context(), "SELECT receipt_json FROM conversation_commands WHERE conversation_id = ? AND key = ?", record.ID, messages[0].CommandKey).Scan(&encoded)
+				if err != nil {
+					t.Fatal(err)
+				}
+				receipt, err := decodeConversationReceipt(encoded)
+				if err != nil || receipt.Status != conversation.DeliveryFailed || receipt.Error == nil || receipt.Error.Code != "coordinator_error" {
+					t.Fatalf("receipt = %#v, error = %v", receipt, err)
+				}
+			}
+			f.coordinator().Stop()
+			if got := f.backend.turns(); got != 1 {
+				t.Fatalf("turns = %d, want 1", got)
+			}
+			if test.ignoreCancel {
+				close(release)
+			}
+			select {
+			case <-backendDone:
+			case <-time.After(time.Second):
+				t.Fatal("test backend did not exit")
+			}
+			if !test.finish {
+				cfg := f.service.config
+				if err := f.service.Close(); err != nil {
+					t.Fatal(err)
+				}
+				cfg.Conversation.Backend = newFakeCoordinatorBackend()
+				restarted, err := Open(t.Context(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = restarted.Close() })
+				f.service, f.conversations = restarted, restarted.conversations
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/commands", f.token,
+					conversation.Command{Key: "retry-after-restart", Kind: conversation.CommandRetry, MessageID: messages[0].ID})
+				requireNativeStatus(t, response, http.StatusOK)
+				f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+				if got := f.messages(t, record.ID); len(got) != 3 || got[0].ID != messages[0].ID || got[0].Delivery != conversation.DeliveryDelivered {
+					t.Fatalf("messages after Retry = %#v", got)
+				}
+			}
+		})
 	}
-	assistant, ok := lastReply(f.messages(t, record.ID))
-	if !ok || assistant.Delivery != conversation.DeliveryUnknown {
-		t.Fatalf("assistant = %#v, want unknown after Stop", assistant)
-	}
-	if messages := f.messages(t, record.ID); messages[0].Delivery != conversation.DeliveryUnknown {
-		t.Fatalf("user message = %s, want unknown after Stop", messages[0].Delivery)
-	}
-	if got := f.conversation(t, record.ID).Execution.Status; got != conversation.ExecutionUnknown {
-		t.Fatalf("execution = %s, want unknown after Stop", got)
-	}
-	f.coordinator().Wake(record.ID)
-	f.coordinator().Stop()
 }
 
 // TestConversationCoordinatorIgnoresLinked proves the hub-side coordinator
