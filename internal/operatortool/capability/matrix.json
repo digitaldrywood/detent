@@ -7084,14 +7084,14 @@
           "kind": "attribute",
           "definition": "action={ canManage && observedPolicies.length === 1 && !conflict ? ( <Button size=\"sm\" variant=\"warning-outline\" onClick={() => onApprovePolicy(observedPolicies[0]!.policy.policy_id)} disabled={approving} > {approving ? \"Approving\u2026\" : \"Approve updated policy\"} </Button> ) : null }",
           "occurrence": 1,
-          "line": 321
+          "line": 344
         },
         {
           "source": "web/conversation/src/app/account/api.ts",
           "kind": "request",
           "definition": "send(PolicyApproval,\"PUT\",`${project(input.projectId)}${input.onboarding === true ? \"/onboarding\" : \"\"}/policy`,{ expected_policy_id: input.expectedPolicyId, policy: input.policy })",
           "occurrence": 1,
-          "line": 307
+          "line": 309
         }
       ],
       "availability": [
@@ -23916,9 +23916,9 @@
         {
           "source": "web/conversation/src/app/account/api.ts",
           "kind": "request",
-          "definition": "send(ProjectIntegration,\"PUT\",`${project(input.projectId)}/integration`,{ expected_revision: input.revision, intake: input.intake, projection: input.projection, repository_enabled: input.repositoryEnabled, ...(input.states !== undefined ? { states: input.states } : {}), idempotency_key: input.key, })",
+          "definition": "send(ProjectIntegration,\"PUT\",`${project(input.projectId)}/onboarding/integration`,{ expected_revision: input.revision, intake: input.intake, projection: input.projection, repository_enabled: input.repositoryEnabled, ...(input.states !== undefined ? { states: input.states } : {}), ...(input.workflowMarkdown !== undefined ? { workflow_markdown: input.workflowMarkdown } : {}), idempotency_key: input.key, })",
           "occurrence": 1,
-          "line": 286
+          "line": 287
         }
       ],
       "availability": [
