@@ -49,9 +49,10 @@ type Issue struct {
 }
 
 type IssueDraft struct {
-	Title  string
-	Body   string
-	Labels []string
+	Title    string
+	Body     string
+	Labels   []string
+	Priority *int
 }
 
 type IssueStore interface {

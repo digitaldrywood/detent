@@ -28,8 +28,8 @@ func (o *Orchestrator) attachMachineIssueTool(request *RunRequest) {
 	source := strconv.FormatInt(request.WorkAttemptID, 10)
 	request.AgentTools = append(request.AgentTools, runner.AgentTool{
 		Name:        "file_machine_issue",
-		Description: "File a machine-discovered follow-up in this repository's Backlog, or comment on an open issue with the same fingerprint. Use a stable problem key shared across occurrences, excluding attempt IDs, wording variations and timestamps. Inspect existing issues for their fingerprint first. Optional labels supply metadata only; configured lane labels are omitted.",
-		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["title","body","fingerprint"],"properties":{"title":{"type":"string","minLength":1},"body":{"type":"string","minLength":1},"fingerprint":{"type":"string","minLength":1},"labels":{"type":"array","items":{"type":"string"}}}}`),
+		Description: "File a machine-discovered follow-up in this repository's Backlog, or comment on an open issue with the same fingerprint. Use a stable problem key shared across occurrences, excluding attempt IDs, wording variations and timestamps. Inspect existing issues for their fingerprint first. Optional priority uses creation ranks 1=Urgent, 2=High, 3=Normal, 4=Low; omit it to leave priority unset. Optional labels supply metadata only; configured lane labels are omitted.",
+		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["title","body","fingerprint"],"properties":{"title":{"type":"string","minLength":1},"body":{"type":"string","minLength":1},"fingerprint":{"type":"string","minLength":1},"priority":{"type":"integer","minimum":1,"maximum":4},"labels":{"type":"array","items":{"type":"string"}}}}`),
 	})
 	request.AgentToolHandler = func(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
 		if call.Name != "file_machine_issue" {
@@ -43,6 +43,7 @@ func (o *Orchestrator) attachMachineIssueTool(request *RunRequest) {
 			Body        string          `json:"body"`
 			Fingerprint string          `json:"fingerprint"`
 			Labels      json.RawMessage `json:"labels"`
+			Priority    json.RawMessage `json:"priority"`
 		}
 		decoder := json.NewDecoder(strings.NewReader(string(call.Arguments)))
 		decoder.DisallowUnknownFields()
@@ -51,6 +52,14 @@ func (o *Orchestrator) attachMachineIssueTool(request *RunRequest) {
 		}
 		if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) || strings.TrimSpace(input.Title) == "" || strings.TrimSpace(input.Body) == "" || strings.TrimSpace(input.Fingerprint) == "" {
 			return runner.AgentToolResult{Content: "one request with title, body and fingerprint is required"}, nil
+		}
+		var priority *int
+		if input.Priority != nil {
+			var rank int
+			if err := json.Unmarshal(input.Priority, &rank); err != nil || rank < 1 || rank > 4 {
+				return runner.AgentToolResult{Content: "priority must be an integer creation rank between 1 and 4"}, nil
+			}
+			priority = &rank
 		}
 		var labels []string
 		if input.Labels != nil {
@@ -75,7 +84,7 @@ func (o *Orchestrator) attachMachineIssueTool(request *RunRequest) {
 			return false
 		})
 		body := issueorigin.Stamp(input.Body, issueorigin.Origin{Kind: "worker", Source: source, Fingerprint: strings.TrimSpace(input.Fingerprint)})
-		issue, err := backend.CreateIntakeIssue(ctx, intake.IssueDraft{Title: input.Title, Body: body, Labels: labels})
+		issue, err := backend.CreateIntakeIssue(ctx, intake.IssueDraft{Title: input.Title, Body: body, Labels: labels, Priority: priority})
 		if err != nil {
 			return runner.AgentToolResult{Content: err.Error()}, nil
 		}
