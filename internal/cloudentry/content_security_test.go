@@ -30,6 +30,8 @@ func TestContentSecurityPolicy(t *testing.T) {
 		{name: "the bundle's own stylesheets load", directive: "style-src", source: "'self'", allowed: true},
 		{name: "the diff renderer's inline style attributes apply", directive: "style-src-attr", source: "'unsafe-inline'", allowed: true},
 		{name: "objects never load", directive: "object-src", source: "'none'", allowed: true},
+		{name: "pages cannot be framed", directive: "frame-ancestors", source: "'none'", allowed: true},
+		{name: "same-origin framing stays forbidden", directive: "frame-ancestors", source: "'self'", allowed: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
