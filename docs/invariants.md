@@ -53,6 +53,11 @@ protocol, credential, network and workspace-hook failures do not consume the
 issue's failure allowance or authorize source repair. Issue retry accounting
 must distinguish genuine code failures from instance interruptions.
 
+Scheduled full-suite job reporting follows INV-5: the reporter files every
+failing job into Todo at least High, including infrastructure failures labelled
+and attributed to the CI instance. This reporting policy preserves worker
+failure allowance and source-repair attribution.
+
 Valid native final reports use the existing instance blocker completion and
 evidence owner after execution and source publication fencing. Instance-only
 reports preserve successful provider accounting and typed evidence without
@@ -216,17 +221,25 @@ Every `develop` push deploys staging independently; production release
 artifacts use validated tags only.
 
 Scheduled Detent failures use the selected native reporting owner and stable
-fingerprints, preserving commit, run, attempt, job, imported history and holds.
-Under the human-approved Detent scheduled reporting policy, newly reported
-proven source or test blockers with reliable, pinned evidence enter Todo at
-least High priority. The selected workflow must provide dispatchable,
-nonterminal Todo and nondispatchable, nonterminal Backlog, neither operator-only.
-Reused items retain their lanes, human questions, holds and terminal history;
-priority updates preserve High and Urgent. Unknown setup, startup, download,
-network, backend, protocol and authentication failures remain instance intake
-in Backlog. Repair workers verify reported failures on their current base;
-green results append tracker evidence without closing work or changing lanes.
-Failed Cloud publication must not fall back to GitHub issue writes.
+job fingerprints, preserving commit, run, attempt, job, imported history and
+holds. Under the human-approved Detent scheduled reporting policy, every
+failing job creates or updates one issue at least High priority. Source, test,
+unclassified and infrastructure failures all enter Todo, with infrastructure
+and unclassified reports labelled as infrastructure and attributed to the CI
+instance. The selected workflow must provide dispatchable, nonterminal Todo
+and nondispatchable, nonterminal Backlog, neither operator-only. Matching open
+job issues receive comments with the run URL, findings and pinned develop SHA
+instead of duplicates. The existing expected-revision edit owner preserves
+High and Urgent and adds the infrastructure label without replacing existing
+labels; the native workflow owner promotes matching scheduled Backlog intake
+to Todo. Human questions, operator holds, active/review lanes and terminal
+history remain intact. Other unknown instance diagnostics remain Backlog intake.
+Infrastructure reporting does not authorize source repair without reproducible
+source evidence or consume an issue failure allowance. Repair workers verify
+reported failures on their current base; green results append tracker evidence
+without closing work or changing lanes. Every suite job must succeed before a
+validated release is tagged. Failed Cloud publication must not fall back to
+GitHub issue writes.
 
 Conversation bundles are ignored feature output, prepared from the selected
 source and lockfile by the build owner with Node 24 and `make app`. Prepared
@@ -285,6 +298,10 @@ supplies priority. Fingerprint reuse may raise unset or weaker priority through
 the existing mutation owner, with the observed revision and a priority-only
 edit. It never lowers stronger priority, replaces origin or content, removes
 operator holds, changes lanes or authorizes admission.
+
+The scheduled reporting owner follows the job-level policy in INV-5, including
+Backlog-to-Todo promotion through the native workflow owner. Worker intake does
+not inherit that scheduled reporting authority.
 
 Host-owned native worker intake requires the current registered runner's scoped
 source lease and fencing token. Its existing creation transaction creates
