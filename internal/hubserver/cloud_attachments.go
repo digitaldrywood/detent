@@ -78,7 +78,7 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 	}
 
 	now := s.config.now()
-	used, err := s.database.hostedConsumption(c.Request().Context(), s.database.db, now)
+	used, err := s.database.hostedConsumption(c.Request().Context(), s.database.db, now, "collaboration_bytes")
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -161,7 +161,7 @@ func (s *Service) recordCloudAttachment(c echo.Context) error {
 	}
 	result, err := s.executeNativeMutation(c.Request().Context(), scope, options, command, requestIdentity, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		record := input.Metadata
-		before, err := s.database.hostedConsumption(ctx, tx, now)
+		before, err := s.database.hostedConsumption(ctx, tx, now, "collaboration_bytes", "usage_windows")
 		if err != nil {
 			return nil, err
 		}
@@ -169,7 +169,7 @@ func (s *Service) recordCloudAttachment(c echo.Context) error {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,width,height,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, record.ID, scope.organization, scope.project, record.Uploader, record.Name, record.ContentType, record.Size, record.SHA256, record.Width, record.Height, formatHubTime(now)); err != nil {
 			return nil, err
 		}
-		if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
+		if err := s.database.checkHostedGrowth(ctx, tx, before, now, false, "collaboration_bytes", "usage_windows"); err != nil {
 			return nil, err
 		}
 		if input.Evidence != nil {

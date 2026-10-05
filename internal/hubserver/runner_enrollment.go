@@ -79,7 +79,8 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 			return s.nativeAPIError(c, err)
 		}
 	}
-	before, err := s.database.hostedConsumption(ctx, tx, now)
+	metrics := hostedRunnerTransactionMetrics(c.Path())
+	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -115,7 +116,7 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 		}
 		completion = active > 0
 	}
-	if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion); err != nil {
+	if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if heartbeat {

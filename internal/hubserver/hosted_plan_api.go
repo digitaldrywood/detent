@@ -248,6 +248,13 @@ func insertHostedComplimentaryGrant(ctx context.Context, tx *sql.Tx, command hos
 	return err
 }
 
+func hostedRunnerTransactionMetrics(path string) []string {
+	if path == nativeBase+"/leases/:lease/validate" {
+		return []string{"events_total", "usage_windows"}
+	}
+	return nil
+}
+
 func hostedNativeMutationMetrics(input any, completion bool) []string {
 	metrics := []string{"events_total", "usage_windows"}
 	if _, runEvent := input.(tracker.NativeRunEvent); !runEvent {

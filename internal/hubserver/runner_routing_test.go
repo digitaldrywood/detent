@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -464,6 +465,90 @@ func TestRunnerRoutingRevocationAndDrain(t *testing.T) {
 			}
 			event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "event"}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: descriptor.ID, RunID: newNativeID("run"), AttemptID: newNativeID("attempt")}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), test.want)
+		})
+	}
+}
+
+func TestRunnerLeaseValidationAccounting(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, statement, target, code string
+		apiLimit                      int64
+		fenceOffset                   tracker.FencingToken
+		status                        int
+	}{
+		{name: "available with exhausted event window", apiLimit: 100, status: http.StatusOK},
+		{name: "API window exhausted", apiLimit: 0, status: http.StatusTooManyRequests, code: "allowance_exhausted"},
+		{name: "stale fence", apiLimit: 100, fenceOffset: 1, status: http.StatusConflict, code: "stale_fencing_token"},
+		{name: "expired lease", apiLimit: 100, statement: "UPDATE leases SET expires_at=acquired_at WHERE lease_id=?", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
+		{name: "released lease", apiLimit: 100, statement: "UPDATE leases SET released_at=acquired_at WHERE lease_id=?", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
+		{name: "revoked credential", apiLimit: 100, statement: "UPDATE api_tokens SET revoked_at=created_at WHERE id=?", target: "runner", status: http.StatusUnauthorized, code: "unauthorized"},
+		{name: "project access removed", apiLimit: 100, statement: "DELETE FROM token_grants WHERE token_id=?", target: "runner", status: http.StatusNotFound, code: "not_found"},
+		{name: "policy approval removed", apiLimit: 100, statement: "DELETE FROM project_policies WHERE scope=?", target: "project", status: http.StatusConflict, code: "policy_mismatch"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "lease-accounting")
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r.enroll(t)
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			issue := f.create(t, "work")
+			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "work", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			d := f.service.database
+			seedHubMachine(t, f.service, "unrelated", now)
+			if _, err := d.db.ExecContext(t.Context(), "UPDATE machines SET last_heartbeat_at='invalid',token_id=? WHERE id='unrelated'", bootstrapTokenID); err != nil {
+				t.Fatal(err)
+			}
+			if test.statement != "" {
+				var target any = r.binding.RunnerID
+				if test.target == "lease" {
+					target = lease.ID
+				} else if test.target == "project" {
+					target = string(f.project.OrganizationID) + "/" + string(f.project.ID)
+				}
+				if _, err := d.db.ExecContext(t.Context(), test.statement, target); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.service.config.Hosted = &HostedConfig{}
+			d.hostedOrganization = f.project.OrganizationID
+			hostedTestPlans(t, f.service, map[string]int64{"api_mutations": test.apiLimit, "ingested_events": 0, "collaboration_bytes": 0, "history_records": 0})
+			f.service.config.Hosted = nil
+			metrics := hostedRunnerTransactionMetrics(nativeBase + "/leases/:lease/validate")
+			before, err := d.hostedConsumption(t.Context(), d.db, now, metrics...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/validate", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken + test.fenceOffset})
+			requireNativeStatus(t, response, test.status)
+			if test.code != "" {
+				var failure apiErrorResponse
+				decodeHubResponse(t, response, &failure)
+				if failure.Code != test.code {
+					t.Fatalf("refusal=%s want=%s", failure.Code, test.code)
+				}
+			}
+			after, err := d.hostedConsumption(t.Context(), d.db, now, metrics...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.status == http.StatusOK {
+				before["api_mutations"]++
+			}
+			if !maps.Equal(before, after) {
+				t.Fatalf("validation accounting=%v want=%v", after, before)
+			}
+			var expires string
+			if err := d.db.QueryRowContext(t.Context(), "SELECT expires_at FROM leases WHERE lease_id=?", lease.ID).Scan(&expires); err != nil {
+				t.Fatal(err)
+			}
+			if test.name != "expired lease" && expires != formatHubTime(lease.ExpiresAt) {
+				t.Fatal("validation changed lease expiry")
+			}
 		})
 	}
 }
