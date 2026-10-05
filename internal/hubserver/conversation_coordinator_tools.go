@@ -84,10 +84,10 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
 	result, err := t.execute(ctx, call)
 	if err != nil {
-		if coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) {
+		if coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
 			err = coordinatorActionError(err)
 		}
-		if coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) {
+		if coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
 			if postErr := t.postActionRefusal(ctx, call.Name, err); postErr != nil {
 				t.coordinator.logger.Warn("coordinator could not persist refusal", "conversation_id", t.state.conversationID, "error", postErr)
 			}
@@ -166,6 +166,8 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		return t.explainIssue(ctx, record, readable, args.WorkItemID)
 	case "load_split_issue_skill":
 		return t.loadSplitIssueSkill(call.Arguments)
+	case string(chat.ActionArchiveItems):
+		return t.proposeIssueArchive(ctx, record, call)
 	case string(chat.ActionIssueSplit):
 		return t.proposeIssueSplit(ctx, record, call)
 	case coordinatorToolProposeIssue:

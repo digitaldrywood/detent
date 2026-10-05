@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -19,13 +20,16 @@ import (
 )
 
 func TestCoordinatorProjectActions(t *testing.T) {
-	for _, tool := range []string{"update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, string(chat.ActionIssueSplit), "set_sprite_pool", "scale_up_sprite_pool"} {
+	for _, tool := range []string{"update_project_integration", operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, string(chat.ActionIssueSplit), string(chat.ActionArchiveItems), "set_sprite_pool", "scale_up_sprite_pool"} {
 		outcomes := []string{"approve", "reject", "unauthorized", "revoked", "stale", "model approval", "foreign issue", "expired session", "wrong role", "no write grant", "bad arguments"}
 		if tool == "update_project_integration" {
 			outcomes = append(outcomes, "transport unavailable")
 		}
 		if tool == string(chat.ActionIssueSplit) {
 			outcomes = append(outcomes, "child failure", "edge failure", "comment failure", "invalid state", "cycle")
+		}
+		if tool == string(chat.ActionArchiveItems) {
+			outcomes = append(outcomes, "running", "merging", "became running", "became merging", "archive failure", "history failure", "already archived", "duplicate", "empty", "outside project")
 		}
 		if coordinatorSpriteMutation(tool) {
 			outcomes = append(outcomes, "no runner grant", "runner grant revoked")
@@ -105,6 +109,41 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						}
 					}
 				}
+				archiveIDs := []string{string(id)}
+				if tool == string(chat.ActionArchiveItems) {
+					now := formatHubTime(f.service.config.now())
+					if _, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Merging','Merging',?,?)", f.project, now, now); err != nil {
+						t.Fatal(err)
+					}
+					scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+					for _, item := range seedArchiveIssues(t, f.service, scope, 4, "Todo") {
+						archiveIDs = append(archiveIDs, string(item.WorkItemID))
+					}
+					if outcome == "running" {
+						seedCoordinatorArchiveLease(t, f.service, archiveIDs[4])
+					}
+					if outcome == "merging" {
+						if _, err := db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", f.project, archiveIDs[4]); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if outcome == "already archived" {
+						if _, err := db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", archiveIDs[4]); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if outcome == "outside project" {
+						response := f.request(t, u, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{"idempotency_key": "archive-other-project", "name": "Other project", "grant_access": true})
+						requireNativeStatus(t, response, http.StatusCreated)
+						var created struct {
+							ProjectID tracker.ProjectID `json:"project_id"`
+						}
+						decodeHubResponse(t, response, &created)
+						scope.project = created.ProjectID
+						foreign := seedArchiveIssues(t, f.service, scope, 1, "Todo")[0]
+						archiveIDs[4] = string(foreign.WorkItemID)
+					}
+				}
 				arguments := map[string]any{"work_item_id": id}
 				switch tool {
 				case "update_project_integration":
@@ -115,6 +154,14 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					arguments["title"], arguments["body"], arguments["labels"], arguments["priority"] = "Edited by Luna", "", []string{"approved"}, 2
 				case operatortool.AddComment:
 					arguments["body"] = "Comment approved by the owner"
+				case string(chat.ActionArchiveItems):
+					arguments = map[string]any{"work_item_ids": archiveIDs}
+					if outcome == "duplicate" {
+						arguments["work_item_ids"] = []string{string(id), string(id)}
+					}
+					if outcome == "empty" {
+						arguments["work_item_ids"] = []string{}
+					}
 				case string(chat.ActionIssueSplit):
 					priority := 1
 					arguments = map[string]any{"parent_work_item_id": id, "children": []chat.IssueSplitChild{
@@ -148,7 +195,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					f.grant(t, u, false, false)
 				}
 				if outcome == "foreign issue" {
-					arguments["work_item_id"] = "wi_foreign"
+					if tool == string(chat.ActionArchiveItems) {
+						arguments["work_item_ids"] = []string{string(id), "wi_foreign"}
+					} else {
+						arguments["work_item_id"] = "wi_foreign"
+					}
 				}
 				if outcome == "unauthorized" {
 					if _, err := db.ExecContext(t.Context(), "UPDATE hosted_members SET role='viewer' WHERE user_id=?", u.identity.Subject); err != nil {
@@ -175,14 +226,14 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					assertCoordinatorEffect(t, f, id, tool, false)
 					return
 				}
-				if outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "invalid state" || outcome == "cycle" || outcome == "no write grant" || outcome == "no runner grant" || outcome == "wrong role" && (tool == "update_project_integration" || coordinatorSpriteMutation(tool)) {
+				if outcome == "running" || outcome == "merging" || outcome == "already archived" || outcome == "duplicate" || outcome == "empty" || outcome == "outside project" || outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "invalid state" || outcome == "cycle" || outcome == "no write grant" || outcome == "no runner grant" || outcome == "wrong role" && (tool == "update_project_integration" || coordinatorSpriteMutation(tool)) {
 					if result.Success || !strings.Contains(result.Content, "error") {
 						t.Fatalf("unauthorized result: %+v", result)
 					}
 					assertCoordinatorEffect(t, f, id, tool, false)
 					return
 				}
-				if tool == string(chat.ActionIssueSplit) && result.Success {
+				if (tool == string(chat.ActionIssueSplit) || tool == string(chat.ActionArchiveItems)) && result.Success {
 					replay, err := tools.handle(t.Context(), runner.AgentToolCall{Name: tool, Arguments: raw})
 					if err != nil || replay.Content != result.Content {
 						t.Fatalf("proposal replay=%+v error=%v, want %s", replay, err, result.Content)
@@ -242,7 +293,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					} else if tool == "update_project_integration" {
 						_, err = db.ExecContext(t.Context(), "UPDATE projects SET integration_revision=integration_revision+1 WHERE id=?", f.project)
 					} else if tool != operatortool.AddComment {
-						_, err = db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", id)
+						staleID := string(id)
+						if tool == string(chat.ActionArchiveItems) {
+							staleID = archiveIDs[4]
+						}
+						_, err = db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", staleID)
 					}
 					if err != nil {
 						t.Fatal(err)
@@ -264,6 +319,28 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						}
 					}
 				}
+				if tool == string(chat.ActionArchiveItems) {
+					if outcome == "became running" {
+						seedCoordinatorArchiveLease(t, f.service, archiveIDs[4])
+					}
+					if outcome == "became merging" {
+						if _, err := db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", f.project, archiveIDs[4]); err != nil {
+							t.Fatal(err)
+						}
+					}
+					trigger := ""
+					if outcome == "archive failure" {
+						trigger = "CREATE TRIGGER archive_failure BEFORE UPDATE OF archived ON issues WHEN NEW.archived=1 AND NEW.title='Seed 3' BEGIN SELECT RAISE(ABORT, 'archive failed'); END"
+					}
+					if outcome == "history failure" {
+						trigger = "CREATE TRIGGER archive_failure BEFORE INSERT ON collaboration_events WHEN NEW.type='issue.edited' AND NEW.work_item_id='" + archiveIDs[4] + "' BEGIN SELECT RAISE(ABORT, 'history failed'); END"
+					}
+					if trigger != "" {
+						if _, err := db.ExecContext(t.Context(), trigger); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				form := url.Values{"connection_id": {connectionID}, "action_id": {action.ID}, "decision": {decision}, "form_token": {tokens[len(tokens)-1][1]}}
 				response = f.request(t, u, http.MethodPost, "/chat/approval", form)
 				want := http.StatusSeeOther
@@ -273,7 +350,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if outcome == "stale" && tool != operatortool.AddComment {
 					want = http.StatusConflict
 				}
-				if strings.HasSuffix(outcome, " failure") {
+				if strings.HasSuffix(outcome, " failure") || outcome == "became running" || outcome == "became merging" {
 					want = http.StatusConflict
 				}
 				if outcome == "runner grant revoked" {
@@ -308,6 +385,29 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						t.Fatalf("confirmation replay created %d children", count)
 					}
 				}
+				if changed && tool == string(chat.ActionArchiveItems) {
+					if _, err := f.service.executeCoordinatorAction(ctx, resolved); err != nil {
+						t.Fatalf("archive replay failed: %v", err)
+					}
+					assertCoordinatorArchiveEffect(t, f, true)
+					for _, archived := range []string{"", "true"} {
+						result, err := (operatorWorkReads{service: f.service, scope: nativeScope{organization: "org_security", project: f.project}}).ReadWork(ctx, operatortool.WorkList, operatortool.WorkReadRequest{ProjectID: string(f.project), Archived: archived, Limit: 100})
+						if err != nil {
+							t.Fatal(err)
+						}
+						var listing operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]
+						if err := json.Unmarshal(result.Content, &listing); err != nil {
+							t.Fatal(err)
+						}
+						want := 0
+						if archived == "true" {
+							want = 5
+						}
+						if len(listing.Data.Items) != want {
+							t.Fatalf("work_list archived=%q: %s", archived, result.Content)
+						}
+					}
+				}
 				if outcome != "revoked" {
 					messages, err = f.service.conversations.store.listMessages(t.Context(), db, record.ID, 0, 100)
 					if err != nil {
@@ -333,6 +433,9 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 	var actual bool
 	var err error
 	switch tool {
+	case string(chat.ActionArchiveItems):
+		assertCoordinatorArchiveEffect(t, f, changed)
+		return
 	case string(chat.ActionIssueSplit):
 		assertCoordinatorSplitEffect(t, f, id, changed)
 		return
@@ -384,6 +487,13 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 	base := browserHostedOrganizationBase + "/projects/" + f.project
 	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", map[string]any{"idempotency_key": "luna-blocked", "title": "Landing blocked by branch rules", "body": "Enable GitHub pull-request mode and retry.", "state": "Blocked"}, http.StatusOK), &issue)
 	f.workItem = string(issue.WorkItemID)
+	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+	archiveIssues := seedArchiveIssues(t, f.service, scope, 5, "Todo")
+	blockedArchive := seedArchiveIssues(t, f.service, scope, 1, "Merging")[0]
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title='Running cleanup issue' WHERE native_id=?", blockedArchive.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	seedCoordinatorArchiveLease(t, f.service, string(blockedArchive.WorkItemID))
 	backend := f.service.conversations.config.Backend.(*fakeCoordinatorBackend)
 	backend.setRun(func(ctx context.Context, turn int, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 		prompt := strings.ToLower(backend.request(t, turn-1).Prompt)
@@ -409,6 +519,20 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 				return runner.AgentTurnResult{}, fmt.Errorf("load split skill: %s", loaded.Content)
 			}
 			call = runner.AgentToolCall{Name: string(chat.ActionIssueSplit), Arguments: raw}
+		}
+		if strings.Contains(prompt, "archive the test issues") || strings.Contains(prompt, "archive the running issue") {
+			ids := make([]string, 0, len(archiveIssues))
+			for _, item := range archiveIssues {
+				ids = append(ids, string(item.WorkItemID))
+			}
+			if strings.Contains(prompt, "archive the running issue") {
+				ids = append(ids, string(blockedArchive.WorkItemID))
+			}
+			raw, err := json.Marshal(map[string]any{"work_item_ids": ids})
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			call = runner.AgentToolCall{Name: string(chat.ActionArchiveItems), Arguments: raw}
 		}
 		if strings.Contains(prompt, "disable the sprite pool") {
 			call = runner.AgentToolCall{Name: "set_sprite_pool", Arguments: json.RawMessage(`{"min_runners":0,"max_runners":0}`)}
@@ -504,6 +628,51 @@ func assertCoordinatorSplitEffect(t *testing.T, f hostedSecurityFixture, parent 
 		}
 		if slices.Contains(ids, dependent) != terminal {
 			t.Fatalf("dependent dispatch=%v while blocker terminal=%v", slices.Contains(ids, dependent), terminal)
+		}
+	}
+}
+
+func seedCoordinatorArchiveLease(t *testing.T, service *Service, id string) {
+	t.Helper()
+	db := service.database.db
+	now := formatHubTime(service.config.now())
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO machines (id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id) VALUES ('archive-machine','archive-host',1,'test',?,?,?,?)", now, now, now, service.config.Hosted.OrganizationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO leases (lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'archive-lease',id,'archive-machine','archive-session',?,?,?,?,? FROM issues WHERE native_id=?", formatHubTime(service.config.now().Add(time.Hour)), now, now, now, now, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertCoordinatorArchiveEffect(t *testing.T, f hostedSecurityFixture, changed bool) {
+	t.Helper()
+	db := f.service.database.db
+	var archived, history int
+	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=? AND archived=1 AND revision>1 AND (title='Original issue' OR title LIKE 'Seed %')", f.project).Scan(&archived); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE project_id=? AND json_extract(data_json,'$.operation')='archive'", f.project).Scan(&history); err != nil {
+		t.Fatal(err)
+	}
+	want := 0
+	if changed {
+		want = 5
+	}
+	if history != want || archived != want {
+		t.Fatalf("archive effect: archived=%d history=%d want=%d", archived, history, want)
+	}
+	if changed {
+		tx, err := db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{NativeScope: &nativeScope{organization: "org_security", project: f.project}, Scope: string(f.project)}, nil, nil, nil, nil, nil, nil, nil, nil)
+		_ = tx.Rollback()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ids) != 0 {
+			t.Fatalf("archived issues remain dispatchable: %v", ids)
 		}
 	}
 }
