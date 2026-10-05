@@ -166,6 +166,10 @@ func TestProjectSecretPermissions(t *testing.T) {
 			f.api(t, "viewer", http.MethodGet, base, nil, http.StatusOK)
 			f.api(t, "viewer", http.MethodPut, base, map[string]any{"token": spritesSecretSentinel}, status)
 			f.api(t, "viewer", http.MethodDelete, base, nil, status)
+			poolPath := strings.TrimSuffix(base, "/secrets/"+flySpritesToken) + "/sprite-pool"
+			var pool spritePoolView
+			decodeHubResponse(t, f.api(t, "viewer", http.MethodGet, poolPath, nil, http.StatusOK), &pool)
+			f.api(t, "viewer", http.MethodPut, poolPath, spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Bootstrap: "true", Revision: pool.Revision}, status)
 		})
 	}
 	f.api(t, "owner", http.MethodPut, strings.Replace(base, f.project, "prj_other", 1), map[string]any{"token": spritesSecretSentinel}, http.StatusNotFound)

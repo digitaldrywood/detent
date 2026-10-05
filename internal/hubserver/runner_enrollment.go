@@ -129,6 +129,9 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	if notify {
 		s.notifications.notify(dispatchNotificationKey(tracker.OrganizationID(c.Param("organization"))))
 	}
+	if heartbeat {
+		s.startSpriteLifecycle(nativeRequestScope(c), "")
+	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	if status == http.StatusNoContent {
 		return c.NoContent(status)
@@ -158,40 +161,44 @@ func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope nativ
 		return nil, nativeInvalid("Enrollment requires valid or omitted host IDs, explicit projects and operations, and a TTL of 1 to 900 seconds")
 	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
-		for i, project := range request.ProjectIDs {
-			var count int
-			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", string(scope.organization), project).Scan(&count); err != nil {
-				return nil, err
-			}
-			if count != 1 || slices.Contains(request.ProjectIDs[:i], project) {
-				return nil, nativeInvalid("Enrollment projects must be unique and belong to the organization")
-			}
-		}
-		if !request.Unbound() {
-			if err := runnerBindingAvailable(ctx, tx, request.Binding, string(scope.organization), request.SharedMachine); err != nil {
-				return nil, err
-			}
-		}
-		token, err := s.config.generateToken()
-		if err != nil {
-			return nil, err
-		}
-		result := runnerauth.Enrollment{ID: newNativeID("enrollment"), Token: token, ExpiresAt: now.Add(time.Duration(request.TTLSeconds) * time.Second)}
-		operations, err := marshalNative(request.Operations)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO runner_enrollments (id, organization_id, runner_id, machine_id, token_hash, operations_json, created_at, expires_at, created_by, shared_machine)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, result.ID, string(scope.organization), request.RunnerID, request.MachineID, apikey.HashToken(token), operations, formatHubTime(now), formatHubTime(result.ExpiresAt), scope.credential.ID, request.SharedMachine); err != nil {
-			return nil, err
-		}
-		for _, project := range request.ProjectIDs {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO runner_enrollment_projects (enrollment_id, organization_id, project_id) VALUES (?, ?, ?)", result.ID, string(scope.organization), project); err != nil {
-				return nil, err
-			}
-		}
-		return result, nil
+		return s.createRunnerEnrollmentInTx(ctx, tx, scope, request, now)
 	})
+}
+
+func (s *Service) createRunnerEnrollmentInTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request runnerauth.EnrollmentRequest, now time.Time) (runnerauth.Enrollment, error) {
+	for i, project := range request.ProjectIDs {
+		var count int
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", string(scope.organization), project).Scan(&count); err != nil {
+			return runnerauth.Enrollment{}, err
+		}
+		if count != 1 || slices.Contains(request.ProjectIDs[:i], project) {
+			return runnerauth.Enrollment{}, nativeInvalid("Enrollment projects must be unique and belong to the organization")
+		}
+	}
+	if !request.Unbound() {
+		if err := runnerBindingAvailable(ctx, tx, request.Binding, string(scope.organization), request.SharedMachine); err != nil {
+			return runnerauth.Enrollment{}, err
+		}
+	}
+	token, err := s.config.generateToken()
+	if err != nil {
+		return runnerauth.Enrollment{}, err
+	}
+	result := runnerauth.Enrollment{ID: newNativeID("enrollment"), Token: token, ExpiresAt: now.Add(time.Duration(request.TTLSeconds) * time.Second)}
+	operations, err := marshalNative(request.Operations)
+	if err != nil {
+		return runnerauth.Enrollment{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO runner_enrollments (id, organization_id, runner_id, machine_id, token_hash, operations_json, created_at, expires_at, created_by, shared_machine)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, result.ID, string(scope.organization), request.RunnerID, request.MachineID, apikey.HashToken(token), operations, formatHubTime(now), formatHubTime(result.ExpiresAt), scope.credential.ID, request.SharedMachine); err != nil {
+		return runnerauth.Enrollment{}, err
+	}
+	for _, project := range request.ProjectIDs {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO runner_enrollment_projects (enrollment_id, organization_id, project_id) VALUES (?, ?, ?)", result.ID, string(scope.organization), project); err != nil {
+			return runnerauth.Enrollment{}, err
+		}
+	}
+	return result, nil
 }
 
 func runnerIDsAvailable(ctx context.Context, tx *sql.Tx, binding runnerauth.Binding) error {
@@ -313,6 +320,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.MachineID, request.Hostname, req
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO runner_identities (id, organization_id, machine_id, token_id, enrollment_id, operations_json, created_at, display_name, capacity_limit, reported_capacity, os, architecture, last_heartbeat_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.RunnerID, identity.OrganizationID, binding.MachineID, binding.RunnerID, id, operations, formatHubTime(now), request.DisplayName, request.Capacity, request.Capacity, request.OS, request.Architecture, formatHubTime(now)); err != nil {
 			return nil, err
+		}
+		if request.SpriteName != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET tags_json='["sprite"]' WHERE id=? AND EXISTS (SELECT 1 FROM project_sprite_members m WHERE m.enrollment_id=? AND m.organization_id=? AND m.name=?)`, binding.RunnerID, id, identity.OrganizationID, request.SpriteName); err != nil {
+				return nil, err
+			}
 		}
 		if err := updateRunnerIsolationReport(ctx, tx, nativeScope{organization: identity.OrganizationID, credential: apiCredential{ID: binding.RunnerID, Runner: identity}}, request.BackendIsolation); err != nil {
 			return nil, err

@@ -31,36 +31,38 @@ const (
 )
 
 type Service struct {
-	mcpHTTP                *mcp.HTTPHandler
-	operatorChat           *chat.Service
-	administration         *operatoradmin.Executor
-	billing                *hostedBillingWorker
-	hostedMutationMu       sync.Mutex
-	hostedAuthLogger       *slog.Logger
-	hostedSessions         *auth.Service
-	echo                   *echo.Echo
-	database               *database
-	tracker                tracker.Tracker
-	config                 Config
-	outbox                 *outboxWorker
-	ready                  atomic.Bool
-	wakeSpriteRunnersAfter func(nativeScope, json.RawMessage)
-	spriteWakeMu           sync.Mutex
-	spriteWakes            map[spriteWakeKey]chan struct{}
-	spriteWakeWork         sync.WaitGroup
-	workerCancel           context.CancelFunc
-	workerDone             chan struct{}
-	workerStopOnce         sync.Once
-	reconcileCancel        context.CancelFunc
-	reconcileDone          chan struct{}
-	reconcileStopOnce      sync.Once
-	pullRequests           *pullRequestCache
-	notifications          *notificationBroker
-	conversations          *conversationService
-	closeOnce              sync.Once
-	closeErr               error
-	clientBuild            appClientBuild
-	workspaces             *workspaceService
+	mcpHTTP                 *mcp.HTTPHandler
+	operatorChat            *chat.Service
+	administration          *operatoradmin.Executor
+	billing                 *hostedBillingWorker
+	hostedMutationMu        sync.Mutex
+	hostedAuthLogger        *slog.Logger
+	hostedSessions          *auth.Service
+	echo                    *echo.Echo
+	database                *database
+	tracker                 tracker.Tracker
+	config                  Config
+	outbox                  *outboxWorker
+	ready                   atomic.Bool
+	wakeSpriteRunnersAfter  func(nativeScope, json.RawMessage)
+	startSpriteLifecycle    func(nativeScope, string)
+	startSpritePoolForQueue func(nativeScope)
+	spriteWakeMu            sync.Mutex
+	spriteWakes             map[spriteWakeKey]*spriteLifecyclePass
+	spriteWakeWork          sync.WaitGroup
+	workerCancel            context.CancelFunc
+	workerDone              chan struct{}
+	workerStopOnce          sync.Once
+	reconcileCancel         context.CancelFunc
+	reconcileDone           chan struct{}
+	reconcileStopOnce       sync.Once
+	pullRequests            *pullRequestCache
+	notifications           *notificationBroker
+	conversations           *conversationService
+	closeOnce               sync.Once
+	closeErr                error
+	clientBuild             appClientBuild
+	workspaces              *workspaceService
 }
 
 type healthResponse struct {
@@ -118,7 +120,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		database:         database,
 		tracker:          workTracker,
 		config:           cfg,
-		spriteWakes:      make(map[spriteWakeKey]chan struct{}),
+		spriteWakes:      make(map[spriteWakeKey]*spriteLifecyclePass),
 		workerCancel:     workerCancel,
 		workerDone:       make(chan struct{}),
 		reconcileCancel:  reconcileCancel,
@@ -128,6 +130,12 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	service.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) {
 		service.scheduleSpriteWake(workerContext, scope, result)
+	}
+	service.startSpriteLifecycle = func(scope nativeScope, state string) {
+		service.scheduleSpriteLifecycle(workerContext, scope, state)
+	}
+	service.startSpritePoolForQueue = func(scope nativeScope) {
+		service.scheduleSpritePoolForQueue(workerContext, scope)
 	}
 	if cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)
@@ -419,6 +427,7 @@ func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
 	if _, err := s.database.purgeWebhookPayloads(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.Warn("purge GitHub webhook payloads", "error", err)
 	}
+	s.maintainSpritePools(ctx)
 }
 
 func (s *Service) stopGitHubWebhookMaintenance() error {

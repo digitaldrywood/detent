@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -131,6 +132,11 @@ type spriteWakeKey struct {
 	project      tracker.ProjectID
 }
 
+type spriteLifecyclePass struct {
+	done         chan struct{}
+	pendingState string
+}
+
 func (s *Service) scheduleSpriteWake(ctx context.Context, scope nativeScope, result json.RawMessage) {
 	if s.config.SecretKeys == nil {
 		return
@@ -145,27 +151,55 @@ func (s *Service) scheduleSpriteWake(ctx context.Context, scope nativeScope, res
 	if err != nil || !dispatchable {
 		return
 	}
+	s.scheduleSpriteLifecycle(ctx, scope, issue.State)
+}
+
+func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope, state string) {
+	if s.config.SecretKeys == nil {
+		return
+	}
 	key := spriteWakeKey{organization: scope.organization, project: scope.project}
 	s.spriteWakeMu.Lock()
 	defer s.spriteWakeMu.Unlock()
-	if ctx.Err() != nil || s.spriteWakes[key] != nil {
+	if ctx.Err() != nil {
 		return
 	}
-	done := make(chan struct{})
-	s.spriteWakes[key] = done
+	if active := s.spriteWakes[key]; active != nil {
+		if state != "" {
+			active.pendingState = state
+		}
+		return
+	}
+	pass := &spriteLifecyclePass{done: make(chan struct{})}
+	s.spriteWakes[key] = pass
 	s.spriteWakeWork.Add(1)
 	go func() {
 		defer s.spriteWakeWork.Done()
 		defer func() {
 			s.spriteWakeMu.Lock()
+			pending := pass.pendingState
 			delete(s.spriteWakes, key)
-			close(done)
+			close(pass.done)
 			s.spriteWakeMu.Unlock()
+			if pending != "" && ctx.Err() == nil {
+				var configured int
+				if err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM project_sprite_pools WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&configured); err == nil && configured > 0 {
+					s.scheduleSpriteLifecycle(ctx, scope, pending)
+				}
+			}
 		}()
-		wakeContext, cancel := context.WithTimeout(ctx, time.Minute)
+		wakeContext, cancel := context.WithTimeout(ctx, runnerauth.MaxEnrollmentTTL)
 		defer cancel()
-		if _, err := s.wakeSpriteRunners(wakeContext, scope, issue.State); err != nil && wakeContext.Err() == nil {
-			s.config.Logger.Warn("sprite runners could not be woken", "error", err)
+		if state != "" {
+			if _, err := s.wakeSpriteRunners(wakeContext, scope, state); err != nil {
+				if wakeContext.Err() == nil {
+					s.config.Logger.Warn("sprite runners could not be woken", "error", err)
+				}
+				return
+			}
+		}
+		if err := s.scaleSpritePool(wakeContext, scope, state != ""); err != nil && wakeContext.Err() == nil {
+			s.config.Logger.Warn("Sprite pool lifecycle failed", "organization", scope.organization, "project", scope.project, "error", err)
 		}
 	}()
 }
@@ -239,6 +273,9 @@ ORDER BY m.hostname LIMIT 1`, scope.project, flySpritesToken, scope.organization
 			return woken, err
 		}
 		if started {
+			if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_woken_at',?) WHERE organization_id=? AND hostname=? AND json_extract(capabilities_json,'$.sprite_name')=hostname`, formatHubTime(s.config.now()), scope.organization, name); err != nil {
+				return woken, err
+			}
 			woken++
 		}
 	}

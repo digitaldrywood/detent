@@ -763,6 +763,21 @@ export const decodePolicy = Schema.decodeUnknownSync(PolicyApproval);
 
 export { ApiError };
 
+export const SpritePool = Schema.Struct({
+  min_runners: Schema.Number,
+  max_runners: Schema.Number,
+  idle_seconds: Schema.Number,
+  bootstrap: Schema.String,
+  revision: Schema.Number,
+  members: Schema.Array(Schema.Struct({
+    name: Schema.String,
+    state: Schema.String,
+    bootstrap_log: Schema.String,
+    runner_id: Schema.String,
+    idle_since: Schema.String,
+  })),
+});
+
 /** Provider secret presence; credentials are write-only. */
 export const ProjectSecretStatus = Schema.Struct({
  kind: Schema.String,

@@ -176,6 +176,7 @@ func (s *Service) releaseNativeLease(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	s.notifyNativeDispatch(nativeRequestScope(c), request)
+	s.startSpritePoolForQueue(nativeRequestScope(c))
 	if s.conversations != nil {
 		s.conversations.leaseReleased(c.Request().Context(), tracker.LeaseID(c.Param("lease")))
 	}
