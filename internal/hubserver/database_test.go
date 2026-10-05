@@ -191,8 +191,8 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		})
 	}
 
-	if service.database.schemaVersion != supportedSchemaVersion {
-		t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion)
+	if service.database.schemaVersion != supportedSchemaVersion(t) {
+		t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
 	}
 }
 
@@ -360,7 +360,7 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
-	if _, err := db.ExecContext(t.Context(), "INSERT INTO hub_schema_version (version_id, is_applied) VALUES (?, 1)", supportedSchemaVersion+1); err != nil {
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO hub_schema_version (version_id, is_applied) VALUES (?, 1)", supportedSchemaVersion(t)+1); err != nil {
 		t.Fatalf("insert future schema version: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -556,8 +556,8 @@ VALUES ('att_history', 'org_history', 'prj_history', 'tok_history', 'preserved.t
 				t.Fatal(err)
 			}
 			service := openTestService(t, Config{DatabasePath: path})
-			if service.database.schemaVersion != supportedSchemaVersion {
-				t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion)
+			if service.database.schemaVersion != supportedSchemaVersion(t) {
+				t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
 			}
 			var urgentUpdate string
 			if err := service.database.db.QueryRowContext(t.Context(), "SELECT urgent_runner_update_json FROM organizations WHERE id = 'org_history'").Scan(&urgentUpdate); err != nil || urgentUpdate != `{"revision":0,"request":null}` {
@@ -827,8 +827,8 @@ func TestOnlineBackupPreservesSchemaAndData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backup schema version: %v", err)
 	}
-	if version != supportedSchemaVersion {
-		t.Fatalf("backup schema version = %d, want %d", version, supportedSchemaVersion)
+	if version != supportedSchemaVersion(t) {
+		t.Fatalf("backup schema version = %d, want %d", version, supportedSchemaVersion(t))
 	}
 	var applicationID int64
 	if err := backup.QueryRowContext(t.Context(), "PRAGMA application_id").Scan(&applicationID); err != nil {

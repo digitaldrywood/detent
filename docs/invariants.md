@@ -4591,19 +4591,28 @@ projects may require strict freshness; Detent honors their branch rules.
 **Why:** Strict freshness invalidated already-tested heads after other merges
 and fed the measured repeated rebase/CI loop.
 
-Concurrent migration and generated-output collisions (native #25) use ordinary
-Git conflict handling instead of strict freshness or a validation gate. New SQL
-migrations use one canonical `NNNNN_migration.sql` path per version; historical
-named versions remain unchanged. The existing migration checker diagnoses new
-noncanonical names. Tracked sqlc, Templ and Tailwind output does not text-merge
+Concurrent migration and generated-output collisions (native #25, superseded
+for Hub/store naming by native #270) use ordinary Git conflict handling instead
+of strict freshness or a validation gate. New Hub and store SQL migrations use
+UTC Goose `YYYYMMDDHHMMSS_name.sql` versions; historical sequential filenames
+and fixed checker cutovers remain unchanged. The embedded directory supplies the
+supported Hub version without a hand-maintained count. Goose applies pending
+timestamps, including older versions that land later, without renumbering.
+Foreign-key verification remains inside the last pending Hub migration's
+version-write transaction, so failed forward or out-of-order migrations roll
+back and unchanged-schema startup does not scan data.
+`TestHubTimestampMigrations` covers fresh, schema-71 and reversed timestamp
+landing order; `TestHubMigrationVerificationScope` preserves validation rollback
+and no-op startup. The existing migration checker diagnoses duplicate versions
+and invalid timestamp names. Its real Git fixture
+`TestIndividuallyValidBranchesRejectIntegratedCollision` exercises both merge
+orders for distinct timestamp files and retains duplicate-version and generated
+conflict regressions. Tracked sqlc, Templ and Tailwind output does not text-merge
 concurrent edits; the existing Rework owner regenerates it from combined source.
-Conversation bundles remain build-owned ignored output. The real Git fixture
-`TestIndividuallyValidBranchesRejectIntegratedCollision` exercises both
-`merge-tree` and merge conflicts, preserves the historical duplicate-version
-regression, and verifies ordinary source and distinct versions still merge.
-This consolidates source integration without a new gate or recovery owner;
-INV-3 and INV-5 remain unchanged. General semantic conflicts still require review
-and scheduled validation.
+Conversation bundles remain build-owned ignored output. This removes shared
+migration metadata without a new gate, allocator or recovery owner; INV-3 and
+INV-5 remain unchanged. General semantic conflicts still require review and
+scheduled validation.
 
 **Enforcement:** Doctor reports live branch protection as project evidence,
 without treating strict freshness as a failure. `TestDoctorRespectsProjectCIPolicy`

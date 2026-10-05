@@ -785,8 +785,8 @@ func TestConversationMigrationTables(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
 	service := f.service
-	if service.database.schemaVersion != supportedSchemaVersion {
-		t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion)
+	if service.database.schemaVersion != supportedSchemaVersion(t) {
+		t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
 	}
 	for _, table := range []string{"conversations", "conversation_messages", "conversation_questions", "conversation_commands", "conversation_events", "conversation_starts", "conversation_audience_events", "conversation_turn_batches", "message_references", "conversation_attachments", "conversation_attachment_blobs", "attempt_diffs", "attempt_diff_files"} {
 		var name string

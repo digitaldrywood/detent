@@ -24,6 +24,14 @@ func TestCheckMigrations(t *testing.T) {
 		{"canonical new version", []string{"hub/00020_migration.sql"}, []string{"hub"}, ""},
 		{"named new version", []string{"hub/00020_onboarding.sql"}, []string{"hub"}, "use hub/00020_migration.sql"},
 		{"unpadded new version", []string{"hub/20_migration.sql"}, []string{"hub"}, "noncanonical migration filename"},
+		{"timestamp version", []string{"hub/20261005120000_onboarding.sql"}, []string{"hub"}, ""},
+		{"mixed versions", []string{"hub/00020_migration.sql", "hub/20261005120000_onboarding.sql"}, []string{"hub"}, ""},
+		{"new sequential version", []string{"hub/00021_migration.sql"}, []string{"hub"}, "UTC YYYYMMDDHHMMSS_name.sql"},
+		{"invalid timestamp date", []string{"hub/20260230120000_feature.sql"}, []string{"hub"}, "noncanonical migration filename"},
+		{"short timestamp", []string{"hub/2026100512000_feature.sql"}, []string{"hub"}, "noncanonical migration filename"},
+		{"long timestamp", []string{"hub/020261005120000_feature.sql"}, []string{"hub"}, "noncanonical migration filename"},
+		{"missing timestamp name", []string{"hub/20261005120000_.sql"}, []string{"hub"}, "noncanonical migration filename"},
+		{"timestamp collision", []string{"hub/20261005120000_onboarding.sql", "hub/20261005120000_viewed.sql"}, []string{"hub"}, "duplicate migration version 20261005120000"},
 		{"separate schemas", []string{"hub/00018_viewed.sql", "store/00018_session.sql"}, []string{"hub", "store"}, ""},
 		{"ignore other files", []string{"hub/00018_viewed.sql", "hub/README.md", "hub/nested/00018_example.sql"}, []string{"hub"}, ""},
 		{"invalid version", []string{"hub/name.sql"}, []string{"hub"}, "invalid migration version"},
@@ -40,7 +48,7 @@ func TestCheckMigrations(t *testing.T) {
 			}
 			var schemas []migrationSchema
 			for _, directory := range test.directories {
-				schemas = append(schemas, migrationSchema{directory, 19})
+				schemas = append(schemas, migrationSchema{directory, 19, 20})
 			}
 			err := checkMigrations(files, schemas)
 			if test.want == "" {
@@ -63,8 +71,12 @@ func TestRun(t *testing.T) {
 		want      int
 	}{
 		{"success", nil, "", 0},
-		{"canonical store addition", nil, "internal/store/migrations/00069_migration.sql", 0},
+		{"timestamp store addition", nil, "internal/store/migrations/20261005120000_feature.sql", 0},
+		{"timestamp Hub addition", nil, "internal/hubserver/migrations/20261005120000_feature.sql", 0},
+		{"historical Hub addition", nil, "internal/hubserver/migrations/00071_migration.sql", 0},
 		{"noncanonical store addition", nil, "internal/store/migrations/00069_feature.sql", 1},
+		{"sequential store addition", nil, "internal/store/migrations/00069_migration.sql", 1},
+		{"sequential Hub addition", nil, "internal/hubserver/migrations/00072_migration.sql", 1},
 		{"noncanonical Hub addition", nil, "internal/hubserver/migrations/00071_feature.sql", 1},
 		{"noncanonical registry addition", nil, "internal/cloudentry/migrations/registry/00006_feature.sql", 1},
 		{"noncanonical auth addition", nil, "internal/cloudentry/migrations/auth/00005_feature.sql", 1},
@@ -114,7 +126,9 @@ func TestIndividuallyValidBranchesRejectIntegratedCollision(t *testing.T) {
 	}{
 		{"historical named collision", "hub/00018_onboarding.sql", "hub/00018_viewed.sql", true, false},
 		{"canonical migration collision", "hub/00020_migration.sql", "hub/00020_migration.sql", true, true},
-		{"independent migration versions", "hub/00020_migration.sql", "hub/00021_migration.sql", true, false},
+		{"independent migration versions", "hub/00020_migration.sql", "hub/20261005120000_viewed.sql", true, false},
+		{"independent timestamps", "hub/20261005120000_onboarding.sql", "hub/20261005120001_viewed.sql", true, false},
+		{"timestamp collision", "hub/20261005120000_onboarding.sql", "hub/20261005120000_viewed.sql", true, false},
 		{"generated sqlc edits", "internal/store/sqlc/models.go", "internal/store/sqlc/models.go", false, true},
 		{"generated templ edits", "internal/web/templates/work_templ.go", "internal/web/templates/work_templ.go", false, true},
 		{"generated CSS edits", "static/css/output.css", "static/css/output.css", false, true},
@@ -155,7 +169,7 @@ func TestIndividuallyValidBranchesRejectIntegratedCollision(t *testing.T) {
 				}
 			}
 			check := func() error {
-				return checkMigrations(os.DirFS(root), []migrationSchema{{"hub", 19}})
+				return checkMigrations(os.DirFS(root), []migrationSchema{{"hub", 19, 20}})
 			}
 			mustGit("init", "-b", "main")
 			write(".gitattributes", string(attributes))
@@ -188,6 +202,10 @@ func TestIndividuallyValidBranchesRejectIntegratedCollision(t *testing.T) {
 			}
 			mustGit("add", ".")
 			mustGit("commit", "-m", "viewed change")
+			rightHead := mustGit("rev-parse", "HEAD")
+			if !test.wantConflict {
+				mustGit("merge-tree", "--write-tree", "--name-only", "onboarding", "main")
+			}
 			for _, args := range [][]string{
 				{"merge-tree", "--write-tree", "--name-only", "main", "onboarding"},
 				{"merge", "--no-edit", "onboarding"},
@@ -207,13 +225,24 @@ func TestIndividuallyValidBranchesRejectIntegratedCollision(t *testing.T) {
 				}
 				return
 			}
-			if test.name == "historical named collision" {
+			if test.name == "historical named collision" || test.name == "timestamp collision" {
 				err := check()
-				if err == nil || !strings.Contains(err.Error(), "duplicate migration version 18") || !strings.Contains(err.Error(), test.leftPath) || !strings.Contains(err.Error(), test.rightPath) {
+				if err == nil || !strings.Contains(err.Error(), "duplicate migration version") || !strings.Contains(err.Error(), test.leftPath) || !strings.Contains(err.Error(), test.rightPath) {
 					t.Fatalf("integrated error = %v", err)
 				}
 			} else if err := check(); err != nil {
 				t.Fatal(err)
+			}
+			if test.name == "independent timestamps" {
+				forwardTree := mustGit("rev-parse", "HEAD^{tree}")
+				mustGit("checkout", "onboarding")
+				mustGit("merge", "--no-edit", rightHead)
+				if reverseTree := mustGit("rev-parse", "HEAD^{tree}"); reverseTree != forwardTree {
+					t.Fatalf("merge order changed tree: forward=%s reverse=%s", forwardTree, reverseTree)
+				}
+				if err := check(); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}

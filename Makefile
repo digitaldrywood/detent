@@ -64,7 +64,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-hub-portability test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-hub-portability test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -286,10 +286,14 @@ sqlc:
 		echo "No sqlc config at $(SQLC_CONFIG); skipping sqlc generate."; \
 	fi
 
+db-create:
+	@test -n "$(NAME)" || { echo "Use make db-create NAME=description [MIGRATIONS_DIR=directory]"; exit 1; }
+	TZ=UTC goose -dir "$(MIGRATIONS_DIR)" create "$(NAME)" sql
+
 db-migrate:
 	@if [ -d "$(MIGRATIONS_DIR)" ]; then \
 		mkdir -p "$$(dirname "$(DATABASE_URL)")"; \
-		goose -dir "$(MIGRATIONS_DIR)" "$(GOOSE_DRIVER)" "$(DATABASE_URL)" up; \
+		goose -allow-missing -dir "$(MIGRATIONS_DIR)" "$(GOOSE_DRIVER)" "$(DATABASE_URL)" up; \
 	else \
 		echo "No migrations directory at $(MIGRATIONS_DIR); skipping database migration."; \
 	fi
@@ -336,5 +340,6 @@ help:
 	@echo "  nilaway-audit  Run the local NilAway audit"
 	@echo "  release-snapshot  Build local GoReleaser snapshot archives"
 	@echo "  sqlc         Generate sqlc output"
-	@echo "  db-migrate   Run goose migrations"
+	@echo "  db-create    Create a UTC timestamp SQL migration (NAME=description)"
+	@echo "  db-migrate   Run goose migrations, including later-landed timestamps"
 	@echo "  setup        Install development tools"
