@@ -1854,6 +1854,17 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if repository, ok := req.Execution.(RepositoryExecution); ok {
 			repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
 		}
+		if source, ok := req.Execution.(IntegrationSourceExecution); ok {
+			if verifier, supported := runWorkspace.(workspace.IntegrationVerifier); supported {
+				source.SetIntegrationSource(func(ctx context.Context, version tracker.ChangeVersion, base string) (workspace.LandResult, error) {
+					method := version.Policy.Gates.MergeMethod
+					if method == "" {
+						method = "squash"
+					}
+					return verifier.VerifyIntegratedChange(ctx, info, workspaceIssue, workspace.LandOptions{HeadSHA: version.HeadSHA, Repository: version.Repository, Method: method}, version.BaseSHA, base)
+				})
+			}
+		}
 		if runtime, ok := req.Execution.(RuntimeExecution); ok {
 			if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Identity: runtimeIdentity}); err != nil {
 				return RunResult{}, err

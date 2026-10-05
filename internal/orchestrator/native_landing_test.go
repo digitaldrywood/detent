@@ -61,6 +61,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 	waiting.RefusalKind = workspace.LandRefusalBaseMoved
 	waiting.Refusal = "GitHub refused PUT repos/example/repo/pulls/7/merge: status 405: Pull Request has merge conflicts; current source is unproven"
 	for _, test := range []struct {
+		absorbed           bool
 		name               string
 		finalMessage       string
 		landing            *runpkg.NativeLanding
@@ -85,6 +86,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		wantLandingWait    bool
 		priorOutage        string
 	}{
+		{name: "absorbed Rework uses the existing landing completion owner", absorbed: true, landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a refused landing returns to review with the reason", landing: refused, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
 		{name: "a conflict enters rework without human review", landing: conflict, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
@@ -233,6 +235,10 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			}
 			if journey == nil {
 				result = runpkg.RunResult{FinalState: FinalStateCompleted, FinalMessage: test.finalMessage, Output: output, NativeLanding: test.landing, WorkspaceBranch: branch}
+				if test.absorbed {
+					result.NativeLanding = nil
+					result.NativeChange = &runpkg.NativeChange{Changed: true, ChangeID: landed.ChangeID, VersionID: landed.VersionID, HeadSHA: landed.HeadSHA, Reviewed: true, Landing: &landed}
+				}
 			}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: now,

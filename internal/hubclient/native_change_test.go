@@ -310,11 +310,15 @@ func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, c
 	if len(previous) > 0 {
 		expectedVersionID = previous[0]
 	}
+	base := strings.Repeat("a", 40)
+	if len(previous) > 1 {
+		base = previous[1]
+	}
 	version, err := h.admin.PublishChangeVersion(t.Context(), item, changeID, tracker.PublishChangeVersion{
 		Mutation:          nativeMutationKey(),
 		ExpectedVersionID: expectedVersionID,
 		ChangeVersionInput: tracker.ChangeVersionInput{
-			BaseSHA: strings.Repeat("a", 40), HeadSHA: head, MergeBaseSHA: strings.Repeat("a", 40), Repository: nativeChangeRepository,
+			BaseSHA: base, HeadSHA: head, MergeBaseSHA: base, Repository: nativeChangeRepository,
 			Code:      tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: digest, Availability: "unverified"},
 			Artifacts: []tracker.ChangeArtifact{}, PolicyID: h.descriptor.ID,
 		},
@@ -396,6 +400,8 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			return tracker.AttemptDiffRequest{BaseSHA: head, HeadSHA: head, Files: []tracker.AttemptDiffFile{}}, true
 		}, existing: true, published: head,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head}, wantChanges: 1, wantVersions: 1},
+		{name: "empty unrelated head retains the mismatch for review", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), existing: true, published: head,
+			wantDiagnostic: "the final attempt diff does not identify the current Change Request head", wantChanges: 1, wantVersions: 1},
 		{name: "removed clean worktree reuses its matching final checkpoint diff", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: head,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "an unavailable final diff cannot reuse an older checkpoint head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: strings.Repeat("b", 40),
@@ -815,6 +821,8 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
+		absorbed       bool
+		hold           bool
 		lowScore       bool
 		wantVerdict    string
 		ssh            bool
@@ -839,6 +847,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		wantState      string
 		wantChanges    int
 	}{
+		{name: "absorbed Rework settles the original version on its actual base", absorbed: true, rework: true, land: true, wantState: "Done", wantChanges: 1},
+		{name: "absorbed SSH Rework settles without a second provider session", absorbed: true, ssh: true, rework: true, land: true, wantState: "Done", wantChanges: 1},
+		{name: "absorbed Rework preserves formal human rejection", absorbed: true, rework: true, formal: true, land: true, wantState: "Human Review", wantChanges: 1},
+		{name: "absorbed Rework preserves a reported human hold", absorbed: true, hold: true, rework: true, land: true, wantState: "Human Review", wantChanges: 1},
 		{name: "SSH native validator pass after publication", ssh: true, validator: "pass", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "native validator pass after publication", validator: "pass", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "native validator low score requests rework", lowScore: true, validator: "pass", wantVerdict: "rework", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
@@ -983,7 +995,17 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				current := h.publish(t, item, change.ID, strings.TrimSpace(string(head)), old.ID)
+				baseOutput, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", "HEAD").Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				base := strings.TrimSpace(string(baseOutput))
+				current := h.publish(t, item, change.ID, strings.TrimSpace(string(head)), old.ID, base)
+				if test.absorbed {
+					nativeChangeGit(t, source, "merge", "--squash", current.HeadSHA)
+					nativeChangeGit(t, source, "commit", "-m", "absorb reviewed source")
+					nativeChangeGit(t, source, "push", "origin", "main")
+				}
 				if test.formal {
 					if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, current.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "changes_requested", Body: "Serialize global config updates"}); err != nil {
 						t.Fatal(err)
@@ -1069,7 +1091,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				nativeChangeGit(t, source, "config", "commit.gpgsign", "true")
 				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
 			}
-			provider := &committingAgent{commit: test.commit, dirty: test.dirty, staged: test.staged, validator: test.validator, lowScore: test.lowScore}
+			provider := &committingAgent{commit: test.commit, dirty: test.dirty, staged: test.staged, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed, hold: test.hold}
 			var runtimeStore store.Store
 			if test.validator != "" {
 				runtimeStore, err = store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
@@ -1107,6 +1129,46 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: runExecution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 			if test.ssh && err == nil {
 				result.NativeChange = execution.(runner.ChangeExecution).NativeChange()
+			}
+			if test.absorbed {
+				change := result.NativeChange
+				if err != nil || change == nil || provider.calls != 1 || change.ChangeID != expected.Change.ID {
+					t.Fatalf("absorbed Rework did not finish once: result=%+v calls=%d error=%v", result, provider.calls, err)
+				}
+				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+				if err != nil || !reflect.DeepEqual(detail.Versions, expected.Versions) || detail.Change.CurrentVersion != expected.Change.CurrentVersion {
+					t.Fatalf("absorbed Rework changed immutable identity: detail=%+v error=%v", detail, err)
+				}
+				attempt := executionID("attempt", string(execution.Recovery().Lease.ID))
+				var stored tracker.AttemptDiff
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/attempts/"+attempt+"/diff", nil, &stored); err != nil {
+					t.Fatal(err)
+				}
+				if stored.BaseSHA != stored.HeadSHA || len(stored.Files) != 0 {
+					t.Fatalf("absorbed fixture did not finish empty: %+v", stored)
+				}
+				if test.formal || test.hold {
+					if change.Landing != nil || detail.Change.Landed != nil || !strings.Contains(change.VersionError, "the final attempt diff does not identify the current Change Request head") {
+						t.Fatalf("human rejection was waived: %+v", change)
+					}
+					h.complete(t, issue.ID, change)
+				} else {
+					if change.Landing == nil || !change.Landing.Landed || detail.Change.Landed == nil || detail.Change.Landed.VersionID != expected.Change.CurrentVersion || detail.Change.Landed.MergeSHA != stored.BaseSHA || change.VersionError != "" {
+						t.Fatalf("absorbed source lacks authentic landing: change=%+v detail=%+v", change, detail)
+					}
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+						t.Fatal(err)
+					}
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+						t.Fatalf("a second release retained authority: %v", err)
+					}
+				}
+				if h.state(t, issue.ID) != test.wantState || len(h.candidatesIn(t, "Rework")) != 0 {
+					t.Fatal("absorbed completion remained dispatchable")
+				}
+				next := h.createInProgress(t, "Next native work")
+				h.claim(t, next.ID)
+				return
 			}
 			if test.lateConflict {
 				owner := execution.(*nativeExecution)
@@ -1487,6 +1549,8 @@ func nativeDiffHas(files []tracker.AttemptDiffFile, path string) bool {
 // committingAgent is a fake provider: it completes one turn, committing a
 // file in the worktree first when commit is set.
 type committingAgent struct {
+	complete  bool
+	hold      bool
 	lowScore  bool
 	validator string
 	commit    bool
@@ -1540,7 +1604,15 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 			}
 		}
 	}
-	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ThreadID: "thread-native", TurnID: "turn-1", Delta: "Finished the native work", ItemID: "result"}); err != nil {
+	message := "Finished the native work"
+	if a.complete {
+		action := "null"
+		if a.hold {
+			action = "Approve the migration"
+		}
+		message += "\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: " + action + "\n```"
+	}
+	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ThreadID: "thread-native", TurnID: "turn-1", Delta: message, ItemID: "result"}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}
 	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnCompleted, ThreadID: "thread-native", TurnID: "turn-1", Status: "completed"}); err != nil {

@@ -77,6 +77,14 @@ func (f landingFixture) advanceMain(t *testing.T, name, content string) {
 	runGit(t, f.source, "push", "origin", "main")
 }
 
+func (f landingFixture) absorb(t *testing.T) {
+	t.Helper()
+	runGit(t, f.source, "merge", "--squash", f.head)
+	runGit(t, f.source, "commit", "-m", "absorb source")
+	runGit(t, f.source, "push", "origin", "main")
+	runGit(t, f.info.Path, "reset", "--hard", f.remoteMain(t))
+}
+
 func TestLocalGitCreateReviewedLanding(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -397,10 +405,43 @@ func TestLocalGitLandChangeMethods(t *testing.T) {
 func TestLocalGitLandChangeRefusals(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name     string
-		arrange  func(*testing.T, landingFixture) LandOptions
-		wantKind string
+		integration bool
+		name        string
+		arrange     func(*testing.T, landingFixture) LandOptions
+		wantKind    string
 	}{
+		{name: "absorbed source verifies without another merge", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			f.absorb(t)
+			f.advanceMain(t, "unrelated.txt", "later work\n")
+			return LandOptions{HeadSHA: f.head, Method: "squash"}
+		}},
+		{name: "discarded source does not prove integration", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			f.advanceMain(t, "unrelated.txt", "different work\n")
+			runGit(t, f.info.Path, "reset", "--hard", f.remoteMain(t))
+			return LandOptions{HeadSHA: f.head, Method: "squash"}
+		}, wantKind: LandRefusalNothing},
+		{name: "reverted absorbed source does not prove integration", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			f.absorb(t)
+			runGit(t, f.source, "rm", "feature.txt")
+			runGit(t, f.source, "commit", "-m", "discard feature")
+			runGit(t, f.source, "push", "origin", "main")
+			runGit(t, f.info.Path, "reset", "--hard", f.remoteMain(t))
+			return LandOptions{HeadSHA: f.head, Method: "squash"}
+		}, wantKind: LandRefusalNothing},
+		{name: "revert after the absorbed checkpoint refuses the current base", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			f.absorb(t)
+			runGit(t, f.source, "rm", "feature.txt")
+			runGit(t, f.source, "commit", "-m", "revert after checkpoint")
+			runGit(t, f.source, "push", "origin", "main")
+			return LandOptions{HeadSHA: f.head, Method: "squash"}
+		}, wantKind: LandRefusalNothing},
+		{name: "unpublished checkpoint cannot identify the actual base", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			return LandOptions{HeadSHA: f.head, Method: "squash"}
+		}, wantKind: LandRefusalHeadMoved},
+		{name: "empty published source is not a deliverable", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			f.absorb(t)
+			return LandOptions{HeadSHA: strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD^")), Method: "squash"}
+		}, wantKind: LandRefusalNothing},
 		{name: "worktree moved past the reviewed head", arrange: func(t *testing.T, f landingFixture) LandOptions {
 			t.Helper()
 			if err := os.WriteFile(filepath.Join(f.info.Path, "late.txt"), []byte("late\n"), 0o600); err != nil {
@@ -435,9 +476,27 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newLandingFixture(t)
+			sourceBase := f.remoteMain(t)
 			opts := test.arrange(t, f)
 			before := f.remoteMain(t)
-			_, err := f.backend.LandChange(context.Background(), f.info, f.issue, opts)
+			var err error
+			if test.integration {
+				const repository = "https://github.com/example/integration"
+				runGit(t, f.source, "remote", "set-url", "origin", repository)
+				runGit(t, f.source, "config", "url."+f.remote+".insteadOf", repository)
+				opts.Repository = repository
+				base := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+				result, verifyErr := f.backend.VerifyIntegratedChange(t.Context(), f.info, f.issue, opts, sourceBase, base)
+				err = verifyErr
+				if test.wantKind == "" {
+					if err != nil || result.MergeSHA != before || result.BaseRef != "main" || result.Method != "squash" || f.remoteMain(t) != before || strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")) != base {
+						t.Fatalf("integration proof = %+v, error = %v", result, err)
+					}
+					return
+				}
+			} else {
+				_, err = f.backend.LandChange(context.Background(), f.info, f.issue, opts)
+			}
 			var refusal *LandRefusal
 			if !errors.As(err, &refusal) || refusal.Kind != test.wantKind {
 				t.Fatalf("LandChange() error = %v, want a %s refusal", err, test.wantKind)

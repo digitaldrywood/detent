@@ -25,6 +25,10 @@ type GitHubPRLander interface {
 	LandChangeViaGitHub(context.Context, Info, Issue, LandOptions) (LandResult, error)
 }
 
+type IntegrationVerifier interface {
+	VerifyIntegratedChange(context.Context, Info, Issue, LandOptions, string, string) (LandResult, error)
+}
+
 type GitHubRESTClient interface {
 	REST(context.Context, string, string, any, any) error
 	GraphQL(context.Context, string, map[string]any, any) error
@@ -310,6 +314,76 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 		}
 	}
 	return result, nil
+}
+
+func (l *LocalGit) VerifyIntegratedChange(ctx context.Context, info Info, issue Issue, opts LandOptions, sourceBase, integratedBase string) (LandResult, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return LandResult{}, err
+	}
+	if opts.Repository == "" {
+		return LandResult{}, refuse(LandRefusalProtected, "integration requires the published repository identity")
+	}
+	if !validLandingHead(sourceBase) || !validLandingHead(opts.HeadSHA) || !validLandingHead(integratedBase) || sourceBase == opts.HeadSHA {
+		return LandResult{}, refuse(LandRefusalNothing, "integration requires the published source delta and final base")
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return LandResult{}, err
+	}
+	defer release()
+	if err := l.verifyLandingWorktree(ctx, normalized, issue, opts); err != nil {
+		return LandResult{}, err
+	}
+	head, err := runGitAt(ctx, normalized.Path, "rev-parse", "HEAD")
+	if err != nil || strings.TrimSpace(head) != integratedBase {
+		return LandResult{}, refuse(LandRefusalHeadMoved, "the final checkpoint differs from the integration base")
+	}
+	remote := strings.TrimSpace(opts.Remote)
+	if remote == "" {
+		remote = defaultGitRemote
+	}
+	target := strings.TrimSpace(opts.TargetBranch)
+	if target == "" {
+		target, err = remoteDefaultBranch(ctx, normalized.Path, remote)
+		if err != nil {
+			return LandResult{}, err
+		}
+	}
+	base, exists, err := remoteBranchHead(ctx, normalized.Path, remote, target)
+	if err != nil {
+		return LandResult{}, err
+	}
+	if !exists {
+		return LandResult{}, refuse(LandRefusalMissingHead, "the integration branch is unavailable")
+	}
+	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-tags", "--no-write-fetch-head", remote, base); err != nil {
+		return LandResult{}, err
+	}
+	for _, ancestry := range [][2]string{{integratedBase, base}, {sourceBase, integratedBase}, {sourceBase, opts.HeadSHA}} {
+		if _, err := runGitAt(ctx, normalized.Path, "merge-base", "--is-ancestor", ancestry[0], ancestry[1]); err != nil {
+			return LandResult{}, refuse(LandRefusalHeadMoved, "the published source and final base do not identify the integration branch")
+		}
+	}
+	delta, err := runGitAt(ctx, normalized.Path, "diff", "--no-ext-diff", "--no-textconv", "--name-only", sourceBase, opts.HeadSHA)
+	if err != nil {
+		return LandResult{}, err
+	}
+	if strings.TrimSpace(delta) == "" {
+		return LandResult{}, refuse(LandRefusalNothing, "the published source has no deliverable to verify")
+	}
+	merged, err := runGitAt(ctx, normalized.Path, "merge-tree", "--write-tree", "--merge-base="+sourceBase, base, opts.HeadSHA)
+	if err != nil {
+		return LandResult{}, refuse(LandRefusalConflict, "the published source delta is not proven incorporated on the current integration base")
+	}
+	tree, err := runGitAt(ctx, normalized.Path, "rev-parse", base+"^{tree}")
+	if err != nil {
+		return LandResult{}, err
+	}
+	if strings.TrimSpace(merged) != strings.TrimSpace(tree) {
+		return LandResult{}, refuse(LandRefusalNothing, "the current integration base does not incorporate the published source delta")
+	}
+	return LandResult{MergeSHA: base, BaseRef: target, BaseBefore: base, Method: opts.Method}, nil
 }
 
 // removeLandingWorktree drops the detached staging worktree a landing used.

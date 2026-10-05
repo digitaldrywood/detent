@@ -21,6 +21,10 @@ func (o *Orchestrator) completeNativeChangeRun(
 	finalState string,
 ) bool {
 	change := event.Result.NativeChange
+	if change != nil && change.Landing != nil {
+		event.Result.NativeLanding = change.Landing
+		return o.completeNativeLandingRun(ctx, state, event, running)
+	}
 	if event.Result.NativeLanding != nil {
 		return false
 	}
@@ -153,6 +157,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	if needsReview {
 		comment = nativeCompletionReason(comment, report, event.Result.FinalMessage)
+		if change.VersionError != "" {
+			comment += "\n\n" + change.VersionError
+		}
 	}
 	if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
 		o.warnNativeCompletion(issue, fmt.Errorf("comment on the completed run: %w", err))
