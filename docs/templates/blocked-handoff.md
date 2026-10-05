@@ -1,29 +1,25 @@
 ## Blocked handoff
 
-Current Workpad: plan, validation, one `detent-status` fence (`schema: 1`; `in_progress`, `blocked`, or `complete`). Prose is not a blocker.
+Workpad: plan, validation, one schema-1 `detent-status`: `in_progress`, `blocked`, or `complete`. Prose is not a blocker.
 
-Comment projects: use the authoritative `## Codex Workpad` comment from current context. Edit when permitted; otherwise post a new comment with that heading/current status block. Body/final-only status cannot supersede it. Keep native/local writers.
+Comment projects: edit current authoritative `## Codex Workpad` if permitted, else post anew; body/final cannot supersede it. Keep native/local writers.
 
-Verified same-head/test-input evidence can publish a receipt without reruns solely for handoff. Required verification, pending acceptance and human approvals remain.
-
-PR handoff: record gate and current-head checks. Expected skips allow handoff, not test credit; merge-group CI must pass.
+Record gate/current-head checks; reuse verified same-head/test-input receipts without handoff-only reruns. Skips earn no test credit; merge-group CI must pass.
 
 The orchestrator is the only writer of tracker lane state. Never change lane labels or status fields.
 
-POST real blocker `issue_id` to `dependencies/blocked_by` before coding; retain `Depends on: owner/repo#123`. Refs: positive `#N` or `owner/repo#N`; no URLs or YAML `blocked_by`. Symbolic `instance:tool` refs are instance-owned; clear via Workpad.
+POST real blocker `issue_id` to `dependencies/blocked_by` before coding; keep `Depends on: owner/repo#123`. Refs: positive `#N`/`owner/repo#N`, no URLs/YAML `blocked_by`; instance-owned `instance:tool` clears via Workpad.
 
 ```detent-status
 schema: 1
 status: blocked
 blockers:
   - ref: "owner/repo#123"
-    reason: "waiting for the dependency to merge"
+    reason: "dependency must merge"
 human_action: null
 ```
 
-Defaults: issue-state/tick checks. `blocked` needs blocker, `human_action`, or `reason_code`; reason-only blockers never auto-clear.
-
-Credential/write failures belong to the instance. Finish independent work. Human needs use blocked Workpad `human_action` ("Needs you"). An authorized member posts a newer Workpad with evidence, `status: in_progress`, and `human_action: null`; Detent resumes. Keep the PR. No invented dependencies or breaker acknowledgments. Replies authorize only stated actions.
+`blocked` needs blocker, `human_action`, or `reason_code`; default issue-state/tick checks never clear reason-only blockers. Credential/write failures are instance-owned. Finish independent work; keep PR. Human needs: blocked `human_action`; resume needs authorized newer Workpad evidence, `in_progress`, `human_action: null`. Invent no dependencies/breaker acknowledgments; replies authorize only stated actions.
 
 Success:
 
@@ -34,4 +30,4 @@ status: complete
 human_action: null
 ```
 
-Already-merged work needs no authorization. In `fields`, set `completion_kind: operational`, `completion_evidence` (acceptance results), `completion_merged_pr` (URL), `completion_merge_commit` (SHA), `completion_branch` (merging PR's integration ref), `completion_branch_head` (SHA), and `completion_ancestry: verified` after fetch and successful `git merge-base --is-ancestor`. Record the same integration branch/head actually tested, matching the merging PR's base, never the workspace branch/head. Pending scheduled acceptance remains pending, not test credit. Missing evidence needs a blocked Workpad `human_action`. Other no-PR work needs issue-body `detent-completion` authorization.
+Already-merged work needs no authorization. Operational `fields`: `completion_kind: operational`, `completion_evidence` (acceptance), `completion_merged_pr`/`completion_merge_commit` (URL/SHA), `completion_branch`/`completion_branch_head` (tested PR-base integration ref/SHA, never workspace), `completion_ancestry: verified` after fetch + successful `git merge-base --is-ancestor`. Missing evidence needs a blocked Workpad `human_action`. Other no-PR work: issue-body `detent-completion` authorization.
