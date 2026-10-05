@@ -62,6 +62,8 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 	defer o.manager.operationMu.Unlock()
 	view := MissingConfigurationOwner(request.ProjectID)
 	saved := false
+	var resume *Project
+	var draining bool
 	err := globalconfig.Mutate(o.selected.Path, func(cfg *globalconfig.Config, revision string) bool {
 		view = o.observe(ctx, *cfg, revision, request.ProjectID)
 		if view.Constraint != "" || ctx.Err() != nil {
@@ -82,15 +84,18 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 		}
 		switch operation {
 		case "apply_local_project_policy":
+			if p.Running() && !view.Paused {
+				resume, draining = p, view.Draining
+			}
 			if request.AllowLocalBinding != nil {
 				view = o.applyLocalBinding(ctx, *cfg, revision, p, request, view)
 				return false
 			}
-			if !view.Paused && !view.Draining || view.UnsettledAttempts != 0 {
-				view.Constraint = "Finish current work and pause the selected project through its existing owner before applying policy."
+			if view.UnsettledAttempts != 0 {
+				view.Constraint = "Active or deferred work must settle through its existing completion owner before applying policy."
 				return false
 			}
-			workflow, loadErr := loadManagedWorkflow(ctx, p.Config(), request.SourceRevision)
+			workflow, loadErr := loadManagedWorkflow(ctx, p.Config())
 			if loadErr != nil {
 				view.Constraint = "The configured committed workflow revision is unavailable or has local overlays."
 				return false
@@ -98,7 +103,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 			candidate := workflow
 			candidate.Config = WithMappedNativeTracker(candidate.Config, p.policyScheduling, p.ID())
 			descriptor, err := ResolvePolicy(p.Config(), candidate)
-			if err != nil || descriptor.ID != request.PolicyID {
+			if err != nil || descriptor.ID != request.PolicyID || descriptor.SourceRevision != request.SourceRevision {
 				view.Constraint = "The selected source policy identity changed; read it before retrying."
 				return false
 			}
@@ -164,6 +169,24 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 		view.Applied = false
 		view.Constraint = "The selected local configuration could not be validated or written."
 		return view
+	}
+	if view.Applied && resume != nil {
+		if err := o.manager.unpauseLocked(ctx, resume.ID(), draining); err != nil {
+			view.Applied = false
+			view.Constraint = "The selected policy was not applied; verify approval and supported workflow through the existing policy owner."
+			return view
+		}
+		savedBinding := view.Saved
+		readErr := globalconfig.Mutate(o.selected.Path, func(cfg *globalconfig.Config, revision string) bool {
+			view = o.observe(ctx, *cfg, revision, request.ProjectID)
+			view.Saved = savedBinding
+			view.Applied = view.Constraint == "" && view.EffectivePolicy != nil && view.EffectivePolicy.ID == request.PolicyID && view.EffectivePolicy.SourceRevision == request.SourceRevision
+			return false
+		}, globalconfig.WithProjectPathLiterals())
+		if readErr != nil {
+			view.Applied = false
+			view.Constraint = "The saved configuration receipt cannot be read."
+		}
 	}
 	if saved {
 		readErr := globalconfig.Mutate(o.selected.Path, func(cfg *globalconfig.Config, revision string) bool {
@@ -285,7 +308,7 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	return view
 }
 
-func loadManagedWorkflow(ctx context.Context, cfg globalconfig.Project, revision string) (workflowconfig.Workflow, error) {
+func loadManagedWorkflow(ctx context.Context, cfg globalconfig.Project) (workflowconfig.Workflow, error) {
 	source, err := newWorkflowGitRefSource(cfg)
 	if err != nil {
 		return workflowconfig.Workflow{}, err
@@ -295,12 +318,9 @@ func loadManagedWorkflow(ctx context.Context, cfg globalconfig.Project, revision
 			return workflowconfig.Workflow{}, errors.New("local workflow overlays are not a committed policy source")
 		}
 	}
-	workflow, loaded, err := source.loadSource(ctx, false)
+	workflow, _, err := source.loadSource(ctx, false)
 	if err != nil {
 		return workflowconfig.Workflow{}, err
-	}
-	if revision != "" && loaded != revision {
-		return workflowconfig.Workflow{}, errors.New("configured workflow revision changed")
 	}
 	return workflow, nil
 }
@@ -327,8 +347,18 @@ func (p *Project) requireSettledAttempts(ctx context.Context) error {
 }
 
 func pauseSettledConfiguration(ctx context.Context, p *Project, view ManagedConfigView) error {
-	if view.UnsettledAttempts != 0 || !view.Paused && !view.Draining {
-		return errors.New("project work must drain before configuration application")
+	if orch := p.Orchestrator(); orch != nil && p.Running() {
+		if err := orch.Drain(ctx); err != nil {
+			return err
+		}
+		state, err := orch.State(ctx)
+		if err != nil {
+			return err
+		}
+		view.UnsettledAttempts = max(view.UnsettledAttempts, state.UnsettledWork())
+	}
+	if view.UnsettledAttempts != 0 {
+		return errors.New("project work must settle before configuration application")
 	}
 	if err := p.Pause(ctx); err != nil {
 		return err

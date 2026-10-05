@@ -690,6 +690,10 @@ func (m *Manager) Unpause(ctx context.Context, id ID) error {
 	m.operationMu.Lock()
 	defer m.operationMu.Unlock()
 
+	return m.unpauseLocked(ctx, id, false)
+}
+
+func (m *Manager) unpauseLocked(ctx context.Context, id ID, draining bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -705,7 +709,7 @@ func (m *Manager) Unpause(ctx context.Context, id ID) error {
 			return err
 		}
 	}
-	if err := project.Unpause(ctx); err != nil {
+	if err := project.unpause(ctx, draining); err != nil {
 		return err
 	}
 	m.spawned = true
