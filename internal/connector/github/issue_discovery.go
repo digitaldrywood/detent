@@ -33,6 +33,10 @@ func (c *Client) DiscoverIssues(ctx context.Context, request tracker.GitHubDisco
 	if request.Cursor != "" {
 		cursor = request.Cursor
 	}
+	var labels any
+	if len(request.Labels) > 0 {
+		labels = request.Labels
+	}
 	var response struct {
 		Repository *struct {
 			Name   string `json:"nameWithOwner"`
@@ -53,7 +57,7 @@ func (c *Client) DiscoverIssues(ctx context.Context, request tracker.GitHubDisco
 			} `json:"issues"`
 		} `json:"repository"`
 	}
-	if err := c.GraphQLWithType(ctx, "onboarding_issue_discovery", issueDiscoveryQuery, map[string]any{"owner": parts[0], "repo": parts[1], "states": states, "labels": request.Labels, "cursor": cursor}, &response); err != nil {
+	if err := c.GraphQLWithType(ctx, "onboarding_issue_discovery", issueDiscoveryQuery, map[string]any{"owner": parts[0], "repo": parts[1], "states": states, "labels": labels, "cursor": cursor}, &response); err != nil {
 		return page, err
 	}
 	if response.Repository == nil {
