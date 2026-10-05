@@ -309,6 +309,10 @@ func (p *Project) requireSettledWork(ctx context.Context) error {
 	if p.Running() {
 		return errors.New("project is running")
 	}
+	return p.requireSettledAttempts(ctx)
+}
+
+func (p *Project) requireSettledAttempts(ctx context.Context) error {
 	if p.orchDeps.WorkAttempts == nil {
 		return errors.New("durable attempt owner is unavailable")
 	}

@@ -159,11 +159,14 @@ recovery. Local overlays preserve an explicit zero.
 
 ## Repository policy with Hub execution
 
-Connecting a project to Hub preserves its repository definition. The customer
-host resolves the existing files and an administrator explicitly approves the
-resulting descriptor. Hub never supplies replacement workflow prose or rewrites
-repository settings. Use `detent hub policy inspect --config /path/global.yaml
---project orders` to review the resolved metadata before approval.
+The customer host resolves the project files and an administrator explicitly
+approves the resulting descriptor. For native projects, that approved revision
+stores the shared behavior and instructions consumed by every authorized runner.
+Credentials, host paths, capacity, isolation hooks and backend routing stay local.
+Repository compatibility projects retain their file-based approval semantics.
+Use `detent hub policy inspect --config /path/global.yaml --project orders` to
+review the resolved descriptor. Authenticated native inspection reads the approved
+shared configuration; offline inspection resolves the local proposal.
 
 Configuration precedence and authorization are applied in this order:
 
@@ -173,24 +176,24 @@ Configuration precedence and authorization are applied in this order:
 | 2 | Project definition anchor | `projects[].workflow` selects the definition directory, including an external root. `detent.yaml` plus prompt-only `WORKFLOW.md` use schema 1; legacy frontmatter remains supported. Mixed structured authority is rejected. No competing checkout file is searched. |
 | 3 | Machine overlays | Existing `detent.local.yaml` and `WORKFLOW.local.md` rules apply: mappings merge, explicit scalars/sequences replace, supported empty/false values clear, and local prose appends. |
 | 4 | Host configuration | Existing flags/environment/global precedence, identity, paths, authorization filters, pool/backend limits, budgets and host ceilings remain enforced on customer infrastructure. Repository requirements cannot increase host permissions or capacity. |
-| 5 | Explicit Hub approval | The complete resolved policy must match an administrator-approved descriptor for this repository or native organization/project. Approval authorizes that exact effective definition, including its local overrides; it does not override its gates. Missing, stale or contradictory policy denies dispatch. |
+| 5 | Explicit Hub approval | Native runners consume the approved shared behavior and instructions while retaining host configuration. Compatibility runners must resolve the approved effective files and local overrides. Both require an exact descriptor match; missing, stale or contradictory policy denies dispatch. |
 | 6 | Run pin | Claims atomically pin the approved policy. The customer runner rechecks approval before dispatch, claim adoption and renewal, and checks its loaded workflow before credentials or workspace creation. |
 
 Use an administrator-selected `workflow_ref` to read shared files from a trusted
 Git commit. The loader resolves the ref once and reads shared files at that
-commit; edits to the working branch do not change it. Local overlays still need
-approval. An external definition is authorized by reviewing its resolved content
-digest through the same approval command. Approvals must be performed outside
+commit; edits to the working branch do not change it. Shared behavior changes in
+local overlays still need approval. An external definition is authorized by
+reviewing its resolved content digest through the same approval command.
+Approvals must be performed outside
 the implementation worker; do not give workers the Hub administrator credential.
 
-`hub policy inspect` operates locally and prints schema 1, the source revision,
-source/configuration digests, a content-derived `policy_id`, selected runner
-requirements and bounded gate metadata. The digest covers the effective
-configuration and workflow; it does not expose the content. Workflow prose,
-commands, local paths, credentials, environment values, approval-label text and
-check names remain on customer infrastructure. A plan stop is represented by a
-digest, while required checks are represented by their count. Custom gate and
-validator settings still contribute to the effective configuration digest.
+`hub policy inspect` prints schema 1, the source revision, source/configuration
+digests, a content-derived `policy_id`, selected runner requirements and gate
+metadata. Native descriptors also contain shared configuration, workflow prose,
+commands and admission guidance. Their digests identify portable behavior rather
+than host-specific source bytes or Git revisions. Host paths, credentials and
+transport settings are excluded. Compatibility descriptors contain only digests
+and bounded metadata; their underlying content stays on customer infrastructure.
 
 After reviewing the files and descriptor, an administrator runs:
 
@@ -198,19 +201,25 @@ After reviewing the files and descriptor, an administrator runs:
 detent hub policy approve --config /path/global.yaml --project orders
 ```
 
-The command reads `DETENT_HUB_ADMIN_TOKEN` (or `--admin-token-env`) and uploads
-only the descriptor. Replacement requires `--expected-policy-id policy_...` to
-prevent a stale approval from overwriting another administrator's decision.
-Changing effective files, permitted local adjustments, resolved environment
-values or the trusted source revision requires a new reviewed approval. Each
-host must resolve the approved effective definition; another host's descriptor
-is not permission to use different local settings.
+The command reads `DETENT_HUB_ADMIN_TOKEN` (or `--admin-token-env`), resolves the
+selected local definition and uploads its descriptor. Replacement requires
+`--expected-policy-id policy_...` to prevent a stale approval from overwriting
+another administrator's decision.
+Changing native shared behavior or instructions requires one reviewed approval
+for the project. Planning, validation and automatic promotion can be enabled
+together; the existing workflow refresh applies the approved combination to
+idle runners without copying files. Host configuration changes do not produce
+competing native approvals. Existing native approvals without shared
+configuration require an explicit replacement approval to adopt this model.
+Compatibility projects still require new approval for effective file, permitted
+local adjustment, environment or trusted source revision changes on each host.
 
 Active leases retain their policy, and Hub refuses a replacement while they
 remain active. Finish or cancel those attempts, approve the new descriptor, and
-restart the customer Detent process to adopt it. Invalid or unapproved reloads
-retain the last-known-good configuration and report an actionable error. A
-running process retains its policy even if a new descriptor is approved. Resumed
+let native runners refresh the shared revision. Compatibility processes still
+require restart or the existing managed configuration application to adopt a
+different approved identity. Invalid or unapproved reloads retain the
+last-known-good configuration and report an actionable error. Resumed
 provider sessions must match the policy stored with their original attempt,
 including after Hub is disabled; missing or mismatched recovery identities are
 rejected. Automatic thread reuse falls back to a fresh attempt under the current

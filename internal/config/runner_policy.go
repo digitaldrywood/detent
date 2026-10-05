@@ -39,6 +39,10 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 	if err := cfg.Validate(); err != nil {
 		return policy.Descriptor{}, err
 	}
+	workflow.Config = cfg
+	if cfg.Tracker.Kind == TrackerHubNative {
+		return resolveNativePolicy(workflow)
+	}
 	cfg = normalizePolicyConfig(cfg)
 	raw, err := json.Marshal(struct {
 		Config Config
@@ -47,12 +51,17 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 	if err != nil {
 		return policy.Descriptor{}, fmt.Errorf("digest effective project policy: %w", err)
 	}
+	return resolvePolicyDescriptor(workflow, workflow.Definition.Revision, workflow.SourceHash, policy.Digest(raw))
+}
+
+func resolvePolicyDescriptor(workflow Workflow, revision, sourceDigest, configDigest string) (policy.Descriptor, error) {
+	cfg := normalizePolicyConfig(workflow.Config)
 	g := gate.Effective(cfg.Gate)
 	p := gate.EffectivePlan(cfg.Plan)
 	descriptor := policy.Descriptor{
-		SourceRevision: workflow.Definition.Revision,
-		SourceDigest:   workflow.SourceHash,
-		ConfigDigest:   policy.Digest(raw),
+		SourceRevision: revision,
+		SourceDigest:   sourceDigest,
+		ConfigDigest:   configDigest,
 		Profile:        cfg.Runners.Profile,
 		Requirements:   cfg.Runners.Profiles[cfg.Runners.Profile].Normalized(),
 		Gates: policy.Gates{

@@ -313,6 +313,12 @@ export const PolicyDescriptor = Schema.Struct({
   profile: Schema.optional(Schema.String),
   requirements: PolicyRequirements,
   gates: PolicyGates,
+  configuration: Schema.optional(Schema.Struct({
+    behavior: Schema.Unknown,
+    prompt: Schema.String,
+    shared_prompt: Schema.optional(Schema.String),
+    agents_prompt: Schema.optional(Schema.String),
+  })),
 });
 export type PolicyDescriptor = typeof PolicyDescriptor.Type;
 
@@ -426,7 +432,10 @@ export type RunnerEligibility = typeof RunnerEligibility.Type;
 export const ObservedPolicy = Schema.Struct({
   policy: PolicyDescriptor,
   runner_id: Schema.String,
+  runner_ids: Schema.optional(Schema.Array(Schema.String)),
   observed_at: Schema.String,
+  conflict: Schema.optional(Schema.Boolean),
+  previously_approved: Schema.optional(Schema.Boolean),
 });
 export type ObservedPolicy = typeof ObservedPolicy.Type;
 

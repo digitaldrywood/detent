@@ -63,7 +63,7 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 	if result.Policy != nil {
 		approvedID = result.Policy.Policy.ID
 	}
-	result.ObservedPolicies, err = readObservedPolicies(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project), approvedID)
+	result.ObservedPolicies, err = readObservedPolicies(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project), approvedID, s.config.now())
 	if err != nil {
 		return result, err
 	}

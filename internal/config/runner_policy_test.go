@@ -241,3 +241,100 @@ func TestRunnerProfileValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeSharedPolicy(t *testing.T) {
+	t.Parallel()
+	load := func(host string) Workflow {
+		t.Helper()
+		workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
+			WorkflowPath: host + "/WORKFLOW.md",
+			Workflow:     []byte("---\ntracker:\n  kind: hub_native\n  api_key: " + host + "-secret\nworkspace:\n  root: " + host + "/worktrees\nworker:\n  ssh_hosts: [local]\nhooks:\n  before_run: " + host + "/isolate.sh\nplan:\n  enabled: true\ngate:\n  run: true\n  validator:\n    enabled: true\nagent:\n  auto_promote:\n    enabled: true\n---\nRun the work.\n"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return workflow
+	}
+	pro := load("pro")
+	air := load("air")
+	if pro.SourceHash == air.SourceHash {
+		t.Fatal("fixture must contain different host source bytes")
+	}
+	approved, err := ResolvePolicy(pro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSharedPolicy(approved); err != nil {
+		t.Fatal(err)
+	}
+	if !approved.Gates.PlanEnabled || !approved.Gates.Validator || !approved.Gates.AutoPromote {
+		t.Fatalf("combined gates missing: %+v", approved.Gates)
+	}
+	for _, tt := range []struct {
+		name   string
+		change func(*Workflow)
+		match  bool
+	}{
+		{"other host", func(*Workflow) {}, true},
+		{"runtime credential", func(w *Workflow) {
+			w.Config.Tracker.APIKey = "runtime-token"
+			w.Config.Worker.GitHubToken = "worker-token"
+		}, true},
+		{"capacity and routing", func(w *Workflow) {
+			w.Config.Agent.MaxConcurrentAgents = 7
+			w.Config.Worker.SSHHosts = []string{"another-host"}
+			w.Config.Worker.HostCaps = map[string]int{"another-host": 2}
+		}, true},
+		{"planning", func(w *Workflow) { w.Config.Plan.Enabled = false }, false},
+		{"validation", func(w *Workflow) { w.Config.Gate.Validator.Enabled = false }, false},
+		{"promotion", func(w *Workflow) { w.Config.Agent.AutoPromote.Enabled = false }, false},
+		{"instructions", func(w *Workflow) { w.Prompt += "Keep a human review hold." }, false},
+		{"admission guidance", func(w *Workflow) { w.SharedPrompt += "Different admission criteria." }, false},
+		{"empty network grants", func(w *Workflow) { w.Config.Worker.ExtraNetworkDomains = []string{} }, true},
+		{"network grant", func(w *Workflow) { w.Config.Worker.ExtraNetworkDomains = []string{"example.com"} }, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			local := air
+			tt.change(&local)
+			descriptor, err := ResolvePolicy(local)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (descriptor.Match(approved) == nil) != tt.match {
+				t.Fatalf("policy match = %v, want %t", descriptor.Match(approved), tt.match)
+			}
+			resolved, err := ApplyNativePolicy(local, approved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved.Config = resolved.Config.WithWorkerDefaults(WorkerDefaults{AllowLocalBinding: new(true)})
+			actual, err := ResolvePolicy(resolved)
+			if err != nil || actual.Match(approved) != nil {
+				t.Fatalf("shared policy resolution = %+v, %v", actual, err)
+			}
+			if resolved.Config.Workspace.Root != local.Config.Workspace.Root || resolved.Config.Hooks != local.Config.Hooks || resolved.Config.Tracker.APIKey != local.Config.Tracker.APIKey || resolved.Config.Worker.GitHubToken != local.Config.Worker.GitHubToken || resolved.Config.Agent.MaxConcurrentAgents != local.Config.Agent.MaxConcurrentAgents {
+				t.Fatal("shared configuration replaced host configuration")
+			}
+		})
+	}
+	raw, err := json.Marshal(approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "pro-secret") || strings.Contains(string(raw), "pro/worktrees") || strings.Contains(string(raw), "isolate.sh") {
+		t.Fatal("shared descriptor exposed host configuration")
+	}
+	var roundtrip policy.Descriptor
+	if err := json.Unmarshal(raw, &roundtrip); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSharedPolicy(roundtrip); err != nil {
+		t.Fatal(err)
+	}
+	forged := roundtrip
+	forged.Gates.AutoPromote = false
+	forged = forged.WithID()
+	if err := ValidateSharedPolicy(forged); err == nil {
+		t.Fatal("accepted gate metadata inconsistent with shared configuration")
+	}
+}

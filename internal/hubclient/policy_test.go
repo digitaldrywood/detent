@@ -78,7 +78,7 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), wantError: true, wantLost: true, reports: 1},
 		{name: "approved policy differs", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, wantError: true, wantLost: true, reports: 1},
 		{name: "invalid approved descriptor", approved: ptr(policy.Descriptor{}), status: http.StatusOK, local: clientTestPolicy(), wantError: true, wantLost: true},
-		{name: "approved policy matches", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 0},
+		{name: "approved policy matches", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "hub unavailable", status: http.StatusServiceUnavailable, local: clientTestPolicy(), wantError: true, reports: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -125,7 +125,7 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 				if (err != nil) != test.wantError {
 					t.Fatalf("CheckProjectPolicy() error = %v, want error %v", err, test.wantError)
 				}
-				if test.reports > 0 && !connector.IsRetryable(err) {
+				if test.wantError && test.reports > 0 && !connector.IsRetryable(err) {
 					t.Fatalf("unapproved policy should keep retrying: %v", err)
 				}
 			}

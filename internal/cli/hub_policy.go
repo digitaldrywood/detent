@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -24,9 +26,28 @@ func newHubPolicyCommand(lookupEnv func(string) string) *cobra.Command {
 		Use: "inspect", Short: "Print the resolved descriptor without uploading private configuration", Args: NoArgs,
 		Example: "detent hub policy inspect --config /etc/detent/config.yaml --project orders",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, workflow, descriptor, err := resolveHubPolicy(cmd.Context(), configPath, projectID)
+			cfg, workflow, descriptor, err := resolveHubPolicy(cmd.Context(), configPath, projectID)
 			if err != nil {
 				return err
+			}
+			settings := cfg.Client.Normalized()
+			if id := settings.NativeProjects[projectID]; id != "" && (settings.IdentityFile != "" || strings.TrimSpace(lookupEnv(settings.TokenEnvironment)) != "") {
+				client, err := hubclient.New(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile, TokenSource: func() string { return lookupEnv(settings.TokenEnvironment) }, HTTPClient: &http.Client{Timeout: settings.RequestTimeout()}})
+				if err != nil {
+					return err
+				}
+				native, err := client.Native(tracker.OrganizationID(settings.OrganizationID), tracker.ProjectID(id))
+				if err != nil {
+					return err
+				}
+				workflow, err = native.ResolveProjectWorkflow(cmd.Context(), workflow)
+				if err != nil {
+					return err
+				}
+				descriptor, err = workflowconfig.ResolvePolicy(workflow)
+				if err != nil {
+					return err
+				}
 			}
 			if steps := nativeWorkflowGitHubSteps(workflow.Config, workflow.Prompt); len(steps) > 0 {
 				if _, err := fmt.Fprintln(cmd.ErrOrStderr(), "warning: "+nativeWorkflowGitHubStepsWarning(steps)); err != nil {

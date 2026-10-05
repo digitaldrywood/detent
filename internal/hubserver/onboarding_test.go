@@ -14,6 +14,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -443,6 +445,18 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	if ids, _ = observedIDs(t); len(ids) != 1 || !strings.HasPrefix(ids[0], changed.ID+"@") {
 		t.Fatalf("two runners reporting the same descriptor = %v, want it once", ids)
 	}
+	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var setup onboarding.Project
+	decodeHubResponse(t, response, &setup)
+	if len(setup.ObservedPolicies[0].RunnerIDs) != 2 || setup.ObservedPolicies[0].Conflict {
+		t.Fatalf("converged reports lost runner identities or remained conflicting: %+v", setup.ObservedPolicies)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, first.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, second.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
+	if ids, _ = observedIDs(t); len(ids) != 0 {
+		t.Fatalf("removed runners retain actionable reports: %v", ids)
+	}
 }
 
 func TestOnboardingRunnerLocalChecks(t *testing.T) {
@@ -503,5 +517,141 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 				t.Fatal("runner checks leaked to another project")
 			}
 		})
+	}
+}
+
+type policyAPITransport struct{ service *Service }
+
+func (transport policyAPITransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	recorder := httptest.NewRecorder()
+	transport.service.Handler().ServeHTTP(recorder, request)
+	return recorder.Result(), nil
+}
+
+func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "shared policy")
+	httpClient := &http.Client{Transport: policyAPITransport{service: f.service}}
+	makeRunner := func(host string, planning, validator, promotion bool) (*hubclient.Scheduler, workflowconfig.Workflow, *hubclient.NativeClient) {
+		t.Helper()
+		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+		r.redemption.DisplayName, r.redemption.Hostname = host, host
+		r.enroll(t)
+		client, err := hubclient.New(hubclient.Config{URL: "https://shared-policy.example.test", TokenSource: func() string { return r.redemption.Credential }, HTTPClient: httpClient})
+		if err != nil {
+			t.Fatal(err)
+		}
+		native, err := client.Native(f.project.OrganizationID, f.project.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+			OrganizationID: f.project.OrganizationID, NativeProjects: map[string]tracker.ProjectID{"shared": f.project.ID},
+			Machine: hubclient.Machine{ID: r.binding.MachineID, Hostname: host, Capacity: 2, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+			WorkflowPath: host + "/WORKFLOW.md",
+			Workflow:     []byte("---\ntracker:\n  kind: hub_native\n  api_key: " + host + "-credential\nworkspace:\n  root: " + host + "/worktrees\nworker:\n  ssh_hosts: [local]\nhooks:\n  runner_setup: " + host + "/setup.sh\n  before_run: " + host + "/isolate.sh\n---\nImplement the issue and preserve explicit human review holds.\n"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		workflow.Config.Plan.Enabled, workflow.Config.Gate.Validator.Enabled, workflow.Config.Agent.AutoPromote.Enabled = planning, validator, promotion
+		workflow.Config.Gate.Run = "true"
+		workflow.Config.Agent.MaxConcurrentAgents = len(host)
+		return scheduler, workflow, native
+	}
+	pro, proWorkflow, proClient := makeRunner("MacBook Pro", true, true, false)
+	air, airWorkflow, airClient := makeRunner("MacBook Air", false, false, true)
+	descriptors := make([]policy.Descriptor, 2)
+	for i, runner := range []*hubclient.Scheduler{pro, air} {
+		workflow := []workflowconfig.Workflow{proWorkflow, airWorkflow}[i]
+		descriptor, err := workflowconfig.ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		descriptors[i] = descriptor
+		if err := runner.CheckProjectPolicy(t.Context(), "shared", "", descriptor); err == nil {
+			t.Fatal("runner executed without approval")
+		}
+	}
+	read := func() onboarding.Project {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var setup onboarding.Project
+		decodeHubResponse(t, response, &setup)
+		return setup
+	}
+	initial := read()
+	if len(initial.ObservedPolicies) != 2 || !initial.ObservedPolicies[0].Conflict || !initial.ObservedPolicies[1].Conflict {
+		t.Fatalf("conflicting reports = %+v", initial.ObservedPolicies)
+	}
+	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptors[0])
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptors[0].ID, Policy: descriptors[1]}), http.StatusOK)
+	historical := read()
+	if len(historical.ObservedPolicies) != 1 || !historical.ObservedPolicies[0].PreviouslyApproved || !historical.ObservedPolicies[0].Conflict {
+		t.Fatalf("historical report offered as a new approval: %+v", historical.ObservedPolicies)
+	}
+	combined := proWorkflow
+	combined.Config.Agent.AutoPromote.Enabled = true
+	descriptor, err := workflowconfig.ResolvePolicy(combined)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptors[0].ID, Policy: descriptor}), http.StatusConflict)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptors[1].ID, Policy: descriptor}), http.StatusOK)
+	for i, runner := range []*hubclient.Scheduler{pro, air} {
+		local := []workflowconfig.Workflow{proWorkflow, airWorkflow}[i]
+		resolved, err := runner.ResolveProjectWorkflow(t.Context(), "shared", local)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual, err := workflowconfig.ResolvePolicy(resolved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runner.CheckProjectPolicy(t.Context(), "shared", "", actual); err != nil {
+			t.Fatal(err)
+		}
+		if err := actual.Match(descriptor); err != nil {
+			t.Fatal(err)
+		}
+		if !resolved.Config.Plan.Enabled || !resolved.Config.Gate.Validator.Enabled || !resolved.Config.Agent.AutoPromote.Enabled {
+			t.Fatal("shared combined gates did not reach both runners")
+		}
+		if resolved.Config.Workspace.Root != local.Config.Workspace.Root || resolved.Config.Hooks != local.Config.Hooks || resolved.Config.Tracker.APIKey != local.Config.Tracker.APIKey || resolved.Config.Agent.MaxConcurrentAgents != local.Config.Agent.MaxConcurrentAgents {
+			t.Fatal("shared definition replaced host configuration")
+		}
+	}
+	for i, client := range []*hubclient.NativeClient{proClient, airClient} {
+		approval, err := client.ProjectPolicy(t.Context())
+		if err != nil || approval.Policy.ID != descriptor.ID {
+			t.Fatalf("runner approval = %+v, %v", approval, err)
+		}
+		inspected, err := client.ResolveProjectWorkflow(t.Context(), []workflowconfig.Workflow{proWorkflow, airWorkflow}[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual, err := workflowconfig.ResolvePolicy(inspected)
+		if err != nil || actual.Match(descriptor) != nil {
+			t.Fatalf("authenticated inspection differs from runtime: %+v, %v", actual, err)
+		}
+	}
+	if setup := read(); len(setup.ObservedPolicies) != 0 {
+		t.Fatalf("converged runners retain stale mismatch reports: %+v", setup.ObservedPolicies)
+	}
+	if os.Getenv("DETENT_POLICY_CAPTURE") != "" {
+		evidence := map[string]onboarding.Project{"conflict": initial, "resolved": read()}
+		raw, err := json.Marshal(evidence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(os.TempDir(), "native-policy-evidence.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

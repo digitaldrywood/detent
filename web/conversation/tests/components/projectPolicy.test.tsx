@@ -146,7 +146,7 @@ describe("repository policy after setup", () => {
     requests.mockRestore();
   });
 
-  it("lists each runner's reported policy and approves the chosen one after a conflicting approval", async () => {
+  it("explains conflicting runner configurations and does not alternate approvals", async () => {
     const { base } = await mount();
     const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
     for (const [runner, id] of [["runner_a", "pol_a"], ["runner_b", "pol_b"]] as const) {
@@ -157,22 +157,13 @@ describe("repository policy after setup", () => {
       });
     }
     await renderSettings();
-    expect(await screen.findByRole("button", { name: "Approve updated policy pol_a" }, httpWait)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Approve updated policy pol_b" })).toBeTruthy();
-
-    // Another owner approves pol_b while this page is open.
-    await fetch(`${base}/onboarding/policy`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ expected_policy_id: current.policy.policy_id, policy: { ...current.policy, policy_id: "pol_b" } }),
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Approve updated policy pol_a" }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Approve updated policy pol_b" })).toBeNull(), httpWait);
-    fireEvent.click(screen.getByRole("button", { name: "Approve updated policy pol_a" }));
-    await waitFor(async () => {
-      const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-      expect(after.policy.policy_id).toBe("pol_a");
-    }, httpWait);
+    expect(await screen.findByText("Runners have conflicting project configurations.", {}, httpWait)).toBeTruthy();
+    expect(screen.getByText(/Inspect and approve one shared configuration/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Approve updated policy/ })).toBeNull();
+    expect(screen.getByText("runner_a")).toBeTruthy();
+    expect(screen.getByText("runner_b")).toBeTruthy();
+    const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
+    expect(after.policy.policy_id).toBe(current.policy.policy_id);
   });
 
   it("approves a pasted descriptor and refuses one that is not JSON", async () => {

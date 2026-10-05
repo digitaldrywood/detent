@@ -371,6 +371,8 @@ export function SetupRoute({
 
   const [repositoryName, setRepositoryName] = React.useState("");
   const [pastedPolicy, setPastedPolicy] = React.useState("");
+  const policyReports = onboarding.value?.observed_policies ?? [];
+  const policyConflict = policyReports.some((entry) => entry.conflict || entry.previously_approved) || new Set(policyReports.map((entry) => entry.policy.policy_id)).size > 1;
   const [enrolling, setEnrolling] = React.useState(false);
   const fleet = useResource(() => enrolling ? api.fleet() : Promise.resolve(undefined), [api, enrolling]);
   const [serviceId, setServiceId] = React.useState("");
@@ -423,7 +425,7 @@ export function SetupRoute({
 
   const approve = useMutation(async () => {
     const current = onboarding.value?.policy?.policy;
-    const descriptor = pastedPolicy.trim().length > 0 ? parsePolicyDescriptor(pastedPolicy) : onboarding.value?.observed_policies?.[0]?.policy ?? current;
+    const descriptor = pastedPolicy.trim().length > 0 ? parsePolicyDescriptor(pastedPolicy) : policyConflict ? undefined : policyReports[0]?.policy ?? current;
     if (descriptor === undefined) {
       throw new AccountError({
         status: 422,
@@ -631,7 +633,7 @@ export function SetupRoute({
         <ControlError message={integration.error?.message ?? null} />
         {onboarding.value.observed_policies?.[0] ? (
           <details className="mb-2.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
-            <summary className="cursor-pointer text-sm">Review runner-reported policy</summary>
+            <summary className="cursor-pointer text-sm">{policyConflict ? "Conflicting runner configurations: inspect and approve one shared definition" : "Review runner-reported policy"}</summary>
             <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">{JSON.stringify(onboarding.value.observed_policies[0].policy, null, 2)}</pre>
           </details>
         ) : null}
@@ -660,7 +662,7 @@ export function SetupRoute({
           help="An owner or admin approves this exact resolved descriptor. Hub records its policy identity; runners must resolve a matching policy to claim work. Approval does not run doctor or sign in to a provider."
           detail={<span className="break-all">{onboarding.value.observed_policies?.[0]?.policy.policy_id ?? onboarding.value.policy?.policy.policy_id ?? "Waiting for the runner to report its policy"}</span>}
           right={
-            <Button size="sm" disabled={approve.pending} onClick={() => void approve.call()}>
+            <Button size="sm" disabled={approve.pending || (policyConflict && pastedPolicy.trim().length === 0)} onClick={() => void approve.call()}>
               {approve.pending ? "Approving…" : "Approve"}
             </Button>
           }

@@ -66,21 +66,43 @@ organization/project scope. Policies are resolved on the customer host. See
 | `/api/v2/organizations/{organization}/projects/{project}/policy` | `GET` | Read current descriptor and approval provenance within native project grants |
 | Either policy endpoint | `PUT` | Instance administrator only; `policy` descriptor and `expected_policy_id` (empty for first approval). Exact retries are idempotent; concurrent distinct replacements have one winner. |
 | Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
-| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports the descriptor it resolved when nothing is approved or the approved policy differs. The Hub keeps the latest report per project and offers it for approval as `observed_policy` in `GET .../onboarding`; it grants nothing by itself. |
+| `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. Reports grant no authority. |
 
 Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
 (owner or admin); the generic `PUT .../policy` above stays instance-administrator
-only and is not served in hosted mode. A runner reports each new unapproved
-descriptor once, so after the repository's `detent.yaml` or `WORKFLOW.md`
-changes, project settings shows "Approve reported policy" with the runner's own
-descriptor and nobody pastes JSON.
+only and is not served in hosted mode. Runners report each distinct resolved
+descriptor once, including successful matches that replace earlier mismatches.
+Only the latest observations from currently authorized runners are actionable.
+Previously approved descriptors retain their history; they are reported as
+configuration conflicts rather than newly generated policies.
+
+Native descriptors include `configuration`, containing shared project behavior,
+execution instructions and admission guidance. The existing approved policy
+revision is the authoritative configuration delivered to every native runner.
+Planning, validation, automatic promotion, review requirements, commands and
+permission grants are shared. Credentials, host paths, capacity, backend routing,
+active hours, isolation hooks and transport settings remain local. Native
+configuration/source digests and revisions identify the portable behavior and
+instructions rather than raw host-specific file bytes. Repository compatibility
+policies retain their original file/revision approval semantics.
+
+To change native behavior, inspect the intended definition on one host and
+approve that exact descriptor once through `detent hub policy approve` or the
+existing policy endpoint. Authenticated native inspection consumes the same
+approved shared definition as runtime; offline inspection describes the local
+proposal. The approval command explicitly proposes the selected local
+definition. The existing workflow refresh applies approved changes to idle
+runners without synchronizing files or pausing the project. Active leases keep
+their exact approved identity and prevent a replacement approval. No descriptor
+is automatically approved.
 
 Descriptors reject unknown JSON fields and validate all metadata, hashes and
 content-derived identities. Worker/operator tokens cannot approve or revoke a
 policy. Native cross-project and cross-organization reads follow existing grant
-checks. Approval is a reviewed authorization of repository files, not a settings
-override. Commands, prose, paths, labels/check names and secrets are not accepted
-as policy fields.
+checks. Native shared configuration is validated against its exact descriptor
+and gate metadata before storage or application. Host configuration and
+credentials are excluded from that payload. Approval remains explicit;
+conflicting runner reports alone do not change the shared definition.
 
 Claim allocation checks approval and requirements in the lease transaction and
 persists the identity with the lease. Responses include `policy_id`; native run

@@ -60,6 +60,15 @@ func configureProjectPolicy(ctx context.Context, cfg globalconfig.Project, workf
 	if !ok {
 		return nil
 	}
+	if source, ok := scheduling.(interface {
+		ResolveProjectWorkflow(context.Context, string, workflowconfig.Workflow) (workflowconfig.Workflow, error)
+	}); ok && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative {
+		resolved, err := source.ResolveProjectWorkflow(ctx, cfg.ID, *workflow)
+		if err != nil {
+			return err
+		}
+		*workflow = resolved
+	}
 	descriptor, err := ResolvePolicy(cfg, *workflow)
 	if err != nil {
 		return fmt.Errorf("resolve repository policy: %w", err)

@@ -57,6 +57,10 @@ export function draftChanged(a: IntegrationDraft, b: IntegrationDraft): boolean 
  */
 export const OBSERVED_POLICY_REFRESH_MS = 30_000;
 
+export function conflictingPolicies(observed: readonly ObservedPolicy[]): boolean {
+  return observed.some((entry) => entry.conflict || entry.previously_approved) || new Set(observed.map((entry) => entry.policy.policy_id)).size > 1;
+}
+
 export function noApprovedPolicy(error: AccountError): boolean {
   return error.status === 404 || error.code === "policy_mismatch";
 }
@@ -160,36 +164,49 @@ export function PolicyRow({
 }): React.ReactElement {
   const [pasting, setPasting] = React.useState(false);
   const [pasted, setPasted] = React.useState("");
+  const conflict = conflictingPolicies(observed);
+  const shared = policy?.policy.configuration !== undefined;
   const description =
-    observed.length > 0
+    conflict
+      ? shared
+        ? "Runners report conflicting configurations. Load the approved shared configuration on these runners; approving their old reports will not converge the project."
+        : "Runners report conflicting configurations. Choose one shared project configuration with the intended planning, validation and automatic promotion settings, then approve its inspected descriptor once."
+      : observed.length > 0
       ? "A runner reported an updated policy that needs approval."
       : policy === null
         ? "No policy is approved. Start a runner or paste an inspected descriptor."
-        : "The repository policy descriptor approved for execution.";
+        : shared
+          ? "Authorized runners consume this approved project configuration."
+          : "The repository policy descriptor approved for execution.";
   return (
     <SettingsRow
-      title="Repository policy"
+      title={shared ? "Shared project configuration" : "Repository policy"}
       help={{
-        label: "Repository policy",
-        text: "The runner reports the policy descriptor it resolves from the trusted repository revision, including detent.yaml and WORKFLOW.md. Repository changes or a runner upgrade can change that descriptor and make the prior approval stale. Execution is blocked when the runner’s resolved policy does not match an approved descriptor; an owner or admin must approve the current policy.",
+        label: shared ? "Shared project configuration" : "Repository policy",
+        text: shared || observed.some((entry) => entry.policy.configuration)
+          ? "Native runners consume the shared configuration stored with the exact approved descriptor. Credentials, paths, capacity, isolation setup and runner routing stay on each host. Inspect the intended project definition and approve its descriptor to change shared behavior. Execution requires an exact match to that approval."
+          : "The runner reports the policy descriptor it resolves from the trusted repository revision, including detent.yaml and WORKFLOW.md. Repository changes or a runner upgrade can change that descriptor and make the prior approval stale. Execution is blocked when the runner’s resolved policy does not match an approved descriptor; an owner or admin must approve the current policy.",
       }}
       description={description}
       status={
         <>
           {policy === null ? null : (
-            <span className="block">
+            <span className="block break-all">
               Approved <span className="font-mono">{policy.policy.policy_id}</span> by {policy.approved_by} on{" "}
               {policy.approved_at}
+              {shared ? ` · Planning ${policy.policy.gates.plan_enabled ? "on" : "off"} · Validation ${policy.policy.gates.validator ? "on" : "off"} · Automatic promotion ${policy.policy.gates.auto_promote ? "on" : "off"}` : null}
             </span>
           )}
           {observed.map((entry) => (
-            <span key={entry.policy.policy_id} className="mt-1 flex flex-wrap items-center gap-2 text-warning-foreground">
+            <span key={entry.policy.policy_id} className="mt-1 flex min-w-0 flex-wrap items-center gap-2 break-all text-warning-foreground">
               <span>
-                Runner <span className="font-mono">{entry.runner_id}</span> reports{" "}
+                Runner <span className="font-mono">{entry.runner_ids?.join(", ") ?? entry.runner_id}</span> reports{" "}
                 <span className="font-mono">{entry.policy.policy_id}</span> (source revision{" "}
                 <span className="font-mono">{entry.policy.source_revision.slice(0, 12)}</span>) at {entry.observed_at}
+                {entry.policy.configuration ? ` · Planning ${entry.policy.gates.plan_enabled ? "on" : "off"} · Validation ${entry.policy.gates.validator ? "on" : "off"} · Automatic promotion ${entry.policy.gates.auto_promote ? "on" : "off"}` : null}
               </span>
-              {canManage ? (
+              {entry.previously_approved ? <span>Previously approved configuration</span> : null}
+              {canManage && !conflict ? (
                 <Button
                   size="xs"
                   disabled={approving}
@@ -297,6 +314,7 @@ export function ProjectSettingsView({
   const repository = integration.checkout_repository || integration.repository || "";
   const transportAvailable = integration.github_transport_available !== false;
   const dirty = draftChanged(draft, draftOf(integration));
+  const conflict = conflictingPolicies(observedPolicies);
 
   return (
     <SettingsPageContainer>
@@ -319,7 +337,7 @@ export function ProjectSettingsView({
       {policy === null || observedPolicies.length > 0 ? (
         <SettingsWarning
           action={
-            canManage && observedPolicies.length === 1 ? (
+            canManage && observedPolicies.length === 1 && !conflict ? (
               <Button
                 size="sm"
                 variant="warning-outline"
@@ -331,7 +349,12 @@ export function ProjectSettingsView({
             ) : null
           }
         >
-          {observedPolicies.length > 0 ? (
+          {conflict ? (
+            <>
+              <b className="font-semibold">Runners have conflicting project configurations.</b>{" "}
+              {policy?.policy.configuration ? "Load the approved shared configuration on the reported runners. Previously reported policies do not need another approval." : "Inspect and approve one shared configuration with the intended planning, validation and automatic promotion settings to converge the runners."}
+            </>
+          ) : observedPolicies.length > 0 ? (
             <>
               <b className="font-semibold">A runner is waiting for a new policy.</b> Repository settings or a runner
               upgrade changed the resolved policy. Approve the updated policy to resume work.
