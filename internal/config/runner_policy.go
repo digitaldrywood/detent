@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -44,10 +46,15 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 		return resolveNativePolicy(workflow)
 	}
 	cfg = normalizePolicyConfig(cfg)
-	raw, err := json.Marshal(struct {
+	defaults := Default()
+	defaults.normalize()
+	raw, err := canonicalPolicyJSON(struct {
 		Config Config
 		Prompt string
-	}{cfg, workflow.Prompt})
+	}{cfg, workflow.Prompt}, struct {
+		Config Config
+		Prompt string
+	}{normalizePolicyConfig(defaults), ""})
 	if err != nil {
 		return policy.Descriptor{}, fmt.Errorf("digest effective project policy: %w", err)
 	}
@@ -85,12 +92,71 @@ func normalizePolicyConfig(cfg Config) Config {
 	if cfg.Worker.HostSelection == "least_loaded" {
 		cfg.Worker.HostSelection = ""
 	}
-	// Before v0.117.6, gate normalization serialized absent checks as [].
-	if cfg.Gate.RequiredStatusChecks == nil {
-		cfg.Gate.RequiredStatusChecks = []string{}
-	}
 	if cfg.Agent.AutoPromote.OptoutLabel == "" {
 		cfg.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 	}
 	return cfg
+}
+
+func canonicalPolicyJSON(value, defaults any) ([]byte, error) {
+	values := make([]any, 2)
+	for i, input := range []any{value, defaults} {
+		raw, err := json.Marshal(input)
+		if err != nil {
+			return nil, err
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&values[i]); err != nil {
+			return nil, err
+		}
+	}
+	canonical, _ := canonicalPolicyValue(values[0], values[1])
+	return json.Marshal(canonical)
+}
+
+func canonicalPolicyValue(value, defaults any) (any, bool) {
+	value = canonicalPolicyEmpty(value)
+	defaults = canonicalPolicyEmpty(defaults)
+	if reflect.DeepEqual(value, defaults) {
+		return nil, false
+	}
+	if defaults == nil {
+		return value, true
+	}
+	if fields, ok := value.(map[string]any); ok {
+		defaultFields, _ := defaults.(map[string]any)
+		canonical := make(map[string]any)
+		for name, field := range fields {
+			defaultField, exists := defaultFields[name]
+			if !exists {
+				canonical[name] = field
+			} else if item, include := canonicalPolicyValue(field, defaultField); include {
+				canonical[name] = item
+			}
+		}
+		for name, field := range defaultFields {
+			if _, exists := fields[name]; !exists {
+				if item, include := canonicalPolicyValue(nil, field); include {
+					canonical[name] = item
+				}
+			}
+		}
+		return canonical, len(canonical) > 0
+	}
+	return value, true
+}
+
+func canonicalPolicyEmpty(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		if len(value) == 0 {
+			return nil
+		}
+	case []any:
+		if len(value) == 0 {
+			return nil
+		}
+	}
+	return value
 }
