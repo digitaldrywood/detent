@@ -16,6 +16,7 @@ import (
 
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -105,7 +106,45 @@ func TestHostedProjectTools(t *testing.T) {
 			if _, err := e.Execute(ctx, stale); !errors.Is(err, mutation.ErrConflict) {
 				t.Fatalf("stale=%v", err)
 			}
-			approve := projectCall(t, "approve_project_policy", id, "approve", policy.Change{Policy: hubTestPolicy()})
+			policyScope := "org_security/" + id
+			previous, err := f.service.database.approvePolicy(t.Context(), policyScope, operatortool.ConnectionIdentity(ctx).PrincipalID, policy.Change{Policy: hubTestPolicy()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+				ConfigPath: "detent.yaml", HasConfig: true,
+				Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: true\n  required_status_checks: []\n"),
+				WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", 100)),
+				AgentsPath: "AGENTS.md", HasAgents: true, Agents: []byte(strings.Repeat("Preserve policy authority.\n", 100)),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow.SharedPrompt = strings.Repeat("Review the material policy.\n", 100)
+			candidate, err := workflowconfig.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			operatorSQL(t, f, "INSERT INTO project_observed_policies(scope,policy_id,descriptor_json,runner_id,observed_at) VALUES (?,?,?,?,?)", policyScope, candidate.ID, string(encoded), operatortool.ConnectionIdentity(ctx).PrincipalID, formatHubTime(f.service.config.now()))
+			observed, err := e.Execute(ctx, read("get_onboarding"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var onboardingRead struct {
+				Data onboarding.Project `json:"data"`
+			}
+			if err := json.Unmarshal(observed.Content, &onboardingRead); err != nil {
+				t.Fatal(err)
+			}
+			setup := onboardingRead.Data
+			if setup.Policy == nil || setup.Policy.Policy.ID != previous.Policy.ID || len(setup.ObservedPolicies) != 1 || !reflect.DeepEqual(setup.ObservedPolicies[0].Policy, candidate) {
+				t.Fatalf("observed candidate = %+v", setup)
+			}
+			approve := projectCall(t, "approve_project_policy", id, "approve", operatortool.PolicyApprovalInput{ExpectedID: setup.Policy.Policy.ID, Policy: setup.ObservedPolicies[0].Policy})
 			a = projectAction(t, e, ctx, approve)
 			if a.Status != chatpkg.ActionPending {
 				t.Fatalf("material=%+v", a)
@@ -155,6 +194,23 @@ func TestHostedProjectTools(t *testing.T) {
 			if json.Unmarshal([]byte(approved.Result), &attribution) != nil || attribution.ApprovedBy != operatortool.ConnectionIdentity(ctx).PrincipalID {
 				t.Fatalf("project command lost originating principal: approval=%+v requester=%s", attribution, operatortool.ConnectionIdentity(ctx).PrincipalID)
 			}
+			storedPolicy, err := e.Execute(ctx, read("get_project_policy"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var policyRead struct {
+				Data policy.Approval `json:"data"`
+			}
+			if err := json.Unmarshal(storedPolicy.Content, &policyRead); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(attribution.Policy, candidate) || !reflect.DeepEqual(policyRead.Data.Policy, candidate) {
+				t.Fatal("MCP approval changed the observed descriptor")
+			}
+			integration, err := readProjectIntegration(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project})
+			if err != nil || integration.Authority["workflow"] != "repository" || integration.WorkflowSource != candidate.Workflow.Source || integration.WorkflowSourceRevision != candidate.SourceRevision || !reflect.DeepEqual(integration.States, candidate.Workflow.States) {
+				t.Fatalf("approved workflow = %+v, %v", integration, err)
+			}
 			if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read("get_change_review_policy")); err != nil {
 				t.Fatal(err)
 			}
@@ -162,6 +218,24 @@ func TestHostedProjectTools(t *testing.T) {
 			human := chatpkg.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx))
 			if err := f.service.operatorChat.SetConnectionMode(human, "project-tools", chatpkg.YOLOMode); err != nil {
 				t.Fatal(err)
+			}
+			workflow.Prompt += "Changed policy.\n"
+			workflow.Definition.ConfigPath = "stale-detent.yaml"
+			updated, err := workflowconfig.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stalePolicy := projectCall(t, "approve_project_policy", id, "stale-policy", operatortool.PolicyApprovalInput{ExpectedID: previous.Policy.ID, Policy: updated})
+			if _, err := e.Execute(ctx, stalePolicy); !errors.Is(err, mutation.ErrConflict) {
+				t.Fatalf("stale expected policy = %v", err)
+			}
+			unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+			if err != nil || !reflect.DeepEqual(unchanged.Policy, candidate) {
+				t.Fatalf("stale approval changed policy = %+v, %v", unchanged, err)
+			}
+			unchangedIntegration, err := readProjectIntegration(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project})
+			if err != nil || !reflect.DeepEqual(unchangedIntegration, integration) {
+				t.Fatalf("stale approval changed workflow = %+v, %v", unchangedIntegration, err)
 			}
 			rules, err := readChangePolicy(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project})
 			if err != nil {
@@ -232,7 +306,7 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Revoke applies the expected policy identity, requires approval, and does not grant authority.
-			revoke := projectCall(t, "revoke_project_policy", id, "revoke", operatortool.PolicyRevokeInput{ExpectedID: hubTestPolicy().ID})
+			revoke := projectCall(t, "revoke_project_policy", id, "revoke", operatortool.PolicyRevokeInput{ExpectedID: candidate.ID})
 			a = projectAction(t, e, ctx, revoke)
 			if a.Status != chatpkg.ActionPending {
 				t.Fatalf("revoke=%+v", a)
