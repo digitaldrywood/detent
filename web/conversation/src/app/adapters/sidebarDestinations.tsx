@@ -77,7 +77,7 @@ function NavRow({
       aria-disabled={disabled ? true : undefined}
       disabled={disabled}
       onClick={disabled ? undefined : onClick}
-      className="w-full min-w-0 focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
+      className="w-full min-w-0 focus-visible:ring-inset"
     >
       {icon}
       <span className="min-w-0 flex-1 truncate text-left">{label}</span>
