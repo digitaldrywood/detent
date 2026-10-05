@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func claimNativeAttempt(t *testing.T, f nativeFixture, worker, machine, session string, item tracker.NativeWorkItemID) tracker.NativeLease {
@@ -248,6 +249,27 @@ func TestNativeConcurrentOrderedEvents(t *testing.T) {
 	var count int
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempt_events").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("duplicate progress: %d, %v", count, err)
+	}
+}
+
+func TestNativeDispositionValidation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		summary string
+		valid   bool
+	}{
+		{"legacy empty summary", "", true},
+		{"exact bound", strings.Repeat("x", workpad.MaxFinalSummaryBytes), true},
+		{"oversized summary", strings.Repeat("x", workpad.MaxFinalSummaryBytes+1), false},
+		{"invalid UTF-8 summary", string([]byte{0xff}), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := tracker.NativeRunData{Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "test"}, Disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation", FinalSummary: test.summary}}
+			if err := validateNativeExecution(data, "run.finished"); (err == nil) != test.valid {
+				t.Fatalf("disposition validation = %v, want valid %t", err, test.valid)
+			}
+		})
 	}
 }
 

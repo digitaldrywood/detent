@@ -39,6 +39,9 @@ func TestLaneWritePersistsBeforeTrackerAndRetainsUncertainIdentity(t *testing.T)
 				if err != nil || result != "prepared" || write.To != target || write.From != issue.State || write.FenceToken == 0 {
 					t.Fatalf("tracker called before durable intent: %#v, %s, %v", write, result, err)
 				}
+				if reason := connector.LaneTransitionReason(ctx); reason != "test transition" {
+					t.Fatalf("tracker lost lane ledger reason: %q", reason)
+				}
 				return tt.mutationErr
 			}}
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, backend, nil, at)

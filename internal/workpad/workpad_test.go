@@ -5,7 +5,33 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+func TestFinalSummary(t *testing.T) {
+	t.Parallel()
+	status := "```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\n```"
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"blocked summary excludes disposition and trailing text", "Sandbox forbids TCP listeners.\n\n" + status + "\nTrailing text", "Sandbox forbids TCP listeners."},
+		{"no disposition", "  Still implementing. \n", "Still implementing."},
+		{"empty summary", status, ""},
+		{"last disposition", status + "\nFinal reason\n" + status, status + "\nFinal reason"},
+		{"CRLF tilde fence", "Needs approval.\r\n~~~detent-status\r\nstatus: blocked\r\n~~~", "Needs approval."},
+		{"exact byte bound", strings.Repeat("x", MaxFinalSummaryBytes) + "\n" + status, strings.Repeat("x", MaxFinalSummaryBytes)},
+		{"long unicode summary", strings.Repeat("界", MaxFinalSummaryBytes) + "\n" + status, strings.Repeat("界", (MaxFinalSummaryBytes-len("…"))/3) + "…"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := FinalSummary(test.body)
+			if got != test.want || len(got) > MaxFinalSummaryBytes || !utf8.ValidString(got) {
+				t.Fatalf("summary = %q (%d bytes), want %q", got, len(got), test.want)
+			}
+		})
+	}
+}
 
 func TestSignalFromComment(t *testing.T) {
 	t.Parallel()
