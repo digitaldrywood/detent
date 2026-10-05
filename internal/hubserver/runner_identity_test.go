@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -14,6 +15,137 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestRunnerRemoval(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		attempt  bool
+		finished bool
+		expired  bool
+		revoked  bool
+		sibling  bool
+		want     int
+	}{
+		{name: "idle", want: http.StatusNoContent},
+		{name: "already revoked", revoked: true, want: http.StatusNoContent},
+		{name: "claimed work", want: http.StatusUnprocessableEntity},
+		{name: "running attempt", attempt: true, want: http.StatusUnprocessableEntity},
+		{name: "expired running attempt", attempt: true, expired: true, want: http.StatusUnprocessableEntity},
+		{name: "finished attempt", attempt: true, finished: true, want: http.StatusNoContent},
+		{name: "busy sibling", attempt: true, sibling: true, want: http.StatusNoContent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			r.enroll(t)
+			worker := r
+			if test.sibling {
+				worker = sharedRunner(t, r)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(worker.binding.MachineID)+"/heartbeat", worker.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation}), http.StatusOK)
+			}
+			var item tracker.NativeIssue
+			if test.attempt || test.name == "claimed work" {
+				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+				item = f.create(t, "Removal history")
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker.redemption.Credential, tracker.NativeClaim{
+					PolicyID: hubTestPolicy().ID, WorkItemID: item.WorkItemID, MachineID: worker.binding.MachineID, SessionID: "remove-test",
+					TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
+				})
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if test.attempt {
+					event := nativeStartedEvent(lease)
+					path := f.base + "/work-items/" + string(item.WorkItemID) + "/events"
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker.redemption.Credential, event), http.StatusOK)
+					if test.finished {
+						event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome = "run.finished", "finish", 2, "succeeded"
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker.redemption.Credential, event), http.StatusOK)
+					}
+				}
+				if test.expired || test.finished {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at = ? WHERE lease_id = ?", formatHubTime(f.service.config.now().Add(-time.Second)), lease.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.revoked {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = ?", formatHubTime(f.service.config.now()), r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodDelete, r.identityPath(), testHubAdminToken, nil)
+			requireNativeStatus(t, response, test.want)
+			removed := test.want == http.StatusNoContent
+			if !removed && !strings.Contains(response.Body.String(), "active work") {
+				t.Fatalf("missing active-work explanation: %s", response.Body.String())
+			}
+			var removedAt, revokedAt sql.NullString
+			var name string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT r.removed_at, t.revoked_at, r.display_name FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.id = ?", r.binding.RunnerID).Scan(&removedAt, &revokedAt, &name); err != nil {
+				t.Fatal(err)
+			}
+			if removedAt.Valid != removed || revokedAt.Valid != removed || name != "Runner" {
+				t.Fatalf("identity after removal: removed=%v revoked=%v name=%q", removedAt, revokedAt, name)
+			}
+			runners, err := f.service.listRunnerRoutingData(t.Context(), f.project.OrganizationID, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, runner := range runners {
+				if removed && runner.RunnerID == r.binding.RunnerID {
+					t.Fatal("removed runner still listed")
+				}
+			}
+			f.service.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID)}
+			fleet, err := f.service.hostedFleetRunners(t.Context(), apiCredential{}, map[tracker.ProjectID]bool{f.project.ID: true}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, runner := range fleet {
+				if removed && runner.ID == r.binding.RunnerID {
+					t.Fatal("removed runner still in hosted fleet")
+				}
+			}
+			f.service.config.Hosted = nil
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			runtime, _, err := readRuntimeRunners(t.Context(), f.service.database.db, scope, f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, runner := range runtime {
+				if removed && runner.RunnerID == r.binding.RunnerID {
+					t.Fatal("removed runner still eligible")
+				}
+			}
+			status := http.StatusOK
+			if removed {
+				status = http.StatusUnauthorized
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, r.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil), http.StatusNotFound)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), status)
+			if test.finished {
+				names, err := readHostedRunnerNames(t.Context(), f.service.database.db, f.project.OrganizationID)
+				if err != nil || names[r.binding.RunnerID].DisplayName != "Runner" {
+					t.Fatalf("historical name lookup = %#v, %v", names, err)
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID)+"/attempts", testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var attempts tracker.Page[tracker.NativeAttempt]
+				decodeHubResponse(t, response, &attempts)
+				if len(attempts.Items) != 1 || attempts.Items[0].Status != "succeeded" {
+					t.Fatalf("history after removal: %#v", attempts)
+				}
+				var historicalName string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT r.display_name FROM native_attempts a JOIN lease_runners lr ON lr.lease_id = a.lease_id JOIN runner_identities r ON r.id = lr.runner_id WHERE a.work_item_id = ?", item.WorkItemID).Scan(&historicalName); err != nil || historicalName != "Runner" {
+					t.Fatalf("historical runner name = %q, %v", historicalName, err)
+				}
+			}
+		})
+	}
+}
 
 type runnerFixture struct {
 	nativeFixture

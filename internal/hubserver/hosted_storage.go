@@ -102,7 +102,7 @@ func (d *database) hostedMetadata(ctx context.Context) (HostedMetadata, error) {
 SELECT h.organization_id, h.provider_id,
        (SELECT count(*) FROM hosted_members WHERE active = 1),
        (SELECT count(*) FROM projects WHERE organization_id = h.organization_id),
-       (SELECT count(*) FROM runner_identities WHERE organization_id = h.organization_id),
+       (SELECT count(*) FROM runner_identities WHERE organization_id = h.organization_id AND removed_at IS NULL),
        (SELECT count(*) FROM collaboration_events WHERE organization_id = h.organization_id),
        (SELECT activity FROM (
          SELECT recorded_at AS activity FROM collaboration_events WHERE organization_id = h.organization_id

@@ -611,6 +611,7 @@ export const Spend = Schema.Struct({
 export type Spend = typeof Spend.Type;
 
 export const FleetResponse = Schema.Struct({
+  runner_names: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ display_name: Schema.String, hostname: Schema.String }))),
   minimum_runner_version: Schema.optional(Schema.String),
   runners: Schema.Array(FleetRunner),
   editable: Schema.optional(Schema.Boolean),

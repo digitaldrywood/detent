@@ -364,8 +364,15 @@ Hub restart. The schema migration preserves existing identities and lease histor
 | `GET /api/v2/organizations/{org}/runners/{runner}` | That runner | Read its public identity, grants and expiry; no credential value |
 | `POST /api/v2/organizations/{org}/runners/{runner}/renew` | That active runner | Body `{}`; retain credential and extend expiry to 24 hours from Hub time |
 | `POST /api/v2/organizations/{org}/runners/{runner}/rotate` | That active runner | Body `{"credential":"<new host-generated credential>"}`; replace the hash and extend expiry atomically; previous credential stops working immediately |
-| `DELETE /api/v2/organizations/{org}/runners/{runner}` | Instance admin | Revoke all future authenticated access for this identity |
+| `DELETE /api/v2/organizations/{org}/runners/{runner}` | Instance admin | Remove the runner from fleet, routing and eligibility; revoke all future authenticated access. Refuses active work with 422; repeat removal returns 204. |
 | `POST /api/v2/organizations/{org}/projects/{project}/machines/{machine}/heartbeat` | Owning runner with `heartbeat` | `display_name`, `capacity`, `version`, optional `os`/`architecture`; enrolled runners update reported capacity/platform and liveness, preserving administrator-owned names and limits |
+
+Removal uses the existing credential revocation transaction. Active leases and
+unfinished attempts prevent removal; drain the runner and let its work finish
+first. Identity and machine records remain available to historical reads. The
+hosted fleet response excludes removed identities from `runners` and retains
+their display names and hostnames in `runner_names` for historical run labels.
+The existing `revoke_runner_identity` MCP operation performs the same removal.
 
 Hub time decides validity, with an inclusive start and exclusive expiry boundary.
 An invalid clock or time before issuance fails closed. Times are parsed before

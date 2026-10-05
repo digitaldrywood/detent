@@ -15,10 +15,12 @@ export function HostCard({
   runner,
   now,
   onOpen,
+  onRemove,
 }: {
   readonly runner: FleetRunner;
   readonly now?: number;
   readonly onOpen: () => void;
+  readonly onRemove?: () => void;
 }): React.ReactElement {
   const health = runner.health === "asleep" ? "Asleep, wakes on new work"
     : runner.health === "healthy" ? "Healthy"
@@ -30,7 +32,7 @@ export function HostCard({
       id={`runner-${runner.id}`}
       tabIndex={-1}
       data-testid="host-card"
-      className="grid min-w-0 gap-4 px-4 py-4 focus-visible:outline-2 focus-visible:outline-ring sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7rem_auto] sm:items-start"
+      className="grid min-w-0 gap-4 px-4 py-4 focus-visible:outline-2 focus-visible:outline-ring sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_7rem_11rem] sm:items-start"
     >
       <div className="flex min-w-0 items-start gap-2.5">
         <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", healthTone(runner.health))} />
@@ -48,7 +50,10 @@ export function HostCard({
         <p className="sm:sr-only">Last check-in</p>
         <time dateTime={runner.last_heartbeat_at} title={runner.last_heartbeat_at}>{formatRelativeTime(runner.last_heartbeat_at, now)}</time>
       </div>
-      <Button size="xs" variant="outline" className="w-fit" aria-label={`Manage ${runner.display_name}`} onClick={onOpen}>Manage</Button>
+      <div className="flex flex-wrap gap-2">
+        <Button size="xs" variant="outline" aria-label={`Manage ${runner.display_name}`} onClick={onOpen}>Manage</Button>
+        {onRemove ? <Button size="xs" variant="outline" aria-label={`Remove runner ${runner.display_name}`} onClick={onRemove}>Remove runner</Button> : null}
+      </div>
     </article>
   );
 }

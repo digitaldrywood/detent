@@ -11,7 +11,7 @@ import (
 )
 
 func readRuntimeRunners(ctx context.Context, query nativeQueryer, scope nativeScope, now time.Time) ([]runnerauth.Runner, bool, error) {
-	rows, err := query.QueryContext(ctx, runnerIdentitySelect+` WHERE r.organization_id = ? AND EXISTS
+	rows, err := query.QueryContext(ctx, runnerIdentitySelect+` WHERE r.organization_id = ? AND r.removed_at IS NULL AND EXISTS
 (SELECT 1 FROM token_grants g WHERE g.token_id = r.token_id AND g.organization_id = r.organization_id AND g.project_id = ?)
 ORDER BY CASE WHEN r.id = ? THEN 0 ELSE 1 END, r.id LIMIT 101`, scope.organization, scope.project, scope.credential.Runner.RunnerID)
 	if err != nil {

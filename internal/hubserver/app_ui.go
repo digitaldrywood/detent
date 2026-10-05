@@ -639,7 +639,7 @@ func (s *Service) hostedWorkspaceCapabilities(ctx context.Context, credential ap
 	}
 	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r
 JOIN token_grants g ON g.token_id = r.token_id AND g.organization_id = r.organization_id
-WHERE r.organization_id = ? AND g.project_id = ?`, s.config.Hosted.OrganizationID, project.ID)
+WHERE r.organization_id = ? AND r.removed_at IS NULL AND g.project_id = ?`, s.config.Hosted.OrganizationID, project.ID)
 	if err != nil {
 		return result, fmt.Errorf("list workspace runners: %w", err)
 	}

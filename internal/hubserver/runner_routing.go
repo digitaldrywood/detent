@@ -213,6 +213,13 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 	if credential.Runner.RunnerID != "" && (credential.Runner.RunnerID != runnerID || credential.Runner.OrganizationID != scope.organization) || credential.Runner.RunnerID == "" && (credential.Scope != apiScopeAdmin || credential.NativeOnly) {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
+	var visible bool
+	if err := s.database.db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM runner_identities WHERE organization_id = ? AND id = ? AND removed_at IS NULL)", scope.organization, runnerID).Scan(&visible); err != nil {
+		return runnerauth.Runner{}, err
+	}
+	if !visible {
+		return runnerauth.Runner{}, nativeNotFound()
+	}
 	return readRunner(ctx, s.database.db, scope.organization, runnerID, s.config.now())
 }
 
@@ -379,7 +386,7 @@ func (s *Service) listRunnerRouting(c echo.Context) error {
 }
 
 func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracker.OrganizationID, limit, offset int) ([]runnerauth.Runner, error) {
-	query := "SELECT id FROM runner_identities WHERE organization_id = ? ORDER BY display_name, id"
+	query := "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id"
 	args := []any{organization}
 	if limit > 0 {
 		query += " LIMIT ? OFFSET ?"

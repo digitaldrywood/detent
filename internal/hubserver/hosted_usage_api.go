@@ -375,7 +375,7 @@ func (s *Service) usageLimits(ctx context.Context) (map[string]usageLimit, error
 // leases it is allowed, which is what capacity_used is a fraction of.
 func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCapacity, error) {
 	capacity := map[string]runnerCapacity{}
-	rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id = ? ORDER BY display_name, id",
+	rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id",
 		tracker.OrganizationID(s.config.Hosted.OrganizationID))
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
