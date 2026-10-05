@@ -46,6 +46,10 @@ func TestAcquireExcludesAnotherProcessAndReleases(t *testing.T) {
 }
 
 func TestAcquireReportsLiveOwner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("filesystem lock and fsync integration")
+	}
+
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "detent.db.lock")
@@ -73,6 +77,10 @@ func TestAcquireReportsLiveOwner(t *testing.T) {
 }
 
 func TestAcquireRecoversStaleOwnerAndClearsOnClose(t *testing.T) {
+	if testing.Short() {
+		t.Skip("filesystem lock and fsync integration")
+	}
+
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "detent.db.lock")
@@ -112,6 +120,10 @@ func TestAcquireRecoversStaleOwnerAndClearsOnClose(t *testing.T) {
 }
 
 func TestAcquireRecoversLegacyPIDOnlyLock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("filesystem lock and fsync integration")
+	}
+
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "detent.db.lock")
@@ -155,6 +167,10 @@ func TestAcquireHelperProcess(t *testing.T) {
 }
 
 func TestDashboardAddressMetadata(t *testing.T) {
+	if testing.Short() {
+		t.Skip("filesystem lock and fsync integration")
+	}
+
 	for _, tt := range []struct {
 		address string
 		invalid bool
