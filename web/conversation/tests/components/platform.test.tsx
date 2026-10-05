@@ -212,6 +212,7 @@ describe("complimentary plans", () => {
     await screen.findByRole("table", { name: "Organizations" });
     expect(screen.queryByRole("region", { name: "Complimentary plans" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Grant complimentary plan" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Grant model choice" })).toBeNull();
     expect(api.platformEntitlements).not.toHaveBeenCalled();
   });
 
@@ -258,6 +259,34 @@ describe("complimentary plans", () => {
     });
     expect(call.change.idempotency_key.length).toBeGreaterThan(0);
     await waitFor(() => expect(api.platformEntitlements).toHaveBeenCalledTimes(2));
+  });
+
+  it("grants model choice without selecting a plan and disables the control after reload", async () => {
+    let enabled = false;
+    const api = fakeApi({
+      platformOrganizations: vi.fn(async () => administrator),
+      platformEntitlements: vi.fn(async () => ({ ...entitlements, features: enabled ? ["model_choice"] : [] })),
+      changePlatformEntitlement: vi.fn(async () => {
+        enabled = true;
+        return { action: "grant", grant_id: "model_grant" };
+      }),
+    });
+    renderWith(api, <PlatformConsole />);
+    const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
+    fireEvent.click(await within(plan).findByRole("button", { name: "Grant model choice" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByLabelText("Plan")).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Approved model choice" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
+    await waitFor(() => expect(api.changePlatformEntitlement).toHaveBeenCalledWith({
+      organization: "org_alpha", csrf: "staff-csrf",
+      change: {
+        action: "grant", feature: "model_choice", idempotency_key: expect.any(String),
+        expected_revision: 3, expires_at: null, reason: "Approved model choice",
+      },
+    }));
+    await within(plan).findByText("Model choice: Enabled");
+    expect((within(plan).getByRole("button", { name: "Grant model choice" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it.each([

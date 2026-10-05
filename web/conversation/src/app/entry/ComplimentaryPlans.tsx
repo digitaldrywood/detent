@@ -112,11 +112,13 @@ export function GrantComplimentaryDialog({
   entitlements,
   csrf,
   onChanged,
+  modelChoice = false,
 }: {
   readonly organization: PlatformOrganization;
   readonly entitlements: OrganizationEntitlements;
   readonly csrf: string;
   readonly onChanged: () => Promise<void>;
+  readonly modelChoice?: boolean;
 }): React.ReactElement {
   const [open, setOpen] = React.useState(false);
   const choices = entitlements.plans.filter((plan) => planKey(plan) !== planKey(entitlements.base));
@@ -127,7 +129,7 @@ export function GrantComplimentaryDialog({
   const [retryRevision, setRetryRevision] = React.useState<number | null>(null);
   const change = useChange(organization.id, csrf, onChanged);
   const selected = choices.find((choice) => planKey(choice) === plan) ?? choices[0];
-  const prefix = `grant-${organization.id}`;
+  const prefix = `grant-${modelChoice ? "model-choice-" : ""}${organization.id}`;
 
   const reset = (next: boolean) => {
     setOpen(next);
@@ -143,7 +145,10 @@ export function GrantComplimentaryDialog({
 
   const onSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (selected === undefined) {
+    const selection = modelChoice
+      ? { feature: "model_choice" as const }
+      : selected === undefined ? null : { plan: { id: selected.id, version: selected.version } };
+    if (selection === null) {
       change.setError("No other plan is configured to grant.");
       return;
     }
@@ -156,7 +161,7 @@ export function GrantComplimentaryDialog({
       action: "grant",
       idempotency_key: key,
       expected_revision: revision,
-      plan: { id: selected.id, version: selected.version },
+      ...selection,
       expires_at: expires === "" ? null : `${expires}T23:59:59Z`,
       reason: reason.trim(),
     });
@@ -175,34 +180,38 @@ export function GrantComplimentaryDialog({
 
   return (
     <Dialog open={open} onOpenChange={reset}>
-      <Button size="sm" onClick={() => reset(true)}>
-        Grant complimentary plan
+      <Button size="sm" onClick={() => reset(true)} disabled={modelChoice && (entitlements.features ?? []).includes("model_choice")}>
+        {modelChoice ? "Grant model choice" : "Grant complimentary plan"}
       </Button>
       <DialogPopup>
-        <form onSubmit={onSubmit} noValidate>
+        <form className="contents" onSubmit={onSubmit} noValidate>
           <DialogHeader>
-            <DialogTitle>Grant a complimentary plan to {organization.name}</DialogTitle>
+            <DialogTitle>{modelChoice ? "Grant model choice" : "Grant a complimentary plan"} to {organization.name}</DialogTitle>
             <DialogDescription>
-              The organization gets every feature and allowance of the chosen plan until the grant expires or is revoked.
+              {modelChoice
+                ? "The organization can choose from models reported by its runners until the grant expires or is revoked."
+                : "The organization gets every feature and allowance of the chosen plan until the grant expires or is revoked."}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={`${prefix}-plan`}>Plan</Label>
-                <select
-                  id={`${prefix}-plan`}
-                  value={selected === undefined ? "" : planKey(selected)}
-                  onChange={(event) => setPlan(event.currentTarget.value)}
-                  className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
-                >
-                  {choices.map((choice) => (
-                    <option key={planKey(choice)} value={planKey(choice)}>
-                      {planName(choice)}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {modelChoice ? null : (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={`${prefix}-plan`}>Plan</Label>
+                  <select
+                    id={`${prefix}-plan`}
+                    value={selected === undefined ? "" : planKey(selected)}
+                    onChange={(event) => setPlan(event.currentTarget.value)}
+                    className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
+                  >
+                    {choices.map((choice) => (
+                      <option key={planKey(choice)} value={planKey(choice)}>
+                        {planName(choice)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={`${prefix}-expires`}>Expires (optional)</Label>
                 <Input
@@ -256,6 +265,7 @@ export function RevokeGrantDialog({
   const [retryRevision, setRetryRevision] = React.useState<number | null>(null);
   const change = useChange(organization.id, csrf, onChanged);
   const reasonId = `revoke-${organization.id}-${grant.id}-reason`;
+  const modelChoice = (grant.scope ?? []).length === 1 && grant.scope?.[0] === "model_choice";
 
   const reset = (next: boolean) => {
     setOpen(next);
@@ -296,11 +306,13 @@ export function RevokeGrantDialog({
         Revoke
       </Button>
       <DialogPopup>
-        <form onSubmit={onSubmit} noValidate>
+        <form className="contents" onSubmit={onSubmit} noValidate>
           <DialogHeader>
-            <DialogTitle>Revoke {planName(grant.plan)} for {organization.name}?</DialogTitle>
+            <DialogTitle>Revoke {modelChoice ? "model choice" : planName(grant.plan)} for {organization.name}?</DialogTitle>
             <DialogDescription>
-              The organization returns to its base plan. Existing data stays; new work must fit the base allowances.
+              {modelChoice
+                ? "This grant will no longer allow the organization to choose models."
+                : "The organization returns to its base plan. Existing data stays; new work must fit the base allowances."}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
@@ -356,7 +368,10 @@ export function OrganizationPlan({
           <div className="font-mono text-xs text-muted-foreground">{organization.id}</div>
         </div>
         {value === undefined ? null : (
-          <GrantComplimentaryDialog organization={organization} entitlements={value} csrf={csrf} onChanged={entitlements.refresh} />
+          <>
+            <GrantComplimentaryDialog organization={organization} entitlements={value} csrf={csrf} onChanged={entitlements.refresh} />
+            <GrantComplimentaryDialog organization={organization} entitlements={value} csrf={csrf} onChanged={entitlements.refresh} modelChoice />
+          </>
         )}
       </div>
       {value === undefined ? (
@@ -384,6 +399,7 @@ export function OrganizationPlan({
               <dd className="font-medium">{effectivePlan(value)}</dd>
             </div>
           </dl>
+          <p className="mt-3 text-sm text-muted-foreground">Model choice: {(value.features ?? []).includes("model_choice") ? "Enabled" : "Disabled"}</p>
           {value.grants.length === 0 ? (
             <p className="mt-3 text-sm text-muted-foreground">No active complimentary grants.</p>
           ) : (
@@ -403,7 +419,7 @@ export function OrganizationPlan({
                 {value.grants.map((grant) => (
                   <TableRow key={grant.id}>
                     <TableCell>
-                      <Badge variant="info">{planName(grant.plan)}</Badge>
+                      <Badge variant="info">{grant.scope?.length === 1 && grant.scope[0] === "model_choice" ? "Model choice" : planName(grant.plan)}</Badge>
                     </TableCell>
                     <TableCell className="max-w-56 whitespace-normal text-muted-foreground">
                       {(grant.scope ?? []).join(", ")}

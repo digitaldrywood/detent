@@ -46,12 +46,14 @@ type organizationEntitlements struct {
 	EffectiveBase  planReference      `json:"effective_base"`
 	Source         string             `json:"source"`
 	Revision       int64              `json:"revision"`
+	Features       []string           `json:"features"`
 	Grants         []entitlementGrant `json:"grants"`
 	Plans          []entitlementPlan  `json:"plans"`
 }
 
 type entitlementChange struct {
 	Action           string        `json:"action"`
+	Feature          string        `json:"feature,omitempty"`
 	IdempotencyKey   string        `json:"idempotency_key"`
 	ExpectedRevision int64         `json:"expected_revision"`
 	Plan             planReference `json:"plan"`
@@ -232,6 +234,8 @@ func (s *Service) changePlatformEntitlement(c echo.Context) error {
 	switch {
 	case change.Action != "grant" && change.Action != "revoke":
 		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose grant or revoke"})
+	case change.Feature != "" && (change.Action != "grant" || change.Feature != "model_choice" || change.Plan != (planReference{})):
+		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose model_choice without a plan for a feature grant"})
 	case !safeID(change.IdempotencyKey) || change.ExpectedRevision < 1:
 		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Reload the organization's plan and try again"})
 	case change.Reason == "" || len(change.Reason) > 500:
@@ -247,11 +251,16 @@ func (s *Service) changePlatformEntitlement(c echo.Context) error {
 	command := tenantPlanCommand{ID: change.IdempotencyKey, Action: change.Action, ExpectedRevision: change.ExpectedRevision, Reason: change.Reason}
 	switch change.Action {
 	case "grant":
-		index := slices.IndexFunc(current.Plans, func(plan entitlementPlan) bool { return plan.planReference == change.Plan })
-		if index < 0 {
-			return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose a configured plan"})
+		if change.Feature == "model_choice" {
+			command.Plan, command.Scope = current.Base, []string{change.Feature}
+		} else {
+			index := slices.IndexFunc(current.Plans, func(plan entitlementPlan) bool { return plan.planReference == change.Plan })
+			if index < 0 {
+				return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose a configured plan"})
+			}
+			command.Plan, command.Scope = change.Plan, planScope(current.Plans[index])
 		}
-		command.Plan, command.Scope, command.ExpiresAt = change.Plan, planScope(current.Plans[index]), change.ExpiresAt
+		command.ExpiresAt = change.ExpiresAt
 		command.GrantID = complimentaryGrantID(organization.ID, change.IdempotencyKey)
 		if command.ExpiresAt != nil {
 			expiry := command.ExpiresAt.UTC()
