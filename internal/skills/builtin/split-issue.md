@@ -31,7 +31,7 @@ Draw the dependency graph:
 
 - Aim for a wide, shallow graph. Every edge serializes work, so add one only when the child truly cannot be built or merged before its blocker lands, for example a schema before the code that reads it.
 - Siblings that run in parallel must not edit the same files. Shared files cause merge conflicts and send cards to Rework. If two pieces must touch one file, chain them or merge them into one child.
-- Timestamp migrations from parallel children do not collide; regenerate generated output in each child and never commit it.
+- Timestamp migrations from parallel children do not collide; regenerate output from combined source inputs and publish generated files through the child's completion contract.
 - Link only issues. A PR cannot gate dispatch; an issue blocked on an open PR waits on nothing.
 - No epics. A tracking epic is never dispatched, so the parent must not become one.
 
@@ -41,7 +41,13 @@ Respect the scope rules:
 - Under INV-15, a child may add visible UI only when the human-authored parent names that UI change. Quote the parent's words in the child. If the parent does not name it, describe the idea in a comment and do not file a UI child.
 - Do not widen the parent's scope while splitting. Unrelated defects you find become their own issues.
 
-File and link:
+Propose in Luna:
+
+- Load this skill with `load_split_issue_skill`, then read the parent with `explain_issue`. Luna cannot read source files or execute commands; make missing code context explicit in the proposal.
+- Use `propose_issue_split` once for the whole split. Supply `parent_work_item_id`, every child's title, description, priority (0 urgent through 3 low, omitted when unset), target `state`, and all dependency `edges`. Children use one-based positions; 0 is the parent. Each edge has a `dependent` and a `blocker`.
+- Include edges blocking the parent on the children for its remaining end-to-end acceptance. Show the entire split for one browser confirmation. Nothing is filed on proposal or cancellation; confirmation creates all children, links and the parent comment atomically. Never use individual filing tools or treat chat text as approval.
+
+File and link outside Luna through an authorized tracker owner:
 
 - Native projects: file each child with the project's `file_issue`, then link it with `set_dependency` (`identifier` is the dependent, `related` is the blocker, and the call needs the dependent's current revision). Dispatch skips any issue with an unfinished blocker while `require_dependencies` is on.
 - GitHub-tracked projects: use native GitHub blocked-by links; a `Depends on: #N` body line is only a fallback.

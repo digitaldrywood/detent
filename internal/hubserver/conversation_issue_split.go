@@ -9,11 +9,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -28,11 +28,14 @@ func (t *coordinatorToolset) loadSplitIssueSkill(raw json.RawMessage) (any, erro
 	if err := decodeCoordinatorArguments(raw, &args); err != nil {
 		return nil, err
 	}
-	body := detent.SplitIssueSkillContent()
+	skill, body, err := skills.ReadBuiltin("split-issue")
+	if err != nil {
+		return nil, err
+	}
 	if len(body) > coordinatorToolArgumentBytes {
 		return nil, fmt.Errorf("split-issue skill exceeds %d bytes", coordinatorToolArgumentBytes)
 	}
-	return map[string]string{"name": "split-issue", "instructions": string(body)}, nil
+	return map[string]string{"name": skill.Name, "instructions": body}, nil
 }
 
 func validateCoordinatorIssueSplit(split chat.IssueSplit) error {

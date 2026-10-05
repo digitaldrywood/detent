@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -783,6 +784,9 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 		{name: "unknown built-in skill", tool: "read_skill", arguments: `{"name":"unknown"}`, success: false, contains: `unknown built-in skill`},
 		{name: "missing skill name", tool: "read_skill", arguments: `{}`, success: false, contains: `invalid tool arguments`},
 		{name: "unknown skill field", tool: "read_skill", arguments: `{"name":"split-issue","path":"/etc/passwd"}`, success: false, contains: `invalid tool arguments`},
+		{name: "load split skill from built-in catalog", tool: "load_split_issue_skill", arguments: `{}`, success: true, contains: `"instructions"`},
+		{name: "unknown split skill field", tool: "load_split_issue_skill", arguments: `{"path":"/etc/passwd"}`, success: false, contains: `invalid tool arguments`},
+		{name: "non-object split skill arguments", tool: "load_split_issue_skill", arguments: `[]`, success: false, contains: `invalid tool arguments`},
 		{name: "all projects lists only granted", tool: "list_attention", arguments: `{"scope":"all_projects"}`, success: true, contains: `"blocked"`},
 	}
 	for index, test := range tests {
@@ -807,6 +811,20 @@ func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 				decodeToolResult(t, result, &skill)
 				if skill.Name != "split-issue" || !strings.Contains(skill.Body, "Read the graph back and confirm every child") {
 					t.Fatalf("skill result = %#v", skill)
+				}
+			}
+			if test.tool == "load_split_issue_skill" && test.success {
+				var loaded struct {
+					Name         string `json:"name"`
+					Instructions string `json:"instructions"`
+				}
+				decodeToolResult(t, result, &loaded)
+				skill, body, err := skills.ReadBuiltin("split-issue")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if loaded.Name != skill.Name || loaded.Instructions != body {
+					t.Fatalf("split skill loader differs from built-in skill %q", skill.Name)
 				}
 			}
 			if test.tool == "explain_issue" && test.success {
