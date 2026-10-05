@@ -297,6 +297,7 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 	accounts := make(map[string]auth.Identity)
 	t.Cleanup(func() {
 		if listen {
+			server.CloseClientConnections()
 			server.Close()
 		}
 		if err := fixture.service.Close(); err != nil {
@@ -1012,6 +1013,61 @@ func TestHostedBrowserPreview(t *testing.T) {
 	case <-f.stop:
 	case <-timer.C:
 	case <-t.Context().Done():
+	}
+}
+
+func TestHostedBrowserPreviewStopClosesStreams(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	parent := t
+	transport := &http.Transport{}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport}
+	var streams []*http.Response
+	if !t.Run("stop with active streams", func(t *testing.T) {
+		f := newBrowserHostedFixture(t, true)
+		for range 2 {
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, f.server.URL+"/projects/"+f.project+"/events", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.AddCookie(f.cookies["owner"])
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			streams = append(streams, response)
+			parent.Cleanup(func() {
+				if err := response.Body.Close(); err != nil {
+					parent.Error(err)
+				}
+			})
+			if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
+				t.Fatalf("stream response = %d %s", response.StatusCode, response.Header.Get("Content-Type"))
+			}
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, f.server.URL+"/__preview/stop", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusNoContent {
+			t.Fatalf("stop status = %d, want %d", response.StatusCode, http.StatusNoContent)
+		}
+		<-f.stop
+	}) {
+		return
+	}
+	for i, response := range streams {
+		if _, err := io.Copy(io.Discard, response.Body); err == nil {
+			t.Errorf("stream %d ended without the fixture closing its connection", i)
+		}
 	}
 }
 
