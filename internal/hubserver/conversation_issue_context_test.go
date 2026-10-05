@@ -149,7 +149,7 @@ func (f *browserHostedFixture) seedIssueAsk(t *testing.T) {
 		}
 		prompt, _, _ := strings.Cut(request.Prompt, "\n\n## Available skills")
 		if strings.HasSuffix(prompt, "Use the split-issue skill to break this issue into smaller issues that can each land on their own. Wire up the dependencies so independent pieces can run in parallel, and show me the whole split as one proposal so I can confirm it once.") {
-			result, err := f.proposeBrowserIssueSplit(ctx, handle, false)
+			result, err := f.proposeBrowserIssueSplit(ctx, handle, false, false)
 			if err != nil {
 				return runner.AgentTurnResult{}, err
 			}

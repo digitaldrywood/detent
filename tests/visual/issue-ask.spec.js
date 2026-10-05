@@ -292,7 +292,7 @@ test("the split suggestion proposes one batch in Ask and confirmation files its 
     await expect(proposal.getByRole("heading", { name: title, exact: true })).toBeVisible();
   }
   await expect(proposal.getByRole("group", { name: "Dependency graph" }))
-    .toContainText("2. Split API → blocked by → 1. Split storage");
+    .toContainText("2. Split API — Blocked by: 1. Split storage");
   await expect(approval.locator("iframe")).toHaveCount(0);
   await expect(panel(page)).not.toContainText("(empty response)");
   const threadId = await panel(page).getByRole("combobox", { name: "Issue chats" }).inputValue();

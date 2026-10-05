@@ -50,34 +50,53 @@ test("unavailable Hub PR mode is refused and the owner can retry a blocked issue
   await expect(page.getByText(/move item: succeeded/)).toBeVisible();
 });
 
-test("an issue split is reviewed once, cancelled without filing, and confirmed atomically", async ({ page }) => {
+test("an issue split renders Markdown and grouped dependencies, cancels without filing, and confirms atomically", async ({ page }, testInfo) => {
   await page.goto(hub.fixture.accounts.owner);
   await page.goto(`${hub.fixture.chat}/p/${hub.fixture.project_id}`);
   const workItems = async () => (await projectRead(page, "work-items")).items;
   const initial = await workItems();
+  const parentBefore = await projectRead(page, `work-items/${hub.fixture.work_item}`);
 
   await askLuna(page, "Propose a cyclic split.");
   await expect(page.getByText(/Dependencies cannot form a cycle/).first()).toBeVisible();
   await expect(page.getByTestId("operator-action-card")).toHaveCount(0);
   expect((await workItems()).length).toBe(initial.length);
 
-  await askLuna(page, "Split this issue into three children.");
+  await askLuna(page, "Split this issue into six children.");
   const cancelled = page.getByTestId("operator-action-card").last();
   await expect(cancelled.getByTestId("issue-split-proposal")).toBeVisible();
   await expect(cancelled.getByRole("heading", { name: "1. Split storage", exact: true })).toBeVisible();
   await expect(cancelled.getByRole("heading", { name: "2. Split API", exact: true })).toBeVisible();
   await expect(cancelled.getByRole("heading", { name: "3. Split UI", exact: true })).toBeVisible();
-  await expect(cancelled.getByRole("group", { name: "Dependency graph" })).toContainText("2. Split API → blocked by → 1. Split storage");
+  const proposal = cancelled.getByTestId("issue-split-proposal");
+  await expect(proposal.getByRole("heading", { level: 3 })).toHaveCount(6);
+  await expect(proposal.locator("strong")).toHaveText("storage layer");
+  await expect(proposal.getByRole("listitem")).toHaveText(["Preserve existing records.", "Add the migration."]);
+  await expect(proposal.locator("pre code")).toContainText("schema: 1\neffort: high");
+  await expect(proposal).not.toContainText("```detent-agent");
+  const graph = proposal.getByRole("group", { name: "Dependency graph" });
+  await expect(graph.locator("p").filter({ hasText: "Blocked by:" })).toHaveCount(6);
+  await expect(graph).toContainText("1. Split storage — Blocked by: None");
+  await expect(graph).toContainText("2. Split API — Blocked by: 1. Split storage");
+  await expect(graph).toContainText("3. Split UI — Blocked by: 1. Split storage, 2. Split API");
+  await expect(graph).toContainText("6. Split integration — Blocked by: 3. Split UI, 5. Split reporting");
+  await expect(graph.locator("p").filter({ hasText: "waits for all" })).toHaveText(`#${parentBefore.number} waits for all 6 children · ${parentBefore.title}`);
+  await expect(cancelled).not.toContainText(hub.fixture.work_item);
+  await expect(graph).not.toContainText("→");
+  await cancelled.getByText("Proposed change", { exact: true }).click();
+  await expect(cancelled.locator("details pre")).toContainText(`#${parentBefore.number}: ${parentBefore.title}`);
+  await cancelled.getByText("Proposed change", { exact: true }).click();
+  await proposal.screenshot({ path: testInfo.outputPath("issue-split-six-children.png") });
   expect((await workItems()).length).toBe(initial.length);
   await cancelled.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByText(/Cancelled\./).first()).toBeVisible();
   expect((await workItems()).length).toBe(initial.length);
 
-  await askLuna(page, "Split this issue now, with the same three children.");
+  await askLuna(page, "Split this issue now, with the same six children.");
   const confirmed = page.getByTestId("operator-action-card").last();
   await expect(confirmed.getByTestId("issue-split-proposal").last()).toBeVisible();
   await confirmed.getByRole("button", { name: "Approve", exact: true }).click();
-  await expect.poll(async () => (await workItems()).length).toBe(initial.length + 3);
+  await expect.poll(async () => (await workItems()).length).toBe(initial.length + 6);
   const children = (await workItems()).filter((item) => item.title.startsWith("Split "));
   const storage = children.find((item) => item.title === "Split storage");
   const api = await projectRead(page, `work-items/${children.find((item) => item.title === "Split API").work_item_id}`);

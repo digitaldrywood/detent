@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 import React from "react";
+import { Markdown } from "./Markdown.tsx";
 
 const Split = Schema.Struct({
   parent_work_item_id: Schema.String,
@@ -20,25 +21,39 @@ const Archive = Schema.Struct({
   })),
 });
 
+export function issueSplitParent(action: Record<string, unknown>, childCount: number): { identifier: string; title: string; label: string } {
+  const identifier = typeof action.identifier === "string" ? action.identifier : "Parent issue";
+  const summary = typeof action.title === "string" ? action.title : "";
+  const prefix = `Split ${identifier}: `;
+  const suffix = ` into ${childCount} issues`;
+  const title = summary.startsWith(prefix) && summary.endsWith(suffix) ? summary.slice(prefix.length, -suffix.length) : summary;
+  return { identifier, title, label: title === "" ? identifier : `${identifier}: ${title}` };
+}
+
 export function OperatorActionPreview({ action }: { action: Record<string, unknown> }): React.ReactElement | null {
   if (action.kind === "propose_issue_split") {
     const parsed = Schema.decodeUnknownOption(Split)(action.arguments);
     if (parsed._tag === "None") return null;
     const split = parsed.value;
-    const node = (position: number): string => position === 0 ? "Parent" : `${position}. ${split.children[position - 1]?.title ?? "Unknown child"}`;
+    const parent = issueSplitParent(action, split.children.length);
+    const node = (position: number): string => position === 0 ? parent.label : `${position}. ${split.children[position - 1]?.title ?? "Unknown child"}`;
+    const blockers = (position: number): number[] => (split.edges ?? []).filter((edge) => edge.dependent === position).map((edge) => edge.blocker);
+    const parentBlockers = blockers(0);
+    const waitsForAll = split.children.length > 0 && split.children.every((_, index) => parentBlockers.includes(index + 1));
+    const projectId = typeof action.project_id === "string" ? action.project_id : undefined;
     return (
       <div className="space-y-3" data-testid="issue-split-proposal">
         {split.children.map((child, index) => (
           <section key={index} className="rounded-lg border border-border p-3">
             <h3 className="break-words font-medium text-sm">{index + 1}. {child.title}</h3>
             <p className="mt-1 text-muted-foreground text-xs">{child.state} · {child.priority === undefined ? "No priority" : ["Urgent", "High", "Normal", "Low"][child.priority] ?? "Unknown priority"}</p>
-            <p className="mt-2 whitespace-pre-wrap break-words text-xs">{child.description}</p>
+            <Markdown source={child.description} projectId={projectId} className="mt-2 text-xs" />
           </section>
         ))}
         <div role="group" aria-label="Dependency graph" className="text-muted-foreground text-xs">
           <p className="font-medium">Dependency graph</p>
-          <p>Parent: {split.parent_work_item_id}</p>
-          {(split.edges ?? []).map((edge, index) => <p key={index}>{node(edge.dependent)} → blocked by → {node(edge.blocker)}</p>)}
+          {split.children.map((_, index) => <p key={index}>{node(index + 1)} — Blocked by: {blockers(index + 1).map(node).join(", ") || "None"}</p>)}
+          <p>{waitsForAll ? `${parent.identifier} waits for all ${split.children.length} children${parent.title === "" ? "" : ` · ${parent.title}`}` : `Parent: ${parent.label}${parentBlockers.length === 0 ? "" : ` — Blocked by: ${parentBlockers.map(node).join(", ")}`}`}</p>
           {(split.edges?.length ?? 0) === 0 ? <p>No dependencies</p> : null}
         </div>
       </div>
