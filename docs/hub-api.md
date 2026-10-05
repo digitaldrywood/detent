@@ -650,13 +650,21 @@ forward the lane ledger's reason as readable text through this field.
 Release reasons are `completed`, `cancelled`, `failed`, `released`,
 `work_item_hydration_failed` and `work_item_identity_missing`.
 
-Native pages use `limit` (1–200, default 50) and an opaque `cursor`. Issue numbers,
-comment creation sequences and aggregate history sequences provide increasing
+Native pages use `limit` (1–200, default 50) and an opaque `cursor`. Issue lists
+group items in configured workflow state order. Within nonterminal states,
+priority sorts first, then `last_activity_at` newest first; terminal states use
+activity alone. Missing priorities and activity sort last, and identifiers break
+ties. The first page retains matching item identities and SQL sort keys for the
+cursor's lifetime, so concurrent changes to state, priority, activity or filters
+cannot skip or repeat those items. New items appear in a fresh query. Each page
+loads current item details, so this is not a transactional export snapshot;
+a consistent export still requires a quiescent owner backup.
+
+Comment creation sequences and aggregate history sequences provide increasing
 page order. Signed cursors bind protocol, principal, organization, project,
 resource and query; they expire after one hour. Reuse with a different scope or
-filter fails. Restart preserves the signing key. These are live pages rather than
-a transactional export snapshot: concurrent edits can change which issues match
-a filter, so a consistent export requires a quiescent owner backup.
+filter fails. Restart preserves the signing key and retained issue sort keys.
+Cursors from the previous issue-number ordering require restarting the query.
 
 Dependency writes require access to both projects within the same organization.
 Cross-organization links are prohibited by the database and API. Transitive

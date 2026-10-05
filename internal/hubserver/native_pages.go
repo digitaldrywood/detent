@@ -20,10 +20,11 @@ import (
 )
 
 type nativeCursor struct {
-	Version int    `json:"v"`
-	Scope   string `json:"scope"`
-	After   string `json:"after"`
-	Expires int64  `json:"expires"`
+	Version int                    `json:"v"`
+	Scope   string                 `json:"scope"`
+	After   string                 `json:"after"`
+	Expires int64                  `json:"expires"`
+	Issues  *nativeIssuePageCursor `json:"issues,omitempty"`
 }
 
 func (s *Service) nativePage(c echo.Context) (int, nativeCursor, []byte, error) {
@@ -248,9 +249,8 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 			return tracker.NativeIssuePage{}, err
 		}
 	}
-	query += " AND i.number > CAST(? AS INTEGER) ORDER BY i.number LIMIT ?"
-	args = append(args, cursor.After, limit+1)
-	ids, err := nativePageIDs(ctx, s.database.db, query, args...)
+	newPage := cursor.Issues == nil
+	items, err := s.readIssuePageItems(ctx, query, args, limit, &cursor)
 	if err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
@@ -261,11 +261,12 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 			operational[string(issue.WorkItemID)] = issue
 		}
 	}
-	hasMore := len(ids) > limit
+	hasMore := len(items) > limit
 	if hasMore {
-		ids = ids[:limit]
+		items = items[:limit]
 	}
-	for _, id := range ids {
+	for _, item := range items {
+		id := item.ID
 		issue, loaded := operational[id]
 		if !loaded {
 			issue, _, err = readNativeIssueProjection(ctx, s.database.db, scope, id, workIncluded || summary)
@@ -275,7 +276,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		}
 		issue = s.nativeIssueResponse(issue)
 		next := cursor
-		next.After = strconv.Itoa(issue.Number)
+		next.Issues = &item.Position
 		if summary {
 			issue = operatortool.NativeListIssue(issue)
 			candidate := tracker.Page[tracker.NativeIssue]{Items: append(page.Items, issue)}
@@ -301,6 +302,11 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	if hasMore {
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
 		if err != nil {
+			return tracker.NativeIssuePage{}, err
+		}
+	}
+	if newPage && !hasMore {
+		if _, err := s.database.db.ExecContext(ctx, "DELETE FROM native_issue_pages WHERE id = ?", cursor.Issues.Snapshot); err != nil {
 			return tracker.NativeIssuePage{}, err
 		}
 	}

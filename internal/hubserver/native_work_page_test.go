@@ -210,8 +210,8 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 			}
 		})
 	}
-	if first.NextCursor == "" || first.Items[0].WorkItemID != history[0].WorkItemID || first.Work.Items[0].WorkItemID != ip[1].WorkItemID || !slices.ContainsFunc(first.Work.Items, func(issue tracker.NativeIssue) bool { return issue.WorkItemID == todo[0].WorkItemID }) {
-		t.Fatal("default history page omitted operational work")
+	if first.NextCursor == "" || first.Items[0].WorkItemID != todo[0].WorkItemID || first.Work.Items[0].WorkItemID != ip[1].WorkItemID || !slices.ContainsFunc(first.Work.Items, func(issue tracker.NativeIssue) bool { return issue.WorkItemID == todo[0].WorkItemID }) {
+		t.Fatal("default lane page omitted operational work")
 	}
 	now := time.Now().Truncate(time.Second).Add(500 * time.Millisecond)
 	f.service.config.now = func() time.Time { return now }

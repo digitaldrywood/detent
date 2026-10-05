@@ -279,8 +279,17 @@ The requested limit is a maximum: the existing issue page owner may return fewer
 items to fit its 64 KiB serialized summary/cursor budget, derived from the 256 KiB
 tool-result limit and reserving room for the envelope and MCP serialization.
 Pass the cursor with the same project, query, state and label; the limit may
-change. Existing cursor authority, one-hour expiry and ordering remain intact.
+change. Items group in configured lane order, then use priority and newest
+activity within nonterminal lanes, or newest activity within terminal lanes,
+with identifiers breaking ties. Matching identities and order remain fixed while
+paging, even if items change; item details remain current. Start a fresh query to
+observe new membership or ordering. Cursor authority and one-hour expiry remain
+intact.
 Both stdio and HTTP return the same shape.
+
+Local GitHub snapshot lists use the same lane comparator, with the snapshot's
+`updated_at` as activity. Their existing offset pagination reads the current
+snapshot on each request.
 
 Summaries retain stable IDs, identifiers, URLs, revisions, title, state, priority,
 labels, assignees, timestamps and authorized dependencies/blockers. Their

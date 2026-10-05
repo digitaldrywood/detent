@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/displayorder"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/hubclient"
@@ -120,6 +121,7 @@ func (r dashboardWorkReads) ReadWork(ctx context.Context, name string, request o
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
 		issues := scopedWorkIssues(snapshot, request.ProjectID)
+		sortWorkIssues(issues, tracked.Workflow().Config.KanbanStateNames(), tracked.Workflow().Config.Tracker.TerminalStates)
 		states := append([]string{}, request.States...)
 		if request.State != "" {
 			states = append(states, request.State)
@@ -323,6 +325,33 @@ func scopedWorkIssues(snapshot telemetry.Snapshot, projectID string) []telemetry
 	}
 	slices.SortFunc(issues, func(a, b telemetry.Issue) int { return strings.Compare(a.Identifier, b.Identifier) })
 	return issues
+}
+
+func sortWorkIssues(issues []telemetry.Issue, states, terminalStates []string) {
+	lane := func(state string) int {
+		index := slices.IndexFunc(states, func(name string) bool { return strings.EqualFold(name, state) })
+		if index < 0 {
+			return len(states)
+		}
+		return index
+	}
+	item := func(issue telemetry.Issue) displayorder.Item {
+		value := displayorder.Item{Priority: issue.Priority, Identifier: issue.Identifier}
+		if issue.UpdatedAt != nil {
+			value.LastActivityAt = *issue.UpdatedAt
+		}
+		return value
+	}
+	slices.SortFunc(issues, func(left, right telemetry.Issue) int {
+		if order := lane(left.State) - lane(right.State); order != 0 {
+			return order
+		}
+		if order := strings.Compare(strings.ToLower(left.State), strings.ToLower(right.State)); order != 0 {
+			return order
+		}
+		terminal := slices.ContainsFunc(terminalStates, func(state string) bool { return strings.EqualFold(state, left.State) })
+		return displayorder.Compare(terminal, item(left), item(right))
+	})
 }
 
 func connectorIssueForWork(issue telemetry.Issue) connector.Issue {
