@@ -947,6 +947,8 @@ func TestNativeMergeQueueWorkerHandoff(t *testing.T) {
 			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}}
 			state.Running[issue.ID] = running
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now}
+			state.Pipeline = []connector.Issue{issue}
+			reserveMergeCandidate(&state, issue, now)
 			event.Err = tt.workerErr
 			orch.handleRunResult(t.Context(), &state, event)
 			wantMerges := 1
@@ -959,8 +961,19 @@ func TestNativeMergeQueueWorkerHandoff(t *testing.T) {
 			if len(state.Retry) != 0 || len(tracker.updates) != 0 {
 				t.Fatalf("retry or lane change: %v %v", state.Retry, tracker.updates)
 			}
-			if tt.inspectErr == nil && len(tracker.enqueued) != 1 {
-				t.Fatalf("enqueued=%v", tracker.enqueued)
+			if len(state.Running) != 0 || len(state.Claimed) != 0 || len(state.mergeReservations) != 0 {
+				t.Fatalf("worker ownership retained: running=%v claimed=%v reservations=%v", state.Running, state.Claimed, state.mergeReservations)
+			}
+			var wantEnqueued []string
+			if tt.inspectErr == nil {
+				wantEnqueued = []string{issue.ID}
+				entry := state.Pipeline[0].PullRequest.MergeQueueEntry
+				if entry == nil || entry.ID != "MQE_"+issue.ID || state.nativeMergeQueueEntries[issue.ID].HeadSHA != issue.PullRequest.HeadSHA {
+					t.Fatalf("current head queue handoff missing: pipeline=%+v cached=%+v", entry, state.nativeMergeQueueEntries[issue.ID])
+				}
+			}
+			if !reflect.DeepEqual(tracker.enqueued, wantEnqueued) {
+				t.Fatalf("enqueued=%v want %v", tracker.enqueued, wantEnqueued)
 			}
 			if tracker.inspections != 1 {
 				t.Fatalf("inspections=%d", tracker.inspections)

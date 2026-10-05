@@ -3138,6 +3138,7 @@ func (o *Orchestrator) completeNativeMergeQueueWorker(ctx context.Context, state
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalSuccess, nil, "", "")
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", "waiting for native merge queue")
 	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
+	delete(state.Running, issue.ID)
 	delete(state.Retry, issue.ID)
 	if reservation := state.mergeReservations[issue.ID]; reservation.IssueID == issue.ID {
 		delete(state.mergeReservations, issue.ID)
