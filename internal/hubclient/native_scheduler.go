@@ -125,9 +125,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		problems = s.problems()
 	}
 	if s.isolationReport != nil {
-		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		report = s.isolationReport(probeCtx)
-		cancel()
+		report = s.probeIsolation(ctx)
 	}
 	if last.IsZero() {
 		var required []string
@@ -247,6 +245,20 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	}
 	s.nativeHeartbeats[project] = s.now()
 	return nil
+}
+
+func (s *Scheduler) probeIsolation(ctx context.Context) isolation.Report {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if s.leaseHold != nil {
+		release, err := s.leaseHold(probeCtx)
+		if err != nil {
+			slog.Default().Warn("sprite isolation probe hold unavailable", "error", err)
+		} else {
+			defer release()
+		}
+	}
+	return s.isolationReport(probeCtx)
 }
 
 func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector) ([]connector.Issue, error) {

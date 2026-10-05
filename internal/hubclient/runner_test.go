@@ -172,38 +172,82 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		t.Fatal("worker changed host")
 	}
 	t.Run("diagnostics without a project orchestrator", func(t *testing.T) {
-		report := isolation.Report{"native/workflow": {}}
-		now := time.Now()
-		scheduler, err := NewScheduler(client, SchedulerConfig{
-			OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine,
-			HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, Now: func() time.Time { return now },
-			IsolationReport: func(context.Context) isolation.Report { return report },
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := scheduler.Heartbeat(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		view, err := fleetAdmin.Fleet(t.Context())
-		if err != nil || len(view.Runners) != 1 || view.Runners[0].Health != "needs_attention" {
-			t.Fatalf("failed startup fleet = %#v, %v", view, err)
-		}
-		found := false
-		for _, problem := range view.Runners[0].Problems {
-			found = found || problem.Code == "settings_invalid"
-		}
-		if !found {
-			t.Fatal("invalid workflow diagnostic was not reported")
-		}
-		report = machine.BackendIsolation
-		now = now.Add(time.Minute)
-		if err := scheduler.Heartbeat(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		view, err = fleetAdmin.Fleet(t.Context())
-		if err != nil || len(view.Runners[0].Problems) != 0 || view.Runners[0].Health != "online" {
-			t.Fatalf("recovered startup fleet = %#v, %v", view, err)
+		for _, test := range []struct {
+			name         string
+			report       isolation.Report
+			wantProblems []string
+		}{
+			{"workflow unavailable", isolation.Report{"native/workflow": {}}, []string{"settings_invalid", "tier_unavailable"}},
+			{"backend unavailable", isolation.Report{"native/codex": {}}, []string{"backend_missing", "tier_unavailable"}},
+			{"empty report", isolation.Report{}, []string{"backend_missing", "tier_unavailable"}},
+			{"partially failed report", isolation.Report{"native/codex": {isolation.NativeTrusted}, "native/claude": {}}, []string{"backend_missing", "tier_unavailable"}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				now := time.Now()
+				held := false
+				probes, acquired, released := 0, 0, 0
+				scheduler, err := NewScheduler(client, SchedulerConfig{
+					OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine,
+					HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, Now: func() time.Time { return now },
+					LeaseHold: func(context.Context) (func(), error) {
+						if held {
+							t.Error("probe acquired a second hold")
+						}
+						held = true
+						acquired++
+						return func() { held = false; released++ }, nil
+					},
+					IsolationReport: func(context.Context) isolation.Report {
+						if !held {
+							t.Error("isolation probe ran without keeping the Sprite awake")
+						}
+						probes++
+						if probes == 1 {
+							return test.report
+						}
+						return machine.BackendIsolation
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := scheduler.Heartbeat(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				view, err := fleetAdmin.Fleet(t.Context())
+				if err != nil || len(view.Runners) != 1 || view.Runners[0].Health != "needs_attention" {
+					t.Fatalf("failed startup fleet = %#v, %v", view, err)
+				}
+				if len(view.Runners[0].Problems) != len(test.wantProblems) {
+					t.Fatalf("startup problems = %+v, want %v", view.Runners[0].Problems, test.wantProblems)
+				}
+				for _, code := range test.wantProblems {
+					found := false
+					for _, problem := range view.Runners[0].Problems {
+						found = found || problem.Code == code
+					}
+					if !found {
+						t.Fatalf("startup did not report %s", code)
+					}
+				}
+				if probes != 1 || acquired != 1 || released != 1 || held {
+					t.Fatalf("startup probes=%d acquired=%d released=%d held=%t", probes, acquired, released, held)
+				}
+				now = now.Add(time.Minute)
+				if err := scheduler.Heartbeat(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				view, err = fleetAdmin.Fleet(t.Context())
+				if err != nil || len(view.Runners[0].Problems) != 0 || view.Runners[0].Health != "online" {
+					t.Fatalf("recovered startup fleet = %#v, %v", view, err)
+				}
+				if probes != 2 || acquired != 2 || released != 2 || held {
+					t.Fatalf("recovery probes=%d acquired=%d released=%d held=%t", probes, acquired, released, held)
+				}
+				if !scheduler.machine.BackendIsolation.Supports(isolation.NativeTrusted) {
+					t.Fatalf("recovered report = %#v", scheduler.machine.BackendIsolation)
+				}
+			})
 		}
 	})
 	descriptor := clientTestPolicy()
@@ -507,7 +551,14 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
-	scheduler := &Scheduler{client: client, now: time.Now, heartbeatInterval: time.Second, machine: Machine{ID: "machine", Capacity: 1}, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": time.Now().Add(-time.Minute)}, isolationReport: func(ctx context.Context) isolation.Report {
+	var held atomic.Bool
+	scheduler := &Scheduler{client: client, now: time.Now, heartbeatInterval: time.Second, machine: Machine{ID: "machine", Capacity: 1}, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": time.Now().Add(-time.Minute)}, leaseHold: func(context.Context) (func(), error) {
+		held.Store(true)
+		return func() { held.Store(false) }, nil
+	}, isolationReport: func(ctx context.Context) isolation.Report {
+		if !held.Load() {
+			t.Error("isolation probe ran without keeping the Sprite awake")
+		}
 		close(entered)
 		deadline, ok := ctx.Deadline()
 		if !ok || time.Until(deadline) > 5*time.Second {
@@ -536,6 +587,9 @@ func TestIsolationProbeDoesNotHoldSchedulerMutex(t *testing.T) {
 		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("probe exceeded aggregate deadline")
+	}
+	if held.Load() {
+		t.Fatal("canceled probe left its Sprite task held")
 	}
 }
 
