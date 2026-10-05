@@ -88,7 +88,7 @@ func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCr
 	if !user.Valid && !organization.Valid && !membership.Valid && !scope.Valid {
 		return credential, nil
 	}
-	if access != hostedProjectsAll && access != hostedProjectsSelected || !user.Valid || organization.String != s.config.Hosted.OrganizationID || membership.String == "" || !expires.Valid || !credential.NativeOnly || credential.Runner.RunnerID != "" || credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin || !hostedKeyAllows(apikey.Scope(scope.String), apikey.ScopeRead) {
+	if access != hostedProjectsAll && access != hostedProjectsSelected || !user.Valid || organization.String != s.config.Hosted.OrganizationID || membership.String == "" || !credential.NativeOnly || credential.Runner.RunnerID != "" || credential.Scope != apiScopeOperator && credential.Scope != apiScopeAdmin || !hostedKeyAllows(apikey.Scope(scope.String), apikey.ScopeRead) {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
 	provider, err := s.hostedProviderOrganization(ctx)
@@ -100,9 +100,11 @@ func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCr
 	if err != nil {
 		return apiCredential{}, err
 	}
-	identity.ExpiresAt, err = parseTimeValue(expires.String)
-	if err != nil {
-		return apiCredential{}, err
+	if expires.Valid {
+		identity.ExpiresAt, err = parseTimeValue(expires.String)
+		if err != nil {
+			return apiCredential{}, err
+		}
 	}
 	current, err := s.hostedMembership(ctx, identity)
 	if err != nil || current.ID != membership.String {
@@ -152,7 +154,7 @@ type hostedAPIKey struct {
 	ID            string              `json:"id"`
 	Name          string              `json:"name"`
 	Scope         apikey.Scope        `json:"scope"`
-	Expiry        string              `json:"expires_at"`
+	Expiry        *string             `json:"expires_at"`
 	CreatedAt     string              `json:"created_at"`
 	RevokedAt     *string             `json:"revoked_at,omitempty"`
 	Fingerprint   string              `json:"fingerprint"`
@@ -187,9 +189,12 @@ func (s *Service) hostedAPIKeysFor(ctx context.Context, credential apiCredential
 	defer rows.Close()
 	for rows.Next() {
 		var key hostedAPIKey
-		var revoked sql.NullString
-		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &key.Expiry, &key.Fingerprint, &revoked, &key.ProjectAccess, &key.CreatedAt); err != nil {
+		var expiry, revoked sql.NullString
+		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &expiry, &key.Fingerprint, &revoked, &key.ProjectAccess, &key.CreatedAt); err != nil {
 			return nil, err
+		}
+		if expiry.Valid {
+			key.Expiry = &expiry.String
 		}
 		key.Revoked = revoked.Valid
 		if revoked.Valid {
@@ -235,7 +240,15 @@ type hostedKeyRequest struct {
 	Name          string              `json:"name"`
 	Scope         apikey.Scope        `json:"scope"`
 	Days          int                 `json:"expires_days"`
+	NeverExpires  bool                `json:"never_expires,omitempty"`
 	Projects      []string            `json:"project_ids"`
+}
+
+func (request hostedKeyRequest) validExpiry() bool {
+	if request.NeverExpires {
+		return request.Days == 0
+	}
+	return request.Days >= 1 && request.Days <= 90
 }
 
 func (s *Service) createHostedAPIKey(c echo.Context) error {
@@ -258,7 +271,7 @@ func (s *Service) createHostedAPIKey(c echo.Context) error {
 }
 
 func (s *Service) authorizeHostedKeyRequest(ctx context.Context, credential apiCredential, request hostedKeyRequest) error {
-	if request.Days < 1 || request.Days > 90 || len(request.Projects) > 200 || !apikey.ValidScope(request.Scope) {
+	if !request.validExpiry() || len(request.Projects) > 200 || !apikey.ValidScope(request.Scope) {
 		return operatortool.ErrInvalidArguments
 	}
 	if _, message := resolveHostedProjectAccess(request.ProjectAccess, request.Projects); message != "" {
@@ -284,20 +297,24 @@ func (s *Service) createHostedAPIKeyFor(ctx context.Context, credential apiCrede
 	if err != nil {
 		return tokenResponse{}, err
 	}
-	if request.Days < 1 || request.Days > 90 || len(request.Projects) > 200 {
-		return tokenResponse{}, nativeInvalid("Choose 1–90 days and at most 200 projects")
+	if !request.validExpiry() || len(request.Projects) > 200 {
+		return tokenResponse{}, nativeInvalid("Choose Never or 1–90 days and at most 200 projects")
 	}
 	var message string
 	request.ProjectAccess, message = resolveHostedProjectAccess(request.ProjectAccess, request.Projects)
 	if message != "" {
 		return tokenResponse{}, nativeInvalid(message)
 	}
-	expiry := s.config.now().Add(time.Duration(request.Days) * 24 * time.Hour)
+	var expiry *time.Time
+	if !request.NeverExpires {
+		value := s.config.now().Add(time.Duration(request.Days) * 24 * time.Hour)
+		expiry = &value
+	}
 	scope := apiScopeOperator
 	if request.Scope == apikey.ScopeAdmin {
 		scope = apiScopeAdmin
 	}
-	key, err := s.createAPITokenFor(ctx, tokenRequest{Name: request.Name, Scope: scope, Issuer: &credential, KeyScope: request.Scope, ExpiresAt: &expiry, ProjectIDs: request.Projects, ProjectAccess: request.ProjectAccess})
+	key, err := s.createAPITokenFor(ctx, tokenRequest{Name: request.Name, Scope: scope, Issuer: &credential, KeyScope: request.Scope, ExpiresAt: expiry, ProjectIDs: request.Projects, ProjectAccess: request.ProjectAccess})
 	if err != nil {
 		return tokenResponse{}, err
 	}

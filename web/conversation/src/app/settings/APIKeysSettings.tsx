@@ -166,6 +166,7 @@ export function APIKeysSettings({
         name: name.trim(),
         scope,
         expires_days: Number(days),
+        ...(days === "0" ? { never_expires: true } : {}),
         project_access: projectAccess,
         project_ids: projectAccess === "selected" ? selectedProjects : [],
       });
@@ -263,7 +264,8 @@ export function APIKeysSettings({
   }
 
   const inactive = (key: OperatorAPIKey) =>
-    key.revoked || new Date(key.expires_at).getTime() <= now;
+    key.revoked ||
+    (key.expires_at !== null && new Date(key.expires_at).getTime() <= now);
   const activeKeys = keys.filter((key) => !inactive(key));
   const history = keys.filter(inactive);
   const allowedPermissions = permissions.filter(
@@ -315,7 +317,7 @@ export function APIKeysSettings({
                     <Badge variant="info">{permissionLabel(key.scope)}</Badge>
                   </span>
                 }
-                description={`Expires ${keyDate(key.expires_at)}${key.created_at ? ` · created ${keyDate(key.created_at, false)}` : ""} · ${key.fingerprint.slice(0, 12)}`}
+                description={`${key.expires_at === null ? "Never expires" : `Expires ${keyDate(key.expires_at)}`}${key.created_at ? ` · created ${keyDate(key.created_at, false)}` : ""} · ${key.fingerprint.slice(0, 12)}`}
                 status={projectBadges(key)}
                 control={
                   <Button
@@ -365,7 +367,7 @@ export function APIKeysSettings({
                             </Badge>
                           </span>
                         }
-                        description={`${key.revoked ? `Revoked${key.revoked_at ? ` ${keyDate(key.revoked_at)}` : ""}` : `Expired ${keyDate(key.expires_at)}`} · ${permissionLabel(key.scope)} · ${key.fingerprint.slice(0, 12)}`}
+                        description={`${key.revoked ? `Revoked${key.revoked_at ? ` ${keyDate(key.revoked_at)}` : ""}` : `Expired ${keyDate(key.expires_at ?? "")}`} · ${permissionLabel(key.scope)} · ${key.fingerprint.slice(0, 12)}`}
                         status={projectBadges(key)}
                       />
                     ))}
@@ -509,6 +511,7 @@ export function APIKeysSettings({
                       { value: "7", label: "7 days" },
                       { value: "30", label: "30 days" },
                       { value: "90", label: "90 days" },
+                      { value: "0", label: "Never" },
                     ]}
                   />
                 </div>

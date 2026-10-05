@@ -330,7 +330,7 @@ func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope n
 		var local, keyScope string
 		var access hostedProjectAccess
 		err = tx.QueryRowContext(ctx, `SELECT m.role,t.operator_key_scope,t.operator_project_access,m.principal_id FROM hosted_members m JOIN api_tokens t ON t.hosted_user_id=m.user_id AND t.hosted_membership_id=m.membership_id JOIN api_tokens p ON p.id=m.principal_id AND p.revoked_at IS NULL
-WHERE t.id=? AND t.token_hash=? AND t.revoked_at IS NULL AND t.native_only=1 AND t.scope IN ('operator','admin') AND t.hosted_organization_id=? AND julianday(t.expires_at)>julianday(?) AND m.user_id=? AND m.membership_id=? AND m.active=1`, scope.credential.ID, scope.credential.Hash, scope.organization, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&local, &keyScope, &access, &scope.credential.HostedPrincipal)
+WHERE t.id=? AND t.token_hash=? AND t.revoked_at IS NULL AND t.native_only=1 AND t.scope IN ('operator','admin') AND t.hosted_organization_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) AND m.user_id=? AND m.membership_id=? AND m.active=1`, scope.credential.ID, scope.credential.Hash, scope.organization, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&local, &keyScope, &access, &scope.credential.HostedPrincipal)
 		if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required) || !hostedKeyAllows(apikey.Scope(keyScope), required) || access != hostedProjectsAll && access != hostedProjectsSelected {
 			return auth.ErrHostedIdentity
 		}

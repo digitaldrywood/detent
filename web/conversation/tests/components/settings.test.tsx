@@ -321,10 +321,13 @@ describe("MCP setup", () => {
     const key = { scope: "read", fingerprint: "12345678901234567890", created_at: "2026-10-01T12:00:00.123456789Z", expires_at: "2099-11-01T12:00:00Z", revoked: false, project_access: "selected", project_ids: [account.projects[0]!.id, "unknown-project"] };
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ keys: [
       { ...key, id: "active", name: "Active agent" },
+      { ...key, id: "never", name: "Long-lived agent", expires_at: null },
       { ...key, id: "revoked", name: "Revoked agent", revoked: true, revoked_at: "2026-10-02T12:00:00Z" },
       { ...key, id: "expired", name: "Expired agent", expires_at: "2020-01-01T12:00:00Z" },
     ] })));
     renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: account.api_base, csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    const permanent = (await screen.findByRole("heading", { name: /Long-lived agent/ })).closest('[data-slot="settings-row"]')!;
+    expect(permanent.textContent).toContain("Never expires");
     const active = (await screen.findByRole("heading", { name: /Active agent/ })).closest('[data-slot="settings-row"]')!;
     expect(active.textContent).toContain(account.projects[0]!.name);
     expect(active.textContent).toContain("unknown-project");
