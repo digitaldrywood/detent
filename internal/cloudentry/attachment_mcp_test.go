@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -59,14 +60,22 @@ func attachmentMCPClient(t *testing.T, browser *browser, token, protocol string)
 			return frame.Result, false
 		}
 		var result struct {
-			IsError bool `json:"isError"`
-			Content []struct {
+			ResultType string                     `json:"resultType"`
+			Meta       map[string]json.RawMessage `json:"_meta"`
+			IsError    bool                       `json:"isError"`
+			Content    []struct {
 				Text string `json:"text"`
 			} `json:"content"`
 			Structured json.RawMessage `json:"structuredContent"`
 		}
 		if json.Unmarshal(frame.Result, &result) != nil || len(result.Content) != 1 {
 			t.Fatalf("tool response=%s", response.Body.String())
+		}
+		if protocol == mcp.ProtocolVersion && (result.ResultType != "complete" || len(result.Meta["io.modelcontextprotocol/serverInfo"]) == 0) {
+			t.Fatalf("modern tool result missing protocol envelope=%s", frame.Result)
+		}
+		if protocol != mcp.ProtocolVersion && (result.ResultType != "" || len(result.Meta) != 0) {
+			t.Fatalf("legacy tool result returned modern protocol envelope=%s", frame.Result)
 		}
 		if protocol == "2024-11-05" && len(result.Structured) != 0 {
 			t.Fatal("legacy MCP returned structured content")
@@ -90,7 +99,7 @@ func attachmentMCPClient(t *testing.T, browser *browser, token, protocol string)
 func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spacesFixture, browser, anonymous *browser, project, otherProject, writeToken, readToken, foreignToken string, record attachment.Metadata, content string) {
 	t.Helper()
 	selector := map[string]any{"project_id": project, "attachment_id": record.ID}
-	for _, protocol := range []string{"2024-11-05", "2025-11-25"} {
+	for _, protocol := range []string{"2024-11-05", "2025-11-25", mcp.ProtocolVersion} {
 		t.Run("attachment operations "+protocol, func(t *testing.T) {
 			call := attachmentMCPClient(t, anonymous, readToken, protocol)
 			listing, failed := call("tools/list", nil)
@@ -146,7 +155,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 			}
 		})
 	}
-	call := attachmentMCPClient(t, anonymous, writeToken, "2025-11-25")
+	call := attachmentMCPClient(t, anonymous, writeToken, mcp.ProtocolVersion)
 	for _, input := range []map[string]any{
 		{"project_id": project, "attachment_id": record.ID, "length": 32769},
 		{"project_id": project, "attachment_id": record.ID, "length": 0},
@@ -161,7 +170,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 			t.Fatalf("invalid or foreign read=%s", raw)
 		}
 	}
-	foreign := attachmentMCPClient(t, anonymous, foreignToken, "2025-11-25")
+	foreign := attachmentMCPClient(t, anonymous, foreignToken, mcp.ProtocolVersion)
 	if raw, failed := foreign(operatortool.ReadAttachmentMetadata, selector); !failed {
 		t.Fatalf("ungranted project read=%s", raw)
 	}

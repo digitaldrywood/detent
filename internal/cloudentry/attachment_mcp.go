@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -52,7 +53,8 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 	response.Body = io.NopCloser(bytes.NewReader(raw))
 	var frame map[string]json.RawMessage
 	var result struct {
-		IsError bool `json:"isError"`
+		Meta    json.RawMessage `json:"_meta"`
+		IsError bool            `json:"isError"`
 		Content []struct {
 			Text string `json:"text"`
 		} `json:"content"`
@@ -142,12 +144,8 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 		payload = []byte(`{"code":"attachment_unavailable","message":"Attachment result exceeds the supported MCP size limit"}`)
 		buffer.status = http.StatusRequestEntityTooLarge
 	}
-	replacement := map[string]any{"content": []map[string]string{{"type": "text", "text": string(payload)}}}
-	if buffer.status != http.StatusCreated && buffer.status != http.StatusOK {
-		replacement["isError"] = true
-	} else if c.Request().Header.Get("Mcp-Protocol-Version") != "2024-11-05" && c.Request().Header.Get("Mcp-Protocol-Version") != "2025-03-26" {
-		replacement["structuredContent"] = json.RawMessage(payload)
-	}
+	replacement := mcp.NewToolCallResult(c.Request().Header.Get("Mcp-Protocol-Version"), payload, buffer.status != http.StatusCreated && buffer.status != http.StatusOK)
+	replacement.Meta = result.Meta
 	frame["result"], err = json.Marshal(replacement)
 	if err != nil {
 		return err

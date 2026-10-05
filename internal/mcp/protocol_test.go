@@ -21,6 +21,7 @@ import (
 // This fake is an application command, not a protocol dispatcher. Both
 // transports must preserve its typed selector and current authority checks.
 type protocolApplication struct {
+	executor    Executor
 	reads       *operatortool.AuthorizedExecutor
 	catalog     []operatortool.Definition
 	listCalls   atomic.Int64
@@ -55,6 +56,9 @@ func (a *protocolApplication) ListTools(ctx context.Context) ([]operatortool.Def
 	return tools, nil
 }
 func (a *protocolApplication) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	if a.executor != nil {
+		return a.executor.Execute(ctx, call)
+	}
 	if a.reads != nil && operatortool.IsWorkRead(call.Name) {
 		return a.reads.Execute(ctx, call)
 	}
@@ -274,6 +278,41 @@ func TestProtocolApplicationParity(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestModernToolCatalogResultTypes(t *testing.T) {
+	t.Parallel()
+	for _, transport := range []string{"stdio", "http"} {
+		t.Run(transport, func(t *testing.T) {
+			t.Parallel()
+			fixture := newProtocolFixture(t, transport, ProtocolVersion)
+			fixture.application.catalog = operatortool.Registry()
+			var catalog catalogPage
+			decodeResult(t, fixture.request("tools/list", nil), &catalog)
+			for _, tool := range catalog.Tools {
+				t.Run(tool.Name, func(t *testing.T) {
+					for _, outcome := range []struct {
+						name string
+						err  error
+					}{
+						{name: "success"},
+						{name: "error", err: operatortool.ErrAccessDenied},
+					} {
+						t.Run(outcome.name, func(t *testing.T) {
+							fixture.application.executor = &staticExecutor{result: operatortool.Result{Content: json.RawMessage(`{"ok":true}`)}, err: outcome.err}
+							response := fixture.request("tools/call", map[string]any{"name": tool.Name, "arguments": map[string]any{}})
+							assertProtocolResultShape(t, ProtocolVersion, "tools/call", response)
+							var result toolCallResult
+							decodeResult(t, response, &result)
+							if result.IsError != (outcome.err != nil) {
+								t.Fatalf("isError = %v, want %v", result.IsError, outcome.err != nil)
+							}
+						})
+					}
+				})
+			}
+		})
 	}
 }
 
