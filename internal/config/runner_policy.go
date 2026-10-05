@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -63,8 +64,53 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 			SecurityAudit: g.SecurityAudit.Enabled, MergeMethod: cfg.Deliverable.EffectiveMergeMethod(),
 			GitHubPullRequest: cfg.Deliverable.GitHubPullRequest,
 		},
-	}.WithID()
+	}
+	if cfg.Tracker.Kind == TrackerHubNative && (workflow.Definition.Layout == ProjectDefinitionSplit || workflow.Definition.Layout == ProjectDefinitionLegacy) {
+		if err := cfg.ValidateNativeWorkflow(); err != nil {
+			return policy.Descriptor{}, err
+		}
+		source := workflow.Definition.WorkflowPath
+		if workflow.Definition.Layout == ProjectDefinitionSplit {
+			source = workflow.Definition.ConfigPath
+		}
+		descriptor.Workflow = &policy.Workflow{Source: strings.TrimPrefix(source, workflow.Definition.Revision+":"), States: cfg.NativeWorkflowStates()}
+	}
+	descriptor = descriptor.WithID()
 	return descriptor, descriptor.Validate()
+}
+
+func (c Config) NativeWorkflowStates() []policy.State {
+	states := c.KanbanStateNames()
+	result := make([]policy.State, 0, len(states))
+	for _, name := range states {
+		terminal := stateListContains(c.Tracker.TerminalStates, name)
+		dispatchable := !terminal && stateListContains(c.Tracker.ActiveStates, name)
+		if c.Plan.Enabled && sameKanbanPolicyState(c.Plan.Stop, name) {
+			dispatchable = false
+		}
+		result = append(result, policy.State{Name: name, Terminal: terminal, Dispatchable: dispatchable, Transitions: c.KanbanAllowedTransitionTargets(name)})
+	}
+	return result
+}
+
+func (c Config) ValidateNativeWorkflow() error {
+	states := c.KanbanStateNames()
+	for _, name := range c.Tracker.ActiveStates {
+		if stateListContains(c.Tracker.TerminalStates, name) {
+			return fmt.Errorf("workflow state %q cannot be both active and terminal", name)
+		}
+	}
+	for source, targets := range c.Server.Kanban.AllowedTransitions {
+		if !stateListContains(states, source) {
+			return fmt.Errorf("server.kanban.allowed_transitions source %q is not a configured workflow state", source)
+		}
+		for _, target := range targets {
+			if !stateListContains(states, target) {
+				return fmt.Errorf("server.kanban.allowed_transitions target %q is not a configured workflow state", target)
+			}
+		}
+	}
+	return policy.ValidateStates(c.NativeWorkflowStates())
 }
 
 func normalizePolicyConfig(cfg Config) Config {

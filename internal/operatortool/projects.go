@@ -38,6 +38,7 @@ type OnboardingInput struct {
 	Progress onboarding.Progress `json:"progress"`
 }
 type IntegrationInput struct {
+	WorkflowMarkdown  *string                `json:"workflow_markdown,omitempty"`
 	States            *[]tracker.NativeState `json:"states,omitempty"`
 	ExpectedRevision  tracker.Revision       `json:"expected_revision,string"`
 	Intake            string                 `json:"intake"`

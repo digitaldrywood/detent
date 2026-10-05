@@ -101,8 +101,63 @@ organization deletion follow the [RFC lifecycle contract](cloud-hub-rfc.md#provi
 Keep the customer checkout and its `detent.yaml` / `WORKFLOW.md` on the customer
 host. Inspect existing files before using `detent onboarding draft-answers`,
 `explain-answers`, or `build-workflow`. The builder's `--help` describes its local
-output options. Review generated files before applying them. Cloud neither stores
-workflow source nor writes repository files.
+output options. Review generated files before applying them. Cloud does not write
+repository files. A supplied repository definition owns the native workflow;
+Cloud Markdown authoring is the fallback when no repository definition exists.
+
+### Workflow definition authority
+
+The configured workflow path and `workflow_ref` select the definition anchor.
+The split layout puts machine configuration in `detent.yaml` beside agent
+instructions in `WORKFLOW.md`; legacy YAML frontmatter in `WORKFLOW.md` is also
+supported. Markdown bullets are instructions, never structured configuration.
+A prose-only `WORKFLOW.md` without `detent.yaml` supplies no structured workflow:
+native runners load the Cloud-authored definition when one exists, otherwise
+report that a definition must be supplied. Malformed, mixed-layout or invalid
+repository definitions fail with parser feedback and never fall back to Cloud
+or the hosted template. Inaccessible files, unavailable Git and invalid refs
+remain instance failures, not evidence that the repository has no definition.
+
+The resolved configuration supplies native states, allowed transitions, terminal
+and dispatchable classification, runner scheduling, and Cloud Board, List and
+lane-picker contents. An enabled plan contributes its configured stop (normally
+`Plan Review`) as a nondispatchable lane. Empty lanes remain available.
+Native defaults permit moves between configured states; explicit
+`server.kanban.allowed_transitions` entries constrain their source states for
+both authorized issue moves and execution progress. Include completion and
+landing transitions when constraining execution states.
+
+The runner includes bounded state and transition metadata in its repository
+policy descriptor and reports unapproved revisions through the existing policy
+observation path. An authorized owner/admin approves the exact descriptor with
+the current expected policy identity. Approval atomically persists the native
+workflow, repository source and revision alongside the policy. Active leases
+retain their approval. States occupied by issues, including archived issues,
+cannot be removed; move those issues through ordinary authorized transitions
+before removing a state. Approval never remaps work items. Conflicting runner
+reports remain separate candidates for explicit approval. An existing runtime
+applies a changed policy through its settled, paused configuration owner, or
+loads the approved definition on restart.
+
+Cloud settings show the approved repository source and revision and direct
+definition edits to the repository. UI, API and MCP definition writes cannot
+override repository authority. Authorized issue moves and other integration
+settings remain available. Older approvals without workflow metadata retain
+their states until an upgraded runner's descriptor is explicitly approved;
+an old descriptor cannot replace an already repository-controlled workflow.
+
+With no supplied repository definition, the Workflow settings editor accepts
+Markdown using the same legacy frontmatter schema: `tracker.kind: hub_native`,
+`tracker.active_states`, `tracker.observed_states`, `tracker.terminal_states`,
+and optional `server.kanban.allowed_transitions`. The body contains agent
+instructions. Cloud persists that Markdown and derives its lanes with the
+existing parser. Runners load it through the existing definition and policy
+approval path; execution changes still require approval. A saved edit makes
+the prior source digest stale: claims and approvals must match the current
+Markdown revision. Approval history remains intact. Adding a repository
+definition transfers authority through that approval path without losing work
+items. Repository-controlled definitions cannot be replaced by Cloud Markdown
+or independent state arrays.
 
 For the shared-site target, use `client.hub_url: https://cloud.detent.build`
 and the selected immutable organization ID. Configure `client.organization_id` and
@@ -114,8 +169,9 @@ explicitly user-reported and do not override runtime validation.
 
 Run `detent hub policy inspect --config /path/to/config.yaml --project LOCAL_PROJECT`.
 Paste only the resulting descriptor into the policy approval form. The form
-accepts validated, bounded policy metadata, including source revision and digests,
-never arbitrary workflow fields. An organization owner/admin with project write
+accepts validated, bounded policy metadata, including source revision, digests
+and the resolved native workflow projection, rather than arbitrary runner
+configuration. An organization owner/admin with project write
 access approves it explicitly. Approval retains the existing compare-and-swap
 and active-lease guards. Edit gate, review, auto-promotion, merge and runner
 requirements in the repository, then approve the new descriptor. A running

@@ -87,6 +87,8 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/projects/prj_site"):
+					_ = json.NewEncoder(w).Encode(tracker.NativeProject{WorkflowMarkdown: "---\ntracker:\n  kind: hub_native\n---\nCloud instructions.\n"})
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/projects/prj_site/policy/observed"):
 					var descriptor policy.Descriptor
 					if err := json.NewDecoder(r.Body).Decode(&descriptor); err != nil {
@@ -119,6 +121,14 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 			scheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: "org_site", NativeProjects: map[string]tracker.ProjectID{"site": "prj_site"}, Machine: Machine{ID: "machine_a", Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
 			if err != nil {
 				t.Fatal(err)
+			}
+			markdown, err := scheduler.ProjectWorkflowMarkdown(t.Context(), "site")
+			if err != nil || !strings.Contains(markdown, "Cloud instructions.") {
+				t.Fatalf("mapped project workflow = %q, %v", markdown, err)
+			}
+			markdown, err = scheduler.ProjectWorkflowMarkdown(t.Context(), "unmapped")
+			if err != nil || markdown != "" {
+				t.Fatalf("unmapped project supplied a Cloud workflow: %q, %v", markdown, err)
 			}
 			for range 3 {
 				err = scheduler.CheckProjectPolicy(t.Context(), "site", "", test.local)

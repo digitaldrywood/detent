@@ -110,7 +110,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 			}
 			p.configMu.Lock()
 			defer p.configMu.Unlock()
-			workflow, loadErr := loadManagedWorkflow(ctx, p.Config(), request.SourceRevision)
+			workflow, loadErr := p.loadManagedWorkflow(ctx, request.SourceRevision)
 			if loadErr != nil {
 				view.Constraint = "The configured committed workflow revision is unavailable or has local overlays."
 				return false
@@ -239,9 +239,12 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 			view.EffectivePolicy = &descriptor
 		}
 	}
-	if current.WorkflowRef != "" {
+	if current.WorkflowRef != "" || workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud {
 		view.Source = "configured_committed_workflow"
-		candidate, err := loadManagedWorkflow(ctx, current, "")
+		if workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud {
+			view.Source = "cloud_workflow"
+		}
+		candidate, err := p.loadManagedWorkflow(ctx, "")
 		if err == nil {
 			candidate.Config = WithMappedNativeTracker(candidate.Config, p.policyScheduling, p.ID())
 			descriptor, err := ResolvePolicy(current, candidate)
@@ -271,6 +274,25 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	}
 	view.UnsettledAttempts = max(view.UnsettledAttempts, len(attempts))
 	return view
+}
+
+func (p *Project) loadManagedWorkflow(ctx context.Context, revision string) (workflowconfig.Workflow, error) {
+	cfg := p.Config()
+	if cfg.WorkflowRef == "" && p.Workflow().Definition.Layout == workflowconfig.ProjectDefinitionCloud {
+		workflow, err := loadWorkflowForScheduling(ctx, cfg, p.policyScheduling)
+		if err == nil && revision != "" && workflow.Definition.Revision != revision {
+			return workflowconfig.Workflow{}, errors.New("Cloud workflow revision changed")
+		}
+		return workflow, err
+	}
+	workflow, err := loadManagedWorkflow(ctx, cfg, revision)
+	if errors.Is(err, workflowconfig.ErrNoProjectDefinition) {
+		workflow, err = loadWorkflowForScheduling(ctx, cfg, p.policyScheduling)
+		if err == nil && revision != "" && workflow.Definition.Revision != revision {
+			return workflowconfig.Workflow{}, errors.New("Cloud workflow revision changed")
+		}
+	}
+	return workflow, err
 }
 
 func loadManagedWorkflow(ctx context.Context, cfg globalconfig.Project, revision string) (workflowconfig.Workflow, error) {

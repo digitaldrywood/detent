@@ -35,9 +35,15 @@ type nativeError struct {
 	CurrentRevision tracker.Revision `json:"current_revision,string,omitempty"`
 	Details         map[string]any   `json:"details,omitempty"`
 	status          int
+	publicMessage   bool
 }
 
-func (e *nativeError) Error() string { return e.Code }
+func (e *nativeError) Error() string {
+	if e.publicMessage {
+		return e.Message
+	}
+	return e.Code
+}
 
 func nativeInvalid(message string) error {
 	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity}
@@ -77,7 +83,7 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	var failure *nativeError
 	if errors.As(err, &failure) {
 		if s.config.Hosted != nil {
-			if failure.Code == "checkout_unavailable" {
+			if failure.Code == "checkout_unavailable" || failure.publicMessage {
 				return c.JSON(failure.status, apiErrorResponse{Code: failure.Code, Message: failure.Message})
 			}
 			if len(failure.Details) > 0 {

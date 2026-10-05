@@ -1,5 +1,4 @@
 import React from "react";
-import * as Schema from "effect/Schema";
 
 import { SpritesCard } from "./SpritesCard.tsx";
 import { SpritePoolCard } from "./SpritePoolCard.tsx";
@@ -7,7 +6,7 @@ import { SpritePoolCard } from "./SpritePoolCard.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
 import type { ObservedPolicy, PolicyApproval, ProjectIntegration } from "../../contracts/account.ts";
-import { INTAKE_CHOICES, PROJECTION_CHOICES, WorkflowState } from "../../contracts/account.ts";
+import { INTAKE_CHOICES, PROJECTION_CHOICES } from "../../contracts/account.ts";
 import {
   SettingsPageContainer,
   SettingsRow,
@@ -92,23 +91,36 @@ export function WorkflowSettings({
   readonly canManage: boolean;
   readonly saving: boolean;
   readonly error: string | null;
-  readonly onSave: (states: readonly WorkflowState[]) => void;
+  readonly onSave: (markdown: string) => void;
 }): React.ReactElement {
-  const stored = JSON.stringify(integration.states ?? [], null, 2);
+  const states = integration.states ?? [];
+  const stored = integration.workflow_markdown ?? `---
+tracker:
+  kind: hub_native
+  active_states: ${JSON.stringify(states.filter((state) => state.dispatchable).map((state) => state.name))}
+  observed_states: ${JSON.stringify(states.filter((state) => !state.dispatchable && !state.terminal).map((state) => state.name))}
+  terminal_states: ${JSON.stringify(states.filter((state) => state.terminal).map((state) => state.name))}
+server:
+  kanban:
+    allowed_transitions: ${JSON.stringify(Object.fromEntries(states.map((state) => [state.name, state.transitions])))}
+---
+Complete the assigned work.
+`;
   const [draft, setDraft] = React.useState(stored);
-  const [parseError, setParseError] = React.useState<string | null>(null);
   React.useEffect(() => {
     setDraft(stored);
-    setParseError(null);
   }, [stored]);
   const native = integration.profile === "native";
+  const repositoryControlled = integration.authority?.workflow === "repository";
   return (
     <SettingsSection title="Workflow">
       <SettingsRow
         title="Project states"
-        description={native ? "The first state is the initial lane for new issues. Review dispatch, operator ownership and allowed transitions before saving." : "This workflow is owned by the source tracker."}
+        description={repositoryControlled
+          ? <span className="[overflow-wrap:anywhere]">Controlled by {integration.checkout_repository || integration.repository || "the repository"}: {integration.workflow_source} at revision {integration.workflow_source_revision}. Edit the repository definition, then approve its new policy.</span>
+          : native ? "Author YAML frontmatter and agent instructions in Markdown using the repository workflow schema. Review states and allowed transitions before saving; execution changes require policy approval." : "This workflow is owned by the source tracker."}
         status={
-          <ul className="text-sm">
+          <ul className="text-sm [overflow-wrap:anywhere]">
             {(integration.states ?? []).map((state, index) => (
               <li key={state.name}>
                 {state.name}{index === 0 ? " · Initial" : ""} · {state.terminal ? "Terminal" : state.dispatchable ? "Dispatchable" : "Nondispatchable"}{state.operator_only ? " · Operator only" : ""}
@@ -117,20 +129,13 @@ export function WorkflowSettings({
           </ul>
         }
       >
-        {native && canManage ? (
+        {native && canManage && !repositoryControlled ? (
           <div className="flex flex-col gap-2 pb-3">
-            <Textarea aria-label="Workflow definition" rows={12} className="font-mono text-xs" value={draft} disabled={saving} onChange={(event) => { setDraft(event.currentTarget.value); setParseError(null); }} />
-            <ControlError message={parseError ?? error} />
+            <Textarea aria-label="Workflow definition" rows={12} className="font-mono text-xs" value={draft} disabled={saving} onChange={(event) => setDraft(event.currentTarget.value)} />
+            <ControlError message={error} />
             <div>
               <Button size="sm" disabled={saving || draft === stored} onClick={() => {
-                let states: readonly WorkflowState[];
-                try {
-                  states = Schema.decodeUnknownSync(Schema.Array(WorkflowState))(JSON.parse(draft));
-                } catch {
-                  setParseError("Enter a JSON array of states with names, terminal and dispatchable flags, and transition names.");
-                  return;
-                }
-                onSave(states);
+                onSave(draft);
               }}>{saving ? "Saving…" : "Save workflow"}</Button>
             </div>
           </div>
@@ -524,7 +529,7 @@ export function ProjectSettingsRoute({
     }
   });
 
-  const saveWorkflow = useMutation(async (states: readonly WorkflowState[]) => {
+  const saveWorkflow = useMutation(async (markdown: string) => {
     const current = integration.value;
     if (current === undefined) return null;
     try {
@@ -535,7 +540,7 @@ export function ProjectSettingsRoute({
         intake: current.intake,
         projection: current.projection,
         repositoryEnabled: current.repository_enabled,
-        states,
+        workflowMarkdown: markdown,
       });
       integration.set({ ...saved, github_transport_available: current.github_transport_available });
       globalThis.location.reload();
@@ -583,6 +588,8 @@ export function ProjectSettingsRoute({
         onboarding: true,
       });
       policy.set(approved);
+      await integration.refresh();
+      globalThis.location.reload();
       return approved;
     } finally {
       // A conflict means somebody else approved meanwhile: re-read both, so a
@@ -640,7 +647,7 @@ export function ProjectSettingsRoute({
       onOpenFleet={() => onNavigate?.("/settings/runners")}
       onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}
       sprites={<><SpritesCard key={projectId} projectId={projectId} canManage={canManage} /><SpritePoolCard key={`pool-${projectId}`} projectId={projectId} canManage={canManage} /></>}
-      workflow={<WorkflowSettings integration={integration.value} canManage={canManage && project?.can_write === true} saving={saveWorkflow.pending} error={saveMessage(saveWorkflow.error)} onSave={(states) => void saveWorkflow.call(states)} />}
+      workflow={<WorkflowSettings integration={integration.value} canManage={canManage && project?.can_write === true} saving={saveWorkflow.pending} error={saveMessage(saveWorkflow.error)} onSave={(markdown) => void saveWorkflow.call(markdown)} />}
     />
   );
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -195,6 +196,12 @@ func (d *database) approvePolicy(ctx context.Context, scope, actor string, chang
 	return result, tx.Commit()
 }
 func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
+	if err := change.Policy.Validate(); err != nil {
+		return result, nativeInvalid(err.Error())
+	}
+	if err := validateWorkflowPolicy(ctx, tx, scope, change.Policy); err != nil {
+		return result, err
+	}
 	var current string
 	err := tx.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", scope).Scan(&current)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -214,6 +221,30 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 		}
 		if active != 0 {
 			return result, policyMismatch("Active leases retain their approved policy; finish or cancel them before approving a different revision")
+		}
+		organization, project, native := strings.Cut(scope, "/")
+		if native && !strings.HasPrefix(scope, "repository:") {
+			nativeScope := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}
+			var profile, source string
+			if err := tx.QueryRowContext(ctx, "SELECT profile, workflow_source FROM projects WHERE organization_id=? AND id=?", organization, project).Scan(&profile, &source); err != nil {
+				return result, err
+			}
+			if profile == "native" {
+				if change.Policy.Workflow == nil && source != "" {
+					return result, policyMismatch("Repository-controlled workflow requires a resolved workflow in the policy descriptor; inspect the repository definition with an updated runner")
+				}
+				if change.Policy.Workflow != nil {
+					if err := requireIntegrationIdle(ctx, tx, nativeScope, now); err != nil {
+						return result, err
+					}
+					if err := applyNativeProjectStates(ctx, tx, nativeScope, change.Policy.Workflow.States, now); err != nil {
+						return result, err
+					}
+					if _, err := tx.ExecContext(ctx, "UPDATE projects SET workflow_source=?, workflow_source_revision=?, workflow_markdown='', integration_revision=integration_revision+1 WHERE organization_id=? AND id=?", change.Policy.Workflow.Source, change.Policy.SourceRevision, organization, project); err != nil {
+						return result, err
+					}
+				}
+			}
 		}
 	}
 	raw, err := json.Marshal(change.Policy)
@@ -357,6 +388,28 @@ func claimPolicyScope(query claimCandidateQuery) (string, error) {
 	return "repository:" + strings.ToLower(strings.TrimSpace(query.Repositories[0])), nil
 }
 
+func validateWorkflowPolicy(ctx context.Context, db policyQuerier, scope string, descriptor policy.Descriptor) error {
+	organization, project, native := strings.Cut(scope, "/")
+	if !native || strings.HasPrefix(scope, "repository:") || descriptor.Workflow != nil {
+		return nil
+	}
+	var profile, markdown string
+	if err := db.QueryRowContext(ctx, "SELECT profile, workflow_markdown FROM projects WHERE organization_id=? AND id=?", organization, project).Scan(&profile, &markdown); err != nil {
+		return err
+	}
+	if profile != "native" || markdown == "" {
+		return nil
+	}
+	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(markdown)})
+	if err != nil {
+		return policyMismatch("Saved Cloud workflow is invalid; correct its Markdown definition before approving execution")
+	}
+	if descriptor.SourceDigest != workflow.SourceHash || descriptor.SourceRevision != workflow.Definition.Revision {
+		return policyMismatch("Cloud workflow changed; load its current Markdown definition and approve the resolved policy before claiming work")
+	}
+	return nil
+}
+
 func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, machine tracker.MachineID) (string, error) {
 	scope, err := claimPolicyScope(query)
 	if err != nil {
@@ -368,6 +421,9 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 	}
 	if query.PolicyID == "" || query.PolicyID != approval.Policy.ID {
 		return "", policyMismatch("Runner policy is missing or stale; load the approved repository definition and permitted local overrides before claiming work")
+	}
+	if err := validateWorkflowPolicy(ctx, tx, scope, approval.Policy); err != nil {
+		return "", err
 	}
 	var runnerID string
 	if query.NativeScope != nil {

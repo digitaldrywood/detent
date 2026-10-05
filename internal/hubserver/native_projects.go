@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -147,24 +148,14 @@ func (s *Service) createNativeProjectOperation(request createNativeProjectReques
 }
 
 func validateNativeStates(states []tracker.NativeState) error {
-	if len(states) == 0 || len(states) > 50 {
-		return nativeInvalid("Between 1 and 50 workflow states are required")
-	}
-	names := make(map[string]bool, len(states))
-	for _, state := range states {
-		if strings.TrimSpace(state.Name) == "" || len(state.Name) > 100 || names[state.Name] || state.Terminal && state.Dispatchable {
-			return nativeInvalid("Workflow states must be unique and valid")
-		}
-		names[state.Name] = true
-	}
-	for _, state := range states {
-		for _, target := range state.Transitions {
-			if !names[target] {
-				return nativeInvalid("Workflow transition target does not exist")
-			}
-		}
+	if err := policy.ValidateStates(states); err != nil {
+		return nativeWorkflowInvalid(err.Error())
 	}
 	return nil
+}
+
+func nativeWorkflowInvalid(message string) error {
+	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
 }
 
 func (s *Service) grantNativeToken(c echo.Context) error {
@@ -189,7 +180,7 @@ type nativeQueryer interface {
 func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeScope) (tracker.NativeProject, error) {
 	var project tracker.NativeProject
 	var states string
-	if err := query.QueryRowContext(ctx, "SELECT id, organization_id, name, profile, states_json, require_dependencies FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&project.ID, &project.OrganizationID, &project.Name, &project.Profile, &states, &project.RequireDependencies); err != nil {
+	if err := query.QueryRowContext(ctx, "SELECT id, organization_id, name, profile, states_json, require_dependencies, workflow_markdown FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&project.ID, &project.OrganizationID, &project.Name, &project.Profile, &states, &project.RequireDependencies, &project.WorkflowMarkdown); err != nil {
 		return project, err
 	}
 	if err := json.Unmarshal([]byte(states), &project.States); err != nil {
@@ -207,6 +198,17 @@ func (s *Service) getNativeProject(c echo.Context) error {
 }
 
 func updateNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope, states []tracker.NativeState, now time.Time) error {
+	var source string
+	if err := tx.QueryRowContext(ctx, "SELECT workflow_source FROM projects WHERE organization_id=? AND id=?", scope.organization, scope.project).Scan(&source); err != nil {
+		return err
+	}
+	if source != "" {
+		return nativeWorkflowInvalid("Workflow is controlled by the repository; edit its definition and approve the new repository policy")
+	}
+	return applyNativeProjectStates(ctx, tx, scope, states, now)
+}
+
+func applyNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope, states []tracker.NativeState, now time.Time) error {
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
 		return err
@@ -227,7 +229,7 @@ WHERE i.project_id=? AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_ext
 		return err
 	}
 	if occupied != 0 {
-		return nativeInvalid("Workflow states used by work items cannot be removed")
+		return nativeWorkflowInvalid("Workflow states used by work items cannot be removed")
 	}
 	for _, state := range states {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at)

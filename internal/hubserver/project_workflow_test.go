@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -196,6 +198,103 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 			t.Fatalf("other project changed: %#v", other)
 		}
 	})
+	t.Run("Markdown authoring and repository precedence", func(t *testing.T) {
+		markdown := "---\ntracker:\n  kind: hub_native\n  active_states: [Todo, In Progress, Rework, Merging]\n  observed_states: [Backlog, Blocked, Human Review]\n  terminal_states: [Done, Cancelled]\nplan:\n  enabled: true\n---\nComplete the issue.\n"
+		request := map[string]any{"idempotency_key": "markdown-workflow", "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": markdown}
+		integration = ProjectIntegration{}
+		browserHostedDecode(t, api(t, "owner", http.MethodPut, base+"/onboarding/integration", request, http.StatusOK), &integration)
+		if integration.WorkflowMarkdown != markdown || integration.Authority["workflow"] != "detent" || len(integration.States) != 10 {
+			t.Fatalf("Cloud Markdown workflow = %#v", integration)
+		}
+		var loaded tracker.NativeProject
+		browserHostedDecode(t, api(t, "owner", http.MethodGet, base, nil, http.StatusOK), &loaded)
+		if loaded.WorkflowMarkdown != markdown || !reflect.DeepEqual(loaded.States, integration.States) {
+			t.Fatal("runner project read differs from Cloud Markdown")
+		}
+		for _, test := range []struct{ name, markdown string }{
+			{"prose is instructions", "# Workflow\n- Todo\n- Done\n"},
+			{"invalid supplied configuration", "---\ntracker:\n  kind: unknown\n---\nWork\n"},
+			{"competing tracker", "---\ntracker:\n  kind: memory\n---\nWork\n"},
+			{"removed occupied state", "---\ntracker:\n  kind: hub_native\n  active_states: [Repair]\n  observed_states: [Blocked]\n  terminal_states: [Done]\n---\nWork\n"},
+		} {
+			api(t, "owner", http.MethodPut, base+"/onboarding/integration", map[string]any{"idempotency_key": test.name, "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": test.markdown}, http.StatusUnprocessableEntity)
+		}
+		api(t, "owner", http.MethodPut, base+"/onboarding/integration", map[string]any{"idempotency_key": "competing-array", "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "states": states}, http.StatusUnprocessableEntity)
+		workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "WORKFLOW.md", Workflow: []byte(markdown)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: approved.Policy}, http.StatusConflict)
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, claimErr := validateClaimPolicy(t.Context(), tx, claimCandidateQuery{NativeScope: &nativeScope{organization: created.OrganizationID, project: created.ID}, PolicyID: approved.Policy.ID}, "machine_stale")
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		var failure *nativeError
+		if !errors.As(claimErr, &failure) || failure.Code != "policy_mismatch" {
+			t.Fatalf("stale Cloud workflow claim = %v", claimErr)
+		}
+		workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
+		cloudPolicy, err := workflowconfig.ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		browserHostedDecode(t, api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: cloudPolicy}, http.StatusOK), &approved)
+		if err := validateWorkflowPolicy(t.Context(), f.service.database.db, string(created.OrganizationID)+"/"+string(created.ID), approved.Policy); err != nil {
+			t.Fatalf("current Cloud workflow approval = %v", err)
+		}
+		workflow.Definition.Layout = workflowconfig.ProjectDefinitionLegacy
+		workflow.Definition.Revision = strings.Repeat("b", 40)
+		descriptor, err := workflowconfig.ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		api(t, "member", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: descriptor}, http.StatusNotFound)
+		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: descriptor}, http.StatusOK)
+		integration = ProjectIntegration{}
+		browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/integration", nil, http.StatusOK), &integration)
+		if integration.Authority["workflow"] != "repository" || integration.WorkflowSource != "WORKFLOW.md" || integration.WorkflowSourceRevision != descriptor.SourceRevision || integration.WorkflowMarkdown != "" {
+			t.Fatalf("repository authority = %#v", integration)
+		}
+		states = descriptor.Workflow.States
+		for _, endpoint := range []string{"/onboarding/integration"} {
+			for _, field := range []string{"states", "workflow_markdown"} {
+				payload := map[string]any{"idempotency_key": endpoint + field, "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled"}
+				if field == "states" {
+					payload[field] = states
+				} else {
+					payload[field] = markdown
+				}
+				response := api(t, "owner", http.MethodPut, base+endpoint, payload, http.StatusUnprocessableEntity)
+				if !strings.Contains(response.Body.String(), "controlled by the repository") {
+					t.Fatalf("missing edit guidance: %s", response.Body.String())
+				}
+			}
+		}
+		var movable tracker.NativeIssue
+		browserHostedDecode(t, api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "repository-task"}, Title: "Repository-defined transitions", State: "Todo"}, http.StatusOK), &movable)
+		api(t, "member", http.MethodPost, base+"/work-items/"+string(movable.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "authorized-move"}, ExpectedRevision: movable.Revision, State: "In Progress", Reason: "user_requested"}, http.StatusOK)
+		removed := descriptor
+		removed.Workflow = &policy.Workflow{Source: "WORKFLOW.md", States: []tracker.NativeState{{Name: "Backlog"}}}
+		removed.SourceRevision = strings.Repeat("c", 40)
+		removed = removed.WithID()
+		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: removed}, http.StatusUnprocessableEntity)
+		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: hubTestPolicy()}, http.StatusConflict)
+		updated := descriptor
+		updated.Workflow = &policy.Workflow{Source: "WORKFLOW.md", States: append(append([]tracker.NativeState(nil), states...), tracker.NativeState{Name: "Customer QA", Transitions: []string{"Todo"}})}
+		updated.SourceRevision = strings.Repeat("d", 40)
+		updated = updated.WithID()
+		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: updated}, http.StatusConflict)
+		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: updated}, http.StatusOK)
+		states = updated.Workflow.States
+		browserHostedDecode(t, api(t, "owner", http.MethodGet, organizationBase+"/projects/"+string(otherProject.ID), nil, http.StatusOK), &loaded)
+		if !reflect.DeepEqual(loaded.States, HostedProjectStates()) {
+			t.Fatal("repository approval changed another project's workflow")
+		}
+	})
 	t.Run("workflow survives reopen", func(t *testing.T) {
 		config := f.service.config
 		if err := f.service.Close(); err != nil {
@@ -206,6 +305,11 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		browserHostedDecode(t, api(t, "owner", http.MethodGet, base, nil, http.StatusOK), &stored)
 		if !reflect.DeepEqual(stored.States, states) {
 			t.Fatalf("reopen reset workflow: %#v", stored.States)
+		}
+		var integration ProjectIntegration
+		browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/integration", nil, http.StatusOK), &integration)
+		if integration.Authority["workflow"] != "repository" || integration.WorkflowSourceRevision != strings.Repeat("d", 40) {
+			t.Fatalf("reopen lost repository authority: %#v", integration)
 		}
 	})
 }
