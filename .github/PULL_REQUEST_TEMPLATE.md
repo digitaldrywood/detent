@@ -8,7 +8,13 @@ that owns this change. Use `Fixes #N` only for a GitHub-tracked issue.
 Deployment or release blockers follow the [High-priority reporting
 contract](../AGENTS.md#deployment-and-release-failure-reporting).
 
-Invariants touched: none, or INV IDs with a link to the same-PR invariant edit.
+Invariants touched: none, or affected INV IDs. Only a change to an invariant's
+rule or its enforcing check edits `docs/invariants.md`; link that edit when
+applicable. Record per-change rationale, evidence and verification in this
+Change/PR description or issue comments through the authorized tracker owner.
+Under [INV-16](../docs/invariants.md#inv-16--the-tracker-database-is-the-only-shared-knowledge-channel),
+never append them to shared repository files or use repository notebooks for
+handoff between issues or runs; no repository file is append-only by convention.
 
 ## UI Surface Contract
 

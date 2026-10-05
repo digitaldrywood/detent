@@ -32,15 +32,10 @@ Cloud error responses. Retry the retained tool payload through the same current
 scoped connection with its unchanged `request_id`; the application's receipt
 owner handles replay. Do not route a failed Cloud publication to GitHub.
 
-Focused reporter and in-memory MCP HTTP fixtures verify destination selection,
-imported fingerprints, replay, response loss, hold preservation, infrastructure
-attribution and opaque credential failures. The shell finalizer fixture checks
-tag/release publication and destination-specific green behavior without external
-writes. Invariants touched: INV-1, INV-5 and INV-7; INV-3 remains unchanged.
-
-After integration the operator/release owner must configure the scoped secret,
+To verify a deployment, the operator/release owner must configure the scoped secret,
 run the existing manual scheduled failure probe, repeat that occurrence, and
 verify one native repair/occurrence and zero GitHub issue/comment writes. A later
 green scheduled run must append evidence without changing native workflow state
-and retain its validated tag/release evidence. These live checks remain pending;
-local fixtures do not establish production credential availability or deployment.
+and retain its validated tag/release evidence. Record the results in tracker
+records; local fixtures do not establish production credential availability or
+deployment.
