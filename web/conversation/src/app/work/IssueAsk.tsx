@@ -13,9 +13,17 @@ import { newCommandKey, useClient } from "../client.ts";
 import { useWorkspacePanel } from "../components/ChatWorkspace.tsx";
 
 export const ISSUE_QUESTIONS = [
-  "Why is this Blocked?",
-  "Summarize the history",
-  "What is left before it can start?",
+  { label: "Why is this Blocked?", prompt: "Why is this Blocked?" },
+  { label: "Summarize the history", prompt: "Summarize the history" },
+  {
+    label: "What is left before it can start?",
+    prompt: "What is left before it can start?",
+  },
+  {
+    label: "Split into smaller issues",
+    prompt:
+      "Use the split-issue skill to break this issue into smaller issues that can each land on their own. Wire up the dependencies so independent pieces can run in parallel, and show me the whole split as one proposal so I can confirm it once.",
+  },
 ] as const;
 
 export interface IssueAsk {
@@ -196,15 +204,15 @@ export function IssueAskEntry({
         Private · Never posted to the issue
       </p>
       <div className="mt-2 flex flex-wrap gap-2">
-        {ISSUE_QUESTIONS.map((text) => (
+        {ISSUE_QUESTIONS.map(({ label, prompt }) => (
           <Button
-            key={text}
+            key={label}
             size="xs"
             variant="ghost"
             disabled={!canWrite || ask.pending || ask.loading}
-            onClick={() => void submit(text)}
+            onClick={() => void submit(prompt)}
           >
-            {text}
+            {label}
           </Button>
         ))}
       </div>
@@ -296,14 +304,14 @@ export function IssueAskPanel({
         />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-          {ISSUE_QUESTIONS.map((text) => (
+          {ISSUE_QUESTIONS.map(({ label, prompt }) => (
             <Button
-              key={text}
+              key={label}
               variant="outline"
               disabled={!canWrite || ask.pending || ask.loading}
-              onClick={() => void ask.start(text)}
+              onClick={() => void ask.start(prompt)}
             >
-              {text}
+              {label}
             </Button>
           ))}
           <form
