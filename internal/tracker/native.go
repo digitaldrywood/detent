@@ -440,25 +440,33 @@ type NativeDisposition struct {
 }
 
 type NativeRunData struct {
-	Disposition  *NativeDisposition        `json:"disposition,omitempty"`
-	Runtime      *NativeRuntimeObservation `json:"runtime,omitempty"`
-	Sequence     int64                     `json:"sequence,string,omitempty"`
-	Identity     *NativeExecutionIdentity  `json:"identity,omitempty"`
-	MachineID    MachineID                 `json:"machine_id,omitempty"`
-	RunnerID     string                    `json:"runner_id,omitempty"`
-	SessionID    string                    `json:"session_id,omitempty"`
-	Handoff      *NativeCheckpoint         `json:"handoff,omitempty"`
-	LeaseID      LeaseID                   `json:"lease_id"`
-	FencingToken FencingToken              `json:"fencing_token,string"`
-	RunID        string                    `json:"run_id"`
-	AttemptID    string                    `json:"attempt_id"`
-	PolicyID     string                    `json:"policy_id"`
-	Outcome      string                    `json:"outcome,omitempty"`
-	ArtifactIDs  []string                  `json:"artifact_ids,omitempty"`
+	Evidence       []NativeEvidence          `json:"evidence,omitempty"`
+	CompletionBody string                    `json:"completion_body,omitempty"`
+	Disposition    *NativeDisposition        `json:"disposition,omitempty"`
+	Runtime        *NativeRuntimeObservation `json:"runtime,omitempty"`
+	Sequence       int64                     `json:"sequence,string,omitempty"`
+	Identity       *NativeExecutionIdentity  `json:"identity,omitempty"`
+	MachineID      MachineID                 `json:"machine_id,omitempty"`
+	RunnerID       string                    `json:"runner_id,omitempty"`
+	SessionID      string                    `json:"session_id,omitempty"`
+	Handoff        *NativeCheckpoint         `json:"handoff,omitempty"`
+	LeaseID        LeaseID                   `json:"lease_id"`
+	FencingToken   FencingToken              `json:"fencing_token,string"`
+	RunID          string                    `json:"run_id"`
+	AttemptID      string                    `json:"attempt_id"`
+	PolicyID       string                    `json:"policy_id"`
+	Outcome        string                    `json:"outcome,omitempty"`
+	ArtifactIDs    []string                  `json:"artifact_ids,omitempty"`
 	// Usage is what the attempt has spent so far, one entry per provider and
 	// model (decisions section 17.5). A runner that reports none leaves the
 	// field out, so the event is byte-identical to what it was before.
 	Usage []NativeUsage `json:"usage,omitempty"`
+}
+
+type NativeEvidence struct {
+	AttachmentID string `json:"attachment_id"`
+	Caption      string `json:"caption"`
+	Reference    string `json:"reference"`
 }
 
 type NativeRunEvent struct {

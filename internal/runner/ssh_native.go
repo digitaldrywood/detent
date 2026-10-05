@@ -18,6 +18,7 @@ type SSHExecutionSources struct {
 	mu        sync.Mutex
 	diff      AttemptDiffSource
 	directory string
+	evidence  func(context.Context, string) (ValidationEvidence, error)
 }
 
 type sshDiff struct {
@@ -27,9 +28,14 @@ type sshDiff struct {
 
 func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 	s.mu.Lock()
-	diff, directory := s.diff, s.directory
+	diff, directory, evidence := s.diff, s.directory, s.evidence
 	s.mu.Unlock()
 	switch method {
+	case "source.evidence":
+		if evidence == nil {
+			return nil, errors.New("SSH evidence workspace is unavailable")
+		}
+		return invokeSSHMethod(ctx, evidence, "", args)
 	case "source.diff":
 		if len(args) != 0 {
 			return nil, errors.New("invalid SSH diff arguments")
@@ -56,6 +62,13 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 // interpreted as a local path. Finish can use the last checkpoint diff once the
 // channel closes, just as it does after a local checkout is removed.
 func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
+	if source, ok := c.execution.(EvidenceSourceExecution); ok {
+		source.SetEvidenceSource(func(ctx context.Context, path string) (ValidationEvidence, error) {
+			var result ValidationEvidence
+			err := peer.Call(ctx, "source.evidence", &result, path)
+			return result, err
+		})
+	}
 	if source, ok := c.execution.(ArtifactSourceExecution); ok {
 		source.SetArtifactSource(journalRoot, func(ctx context.Context, base, head string) (artifact.GitCapture, error) {
 			var result artifact.GitCapture
@@ -80,6 +93,12 @@ type sshNativeExecution struct {
 	capacity *providercapacity.Reservation
 	mu       sync.Mutex
 	setupErr error
+}
+
+func (e *sshNativeExecution) SetEvidenceSource(source func(context.Context, string) (ValidationEvidence, error)) {
+	e.sources.mu.Lock()
+	defer e.sources.mu.Unlock()
+	e.sources.evidence = source
 }
 
 func (e *sshNativeExecution) SetDiffSource(source AttemptDiffSource) {

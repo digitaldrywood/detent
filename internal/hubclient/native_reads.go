@@ -113,9 +113,13 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
 		}
 	}
+	tools = append(tools, evidenceTool())
 	return tools, func(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
 		if err := e.Validate(ctx); err != nil {
 			return runner.AgentToolResult{Content: "Native execution authority is unavailable"}, err
+		}
+		if call.Name == "attach_evidence" {
+			return e.attachEvidence(ctx, call.Arguments)
 		}
 		result, err := e.claim.source.client.readAgentTool(ctx, call, e.scheduler.now())
 		if err != nil {

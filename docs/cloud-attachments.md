@@ -37,6 +37,20 @@ comment body. Raster references use `![name](path)`; other files use
 same transaction. Path references retain their existing binding to one issue
 body or comment. Reads still require a session or a scoped token.
 
+Native issue agents can call `attach_evidence` with a workspace-relative `path`
+and a short, single-line `caption`. The runner reads the file on the worker that
+owns the attempt, including Sprite workers, and uploads through the existing
+entry attachment owner using its current lease and fencing token. The existing
+runner `events` grant authorizes this path; no new credential or grant is needed.
+Absolute paths, traversal outside the workspace, escaping symlinks, nonregular
+files, unsupported types and files over 20 MiB are refused. Images and small
+text, Markdown, CSV, JSON and log files are supported, with at most ten files
+per attempt. The Hub records the attachment references and captions on the
+attempt and publishes them with its completion response, or in an evidence-only
+comment when the attempt ends without a response. Use ignored workspace output
+or remove uploaded files before staging. Browser screenshots and runtime logs
+belong on the issue, never in committed repository files.
+
 The hosted MCP `upload_attachment` tool accepts `project_id`, `name`,
 `content_base64` and optional `content_type`. It returns the same metadata and
 reference. Embed the reference in `file_issue.description` (the native

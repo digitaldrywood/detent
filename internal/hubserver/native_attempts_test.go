@@ -45,6 +45,9 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 	worker := f.worker(t, "worker")
 	lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
 	start := nativeStartedEvent(lease)
+	forged := start
+	forged.IdempotencyKey = "forged-evidence"
+	forged.Data.Evidence = []tracker.NativeEvidence{{AttachmentID: "att_forged", Caption: "Not uploaded", Reference: "![forged](attachment:att_forged)"}}
 	path := f.base + "/work-items/" + string(issue.WorkItemID)
 	checkpoint := start
 	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", "checkpoint", 2
@@ -58,6 +61,7 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 		status  int
 		restart bool
 	}{
+		{"evidence without upload", forged, http.StatusUnprocessableEntity, false},
 		{"checkpoint before start", checkpoint, http.StatusConflict, false},
 		{"start", start, http.StatusOK, false},
 		{"same command", start, http.StatusOK, false},

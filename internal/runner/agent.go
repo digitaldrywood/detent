@@ -1851,6 +1851,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		return RunResult{}, err
 	}
 	if req.Execution != nil {
+		if evidence, ok := req.Execution.(EvidenceSourceExecution); ok {
+			evidence.SetEvidenceSource(workspaceEvidenceSource(info.Path))
+		}
 		// The stored attempt diff rides every checkpoint and the finish
 		// (decisions section 18.5).
 		if diffs, ok := req.Execution.(DiffExecution); ok {

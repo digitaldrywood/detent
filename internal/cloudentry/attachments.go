@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,9 +24,35 @@ import (
 
 var errAttachmentReadAudit = errors.New("attachment read audit unavailable")
 
+func attachmentEvidenceRequest(c echo.Context) (*attachment.EvidenceRequest, error) {
+	encoded := c.Request().Header.Get("X-Detent-Evidence")
+	if c.Param("attempt") == "" {
+		if encoded != "" {
+			return nil, attachment.ErrInvalid
+		}
+		return nil, nil
+	}
+	if len(encoded) > 4096 {
+		return nil, attachment.ErrInvalid
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	var evidence attachment.EvidenceRequest
+	if err := json.Unmarshal(raw, &evidence); err != nil {
+		return nil, err
+	}
+	if evidence.AttemptID != c.Param("attempt") || evidence.IdempotencyKey == "" || evidence.IdempotencyKey != c.Request().Header.Get("Idempotency-Key") {
+		return nil, attachment.ErrInvalid
+	}
+	return &evidence, nil
+}
+
 func (s *Service) registerAttachmentRoutes(e *echo.Echo) {
 	for _, base := range []string{"/organizations/:organization/api/v2/projects/:project/attachments", "/api/v2/organizations/:organization/projects/:project/attachments"} {
 		e.POST(base, s.uploadAttachment)
+		e.POST(strings.TrimSuffix(base, "/attachments")+"/attempts/:attempt/evidence", s.uploadAttachment)
 		e.GET(base+"/:attachment", s.readAttachment)
 		e.GET(base+"/:attachment/metadata", s.readAttachmentMetadata)
 		e.DELETE(base+"/:attachment", s.deleteAttachment)
@@ -46,6 +73,12 @@ func (s *Service) attachmentCall(c echo.Context, organization Organization, meth
 		return http.StatusNotFound, nil, nil
 	}
 	path := "/api/v2/organizations/" + organization.ID + "/projects/" + c.Param("project") + "/attachment-metadata" + suffix
+	if c.Param("attempt") != "" && method == http.MethodPost {
+		if !safeID(c.Param("attempt")) {
+			return http.StatusNotFound, nil, nil
+		}
+		path = "/api/v2/organizations/" + organization.ID + "/projects/" + c.Param("project") + "/attempts/" + c.Param("attempt") + "/evidence" + suffix
+	}
 	var body []byte
 	var err error
 	if payload != nil {
@@ -91,6 +124,10 @@ func attachmentCallError(c echo.Context, status int, body []byte, err error, hid
 }
 
 func (s *Service) uploadAttachment(c echo.Context) error {
+	evidence, err := attachmentEvidenceRequest(c)
+	if err != nil {
+		return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "Invalid attempt evidence authority")
+	}
 	var resource *attachment.Upload
 	if audit, ok := mutation.FromContext(c.Request().Context()); ok && audit.Source == "mcp" {
 		defer func() {
@@ -118,7 +155,7 @@ func (s *Service) uploadAttachment(c echo.Context) error {
 	if err != nil {
 		return attachmentNotFound(c)
 	}
-	status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]int64{"size": 0})
+	status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]any{"size": 0, "evidence": evidence})
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, false)
 	}
@@ -187,6 +224,10 @@ func (s *Service) closeAttachmentUpload(upload *attachment.Upload) {
 }
 
 func (s *Service) storeAttachment(c echo.Context, organization Organization, principal string, upload *attachment.Upload) error {
+	evidence, err := attachmentEvidenceRequest(c)
+	if err != nil {
+		return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "Invalid attempt evidence authority")
+	}
 	s.attachmentMu.RLock()
 	defer s.attachmentMu.RUnlock()
 	current, err := s.readyOrganization(c.Request().Context(), organization.ID)
@@ -195,7 +236,7 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 	}
 	requestID := c.Request().Header.Get("Idempotency-Key")
 	if requestID != "" {
-		status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]any{"upload": attachment.UploadRequest{Metadata: upload.Metadata, RequestID: requestID}})
+		status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]any{"upload": attachment.UploadRequest{Metadata: upload.Metadata, RequestID: requestID, Evidence: evidence}})
 		if err != nil || status != http.StatusOK {
 			return attachmentCallError(c, status, raw, err, false)
 		}
@@ -210,7 +251,7 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 			return attachmentCallError(c, status, raw, err, false)
 		}
 	}
-	status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]int64{"size": upload.Size})
+	status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]any{"size": upload.Size, "evidence": evidence})
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, false)
 	}
@@ -225,7 +266,7 @@ func (s *Service) storeAttachment(c echo.Context, organization Organization, pri
 	if err := s.attachments.Put(ctx, key, upload.File, upload.Size, upload.ContentType, upload.SHA256); err != nil && (requestID == "" || !s.attachmentUploadStored(ctx, key, upload.Metadata)) {
 		return attachmentError(c, http.StatusBadGateway, "attachment_storage_unavailable", "Attachment storage is unavailable")
 	}
-	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, "", attachment.UploadRequest{Metadata: upload.Metadata, RequestID: requestID})
+	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, "", attachment.UploadRequest{Metadata: upload.Metadata, RequestID: requestID, Evidence: evidence})
 	if err == nil && status == http.StatusCreated {
 		return attachmentUploadResponse(c, organization.ID, status, raw)
 	}
