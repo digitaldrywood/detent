@@ -165,16 +165,20 @@ func TestAttemptDiffStoreAndRead(t *testing.T) {
 		item       tracker.NativeWorkItemID
 		sequence   int64
 		denied     bool
+		source     string
+		absent     bool
 	}{
-		{"latest", operatortool.GetAttemptDiff, f.issue.WorkItemID, 0, false},
-		{"pinned", operatortool.GetAttemptDiff, f.issue.WorkItemID, 2, false},
-		{"work item", operatortool.GetWorkItemDiff, f.issue.WorkItemID, 0, false},
-		{"run", operatortool.GetNativeRun, f.issue.WorkItemID, 0, false},
-		{"foreign diff", operatortool.GetAttemptDiff, other.WorkItemID, 0, true},
-		{"foreign run", operatortool.GetNativeRun, other.WorkItemID, 0, true},
+		{"latest", operatortool.GetAttemptDiff, f.issue.WorkItemID, 0, false, "", false},
+		{"pinned", operatortool.GetAttemptDiff, f.issue.WorkItemID, 2, false, "", false},
+		{"work item", operatortool.GetWorkItemDiff, f.issue.WorkItemID, 0, false, "", false},
+		{"workspace without generation", operatortool.GetWorkItemDiff, f.issue.WorkItemID, 0, false, tracker.DiffSourceWorkspace, true},
+		{"work item without generation", operatortool.GetWorkItemDiff, other.WorkItemID, 0, false, "", true},
+		{"run", operatortool.GetNativeRun, f.issue.WorkItemID, 0, false, "", false},
+		{"foreign diff", operatortool.GetAttemptDiff, other.WorkItemID, 0, true, "", false},
+		{"foreign run", operatortool.GetNativeRun, other.WorkItemID, 0, true, "", false},
 	} {
 		t.Run("operator/"+test.name, func(t *testing.T) {
-			args := operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(test.item), Sequence: test.sequence}
+			args := operatortool.ChangeArguments{ProjectID: string(f.project.ID), ItemID: string(test.item), Sequence: test.sequence, Source: test.source}
 			if test.tool != operatortool.GetWorkItemDiff {
 				args.AttemptID = f.attempt
 			}
@@ -196,6 +200,14 @@ func TestAttemptDiffStoreAndRead(t *testing.T) {
 				if value.Attempt == nil || value.Attempt.AttemptID != f.attempt {
 					t.Fatal("missing run identity")
 				}
+			} else if test.absent {
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(result.Content, &fields); err != nil {
+					t.Fatal(err)
+				}
+				if string(fields["diff"]) != "null" || value.Freshness != "live" || value.GeneratedAt.IsZero() {
+					t.Fatalf("missing explicit stored-generation absence or read freshness: %s", result.Content)
+				}
 			} else {
 				want := int64(5)
 				if test.sequence != 0 {
@@ -203,6 +215,16 @@ func TestAttemptDiffStoreAndRead(t *testing.T) {
 				}
 				if value.Diff == nil || value.Diff.Generation.Seq != want || value.Diff.AttemptID != f.attempt {
 					t.Fatal("incorrect diff identity")
+				}
+				if value.Diff.Producer != latest.Producer || value.Diff.Generation.Source != tracker.DiffSourceAttempt || value.Diff.CreatedAt.IsZero() {
+					t.Fatal("lost stored generation provenance")
+				}
+				storedAt := latest.CreatedAt
+				if test.sequence == 2 {
+					storedAt = pinned.CreatedAt
+				}
+				if !value.Diff.CreatedAt.Equal(storedAt) || value.Freshness != "live" || value.GeneratedAt.Before(storedAt) {
+					t.Fatal("stored timestamp or read freshness changed")
 				}
 			}
 		})

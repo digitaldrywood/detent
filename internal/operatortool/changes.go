@@ -99,7 +99,7 @@ type ChangeResult struct {
 	Artifacts      []artifact.Reference        `json:"artifacts,omitempty"`
 	Access         *ArtifactDownload           `json:"access,omitempty"`
 	Receipt        json.RawMessage             `json:"receipt,omitempty"`
-	Diff           *tracker.AttemptDiff        `json:"diff,omitempty"`
+	Diff           *tracker.AttemptDiff        `json:"diff"`
 	PullRequests   []tracker.PullRequestView   `json:"pull_requests,omitempty"`
 	Library        []ArtifactLibraryRow        `json:"library,omitempty"`
 	Attempt        *tracker.NativeAttempt      `json:"attempt,omitempty"`
@@ -207,8 +207,8 @@ func ChangeCatalog() []Definition {
 	add(ViewChangeFile, "Record a viewed-file digest for an immutable review bundle.", "work_item_id change_id version_id bundle file_sha256 viewed request_id", "", false, false)
 	add(ApproveChangeReviewPolicy, "Approve the project review policy using current administrator authority.", "policy request_id", "expected_review_policy_id", false, true)
 	add(BindArtifactService, "Bind an artifact service to this project using existing administrator policy. Publisher identity is an existing granted credential ID, never a token.", "binding request_id", "", false, true)
-	add(GetAttemptDiff, "Read stored files and patches for an attempt owned by this work item.", "work_item_id attempt_id", "sequence source limit offset", true, false)
-	add(GetWorkItemDiff, "Read stored files and patches for this work item's latest diff.", "work_item_id", "source limit offset", true, false)
+	add(GetAttemptDiff, "Read stored files and patches for an attempt owned by this work item. Freshness describes the read; diff.created_at, producer and generation identify the stored artifact. This read does not capture current worktree edits.", "work_item_id attempt_id", "sequence source limit offset", true, false)
+	add(GetWorkItemDiff, "Read stored files and patches for this work item's latest diff, or diff:null when no stored generation exists for the selected source. Freshness describes the read; diff.created_at, producer and generation identify the stored artifact. This read does not capture current worktree edits.", "work_item_id", "source limit offset", true, false)
 	add(ListWorkItemPullRequests, "Read the existing PR panel with source observation times, checks, reviews and mergeability.", "work_item_id", "limit offset", true, false)
 	add(ArtifactLibrary, "Read a bounded page of this project's artifact library and review links.", "", "kind status limit offset", true, false)
 	add(GetNativeRun, "Read an owned native attempt, its linked changes and artifact receipts.", "work_item_id attempt_id", "", true, false)
