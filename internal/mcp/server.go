@@ -258,7 +258,7 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 	}
 }
 
-const operatorInstructions = "tools/list returns the current authorized catalog. Optionally select toolsets with _meta.detent/toolsets, an array of toolset names from tool metadata. Use current connection authority. Pending actions require a human to use the returned dashboard approval URL; a tool call cannot approve them."
+const operatorInstructions = "tools/list returns the current authorized catalog. Optionally select toolsets with _meta.detent/toolsets, an array of toolset names from tool metadata. Authorized calls execute directly after checking key scope, project access and current grants through the application owner. Clients own confirmation."
 
 func (s *session) requestVersion() string {
 	s.mu.Lock()

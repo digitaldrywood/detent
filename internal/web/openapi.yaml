@@ -143,7 +143,7 @@ paths:
     post:
       operationId: createOperatorConnection
       summary: Establish a local MCP stdio operator connection
-      description: Binds a new connection to the authenticated operator identity in confirmation mode. The response links to the browser setup page; only the authenticated browser operator can change the mode or approve actions.
+      description: Binds a new connection to the authenticated operator identity. Authorized calls execute directly after checking key scope, project access and current grants through the application owner. Clients own confirmation.
       tags: [operations]
       security:
         - bearerAuth: []
@@ -153,15 +153,14 @@ paths:
       x-detent-echo-path: /api/v1/operator-connections
       responses:
         "201":
-          description: Connection identity and browser setup link.
+          description: Authenticated operator connection identifier.
           content:
             application/json:
               schema:
                 type: object
-                required: [connection_id, setup_url]
+                required: [connection_id]
                 properties:
                   connection_id: {type: string}
-                  setup_url: {type: string}
         "401": {$ref: "#/components/responses/Problem"}
         "403": {$ref: "#/components/responses/Problem"}
         "500": {$ref: "#/components/responses/Problem"}

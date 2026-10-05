@@ -105,7 +105,7 @@ func newProtocolFixture(t *testing.T, transport, version string) protocolFixture
 		t.Cleanup(client.close)
 		send = func(frame string) rpcResponse { client.write(frame); return client.read() }
 		if !modern {
-			send(strings.Replace(initializeRequest, LegacyProtocolVersion, version, 1))
+			assertOperatorInstructions(t, send(strings.Replace(initializeRequest, LegacyProtocolVersion, version, 1)))
 			client.write(initializedNotice)
 		}
 	} else {
@@ -157,7 +157,7 @@ func newProtocolFixture(t *testing.T, transport, version string) protocolFixture
 			return response
 		}
 		if !modern {
-			send(strings.Replace(initializeRequest, LegacyProtocolVersion, version, 1))
+			assertOperatorInstructions(t, send(strings.Replace(initializeRequest, LegacyProtocolVersion, version, 1)))
 			send(initializedNotice)
 		}
 	}
@@ -182,6 +182,22 @@ func newProtocolFixture(t *testing.T, transport, version string) protocolFixture
 	}}
 }
 
+func assertOperatorInstructions(t *testing.T, response rpcResponse) {
+	t.Helper()
+	var result struct {
+		Instructions string `json:"instructions"`
+	}
+	decodeResult(t, response, &result)
+	if !strings.Contains(result.Instructions, "Clients own confirmation") {
+		t.Fatalf("missing client confirmation authority: %q", result.Instructions)
+	}
+	for _, retired := range []string{"approval url", "pending actions", "confirmation mode", "setup_url", "yolo"} {
+		if strings.Contains(strings.ToLower(result.Instructions), retired) {
+			t.Fatalf("retired approval instruction %q: %q", retired, result.Instructions)
+		}
+	}
+}
+
 func TestProtocolApplicationParity(t *testing.T) {
 	t.Parallel()
 	for _, transport := range []string{"stdio", "http"} {
@@ -201,7 +217,9 @@ func TestProtocolApplicationParity(t *testing.T) {
 						ResultType string   `json:"resultType"`
 						Supported  []string `json:"supportedVersions"`
 					}
-					decodeResult(t, request(t, "server/discover", nil), &discover)
+					response := request(t, "server/discover", nil)
+					assertOperatorInstructions(t, response)
+					decodeResult(t, response, &discover)
 					if discover.ResultType != "complete" || !reflect.DeepEqual(discover.Supported, supportedVersions()) {
 						t.Fatalf("discovery: %+v", discover)
 					}
