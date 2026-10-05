@@ -140,14 +140,12 @@ func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 	return Definition{Name: name, Description: "Use the shared dashboard application command: " + strings.ReplaceAll(name, "_", " ") + ". Current scoped authority is required; request_id is the business retry key.", InputSchema: raw, Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: openWorld}, Meta: ToolMetadata{Toolset: "projects"}}
 }
 
-// Fixed application DTOs define discovery schemas; no map or arbitrary JSON
-// input is accepted. Runtime validation applies these same recursive bounds.
 func projectSchema(t reflect.Type) map[string]any {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t == reflect.TypeFor[json.RawMessage]() {
-		return map[string]any{"type": "object"}
+		return map[string]any{}
 	}
 	switch t.Kind() {
 	case reflect.Struct:
@@ -204,8 +202,7 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 			t = t.Elem()
 		}
 		if t == reflect.TypeFor[json.RawMessage]() {
-			_, object := v.(map[string]any)
-			return object
+			return true
 		}
 		switch x := v.(type) {
 		case string:
