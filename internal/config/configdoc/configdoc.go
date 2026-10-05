@@ -624,7 +624,11 @@ func validationRules(fields []fieldDetails) (map[string][]string, error) {
 			}
 			problems = append(problems, collected...)
 		}
-		for _, candidate := range candidates(field.node.typ) {
+		values := candidates(field.node.typ)
+		if field.Path == "hooks.runner_setup" {
+			values = append(values, reflect.ValueOf("../setup.sh"))
+		}
+		for _, candidate := range values {
 			cfg := probeBase()
 			target, ok := locate(reflect.ValueOf(&cfg), field.node.steps, true)
 			if !ok || !target.CanSet() || !candidate.Type().AssignableTo(target.Type()) {

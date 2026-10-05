@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +57,44 @@ func TestOrphanRecoveryRetainsPolicyAcrossHubTransition(t *testing.T) {
 type checkedPolicyScheduling struct {
 	SchedulingSource
 	approved policy.Descriptor
+}
+
+type preparingProjectScheduling struct {
+	SchedulingSource
+	err error
+}
+
+func (s preparingProjectScheduling) PrepareProject(context.Context, string) error {
+	return s.err
+}
+
+func TestProjectSetupFailurePreservesIssueAccounting(t *testing.T) {
+	t.Parallel()
+	for _, granted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ready candidates", true: "granted dispatch"}[granted], func(t *testing.T) {
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "project-one"}})
+			state := newState(cfg)
+			issue := dispatchTestIssue("issue-one", "Todo")
+			state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2}
+			state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 1}
+			beforeRetry := state.Retry[issue.ID]
+			beforeFailure := state.RepeatedFailures[issue.ID]
+			beforeBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
+			attempts := &recordingWorkAttemptStore{}
+			orch := Orchestrator{cfg: cfg, workAttempts: attempts, scheduling: preparingProjectScheduling{err: errors.New("instance project setup exited 7")}}
+			if granted {
+				outcome := orch.dispatchIssueWithGlobalGrant(t.Context(), &state, issue, 2, time.Now(), "", false, true, nil, &scheduler.DispatchResult{})
+				if outcome.dispatched || outcome.reason != dispatchIssueFailureWorkerHostUnavailable {
+					t.Fatalf("dispatch outcome = %+v", outcome)
+				}
+			} else {
+				orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+			}
+			if !reflect.DeepEqual(state.Retry[issue.ID], beforeRetry) || !reflect.DeepEqual(state.RepeatedFailures[issue.ID], beforeFailure) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) || len(state.Running) != 0 || len(state.Claimed) != 0 || len(attempts.decisions) != 0 {
+				t.Fatal("instance setup failure changed issue accounting or started work")
+			}
+		})
+	}
 }
 
 func (s checkedPolicyScheduling) CheckProjectPolicy(_ context.Context, _, _ string, descriptor policy.Descriptor) error {

@@ -25,6 +25,7 @@ const NativeRunnerUpdateCapability = "runner_installed_update"
 
 const NativeRunnerCapacityCapability = "runner_capacity_configuration"
 const NativeLocalChecksCapability = "runner_local_checks"
+const NativeRunnerSetupCapability = "runner_project_setup"
 
 // NativeWorkspaceCapability is declared by a runner's workspace lane on its
 // claim. It is what separates the lane that holds a workspace session open

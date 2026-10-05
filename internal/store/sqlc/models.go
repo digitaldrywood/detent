@@ -353,6 +353,12 @@ type ProjectDispatchStatus struct {
 	WaitReasonCode         sql.NullString `json:"wait_reason_code"`
 }
 
+type ProjectRunnerSetup struct {
+	RunnerID    string `json:"runner_id"`
+	ProjectID   string `json:"project_id"`
+	ContentHash string `json:"content_hash"`
+}
+
 type ProvenanceAttributionBoundary struct {
 	ID               int64  `json:"id"`
 	TrustworthySince string `json:"trustworthy_since"`

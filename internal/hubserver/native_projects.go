@@ -47,6 +47,7 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 	if s.workspaces != nil {
 		features = append(features, tracker.NativeWorkspaceCapability)
 	}
+	features = append(features, tracker.NativeRunnerSetupCapability)
 	features = append(features, tracker.NativeDispatchPriorityCapability, tracker.NativeDispatchWaitCapability)
 	return nativeCapabilitiesResponse{
 		ServerID: serverID, Version: s.config.Version, MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),

@@ -168,6 +168,10 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		o.cancelPendingGlobalDispatches()
 		return
 	}
+	if err := o.prepareDispatchProject(ctx); err != nil {
+		o.cancelPendingGlobalDispatches()
+		return
+	}
 	rankingIssues := issues
 	// Refresh retains closed snapshots for lane reconciliation, not dispatch.
 	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
@@ -599,6 +603,9 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	}
 	if err := o.checkDispatchPolicy(ctx); err != nil {
 		return dispatchIssueOutcome{reason: "policy_mismatch", waitReason: err.Error()}
+	}
+	if err := o.prepareDispatchProject(ctx); err != nil {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable, waitReason: err.Error()}
 	}
 	if reason := connector.NonExecutableReason(issue); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: reason}

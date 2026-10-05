@@ -532,6 +532,8 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		logger.Info("runner setup observations started")
 		if cfg.Global.Client.Configured() {
 			hubScheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
+				setupStore:    runtimeStore,
+				logger:        logger,
 				runtimeConfig: globalConfigState.get,
 				intakeToken:   newRunnerIntakeTokenSource(runtimeGitHubToken.get, refreshGitHubToken),
 				problems: func() []runnerauth.Problem {

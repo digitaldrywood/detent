@@ -24,6 +24,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	PrepareProject        func(context.Context, string) error
 	UpdateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	CapacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
 	// LocalChecks are startup observations by local project, reused by the heartbeat owner.
@@ -47,6 +48,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	prepareProject        func(context.Context, string) error
 	updateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
 	localChecks           map[string]runnerauth.LocalChecks
@@ -98,6 +100,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		prepareProject:        config.PrepareProject,
 		capacityConfiguration: config.CapacityConfiguration,
 		updateOwner:           config.UpdateOwner,
 		localChecks:           config.LocalChecks,
@@ -141,6 +144,9 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	if err := s.CheckProjectPolicy(ctx, request.ProjectID, request.Repository, request.Policy); err != nil {
 		return nil, schedulingError(err)
 	}
+	if err := s.PrepareProject(ctx, request.ProjectID); err != nil {
+		return nil, errors.Join(orchestrator.ErrSchedulingUnavailable, err)
+	}
 	if source := s.nativeProjects[request.ProjectID]; source != nil {
 		return s.fetchNativeCandidate(ctx, request, source)
 	}
@@ -183,6 +189,35 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	s.claimPolicies[issue.ID] = claimPolicy{project: request.ProjectID, repository: request.Repository, descriptor: request.Policy}
 	s.mu.Unlock()
 	return []connector.Issue{issue}, nil
+}
+
+func (s *Scheduler) PrepareProject(ctx context.Context, project string) error {
+	if s.prepareProject == nil {
+		return nil
+	}
+	err := s.prepareProject(ctx, project)
+	s.mu.Lock()
+	checks, reported := s.localChecks[project]
+	previous := checks.Setup
+	if reported {
+		checks.Setup = "passed"
+		if err != nil {
+			checks.Setup = "failed"
+		}
+		s.localChecks[project] = checks
+	}
+	s.mu.Unlock()
+	if source := s.nativeProjects[project]; source != nil && reported && previous != checks.Setup {
+		s.mu.Lock()
+		if !s.nativeHeartbeats[source.client.project].IsZero() {
+			s.nativeHeartbeats[source.client.project] = s.now().Add(-s.heartbeatInterval)
+		}
+		s.mu.Unlock()
+		if reportErr := s.ensureNativeMachine(ctx, source); reportErr != nil {
+			return errors.Join(err, reportErr)
+		}
+	}
+	return err
 }
 
 func (s *Scheduler) AdoptClaim(ctx context.Context, issue connector.Issue, _ time.Time) (orchestrator.Claimed, error) {

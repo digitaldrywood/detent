@@ -453,18 +453,21 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 	r.enroll(t)
 	path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
 	for _, tt := range []struct {
-		name, checkout, doctor, provider string
-		valid                            bool
+		name, checkout, doctor, provider, setup string
+		valid                                   bool
 	}{
-		{"missing report", "", "", "", true},
-		{"missing checkout", "failed", "pending", "pending", true},
-		{"failed doctor", "passed", "failed", "passed", true},
-		{"missing auth", "passed", "passed", "failed", true},
-		{"success", "passed", "passed", "passed", true},
-		{"reject command output", "passed", "secret-token", "passed", false},
+		{"missing report", "", "", "", "", true},
+		{"missing checkout", "failed", "pending", "pending", "", true},
+		{"failed doctor", "passed", "failed", "passed", "", true},
+		{"missing auth", "passed", "passed", "failed", "", true},
+		{"success", "passed", "passed", "passed", "", true},
+		{"failed setup", "passed", "passed", "passed", "failed", true},
+		{"repaired setup", "passed", "passed", "passed", "passed", true},
+		{"reject setup output", "passed", "passed", "passed", "secret-token", false},
+		{"reject command output", "passed", "secret-token", "passed", "", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			checks := runnerauth.LocalChecks{Checkout: tt.checkout, Doctor: tt.doctor, Provider: tt.provider, ProviderKinds: []string{"codex"}}
+			checks := runnerauth.LocalChecks{Checkout: tt.checkout, Doctor: tt.doctor, Provider: tt.provider, ProviderKinds: []string{"codex"}, Setup: tt.setup}
 			body := map[string]any{"capacity": 1, "version": "test"}
 			if tt.checkout != "" {
 				body["local_checks"] = checks
@@ -482,7 +485,7 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 			if setup.Policy != nil || setup.Steps[0].State != "ready" {
 				t.Fatalf("enrollment depends on policy: %+v", setup)
 			}
-			if tt.valid && tt.checkout != "" && (setup.Runners[0].LocalChecks == nil || setup.Runners[0].LocalChecks.Doctor != tt.doctor || setup.Runners[0].LocalChecks.ObservedAt.IsZero()) {
+			if tt.valid && tt.checkout != "" && (setup.Runners[0].LocalChecks == nil || setup.Runners[0].LocalChecks.Doctor != tt.doctor || setup.Runners[0].LocalChecks.Setup != tt.setup || setup.Runners[0].LocalChecks.ObservedAt.IsZero()) {
 				t.Fatalf("report=%+v", setup)
 			}
 			if tt.valid && (setup.Steps[1].State == "ready") != (tt.checkout != "" && checks.Passed()) {

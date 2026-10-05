@@ -143,7 +143,10 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 			admission = &current
 		}
 		s.mu.Unlock()
-		if checks, ok := s.localChecks[name]; ok && s.client.runner != nil {
+		s.mu.Lock()
+		checks, ok := s.localChecks[name]
+		s.mu.Unlock()
+		if ok && s.client.runner != nil {
 			localChecks = &checks
 		}
 		if s.checkoutRepository != nil {

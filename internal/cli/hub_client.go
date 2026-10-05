@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
@@ -17,11 +19,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
 )
 
 type hubSchedulingOptions struct {
+	setupStore    store.ProjectRunnerSetupStore
+	logger        *slog.Logger
 	runtimeConfig func() globalconfig.Config
 	intakeToken   githubconnector.TokenSource
 	problems      func() []runnerauth.Problem
@@ -42,6 +47,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		hostname = "unknown"
 	}
 	machineID := firstNonBlankString(clientConfig.MachineID, cfg.Global.Identity.Name, cfg.InstanceName, hostname)
+	runnerID := machineID
 	if clientConfig.IdentityFile != "" {
 		file, err := runnerauth.Load(clientConfig.IdentityFile)
 		if err != nil {
@@ -56,6 +62,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			}
 		}
 		machineID = string(file.Identity.MachineID)
+		runnerID = string(file.Identity.RunnerID)
 	}
 	displayName := firstNonBlankString(clientConfig.DisplayName, cfg.Global.Identity.Name, cfg.InstanceName, machineID)
 	capacity := clientConfig.Capacity
@@ -80,9 +87,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	}
 	checkouts := make(map[string]globalconfig.Project, len(nativeProjects))
 	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
-		if _, ok := nativeProjects[selected.ID]; ok {
-			checkouts[selected.ID] = selected
-		}
+		checkouts[selected.ID] = selected
 	}
 	var providerReports func() ([]providercapacity.Report, error)
 	if clientConfig.ProviderCapacityFile != "" {
@@ -90,9 +95,43 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			return providercapacity.Load(clientConfig.ProviderCapacityFile)
 		}
 	}
+	var setupOptions hubSchedulingOptions
+	if len(options) > 0 {
+		setupOptions = options[0]
+	}
+	setup := project.NewRunnerSetup(runnerID, setupOptions.setupStore, setupOptions.logger)
+	prepareProject := func(ctx context.Context, name string) error {
+		selected, ok := checkouts[name]
+		if setupOptions.runtimeConfig != nil {
+			for _, current := range project.ManagerConfigFromGlobal(setupOptions.runtimeConfig()).Projects {
+				if current.ID == name {
+					selected, ok = current, true
+					break
+				}
+			}
+		}
+		if !ok {
+			return fmt.Errorf("runner project checkout %s is unavailable", name)
+		}
+		if id := nativeProjects[name]; id != "" {
+			selected.ID = string(id)
+		}
+		return setup.Prepare(ctx, selected)
+	}
+	setupResults := make(map[string]string, len(checkouts))
+	for name := range checkouts {
+		setupResults[name] = "passed"
+		if err := prepareProject(ctx, name); err != nil {
+			setupResults[name] = "failed"
+		}
+	}
 	localChecks, err := collectRunnerSetupReports(ctx, cfg, client)
 	if err != nil {
 		return nil, err
+	}
+	for name, checks := range localChecks {
+		checks.Setup = setupResults[name]
+		localChecks[name] = checks
 	}
 	tokenSource := githubconnector.StaticTokenSource("")
 	if len(options) > 0 && options[0].intakeToken != nil {
@@ -111,6 +150,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		reportProblems = options[0].problems
 	}
 	return hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		PrepareProject:        prepareProject,
 		CapacityConfiguration: capacityConfiguration,
 		LocalChecks:           localChecks,
 		GitHubIntake:          github.FetchIssueSnapshot,

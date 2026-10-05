@@ -59,6 +59,7 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 		LabelExclude       []string                          `json:"label_exclude,omitempty"`
 	}
 	var supportsChecks, supportsCheckout, wrongIdentity atomic.Bool
+	var supportsSetup atomic.Bool
 	var supportsRanking atomic.Bool
 	var claimCalls, previewCalls atomic.Int64
 	var mu sync.Mutex
@@ -78,6 +79,9 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			}
 			if supportsChecks.Load() {
 				features = append(features, tracker.NativeLocalChecksCapability)
+			}
+			if supportsSetup.Load() {
+				features = append(features, tracker.NativeRunnerSetupCapability)
 			}
 			if supportsRanking.Load() {
 				features = append(features, tracker.NativeDispatchPriorityCapability)
@@ -137,6 +141,9 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				return
 			}
+			if current.LocalChecks != nil && current.LocalChecks.Setup != "" && !supportsSetup.Load() {
+				t.Error("setup report reached an older Hub schema")
+			}
 			if current.ProtocolMajor != 2 || current.DisplayName != "Runner" || current.Capacity != 3 || current.Version != "test" || current.OS != runtime.GOOS || current.Architecture != runtime.GOARCH || r.URL.Path != "/api/v2/organizations/org_test/projects/prj_test/machines/"+string(machineID)+"/heartbeat" {
 				t.Errorf("original heartbeat or machine identity changed: %+v, path=%s", current.originalHeartbeat, r.URL.Path)
 			}
@@ -178,7 +185,7 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 	}
 	now := time.Now()
 	repository := "Acme/Private"
-	checks := runnerauth.LocalChecks{Checkout: "passed", Doctor: "failed", Provider: "failed", ProviderKinds: []string{"codex"}}
+	checks := runnerauth.LocalChecks{Checkout: "passed", Doctor: "failed", Provider: "failed", ProviderKinds: []string{"codex"}, Setup: "failed"}
 	scheduler, err := NewScheduler(client, SchedulerConfig{
 		OrganizationID: "org_test", NativeProjects: map[string]tracker.ProjectID{"native": "prj_test"},
 		CheckoutRepository: func(string) string { return repository },
@@ -194,20 +201,22 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 		t.Fatal("native project connector is missing")
 	}
 	for _, step := range []struct {
-		name                  string
-		checkout, diagnostics bool
-		repository            string
-		evidence              *runnerauth.LocalChecks
+		name                         string
+		checkout, diagnostics, setup bool
+		repository                   string
+		evidence                     *runnerauth.LocalChecks
 	}{
-		{"older Hub", false, false, "Acme/Private", &checks},
-		{"checkout-report Hub", true, false, "Acme/Private", &checks},
-		{"current Hub failed evidence", true, true, "Acme/Private", &checks},
-		{"current Hub missing evidence", true, true, "", nil},
-		{"neither optional field", false, false, "", &checks},
+		{"older Hub", false, false, false, "Acme/Private", &checks},
+		{"checkout-report Hub", true, false, false, "Acme/Private", &checks},
+		{"local-checks Hub", true, true, false, "Acme/Private", &checks},
+		{"current Hub failed evidence", true, true, true, "Acme/Private", &checks},
+		{"current Hub missing evidence", true, true, true, "", nil},
+		{"neither optional field", false, false, false, "", &checks},
 	} {
 		t.Run(step.name, func(t *testing.T) {
 			supportsCheckout.Store(step.checkout)
 			supportsChecks.Store(step.diagnostics)
+			supportsSetup.Store(step.setup)
 			repository = step.repository
 			delete(scheduler.localChecks, "native")
 			if step.evidence != nil {
@@ -225,6 +234,11 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			want := step.evidence
 			if !step.diagnostics {
 				want = nil
+			}
+			if want != nil && !step.setup {
+				copy := *want
+				copy.Setup = ""
+				want = &copy
 			}
 			if !reflect.DeepEqual(got.checks, want) {
 				t.Fatalf("local checks = %+v, want %+v", got.checks, want)
