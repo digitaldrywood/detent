@@ -91,6 +91,8 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(tracker.NativeProject{Profile: "native"})
 		case strings.HasSuffix(r.URL.Path, "/policy"):
 			_ = json.NewEncoder(w).Encode(policy.Approval{Policy: clientTestPolicy()})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v2/organizations/org_test/projects/prj_test/policy/observed":
+			w.WriteHeader(http.StatusNoContent)
 		case strings.HasSuffix(r.URL.Path, "/claims"), strings.HasSuffix(r.URL.Path, "/claims/preview"):
 			decoder := json.NewDecoder(r.Body)
 			decoder.DisallowUnknownFields()
