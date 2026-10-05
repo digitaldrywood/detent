@@ -45,6 +45,8 @@ type deferredCompletion struct {
 	ForgeAvailability   *forgeWaitMetadata             `json:"worker_forge_availability,omitempty"`
 	GitHubRESTQuota     *github.StatusError            `json:"github_rest_quota,omitempty"`
 	Persisted           bool                           `json:"-"`
+	Execution           json.RawMessage                `json:"execution,omitempty"`
+	AuthorityRestored   bool                           `json:"-"`
 }
 
 type deferredDeliverableRecovery struct {
@@ -226,12 +228,7 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	// A retired native lease is an obsolete completion, not a tracker outage.
 	// Reuse completion rejection rather than enqueueing the same dead token.
 	if errors.Is(fenceErr, runpkg.ErrExecutionAuthorityUnavailable) {
-		o.rejectWorkerCompletion(ctx, state, event, running, "worker lease is no longer active", fenceErr)
-		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalAbandoned, workAttemptErrorInterrupted, fenceErr.Error(), "interrupted", "native execution authority ended")
-		o.clearLiveWorkAttemptState(state, telemetry.WorkAttempt{IssueID: event.IssueID, AttemptID: running.WorkAttemptID})
-		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
-			o.logger.Warn("release obsolete completion claim failed", "issue_id", event.IssueID, "error", err)
-		}
+		o.rejectUnavailableCompletion(ctx, state, event, running, fenceErr, true)
 		return
 	}
 	deferredAt := o.clockNow().UTC()
@@ -243,6 +240,8 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	}
 	o.observeTrackerReadFailure(state, "", fenceErr, deferredAt)
 	record := newDeferredCompletion(event, running, fenceErr, deferredAt)
+	o.captureDeferredExecution(&record)
+	record.AuthorityRestored = true
 	record.FenceRetryAt = o.completionFenceRetryAt(state, fenceErr, deferredAt, event.RetryDelay)
 	record.Persisted = o.persistDeferredCompletion(ctx, state, record)
 
@@ -286,6 +285,17 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 			Event:   "completion_deferral_persist_failed",
 			Message: "retained completed result in memory for " + issueLabel(running.Issue) + " after durable persistence failed",
 		})
+	}
+}
+
+func (o *Orchestrator) rejectUnavailableCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running, cause error, release bool) {
+	o.rejectWorkerCompletion(ctx, state, event, running, "worker lease is no longer active", cause)
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalAbandoned, workAttemptErrorInterrupted, cause.Error(), "interrupted", "native execution authority ended")
+	o.clearLiveWorkAttemptState(state, telemetry.WorkAttempt{IssueID: event.IssueID, AttemptID: running.WorkAttemptID})
+	if release {
+		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
+			o.logger.Warn("release obsolete completion claim failed", "issue_id", event.IssueID, "error", err)
+		}
 	}
 }
 
@@ -425,6 +435,10 @@ func (o *Orchestrator) recoverDeferredCompletions(ctx context.Context, state *St
 			continue
 		}
 		issueID := record.Running.Issue.ID
+		claim, restoreErr := o.restoreDeferredExecution(ctx, record)
+		if restoreErr == nil {
+			record.AuthorityRestored = true
+		}
 		state.deferredCompletions[issueID] = record
 		dueAt := now
 		if record.FenceRetryAt.IsZero() {
@@ -443,6 +457,14 @@ func (o *Orchestrator) recoverDeferredCompletions(ctx context.Context, state *St
 			CompletionDeferred: true,
 		}
 		state.Claimed[issueID] = recoveredDeferredCompletionClaim(o, record.Running.Issue, now)
+		if claim.Issue.ID != "" {
+			state.Claimed[issueID] = claim
+		}
+		if record.AuthorityRestored && o.captureDeferredExecution(&record) {
+			record.DeferredAt = now
+			record.Persisted = o.persistDeferredCompletion(ctx, state, record)
+			state.deferredCompletions[issueID] = record
+		}
 		o.upsertWorkAttemptSnapshot(state, telemetryWorkAttempt(attempt, now))
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
@@ -503,6 +525,29 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 			continue
 		}
 		record := state.deferredCompletions[issueID]
+		if !record.AuthorityRestored {
+			claim, err := o.restoreDeferredExecution(ctx, record)
+			if err != nil {
+				if errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
+					state.Running[issueID] = record.Running
+					o.rejectUnavailableCompletion(ctx, state, record.completion(), record.Running, err, false)
+					return true
+				}
+				o.observeTrackerReadFailure(state, "", err, now)
+				retry.DueAt = now.Add(o.cfg.PollInterval)
+				state.Retry[issueID] = retry
+				return false
+			}
+			record.AuthorityRestored = true
+			state.deferredCompletions[issueID] = record
+			if claim.Issue.ID != "" {
+				state.Claimed[issueID] = claim
+			}
+			if o.captureDeferredExecution(&record) {
+				record.DeferredAt = now
+				record.Persisted = false
+			}
+		}
 		if !record.Persisted {
 			record.DeferredAt = now
 			if !o.persistDeferredCompletion(ctx, state, record) {
@@ -520,7 +565,7 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 			state.Claimed[issueID] = recoveredDeferredCompletionClaim(o, record.Running.Issue, now)
 		}
 		completion := record.completion()
-		if completion.Err == nil && completion.Result.NativeChange != nil && completion.Result.NativeChange.Error != "" {
+		if completion.Err == nil && completion.Result.NativeChange != nil {
 			if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
 				execution := source.RunExecution(issueID)
 				if publisher, ok := execution.(runpkg.CompletionExecution); ok {
@@ -540,6 +585,29 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 		}
 	}
 	return true
+}
+
+func (o *Orchestrator) restoreDeferredExecution(ctx context.Context, record deferredCompletion) (Claimed, error) {
+	if source, ok := o.scheduling.(interface {
+		RestoreCompletion(context.Context, SchedulingRequest, connector.Issue, json.RawMessage) (Claimed, error)
+	}); ok {
+		policy := record.Running.Policy
+		if policy.ID == "" {
+			policy = o.cfg.Policy
+		}
+		return source.RestoreCompletion(ctx, SchedulingRequest{ProjectID: o.cfg.Project.ID, Repository: o.cfg.SchedulingRepository, Policy: policy}, record.Running.Issue, record.Execution)
+	}
+	return Claimed{}, nil
+}
+
+func (o *Orchestrator) captureDeferredExecution(record *deferredCompletion) bool {
+	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+		if execution, ok := source.RunExecution(record.Running.Issue.ID).(interface{ CompletionState() json.RawMessage }); ok {
+			record.Execution = execution.CompletionState()
+			return true
+		}
+	}
+	return false
 }
 
 func cloneDeferredCompletions(source map[string]deferredCompletion) map[string]deferredCompletion {
