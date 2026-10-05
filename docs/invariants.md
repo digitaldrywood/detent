@@ -317,6 +317,17 @@ requests; acquisition revalidates current eligibility. Authorization,
 dependencies, retry readiness, local ceilings and stop exclusions remain
 authoritative. Admission filters eligible candidates before acquiring capacity.
 
+Native admission reads reuse the claim owner's candidate predicates and retain
+authorized current exclusion evidence without changing eligibility. Required
+unfinished dependencies include their scoped identity and observed nonterminal
+state; optional dependencies are never attributed as exclusions. Multiple
+observed dependencies remain separate, and unproven exclusions or truncated
+evidence remain explicitly unavailable. Snapshot observation times describe the
+current read, never a recorded scheduler decision. Reads write no claims or
+scheduler events and preserve active-lease, workflow, intake and project-grant
+authority. Current refusals do not supply historical skip counts, missing
+durations, private instruction causality or zero-valued analytics.
+
 **Enforcement:** `TestGlobalDispatchGatePriorityOnlyPicksNextJob`,
 `TestGlobalDispatchGateReadyRequests`,
 `TestGlobalDispatchGateConcurrentReadyRequests`,
@@ -329,6 +340,10 @@ authoritative. Admission filters eligible candidates before acquiring capacity.
 `TestStandingDispatchSurvivesProjectRefresh` in `internal/orchestrator`;
 `TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity` in
 `internal/admission`; `TestRepositorySources` in `internal/invariants`.
+`TestNativeAdmissionExplanation`, `TestNativeDependencyReadPermissions`,
+`TestNativeRuntimeReadHistoryCost`, `TestNativeRuntimeReadSharedCapacityCost`,
+`TestHostedAnalyticsReads` and `TestNativeAnalyticsRuntimePopulation` in
+`internal/hubserver` enforce scoped current evidence and recorded-read boundaries.
 Review rejects semantic reservation and preemption substitutes.
 
 ## INV-11 — Human mechanism scope approval before Todo

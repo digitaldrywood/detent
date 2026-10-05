@@ -8,6 +8,49 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const nativeCandidateDependenciesSatisfied = `(p.require_dependencies = 0 OR NOT EXISTS (
+ SELECT 1 FROM issue_dependencies dependency JOIN issues blocker ON blocker.id = dependency.blocker_issue_id
+ LEFT JOIN workflow_states blocker_state ON blocker_state.id = blocker.workflow_state_id
+ WHERE dependency.dependent_issue_id = i.id AND (blocker_state.id IS NULL OR blocker_state.terminal = 0)))`
+
+type nativeCandidateSnapshot struct {
+	IDs                    []tracker.WorkItemID
+	UnresolvedDependencies []tracker.NativeDependency
+	Unavailable            []string
+}
+
+func readNativeCandidateSnapshot(ctx context.Context, q nativeQueryer, query claimCandidateQuery, issue tracker.NativeIssue) (nativeCandidateSnapshot, error) {
+	ids, err := nativeCandidateIDs(ctx, q, query, nil, nil, nil, nil, nil, nil, nil)
+	snapshot := nativeCandidateSnapshot{IDs: ids}
+	if err != nil || len(ids) > 0 {
+		return snapshot, err
+	}
+	var dependenciesSatisfied bool
+	err = q.QueryRowContext(ctx, `SELECT `+nativeCandidateDependenciesSatisfied+`
+FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
+WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID, query.NativeScope.organization, query.NativeScope.project).Scan(&dependenciesSatisfied)
+	if err != nil {
+		return snapshot, err
+	}
+	if !dependenciesSatisfied {
+		for _, dependency := range issue.Blockers {
+			if !dependency.Terminal {
+				if len(snapshot.UnresolvedDependencies) == 100 {
+					snapshot.Unavailable = append(snapshot.Unavailable, "unresolved_dependencies")
+					break
+				}
+				snapshot.UnresolvedDependencies = append(snapshot.UnresolvedDependencies, dependency)
+			}
+		}
+	}
+	if len(snapshot.UnresolvedDependencies) > 0 {
+		snapshot.Unavailable = append(snapshot.Unavailable, "other_native_candidate_exclusions")
+	} else {
+		snapshot.Unavailable = append(snapshot.Unavailable, "native_candidate_exclusion")
+	}
+	return snapshot, nil
+}
+
 func nativeCandidateIDs(ctx context.Context, tx nativeQueryer, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories, states, authors, assignees, included, excluded []string) ([]tracker.WorkItemID, error) {
 	args := []any{}
 	bind := func(value any) string {
@@ -82,11 +125,8 @@ WHERE i.organization_id = `,
 		`)
  AND `,
 		notAlreadyAnsweredClause,
-		`
- AND (p.require_dependencies = 0 OR NOT EXISTS (
- SELECT 1 FROM issue_dependencies dependency JOIN issues blocker ON blocker.id = dependency.blocker_issue_id
- LEFT JOIN workflow_states blocker_state ON blocker_state.id = blocker.workflow_state_id
- WHERE dependency.dependent_issue_id = i.id AND (blocker_state.id IS NULL OR blocker_state.terminal = 0)))`}, "")
+		` AND `,
+		nativeCandidateDependenciesSatisfied}, "")
 	if len(query.HomeProjects) > 0 {
 		statement += ` AND i.project_id IN (SELECT value FROM json_each(` + jsonList(query.HomeProjects) + `))`
 	} else {
