@@ -993,28 +993,131 @@ func TestConversationCoordinatorHonoursPreferences(t *testing.T) {
 
 func TestConversationCoordinatorUsesLunaForLegacyPreferences(t *testing.T) {
 	t.Parallel()
-	f := newCoordinatorFixture(t, "luna-legacy")
-	f.conversations.config.Model = genkitbackend.Model
-	f.conversations.config.ReasoningEffort = "low"
-
-	legacy := f.seed(t, "legacy", func(record *conversationRecord) {
-		record.Preferences = conversation.Preferences{Model: "gpt-6-astra", ReasoningEffort: conversation.EffortHigh, Access: conversation.AccessFull}
-	})
-	f.say(t, &legacy, "What changed?")
-	f.waitAssistant(t, legacy.ID, conversation.DeliveryCompleted)
-	if request := f.backend.request(t, 0); request.Model != genkitbackend.Model || request.ReasoningEffort != "low" {
-		t.Fatalf("legacy turn = model %q effort %q", request.Model, request.ReasoningEffort)
+	for _, test := range []struct {
+		name        string
+		model       string
+		effort      string
+		hosted      bool
+		granted     bool
+		revoked     bool
+		free        bool
+		credits     bool
+		balance     int64
+		unavailable bool
+		usage       bool
+		wantModel   string
+		wantEffort  string
+		wantFailure string
+	}{
+		{name: "legacy without hosted plans", model: "gpt-6-astra", effort: "high", wantModel: genkitbackend.Model, wantEffort: "low"},
+		{name: "ungranted choice", hosted: true, model: "gpt-6-astra", effort: "high", wantModel: genkitbackend.Model, wantEffort: "low"},
+		{name: "Luna medium", model: genkitbackend.Model, effort: "medium", wantModel: genkitbackend.Model, wantEffort: "medium"},
+		{name: "granted choice", hosted: true, granted: true, usage: true, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
+		{name: "granted auto", hosted: true, granted: true, wantModel: genkitbackend.Model, wantEffort: "low"},
+		{name: "granted Luna medium", hosted: true, granted: true, model: genkitbackend.Model, effort: "medium", wantModel: genkitbackend.Model, wantEffort: "medium"},
+		{name: "revoked choice", hosted: true, granted: true, revoked: true, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
+		{name: "ungranted unknown", hosted: true, model: "unknown-model", wantFailure: "not one of the available choices"},
+		{name: "granted unknown", hosted: true, granted: true, model: "unknown-model", wantFailure: "not one of the available choices"},
+		{name: "granted without execution", hosted: true, granted: true, free: true, model: "gpt-6-astra", wantFailure: "Upgrade"},
+		{name: "granted with exhausted credits", hosted: true, granted: true, credits: true, model: "gpt-6-astra", wantFailure: "AI credits are exhausted"},
+		{name: "granted with purchased credits", hosted: true, granted: true, free: true, credits: true, balance: 1000000, model: "gpt-6-astra", effort: "high", wantModel: "gpt-6-astra", wantEffort: "high"},
+		{name: "granted without model backend", hosted: true, granted: true, unavailable: true, model: "gpt-6-astra", wantFailure: "model backend is unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newCoordinatorFixture(t, "luna-preferences")
+			f.conversations.config.Model = genkitbackend.Model
+			f.conversations.config.ReasoningEffort = "low"
+			reportConversationModels(t, conversationAPIFixture{nativeFixture: f.nativeFixture}, "gpt-6-astra")
+			d := f.service.database
+			if test.hosted {
+				d.hostedOrganization = f.organization
+				plans := capacityHostedPlans()
+				if !test.free {
+					plans.Base = PlanReference{ID: "starter", Version: 1}
+				}
+				if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+					t.Fatal(err)
+				}
+				if test.granted {
+					if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "grant-model", Action: "grant", GrantID: "model", ExpectedRevision: 1, Plan: plans.Base, Scope: []string{"model_choice"}, Reason: "approved model choice"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.credits {
+				d.aiCreditMode = "test"
+				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',?)", f.organization, test.balance); err != nil {
+					t.Fatal(err)
+				}
+			}
+			chosen := newFakeCoordinatorBackend()
+			sink := recordingConversationUsageSink{usage: make(chan ConversationUsage, 1)}
+			if test.usage {
+				luna, err := genkitbackend.NewOpenAI("test-key")
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.conversations.config.Backend = luna
+				f.conversations.config.UsageSink = sink
+				chosen.setRun(func(_ context.Context, _ int, _ runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+					return runner.AgentTurnResult{}, onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 20, OutputTokens: 10, TotalTokens: 30}})
+				})
+			}
+			if !test.unavailable {
+				f.conversations.config.ModelBackend = func() (runner.AgentBackend, string, error) { return chosen, "chosen-workspace", nil }
+			}
+			record := f.seed(t, "preferences", func(record *conversationRecord) {
+				record.Preferences = conversation.Preferences{Model: test.model, ReasoningEffort: test.effort, Access: conversation.AccessFull}
+			})
+			f.say(t, &record, "What changed?")
+			delivery := conversation.DeliveryCompleted
+			if test.wantFailure != "" {
+				delivery = conversation.DeliveryFailed
+			}
+			reply := f.waitAssistant(t, record.ID, delivery)
+			if test.wantFailure != "" {
+				if !strings.Contains(reply.Text+string(reply.Data), test.wantFailure) || f.backend.turns() != 0 || chosen.turns() != 0 {
+					t.Fatalf("reply=%#v Luna calls=%d chosen calls=%d", reply, f.backend.turns(), chosen.turns())
+				}
+				return
+			}
+			backend, other := f.backend, chosen
+			if test.wantModel != genkitbackend.Model {
+				backend, other = chosen, f.backend
+			}
+			request := backend.request(t, 0)
+			if request.Model != test.wantModel || request.ReasoningEffort != test.wantEffort || !request.ReadOnly || other.turns() != 0 {
+				t.Fatalf("request=%#v other calls=%d", request, other.turns())
+			}
+			if backend == chosen && request.Workspace != "chosen-workspace" {
+				t.Fatalf("chosen workspace = %q", request.Workspace)
+			}
+			if test.usage {
+				select {
+				case usage := <-sink.usage:
+					if usage.Provider != "codex" || usage.Model != test.wantModel || usage.TurnID != reply.ID || usage.Tokens.InputTokens != 20 {
+						t.Fatalf("chosen backend usage = %#v", usage)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("chosen backend usage was not reported")
+				}
+			}
+			if test.revoked {
+				if err := d.applyHostedPlanCommand(t.Context(), bootstrapTokenID, hostedPlanCommand{ID: "revoke-model", Action: "revoke", GrantID: "model", ExpectedRevision: 2, Reason: "revoked model choice"}); err != nil {
+					t.Fatal(err)
+				}
+				f.say(t, &record, "And now?")
+				f.backend.waitStarted(t)
+				f.waitAssistant(t, record.ID, conversation.DeliveryCompleted)
+				request := f.backend.request(t, 0)
+				if request.Model != genkitbackend.Model || request.ReasoningEffort != "low" || chosen.turns() != 1 {
+					t.Fatalf("revoked turn=%#v chosen calls=%d", request, chosen.turns())
+				}
+			}
+			f.coordinator().Stop()
+		})
 	}
-
-	medium := f.seed(t, "medium", func(record *conversationRecord) {
-		record.Preferences = conversation.Preferences{Model: genkitbackend.Model, ReasoningEffort: "medium", Access: conversation.AccessFull}
-	})
-	f.say(t, &medium, "And now?")
-	f.waitAssistant(t, medium.ID, conversation.DeliveryCompleted)
-	if request := f.backend.request(t, 1); request.Model != genkitbackend.Model || request.ReasoningEffort != "medium" {
-		t.Fatalf("medium turn = model %q effort %q", request.Model, request.ReasoningEffort)
-	}
-	f.coordinator().Stop()
 }
 
 func TestCoordinatorAttachmentBlock(t *testing.T) {

@@ -1380,9 +1380,17 @@ func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScop
 		}
 		if s.hasLunaCoordinator() {
 			if record.WorkItemID == "" {
-				models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID != s.conversationDefaultModel() })
-				if effort := preferences.EffortValue(); effort != "" && effort != "low" && effort != "medium" {
-					return nativeInvalid("preferences: reasoning_effort must be auto, low, or medium for general chat")
+				granted, err := s.conversationModelChoiceGranted(ctx, tx, record.OrganizationID, now)
+				if err != nil {
+					return err
+				}
+				if !granted {
+					models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID != s.conversationDefaultModel() })
+				}
+				if !granted || preferences.ModelValue() == "" || preferences.ModelValue() == s.conversationDefaultModel() {
+					if effort := preferences.EffortValue(); effort != "" && effort != "low" && effort != "medium" {
+						return nativeInvalid("preferences: reasoning_effort must be auto, low, or medium for general chat")
+					}
 				}
 			} else {
 				models = slices.DeleteFunc(models, func(model conversationModel) bool { return model.ID == s.conversationDefaultModel() })

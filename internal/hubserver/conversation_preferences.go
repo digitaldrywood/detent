@@ -87,6 +87,17 @@ func (s *Service) hasLunaCoordinator() bool {
 	return s.conversations != nil && s.conversations.config.Backend != nil && s.conversations.config.Model == genkitbackend.Model
 }
 
+func (s *Service) conversationModelChoiceGranted(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, now time.Time) (bool, error) {
+	if s.database.hostedPlans == nil || s.database.hostedOrganization != organization {
+		return false, nil
+	}
+	entitlement, err := s.database.hostedEntitlement(ctx, query, now)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(entitlement.Features, "model_choice"), nil
+}
+
 // conversationModelValidationChoices is what ValidatePreferences checks
 // against: the identifier plus the effort ladder the model published, so an
 // effort the picker offered is not then refused.
