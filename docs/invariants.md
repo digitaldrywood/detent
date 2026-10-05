@@ -55,6 +55,20 @@ forge host and Git read operation are required to classify a workspace error
 as forge unavailability; an unrelated hook failure cannot inherit that
 classification. Unknown infrastructure diagnostics remain instance intake.
 
+Native Rework verifies preserved source head, digest, machine, policy and
+provider-session availability before host preparation changes the worktree.
+Existing assigned worktrees retain their branch and source; creation cannot
+repair foreign ownership. The fenced execution owner captures the verified
+source and the host preparation result before the worker continues, including
+an owned paused rebase. Unknown changes and unavailable authority remain
+refusals, never checkpoint rewrites or relaxed comparisons.
+
+Permanent pre-provider native recovery refusals use the existing completion
+and admission owners to retain a non-dispatchable review handoff before claim
+release. They preserve genuine run and checkpoint receipts, create no provider
+attempt, and consume no issue failure allowance. Human and permission holds
+retain their existing authority.
+
 Native landing conflicts are source refusals, not infrastructure failures or
 shipped work. A GitHub HTTP 405 mergeability refusal requires current source
 conflict verification before selecting a conflict destination. Clean or
@@ -80,7 +94,9 @@ in `internal/orchestrator`;
 `TestLocalGitLandChangeViaGitHub` in `internal/workspace`;
 `TestWorkerCredentialBlockerError` in `internal/runner`;
 `TestIssueSpendSinceExcludesInstanceInfrastructureAttempts`
-in `internal/store`. Review preserves instance attribution outside those cases.
+in `internal/store`; `TestNativeInterruptedCodeRecoversPersistedSession` in
+`internal/runner`; `TestNativePlannerAutomaticHandoff` in `internal/hubclient`.
+Review preserves instance attribution outside those cases.
 
 ## INV-3 — Mechanism moratorium
 

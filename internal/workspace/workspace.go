@@ -571,24 +571,16 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 			return Info{}, err
 		}
 		if exists && isDir {
-			paused, err := rebaseInProgress(ctx, info.Path)
+			release, err := l.acquireSourceOperation(ctx)
 			if err != nil {
 				return Info{}, err
 			}
-			if paused {
-				release, err := l.acquireSourceOperation(ctx)
-				if err != nil {
-					return Info{}, err
-				}
-				paused, err = l.verifyReworkBranch(ctx, info, issue)
-				release()
-				if err != nil {
-					return Info{}, err
-				}
-				if paused {
-					return info, nil
-				}
+			_, err = l.verifyReworkBranch(ctx, info, issue)
+			release()
+			if err != nil {
+				return Info{}, err
 			}
+			return info, nil
 		}
 	}
 
