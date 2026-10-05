@@ -38,7 +38,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValida
 		if issueID == "" {
 			continue
 		}
-		if _, running := state.Running[issueID]; running {
+		if running, active := state.Running[issueID]; active && !running.CompletionOwnershipReleased {
 			continue
 		}
 		completed, ok := state.Completed[issueID]
@@ -189,7 +189,7 @@ func (o *Orchestrator) transitionActiveArtifactGateWaitIssuesToReview(
 		if issueID == "" {
 			continue
 		}
-		if _, running := state.Running[issueID]; running {
+		if running, active := state.Running[issueID]; active && !running.CompletionOwnershipReleased {
 			continue
 		}
 		targetState := activeArtifactGateWaitReviewTargetState(
@@ -315,6 +315,11 @@ func (o *Orchestrator) finishCompletedActiveReviewTransition(
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon completed review claim failed", "issue_id", issueID, "error", err)
 	}
+	o.recordCompletedActiveReviewTransition(state, issue, completed, targetState)
+}
+
+func (o *Orchestrator) recordCompletedActiveReviewTransition(state *State, issue connector.Issue, completed Completed, targetState string) {
+	issueID := strings.TrimSpace(issue.ID)
 	sameState := normalizeState(issue.State) == normalizeState(targetState)
 	if sameState {
 		delete(state.Completed, issueID)

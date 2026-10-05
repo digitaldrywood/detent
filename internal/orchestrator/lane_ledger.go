@@ -44,7 +44,9 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		return
 	}
 	if event.Err == nil && stateIn(running.Issue.State, o.cfg.TerminalStates) {
-		o.completeTerminalRunning(ctx, state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt)
+		if err := o.completeTerminalRunning(ctx, state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens, event.CompletedAt); err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		}
 		return
 	}
 	errorClass := ""
@@ -54,8 +56,18 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 	terminal := terminalStateForRun(event.Err, event.Result.FinalState)
 	cleanliness := o.evaluateCompletionCleanliness(ctx, running, running.Issue, running.DiffStats)
 	metadata := completionCleanlinessMetadata(cleanliness)
+	if event.Result.NativeChange != nil {
+		metadata = mergeWorkAttemptMetadata(metadata, nativeChangeMetadata(event.Result.NativeChange))
+	}
+	if event.Result.NativeLanding != nil {
+		metadata = mergeWorkAttemptMetadata(metadata, nativeLandingMetadata(event.Result.NativeLanding))
+	}
 	if terminal == store.WorkAttemptTerminalSuccess && (!cleanliness.Attempted || cleanliness.Outcome == completionCleanlinessAccepted) {
 		resetWorkerFailureBreakers(state, event.IssueID)
+	}
+	if err := o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return
 	}
 	if !o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, errorClass, errorString(event.Err), "completed", string(terminal), metadata) && o.workAttempts != nil && running.WorkAttemptID > 0 {
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("persist completed work attempt failed"))
@@ -70,7 +82,6 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 		}
 		state.Completed[event.IssueID] = Completed{Issue: cloneIssue(running.Issue), SessionID: running.SessionID, StartedAt: running.StartedAt, CompletedAt: event.CompletedAt, FinalState: finalState, Tokens: tokens, RuntimeIdentity: running.RuntimeIdentity}
 	}
-	o.finishAcceptedCompletionLaneRun(ctx, state, running, event.CompletedAt)
 }
 
 func (o *Orchestrator) writeTrackerLane(ctx context.Context, issueID, target string, metadata workflowLaneMetadata) error {

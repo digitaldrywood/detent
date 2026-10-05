@@ -19,8 +19,9 @@ import (
 
 type nativeWorkflowConnector struct {
 	*autoPromoteTickConnector
-	states    []connector.WorkflowState
-	statesErr error
+	states       []connector.WorkflowState
+	statesErr    error
+	beforeStates func()
 	// reviewed is the change's review state when the completion is applied;
 	// nil answers as a failed read.
 	reviewed *bool
@@ -34,6 +35,9 @@ func (c *nativeWorkflowConnector) ChangeReviewed(context.Context, string, string
 }
 
 func (c *nativeWorkflowConnector) WorkflowStates(context.Context) ([]connector.WorkflowState, error) {
+	if c.beforeStates != nil {
+		c.beforeStates()
+	}
 	return c.states, c.statesErr
 }
 
@@ -117,7 +121,13 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		wantAbandoned bool
 		wantTerminal  store.WorkAttemptTerminalState
 		roundTrip     bool
+		lifecycle     string
 	}{
+		{name: "native release outage keeps completion ownership", lifecycle: "release", change: accepted, states: landing, reviewed: &yes, wantState: "Merging"},
+		{name: "normal provider exit renews through delayed native settlement", lifecycle: "settle", change: accepted, states: landing, reviewed: &yes, wantState: "Merging"},
+		{name: "normal provider exit renews through deferred native publication", lifecycle: "defer", republish: true, change: &runpkg.NativeChange{Changed: true, Error: "native publication unavailable"}, states: landing, reviewed: &yes, wantState: "Merging"},
+		{name: "deferred native publication loses fencing authority", lifecycle: "lost", republish: true, change: &runpkg.NativeChange{Changed: true, Error: "native publication unavailable"}, states: landing, reviewed: &yes},
+		{name: "true provider cancellation retires renewal", lifecycle: "cancel", runErr: context.Canceled, states: workflow, wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled},
 		{name: "blocked comment retains agent reason and summary", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", wantState: "Blocked", wantComment: "detent-status blocked", wantReason: "merge_conflict", wantSummary: "Source conflicts remain unresolved."},
 		{name: "human action comment retains agent reason and summary", change: accepted, states: workflow, finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true, wantReason: "permission_wait", wantSummary: "The operator must approve the migration."},
 		{name: "instance limitation comment retains agent reason and summary", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\nblockers: []\nhuman_action: null\n```", wantState: "Blocked", wantComment: "detent-status blocked", wantReason: "instance_limitation", wantSummary: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403."},
@@ -250,6 +260,67 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if !diffStatsPresent(diffStats) {
 				diffStats = DiffStats{Status: "clean", HeadSHA: head}
 			}
+			var advance func()
+			if test.lifecycle != "" {
+				cfg.Claiming.LeaseTTL = 90 * time.Second
+				cfg.Claiming.HeartbeatInterval = 30 * time.Second
+				orch.cfg = cfg
+				orch.now = func() time.Time { return now }
+				orch.heartbeats = newHeartbeatManager(cfg, tracker, attempts, orch.now, nil, scheduling)
+				expires := now.Add(cfg.Claiming.LeaseTTL)
+				released := false
+				scheduling.renew = func() (Claimed, error) {
+					if released || !now.Before(expires) {
+						return Claimed{}, ErrSchedulingClaimLost
+					}
+					expires = now.Add(cfg.Claiming.LeaseTTL)
+					return Claimed{Issue: issue, Owner: "machine-a", LeaseRenewedAt: now, LeaseExpiresAt: expires}, nil
+				}
+				running := state.Running[issue.ID]
+				running.WorkerProcess = startHeartbeatWorkerProcess(t, true)
+				running.progress = newWorkerProgress(running, store.WorkAttemptHeartbeat{AttemptID: 42}, attempts, 1024)
+				state.Running[issue.ID] = running
+				state.Claimed[issue.ID] = Claimed{Issue: issue, Owner: "machine-a", LeaseExpiresAt: expires}
+				orch.trackRunningHeartbeat(&state, running, state.Claimed[issue.ID], now)
+				advance = func() {
+					for range 7 {
+						now = now.Add(cfg.Claiming.HeartbeatInterval)
+						due := orch.heartbeats.due(now)
+						if len(due) != 1 {
+							t.Fatalf("host completion lost heartbeat owner: %d targets", len(due))
+						}
+						orch.heartbeats.execute(t.Context(), due[0])
+						result := <-orch.heartbeats.results
+						if !result.claimRenewed || !result.workAttemptRenewed || !result.workerChecked || result.workerAlive || result.heartbeat.AttemptID != 42 {
+							t.Fatalf("exited provider lost existing ownership or appeared healthy: %#v", result)
+						}
+						orch.handleHeartbeatResult(&state, result)
+					}
+				}
+				advance()
+				tracker.(*nativeWorkflowConnector).beforeStates = advance
+				publisher.prepare = advance
+				release := scheduling.release
+				scheduling.release = func() {
+					advance()
+					release()
+					if !now.Before(expires) {
+						t.Fatal("completion released an expired existing lease")
+					}
+					released = scheduling.releaseError == nil
+				}
+				if test.lifecycle == "release" {
+					scheduling.releaseError = errors.Join(ErrSchedulingUnavailable, errors.New("native Finish publication unavailable"))
+				}
+				if test.lifecycle == "cancel" {
+					orch.cancelRunning(&state, issue.ID, "test.cancellation")
+					if len(orch.heartbeats.due(now.Add(time.Hour))) != 0 {
+						t.Fatal("true cancellation retained renewal ownership")
+					}
+					tracker.(*nativeWorkflowConnector).beforeStates = nil
+					scheduling.release = release
+				}
+			}
 			event := runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: now, Err: test.runErr,
 				Request: runpkg.RunRequest{Mode: runpkg.RunModeImplement, WorkAttemptID: 42, Generation: 7},
@@ -270,6 +341,45 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Fatal("nil native result bypassed ordinary continuation ownership")
 			}
 			orch.handleRunResult(t.Context(), &state, event)
+			if test.lifecycle == "release" {
+				if !state.Retry[issue.ID].CompletionDeferred || len(attempts.completions) != 0 || len(state.Completed) != 0 {
+					t.Fatal("release outage retired the completed source owner")
+				}
+				advance()
+				scheduling.releaseError = nil
+				if !orch.retryDeferredCompletions(t.Context(), &state, now) {
+					t.Fatal("retained release did not settle")
+				}
+			}
+			if test.lifecycle == "defer" || test.lifecycle == "lost" {
+				advance()
+				last := attempts.heartbeats[len(attempts.heartbeats)-1]
+				record, err := decodeDeferredCompletion(store.WorkAttempt{ID: 42, WorkerMetadataJSON: last.WorkerMetadataJSON})
+				if err != nil || record.Result.NativeChange == nil || record.Running.Generation != 7 || record.Running.WorkAttemptID != 42 {
+					t.Fatalf("renewal lost deferred source evidence: %#v, %v", record, err)
+				}
+				if test.lifecycle == "lost" {
+					scheduling.renew = func() (Claimed, error) { return Claimed{}, ErrSchedulingClaimLost }
+					now = now.Add(cfg.Claiming.HeartbeatInterval)
+					due := orch.heartbeats.due(now)
+					orch.heartbeats.execute(t.Context(), due[0])
+					orch.handleHeartbeatResult(&state, <-orch.heartbeats.results)
+					orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
+					if len(state.deferredCompletions) != 0 || len(state.Claimed) != 0 || len(orch.heartbeats.due(now.Add(time.Hour))) != 0 || publisher.prepared != 0 || len(tick.updates) != 0 || len(attempts.completions) != 0 {
+						t.Fatal("lost fence revived deferred publication")
+					}
+					return
+				}
+				if !orch.retryDeferredCompletions(t.Context(), &state, now) || publisher.prepared != 1 {
+					t.Fatal("retained completion did not publish exactly once")
+				}
+				test.change = accepted
+			}
+			if test.lifecycle != "" {
+				if len(orch.heartbeats.due(now.Add(time.Hour))) != 0 {
+					t.Fatal("renewal continued after terminal release")
+				}
+			}
 			if test.wantInstance {
 				if len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Retry) != 0 || len(state.Completed) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(state.FailureBreaker.Failures) != 0 {
 					t.Fatalf("instance report acquired issue completion effects: updates=%v blocked=%v retry=%v completed=%v claims=%v releases=%d", tick.updates, state.Blocked, state.Retry, state.Completed, state.Claimed, scheduling.releases)
@@ -310,7 +420,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if deferred != test.wantDeferred || test.wantDeferred && !retry.CompletionDeferred {
 				t.Fatalf("deferred = %t (retry %#v), want %t", deferred, retry, test.wantDeferred)
 			}
-			if test.republish {
+			if test.republish && test.lifecycle == "" {
 				if len(tick.updates) != 0 || len(attempts.completions) != 0 {
 					t.Fatal("publication outage completed or changed issue")
 				}
@@ -467,7 +577,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if len(tick.comments) != 1 || !strings.Contains(strings.ToLower(tick.comments[0].body), strings.ToLower(test.wantComment)) {
 				t.Fatalf("comments = %#v, want one containing %q", tick.comments, test.wantComment)
 			}
-			if _, claimed := state.Claimed[issue.ID]; claimed || scheduling.releases != 1 {
+			wantReleases := 1
+			if test.lifecycle == "release" {
+				wantReleases = 2
+			}
+			if _, claimed := state.Claimed[issue.ID]; claimed || scheduling.releases != wantReleases {
 				t.Fatalf("claim retained = %t, releases = %d", claimed, scheduling.releases)
 			}
 			completed, ok := state.Completed[issue.ID]
@@ -533,6 +647,14 @@ func TestNativeCompletionComment(t *testing.T) {
 type nativeCompletionScheduling struct {
 	*hubSchedulingSource
 	release func()
+	renew   func() (Claimed, error)
+}
+
+func (s *nativeCompletionScheduling) RenewClaim(ctx context.Context, issueID string, now time.Time) (Claimed, error) {
+	if s.renew != nil {
+		return s.renew()
+	}
+	return s.hubSchedulingSource.RenewClaim(ctx, issueID, now)
 }
 
 func (s *nativeCompletionScheduling) ReleaseClaim(ctx context.Context, issueID, reason string) error {
@@ -546,10 +668,14 @@ type nativeCompletionPublisher struct {
 	nativeLandingJourneyExecution
 	change   *runpkg.NativeChange
 	prepared int
+	prepare  func()
 }
 
 func (p *nativeCompletionPublisher) PrepareFinish(context.Context, string, string) error {
 	p.prepared++
+	if p.prepare != nil {
+		p.prepare()
+	}
 	return nil
 }
 

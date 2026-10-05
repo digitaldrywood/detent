@@ -260,7 +260,6 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 			running.cancel()
 		}
 	}
-	o.heartbeats.remove(event.IssueID)
 	delete(state.Running, event.IssueID)
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	if state.deferredCompletions == nil {
@@ -345,6 +344,20 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 		DetentSessionID:        record.Running.DetentSessionID,
 		ProviderSessionID:      record.Running.SessionID,
 		RuntimeIdentity:        record.Running.RuntimeIdentity,
+	}
+	if record.Running.progress != nil {
+		record.Running.progress.mu.Lock()
+		defer record.Running.progress.mu.Unlock()
+	}
+	if o.heartbeats != nil {
+		o.heartbeats.upsert(heartbeatTarget{
+			progress:             record.Running.progress,
+			issueID:              record.Running.Issue.ID,
+			claimOwner:           firstNonBlank(state.Claimed[record.Running.Issue.ID].Owner, o.claimOwner()),
+			workAttemptHeartbeat: heartbeat,
+			workerProcess:        record.Running.WorkerProcess,
+			workspacePath:        record.Running.WorkspacePath,
+		})
 	}
 	if err := o.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat); err != nil {
 		if o.logger != nil {

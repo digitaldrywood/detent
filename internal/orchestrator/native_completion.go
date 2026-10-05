@@ -64,13 +64,16 @@ func (o *Orchestrator) completeNativeChangeRun(
 		if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason); err != nil {
 			return handoff(fmt.Errorf("move failed native item to %s: %w", target, err))
 		}
+		if err := o.abandonClaim(ctx, issueID); err != nil {
+			return handoff(err)
+		}
 		terminal := terminalStateForRun(event.Err, finalState)
 		class := runnerWorkAttemptErrorClass(event.Err)
 		message := errorString(event.Err)
 		o.recordProjectAttemptOutcome(state, issueID, event.CompletedAt, terminal, event.Err, class, message)
 		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminal, class, message, "failed", "native worker failed; source preserved for review")
 		o.recordCompletionUsage(ctx, state, event, issue)
-		o.releaseCompletedAttemptClaim(ctx, state, issue)
+		o.releaseClaim(state, issueID)
 		return true
 	}
 	if change == nil {
@@ -138,6 +141,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
 		o.warnNativeCompletion(issue, fmt.Errorf("comment on the completed run: %w", err))
 	}
+	if err := o.abandonClaim(ctx, issueID); err != nil {
+		return handoff(err)
+	}
 	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker completed", nativeChangeMetadata(change))
 	completed := Completed{
 		Issue:                      cloneIssue(issue),
@@ -149,9 +155,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 		Tokens:                     event.Result.Tokens,
 		RuntimeIdentity:            running.RuntimeIdentity,
 	}
-	state.Completed[issueID] = completed
 	o.recordCompletionUsage(ctx, state, event, issue)
-	o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, target)
+	o.recordCompletedActiveReviewTransition(state, issue, completed, target)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "completed_issue_review_transition",

@@ -1600,7 +1600,11 @@ func (o *Orchestrator) forceQuit(ctx context.Context, state *State, now time.Tim
 
 func (o *Orchestrator) abandonClaim(ctx context.Context, issueID string) error {
 	if o.scheduling != nil {
-		return o.scheduling.ReleaseClaim(ctx, issueID, "orchestrator_release")
+		err := o.scheduling.ReleaseClaim(ctx, issueID, "orchestrator_release")
+		if err == nil || errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrSchedulingClaimLost) {
+			o.heartbeats.remove(issueID)
+		}
+		return err
 	}
 	if !o.cfg.Claiming.Enabled || strings.TrimSpace(o.cfg.Claiming.LeaseField) == "" {
 		return nil
@@ -1608,6 +1612,7 @@ func (o *Orchestrator) abandonClaim(ctx context.Context, issueID string) error {
 	if strings.TrimSpace(issueID) == "" || o.connector == nil {
 		return nil
 	}
+	o.heartbeats.remove(issueID)
 	if err := o.connector.SetField(ctx, issueID, o.cfg.Claiming.LeaseField, ""); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("abandon claim lease failed", "issue_id", issueID, "error", err)
