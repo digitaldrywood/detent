@@ -19,6 +19,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/displayorder"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -148,6 +149,12 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 		tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "list-dependency"}, ExpectedRevision: expected[0].Revision, RelatedWorkItemID: expected[1].WorkItemID, Operation: "add"})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &expected[0])
+	detailItem := expected[60]
+	slices.SortFunc(expected, func(left, right tracker.NativeIssue) int {
+		return displayorder.Compare(false,
+			displayorder.Item{Priority: left.Priority, LastActivityAt: left.LastActivityAt, Identifier: string(left.ProjectID) + "#" + strconv.Itoa(left.Number)},
+			displayorder.Item{Priority: right.Priority, LastActivityAt: right.LastActivityAt, Identifier: string(right.ProjectID) + "#" + strconv.Itoa(right.Number)})
+	})
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	var firstCursor string
 	var baseline []byte
@@ -215,7 +222,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 					}
 				})
 			}
-			itemArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(expected[60].WorkItemID)}
+			itemArgs := map[string]any{"project_id": string(f.project.ID), "reference": string(detailItem.WorkItemID)}
 			for _, tool := range []string{operatortool.WorkItem, operatortool.WorkExport} {
 				data := hostedContextData(t, call("tools/call", tool, itemArgs), false)
 				var result operatortool.WorkReadResult[tracker.NativeIssue]
