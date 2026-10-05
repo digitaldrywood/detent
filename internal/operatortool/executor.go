@@ -242,21 +242,36 @@ func decodeArguments(raw json.RawMessage, target any) error {
 		raw = json.RawMessage(`{}`)
 	}
 	if len(raw) > MaxArgumentBytes {
-		return fmt.Errorf("%w: payload exceeds %d bytes", ErrInvalidArguments, MaxArgumentBytes)
+		return invalidArgument("arguments", fmt.Sprintf("must not exceed %d bytes", MaxArgumentBytes))
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidArguments, err)
+		return argumentDecodeError(err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			err = errors.New("multiple JSON values")
-		}
-		return fmt.Errorf("%w: %w", ErrInvalidArguments, err)
+		return invalidArgument("arguments", "must contain exactly one JSON value")
 	}
 	return nil
+}
+
+func argumentDecodeError(err error) error {
+	var typeError *json.UnmarshalTypeError
+	if errors.As(err, &typeError) {
+		field := typeError.Field
+		if field == "" {
+			field = "arguments"
+		}
+		return invalidArgument(field, "must have type "+typeError.Type.String())
+	}
+	if field, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+		var name string
+		if json.Unmarshal([]byte(field), &name) == nil {
+			return invalidArgument(name, "is not an allowed field")
+		}
+	}
+	return invalidArgument("arguments", "must be valid JSON")
 }
 
 func snapshotFreshness(snapshot telemetry.Snapshot) explain.SourceState {

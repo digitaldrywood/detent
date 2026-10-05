@@ -93,22 +93,22 @@ type MoveItemArguments struct {
 
 func DecodeNativeMoveItem(raw json.RawMessage) (MoveItemArguments, error) {
 	var request MoveItemArguments
-	var fields map[string]json.RawMessage
-	if DecodeArguments(raw, &request) != nil || json.Unmarshal(raw, &fields) != nil || fields == nil {
-		return request, ErrInvalidArguments
+	definition, _ := Lookup(MoveItem)
+	var schema argumentSchema
+	if err := json.Unmarshal(definition.InputSchema, &schema); err != nil {
+		return request, err
 	}
-	for _, value := range fields {
-		if string(value) == "null" {
-			return request, ErrInvalidArguments
+	schema.Required = append(schema.Required, "expected_revision")
+	if err := validateArgumentSchema(raw, schema); err != nil {
+		return request, err
+	}
+	if err := DecodeArguments(raw, &request); err != nil {
+		return request, err
+	}
+	for field, value := range map[string]string{"project_id": request.ProjectID, "identifier": request.Identifier, "target_state": request.TargetState, "request_id": request.RequestID} {
+		if strings.TrimSpace(value) == "" {
+			return request, invalidArgument(field, "must not be blank")
 		}
-	}
-	for _, value := range []string{request.ProjectID, request.Identifier, request.TargetState} {
-		if strings.TrimSpace(value) == "" || len(value) > 256 {
-			return request, ErrInvalidArguments
-		}
-	}
-	if request.ExpectedRevision <= 0 || strings.TrimSpace(request.RequestID) == "" || len(request.RequestID) > 128 {
-		return request, ErrInvalidArguments
 	}
 	return request, nil
 }
