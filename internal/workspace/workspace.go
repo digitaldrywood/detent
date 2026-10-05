@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2344,8 +2345,8 @@ func canonicalGitMetadataPath(path string) (string, error) {
 	for {
 		canonical, err := canonicalExistingPath(path)
 		if err == nil {
-			for i := len(missing) - 1; i >= 0; i-- {
-				canonical = filepath.Join(canonical, missing[i])
+			for _, component := range slices.Backward(missing) {
+				canonical = filepath.Join(canonical, component)
 			}
 			return canonical, nil
 		}

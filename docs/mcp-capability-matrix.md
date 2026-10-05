@@ -2098,7 +2098,7 @@ Create conversation
 - Availability: credential_maintenance / native / hub application service — unavailable: This deployment has no native workspace/conversation application service. Direct calls return opaque unavailable errors; use the authenticated native hub endpoint when configured.
 - Confirmation: authorized call; the client controls user confirmation → none
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations](../internal/hubserver/conversation_api.go#L38), [web/conversation/src/app/work/IssueAsk.tsx:168](../web/conversation/src/app/work/IssueAsk.tsx#L168), [web/conversation/src/app/work/IssueAsk.tsx:169](../web/conversation/src/app/work/IssueAsk.tsx#L169), [web/conversation/src/app/work/IssueAsk.tsx:171](../web/conversation/src/app/work/IssueAsk.tsx#L171), [web/conversation/src/app/work/IssueAsk.tsx:205](../web/conversation/src/app/work/IssueAsk.tsx#L205), [web/conversation/src/app/work/IssueAsk.tsx:309](../web/conversation/src/app/work/IssueAsk.tsx#L309), [web/conversation/src/app/work/IssueAsk.tsx:311](../web/conversation/src/app/work/IssueAsk.tsx#L311), [web/conversation/src/runtime/rpc/http.ts:428](../web/conversation/src/runtime/rpc/http.ts#L428)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations](../internal/hubserver/conversation_api.go#L38), [web/conversation/src/runtime/rpc/http.ts:428](../web/conversation/src/runtime/rpc/http.ts#L428)
 ## hubserver.create_hosted_organization
 
 Create hosted organization
@@ -7808,4 +7808,4 @@ Execute a browser client conversation action
 - Availability: credential_maintenance / github,native / dashboard daemon — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: browser client interaction → not_applicable
 
-Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/actions](../internal/hubserver/conversation_api.go#L45), [web/conversation/src/app/components/InlineActionCard.tsx:25](../web/conversation/src/app/components/InlineActionCard.tsx#L25)
+Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/actions](../internal/hubserver/conversation_api.go#L45), [web/conversation/src/app/components/InlineActionCard.tsx:25](../web/conversation/src/app/components/InlineActionCard.tsx#L25), [web/conversation/src/app/components/InlineActionCard.tsx:46](../web/conversation/src/app/components/InlineActionCard.tsx#L46)

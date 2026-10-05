@@ -170,6 +170,9 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var projects []hostedProjectView
 	decodeHubResponse(t, response, &projects)
+	if projects == nil {
+		t.Fatal("project list omitted the created project")
+	}
 	index := slices.IndexFunc(projects, func(project hostedProjectView) bool { return project.ID == first })
 	if index < 0 || projects[index].Onboarding.Ready || len(projects[index].Onboarding.Steps) == 0 {
 		t.Fatalf("project list readiness = %+v", projects)
@@ -561,10 +564,7 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
-			WorkflowPath: host + "/WORKFLOW.md",
-			Workflow:     []byte("---\ntracker:\n  kind: hub_native\n  api_key: " + host + "-credential\nworkspace:\n  root: " + host + "/worktrees\nworker:\n  ssh_hosts: [local]\nhooks:\n  runner_setup: " + host + "/setup.sh\n  before_run: " + host + "/isolate.sh\n---\nImplement the issue and preserve explicit human review holds.\n"),
-		})
+		workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  api_key: " + host + "-credential\nworkspace:\n  root: " + host + "/worktrees\nworker:\n  ssh_hosts: [local]\nhooks:\n  runner_setup: " + host + "/setup.sh\n  before_run: " + host + "/isolate.sh\n---\nImplement the issue and preserve explicit human review holds.\n"))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -94,8 +94,8 @@ func TestBacklogAdmissionCannotUseConfigWithoutWorkflowFile(t *testing.T) {
 		t.Fatalf("WriteFile(detent.yaml) error = %v", err)
 	}
 	_, err := LoadProjectDefinition(filepath.Join(dir, "WORKFLOW.md"))
-	if err == nil || !strings.Contains(err.Error(), "WORKFLOW.md") || !strings.Contains(err.Error(), "read workflow file") {
-		t.Fatalf("LoadProjectDefinition() error = %v, want missing WORKFLOW.md", err)
+	if err == nil || !strings.Contains(err.Error(), "backlog admission criteria section is required") {
+		t.Fatalf("LoadProjectDefinition() error = %v, want missing admission criteria", err)
 	}
 }
 

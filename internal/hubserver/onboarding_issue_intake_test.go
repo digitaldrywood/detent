@@ -159,6 +159,11 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 					t.Fatal(err)
 				}
 				input := operatortool.GitHubBatchInput{Revision: f.batch.Revision, Action: "apply", Numbers: []int{12, 13, 14}, Destination: "Backlog"}
+				input.Destination = "Todo"
+				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "dispatch-preview", input)); !errors.Is(err, errProjectServiceUnavailable) {
+					t.Fatalf("unconfirmed dispatch=%v", err)
+				}
+				input.Destination = "Backlog"
 				call := projectCall(t, "command_git_hub_batch", string(f.project.ID), "batch-apply", input)
 				a := projectAction(t, e, ctx, call)
 				if a.Status != chatpkg.ActionSucceeded || strings.Contains(a.Result, "credential-secret") {
@@ -182,11 +187,6 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				if json.Unmarshal(result.Content, &envelope) != nil || len(envelope.Data.Batch.Items) != 1 || len(envelope.Data.Batch.Page.Issues) != 1 {
 					t.Fatalf("batch bounds=%s", result.Content)
 				}
-				input.Action, input.AllowDispatch = "apply", true
-				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "dispatch-preview", input)); !errors.Is(err, errProjectServiceUnavailable) {
-					t.Fatalf("unapproved dispatch=%v", err)
-				}
-				input.AllowDispatch = false
 				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "stale-batch", input)); !errors.Is(err, mutation.ErrConflict) {
 					t.Fatalf("stale batch=%v", err)
 				}

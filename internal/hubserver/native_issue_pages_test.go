@@ -64,7 +64,7 @@ func TestNativeWorkListOrder(t *testing.T) {
 
 func TestNativeWorkListPagingDuringChanges(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "changing-list")
-	var original []tracker.NativeIssue
+	original := make([]tracker.NativeIssue, 0, 12)
 	for index := range 12 {
 		issue := f.create(t, fmt.Sprintf("changing-%d", index))
 		state := f.project.States[index%len(f.project.States)]

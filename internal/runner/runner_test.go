@@ -3085,7 +3085,7 @@ func TestRunnerRunCompletionLeaseOnOrphanResume(t *testing.T) {
 				"The orchestrator is the only writer of tracker lane state",
 				repositoryHandoffContract,
 				"Pending acceptance remains unverified",
-				"Preserve explicit pre-merge runtime evidence, human approvals, and project gates",
+				"Preserve pre-merge evidence, approvals and gates",
 			} {
 				if !strings.Contains(prompt, want) {
 					t.Errorf("prompt missing %q", want)

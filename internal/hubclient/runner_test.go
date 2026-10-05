@@ -502,7 +502,11 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 			t.Fatalf("stale heartbeat disturbed the active lease: %v", err)
 		}
 	})
-	if err := scheduler.RunExecution(string(issue.WorkItemID)).Finish(t.Context(), "interrupted"); err != nil {
+	execution := scheduler.RunExecution(string(issue.WorkItemID))
+	if execution == nil {
+		t.Fatal("claimed issue has no native execution")
+	}
+	if err := execution.Finish(t.Context(), "interrupted"); err != nil {
 		t.Fatal(err)
 	}
 	if err := scheduler.ReleaseClaim(t.Context(), string(issue.WorkItemID), "interrupted"); err != nil {
@@ -616,6 +620,8 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 
 		case strings.HasSuffix(r.URL.Path, "/policy"):
 			_ = json.NewEncoder(w).Encode(policy.Approval{Policy: approved})
+		case strings.HasSuffix(r.URL.Path, "/policy/observed"):
+			w.WriteHeader(http.StatusNoContent)
 		case strings.HasSuffix(r.URL.Path, "/renew"):
 			var mutation tracker.NativeLeaseMutation
 			if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil {

@@ -9492,48 +9492,6 @@
           "resolved_path": "/api/v2/organizations/:organization/projects/:project/conversations"
         },
         {
-          "source": "web/conversation/src/app/work/IssueAsk.tsx",
-          "kind": "form",
-          "definition": "<form onSubmit={(event) => { event.preventDefault(); void submit(question); }} className=\"flex items-center gap-2\" >",
-          "occurrence": 1,
-          "line": 168
-        },
-        {
-          "source": "web/conversation/src/app/work/IssueAsk.tsx",
-          "kind": "attribute",
-          "definition": "onSubmit={(event) => { event.preventDefault(); void submit(question); }}",
-          "occurrence": 1,
-          "line": 169
-        },
-        {
-          "source": "web/conversation/src/app/work/IssueAsk.tsx",
-          "kind": "request",
-          "definition": "submit(question)",
-          "occurrence": 1,
-          "line": 171
-        },
-        {
-          "source": "web/conversation/src/app/work/IssueAsk.tsx",
-          "kind": "request",
-          "definition": "submit(text)",
-          "occurrence": 1,
-          "line": 205
-        },
-        {
-          "source": "web/conversation/src/app/work/IssueAsk.tsx",
-          "kind": "form",
-          "definition": "<form className=\"mt-auto space-y-2\" onSubmit={(event) => { event.preventDefault(); void ask.start(question).then((sent) => { if (sent) setQuestion(\"\"); }); }} >",
-          "occurrence": 1,
-          "line": 309
-        },
-        {
-          "source": "web/conversation/src/app/work/IssueAsk.tsx",
-          "kind": "attribute",
-          "definition": "onSubmit={(event) => { event.preventDefault(); void ask.start(question).then((sent) => { if (sent) setQuestion(\"\"); }); }}",
-          "occurrence": 1,
-          "line": 311
-        },
-        {
           "source": "web/conversation/src/runtime/rpc/http.ts",
           "kind": "request",
           "definition": "send(CreateConversationResponse,\"POST\",url(`${projectBase(input.projectId)}/conversations`),{ key: input.key, ...(input.subjectWorkItemId === undefined ? {} : { subject_work_item_id: input.subjectWorkItemId }), ...(input.title === undefined ? {} : { title: input.title }), ...(input.firstMessage === undefined ? {} : { first_message: input.firstMessage }), })",
@@ -37381,6 +37339,13 @@
           "definition": "fetch(`${client.bootstrap.api_base}/projects/${encodeURIComponent(String(proposal.action.project_id))}/conversations/${encodeURIComponent(proposal.conversation_id)}/actions`,{ method: \"POST\", credentials: \"same-origin\", headers: { \"Content-Type\": \"application/json\", \"X-CSRF-Token\": client.bootstrap.csrf_token }, body: JSON.stringify(proposal.action), })",
           "occurrence": 1,
           "line": 25
+        },
+        {
+          "source": "web/conversation/src/app/components/InlineActionCard.tsx",
+          "kind": "attribute",
+          "definition": "action={proposal.action}",
+          "occurrence": 1,
+          "line": 46
         }
       ],
       "availability": [
