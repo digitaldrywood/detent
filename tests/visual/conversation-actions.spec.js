@@ -49,3 +49,43 @@ test("unavailable Hub PR mode is refused and the owner can retry a blocked issue
   await expect.poll(async () => (await projectRead(page, `work-items/${hub.fixture.work_item}`)).state).toBe("Todo");
   await expect(page.getByText(/move item: succeeded/)).toBeVisible();
 });
+
+test("an issue split is reviewed once, cancelled without filing, and confirmed atomically", async ({ page }) => {
+  await page.goto(hub.fixture.accounts.owner);
+  await page.goto(`${hub.fixture.chat}/p/${hub.fixture.project_id}`);
+  const workItems = async () => (await projectRead(page, "work-items")).items;
+  const initial = await workItems();
+
+  await askLuna(page, "Propose a cyclic split.");
+  await expect(page.getByText(/Dependencies cannot form a cycle/).first()).toBeVisible();
+  await expect(page.getByTestId("operator-approval-card")).toHaveCount(0);
+  expect((await workItems()).length).toBe(initial.length);
+
+  await askLuna(page, "Split this issue into three children.");
+  const cancelled = page.getByTestId("operator-approval-card").last().frameLocator("iframe");
+  await expect(cancelled.getByTestId("issue-split-proposal")).toBeVisible();
+  await expect(cancelled.getByRole("heading", { name: "1. Split storage", exact: true })).toBeVisible();
+  await expect(cancelled.getByRole("heading", { name: "2. Split API", exact: true })).toBeVisible();
+  await expect(cancelled.getByRole("heading", { name: "3. Split UI", exact: true })).toBeVisible();
+  await expect(cancelled.getByRole("group", { name: "Dependency graph" })).toContainText("2. Split API → blocked by → 1. Split storage");
+  expect((await workItems()).length).toBe(initial.length);
+  await cancelled.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByText(/rejected/).first()).toBeVisible();
+  expect((await workItems()).length).toBe(initial.length);
+
+  await askLuna(page, "Split this issue now, with the same three children.");
+  const confirmed = page.getByTestId("operator-approval-card").last().frameLocator("iframe");
+  await expect(confirmed.getByTestId("issue-split-proposal").last()).toBeVisible();
+  await confirmed.getByRole("button", { name: "Confirm action", exact: true }).click();
+  await expect.poll(async () => (await workItems()).length).toBe(initial.length + 3);
+  const children = (await workItems()).filter((item) => item.title.startsWith("Split "));
+  const storage = children.find((item) => item.title === "Split storage");
+  const api = await projectRead(page, `work-items/${children.find((item) => item.title === "Split API").work_item_id}`);
+  expect(api.state).toBe("Todo");
+  expect(api.dependencies).toEqual([storage.work_item_id]);
+  const parent = await projectRead(page, `work-items/${hub.fixture.work_item}`);
+  expect(new Set(parent.dependencies)).toEqual(new Set(children.map((item) => item.work_item_id)));
+  const comments = await projectRead(page, `work-items/${hub.fixture.work_item}/comments`);
+  const comment = comments.items.find((item) => item.body.includes("Approved issue split:"));
+  for (const child of children) expect(comment.body).toContain(child.work_item_id);
+});

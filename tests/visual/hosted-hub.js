@@ -65,7 +65,7 @@ async function startHostedHub(name = "conversation", options = {}) {
       "4",
       "./internal/hubserver",
       "-run",
-      "TestHostedBrowserPreview",
+      "^TestHostedBrowserPreview$",
       "-count=1",
       "-v",
       "-timeout",

@@ -141,53 +141,57 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 func (s *Service) changeNativeDependencyCommand(ctx context.Context, scope nativeScope, item string, request tracker.DependencyMutation) (json.RawMessage, error) {
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/dependencies", Item: item, RequireLease: true, Feature: "collaboration"}
 	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		issue, dependentID, err := readNativeIssue(ctx, tx, scope, item)
-		if err != nil {
-			return nil, err
-		}
-		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
-			return nil, err
-		}
-		if request.Operation != "add" && request.Operation != "remove" {
-			return nil, nativeInvalid("Dependency operation must be add or remove")
-		}
-		condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
-		args := append([]any{scope.organization, request.RelatedWorkItemID}, grantArgs...)
-		var blockerID tracker.WorkItemID
-		var blockerProject tracker.ProjectID
-		err = tx.QueryRowContext(ctx, `SELECT i.id, i.project_id FROM issues i WHERE i.organization_id = ? AND i.native_id = ?
-AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
-		if err != nil {
-			return nil, err
-		}
-		if blockerID == dependentID {
-			return nil, nativeInvalid("Dependencies cannot form a cycle")
-		}
-		if request.Operation == "add" {
-			var cycle int
-			err := tx.QueryRowContext(ctx, `WITH RECURSIVE reachable(id) AS (SELECT dependent_issue_id FROM issue_dependencies WHERE blocker_issue_id = ? UNION SELECT d.dependent_issue_id FROM issue_dependencies d JOIN reachable r ON d.blocker_issue_id = r.id) SELECT count(*) FROM reachable WHERE id = ?`, dependentID, blockerID).Scan(&cycle)
-			if err != nil {
-				return nil, err
-			}
-			if cycle != 0 {
-				return nil, nativeInvalid("Dependencies cannot form a cycle")
-			}
-			_, err = tx.ExecContext(ctx, "INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at) VALUES (?, ?, 'native', ?, ?) ON CONFLICT DO NOTHING", blockerID, dependentID, formatHubTime(now), formatHubTime(now))
-			if err != nil {
-				return nil, err
-			}
-			if !slices.Contains(issue.Dependencies, request.RelatedWorkItemID) {
-				issue.Dependencies = append(issue.Dependencies, request.RelatedWorkItemID)
-				slices.Sort(issue.Dependencies)
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, "DELETE FROM issue_dependencies WHERE blocker_issue_id = ? AND dependent_issue_id = ?", blockerID, dependentID); err != nil {
-				return nil, err
-			}
-			issue.Dependencies = slices.DeleteFunc(issue.Dependencies, func(id tracker.NativeWorkItemID) bool { return id == request.RelatedWorkItemID })
-		}
-		return persistNativeIssue(ctx, tx, scope, issue, "dependency.changed", tracker.CollaborationData{RelatedWorkItemID: request.RelatedWorkItemID, Operation: request.Operation}, now)
+		return changeNativeDependencyTx(ctx, tx, scope, item, request, now)
 	})
+}
+
+func changeNativeDependencyTx(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, request tracker.DependencyMutation, now time.Time) (tracker.NativeIssue, error) {
+	issue, dependentID, err := readNativeIssue(ctx, tx, scope, item)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	if request.Operation != "add" && request.Operation != "remove" {
+		return tracker.NativeIssue{}, nativeInvalid("Dependency operation must be add or remove")
+	}
+	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+	args := append([]any{scope.organization, request.RelatedWorkItemID}, grantArgs...)
+	var blockerID tracker.WorkItemID
+	var blockerProject tracker.ProjectID
+	err = tx.QueryRowContext(ctx, `SELECT i.id, i.project_id FROM issues i WHERE i.organization_id = ? AND i.native_id = ?
+AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	if blockerID == dependentID {
+		return tracker.NativeIssue{}, nativeInvalid("Dependencies cannot form a cycle")
+	}
+	if request.Operation == "add" {
+		var cycle int
+		err := tx.QueryRowContext(ctx, `WITH RECURSIVE reachable(id) AS (SELECT dependent_issue_id FROM issue_dependencies WHERE blocker_issue_id = ? UNION SELECT d.dependent_issue_id FROM issue_dependencies d JOIN reachable r ON d.blocker_issue_id = r.id) SELECT count(*) FROM reachable WHERE id = ?`, dependentID, blockerID).Scan(&cycle)
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		if cycle != 0 {
+			return tracker.NativeIssue{}, nativeInvalid("Dependencies cannot form a cycle")
+		}
+		_, err = tx.ExecContext(ctx, "INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at) VALUES (?, ?, 'native', ?, ?) ON CONFLICT DO NOTHING", blockerID, dependentID, formatHubTime(now), formatHubTime(now))
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		if !slices.Contains(issue.Dependencies, request.RelatedWorkItemID) {
+			issue.Dependencies = append(issue.Dependencies, request.RelatedWorkItemID)
+			slices.Sort(issue.Dependencies)
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM issue_dependencies WHERE blocker_issue_id = ? AND dependent_issue_id = ?", blockerID, dependentID); err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		issue.Dependencies = slices.DeleteFunc(issue.Dependencies, func(id tracker.NativeWorkItemID) bool { return id == request.RelatedWorkItemID })
+	}
+	return persistNativeIssue(ctx, tx, scope, issue, "dependency.changed", tracker.CollaborationData{RelatedWorkItemID: request.RelatedWorkItemID, Operation: request.Operation}, now)
 }
 
 func (s *Service) createNativeCommentCommand(ctx context.Context, scope nativeScope, item string, request tracker.CreateComment) (json.RawMessage, error) {
