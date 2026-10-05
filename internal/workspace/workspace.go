@@ -168,6 +168,7 @@ type DeliverableState struct {
 
 type ReworkPreparer interface {
 	PrepareRework(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
+	VerifyReworkRecovery(context.Context, Info, Issue, string, string, RecoveryState) (bool, error)
 }
 
 type NativeWorkFinalizer interface {

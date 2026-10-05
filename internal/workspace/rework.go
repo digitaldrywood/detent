@@ -22,6 +22,127 @@ func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, op
 	return l.prepareRework(ctx, info, issue, opts)
 }
 
+func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Issue, sourceHead, sourceDigest string, observed RecoveryState) (bool, error) {
+	info, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return false, err
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	paused, err := l.verifyReworkBranch(ctx, info, issue)
+	if err != nil || !paused {
+		return false, err
+	}
+	if sourceHead == "" || sourceDigest != workspaceRecoveryFingerprint(sourceHead, "") {
+		return false, nil
+	}
+	branchHead, err := runGitAt(ctx, info.Path, "rev-parse", "refs/heads/"+info.Branch)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(branchHead) != sourceHead {
+		return false, nil
+	}
+	dir, err := gitPathFor(ctx, info.Path, "rebase-merge")
+	if err != nil {
+		return false, err
+	}
+	ontoBytes, err := os.ReadFile(filepath.Join(dir, "onto"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	onto := strings.TrimSpace(string(ontoBytes))
+	base, err := l.localProgressBase(ctx, info.Path, issue)
+	if err != nil {
+		return false, err
+	}
+	if _, err := runGitAt(ctx, info.Path, "merge-base", "--is-ancestor", onto, base); err != nil {
+		var commandErr *CommandError
+		if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	scratch, err := os.MkdirTemp("", "detent-rework-verification-*")
+	if err != nil {
+		return false, err
+	}
+	defer os.RemoveAll(scratch)
+	replay := filepath.Join(scratch, "source")
+	if _, err := runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "clone", "--shared", "--no-checkout", "--", info.Path, replay); err != nil {
+		return false, err
+	}
+	if _, err := runGitAt(ctx, replay, "-c", "core.hooksPath="+os.DevNull, "checkout", "-B", info.Branch, sourceHead); err != nil {
+		return false, err
+	}
+	stat, err := GitDiffStat(ctx, replay)
+	if err != nil {
+		return false, err
+	}
+	if workspaceRecoveryFingerprint(sourceHead, stat.Fingerprint) != sourceDigest {
+		return false, nil
+	}
+	_, rebaseErr := runGitAt(ctx, replay, "-c", "core.hooksPath="+os.DevNull, "-c", "rerere.enabled=false", "rebase", "--no-gpg-sign", "--no-update-refs", "--no-autostash", "--no-rebase-merges", onto)
+	prepared, err := reworkRebaseResult(ctx, replay, rebaseErr)
+	if err != nil || prepared.Status != MergePrepareStatusConflict {
+		return false, err
+	}
+	head, err := runGitAt(ctx, replay, "rev-parse", "HEAD")
+	if err != nil {
+		return false, err
+	}
+	stat, err = GitDiffStat(ctx, replay)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(head) != observed.HeadSHA || workspaceRecoveryFingerprint(strings.TrimSpace(head), stat.Fingerprint) != observed.WorkspaceFingerprint {
+		return false, nil
+	}
+	replayDir, err := gitPathFor(ctx, replay, "rebase-merge")
+	if err != nil {
+		return false, err
+	}
+	for _, name := range []string{"head-name", "orig-head", "onto", "stopped-sha", "done", "git-rebase-todo", "autostash", "strategy", "strategy_opts", "rewritten-list", "msgnum", "end", "message", "author-script"} {
+		actual, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+		expected, err := os.ReadFile(filepath.Join(replayDir, name))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+		if strings.TrimSpace(string(actual)) != strings.TrimSpace(string(expected)) {
+			return false, nil
+		}
+	}
+	actualIndex, err := runGitAt(ctx, info.Path, "ls-files", "--stage", "-v", "-z")
+	if err != nil {
+		return false, err
+	}
+	expectedIndex, err := runGitAt(ctx, replay, "ls-files", "--stage", "-v", "-z")
+	if err != nil {
+		return false, err
+	}
+	if actualIndex != expectedIndex {
+		return false, nil
+	}
+	paused, err = l.verifyReworkBranch(ctx, info, issue)
+	if err != nil || !paused {
+		return false, err
+	}
+	current, err := l.RecoveryState(ctx, info, issue)
+	if err != nil {
+		return false, err
+	}
+	return current.HeadSHA == observed.HeadSHA && current.WorkspaceFingerprint == observed.WorkspaceFingerprint, nil
+}
+
 func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions) (MergePrepareResult, error) {
 	paused, err := l.verifyReworkBranch(ctx, info, issue)
 	if err != nil {

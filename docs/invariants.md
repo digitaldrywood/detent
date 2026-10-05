@@ -60,8 +60,14 @@ provider-session availability before host preparation changes the worktree.
 Existing assigned worktrees retain their branch and source; creation cannot
 repair foreign ownership. The fenced execution owner captures the verified
 source and the host preparation result before the worker continues, including
-an owned paused rebase. Unknown changes and unavailable authority remain
-refusals, never checkpoint rewrites or relaxed comparisons.
+an owned paused rebase. For an already-paused assigned rebase, the existing
+Rework owner verifies the original unpushed source checkpoint and reproduces
+the preparation in isolated scratch. Its source replay plan, index entries,
+detached head and conflict content must match the preserved worktree before
+the same fenced checkpoint owner records the actual transition and resumes
+the session. Commit metadata alone cannot establish that transition. Unknown
+changes and unavailable authority remain refusals, never checkpoint rewrites
+or relaxed comparisons.
 
 Permanent pre-provider native recovery refusals use the existing completion
 and admission owners to retain a non-dispatchable review handoff before claim

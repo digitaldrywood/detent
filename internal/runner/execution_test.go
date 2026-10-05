@@ -142,6 +142,15 @@ type resumedExecutionWorkspace struct {
 	afterRun          bool
 	prepared          bool
 	beforePreparation func()
+	afterVerification func()
+}
+
+func (w *resumedExecutionWorkspace) VerifyReworkRecovery(ctx context.Context, info workspace.Info, issue workspace.Issue, head, digest string, observed workspace.RecoveryState) (bool, error) {
+	verified, err := w.LocalGit.VerifyReworkRecovery(ctx, info, issue, head, digest, observed)
+	if w.afterVerification != nil {
+		w.afterVerification()
+	}
+	return verified, err
 }
 
 func (w *resumedExecutionWorkspace) PrepareRework(ctx context.Context, info workspace.Info, issue workspace.Issue, opts workspace.MergePrepareOptions) (workspace.MergePrepareResult, error) {
@@ -160,21 +169,58 @@ func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace
 func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name                   string
-		dirty                  bool
-		edit                   func(*testExecution, *fakeCodexClient)
-		blocked                bool
-		changedPolicy          bool
-		providerNotStarted     bool
-		providerHadTurns       bool
-		startupFailsAgain      bool
-		observedProvider       bool
-		defaultModel           bool
-		legacyTurns            bool
-		configuredDefaultLabel bool
-		rework                 bool
-		foreign                string
+		name                    string
+		dirty                   bool
+		edit                    func(*testExecution, *fakeCodexClient)
+		blocked                 bool
+		changedPolicy           bool
+		providerNotStarted      bool
+		providerHadTurns        bool
+		startupFailsAgain       bool
+		observedProvider        bool
+		defaultModel            bool
+		legacyTurns             bool
+		configuredDefaultLabel  bool
+		rework                  bool
+		paused                  bool
+		resolved                bool
+		signedPause             bool
+		advancedBase            bool
+		revokeAfterVerification bool
+		foreign                 string
 	}{
+		{name: "already paused unpushed rework", rework: true, paused: true},
+		{name: "already paused worker resolves", rework: true, paused: true, resolved: true},
+		{name: "already paused inherited signing", rework: true, paused: true, signedPause: true},
+		{name: "already paused base advanced", rework: true, paused: true, advancedBase: true},
+		{name: "already paused fence lost during verification", rework: true, paused: true, revokeAfterVerification: true, blocked: true},
+		{name: "already paused foreign digest", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "foreign"
+		}},
+		{name: "already paused foreign head", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Checkpoint.HeadSHA = "foreign" }},
+		{name: "already paused foreign branch", rework: true, paused: true, foreign: "head-name", blocked: true},
+		{name: "already paused foreign orig-head", rework: true, paused: true, foreign: "orig-head", blocked: true},
+		{name: "already paused foreign target", rework: true, paused: true, foreign: "onto", blocked: true},
+		{name: "already paused assigned branch moved", rework: true, paused: true, foreign: "branch-ref", blocked: true},
+		{name: "already paused additional refs", rework: true, paused: true, foreign: "update-refs", blocked: true},
+		{name: "already paused unknown autostash", rework: true, paused: true, foreign: "autostash", blocked: true},
+		{name: "already paused changed replay plan", rework: true, paused: true, foreign: "git-rebase-todo", blocked: true},
+		{name: "already paused unknown conflict edit", rework: true, paused: true, foreign: "digest", blocked: true},
+		{name: "already paused unknown untracked edit", rework: true, paused: true, foreign: "untracked", blocked: true},
+		{name: "already paused index changed", rework: true, paused: true, foreign: "index", blocked: true},
+		{name: "already paused hidden index edit", rework: true, paused: true, foreign: "hidden-index", blocked: true},
+		{name: "already paused lease revoked", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.validateErr = ErrExecutionAuthorityUnavailable }},
+		{name: "already paused host changed", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
+		{name: "already paused policy changed", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].PolicyID = "other-policy" }},
+		{name: "already paused unavailable checkpoint", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
+		}},
+		{name: "already paused unavailable session", rework: true, paused: true, blocked: true, edit: func(_ *testExecution, a *fakeCodexClient) { a.verifyErr = errors.New("session unavailable") }},
+		{name: "already paused missing session", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
+		{name: "already paused ambiguous publication", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+			e.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
+			e.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
+		}},
 		{name: "interrupted unpushed rework", rework: true},
 		{name: "rework foreign digest", rework: true, foreign: "digest", blocked: true},
 		{name: "rework foreign head", rework: true, foreign: "head", blocked: true},
@@ -306,10 +352,8 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			worktree := "clean"
 			contents := []byte("source repo\n")
 			if test.dirty {
-				worktree = "dirty"
 				contents = []byte("unfinished original source\n")
 			}
 			if err := os.WriteFile(filepath.Join(info.Path, "README.md"), contents, 0o600); err != nil {
@@ -320,9 +364,11 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), contents, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				runRunnerGit(t, info.Path, "add", "README.md")
+				if err := os.WriteFile(filepath.Join(info.Path, "stable.md"), []byte("preserved companion\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, info.Path, "add", "README.md", "stable.md")
 				runRunnerGit(t, info.Path, "commit", "-m", "preserved feature")
-				worktree = "unpushed"
 				if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("advanced base\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -333,6 +379,34 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			local, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
 			if err != nil {
 				t.Fatal(err)
+			}
+			sourceCheckpoint := executionCheckpoint(&local)
+			sourceCheckpoint.Resume = "resume_session"
+			if test.rework && sourceCheckpoint.WorktreeState != "unpushed" {
+				t.Fatalf("original source checkpoint is not genuinely unpushed: %+v", sourceCheckpoint)
+			}
+			if test.paused {
+				if test.signedPause {
+					runRunnerGit(t, info.Path, "fetch", "origin")
+					if err := runAgentGit(ctx, info.Path, "rebase", "--gpg-sign", "--no-update-refs", "origin/main"); err == nil {
+						t.Fatal("inherited rebase did not pause")
+					}
+				}
+				pausedIssue := workspaceIssue("native", issue)
+				pausedIssue.NativeRework = true
+				prepared, err := gitWorkspace.PrepareRework(ctx, info, pausedIssue, workspace.MergePrepareOptions{})
+				if err != nil || prepared.Status != workspace.MergePrepareStatusConflict {
+					t.Fatalf("historical preparation did not pause: %+v, %v", prepared, err)
+				}
+				if test.advancedBase {
+					if err := os.WriteFile(filepath.Join(source, "later.md"), []byte("later base\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runRunnerGit(t, source, "add", "later.md")
+					runRunnerGit(t, source, "commit", "-m", "later base")
+					runRunnerGit(t, source, "push", "origin", "main")
+					runRunnerGit(t, info.Path, "fetch", "origin")
+				}
 			}
 			backend := &resumedExecutionWorkspace{LocalGit: gitWorkspace}
 			overload := errors.New("serverOverloaded: selected model at capacity")
@@ -347,9 +421,12 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			if test.defaultModel {
 				nativeIdentity.Model = "provider_default"
 			}
-			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "host", PolicyID: approved.ID}, Attempts: []tracker.NativeAttempt{{Status: "interrupted", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: approved.ID, Identity: &nativeIdentity, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: worktree, HeadSHA: local.HeadSHA, WorkspaceDigest: local.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}}}}}
+			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "host", PolicyID: approved.ID}, Attempts: []tracker.NativeAttempt{{Status: "interrupted", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: approved.ID, Identity: &nativeIdentity, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}, Checkpoint: &sourceCheckpoint}}}}
 			if test.edit != nil {
 				test.edit(execution, agent)
+			}
+			if test.revokeAfterVerification {
+				backend.afterVerification = func() { execution.validateErr = ErrExecutionAuthorityUnavailable }
 			}
 			if test.foreign == "digest" {
 				contents = []byte("foreign source\n")
@@ -360,11 +437,57 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "foreign head")
 			} else if test.foreign == "branch" {
 				runRunnerGit(t, info.Path, "checkout", "-b", "foreign")
+			} else if test.foreign == "branch-ref" {
+				runRunnerGit(t, source, "update-ref", "refs/heads/"+info.Branch, local.HeadSHA+"^")
+			} else if test.foreign == "index" {
+				runRunnerGit(t, info.Path, "update-index", "--force-remove", "README.md")
+			} else if test.foreign == "hidden-index" {
+				runRunnerGit(t, info.Path, "update-index", "--assume-unchanged", "stable.md")
+				if err := os.WriteFile(filepath.Join(info.Path, "stable.md"), []byte("hidden foreign edit\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if test.foreign == "untracked" {
+				if err := os.WriteFile(filepath.Join(info.Path, "foreign.md"), []byte("foreign\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else if test.paused && test.foreign != "" {
+				gitDir := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "--absolute-git-dir"))
+				value := "foreign\n"
+				if test.foreign == "git-rebase-todo" {
+					value = "pick " + local.HeadSHA + " preserved feature\n"
+				} else if test.foreign == "onto" {
+					value = local.HeadSHA + "\n"
+				}
+				if err := os.WriteFile(filepath.Join(gitDir, "rebase-merge", test.foreign), []byte(value), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeRun, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexPath := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "--git-path", "index"))
+			indexBefore, err := os.ReadFile(indexPath)
+			if err != nil {
+				t.Fatal(err)
 			}
 			backend.beforePreparation = func() {
-				if !execution.started || execution.checkpoint == nil || execution.checkpoint.HeadSHA != local.HeadSHA || execution.checkpoint.WorkspaceDigest != local.WorkspaceFingerprint || execution.checkpoint.Resume != "resume_session" {
+				if !execution.started || execution.checkpoint == nil || execution.checkpoint.HeadSHA != beforeRun.HeadSHA || execution.checkpoint.WorkspaceDigest != beforeRun.WorkspaceFingerprint || execution.checkpoint.Resume != "resume_session" {
 					t.Fatalf("preparation preceded verified checkpoint: %+v", execution.checkpoint)
 				}
+			}
+			var worker AgentBackend = agent
+			if test.resolved {
+				resolving := &resolvingReworkAgent{fakeCodexClient: *agent, t: t}
+				resolving.beforeStage = func() {
+					backend.beforePreparation()
+					index, err := os.ReadFile(indexPath)
+					if err != nil || string(index) != string(indexBefore) {
+						t.Fatalf("recovery altered the paused index: %v", err)
+					}
+				}
+				agent = &resolving.fakeCodexClient
+				worker = resolving
 			}
 			if test.changedPolicy {
 				approved.Gates.MergeMethod = "merge"
@@ -380,11 +503,35 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			if test.providerNotStarted {
 				cfg.Agents.Routes[0].Model = model
 			}
-			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: worker, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}
 			result, err := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: execution, WorkAttemptID: currentAttemptID, Issue: issue, Mode: RunModeImplement})
+			if test.resolved {
+				if err != nil || agent.calls != 1 || agent.request.Resume != originalResume || agent.verifiedResume != originalResume || execution.finish != "succeeded" {
+					t.Fatalf("historical resolution failed: %+v, %v, %+v", result, err, execution)
+				}
+				head := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+				if head == beforeRun.HeadSHA || strings.TrimSpace(runRunnerGit(t, info.Path, "symbolic-ref", "HEAD")) != "refs/heads/"+info.Branch || strings.TrimSpace(runRunnerGit(t, info.Path, "show", "HEAD:README.md")) != "resolved" {
+					t.Fatal("host did not finalize the resolved source on the assigned branch")
+				}
+				latest, err := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumed, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
+				if err != nil || resumed.ResumedFromSessionID.Int64 != sessionID || resumed.FinalState.String != "completed" {
+					t.Fatalf("resolved session lost provenance: %+v, %v", resumed, err)
+				}
+				return
+			}
+			if test.paused {
+				index, readErr := os.ReadFile(indexPath)
+				if readErr != nil || string(index) != string(indexBefore) {
+					t.Fatalf("recovery changed paused index: %v", readErr)
+				}
+			}
 			if test.blocked {
 				if err == nil || agent.calls != 0 || execution.started || backend.prepared || execution.checkpoint != nil {
 					t.Fatalf("invalid recovery ran: error=%v turns=%d started=%v", err, agent.calls, execution.started)
@@ -623,7 +770,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 					Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: "dirty", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"},
 				}}}
 				test.edit(&recovery, &local, &available)
-				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh)
+				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh, false)
 				wantAction, wantReason := test.action, test.reason
 				if mode == RetryModeFresh && wantAction == "resume_session" {
 					wantAction, wantReason = "fresh_checkout", "session_restart_required"
