@@ -197,7 +197,52 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if _, err := runGitAt(ctx, normalized.Path, "merge-base", "--is-ancestor", mergeSHA, baseRef); err != nil {
 		return LandResult{}, fmt.Errorf("GitHub merge commit %s is not on %s: %w", mergeSHA, base, err)
 	}
+	if opts.External == nil && branch == autoBranchPrefix+"landing/"+strings.ToLower(normalized.Key)+"/"+head {
+		if err := closeSupersededLandingPulls(ctx, opts.GitHubClient, repository, base, normalized.Key, pull.Number); err != nil {
+			operation := "github.update_pull_request repos/" + repository + "/pulls"
+			var status *github.StatusError
+			if errors.As(err, &status) && status.StatusCode >= 500 && status.StatusCode <= 599 {
+				err = forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: operation}, forgeavailability.ClassServer, err)
+			} else if class, unavailable := forgeavailability.Classify(operation, err.Error()); unavailable {
+				err = forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: operation}, class, err)
+			}
+			return LandResult{}, fmt.Errorf("close superseded landing pull requests after merging %d: %w", pull.Number, err)
+		}
+	}
 	return LandResult{MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil}, nil
+}
+
+func closeSupersededLandingPulls(ctx context.Context, client GitHubRESTClient, repository, base, key string, mergedNumber int) error {
+	prefix := autoBranchPrefix + "landing/" + strings.ToLower(key) + "/"
+	var superseded []githubLandingPull
+	for page := 1; ; page++ {
+		var pulls []githubLandingPull
+		path := fmt.Sprintf("repos/%s/pulls?state=open&base=%s&per_page=100&page=%d", repository, url.QueryEscape(base), page)
+		if err := client.REST(ctx, http.MethodGet, path, nil, &pulls); err != nil {
+			return err
+		}
+		for _, pull := range pulls {
+			if pull.Number <= 0 || pull.Number >= mergedNumber || pull.State != "open" || pull.Merged || pull.MergedAt != "" ||
+				pull.Head.Repo.FullName != repository || pull.Base.Repo.FullName != repository || pull.Base.Ref != base ||
+				!strings.HasPrefix(pull.Head.Ref, prefix) || !validLandingHead(strings.TrimPrefix(pull.Head.Ref, prefix)) {
+				continue
+			}
+			superseded = append(superseded, pull)
+		}
+		if len(pulls) < 100 {
+			break
+		}
+	}
+	for _, pull := range superseded {
+		comment := map[string]string{"body": fmt.Sprintf("Superseded by the merged landing pull request https://github.com/%s/pull/%d.", repository, mergedNumber)}
+		if err := client.REST(ctx, http.MethodPost, fmt.Sprintf("repos/%s/issues/%d/comments", repository, pull.Number), comment, nil); err != nil {
+			return err
+		}
+		if err := client.REST(ctx, http.MethodPatch, fmt.Sprintf("repos/%s/pulls/%d", repository, pull.Number), map[string]string{"state": "closed"}, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func githubLandingMergedCommit(ctx context.Context, client GitHubRESTClient, repository string, number int, head, branch, base string) (string, error) {

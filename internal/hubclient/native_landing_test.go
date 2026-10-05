@@ -24,19 +24,22 @@ import (
 func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name   string
-		github bool
-		ssh    bool
-		batch  bool
+		name         string
+		github       bool
+		ssh          bool
+		batch        bool
+		otherMachine string
 	}{
-		{"plain git by default", false, false, false},
-		{"approved GitHub PR policy", true, false, false},
-		{"SSH native landing", false, true, false},
-		{"landing and coding in one refresh", false, false, true},
+		{name: "plain git by default"},
+		{name: "approved GitHub PR policy", github: true},
+		{name: "SSH native landing", ssh: true},
+		{name: "landing and coding in one refresh", batch: true},
+		{name: "local reviewed head stays on its source machine", otherMachine: "unpushed"},
+		{name: "published reviewed head remains available across machines", otherMachine: "clean"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh, test.batch)
+			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh, test.batch, test.otherMachine)
 		})
 	}
 }
@@ -54,12 +57,12 @@ func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			testNativeExecutionLandsReviewedVersion(t, true, test.github, test.ssh, false)
+			testNativeExecutionLandsReviewedVersion(t, true, test.github, test.ssh, false, "")
 		})
 	}
 }
 
-func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool) {
+func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string) {
 	t.Helper()
 	h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
@@ -121,7 +124,11 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := work.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := work.Checkpoint(guarded, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", ExternalEffect: "none", EffectState: "none"}); err != nil {
+	worktreeState := "unpushed"
+	if otherMachine != "" {
+		worktreeState = otherMachine
+	}
+	if err := work.Checkpoint(guarded, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: worktreeState, HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := work.Finish(guarded, "succeeded"); err != nil {
@@ -146,6 +153,33 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if state := h.state(t, issue.ID); state != "Merging" {
 		t.Fatalf("after approval the item is in %s, want Merging", state)
+	}
+	if otherMachine != "" {
+		other, err := NewScheduler(h.scheduler.client, SchedulerConfig{
+			OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
+			Machine: Machine{ID: "other-machine", Hostname: "other", Capacity: 1, Version: "test"}, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidates, err := other.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Merging"}})
+		want := 0
+		if otherMachine == "clean" {
+			want = 1
+		}
+		if err != nil || len(candidates) != want {
+			t.Fatalf("landing candidates for head availability %s: candidates=%v want=%d err=%v", otherMachine, candidates, want, err)
+		}
+		if otherMachine == "clean" {
+			if err := other.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if otherMachine == "unpushed" {
+			if _, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: item, MachineID: "other-machine", SessionID: "wrong-host", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}); err == nil {
+				t.Fatal("direct claim bypassed reviewed head ownership")
+			}
+		}
 	}
 
 	var candidates []connector.Issue
@@ -301,6 +335,24 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if detail.Change.Landed == nil || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" {
 		t.Fatalf("landed change = %#v, summary %#v", detail.Change.Landed, detail.Summary)
+	}
+	if otherMachine != "" {
+		attempts, err := h.admin.Attempts(t.Context(), item, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		merges := 0
+		for _, attempt := range attempts.Items {
+			if attempt.Identity.Role == runner.RoleMerge {
+				merges++
+				if attempt.MachineID != tracker.MachineID(h.scheduler.machine.ID) {
+					t.Fatalf("landing ran away from reviewed head: %+v", attempt)
+				}
+			}
+		}
+		if merges != 1 {
+			t.Fatalf("landing started %d times, want once", merges)
+		}
 	}
 	for _, fetch := range []struct {
 		name string
