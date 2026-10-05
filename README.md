@@ -201,6 +201,7 @@ at hand.
 
 
 - [Quick Start](docs/getting-started.md) — configure a tracker and run Detent.
+- [Cloud runners on Fly Sprites](docs/sprite-runners.md) — enroll a runner, prepare its agents and checkout, and verify automatic wake and pause.
 - [Project Onboarding](docs/ONBOARDING.md) — agent-guided installation and project setup.
 - [Bootstrap a new machine](docs/bootstrap.md) — install prerequisites, templates, and service files.
 - [Configuration](docs/config.md) — project and host configuration, generated field reference, and sample files.
