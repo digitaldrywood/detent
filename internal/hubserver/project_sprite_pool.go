@@ -179,10 +179,10 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 	if err != nil {
 		return input, nil, err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
 			return input, nil, err
 		}
 		ids = append(ids, id)
@@ -212,7 +212,10 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 			if runner.Health == "revoked" || runner.Health == "expired" {
 				continue
 			}
-			at, _ := parseTimeValue(woke)
+			at, err := parseTimeValue(woke)
+			if err != nil {
+				continue
+			}
 			if name == runner.Hostname && !at.IsZero() && !now.Before(at) && now.Sub(at) < time.Minute {
 				runner.Health, runner.ConnectionHealth = "online", "online"
 				pendingRunner = true
@@ -330,7 +333,7 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowC
 		return err
 	}
 	decision := decideSpriteScale(input)
-	for i := 0; i < decision.Delete; i++ {
+	for i := range decision.Delete {
 		if err := s.deletePoolSprite(ctx, scope, idle[i]); err != nil {
 			return err
 		}
@@ -373,11 +376,11 @@ func (s *Service) maintainSpritePools(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	defer rows.Close()
 	var scopes []nativeScope
 	for rows.Next() {
 		var scope nativeScope
 		if err := rows.Scan(&scope.organization, &scope.project); err != nil {
-			_ = rows.Close()
 			return
 		}
 		scopes = append(scopes, scope)

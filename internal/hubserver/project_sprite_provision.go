@@ -254,7 +254,11 @@ func (s *Service) execPoolSprite(ctx context.Context, scope nativeScope, name st
 		}
 		return "", errSpritesValidation
 	}
-	defer conn.CloseNow()
+	defer func() {
+		if err := conn.CloseNow(); err != nil {
+			s.config.Logger.Debug("close Sprite bootstrap connection", "error", err)
+		}
+	}()
 	conn.SetReadLimit(1 << 20)
 	input := append([]byte{0}, script...)
 	defer clear(input)
@@ -283,7 +287,7 @@ func (s *Service) execPoolSprite(ctx context.Context, scope nativeScope, name st
 				if event.Type == "exit" && event.ExitCode != nil {
 					if *event.ExitCode != 0 {
 						fmt.Fprintf(&log, "Bootstrap exited with code %d\n", *event.ExitCode)
-						return log.String(), fmt.Errorf("Sprite bootstrap exited with code %d", *event.ExitCode)
+						return log.String(), fmt.Errorf("sprite bootstrap exited with code %d", *event.ExitCode)
 					}
 					return log.String(), nil
 				}
@@ -293,7 +297,7 @@ func (s *Service) execPoolSprite(ctx context.Context, scope nativeScope, name st
 			if data[0] == 3 && len(data) == 2 {
 				if data[1] != 0 {
 					fmt.Fprintf(&log, "Bootstrap exited with code %d\n", data[1])
-					return log.String(), fmt.Errorf("Sprite bootstrap exited with code %d", data[1])
+					return log.String(), fmt.Errorf("sprite bootstrap exited with code %d", data[1])
 				}
 				return log.String(), nil
 			}
@@ -374,9 +378,9 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 	if err != nil {
 		return err
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+	_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
 	_ = response.Body.Close()
-	if response.StatusCode != http.StatusNotFound && (response.StatusCode < 200 || response.StatusCode > 299) {
+	if readErr != nil || response.StatusCode != http.StatusNotFound && (response.StatusCode < 200 || response.StatusCode > 299) {
 		return errSpritesValidation
 	}
 	finished, err := s.database.db.BeginTx(ctx, nil)

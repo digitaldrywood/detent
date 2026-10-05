@@ -85,6 +85,37 @@ class ReverseDependentAuditTests(unittest.TestCase):
             self.assertEqual(code, 0, output)
             self.assertIn("1 reviewed legacy diagnostics", output)
 
+            reviewed = f'{importer}:{line}:{diagnostic["column"]}: Potential nil panic detected\n'
+            related = f'(Same nil source could also cause potential nil panic(s) at 1 other place(s): "importer/importer.go:{line}:{diagnostic["column"]}".)\n'
+            with mock.patch.object(
+                audit.subprocess, "run", side_effect=[
+                    subprocess.CompletedProcess([], 0, ""),
+                    subprocess.CompletedProcess([], 1, reviewed + related),
+                ],
+            ):
+                code, output = run_audit()
+                self.assertEqual(code, 0, output)
+                self.assertIn("1 reviewed legacy diagnostics", output)
+
+            for returncode, failure in ((1, "nilaway: signal: killed\n"), (-9, ""), (2, "")):
+                with self.subTest(returncode=returncode, failure=failure), mock.patch.object(
+                    audit.subprocess, "run", side_effect=[
+                        subprocess.CompletedProcess([], 0, ""),
+                        subprocess.CompletedProcess([], returncode, reviewed + failure),
+                    ],
+                ):
+                    code, output = run_audit()
+                    self.assertEqual(code, 1, output)
+                    self.assertNotIn("Audited all Go packages", output)
+
+            with mock.patch.object(
+                audit.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "tool install failed"),
+            ) as install:
+                code, output = run_audit()
+                self.assertEqual(code, 1, output)
+                self.assertIn("tool install failed", output)
+                self.assertEqual(install.call_count, 1)
+
             importer.write_text(importer.read_text().replace("return *provider.Value()", "return *provider.Value() /* changed */"))
             code, output = run_audit()
             self.assertEqual(code, 1, output)

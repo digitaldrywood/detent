@@ -165,6 +165,11 @@ release source archives include embed inputs and build identity. The scheduled
 suite retains safety-critical coverage floors and boundary fuzz seeds.
 The NilAway audit selects all Go packages, including unchanged importers;
 baseline matches require both location and source-line hash.
+The pinned analyzer uses Go's vettool protocol to carry dependency facts between
+serial package processes. Its default Go soft memory limit is 1 GiB, not a
+hard RSS bound. Installation, package loading and analyzer failures cannot be
+accepted as reviewed findings. Grouped-finding explanation lines remain part
+of their reviewed finding; unrelated tool errors still fail the audit.
 
 **Enforcement:** `TestRepositoryWorkflow`,
 `TestRepositoryHasNoPullRequestActions`, and `TestWorkflowViolations` in
