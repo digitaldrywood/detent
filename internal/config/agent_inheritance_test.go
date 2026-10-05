@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"reflect"
 	"slices"
 	"strings"
@@ -28,16 +29,17 @@ model_selection:
 		t.Fatal(err)
 	}
 	for _, tt := range []struct {
-		name, local, complex, normal, modelSource string
-		design, active                            bool
+		name, local string
+		design      bool
 	}{
-		{name: "existing project", complex: "gpt-6-astra", normal: "gpt-5.6-sol", modelSource: "preset", design: true, active: true},
-		{name: "future registration", complex: "gpt-6-astra", normal: "gpt-5.6-sol", modelSource: "preset", design: true, active: true},
-		{name: "partial model", local: "model_selection:\n  complex_model: custom-complex", complex: "custom-complex", normal: "gpt-5.6-sol", modelSource: "project", design: true, active: true},
-		{name: "partial effort", local: "model_selection:\n  levels:\n    complex:\n      effort: high", complex: "gpt-6-astra", normal: "gpt-5.6-sol", modelSource: "preset", design: true, active: true},
-		{name: "disable", local: "model_selection:\n  enabled: false", complex: "gpt-6-astra", normal: "gpt-5.6-sol", modelSource: "preset", design: true},
-		{name: "disable route", local: "routes:\n  - name: design\n    disabled: true", complex: "gpt-6-astra", normal: "gpt-5.6-sol", modelSource: "preset", active: true},
-		{name: "clear routes", local: "routes: []", complex: "gpt-6-astra", normal: "gpt-5.6-sol", modelSource: "preset", active: true},
+		{name: "existing project", design: true},
+		{name: "future registration", design: true},
+		{name: "ignored partial model", local: "model_selection: {complex_model: custom-complex}", design: true},
+		{name: "ignored partial effort", local: "model_selection: {levels: {complex: {effort: high}}}", design: true},
+		{name: "ignored disable", local: "model_selection: {enabled: false}", design: true},
+		{name: "ignored merged policy", local: "<<: {model_selection: {preset: sol_first}}", design: true},
+		{name: "disable route", local: "routes: [{name: design, disabled: true}]"},
+		{name: "clear routes", local: "routes: []"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := Default()
@@ -46,7 +48,10 @@ model_selection:
 			}
 			got := cfg.WithAgentDefaults(host, AgentBudgetDefaults{})
 			p := got.EffectiveModelSelection()
-			if p.Active() != tt.active || p.Model("complex") != tt.complex || p.Model("normal") != tt.normal || p.Sources["complex_model"] != tt.modelSource {
+			if strings.HasPrefix(tt.name, "ignored") && !slices.ContainsFunc(got.ValidationWarnings(), func(warning string) bool { return strings.HasPrefix(warning, "agents.model_selection") }) {
+				t.Fatal("legacy selection has no compatibility warning")
+			}
+			if p.Configured() {
 				t.Fatalf("policy = %+v", p)
 			}
 			design := slices.ContainsFunc(got.AgentRouteConfigs(), func(r AgentRoute) bool { return r.Name == "design" })
@@ -166,15 +171,22 @@ func TestPolicyMarshalPreservesClearing(t *testing.T) {
 			if err := yaml.Unmarshal([]byte(raw), &before); err != nil {
 				t.Fatal(err)
 			}
-			encoded, err := yaml.Marshal(before)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := yaml.Unmarshal(encoded, &after); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(before, after) {
-				t.Fatalf("clearing lost: %s", encoded)
+			for _, encoding := range []struct {
+				name      string
+				marshal   func(any) ([]byte, error)
+				unmarshal func([]byte, any) error
+			}{{"yaml", yaml.Marshal, yaml.Unmarshal}, {"json", json.Marshal, json.Unmarshal}} {
+				encoded, err := encoding.marshal(before)
+				if err != nil {
+					t.Fatal(err)
+				}
+				after = ModelSelection{}
+				if err := encoding.unmarshal(encoded, &after); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(before, after) {
+					t.Fatalf("%s clearing lost: %s", encoding.name, encoded)
+				}
 			}
 		})
 	}

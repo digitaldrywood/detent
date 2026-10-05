@@ -30,11 +30,14 @@
 ## Issue effort selection
 
 Model and reasoning effort are orchestration settings, not authoring decisions.
-They are configured once in the operator's instance config, not in this repo,
-and split by stage: Codex Astra (`gpt-6-astra`) plans at `low` effort and
-validates at `medium`, and Codex Sol (`gpt-6-sol`) builds (code, rework, merge)
-at `high`. `detent.yaml` deliberately carries an empty `agents.model_selection`
-block so it inherits that split.
+Cloud organization settings hold the default selection; Cloud project settings
+may override it. Runners receive the effective selection from the Hub. Do not
+configure model selection in `global.yaml` or `detent.yaml`.
+
+The seeded default uses Codex Sol (`gpt-6.1-sol`) at `high` for normal and complex
+work, Codex Astra (`gpt-6-astra`) at `low` for planning and `medium` for validation,
+and Astra at `medium` for `complexity:very-complex`. Per-issue effort blocks still
+clamp to each stage's configured ceiling.
 
 Do not put a `model` in a `detent-agent` block: it overrides every stage,
 including Astra planning and validation. Use `effort: high`; each stage clamps

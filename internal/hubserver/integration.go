@@ -215,6 +215,8 @@ func repositoryOwnership(ctx context.Context, query nativeQueryer, id int64) (st
 
 func (s *Service) registerIntegrationRoutes(e *echo.Echo) {
 	e.GET("/api/v2/github/requests", s.githubRequestCounts, s.requireInstanceAdmin())
+	e.GET(nativeBase+"/model-selection", s.getCloudModelSelection, s.requireNativeScope(apiScopeWorker, apiScopeOperator))
+	e.PUT(nativeBase+"/model-selection", s.updateCloudModelSelection, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	operator := s.requireNativeScope(apiScopeOperator)
 	admin := s.requireNativeScope(apiScopeAdmin)

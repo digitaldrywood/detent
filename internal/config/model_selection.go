@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -12,41 +13,41 @@ import (
 )
 
 type ModelSelection struct {
-	Enabled       *bool                             `yaml:"enabled,omitempty"`
-	Preset        *string                           `yaml:"preset,omitempty"`
-	NormalModel   *string                           `yaml:"normal_model,omitempty"`
-	ComplexModel  *string                           `yaml:"complex_model,omitempty"`
-	BackendKinds  *[]string                         `yaml:"backend_kinds,omitempty"`
-	DefaultLevel  *string                           `yaml:"default_level,omitempty"`
-	Levels        map[string]ModelSelectionDefaults `yaml:"levels,omitempty"`
-	Stages        map[string]ModelSelectionStage    `yaml:"stages,omitempty"`
-	Rules         *[]ModelSelectionRule             `yaml:"rules,omitempty"`
-	Unavailable   *string                           `yaml:"unavailable,omitempty"`
-	FallbackOrder *[]string                         `yaml:"fallback_order,omitempty"`
-	Sources       map[string]string                 `yaml:"-"`
+	Enabled       *bool                             `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Preset        *string                           `yaml:"preset,omitempty" json:"preset,omitempty"`
+	NormalModel   *string                           `yaml:"normal_model,omitempty" json:"normal_model,omitempty"`
+	ComplexModel  *string                           `yaml:"complex_model,omitempty" json:"complex_model,omitempty"`
+	BackendKinds  *[]string                         `yaml:"backend_kinds,omitempty" json:"backend_kinds,omitempty"`
+	DefaultLevel  *string                           `yaml:"default_level,omitempty" json:"default_level,omitempty"`
+	Levels        map[string]ModelSelectionDefaults `yaml:"levels,omitempty" json:"levels,omitempty"`
+	Stages        map[string]ModelSelectionStage    `yaml:"stages,omitempty" json:"stages,omitempty"`
+	Rules         *[]ModelSelectionRule             `yaml:"rules,omitempty" json:"rules,omitempty"`
+	Unavailable   *string                           `yaml:"unavailable,omitempty" json:"unavailable,omitempty"`
+	FallbackOrder *[]string                         `yaml:"fallback_order,omitempty" json:"fallback_order,omitempty"`
+	Sources       map[string]string                 `yaml:"-" json:"sources,omitempty"`
 }
 
 type ModelSelectionDefaults struct {
-	Model                *string `yaml:"model,omitempty"`
-	Effort               *string `yaml:"effort,omitempty"`
-	MaxSessionDurationMS *int    `yaml:"max_session_duration_ms,omitempty"`
-	MaxSessionTokens     *int64  `yaml:"max_session_tokens,omitempty"`
+	Model                *string `yaml:"model,omitempty" json:"model,omitempty"`
+	Effort               *string `yaml:"effort,omitempty" json:"effort,omitempty"`
+	MaxSessionDurationMS *int    `yaml:"max_session_duration_ms,omitempty" json:"max_session_duration_ms,omitempty"`
+	MaxSessionTokens     *int64  `yaml:"max_session_tokens,omitempty" json:"max_session_tokens,omitempty"`
 }
 
 type ModelSelectionStage struct {
-	Model           *string `yaml:"model,omitempty"`
-	Effort          *string `yaml:"effort,omitempty"`
-	Level           *string `yaml:"level,omitempty"`
-	IssueComplexity *bool   `yaml:"issue_complexity,omitempty"`
+	Model           *string `yaml:"model,omitempty" json:"model,omitempty"`
+	Effort          *string `yaml:"effort,omitempty" json:"effort,omitempty"`
+	Level           *string `yaml:"level,omitempty" json:"level,omitempty"`
+	IssueComplexity *bool   `yaml:"issue_complexity,omitempty" json:"issue_complexity,omitempty"`
 }
 
 type ModelSelectionRule struct {
-	Name     string            `yaml:"name"`
-	Disabled bool              `yaml:"disabled,omitempty"`
-	Level    string            `yaml:"level"`
-	Roles    []string          `yaml:"roles,omitempty"`
-	Selector selector.Selector `yaml:"selector,omitempty"`
-	Efforts  []string          `yaml:"efforts,omitempty"`
+	Name     string            `yaml:"name" json:"name"`
+	Disabled bool              `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+	Level    string            `yaml:"level" json:"level"`
+	Roles    []string          `yaml:"roles,omitempty" json:"roles,omitempty"`
+	Selector selector.Selector `yaml:"selector,omitempty" json:"selector,omitempty"`
+	Efforts  []string          `yaml:"efforts,omitempty" json:"efforts,omitempty"`
 }
 
 func (p ModelSelection) MarshalYAML() (any, error) {
@@ -64,6 +65,25 @@ func (p ModelSelection) MarshalYAML() (any, error) {
 		}
 	}
 	return &node, nil
+}
+
+func (p ModelSelection) MarshalJSON() ([]byte, error) {
+	type plain ModelSelection
+	raw, err := json.Marshal(plain(p))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if p.Levels != nil && len(p.Levels) == 0 {
+		fields["levels"] = json.RawMessage(`{}`)
+	}
+	if p.Stages != nil && len(p.Stages) == 0 {
+		fields["stages"] = json.RawMessage(`{}`)
+	}
+	return json.Marshal(fields)
 }
 
 func SolFirstModelSelection() ModelSelection {
@@ -313,4 +333,39 @@ func (p ModelSelection) SessionAgent(agent Agent, level string) Agent {
 		agent.MaxSessionTokens = *defaults.MaxSessionTokens
 	}
 	return agent
+}
+
+func ResolveCloudModelSelection(organization, project ModelSelection) ModelSelection {
+	result := ResolveModelSelection(organization, project)
+	for key, source := range result.Sources {
+		if source == "instance" {
+			result.Sources[key] = "organization"
+		}
+	}
+	result.Sources["authority"] = "cloud"
+	return result
+}
+
+func (a *Agents) UnmarshalYAML(node *yaml.Node) error {
+	type plain Agents
+	var value plain
+	if err := node.Decode(&value); err != nil {
+		return err
+	}
+	*a = Agents(value)
+	a.legacyModelSelection = nestedFieldSet(node, "model_selection")
+	for field := range configuredFieldPaths(node) {
+		if field == "model_selection" || strings.HasPrefix(field, "model_selection.") {
+			a.legacyModelSelection = true
+		}
+	}
+	a.ModelSelection = ModelSelection{}
+	return nil
+}
+
+func (a Agents) ModelSelectionWarnings() []string {
+	if !a.legacyModelSelection {
+		return nil
+	}
+	return []string{"agents.model_selection is ignored; configure model selection in Cloud organization or project settings; remove it before the next release, which will reject it"}
 }

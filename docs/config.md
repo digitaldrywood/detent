@@ -77,26 +77,20 @@ historical-reader compatibility contract.
 
 ## Session limits by complexity level
 
-Each `agents.model_selection.levels.<name>` entry may set
-`max_session_duration_ms` and `max_session_tokens` alongside model and effort.
-The existing selected level (stage override, matching rule, then default) supplies
-these limits once at session start. An omitted limit inherits `agent`'s flat
-value; explicit `0` disables that limit. Values must be non-negative. Selection
-disabled or an ineligible backend uses the flat values. No preset limit changes
-unless configured. For example, extend an inherited enabled selection policy:
+Model selection is configured in Cloud organization settings. Projects inherit
+that default and may override it in their Cloud project settings. Runners receive
+the effective selection from the Hub. `global.agents.model_selection` and
+`agents.model_selection` in `detent.yaml` or legacy workflow frontmatter are
+ignored with a compatibility warning for one release; the next release rejects
+them. Remove those keys from runner and repository files.
 
-```yaml
-agents:
-  model_selection:
-    levels:
-      normal:
-        max_session_duration_ms: 1800000
-      complex:
-        max_session_duration_ms: 7200000
-      very_complex:
-        max_session_duration_ms: 14400000
-        max_session_tokens: 2000000
-```
+Cloud complexity levels may include `max_session_duration_ms` and
+`max_session_tokens` alongside model and effort. The selected level (stage
+override, matching rule, then default) supplies these limits once at session
+start. An omitted limit inherits `agent`'s flat value; explicit `0` disables that
+limit. Values must be non-negative. Selection disabled or an ineligible backend
+uses the flat values. Per-issue `detent-agent` model and effort blocks retain their
+existing behavior, including clamping effort to the stage's ceiling.
 
 The running session keeps its resolved values across turns, checkpoints, and
 fallbacks. Later label or configuration changes do not change its limits or reset
@@ -1272,45 +1266,6 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agents.backends[].options.turn_timeout_ms` | `integer` | `Codex: 3600000; Claude Code: 0; Pi: 0` | No | must be greater than or equal to 0 |
 | `agents.backends[].protocol` | `string` | `none` | No | must be app-server for codex<br>must be headless for claude_code<br>must be rpc for pi_agent |
 | `agents.backends[].provider` | `string` | `none` | No | must be a sanitized label containing only letters, numbers, dots, underscores, or hyphens |
-| `agents.model_selection` | `object` | `see child fields` | No | None |
-| `agents.model_selection.backend_kinds` | `list<string>` | `none` | No | None |
-| `agents.model_selection.complex_model` | `string` | `none` | Conditional | is required when enabled |
-| `agents.model_selection.default_level` | `string` | `none` | Conditional | is required when enabled<br>must reference a configured level |
-| `agents.model_selection.enabled` | `boolean` | `none` | No | None |
-| `agents.model_selection.fallback_order` | `list<string>` | `none` | No | None |
-| `agents.model_selection.levels` | `mapping<string, mapping>` | `{}` | No | None |
-| `agents.model_selection.levels.<name>` | `object` | `backend-dependent` | No | None |
-| `agents.model_selection.levels.<name>.effort` | `string` | `none for Claude Code` | No | None |
-| `agents.model_selection.levels.<name>.max_session_duration_ms` | `integer` | `backend-dependent` | No | None |
-| `agents.model_selection.levels.<name>.max_session_tokens` | `integer` | `backend-dependent` | No | None |
-| `agents.model_selection.levels.<name>.model` | `string` | `backend-dependent` | No | None |
-| `agents.model_selection.normal_model` | `string` | `none` | Conditional | is required when enabled |
-| `agents.model_selection.preset` | `string` | `none` | No | must be sol_first or empty |
-| `agents.model_selection.rules` | `list<object>` | `none` | No | None |
-| `agents.model_selection.rules[].disabled` | `boolean` | `none` | No | None |
-| `agents.model_selection.rules[].efforts` | `list<string>` | `none` | No | None |
-| `agents.model_selection.rules[].level` | `string` | `none` | No | None |
-| `agents.model_selection.rules[].name` | `string` | `none` | No | None |
-| `agents.model_selection.rules[].roles` | `list<string>` | `none` | No | None |
-| `agents.model_selection.rules[].selector` | `object` | `none` | No | None |
-| `agents.model_selection.rules[].selector.and` | `list<mapping>` | `none` | No | None |
-| `agents.model_selection.rules[].selector.assignee_in` | `list<string>` | `none` | No | None |
-| `agents.model_selection.rules[].selector.author_in` | `list<string>` | `none` | No | None |
-| `agents.model_selection.rules[].selector.fields` | `list<object>` | `none` | No | None |
-| `agents.model_selection.rules[].selector.fields[].name` | `string` | `none` | No | None |
-| `agents.model_selection.rules[].selector.fields[].value` | `string` | `none` | No | None |
-| `agents.model_selection.rules[].selector.labels` | `object` | `none` | No | None |
-| `agents.model_selection.rules[].selector.labels.exclude` | `list<string>` | `none` | No | None |
-| `agents.model_selection.rules[].selector.labels.include` | `list<string>` | `none` | No | None |
-| `agents.model_selection.rules[].selector.or` | `list<mapping>` | `none` | No | None |
-| `agents.model_selection.rules[].selector.priority_in` | `list<integer>` | `none` | No | None |
-| `agents.model_selection.stages` | `mapping<string, mapping>` | `{}` | No | None |
-| `agents.model_selection.stages.<name>` | `object` | `backend-dependent` | No | None |
-| `agents.model_selection.stages.<name>.effort` | `string` | `none for Claude Code` | No | None |
-| `agents.model_selection.stages.<name>.issue_complexity` | `boolean` | `backend-dependent` | No | None |
-| `agents.model_selection.stages.<name>.level` | `string` | `backend-dependent` | No | None |
-| `agents.model_selection.stages.<name>.model` | `string` | `backend-dependent` | No | None |
-| `agents.model_selection.unavailable` | `string` | `none` | No | must be fallback or fail |
 | `agents.routes` | `list<object>` | `[]` | No | None |
 | `agents.routes[].backend` | `string` | `none` | Conditional | is required<br>must reference a configured backend |
 | `agents.routes[].default` | `boolean` | `false when configured` | No | None |

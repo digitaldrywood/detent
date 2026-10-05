@@ -1,3 +1,4 @@
+import { ModelSelectionSettings } from "./ModelSelectionSettings.tsx";
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
@@ -617,6 +618,8 @@ export function OrganizationRoute(): React.ReactElement {
           error={create.error?.message ?? null}
         />
       ) : null}
+
+      <ModelSelectionSettings canManage={bootstrap?.actor.can_manage ?? false} />
 
       <SettingsSection title="Members" variant="plain">
         {members.loading && members.value === undefined ? (

@@ -37,23 +37,23 @@ type Decision struct {
 }
 
 type Selector struct {
-	AssigneeIn []string      `yaml:"assignee_in,omitempty"`
-	AuthorIn   []string      `yaml:"author_in,omitempty"`
-	PriorityIn []int         `yaml:"priority_in,omitempty"`
-	Labels     Labels        `yaml:"labels,omitempty"`
-	Fields     []FieldEquals `yaml:"fields,omitempty"`
-	And        []Selector    `yaml:"and,omitempty"`
-	Or         []Selector    `yaml:"or,omitempty"`
+	AssigneeIn []string      `yaml:"assignee_in,omitempty" json:"assignee_in,omitempty"`
+	AuthorIn   []string      `yaml:"author_in,omitempty" json:"author_in,omitempty"`
+	PriorityIn []int         `yaml:"priority_in,omitempty" json:"priority_in,omitempty"`
+	Labels     Labels        `yaml:"labels,omitempty" json:"labels,omitempty"`
+	Fields     []FieldEquals `yaml:"fields,omitempty" json:"fields,omitempty"`
+	And        []Selector    `yaml:"and,omitempty" json:"and,omitempty"`
+	Or         []Selector    `yaml:"or,omitempty" json:"or,omitempty"`
 }
 
 type Labels struct {
-	Include []string `yaml:"include,omitempty"`
-	Exclude []string `yaml:"exclude,omitempty"`
+	Include []string `yaml:"include,omitempty" json:"include,omitempty"`
+	Exclude []string `yaml:"exclude,omitempty" json:"exclude,omitempty"`
 }
 
 type FieldEquals struct {
-	Name  string `yaml:"name"`
-	Value string `yaml:"value"`
+	Name  string `yaml:"name" json:"name"`
+	Value string `yaml:"value" json:"value"`
 }
 
 func (s Selector) Configured() bool {

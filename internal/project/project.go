@@ -1482,6 +1482,7 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 	projectConfig := p.cfg
 	loadedHash := p.workflowSource.Hash
 	scheduling := p.policyScheduling
+	loadedSelection := p.workflow.Config.Agents.ModelSelection
 	loadedPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 
@@ -1503,7 +1504,7 @@ func (p *Project) reconcileWorkflow(ctx context.Context) error {
 		}
 	}
 	policyChanged := workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative && workflow.Config.Policy.ID != loadedPolicy.ID
-	if (workflow.SourceHash == "" || workflow.SourceHash == loadedHash) && !policyChanged {
+	if (workflow.SourceHash == "" || workflow.SourceHash == loadedHash) && !policyChanged && reflect.DeepEqual(loadedSelection, workflow.Config.Agents.ModelSelection) {
 		p.clearWorkflowReloadError()
 		return nil
 	}

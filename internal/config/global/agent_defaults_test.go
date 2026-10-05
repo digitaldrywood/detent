@@ -16,7 +16,7 @@ func TestParseGlobalAgentDefaults(t *testing.T) {
 		{name: "preset", extra: "model_selection: {preset: sol_first}"},
 		{name: "disabled", extra: "model_selection: {preset: sol_first, enabled: false}"},
 		{name: "invalid reference", extra: "routes: [{name: design, backend: missing}]", invalid: true},
-		{name: "invalid preset", extra: "model_selection: {preset: unknown}", invalid: true},
+		{name: "ignored invalid preset", extra: "model_selection: {preset: unknown}"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			raw, err := yaml.Marshal(map[string]any{"apiVersion": "detent/v1", "kind": "GlobalConfig", "global": map[string]any{"max_concurrent_agents": 2, "scheduling": "weighted", "agents": map[string]any{}}, "projects": []any{}})
@@ -44,7 +44,7 @@ func TestParseGlobalAgentDefaults(t *testing.T) {
 				return
 			}
 			policy := workflowconfig.ResolveModelSelection(got.Global.Agents.ModelSelection, workflowconfig.ModelSelection{})
-			if policy.Active() != (tt.name == "preset") || policy.Model("normal") != "gpt-5.6-sol" {
+			if policy.Configured() || len(got.Global.Agents.ModelSelectionWarnings()) == 0 {
 				t.Fatalf("policy=%+v", policy)
 			}
 		})
