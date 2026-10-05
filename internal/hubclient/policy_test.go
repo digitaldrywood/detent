@@ -68,14 +68,18 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 	t.Parallel()
 	changed := func() policy.Descriptor { d := clientTestPolicy(); d.Gates.AutoPromote = true; return d.WithID() }()
 	for _, test := range []struct {
-		name      string
-		approved  *policy.Descriptor
-		status    int
-		local     policy.Descriptor
-		wantError bool
-		wantLost  bool
-		reports   int
+		name       string
+		autoApply  bool
+		provenance *policy.RepositorySource
+		approved   *policy.Descriptor
+		status     int
+		local      policy.Descriptor
+		wantError  bool
+		wantLost   bool
+		reports    int
 	}{
+		{name: "default branch applies immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
+		{name: "default branch replaces old policy immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
 		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), wantError: true, wantLost: true, reports: 1},
 		{name: "approved policy differs", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, wantError: true, wantLost: true, reports: 1},
 		{name: "invalid approved descriptor", approved: ptr(policy.Descriptor{}), status: http.StatusOK, local: clientTestPolicy(), wantError: true, wantLost: true},
@@ -85,23 +89,30 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			var reported []policy.Descriptor
+			status, approved := test.status, test.approved
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/projects/prj_site"):
 					_ = json.NewEncoder(w).Encode(tracker.NativeProject{WorkflowMarkdown: "---\ntracker:\n  kind: hub_native\n---\nCloud instructions.\n"})
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/projects/prj_site/policy/observed"):
-					var descriptor policy.Descriptor
-					if err := json.NewDecoder(r.Body).Decode(&descriptor); err != nil {
+					var observation policy.Observation
+					if err := json.NewDecoder(r.Body).Decode(&observation); err != nil {
 						t.Error(err)
 					}
-					reported = append(reported, descriptor)
+					reported = append(reported, observation.Descriptor)
+					if test.autoApply {
+						if observation.Source == nil || *observation.Source != *test.provenance {
+							t.Fatalf("lost repository provenance: %+v", observation.Source)
+						}
+						status, approved = http.StatusOK, &observation.Descriptor
+					}
 					w.WriteHeader(http.StatusNoContent)
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/projects/prj_site/policy"):
-					w.WriteHeader(test.status)
-					switch test.status {
+					w.WriteHeader(status)
+					switch status {
 					case http.StatusOK:
-						_ = json.NewEncoder(w).Encode(policy.Approval{Policy: *test.approved})
+						_ = json.NewEncoder(w).Encode(policy.Approval{Policy: *approved})
 					case http.StatusConflict:
 						_ = json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "No approved repository policy"})
 					default:
@@ -140,7 +151,7 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 				}
 			}
 			for range 3 {
-				err = scheduler.CheckProjectPolicy(t.Context(), "site", "", test.local)
+				err = scheduler.CheckProjectPolicyWithSource(t.Context(), "site", "", test.local, test.provenance)
 				if (err != nil) != test.wantError {
 					t.Fatalf("CheckProjectPolicy() error = %v, want error %v", err, test.wantError)
 				}

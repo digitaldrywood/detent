@@ -95,19 +95,46 @@ func ValidateStates(states []State) error {
 	return nil
 }
 
+type RepositorySource struct {
+	Repository             string `json:"repository"`
+	Commit                 string `json:"commit"`
+	DefaultBranch          string `json:"default_branch,omitempty"`
+	DefaultBranchHead      string `json:"default_branch_head,omitempty"`
+	DefaultBranchReachable bool   `json:"default_branch_reachable"`
+}
+
+type Observation struct {
+	Descriptor
+	Source *RepositorySource `json:"repository_source,omitempty"`
+}
+
+type WorkflowApply struct {
+	ID                       int64  `json:"id,string"`
+	Repository               string `json:"repository"`
+	Commit                   string `json:"commit"`
+	PreviousDefinitionDigest string `json:"previous_definition_digest"`
+	DefinitionDigest         string `json:"definition_digest"`
+	RunnerID                 string `json:"runner_id"`
+	AppliedBy                string `json:"applied_by"`
+	AppliedAt                string `json:"applied_at"`
+}
+
 type Approval struct {
-	Policy     Descriptor `json:"policy"`
-	ApprovedBy string     `json:"approved_by"`
-	ApprovedAt string     `json:"approved_at"`
+	History     []WorkflowApply `json:"history,omitempty"`
+	HistoryNext string          `json:"history_next,omitempty"`
+	Policy      Descriptor      `json:"policy"`
+	ApprovedBy  string          `json:"approved_by"`
+	ApprovedAt  string          `json:"approved_at"`
 }
 
 type ObservedPolicy struct {
-	Policy             Descriptor `json:"policy"`
-	RunnerID           string     `json:"runner_id"`
-	RunnerIDs          []string   `json:"runner_ids,omitempty"`
-	ObservedAt         string     `json:"observed_at"`
-	Conflict           bool       `json:"conflict"`
-	PreviouslyApproved bool       `json:"previously_approved"`
+	Source             *RepositorySource `json:"repository_source,omitempty"`
+	Policy             Descriptor        `json:"policy"`
+	RunnerID           string            `json:"runner_id"`
+	RunnerIDs          []string          `json:"runner_ids,omitempty"`
+	ObservedAt         string            `json:"observed_at"`
+	Conflict           bool              `json:"conflict"`
+	PreviouslyApproved bool              `json:"previously_approved"`
 }
 
 type Change struct {

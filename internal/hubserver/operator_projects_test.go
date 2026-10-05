@@ -162,6 +162,9 @@ func TestHostedProjectTools(t *testing.T) {
 			if !reflect.DeepEqual(attribution.Policy, candidate) || !reflect.DeepEqual(policyRead.Data.Policy, candidate) {
 				t.Fatal("MCP approval changed the observed descriptor")
 			}
+			if len(policyRead.Data.History) != 1 || policyRead.Data.History[0].PreviousDefinitionDigest != previous.Policy.SourceDigest || policyRead.Data.History[0].DefinitionDigest != candidate.SourceDigest || policyRead.Data.History[0].AppliedBy != attribution.ApprovedBy || policyRead.Data.History[0].AppliedAt == "" {
+				t.Fatalf("MCP lost workflow apply history: %+v", policyRead.Data.History)
+			}
 			integration, err := readProjectIntegration(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project})
 			if err != nil || integration.Authority["workflow"] != "repository" || integration.WorkflowSource != candidate.Workflow.Source || integration.WorkflowSourceRevision != candidate.SourceRevision || !reflect.DeepEqual(integration.States, candidate.Workflow.States) {
 				t.Fatalf("approved workflow = %+v, %v", integration, err)
