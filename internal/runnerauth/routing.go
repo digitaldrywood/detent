@@ -94,6 +94,7 @@ type Runner struct {
 type RunnerLease struct {
 	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`
 	ID                  tracker.LeaseID               `json:"lease_id"`
+	FencingToken        tracker.FencingToken          `json:"fencing_token,string"`
 	WorkItemID          tracker.NativeWorkItemID      `json:"work_item_id"`
 	Title               string                        `json:"title"`
 	ProjectID           tracker.ProjectID             `json:"project_id"`

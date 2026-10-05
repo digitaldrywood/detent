@@ -102,7 +102,7 @@ func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tra
 		return r, err
 	}
 	r.Leases = []runnerauth.RunnerLease{}
-	rows, err := db.QueryContext(ctx, `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, coalesce(i.native_id, ''), i.title, coalesce(i.project_id, ''), coalesce(p.metadata_json, ''), coalesce(pp.policy_id, '')
+	rows, err := db.QueryContext(ctx, `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, l.fencing_token, coalesce(i.native_id, ''), i.title, coalesce(i.project_id, ''), coalesce(p.metadata_json, ''), coalesce(pp.policy_id, '')
 FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
 LEFT JOIN lease_policies lp ON lp.lease_id = l.lease_id LEFT JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id
 LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND l.released_at IS NULL ORDER BY l.fencing_token`, r.MachineID)
@@ -113,7 +113,7 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 	for rows.Next() {
 		var expiry, runner, raw, approved string
 		var lease runnerauth.RunnerLease
-		if err := rows.Scan(&expiry, &runner, &lease.ID, &lease.WorkItemID, &lease.Title, &lease.ProjectID, &raw, &approved); err != nil {
+		if err := rows.Scan(&expiry, &runner, &lease.ID, &lease.FencingToken, &lease.WorkItemID, &lease.Title, &lease.ProjectID, &raw, &approved); err != nil {
 			return r, err
 		}
 		end, err := parseTimeValue(expiry)
