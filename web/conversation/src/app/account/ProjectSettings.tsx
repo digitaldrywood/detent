@@ -2,6 +2,7 @@ import React from "react";
 
 import { SpritesCard } from "./SpritesCard.tsx";
 import { SpritePoolCard } from "./SpritePoolCard.tsx";
+import { WorkflowRevisions } from "./WorkflowRevisions.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
@@ -90,12 +91,14 @@ export function WorkflowSettings({
   saving,
   error,
   onSave,
+  revisions,
 }: {
   readonly integration: ProjectIntegration;
   readonly canManage: boolean;
   readonly saving: boolean;
   readonly error: string | null;
   readonly onSave: (markdown: string) => void;
+  readonly revisions?: React.ReactNode;
 }): React.ReactElement {
   const states = integration.states ?? [];
   const stored = integration.workflow_markdown ?? `---
@@ -145,6 +148,7 @@ Complete the assigned work.
           </div>
         ) : null}
       </SettingsRow>
+      {revisions}
     </SettingsSection>
   );
 }
@@ -157,6 +161,7 @@ export function PolicyRow({
   onApprovePasted,
   approving,
   error,
+  workflowRevisionsShown = false,
 }: {
   readonly policy: PolicyApproval | null;
   /** Descriptors runners resolved and could not run, newest first. */
@@ -166,6 +171,7 @@ export function PolicyRow({
   readonly onApprovePasted: (text: string) => void;
   readonly approving: boolean;
   readonly error: string | null;
+  readonly workflowRevisionsShown?: boolean;
 }): React.ReactElement {
   const [pasting, setPasting] = React.useState(false);
   const [pasted, setPasted] = React.useState("");
@@ -202,7 +208,7 @@ export function PolicyRow({
               {shared ? ` · Planning ${policy.policy.gates.plan_enabled ? "on" : "off"} · Validation ${policy.policy.gates.validator ? "on" : "off"} · Automatic promotion ${policy.policy.gates.auto_promote ? "on" : "off"}` : null}
             </span>
           )}
-          {observed.map((entry) => (
+          {observed.filter((entry) => !workflowRevisionsShown || !entry.policy.workflow || entry.previously_approved).map((entry) => (
             <span key={entry.policy.policy_id} className="mt-1 flex min-w-0 flex-wrap items-center gap-2 break-all text-warning-foreground">
               <span>
                 Runner <span className="font-mono">{entry.runner_ids?.join(", ") ?? entry.runner_id}</span> reports{" "}
@@ -466,6 +472,7 @@ export function ProjectSettingsView({
 
       <SettingsSection title="Execution">
         <PolicyRow
+          workflowRevisionsShown={workflow !== undefined}
           policy={policy}
           canManage={canManage}
           onApprove={onApprovePolicy}
@@ -578,12 +585,26 @@ export function ProjectSettingsRoute({
   // approves exactly that descriptor instead of pasting it.
   const setup = useResource(() => api.onboarding(projectId), [api, projectId]);
   const observed = setup.value?.observed_policies ?? [];
+  const loadOlder = useMutation(async () => {
+    const current = policy.value;
+    if (!current?.history_next) return null;
+    const page = await api.policy(projectId, current.history_next);
+    if (page.policy.policy_id !== current.policy.policy_id) {
+      await policy.refresh();
+      return null;
+    }
+    policy.set({ ...page, history: [...(current.history ?? []), ...(page.history ?? [])] });
+    return page;
+  });
   // A runner reports a changed policy whenever the repository changes, so the
   // page looks again while it is open instead of only on the next visit.
   React.useEffect(() => {
-    const timer = globalThis.setInterval(() => void setup.refresh(), OBSERVED_POLICY_REFRESH_MS);
+    const timer = globalThis.setInterval(() => {
+      void setup.refresh();
+      void policy.refresh();
+    }, OBSERVED_POLICY_REFRESH_MS);
     return () => globalThis.clearInterval(timer);
-  }, [setup.refresh]);
+  }, [setup.refresh, policy.refresh]);
 
   // Approves what the runner reported, or a descriptor pasted from the inspect
   // command. Both go through the onboarding route, the one the hosted Hub
@@ -670,7 +691,28 @@ export function ProjectSettingsRoute({
       onOpenFleet={() => onNavigate?.("/settings/runners")}
       onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}
       sprites={<><SpritesCard key={projectId} projectId={projectId} canManage={canManage} /><SpritePoolCard key={`pool-${projectId}`} projectId={projectId} canManage={canManage} /></>}
-      workflow={<WorkflowSettings integration={integration.value} canManage={canManage && project?.can_write === true} saving={saveWorkflow.pending} error={saveMessage(saveWorkflow.error)} onSave={(markdown) => void saveWorkflow.call(markdown)} />}
+      workflow={
+        <WorkflowSettings
+          integration={integration.value}
+          canManage={canManage && project?.can_write === true}
+          saving={saveWorkflow.pending}
+          error={saveMessage(saveWorkflow.error)}
+          onSave={(markdown) => void saveWorkflow.call(markdown)}
+          revisions={
+            <WorkflowRevisions
+              policy={policy.value ?? setup.value?.policy ?? null}
+              observed={observed}
+              repository={integration.value.checkout_repository || integration.value.repository || ""}
+              canApprove={canManage && !conflictingPolicies(observed)}
+              approving={approve.pending}
+              onApprove={(policyId) => void approve.call({ reported: policyId })}
+              error={approve.error?.message ?? loadOlder.error?.message ?? policy.error?.message ?? null}
+              onLoadOlder={() => void loadOlder.call()}
+              loadingOlder={loadOlder.pending}
+            />
+          }
+        />
+      }
     />
   );
 }
