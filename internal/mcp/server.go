@@ -438,7 +438,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 			}
 			return
 		}
-		if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, successfulToolCallResult(protocolVersion, result.Content)); writeErr != nil {
+		if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, NewToolCallResult(protocolVersion, result.Content, false)); writeErr != nil {
 			return
 		}
 	}()
@@ -463,6 +463,8 @@ func (s *session) execute(ctx context.Context, call operatortool.Call) (operator
 }
 
 type toolCallResult struct {
+	ResultType        string          `json:"resultType,omitempty"`
+	Meta              json.RawMessage `json:"_meta,omitempty"`
 	Content           []textContent   `json:"content"`
 	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
 	IsError           bool            `json:"isError,omitempty"`
@@ -473,11 +475,15 @@ type textContent struct {
 	Text string `json:"text"`
 }
 
-func successfulToolCallResult(protocolVersion string, content json.RawMessage) toolCallResult {
-	if protocolVersion == "2024-11-05" || protocolVersion == "2025-03-26" {
-		return toolCallResult{Content: []textContent{{Type: "text", Text: string(content)}}}
+func NewToolCallResult(protocolVersion string, content json.RawMessage, isError bool) toolCallResult {
+	result := toolCallResult{Content: []textContent{{Type: "text", Text: string(content)}}, IsError: isError}
+	if protocolVersion == ProtocolVersion {
+		result.ResultType = "complete"
 	}
-	return toolCallResult{Content: []textContent{{Type: "text", Text: string(content)}}, StructuredContent: content}
+	if !isError && protocolVersion != "2024-11-05" && protocolVersion != "2025-03-26" {
+		result.StructuredContent = content
+	}
+	return result
 }
 
 func (s *session) completeRequest(key string, active *activeRequest) bool {
@@ -654,10 +660,10 @@ func failedToolCallResult(protocolVersion string, err error) toolCallResult {
 	}
 	if detail != nil {
 		if result, encodeErr := operatortool.EncodeResult(detail); encodeErr == nil {
-			failure := successfulToolCallResult(protocolVersion, result.Content)
+			failure := NewToolCallResult(protocolVersion, result.Content, false)
 			failure.IsError = true
 			return failure
 		}
 	}
-	return toolCallResult{Content: []textContent{{Type: "text", Text: safeToolError(err)}}, IsError: true}
+	return NewToolCallResult(protocolVersion, json.RawMessage(safeToolError(err)), true)
 }
