@@ -30,6 +30,8 @@ import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { noApprovedPolicy, saveMessage, WorkflowSettings } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
+import approval from "../../src/contracts/fixtures/account-policy.json";
+import { WorkflowRevisions } from "../../src/app/account/WorkflowRevisions.tsx";
 
 afterEach(cleanup);
 
@@ -494,4 +496,32 @@ describe("the runner name limit", () => {
   ])("counts UTF-8 bytes: $fits", ({ name, fits }) => {
     expect(runnerNameFits(name)).toBe(fits);
   });
+});
+
+const definition = { ...approval.policy, workflow: { source: "detent.yaml", states: [
+  { name: "Todo", dispatchable: true, terminal: false, transitions: [] },
+] } };
+const props = {
+  repository: "acme/orders", canApprove: false, approving: false,
+  onApprove: vi.fn(), error: null, onLoadOlder: vi.fn(), loadingOlder: false,
+};
+
+it("does not invent an initial diff when a stored predecessor is unavailable", () => {
+  render(<WorkflowRevisions {...props} observed={[]} policy={{ ...approval, policy: definition, history: [{
+    id: "2", repository: "acme/orders", commit: "b".repeat(40),
+    previous_definition_digest: "missing", definition_digest: "current", runner_id: "runner_test",
+    applied_by: "runner_test", applied_at: "2026-10-05T12:00:00Z", definition,
+  }] }} />);
+  expect(screen.getByText("The stored definition for this comparison is unavailable.")).toBeTruthy();
+  expect(screen.queryByRole("table")).toBeNull();
+});
+
+it("keeps old approvals out of pending revisions and does not label a digest as a commit", () => {
+  render(<WorkflowRevisions {...props} policy={null} observed={[
+    { policy: { ...definition, policy_id: "old" }, runner_id: "runner_old", observed_at: "2026-10-05T10:00:00Z", previously_approved: true },
+    { policy: definition, runner_id: "runner_test", observed_at: "2026-10-05T12:00:00Z" },
+  ]} />);
+  expect(screen.getAllByRole("heading", { name: "Pending revision" })).toHaveLength(1);
+  expect(screen.getByText("Commit not recorded")).toBeTruthy();
+  expect(screen.queryByText(definition.source_revision)).toBeNull();
 });

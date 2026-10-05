@@ -888,6 +888,9 @@ func TestHostedBrowserPreview(t *testing.T) {
 		})}
 	}
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_WORKFLOW_REVISIONS") != "" {
+		f.seedWorkflowRevisions(t)
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
 		f.seedIssueAsk(t)
 	}

@@ -113,20 +113,33 @@ func readProjectPolicyWithHistory(ctx context.Context, query nativeQueryer, scop
 	if err != nil {
 		return result, err
 	}
-	rows, err := query.QueryContext(ctx, `SELECT id, repository, source_commit, previous_definition_digest, definition_digest, runner_id, applied_by, applied_at
-FROM project_workflow_applies WHERE scope = ? AND (? = 0 OR id < ?) ORDER BY id DESC LIMIT ?`, scope, before, before, limit+1)
+	rows, err := query.QueryContext(ctx, `SELECT a.id, a.repository, a.source_commit, a.previous_definition_digest, a.definition_digest, a.runner_id, a.applied_by, a.applied_at,
+(SELECT r.metadata_json FROM policy_revisions r WHERE r.scope = a.scope AND json_extract(r.metadata_json, '$.source_digest') = a.previous_definition_digest ORDER BY r.approved_at DESC, r.policy_id LIMIT 1),
+(SELECT r.metadata_json FROM policy_revisions r WHERE r.scope = a.scope AND json_extract(r.metadata_json, '$.source_digest') = a.definition_digest AND COALESCE(json_extract(r.metadata_json, '$.workflow.revision'), '') = a.source_commit ORDER BY r.approved_at DESC, r.policy_id LIMIT 1)
+FROM project_workflow_applies a WHERE a.scope = ? AND (? = 0 OR a.id < ?) ORDER BY a.id DESC LIMIT ?`, scope, before, before, limit+1)
 	if err != nil {
 		return result, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, rows.Close()) }()
 	for rows.Next() {
 		var entry policy.WorkflowApply
-		if err := rows.Scan(&entry.ID, &entry.Repository, &entry.Commit, &entry.PreviousDefinitionDigest, &entry.DefinitionDigest, &entry.RunnerID, &entry.AppliedBy, &entry.AppliedAt); err != nil {
+		var previous, definition sql.NullString
+		if err := rows.Scan(&entry.ID, &entry.Repository, &entry.Commit, &entry.PreviousDefinitionDigest, &entry.DefinitionDigest, &entry.RunnerID, &entry.AppliedBy, &entry.AppliedAt, &previous, &definition); err != nil {
 			return result, err
 		}
 		if len(result.History) == limit {
 			result.HistoryNext = strconv.FormatInt(result.History[limit-1].ID, 10)
 			break
+		}
+		if previous.Valid {
+			if err := json.Unmarshal([]byte(previous.String), &entry.PreviousDefinition); err != nil {
+				return result, err
+			}
+		}
+		if definition.Valid {
+			if err := json.Unmarshal([]byte(definition.String), &entry.Definition); err != nil {
+				return result, err
+			}
 		}
 		result.History = append(result.History, entry)
 	}
