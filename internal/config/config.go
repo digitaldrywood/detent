@@ -970,6 +970,7 @@ func (r Release) validate(prefix string, problems *[]string) {
 
 type Hooks struct {
 	Shell        string `yaml:"shell"`
+	RunnerSetup  string `yaml:"runner_setup"`
 	AfterCreate  string `yaml:"after_create"`
 	BeforeRun    string `yaml:"before_run"`
 	AfterRun     string `yaml:"after_run"`
@@ -3233,6 +3234,9 @@ func (s StalenessObservability) validate(problems *[]string) {
 
 func (h *Hooks) validate(problems *[]string) {
 	validatePositive("hooks.timeout_ms", h.TimeoutMS, problems)
+	if h.RunnerSetup != "" && !filepath.IsLocal(h.RunnerSetup) {
+		*problems = append(*problems, "hooks.runner_setup must be a repository-relative file path")
+	}
 }
 
 func splitFrontmatter(raw []byte) ([]byte, []byte, error) {

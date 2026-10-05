@@ -1196,6 +1196,7 @@ budget:
   pricing_path: priv/pricing/models.yaml
 hooks:
   shell: bash
+  runner_setup: scripts/runner-setup.sh
   after_create: git clone .
   before_run: echo before
   after_run: echo after
@@ -1461,6 +1462,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Hooks.AfterCreate != "git clone ." {
 		t.Fatalf("Hooks.AfterCreate = %q", cfg.Hooks.AfterCreate)
+	}
+	if cfg.Hooks.RunnerSetup != "scripts/runner-setup.sh" {
+		t.Fatalf("Hooks.RunnerSetup = %q", cfg.Hooks.RunnerSetup)
 	}
 	if cfg.Hooks.Shell != "bash" {
 		t.Fatalf("Hooks.Shell = %q, want bash", cfg.Hooks.Shell)

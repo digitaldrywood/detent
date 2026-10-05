@@ -873,6 +873,44 @@ tolerates normal gaps between a completed session and prompt re-dispatch.
 cleanup. Treat them as trusted code: they run with the Detent process
 permissions and should be short, deterministic, and safe to retry.
 
+`hooks.runner_setup` names a repository-relative script for project tools on
+a registered runner. It runs from the project's source checkout during runner
+preparation, before any work is claimed, and is checked before subsequent
+dispatch. It uses `hooks.shell` and `hooks.timeout_ms` (60 seconds by default;
+increase this for installers). The script need not have executable permission.
+
+```yaml
+hooks:
+  runner_setup: scripts/runner-setup.sh
+  shell: bash
+  timeout_ms: 300000
+```
+
+Each runner records the successful SHA-256 of the script content and shell in
+its local store, scoped to its runner identity and project. Unchanged setup
+does not run for later attempts or after restarting with the same store.
+Changing the script or shell runs setup again before the next dispatch. With
+`workflow_ref`, the script comes from the same Git revision as the project's
+configuration; otherwise it comes from the source checkout, including local
+edits. Paths must remain inside the repository. Keep setup self-contained:
+changes to files sourced by the script do not change its recorded hash.
+
+Setup is trusted host code. Make it idempotent, non-interactive, and free of
+secrets; the runner closes standard input and inherits its host environment,
+including native tool caches and supplied scratch directories. Install CLIs
+into a directory already on the runner's PATH. Shell exports do not persist
+into later agent turns. Setup failures are instance-owned for that project on
+that runner, appear in runner logs and the project's local-check API report,
+and prevent claims and dispatch without consuming an issue failure allowance.
+The existing project polling retries setup until it succeeds. Other projects
+and runners remain eligible.
+
+Use workspace hooks for worktree or attempt preparation. Move project tool
+installation from `hooks.after_create`, `hooks.before_run`, or Sprite pool
+customer `bootstrap` into this script. Pool `bootstrap` is reserved for
+prerequisites that cannot live in a readable repository file, such as fetching
+credentials through a customer's secret service or obtaining the checkout.
+
 ### Intake, retrospectives, routines, and admission
 
 `intake.sources` turns webhook or scheduled external signals into tracker
@@ -1371,6 +1409,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `hooks.after_run` | `string` | `none` | No | None |
 | `hooks.before_remove` | `string` | `none` | No | None |
 | `hooks.before_run` | `string` | `none` | No | None |
+| `hooks.runner_setup` | `string` | `none` | No | must be a repository-relative file path |
 | `hooks.shell` | `string` | `platform default shell` | No | None |
 | `hooks.timeout_ms` | `integer` | `60000` | No | must be greater than 0 |
 | `identity` | `object` | `see child fields` | No | None |

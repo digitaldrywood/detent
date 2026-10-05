@@ -49,6 +49,7 @@ type Config struct {
 }
 
 type Store interface {
+	ProjectRunnerSetupStore
 	ProtectedCodexThreadIDs(context.Context) ([]string, error)
 	auth.Store
 	StatsStore
@@ -81,6 +82,11 @@ type Store interface {
 	APIKeyStore
 	Queries() *sqlc.Queries
 	Close() error
+}
+
+type ProjectRunnerSetupStore interface {
+	ProjectRunnerSetupHash(context.Context, string, string) (string, error)
+	SetProjectRunnerSetupHash(context.Context, string, string, string) error
 }
 
 type StatsStore interface {

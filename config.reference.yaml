@@ -1234,6 +1234,8 @@
 # hooks:
 #   # hooks.shell | type: string | default: platform default shell | required: No | validation: None
 #   shell: null
+#   # hooks.runner_setup | type: string | default: none | required: No | validation: must be a repository-relative file path
+#   runner_setup: null
 #   # hooks.after_create | type: string | default: none | required: No | validation: None
 #   after_create: null
 #   # hooks.before_run | type: string | default: none | required: No | validation: None

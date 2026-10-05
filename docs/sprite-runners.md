@@ -12,9 +12,11 @@ also ask **Luna** to "run this project on Fly Sprites." Luna reads the project's
 pool, links to the existing Sprites connector for secure token entry, and
 previews the floor, ceiling and customer bootstrap steps for approval in chat.
 Start with a floor and ceiling of one to connect the first runner even before
-there is queued work. New Sprites run the saved customer setup before the pinned
-runner bootstrap; provide credential-free steps that prepare the project's
-checkout and dependencies using your own approved credential setup.
+there is queued work. New Sprites run the saved customer bootstrap before the
+pinned runner bootstrap. Reserve customer bootstrap for prerequisites that
+cannot live in a readable repository file, such as obtaining credentials from
+your secret service and preparing the checkout. Put project tool installation
+in the repository setup script described below.
 
 Luna reports bootstrap progress and provider readiness. Follow the sign-in steps
 below inside the Sprite; never paste tokens, provider API keys or private
@@ -123,6 +125,39 @@ The generated `detent hub runner register ...` command contains a single-use
 enrollment token valid for up to 15 minutes. Copy the full command when the
 bootstrap asks for it. If it expires before registration, create a fresh
 command. Closing the dialog clears its displayed command.
+
+## Repository project setup
+
+Declare project tools once in the project's `detent.yaml`:
+
+```yaml
+hooks:
+  runner_setup: scripts/runner-setup.sh
+  shell: bash
+  timeout_ms: 300000
+```
+
+Commit the script alongside the configuration. Make it idempotent,
+non-interactive, and free of secrets. For example, check whether a CLI is
+already installed at the required version before installing it into a directory
+on the runner's existing PATH. The script runs from the source checkout with
+the runner's permissions and inherited environment; exports inside it do not
+change later agent environments. Keep installation in this script rather than
+manually installing project tools on individual Sprites.
+
+Both pool members and manually enrolled Sprites use the same runner owner.
+It runs setup when preparing the project, records a successful content hash in
+that Sprite's local store, and runs again only when the script or configured
+shell changes. Later attempts and runner restarts reuse that hash. Each Sprite
+has its own record, so every member installs the tools automatically. Keep the
+runner store when restoring a checkpoint to preserve successful setup evidence.
+
+A failure prevents that project's claims and dispatch on that Sprite until
+setup succeeds. The runner reports an instance failure in its logs and the
+project's local-check API report; no issue failure allowance is consumed.
+Other projects and Sprites can continue. The existing project polling retries
+the failed setup. See [project setup configuration](config.md#workspace-deliverable-and-worker-placement)
+for hash, workflow-ref, timeout, and path semantics.
 
 ## 5. Create the Sprite and bootstrap the runner
 
@@ -239,8 +274,9 @@ git clone REPOSITORY_URL "$HOME/detent-runner/PROJECT_NAME"
 
 Use the exact checkout directory printed by registration, not an inferred
 repository name. Each checkout must contain the project's `detent.yaml` and
-`WORKFLOW.md`. Install its build and test dependencies and configure the agent
-routes it uses; see [Cloud onboarding](cloud-onboarding.md#repository-configuration-and-policy).
+`WORKFLOW.md`. Declare its build and test dependencies in `hooks.runner_setup`
+and configure the agent routes it uses; see
+[Cloud onboarding](cloud-onboarding.md#repository-configuration-and-policy).
 Repeat for every enrolled project.
 
 When the runner reports a pending repository policy, open Hub **Settings >
@@ -285,7 +321,7 @@ sprite-env checkpoints create --comment 'runner ready: agents and checkouts conf
 Empty input reuses the registered identity and restarts the existing Service;
 it does not redeem another enrollment token or overwrite `global.yaml`. The
 bootstrap also takes a checkpoint. Save the ready checkpoint ID so your
-baseline includes the manual setup. Restoring with
+baseline includes runner sign-ins and successful repository setup. Restoring with
 `sprite-env checkpoints restore CHECKPOINT_ID` rewinds the same Sprite's files,
 including credentials; it does not renew credentials that have since expired.
 
