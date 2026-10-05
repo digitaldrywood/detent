@@ -92,7 +92,15 @@ it analyzes all Go packages so changes to a provider's inferred nilability also
 check unchanged importers. It accepts only reviewed legacy diagnostics whose
 location and source-line hash match `scripts/nilaway-baseline.json`.
 
-The project uses the standalone NilAway command instead of golangci-lint
+The pinned analyzer runs through `go vet -vettool` with one package process at
+a time, retaining dependency facts without loading the entire module's syntax
+and type information into one process. Its default Go soft memory limit is
+1 GiB; an explicit `GOMEMLIMIT` is preserved. This is a garbage-collection
+target, not a hard RSS cap. The temporary binary uses the supplied `TMPDIR`,
+`TMP`, or `TEMP`. Tool installation, package loading, and analyzer failures
+remain failures even when another package emits reviewed baseline diagnostics.
+
+The project uses the pinned NilAway command instead of golangci-lint
 integration because the linter integration requires a custom module-plugin
 binary. Go 1.26's experimental `runtime/pprof` `goroutineleak` profile remains a
 runtime audit aid behind `GOEXPERIMENT=goroutineleakprofile`; the stable CI
