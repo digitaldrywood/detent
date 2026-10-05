@@ -242,6 +242,7 @@ type ResidualReconciler interface {
 type Issue struct {
 	Landing                 *LandOptions
 	NativeRework            bool
+	FreshCheckout           bool
 	ProjectID               string
 	ID                      string
 	Identifier              string
@@ -566,7 +567,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	if issue.NativeRework {
+	if issue.NativeRework && !issue.FreshCheckout {
 		exists, isDir, err := pathExists(info.Path)
 		if err != nil {
 			return Info{}, err
@@ -589,7 +590,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 	if issue.Landing != nil {
 		info, created, err = l.createLandingWorktree(ctx, info, issue)
 	} else {
-		created, err = l.createWorktree(ctx, info.Path, info.Branch)
+		created, err = l.createWorktree(ctx, info.Path, info.Branch, issue.FreshCheckout)
 	}
 	if err != nil {
 		var creationErr *worktreeCreationError
@@ -619,10 +620,40 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 	return info, nil
 }
 
-func (l *LocalGit) createWorktree(ctx context.Context, path string, branch string) (bool, error) {
+func (l *LocalGit) createWorktree(ctx context.Context, path string, branch string, fresh bool) (bool, error) {
 	l.createMu.Lock()
 	defer l.createMu.Unlock()
-	return l.ensureWorktree(ctx, path, branch)
+	baseRef := "HEAD"
+	if fresh {
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return false, err
+		}
+		defer release()
+		if holder, held, err := l.branchWorktreePath(ctx, branch, path); err != nil {
+			return false, err
+		} else if held {
+			return false, &BranchHeldError{Branch: branch, Path: holder}
+		}
+		base, err := l.newBranchStartRef(ctx, branch)
+		if err != nil {
+			return false, err
+		}
+		baseRef = base
+		if exists, _, err := pathExists(path); err != nil {
+			return false, err
+		} else if exists {
+			if _, err := l.quarantineWorktree(ctx, path); err != nil {
+				return false, err
+			}
+		}
+		if l.autoBranch {
+			if _, err := l.runGit(ctx, "branch", "-f", branch, base); err != nil {
+				return false, err
+			}
+		}
+	}
+	return l.ensureWorktree(ctx, path, branch, baseRef)
 }
 
 func (l *LocalGit) Cleanup(ctx context.Context, identifier string) error {
@@ -845,7 +876,7 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 	return autoBranchPrefix + strings.ToLower(key)
 }
 
-func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string) (bool, error) {
+func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string, baseRef string) (bool, error) {
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
 		return false, fmt.Errorf("prune stale worktree registrations during preparation: %w", withCommandOutput(err))
 	}
@@ -901,7 +932,7 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 	}
 
 	err = l.addWorktreeWithPrune(ctx, func() error {
-		_, addErr := l.runGit(ctx, "worktree", "add", "--detach", path, "HEAD")
+		_, addErr := l.runGit(ctx, "worktree", "add", "--detach", path, baseRef)
 		return addErr
 	})
 	if err != nil {

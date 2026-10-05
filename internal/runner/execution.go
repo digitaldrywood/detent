@@ -355,6 +355,14 @@ func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.Na
 	return previous
 }
 
+func nativeCheckpointPolicyChanged(recovery tracker.NativeRecovery) bool {
+	if len(recovery.Attempts) == 0 {
+		return false
+	}
+	previous := recovery.Attempts[len(recovery.Attempts)-1]
+	return previous.Checkpoint != nil && previous.PolicyID != recovery.Lease.PolicyID
+}
+
 func (r *Runner) nativeInterruptedResumeState(ctx context.Context, req RunRequest, runtime agentRuntime) (store.AgentResumeState, error) {
 	previous := nativeInterruptedResumeAttempt(req.Execution.Recovery())
 	if previous == nil {
@@ -398,6 +406,9 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	}
 	if checkpoint.ExternalEffect != "none" && checkpoint.ExternalEffect != "provider_turn" && (checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") {
 		return "manual_recovery", "external_effect_uncertain"
+	}
+	if nativeCheckpointPolicyChanged(recovery) {
+		return "fresh_checkout", "session_restart_required"
 	}
 	sameMachine := previous.MachineID == recovery.Lease.MachineID
 	localAvailable := sameMachine && local != nil

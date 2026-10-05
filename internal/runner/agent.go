@@ -1490,8 +1490,18 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 	}
+	freshCheckout := req.Execution != nil && nativeCheckpointPolicyChanged(req.Execution.Recovery())
+	if freshCheckout {
+		recovery := req.Execution.Recovery()
+		action, reason := nativeRecoveryAction(recovery, nil, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{}, false, false)
+		if action == "manual_recovery" {
+			return RunResult{}, fmt.Errorf("%w: %s", ErrNativeRecoveryRequired, reason)
+		}
+		req.ResumeState = store.AgentResumeState{}
+		req.RetryMode = RetryModeFresh
+	}
 	if req.Execution != nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
-		if !req.operatorFreshRetry() {
+		if !freshCheckout && !req.operatorFreshRetry() {
 			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
 			if err != nil {
 				return RunResult{}, err
@@ -1537,6 +1547,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		runWorkspace = &admissionWorkspace{logger: r.logger, leaks: &r.admissionLeaks}
 	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	workspaceIssue.FreshCheckout = freshCheckout
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && runRole(mode, req.Issue) == RoleRework
 	var landingTarget NativeLandingTarget
 	landing, nativeLanding := req.Execution.(LandingExecution)
@@ -1590,6 +1601,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if err := r.publishWorkspaceCreateStarted(req); err != nil {
 		return RunResult{}, err
 	}
+	if freshCheckout {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return RunResult{}, err
+		}
+	}
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
 		if workspaceIssue.NativeRework && errors.Is(err, workspace.ErrMergeResolutionInvalid) {
@@ -1617,6 +1633,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if err := req.Execution.Validate(ctx); err != nil {
 			return RunResult{}, err
 		}
+	}
+	if freshCheckout {
+		recovery := req.Execution.Recovery()
+		r.logWorkerEventLevel(slog.LevelInfo, req.Issue, "worker_native_checkpoint_discarded", "previous_policy_id", recovery.Attempts[len(recovery.Attempts)-1].PolicyID, "approved_policy_id", recovery.Lease.PolicyID)
 	}
 	if err := runWorkspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
 		return RunResult{}, fmt.Errorf("workspace before_run: %w", err)
