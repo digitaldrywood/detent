@@ -85,6 +85,14 @@ version. Merging claim eligibility belongs to the existing Change landing
 readiness owner, which requires a reviewed current version without a Landed
 receipt. Successful unchanged Code and Rework answers remain suppressed.
 
+The same landing readiness owner limits a reviewed version to its source
+machine and registered runner only when its exact source attempt checkpoint
+names that head as local-only and unpushed. External pull requests, published
+heads, clean checkpoints and missing checkpoints do not impose that restriction.
+Workspace-session retained-worktree affinity governs separate workspace items;
+its retention interval does not establish availability of an unpublished
+project issue commit.
+
 Landing refusal destinations belong to the workflow owner. Conflicts prefer
 configured Rework, then the first allowed dispatchable non-terminal lane.
 Other refusals prefer the configured review lane, then the first allowed
@@ -102,6 +110,7 @@ remain excluded; unreachable destinations retain the existing error handoff.
 in `internal/orchestrator`;
 `TestNativeExecutionSettlesFinishedRun` in `internal/hubclient`;
 `TestClaimCandidatesRequireUnansweredWorkItem` in `internal/hubserver`;
+`TestNativeExecutionLandsReviewedVersion` in `internal/hubclient`;
 `TestNativeRunnerOpensChangeAndLeavesDispatch` in `internal/hubclient`;
 `TestLocalGitLandChangeViaGitHub` in `internal/workspace`;
 `TestWorkerCredentialBlockerError` in `internal/runner`;
@@ -147,6 +156,12 @@ removal permits normal readmission; a second on the same head routes to Rework
 under the existing budget. Restart preserves that accounting, and a repaired
 head starts a fresh count.
 
+After verifying a native landing merge on its base branch, the existing
+landing owner comments on and closes earlier open landing pull requests for
+that item and repository. Ownership requires the actual pull head to match
+the immutable SHA encoded in its landing branch. A different or missing
+head does not establish ownership and the pull request remains open.
+
 **Enforcement:** `TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch`,
 `TestDelegateNativeMergeQueueIssuesCachesQueueEntries`,
 `TestNativeMergeQueueReviewReworkAfterEnqueue`,
@@ -154,6 +169,8 @@ head starts a fresh count.
 `TestNativeMergeQueueSkippedChecks`, `TestNativeMergeQueueNeutralChecks`,
 `TestNativeMergeQueueHeadBudget`, and
 `TestNativeMergeQueueBudgetSurvivesRestart` in `internal/orchestrator`.
+`TestLocalGitLandingReplacement` in `internal/workspace` enforces superseded
+landing ownership, cleanup and retention of moved or unknown heads.
 The `detent doctor` queue diagnostic reports programmatic merges while a queue
 is present; live queue settings require operator inspection.
 

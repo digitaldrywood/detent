@@ -76,7 +76,7 @@ func (d *database) runnerHomeSelection(ctx context.Context, tx *sql.Tx, query cl
 			}
 			candidateScope := scope
 			candidateScope.project = project
-			ready, _, err := nativeLandingCandidateReady(ctx, tx, &candidateScope, id, now)
+			ready, _, err := nativeLandingCandidateReady(ctx, tx, &candidateScope, id, r.MachineID, now)
 			if err != nil {
 				return 0, false, err
 			}
