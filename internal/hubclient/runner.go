@@ -226,6 +226,15 @@ func RefreshRunner(ctx context.Context, path string, rotate bool) (identity runn
 }
 
 func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) error {
+	if machine.ProjectConfiguration != nil {
+		supported, err := c.HubFeature(ctx, tracker.NativeProjectConfigurationCapability)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			machine.ProjectConfiguration = nil
+		}
+	}
 	if machine.Update != nil {
 		supported, err := c.HubFeature(ctx, tracker.NativeRunnerUpdateCapability)
 		if err != nil {
@@ -303,27 +312,28 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		problems, rejected = c.client.runner.heartbeatProblems(ctx, machine)
 	}
 	request := struct {
-		Admission        *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
-		SpriteName       string                              `json:"sprite_name,omitempty"`
-		Update           *runnerauth.UpdateObservation       `json:"update,omitempty"`
-		CapacityConfig   *runnerauth.CapacityConfig          `json:"capacity_configuration,omitempty"`
-		LocalChecks      *runnerauth.LocalChecks             `json:"local_checks,omitempty"`
-		Problems         []runnerauth.Problem                `json:"problems"`
-		ProtocolMajor    int                                 `json:"protocol_major,omitempty"`
-		SettingsRejected bool                                `json:"settings_rejected,omitempty"`
-		BackendIsolation isolationpolicy.Report              `json:"backend_isolation"`
-		ProviderReports  []providercapacity.Report           `json:"provider_reports,omitempty"`
-		DisplayName      string                              `json:"display_name"`
-		Capacity         int                                 `json:"capacity"`
-		Version          string                              `json:"version"`
-		OS               string                              `json:"os"`
-		Architecture     string                              `json:"architecture"`
+		Admission            *tracker.NativeAdmissionObservation `json:"admission,omitempty"`
+		SpriteName           string                              `json:"sprite_name,omitempty"`
+		Update               *runnerauth.UpdateObservation       `json:"update,omitempty"`
+		CapacityConfig       *runnerauth.CapacityConfig          `json:"capacity_configuration,omitempty"`
+		ProjectConfiguration *runnerauth.ProjectConfiguration    `json:"project_configuration,omitempty"`
+		LocalChecks          *runnerauth.LocalChecks             `json:"local_checks,omitempty"`
+		Problems             []runnerauth.Problem                `json:"problems"`
+		ProtocolMajor        int                                 `json:"protocol_major,omitempty"`
+		SettingsRejected     bool                                `json:"settings_rejected,omitempty"`
+		BackendIsolation     isolationpolicy.Report              `json:"backend_isolation"`
+		ProviderReports      []providercapacity.Report           `json:"provider_reports,omitempty"`
+		DisplayName          string                              `json:"display_name"`
+		Capacity             int                                 `json:"capacity"`
+		Version              string                              `json:"version"`
+		OS                   string                              `json:"os"`
+		Architecture         string                              `json:"architecture"`
 		// The workspace claim gate matches these against a workspace's
 		// requires set and checks the heartbeat that carried them is fresh.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`
 		CheckoutRepository    *string                        `json:"checkout_repository,omitempty"`
-	}{machine.Admission, runnerSpriteName(machine.Hostname), machine.Update, machine.CapacityConfig, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository}
+	}{machine.Admission, runnerSpriteName(machine.Hostname), machine.Update, machine.CapacityConfig, machine.ProjectConfiguration, machine.LocalChecks, problems, 2, rejected, machine.BackendIsolation, machine.ProviderReports, machine.DisplayName, machine.Capacity, machine.Version, runtime.GOOS, runtime.GOARCH, capabilities, isolation, machine.CheckoutRepository}
 	if c.client.runner == nil {
 		return c.client.request(ctx, http.MethodPost, c.base()+"/machines/"+url.PathEscape(string(machine.ID))+"/heartbeat", request, nil)
 	}
@@ -421,5 +431,15 @@ func (r *runnerCredentialSource) updateRequest() *runnerauth.UpdateRequest {
 		return nil
 	}
 	copy := *r.routing.Routing.UpdateRequest
+	return &copy
+}
+
+func (r *runnerCredentialSource) projectConfigurationRequest() *runnerauth.ProjectConfigurationRequest {
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	if r.routing == nil || r.routing.ProjectConfigurationRequest == nil {
+		return nil
+	}
+	copy := *r.routing.ProjectConfigurationRequest
 	return &copy
 }

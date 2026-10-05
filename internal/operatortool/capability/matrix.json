@@ -36352,7 +36352,7 @@
         {
           "source": "internal/operatortool/catalog.go",
           "kind": "existing_tool",
-          "definition": "definition(\"apply_local_project_policy\", \"Apply an already-approved exact policy from the configured committed workflow to a paused, settled local project through its configuration owner. Requires operator approval.\", localProjectSchema(\"apply_local_project_policy\"))",
+          "definition": "definition(\"apply_local_project_policy\", \"Apply an approved exact policy to a paused or draining, settled project through its configuration owner. The optional existing allow_local_binding setting includes other localhost services. Cloud requires runner_id and expected_runner_revision. Requires operator approval.\", localProjectSchema(\"apply_local_project_policy\"))",
           "occurrence": 1,
           "line": 82,
           "handler": "\"apply_local_project_policy\""
@@ -36373,8 +36373,8 @@
             "github",
             "native"
           ],
-          "service": "selected installed local configuration owner",
-          "unsupported": "Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities."
+          "service": "selected enrolled runner configuration owner through heartbeat transport",
+          "unsupported": "A missing or stopped enrolled owner is explicit. No board is started; runner binding, current issuer authority, project grants, configuration revision and approved policy remain required."
         },
         {
           "deployment": "hosted_shared",
@@ -36382,8 +36382,8 @@
             "github",
             "native"
           ],
-          "service": "selected installed local configuration owner",
-          "unsupported": "Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities."
+          "service": "selected enrolled runner configuration owner through heartbeat transport",
+          "unsupported": "A missing or stopped enrolled owner is explicit. No board is started; runner binding, current issuer authority, project grants, configuration revision and approved policy remain required."
         },
         {
           "deployment": "credential_maintenance",
@@ -36413,13 +36413,13 @@
           "class": "operator"
         }
       ],
-      "application": "project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; existing orchestrator Drain and native cutover receipt reader",
+      "application": "project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; enrolled runner heartbeat request/observation transport; existing orchestrator Drain and native cutover receipt reader",
       "extraction": "Existing MCP/API command, exact chat approval, current authorization and durable OperatorMutation receipts; no generic editor, SQLite proxy, auto-start or new loop.",
       "tool": {
         "set": "local_projects",
         "name": "apply_local_project_policy",
-        "arguments": "Bounded project_id; commands require request_id, expected_config_revision (64 lowercase hex), expected_policy_id. Policy requires policy_id and source_revision (40 or 64 lowercase hex); detach requires checkpoint (64 lowercase hex). No extra properties.",
-        "result": "Redacted ManagedConfigView with authority, actual configuration revision, registered/runtime_registered, selected/effective policy provenance, pause/drain, unsettled work, saved/applied flags, constraint and observation time. Durable replay preserves the original receipt; a fresh read verifies reload.",
+        "arguments": "Bounded project_id and optional runner_id. Commands require request_id, expected_config_revision (64 lowercase hex) and expected_policy_id; Cloud also requires runner_id and expected_runner_revision. Policy requires policy_id and source_revision (40 or 64 lowercase hex), with optional allow_local_binding for the existing project worker permission. Detach requires checkpoint (64 lowercase hex). No extra properties.",
+        "result": "Redacted configuration receipt with runner identity/revision, configuration revision, effective localhost permission, complete policy candidates, registered/runtime_registered, pause/drain, unsettled work, pending/saved/applied flags, constraint and observation time. Fresh reads verify application.",
         "annotations": {
           "readOnly": false,
           "destructive": true,
@@ -36429,7 +36429,7 @@
       },
       "owner": "digitaldrywood/detent#3342",
       "status": "implemented",
-      "coverage": "TestManagedProjectConfiguration, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt, TestHostedProjectTools and TestBeginDrainStopsPendingDispatchTick.",
+      "coverage": "TestManagedProjectConfiguration, TestCloudProjectConfigurationOwner, TestRunnerCapacityHeartbeat, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt and TestHostedProjectTools.",
       "decision": "Native #94 consolidates configuration/policy/drain/handoff owners. Saved removal is distinct from runtime detach; Cloud routing and native Change/version/head authority remain separate. Parent parity remains pending."
     },
     {
@@ -36461,8 +36461,8 @@
             "github",
             "native"
           ],
-          "service": "selected installed local configuration owner",
-          "unsupported": "Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities."
+          "service": "selected enrolled runner configuration owner through heartbeat transport",
+          "unsupported": "A missing or stopped enrolled owner is explicit. No board is started; runner binding, current issuer authority, project grants, configuration revision and approved policy remain required."
         },
         {
           "deployment": "hosted_shared",
@@ -36470,8 +36470,8 @@
             "github",
             "native"
           ],
-          "service": "selected installed local configuration owner",
-          "unsupported": "Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities."
+          "service": "selected enrolled runner configuration owner through heartbeat transport",
+          "unsupported": "A missing or stopped enrolled owner is explicit. No board is started; runner binding, current issuer authority, project grants, configuration revision and approved policy remain required."
         },
         {
           "deployment": "credential_maintenance",
@@ -36501,13 +36501,13 @@
           "class": "operator"
         }
       ],
-      "application": "project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; existing orchestrator Drain and native cutover receipt reader",
+      "application": "project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; enrolled runner heartbeat request/observation transport; existing orchestrator Drain and native cutover receipt reader",
       "extraction": "Existing MCP/API command, exact chat approval, current authorization and durable OperatorMutation receipts; no generic editor, SQLite proxy, auto-start or new loop.",
       "tool": {
         "set": "local_projects",
         "name": "detach_local_project",
-        "arguments": "Bounded project_id; commands require request_id, expected_config_revision (64 lowercase hex), expected_policy_id. Policy requires policy_id and source_revision (40 or 64 lowercase hex); detach requires checkpoint (64 lowercase hex). No extra properties.",
-        "result": "Redacted ManagedConfigView with authority, actual configuration revision, registered/runtime_registered, selected/effective policy provenance, pause/drain, unsettled work, saved/applied flags, constraint and observation time. Durable replay preserves the original receipt; a fresh read verifies reload.",
+        "arguments": "Bounded project_id and optional runner_id. Commands require request_id, expected_config_revision (64 lowercase hex) and expected_policy_id; Cloud also requires runner_id and expected_runner_revision. Policy requires policy_id and source_revision (40 or 64 lowercase hex), with optional allow_local_binding for the existing project worker permission. Detach requires checkpoint (64 lowercase hex). No extra properties.",
+        "result": "Redacted configuration receipt with runner identity/revision, configuration revision, effective localhost permission, complete policy candidates, registered/runtime_registered, pause/drain, unsettled work, pending/saved/applied flags, constraint and observation time. Fresh reads verify application.",
         "annotations": {
           "readOnly": false,
           "destructive": true,
@@ -36517,7 +36517,7 @@
       },
       "owner": "digitaldrywood/detent#3342",
       "status": "implemented",
-      "coverage": "TestManagedProjectConfiguration, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt, TestHostedProjectTools and TestBeginDrainStopsPendingDispatchTick.",
+      "coverage": "TestManagedProjectConfiguration, TestCloudProjectConfigurationOwner, TestRunnerCapacityHeartbeat, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt and TestHostedProjectTools.",
       "decision": "Native #94 consolidates configuration/policy/drain/handoff owners. Saved removal is distinct from runtime detach; Cloud routing and native Change/version/head authority remain separate. Parent parity remains pending."
     },
     {
@@ -36549,8 +36549,8 @@
             "github",
             "native"
           ],
-          "service": "selected installed local configuration owner",
-          "unsupported": "Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities."
+          "service": "selected enrolled runner configuration owner through heartbeat transport",
+          "unsupported": "A missing or stopped enrolled owner is explicit. No board is started; runner binding, current issuer authority, project grants, configuration revision and approved policy remain required."
         },
         {
           "deployment": "hosted_shared",
@@ -36558,8 +36558,8 @@
             "github",
             "native"
           ],
-          "service": "selected installed local configuration owner",
-          "unsupported": "Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities."
+          "service": "selected enrolled runner configuration owner through heartbeat transport",
+          "unsupported": "A missing or stopped enrolled owner is explicit. No board is started; runner binding, current issuer authority, project grants, configuration revision and approved policy remain required."
         },
         {
           "deployment": "credential_maintenance",
@@ -36589,13 +36589,13 @@
           "class": "operator"
         }
       ],
-      "application": "project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; existing orchestrator Drain and native cutover receipt reader",
+      "application": "project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; enrolled runner heartbeat request/observation transport; existing orchestrator Drain and native cutover receipt reader",
       "extraction": "Existing MCP/API command, exact chat approval, current authorization and durable OperatorMutation receipts; no generic editor, SQLite proxy, auto-start or new loop.",
       "tool": {
         "set": "local_projects",
         "name": "drain_local_project",
-        "arguments": "Bounded project_id; commands require request_id, expected_config_revision (64 lowercase hex), expected_policy_id. Policy requires policy_id and source_revision (40 or 64 lowercase hex); detach requires checkpoint (64 lowercase hex). No extra properties.",
-        "result": "Redacted ManagedConfigView with authority, actual configuration revision, registered/runtime_registered, selected/effective policy provenance, pause/drain, unsettled work, saved/applied flags, constraint and observation time. Durable replay preserves the original receipt; a fresh read verifies reload.",
+        "arguments": "Bounded project_id and optional runner_id. Commands require request_id, expected_config_revision (64 lowercase hex) and expected_policy_id; Cloud also requires runner_id and expected_runner_revision. Policy requires policy_id and source_revision (40 or 64 lowercase hex), with optional allow_local_binding for the existing project worker permission. Detach requires checkpoint (64 lowercase hex). No extra properties.",
+        "result": "Redacted configuration receipt with runner identity/revision, configuration revision, effective localhost permission, complete policy candidates, registered/runtime_registered, pause/drain, unsettled work, pending/saved/applied flags, constraint and observation time. Fresh reads verify application.",
         "annotations": {
           "readOnly": false,
           "destructive": true,
@@ -36605,7 +36605,7 @@
       },
       "owner": "digitaldrywood/detent#3342",
       "status": "implemented",
-      "coverage": "TestManagedProjectConfiguration, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt, TestHostedProjectTools and TestBeginDrainStopsPendingDispatchTick.",
+      "coverage": "TestManagedProjectConfiguration, TestCloudProjectConfigurationOwner, TestRunnerCapacityHeartbeat, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt and TestHostedProjectTools.",
       "decision": "Native #94 consolidates configuration/policy/drain/handoff owners. Saved removal is distinct from runtime detach; Cloud routing and native Change/version/head authority remain separate. Parent parity remains pending."
     },
     {
@@ -36616,7 +36616,7 @@
         {
           "source": "internal/operatortool/catalog.go",
           "kind": "existing_tool",
-          "definition": "definition(LocalProjectConfiguration, \"Read the actual selected local configuration revision and effective workflow policy with redacted provenance. Cloud routing is a separate authority; a stopped owner is explicit.\", localProjectSchema(LocalProjectConfiguration))",
+          "definition": "definition(LocalProjectConfiguration, \"Read the selected configuration revision, effective localhost permission and complete policy candidates through the local or enrolled runner owner. Provenance is redacted; a stopped owner is explicit.\", localProjectSchema(LocalProjectConfiguration))",
           "occurrence": 1,
           "line": 81,
           "handler": "LocalProjectConfiguration"
@@ -36637,8 +36637,8 @@
             "github",
             "native"
           ],
-          "service": "selected installed local configuration owner",
-          "unsupported": "Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities."
+          "service": "selected enrolled runner configuration owner through heartbeat transport",
+          "unsupported": "A missing or stopped enrolled owner is explicit. No board is started; runner binding, current issuer authority, project grants, configuration revision and approved policy remain required."
         },
         {
           "deployment": "hosted_shared",
@@ -36646,8 +36646,8 @@
             "github",
             "native"
           ],
-          "service": "selected installed local configuration owner",
-          "unsupported": "Missing or stopped local owner returns explicit support requirements without starting a board. Cloud routing and runner association are separate authorities."
+          "service": "selected enrolled runner configuration owner through heartbeat transport",
+          "unsupported": "A missing or stopped enrolled owner is explicit. No board is started; runner binding, current issuer authority, project grants, configuration revision and approved policy remain required."
         },
         {
           "deployment": "credential_maintenance",
@@ -36677,13 +36677,13 @@
           "class": "none"
         }
       ],
-      "application": "project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; existing orchestrator Drain and native cutover receipt reader",
+      "application": "project.ConfigurationOwner, globalconfig.Mutate, selected Project manager and approved policy owner; enrolled runner heartbeat request/observation transport; existing orchestrator Drain and native cutover receipt reader",
       "extraction": "Existing MCP/API command, exact chat approval, current authorization and durable OperatorMutation receipts; no generic editor, SQLite proxy, auto-start or new loop.",
       "tool": {
         "set": "local_projects",
         "name": "local_project_configuration",
-        "arguments": "Bounded project_id; commands require request_id, expected_config_revision (64 lowercase hex), expected_policy_id. Policy requires policy_id and source_revision (40 or 64 lowercase hex); detach requires checkpoint (64 lowercase hex). No extra properties.",
-        "result": "Redacted ManagedConfigView with authority, actual configuration revision, registered/runtime_registered, selected/effective policy provenance, pause/drain, unsettled work, saved/applied flags, constraint and observation time. Durable replay preserves the original receipt; a fresh read verifies reload.",
+        "arguments": "Bounded project_id and optional runner_id. Commands require request_id, expected_config_revision (64 lowercase hex) and expected_policy_id; Cloud also requires runner_id and expected_runner_revision. Policy requires policy_id and source_revision (40 or 64 lowercase hex), with optional allow_local_binding for the existing project worker permission. Detach requires checkpoint (64 lowercase hex). No extra properties.",
+        "result": "Redacted configuration receipt with runner identity/revision, configuration revision, effective localhost permission, complete policy candidates, registered/runtime_registered, pause/drain, unsettled work, pending/saved/applied flags, constraint and observation time. Fresh reads verify application.",
         "annotations": {
           "readOnly": true,
           "destructive": false,
@@ -36693,7 +36693,7 @@
       },
       "owner": "digitaldrywood/detent#3342",
       "status": "implemented",
-      "coverage": "TestManagedProjectConfiguration, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt, TestHostedProjectTools and TestBeginDrainStopsPendingDispatchTick.",
+      "coverage": "TestManagedProjectConfiguration, TestCloudProjectConfigurationOwner, TestRunnerCapacityHeartbeat, TestMCPLocalProjectConfiguration, TestLocalProjectArgumentBoundary, TestLocalProjectCutoverReceipt and TestHostedProjectTools.",
       "decision": "Native #94 consolidates configuration/policy/drain/handoff owners. Saved removal is distinct from runtime detach; Cloud routing and native Change/version/head authority remain separate. Parent parity remains pending."
     },
     {

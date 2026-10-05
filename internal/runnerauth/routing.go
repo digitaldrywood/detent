@@ -19,18 +19,19 @@ import (
 const HeartbeatTimeout = 2 * time.Minute
 
 type Routing struct {
-	UpdateRequest   *UpdateRequest      `json:"update_request,omitempty"`
-	CapacityRequest *CapacityRequest    `json:"capacity_request,omitempty"`
-	DisplayName     string              `json:"display_name"`
-	Tags            []string            `json:"tags"`
-	State           string              `json:"state"`
-	CapacityLimit   int                 `json:"capacity_limit"`
-	ProjectIDs      []tracker.ProjectID `json:"project_ids"`
-	HomeProjectIDs  []tracker.ProjectID `json:"home_project_ids"`
-	IsolationTier   string              `json:"isolation_tier"`
-	HostServices    []string            `json:"host_services"`
-	Availability    Availability        `json:"availability"`
-	Spillover       Spillover           `json:"spillover"`
+	ProjectConfigurationCommand *ProjectConfigurationCommand `json:"-"`
+	UpdateRequest               *UpdateRequest               `json:"update_request,omitempty"`
+	CapacityRequest             *CapacityRequest             `json:"capacity_request,omitempty"`
+	DisplayName                 string                       `json:"display_name"`
+	Tags                        []string                     `json:"tags"`
+	State                       string                       `json:"state"`
+	CapacityLimit               int                          `json:"capacity_limit"`
+	ProjectIDs                  []tracker.ProjectID          `json:"project_ids"`
+	HomeProjectIDs              []tracker.ProjectID          `json:"home_project_ids"`
+	IsolationTier               string                       `json:"isolation_tier"`
+	HostServices                []string                     `json:"host_services"`
+	Availability                Availability                 `json:"availability"`
+	Spillover                   Spillover                    `json:"spillover"`
 }
 
 type Availability struct {
@@ -45,10 +46,11 @@ type Spillover struct {
 }
 
 type RoutingSnapshot struct {
-	GitHubIntake *tracker.GitHubBatchTask `json:"github_intake,omitempty"`
-	RunnerID     string                   `json:"runner_id"`
-	Revision     int64                    `json:"revision"`
-	Routing      Routing                  `json:"routing"`
+	ProjectConfigurationRequest *ProjectConfigurationRequest `json:"project_configuration_request,omitempty"`
+	GitHubIntake                *tracker.GitHubBatchTask     `json:"github_intake,omitempty"`
+	RunnerID                    string                       `json:"runner_id"`
+	Revision                    int64                        `json:"revision"`
+	Routing                     Routing                      `json:"routing"`
 }
 
 type RoutingChange struct {

@@ -10,14 +10,14 @@ import (
 const LocalProjectConfiguration = "local_project_configuration"
 
 func localProjectSchema(name string) string {
-	properties := `"project_id":{"type":"string","minLength":1,"maxLength":256}`
+	properties := `"runner_id":{"type":"string","minLength":1,"maxLength":256},"project_id":{"type":"string","minLength":1,"maxLength":256}`
 	if name == LocalProjectConfiguration {
 		return `{"type":"object","properties":{` + properties + `},"required":["project_id"],"additionalProperties":false}`
 	}
-	extra := `,"request_id":{"type":"string","minLength":1,"maxLength":128},"expected_config_revision":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},"expected_policy_id":{"type":"string","minLength":1,"maxLength":256}`
+	extra := `,"expected_runner_revision":{"type":"integer","minimum":1,"maximum":2147483647},"request_id":{"type":"string","minLength":1,"maxLength":128},"expected_config_revision":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},"expected_policy_id":{"type":"string","minLength":1,"maxLength":256}`
 	required := `"project_id","request_id","expected_config_revision","expected_policy_id"`
 	if name == "apply_local_project_policy" {
-		extra += `,"source_revision":{"type":"string","minLength":40,"maxLength":64,"pattern":"^[0-9a-f]{40}([0-9a-f]{24})?$"},"policy_id":{"type":"string","minLength":1,"maxLength":256}`
+		extra += `,"allow_local_binding":{"type":"boolean"},"source_revision":{"type":"string","minLength":40,"maxLength":64,"pattern":"^[0-9a-f]{40}([0-9a-f]{24})?$"},"policy_id":{"type":"string","minLength":1,"maxLength":256}`
 		required += `,"source_revision","policy_id"`
 	}
 	if name == "detach_local_project" {
@@ -37,6 +37,9 @@ func IsLocalProjectTool(name string) bool {
 }
 
 type LocalProjectArguments struct {
+	RunnerID               string `json:"runner_id,omitempty"`
+	ExpectedRunnerRevision int64  `json:"expected_runner_revision,omitempty"`
+	AllowLocalBinding      *bool  `json:"allow_local_binding,omitempty"`
 	RequestID              string `json:"request_id,omitempty"`
 	ProjectID              string `json:"project_id"`
 	ExpectedConfigRevision string `json:"expected_config_revision,omitempty"`

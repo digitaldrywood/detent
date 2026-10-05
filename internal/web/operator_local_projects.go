@@ -12,7 +12,7 @@ import (
 )
 
 func (s *Server) localProjectTool(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
-	r, err := operatortool.DecodeLocalProjectArguments(call.Name, call.Arguments, true)
+	r, err := decodeLocalOwnerArguments(call.Name, call.Arguments, true)
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -34,7 +34,7 @@ func (s *Server) localProjectTool(ctx context.Context, call operatortool.Call) (
 }
 
 func localProjectAction(name string, raw json.RawMessage) (chatpkg.Action, error) {
-	r, err := operatortool.DecodeLocalProjectArguments(name, raw, false)
+	r, err := decodeLocalOwnerArguments(name, raw, false)
 	if err != nil {
 		return chatpkg.Action{}, err
 	}
@@ -42,14 +42,25 @@ func localProjectAction(name string, raw json.RawMessage) (chatpkg.Action, error
 }
 
 func (s *Server) executeLocalProjectAction(ctx context.Context, action chatpkg.Action) (chatpkg.ActionExecution, error) {
-	r, err := operatortool.DecodeLocalProjectArguments(string(action.Kind), action.Arguments, false)
+	r, err := decodeLocalOwnerArguments(string(action.Kind), action.Arguments, false)
 	if err != nil {
 		return chatpkg.ActionExecution{}, err
 	}
-	view := s.projectConfigOwner.Apply(ctx, string(action.Kind), project.ManagedConfigRequest{ProjectID: r.ProjectID, ExpectedConfigRevision: r.ExpectedConfigRevision, ExpectedPolicyID: r.ExpectedPolicyID, PolicyID: r.PolicyID, SourceRevision: r.SourceRevision, Checkpoint: r.Checkpoint})
+	view := s.projectConfigOwner.Apply(ctx, string(action.Kind), project.ManagedConfigRequest{AllowLocalBinding: r.AllowLocalBinding, ProjectID: r.ProjectID, ExpectedConfigRevision: r.ExpectedConfigRevision, ExpectedPolicyID: r.ExpectedPolicyID, PolicyID: r.PolicyID, SourceRevision: r.SourceRevision, Checkpoint: r.Checkpoint})
 	result, err := operatorResult(view)
 	if err != nil {
 		return chatpkg.ActionExecution{}, err
 	}
 	return chatpkg.ActionExecution{Message: string(result.Content), Data: result.Content, ResourceID: r.ProjectID}, nil
+}
+
+func decodeLocalOwnerArguments(name string, raw json.RawMessage, submission bool) (operatortool.LocalProjectArguments, error) {
+	r, err := operatortool.DecodeLocalProjectArguments(name, raw, submission)
+	if err != nil {
+		return r, err
+	}
+	if r.RunnerID != "" || r.ExpectedRunnerRevision != 0 {
+		return r, operatortool.ErrInvalidArguments
+	}
+	return r, nil
 }

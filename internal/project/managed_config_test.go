@@ -20,12 +20,30 @@ import (
 func TestManagedProjectConfiguration(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, scenario := range []string{"detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay"} {
+	for _, scenario := range []string{"detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := initWorkflowSourceRepo(t)
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
 			writeWorkflowSourceFile(t, workflowPath, "Private workflow instructions")
 			commitWorkflowSourceRepo(t, root, "initial workflow")
+			binding := strings.HasPrefix(scenario, "binding")
+			otherRoot := root
+			if binding {
+				if err := os.WriteFile(workflowPath, []byte("Private workflow instructions\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: memory\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				runWorkflowSourceGit(t, root, "add", "detent.yaml")
+				commitWorkflowSourceRepo(t, root, "split definition")
+				if err := os.WriteFile(filepath.Join(root, "detent.local.yaml"), []byte("schema: 1\nworker:\n  ssh_hosts: [local]\n  github_token: private-worker-credential\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				otherRoot = initWorkflowSourceRepo(t)
+				writeWorkflowSourceFile(t, filepath.Join(otherRoot, "WORKFLOW.md"), "unrelated")
+				commitWorkflowSourceRepo(t, otherRoot, "unrelated")
+			}
 			cfg, err := globalconfig.DefaultAt(filepath.Join(root, "global.yaml"), globalconfig.WithProjectPathLiterals())
 			if err != nil {
 				t.Fatal(err)
@@ -33,7 +51,14 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			cfg.APIToken = "private-api-credential"
 			cfg.Projects = []globalconfig.Project{
 				{ID: "selected", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: root, Weight: 1, Paused: true},
-				{ID: "unrelated", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: root, Weight: 3, Priority: 7, Paused: true, PausedReason: "user pause", PausedUntilIssue: "unrelated#42"},
+				{ID: "unrelated", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: otherRoot, Weight: 3, Priority: 7, Paused: true, PausedReason: "user pause", PausedUntilIssue: "unrelated#42"},
+			}
+			if scenario == "binding drained" {
+				cfg.Projects[0].Paused = false
+			}
+			if scenario == "binding local source" {
+				cfg.Projects[0].WorkflowRef = ""
+				cfg.Projects[0].Workflow = workflowPath
 			}
 			if err := globalconfig.Write(cfg.Path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
 				t.Fatal(err)
@@ -93,7 +118,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, private := range []string{root, cfg.APIToken, "Private workflow instructions", "WORKFLOW.md"} {
+			for _, private := range []string{root, cfg.APIToken, "private-worker-credential", "Private workflow instructions", "WORKFLOW.md"} {
 				if strings.Contains(string(raw), private) {
 					t.Fatalf("private provenance in %s", raw)
 				}
@@ -125,7 +150,9 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				operation = "apply_local_project_policy"
 				writeWorkflowSourceFile(t, workflowPath, "Changed committed private instructions")
 				commitWorkflowSourceRepo(t, root, "changed workflow")
-				candidate := owner.Read(t.Context(), "selected").SelectedPolicy
+				candidateView := owner.Read(t.Context(), "selected")
+				request.ExpectedConfigRevision = candidateView.ConfigRevision
+				candidate := candidateView.SelectedPolicy
 				if candidate == nil {
 					t.Fatal("candidate missing")
 				}
@@ -142,6 +169,63 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					}
 				}
 			}
+			var originalLocal []byte
+			if binding {
+				operation = "apply_local_project_policy"
+				if scenario == "binding drained" {
+					if before.Paused {
+						t.Fatal("drain fixture started paused")
+					}
+					attemptID, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "selected", IssueID: "active", Identifier: "selected#2", WorkerType: "code", AttemptNumber: 1, Lane: "In Progress", StartedAt: time.Now(), WorkerMetadataJSON: "{}"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					drained := owner.Apply(t.Context(), "drain_local_project", request)
+					if !drained.Applied || !drained.Draining || drained.Paused || drained.UnsettledAttempts != 1 {
+						t.Fatalf("drain=%+v", drained)
+					}
+					enabled := true
+					busy := request
+					busy.AllowLocalBinding, busy.PolicyID, busy.SourceRevision = &enabled, before.LocalBindingPolicy.ID, before.LocalBindingPolicy.SourceRevision
+					if result := owner.Apply(t.Context(), operation, busy); result.Applied || result.Saved || result.Constraint == "" {
+						t.Fatalf("busy drain application=%+v", result)
+					}
+					if err := attempts.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: time.Now(), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+						t.Fatal(err)
+					}
+					before = owner.Read(t.Context(), "selected")
+					if before.Constraint != "" || !before.Draining || before.Paused || before.UnsettledAttempts != 0 {
+						t.Fatalf("settled drain=%+v", before)
+					}
+					request.ExpectedConfigRevision = before.ConfigRevision
+				}
+				enabled := true
+				request.AllowLocalBinding = &enabled
+				if before.LocalBindingPolicy == nil || before.AllowLocalBinding {
+					t.Fatalf("binding preview=%+v", before)
+				}
+				request.SourceRevision, request.PolicyID = before.LocalBindingPolicy.SourceRevision, before.LocalBindingPolicy.ID
+				if scenario != "binding unapproved" {
+					scheduling.approved["selected"] = *before.LocalBindingPolicy
+				}
+				if scenario == "binding stale overlay" {
+					if err := os.WriteFile(filepath.Join(root, "detent.local.yaml"), []byte("schema: 1\nworker:\n  github_token: operator-new-credential\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if scenario == "binding busy" {
+					if _, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: "selected", IssueID: "active", Identifier: "selected#2", WorkerType: "code", AttemptNumber: 1, Lane: "In Progress", StartedAt: time.Now(), WorkerMetadataJSON: "{}"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if scenario == "binding foreign" {
+					request.ProjectID = "foreign"
+				}
+				originalLocal, err = os.ReadFile(filepath.Join(root, "detent.local.yaml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			original, err := os.ReadFile(cfg.Path)
 			if err != nil {
 				t.Fatal(err)
@@ -150,6 +234,38 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			after, err := os.ReadFile(cfg.Path)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if binding {
+				afterLocal, err := os.ReadFile(filepath.Join(root, "detent.local.yaml"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if scenario == "binding" || scenario == "binding local source" || scenario == "binding drained" {
+					if !result.Saved || !result.Applied || !result.AllowLocalBinding || result.EffectivePolicy.ID != request.PolicyID || string(after) != string(original) {
+						t.Fatalf("binding application=%+v", result)
+					}
+					if !strings.Contains(string(afterLocal), "private-worker-credential") || !strings.Contains(string(afterLocal), "ssh_hosts") {
+						t.Fatal("unrelated local settings changed")
+					}
+					if other := owner.Read(t.Context(), "unrelated"); other.AllowLocalBinding {
+						t.Fatal("permission escaped selected project")
+					}
+					selected, _ := manager.Registry().Get("selected")
+					if !selected.Paused() || selected.Running() {
+						t.Fatal("applied policy did not retain the settled pause boundary")
+					}
+					loaded, err := LoadWorkflowContext(t.Context(), selected.Config())
+					if err != nil {
+						t.Fatal(err)
+					}
+					savedPolicy, err := ResolvePolicy(selected.Config(), loaded)
+					if err != nil || savedPolicy.ID != request.PolicyID {
+						t.Fatalf("saved definition policy differs: %v", err)
+					}
+				} else if result.Constraint == "" || result.Applied || result.Saved || string(afterLocal) != string(originalLocal) || string(after) != string(original) {
+					t.Fatalf("binding refusal=%+v", result)
+				}
+				return
 			}
 			switch scenario {
 			case "detach":

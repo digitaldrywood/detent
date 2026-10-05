@@ -550,6 +550,12 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				return err
 			}
 		}
+		if reporter, ok := hubScheduling.(interface {
+			SetProjectConfigurationOwner(func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration)
+		}); ok {
+			owner := project.NewConfigurationOwner(cfg.Global, globalConfigState.get, manager, runtimeStore, nil)
+			reporter.SetProjectConfigurationOwner(runnerProjectConfigurationOwner(cfg.Global, globalConfigState.get, owner))
+		}
 		logger.Info("runner setup observations completed", "duration", time.Since(observationsStarted))
 		projectFactory = withRunnerFactoryWithIsolation(ctx, project.Dependencies{
 			Events:             events,

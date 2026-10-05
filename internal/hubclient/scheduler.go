@@ -48,6 +48,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	projectConfiguration  func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration
 	prepareProject        func(context.Context, string) error
 	updateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
@@ -503,4 +504,10 @@ func (s *Scheduler) SetUpdateOwner(owner func(context.Context, *runnerauth.Updat
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.updateOwner = owner
+}
+
+func (s *Scheduler) SetProjectConfigurationOwner(owner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projectConfiguration = owner
 }

@@ -90,6 +90,15 @@ func LoadProjectDefinition(path string) (Workflow, error) {
 	return ParseProjectDefinition(sources)
 }
 
+func LoadProjectDefinitionWithLocalConfig(path string, local []byte) (Workflow, error) {
+	sources, err := readProjectDefinitionSources(path)
+	if err != nil {
+		return Workflow{}, err
+	}
+	sources.LocalConfig, sources.HasLocalConfig = local, true
+	return ParseProjectDefinition(sources)
+}
+
 func readProjectDefinitionSources(path string) (ProjectDefinitionSources, error) {
 	workflowRaw, err := os.ReadFile(path)
 	if err != nil {
