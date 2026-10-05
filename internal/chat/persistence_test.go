@@ -24,6 +24,17 @@ func (store *failingSessionStore) Save(context.Context, SessionState, time.Time,
 	return nil
 }
 
+func (*failingSessionStore) LoadConnectionMode(context.Context, string, operatortool.Identity) (ConnectionMode, error) {
+	return ConfirmationMode, nil
+}
+
+func (store *failingSessionStore) SaveConnectionMode(context.Context, string, operatortool.Identity, ConnectionMode) error {
+	if store.fail {
+		return ErrUnavailable
+	}
+	return nil
+}
+
 func TestFailedPersistenceDoesNotRenewLifetime(t *testing.T) {
 	for _, operation := range []string{"proposal", "confirmation", "mode"} {
 		t.Run(operation, func(t *testing.T) {

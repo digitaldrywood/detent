@@ -97,6 +97,7 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 	}{
 		{"selected operator keys", 55, "1", true, true, false},
 		{"current selected operator keys", 67, "1", true, true, false},
+		{"persistent connection choices", 70, "1", true, true, false},
 		{"artifacts", 16, "0", false, false, false},
 		{"hosted identity", 17, "1", false, false, false},
 		{"viewed files version 18", 18, "1", true, false, false},
@@ -175,6 +176,11 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 			if _, err := provider.UpTo(t.Context(), test.version); err != nil {
 				t.Fatal(err)
 			}
+			if test.version == 70 {
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO operator_chat_sessions(connection_id, organization_id, identity_json, client, require_confirmation, mode, actions_json, last_used_at) SELECT 'existing-connection', organization_id, json_object('principal_id', 'operator', 'organization_id', organization_id, 'credential_id', 'credential'), 'existing client', 0, 'yolo', '[]', ? FROM issues WHERE id = ?`, testTimestamp, issueID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if _, err := db.ExecContext(t.Context(), `INSERT INTO api_tokens(id,name,scope,token_hash,token_fingerprint,created_at,updated_at,native_only) VALUES ('legacy-key','legacy key','operator','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','legacy-fingerprint','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1)`); err != nil {
 				t.Fatal(err)
 			}
@@ -222,6 +228,18 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 				t.Fatal(err)
 			}
 			service = openTestService(t, cfg)
+			if test.version == 70 {
+				var before, after string
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT identity_json || mode FROM operator_connections WHERE connection_id = 'existing-connection'").Scan(&before); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.database.db.ExecContext(t.Context(), "DELETE FROM operator_chat_sessions WHERE connection_id = 'existing-connection'"); err != nil {
+					t.Fatal(err)
+				}
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT identity_json || mode FROM operator_connections WHERE connection_id = 'existing-connection'").Scan(&after); err != nil || before != after || !strings.HasSuffix(after, "yolo") {
+					t.Fatalf("migration lost connection choice after session pruning: before=%s after=%s error=%v", before, after, err)
+				}
+			}
 			for _, check := range []struct{ name, query, want string }{
 				{"legacy key access", "SELECT operator_project_access FROM api_tokens WHERE id='legacy-key'", "selected"},
 				{"legacy key grants", "SELECT count(*) FROM token_grants g JOIN issues i ON i.organization_id=g.organization_id AND i.project_id=g.project_id WHERE g.token_id='legacy-key'", "1"},

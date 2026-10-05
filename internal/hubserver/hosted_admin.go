@@ -135,6 +135,7 @@ func (s *Service) revokeHostedMemberLocally(ctx context.Context, user string) (r
 		query string
 		args  []any
 	}{
+		{"DELETE FROM operator_connections WHERE organization_id = ? AND json_extract(identity_json, '$.principal_id') = (SELECT principal_id FROM hosted_members WHERE user_id = ?)", []any{s.config.Hosted.OrganizationID, user}},
 		{"UPDATE hosted_members SET active = 0,updated_at = ? WHERE user_id = ?", []any{formatHubTime(s.config.now()), user}},
 		{"DELETE FROM token_grants WHERE token_id = (SELECT principal_id FROM hosted_members WHERE user_id = ?)", []any{user}},
 		{"DELETE FROM hosted_project_grants WHERE user_id = ?", []any{user}},
@@ -200,6 +201,9 @@ func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, use
 	var principal string
 	err = tx.QueryRowContext(ctx, "SELECT principal_id FROM hosted_members WHERE user_id = ? AND active = 1", user).Scan(&principal)
 	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM operator_connections WHERE organization_id = ? AND json_extract(identity_json, '$.principal_id') = ? AND EXISTS (SELECT 1 FROM hosted_project_grants WHERE user_id = ? AND project_id = ? AND (? OR can_write > ? OR manage_runner > ?))`, s.config.Hosted.OrganizationID, principal, user, project, revoke, write, runner); err != nil {
 		return err
 	}
 	if revoke {

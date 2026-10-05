@@ -71,11 +71,16 @@ func (s *Service) AttachConnection(ctx context.Context) error {
 		}
 		connection.RequireConfirmation = connection.RequireConfirmation || current.connection.RequireConfirmation
 		connection.Client = current.connection.Client
-		current.connection = &connection
-		return nil
+	}
+	mode, err := s.connectionMode(ctx, connection.ID, connection.Identity)
+	if err != nil {
+		return err
+	}
+	if connection.RequireConfirmation {
+		mode = ConfirmationMode
 	}
 	current.connection = &connection
-	current.mode = ConfirmationMode
+	current.mode = mode
 	return nil
 }
 
@@ -98,11 +103,19 @@ func (s *Service) connectionSession(ctx context.Context) (*session, error) {
 		return nil, operatortool.ErrAccessDenied
 	}
 	current.mu.Lock()
+	defer current.mu.Unlock()
 	valid := current.connection != nil && current.connection.Identity == connection.Identity
-	current.mu.Unlock()
 	if !valid {
 		return nil, operatortool.ErrAccessDenied
 	}
+	mode, err := s.connectionMode(ctx, connection.ID, connection.Identity)
+	if err != nil {
+		return nil, err
+	}
+	if current.connection.RequireConfirmation {
+		mode = ConfirmationMode
+	}
+	current.mode = mode
 	return current, nil
 }
 
@@ -170,8 +183,6 @@ func (s *Service) RetryResult(ctx context.Context, kind ActionKind, requestID st
 	return Action{}, false, nil
 }
 
-// SetConnectionMode accepts only a trusted browser operator decision. The mode
-// lives on the server session, never in initialize metadata or request headers.
 func (s *Service) SetConnectionMode(ctx context.Context, id string, mode ConnectionMode) error {
 	current := s.session(id)
 	current.mu.Lock()
@@ -190,12 +201,10 @@ func (s *Service) SetConnectionMode(ctx context.Context, id string, mode Connect
 	if _, err := operatortool.AuthorizeCurrent(operatortool.WithConnection(ctx, *current.connection), operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return err
 	}
-	previous := current.mode
-	current.mode = mode
-	if err := s.persistSession(ctx, current); err != nil {
-		current.mode = previous
+	if err := s.saveConnectionMode(ctx, *current.connection, mode); err != nil {
 		return err
 	}
+	current.mode = mode
 	return nil
 }
 

@@ -19,6 +19,38 @@ func TestConnectionActions(t *testing.T) {
 		name string
 		run  func(*testing.T, *Service, *actionExecutorStub, context.Context, context.Context, *bool)
 	}{
+		{"YOLO survives session expiry", func(t *testing.T, s *Service, executor *actionExecutorStub, ctx, human context.Context, revoked *bool) {
+			if err := s.SetConnectionMode(human, "connection", YOLOMode); err != nil {
+				t.Fatal(err)
+			}
+			now := s.now().Add(25 * time.Hour)
+			s.now = func() time.Time { return now }
+			s.Conversation("prune")
+			if err := s.AttachConnection(ctx); err != nil {
+				t.Fatal(err)
+			}
+			result, err := s.Submit(ctx, connectionTestAction())
+			if err != nil || result.Status != ActionSucceeded || result.Mode != YOLOMode || executor.calls != 1 {
+				t.Fatalf("expired connection lost choice: action=%+v error=%v calls=%d", result, err, executor.calls)
+			}
+		}},
+		{"operator confirmation choice survives session eviction", func(t *testing.T, s *Service, executor *actionExecutorStub, ctx, human context.Context, revoked *bool) {
+			if err := s.SetConnectionMode(human, "connection", YOLOMode); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.SetConnectionMode(human, "connection", ConfirmationMode); err != nil {
+				t.Fatal(err)
+			}
+			s.sessionLimit = 1
+			s.Conversation("evict")
+			if err := s.AttachConnection(ctx); err != nil {
+				t.Fatal(err)
+			}
+			result, err := s.Submit(ctx, connectionTestAction())
+			if err != nil || result.Status != ActionPending || result.Mode != ConfirmationMode || executor.calls != 0 {
+				t.Fatalf("evicted connection ignored choice: action=%+v error=%v calls=%d", result, err, executor.calls)
+			}
+		}},
 		{"another principal cannot select YOLO", func(t *testing.T, s *Service, executor *actionExecutorStub, ctx, human context.Context, revoked *bool) {
 			identity := operatortool.ConnectionIdentity(ctx)
 			identity.PrincipalID = "other-operator"

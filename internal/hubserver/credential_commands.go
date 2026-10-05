@@ -114,7 +114,15 @@ func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenRespon
 	if err != nil {
 		return tokenResponse{}, err
 	}
-	result, err := s.database.db.ExecContext(ctx, `UPDATE api_tokens SET token_hash=?,token_fingerprint=?,rotated_at=?,revoked_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id)`, apikey.HashToken(token), tokenFingerprint(apikey.HashToken(token)), formatHubTime(now), formatHubTime(now), id)
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return tokenResponse{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM operator_connections WHERE json_extract(identity_json, '$.credential_id') = (SELECT token_hash FROM api_tokens WHERE id = ?)", id); err != nil {
+		return tokenResponse{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE api_tokens SET token_hash=?,token_fingerprint=?,rotated_at=?,revoked_at=NULL,updated_at=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id)`, apikey.HashToken(token), tokenFingerprint(apikey.HashToken(token)), formatHubTime(now), formatHubTime(now), id)
 	if err != nil {
 		return tokenResponse{}, err
 	}
@@ -124,6 +132,9 @@ func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenRespon
 	}
 	if rows != 1 {
 		return tokenResponse{}, nativeNotFound()
+	}
+	if err := tx.Commit(); err != nil {
+		return tokenResponse{}, err
 	}
 	for _, organization := range organizations {
 		s.notifications.notify(dispatchNotificationKey(organization))
@@ -145,7 +156,15 @@ func (s *Service) revokeAPITokenFor(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	result, err := s.database.db.ExecContext(ctx, "UPDATE api_tokens SET revoked_at=?,updated_at=? WHERE id=? AND revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id)", formatHubTime(now), formatHubTime(now), id)
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM operator_connections WHERE json_extract(identity_json, '$.credential_id') = (SELECT token_hash FROM api_tokens WHERE id = ?)", id); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE api_tokens SET revoked_at=?,updated_at=? WHERE id=? AND revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id)", formatHubTime(now), formatHubTime(now), id)
 	if err != nil {
 		return err
 	}
@@ -155,6 +174,9 @@ func (s *Service) revokeAPITokenFor(ctx context.Context, id string) error {
 	}
 	if rows != 1 {
 		return nativeNotFound()
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	for _, organization := range organizations {
 		s.notifications.notify(dispatchNotificationKey(organization))

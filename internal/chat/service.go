@@ -31,17 +31,18 @@ var (
 )
 
 type Service struct {
-	provider     Provider
-	tools        ToolExecutor
-	actions      ActionExecutor
-	now          func() time.Time
-	newID        func() (string, error)
-	sessionLimit int
-	sessionTTL   time.Duration
-	mu           sync.Mutex
-	sessions     map[string]*session
-	store        SessionStore
-	resolve      func(context.Context, operatortool.Identity) (operatortool.Authority, error)
+	provider        Provider
+	tools           ToolExecutor
+	actions         ActionExecutor
+	now             func() time.Time
+	newID           func() (string, error)
+	sessionLimit    int
+	sessionTTL      time.Duration
+	mu              sync.Mutex
+	sessions        map[string]*session
+	connectionModes map[string]connectionPreference
+	store           SessionStore
+	resolve         func(context.Context, operatortool.Identity) (operatortool.Authority, error)
 }
 
 type session struct {
@@ -74,14 +75,15 @@ func WithIDGenerator(generator func() (string, error)) Option {
 
 func NewService(provider Provider, tools ToolExecutor, actions ActionExecutor, options ...Option) *Service {
 	service := &Service{
-		provider:     provider,
-		tools:        tools,
-		actions:      actions,
-		now:          time.Now,
-		newID:        randomID,
-		sessionLimit: defaultSessionLimit,
-		sessionTTL:   defaultSessionTTL,
-		sessions:     make(map[string]*session),
+		provider:        provider,
+		tools:           tools,
+		actions:         actions,
+		now:             time.Now,
+		newID:           randomID,
+		sessionLimit:    defaultSessionLimit,
+		sessionTTL:      defaultSessionTTL,
+		sessions:        make(map[string]*session),
+		connectionModes: make(map[string]connectionPreference),
 	}
 	for _, option := range options {
 		option(service)

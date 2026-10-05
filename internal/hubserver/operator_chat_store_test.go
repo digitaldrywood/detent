@@ -347,3 +347,159 @@ func TestOperatorProposalSaveFailurePreventsEffect(t *testing.T) {
 		})
 	}
 }
+
+func TestOperatorConnectionModeLifetime(t *testing.T) {
+	for _, scenario := range []string{"expired session", "expired session after restart", "rotated key", "revoked key", "revoked grant", "reduced grant", "unchanged grant", "reduced role", "revoked membership"} {
+		t.Run(scenario, func(t *testing.T) {
+			now := time.Now().UTC()
+			f := newHostedSecurityFixture(t, func(cfg *Config) { cfg.now = func() time.Time { return now } })
+			user := f.user(t, "owner", "owner", "operator@example.test", "write", "")
+			f.grant(t, user, true, true)
+			issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
+			if err != nil {
+				t.Fatal(err)
+			}
+			createKey := func(name string) tokenResponse {
+				t.Helper()
+				expires := f.service.config.now().Add(72 * time.Hour)
+				key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: name, Scope: apiScopeOperator, Issuer: &issuer, KeyScope: apikey.ScopeWrite, ExpiresAt: &expires, ProjectIDs: []string{string(f.project)}, ProjectAccess: hostedProjectsSelected})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return key
+			}
+			key := createKey("persistent-mode")
+			bind := func() context.Context {
+				t.Helper()
+				var ctx context.Context
+				f.service.echo.POST("/api/v2/mode-test", func(c echo.Context) error {
+					ctx = c.Request().Context()
+					return c.NoContent(http.StatusOK)
+				}, f.service.operatorAuthority)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/mode-test", key.Token, nil), http.StatusOK)
+				return ctx
+			}
+			ctx := bind()
+			send := hostedContextProtocol(t, f.service, ctx, "http")
+			info := func() (string, chat.ConnectionMode) {
+				t.Helper()
+				var result struct {
+					ConnectionID string              `json:"connection_id"`
+					Mode         chat.ConnectionMode `json:"mode"`
+				}
+				raw := hostedContextData(t, send("tools/call", operatortool.ConnectionInfo, map[string]any{}), false)
+				if err := json.Unmarshal(raw, &result); err != nil || result.ConnectionID == "" {
+					t.Fatalf("connection info=%s error=%v", raw, err)
+				}
+				return result.ConnectionID, result.Mode
+			}
+			id, mode := info()
+			if mode != chat.ConfirmationMode {
+				t.Fatalf("initial mode=%s", mode)
+			}
+			if err := f.service.operatorChat.SetConnectionMode(chat.WithOperatorApproval(ctx, operatortool.ConnectionIdentity(ctx)), id, chat.YOLOMode); err != nil {
+				t.Fatal(err)
+			}
+			created := hostedContextData(t, send("tools/call", operatortool.FileIssue, map[string]any{"project_id": f.project, "request_id": "create", "title": "Persistent mode", "state": "Todo"}), false)
+			var creation struct {
+				Data tracker.NativeIssue `json:"data"`
+			}
+			if json.Unmarshal(created, &creation) != nil || creation.Data.WorkItemID == "" {
+				t.Fatalf("create=%s", created)
+			}
+			wantMode, wantStatus, wantState := chat.YOLOMode, chat.ActionSucceeded, "Done"
+			switch scenario {
+			case "expired session", "expired session after restart":
+				now = now.Add(25 * time.Hour)
+				if scenario == "expired session after restart" {
+					cfg := f.service.config
+					if err := f.service.Close(); err != nil {
+						t.Fatal(err)
+					}
+					f.service, err = Open(t.Context(), cfg)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						if err := f.service.Close(); err != nil {
+							t.Error(err)
+						}
+					})
+				} else {
+					f.service.operatorChat.Conversation("prune-expired-session")
+				}
+			case "rotated key", "revoked key":
+				if scenario == "rotated key" {
+					key, err = f.service.rotateAPITokenFor(t.Context(), key.ID)
+				} else {
+					err = f.service.revokeAPITokenFor(t.Context(), key.ID)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				hostedContextData(t, send("tools/call", operatortool.ConnectionInfo, map[string]any{}), true)
+				if mode, err := (operatorChatStore{f.service.database}).LoadConnectionMode(t.Context(), id, operatortool.ConnectionIdentity(ctx)); err != nil || mode != chat.ConfirmationMode {
+					t.Fatalf("invalidated key retained choice: mode=%s error=%v", mode, err)
+				}
+				if scenario == "revoked key" {
+					key = createKey("replacement")
+				}
+				wantMode, wantStatus, wantState = chat.ConfirmationMode, chat.ActionPending, "Todo"
+			case "revoked grant", "reduced grant", "unchanged grant", "reduced role", "revoked membership":
+				administrator := f.user(t, "administrator", "owner", "administrator@example.test", "write", "")
+				f.grant(t, administrator, true, true)
+				credential, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: administrator.identity.Hosted, Email: administrator.identity.Email}, apikey.HashToken(administrator.token))
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch scenario {
+				case "reduced role":
+					for _, role := range []string{"viewer", "owner"} {
+						if _, err := f.service.changeHostedRoleFor(t.Context(), credential, issuer.HostedMembership, role); err != nil {
+							t.Fatal(err)
+						}
+					}
+				case "revoked membership":
+					if err := f.service.revokeHostedMemberLocally(t.Context(), user.identity.Subject); err != nil {
+						t.Fatal(err)
+					}
+					f.user(t, "owner", "owner", "operator@example.test", "write", "")
+				default:
+					unchanged := scenario == "unchanged grant"
+					if err := f.service.hostedGrant(t.Context(), credential, user.identity.Subject, string(f.project), unchanged, unchanged, scenario == "revoked grant"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := f.service.hostedGrant(t.Context(), credential, user.identity.Subject, string(f.project), true, true, false); err != nil {
+					t.Fatal(err)
+				}
+				if scenario != "unchanged grant" {
+					wantMode, wantStatus, wantState = chat.ConfirmationMode, chat.ActionPending, "Todo"
+				}
+			}
+			ctx = bind()
+			send = hostedContextProtocol(t, f.service, ctx, "http")
+			newID, mode := info()
+			if mode != wantMode {
+				t.Fatalf("reconnected mode=%s want=%s", mode, wantMode)
+			}
+			if strings.HasPrefix(scenario, "expired session") && newID != id {
+				t.Fatal("same principal changed connection identity")
+			}
+			if len(f.service.operatorChat.Conversation(newID).Actions) != 0 && strings.HasPrefix(scenario, "expired session") {
+				t.Fatal("expired action receipt revived")
+			}
+			raw := hostedContextData(t, send("tools/call", operatortool.MoveItem, map[string]any{"project_id": f.project, "request_id": "terminal", "identifier": creation.Data.WorkItemID, "expected_revision": 1, "target_state": "Done"}), false)
+			var result struct {
+				Preview chat.Action `json:"preview"`
+			}
+			if json.Unmarshal(raw, &result) != nil || result.Preview.Status != wantStatus {
+				t.Fatalf("terminal move=%s want=%s", raw, wantStatus)
+			}
+			issue, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(creation.Data.WorkItemID))
+			if err != nil || issue.State != wantState {
+				t.Fatalf("terminal effect=%+v error=%v want=%s", issue, err, wantState)
+			}
+		})
+	}
+}

@@ -129,7 +129,20 @@ func (s *Service) changeHostedRoleFor(ctx context.Context, credential apiCredent
 	if err := s.config.Hosted.Provider.SetMembershipRole(ctx, member.ID, role); err != nil {
 		return hostedMemberView{}, err
 	}
-	if _, err := s.database.db.ExecContext(ctx, "UPDATE hosted_members SET role=?,updated_at=? WHERE user_id=?", role, formatHubTime(s.config.now()), member.UserID); err != nil {
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return hostedMemberView{}, err
+	}
+	defer tx.Rollback()
+	if role != member.Role.Slug && lesserHostedRole(role, member.Role.Slug) == role {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM operator_connections WHERE organization_id = ? AND json_extract(identity_json, '$.principal_id') = (SELECT principal_id FROM hosted_members WHERE user_id = ?)", s.config.Hosted.OrganizationID, member.UserID); err != nil {
+			return hostedMemberView{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE hosted_members SET role=?,updated_at=? WHERE user_id=?", role, formatHubTime(s.config.now()), member.UserID); err != nil {
+		return hostedMemberView{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return hostedMemberView{}, err
 	}
 	return s.hostedMemberResponse(ctx, member)

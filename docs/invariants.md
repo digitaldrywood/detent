@@ -17,6 +17,16 @@ A passing test does not authorize weakening a rule.
 
 ## INV-1 — Lane ownership
 
+MCP connection confirmation mode belongs to the stable authenticated connection
+identity, separately from expiring chat sessions and action receipts (native
+#259). Session pruning and Hub restart preserve an operator's choice; credential
+rotation selects a new identity in confirmation mode. Existing credential,
+grant reduction, role downgrade and membership revocation owners clear the
+choice, and every action still checks current authority.
+`TestOperatorConnectionModeLifetime` covers expiry, restart and authority changes
+through MCP reads and terminal workflow effects. This relocates the existing
+setting without a new mode, approval path, configuration or lane writer.
+
 MCP action results advertise `approval_url` only while the existing action is
 pending. Succeeded, failed and rejected receipts retain their genuine status,
 action identity, result tool, safe resource data and replay semantics without

@@ -12,7 +12,6 @@ type SessionState struct {
 	Identity            operatortool.Identity
 	Client              string
 	RequireConfirmation bool
-	Mode                ConnectionMode
 	Actions             []Action
 	LastUsedAt          time.Time
 }
@@ -20,6 +19,39 @@ type SessionState struct {
 type SessionStore interface {
 	Load(context.Context, string, time.Time, time.Duration) (SessionState, bool, error)
 	Save(context.Context, SessionState, time.Time, time.Duration, int) error
+	LoadConnectionMode(context.Context, string, operatortool.Identity) (ConnectionMode, error)
+	SaveConnectionMode(context.Context, string, operatortool.Identity, ConnectionMode) error
+}
+
+type connectionPreference struct {
+	identity operatortool.Identity
+	mode     ConnectionMode
+}
+
+func (s *Service) connectionMode(ctx context.Context, id string, identity operatortool.Identity) (ConnectionMode, error) {
+	if s.store != nil {
+		return s.store.LoadConnectionMode(ctx, id, identity)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	preference, found := s.connectionModes[id]
+	if !found {
+		return ConfirmationMode, nil
+	}
+	if preference.identity != identity {
+		return ConfirmationMode, operatortool.ErrAccessDenied
+	}
+	return preference.mode, nil
+}
+
+func (s *Service) saveConnectionMode(ctx context.Context, connection operatortool.Connection, mode ConnectionMode) error {
+	if s.store != nil {
+		return s.store.SaveConnectionMode(ctx, connection.ID, connection.Identity, mode)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.connectionModes[connection.ID] = connectionPreference{identity: connection.Identity, mode: mode}
+	return nil
 }
 
 func WithSessionStore(store SessionStore, resolve func(context.Context, operatortool.Identity) (operatortool.Authority, error)) Option {
@@ -50,7 +82,14 @@ func (s *Service) restoreSession(ctx context.Context, id string, current *sessio
 		}
 		return s.resolve(ctx, state.Identity)
 	}
-	current.connection, current.mode = &connection, state.Mode
+	mode, err := s.connectionMode(ctx, id, state.Identity)
+	if err != nil {
+		return err
+	}
+	if connection.RequireConfirmation {
+		mode = ConfirmationMode
+	}
+	current.connection, current.mode = &connection, mode
 	current.actions = cloneActions(state.Actions)
 	s.mu.Lock()
 	current.lastUsedAt = state.LastUsedAt
@@ -63,7 +102,7 @@ func (s *Service) persistSession(ctx context.Context, current *session) error {
 		return nil
 	}
 	now := s.now().UTC()
-	if err := s.store.Save(ctx, SessionState{ID: current.connection.ID, Identity: current.connection.Identity, Client: current.connection.Client, RequireConfirmation: current.connection.RequireConfirmation, Mode: current.mode, Actions: cloneActions(current.actions), LastUsedAt: now}, now, s.sessionTTL, s.sessionLimit); err != nil {
+	if err := s.store.Save(ctx, SessionState{ID: current.connection.ID, Identity: current.connection.Identity, Client: current.connection.Client, RequireConfirmation: current.connection.RequireConfirmation, Actions: cloneActions(current.actions), LastUsedAt: now}, now, s.sessionTTL, s.sessionLimit); err != nil {
 		return err
 	}
 	s.mu.Lock()
