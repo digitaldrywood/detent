@@ -271,6 +271,7 @@ export function useBoard(
         }
 
         const names = new Map(loaded.map((entry) => [entry.project.project_id, entry.project.name]));
+        const workflows = new Map(loaded.map((entry) => [entry.project.project_id, entry.project.states]));
         let totals: ScopedWorkStats | null = null;
         if (loaded.every((entry) => entry.work !== undefined)) {
           const counts = Object.create(null) as Record<string, number>;
@@ -341,10 +342,14 @@ export function useBoard(
 
         const items = issues.map((issue) => {
           const extra = extras.get(issue.work_item_id);
-          return toWorkItemView(issue, names.get(issue.project_id) ?? issue.project_id, {
+          const item = toWorkItemView(issue, names.get(issue.project_id) ?? issue.project_id, {
             ...(extra === undefined ? {} : { attempts: extra.attempts, change: extra.change, observations: extra.observations }),
             runnerNames: latestRunnerNames.current,
           });
+          return {
+            ...item,
+            terminal: workflows.get(issue.project_id)?.find((state) => state.name === issue.state)?.terminal ?? issue.terminal,
+          };
         });
         const currentFacets = toProjectView(loaded[0]!.project, issues);
         const previousFacets = knownFacets.current.scope === facetScope && knownFacets.current.http === http

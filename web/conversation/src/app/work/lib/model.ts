@@ -83,6 +83,7 @@ export interface WorkItemView {
   readonly epic: string | null;
   readonly createdAt: string | null;
   readonly updatedAt: string | null;
+  readonly lastActivityAt: string | null;
   readonly revision: string | null;
   /** Dependencies that are not yet terminal. A non-empty list is "Blocked". */
   readonly blockedBy: readonly string[];
@@ -144,6 +145,16 @@ export function sortItems(
     a.identifier.localeCompare(b.identifier, undefined, { numeric: true });
   return [...items].sort((a, b) => {
     switch (sort) {
+      case "default": {
+        const terminal = Number(a.terminal) - Number(b.terminal);
+        if (terminal !== 0) return terminal;
+        if (!a.terminal) {
+          const rank = priorityRank(a.priority) - priorityRank(b.priority);
+          if (rank !== 0) return rank;
+        }
+        const delta = time(b.lastActivityAt) - time(a.lastActivityAt);
+        return delta !== 0 ? delta : byIdentifier(a, b);
+      }
       case "priority": {
         const rank = priorityRank(a.priority) - priorityRank(b.priority);
         if (rank !== 0) return rank;

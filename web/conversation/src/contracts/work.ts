@@ -147,6 +147,7 @@ export const NativeIssue = Schema.Struct({
   provenance: Schema.optional(Provenance),
   created_at: Schema.String,
   updated_at: Schema.String,
+  last_activity_at: Schema.optional(Schema.NullOr(Schema.String)),
   dependencies: Schema.Array(NativeWorkItemId),
   /**
    * The same set as `dependencies` with state hydrated, minus any the caller's
