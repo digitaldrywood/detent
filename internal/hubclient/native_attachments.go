@@ -14,6 +14,10 @@ import (
 )
 
 func (c *NativeClient) UploadAttachment(ctx context.Context, reader io.Reader, name, contentType string) (attachment.Metadata, error) {
+	return c.uploadAttachment(ctx, reader, name, contentType, nil, "/attachments")
+}
+
+func (c *NativeClient) uploadAttachment(ctx context.Context, reader io.Reader, name, contentType string, headers http.Header, suffix string) (attachment.Metadata, error) {
 	var result attachment.Metadata
 	content, err := io.ReadAll(io.LimitReader(reader, attachment.MaxBytes+1))
 	if err != nil {
@@ -28,10 +32,14 @@ func (c *NativeClient) UploadAttachment(ctx context.Context, reader io.Reader, n
 			contentType = http.DetectContentType(content)
 		}
 	}
-	headers := http.Header{"Content-Type": {contentType}, "X-Attachment-Name": {filepath.Base(name)}}
-	path := c.base() + "/attachments"
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	headers.Set("Content-Type", contentType)
+	headers.Set("X-Attachment-Name", filepath.Base(name))
+	path := c.base() + suffix
 	if c.client.baseURL.Path == "/organizations/"+string(c.organization) {
-		path = "/api/v2/projects/" + string(c.project) + "/attachments"
+		path = "/api/v2/projects/" + string(c.project) + suffix
 	}
 	err = c.client.requestWithHeaders(ctx, http.MethodPost, path, headers, bytes.NewReader(content), &result)
 	if err != nil {

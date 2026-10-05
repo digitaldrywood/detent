@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
 
@@ -96,6 +97,12 @@ func validCommitID(value string) bool {
 }
 
 func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
+	if len(data.Evidence) != 0 {
+		return nativeInvalid("Attempt evidence is owned by attachment uploads")
+	}
+	if data.CompletionBody != "" && (eventType != "run.finished" || data.Sequence <= 0 || len(data.CompletionBody) > 64<<10 || !utf8.ValidString(data.CompletionBody)) {
+		return nativeInvalid("Completion responses require a bounded ordered terminal event")
+	}
 	if data.Disposition != nil && (eventType != "run.finished" || data.Sequence <= 0 || !slices.Contains([]string{workpad.StatusInProgress, workpad.StatusBlocked, workpad.StatusComplete}, data.Disposition.Status)) {
 		return nativeInvalid("Final disposition requires an ordered terminal event and a supported workpad status")
 	}
@@ -205,6 +212,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`, data.AttemptID, scop
 		if err := json.Unmarshal([]byte(previousJSON), &previous); err != nil {
 			return false, false, err
 		}
+		data.Evidence = previous.Evidence
+		encoded, err = marshalNative(data)
+		if err != nil {
+			return false, false, err
+		}
 		if previous.LeaseID != data.LeaseID || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || *previous.Identity != *data.Identity || status != "running" || data.Sequence != sequence+1 || event.Type == "run.started" {
 			return false, false, nativeExecutionConflict("Attempt identity, lifecycle or next sequence does not match")
 		}
@@ -217,6 +229,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`, data.AttemptID, scop
 			publish = nativeRuntimeHistoryChanged(previous.Runtime, data.Runtime)
 		}
 		if event.Type == "run.finished" {
+			if err := publishAttemptEvidence(ctx, tx, scope, item, data, now); err != nil {
+				return false, false, err
+			}
 			status = data.Outcome
 		}
 		if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence = ?, status = ?, data_json = ?, updated_at = ? WHERE id = ?", data.Sequence, status, encoded, formatHubTime(now), data.AttemptID); err != nil {

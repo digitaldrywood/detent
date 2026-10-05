@@ -35,6 +35,10 @@ type ToolExecution interface {
 	AgentTools() ([]AgentTool, AgentToolHandler)
 }
 
+type EvidenceSourceExecution interface {
+	SetEvidenceSource(func(context.Context, string) (ValidationEvidence, error))
+}
+
 type LandingRuntimeExecution interface {
 	StartLanding(context.Context, int64, uint64) error
 	ObserveLanding(context.Context, NativeLanding) error
@@ -211,9 +215,16 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	finish := req.Execution.Finish
-	if prepared, ok := req.Execution.(CompletionExecution); ok && req.DeferExecutionFinish {
+	if prepared, ok := req.Execution.(CompletionExecution); ok {
 		finish = func(ctx context.Context, outcome string) error {
-			return prepared.PrepareFinish(ctx, outcome, result.FinalMessage)
+			if req.DeferExecutionFinish {
+				return prepared.PrepareFinish(ctx, outcome, result.FinalMessage)
+			}
+			preparationErr := prepared.PrepareFinish(ctx, outcome, result.FinalMessage)
+			if preparationErr != nil {
+				outcome = "failed"
+			}
+			return errors.Join(preparationErr, req.Execution.Finish(ctx, outcome))
 		}
 	}
 	if err := finish(finishCtx, outcome); err != nil {

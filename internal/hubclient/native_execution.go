@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -19,13 +20,14 @@ import (
 )
 
 type nativeExecution struct {
-	artifacts nativeArtifacts
-	scheduler *Scheduler
-	claim     nativeClaim
-	mu        sync.Mutex
-	data      tracker.NativeRunData
-	pending   *tracker.NativeRunEvent
-	cancel    context.CancelCauseFunc
+	artifacts      nativeArtifacts
+	scheduler      *Scheduler
+	claim          nativeClaim
+	mu             sync.Mutex
+	data           tracker.NativeRunData
+	evidenceSource func(context.Context, string) (runner.ValidationEvidence, error)
+	pending        *tracker.NativeRunEvent
+	cancel         context.CancelCauseFunc
 	// diffSource computes the stored attempt diff the execution posts before
 	// every checkpoint and before the finish (decisions section 18.5). It is
 	// nil for a run with no worktree to describe.
@@ -46,6 +48,7 @@ type nativeExecution struct {
 	settled                  bool
 	change                   *runner.NativeChange
 	preparedOutcome          string
+	preparedMessage          string
 	preparedDisposition      *tracker.NativeDisposition
 	runtimeDirty             bool
 	runtimeSupported         *bool
@@ -306,6 +309,13 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.preparedOutcome = outcome
+	e.preparedMessage = finalMessage
+	if len(e.preparedMessage) > 64<<10 {
+		e.preparedMessage = e.preparedMessage[:64<<10]
+		for !utf8.ValidString(e.preparedMessage) {
+			e.preparedMessage = e.preparedMessage[:len(e.preparedMessage)-1]
+		}
+	}
 	e.preparedDisposition = nil
 	if signal, reported := workpad.SignalFromComment(finalMessage, "", ""); e.ownsChangeCompletion() && reported && signal != nil && signal.Invalid == nil {
 		e.preparedDisposition = &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != ""}
@@ -463,6 +473,9 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	data := e.data
 	data.Sequence++
 	data.Outcome = outcome
+	if kind == "run.finished" {
+		data.CompletionBody = e.preparedMessage
+	}
 	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence {
 		if err := e.postDiff(ctx, data.Sequence); err != nil {
 			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", data.Sequence, "error", err)

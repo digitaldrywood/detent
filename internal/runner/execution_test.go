@@ -54,7 +54,18 @@ func (e *testExecution) Recovery() tracker.NativeRecovery { return e.recovery }
 
 type readToolTestExecution struct {
 	testExecution
-	reads int
+	reads          int
+	evidenceSource func(context.Context, string) (ValidationEvidence, error)
+	completionBody string
+}
+
+func (e *readToolTestExecution) SetEvidenceSource(source func(context.Context, string) (ValidationEvidence, error)) {
+	e.evidenceSource = source
+}
+
+func (e *readToolTestExecution) PrepareFinish(_ context.Context, _, body string) error {
+	e.completionBody = body
+	return nil
 }
 
 func (e *readToolTestExecution) AgentTools() ([]AgentTool, AgentToolHandler) {
@@ -91,7 +102,7 @@ func (b *executionToolTestBackend) RunTurnWithTools(ctx context.Context, request
 func TestRunnerExecutionReadToolsPreserveCodingAndExistingTools(t *testing.T) {
 	t.Parallel()
 	execution := &readToolTestExecution{}
-	agent := &executionToolTestBackend{testing: t}
+	agent := &executionToolTestBackend{testing: t, fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: "Verified the page."}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}}
 	backend := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}}
 	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
 	if err != nil {
@@ -110,6 +121,9 @@ func TestRunnerExecutionReadToolsPreserveCodingAndExistingTools(t *testing.T) {
 	}
 	if execution.reads != 1 || previousCalls != 1 || agent.calls != 1 || !execution.started {
 		t.Fatalf("reads=%d previous=%d turns=%d started=%t", execution.reads, previousCalls, agent.calls, execution.started)
+	}
+	if execution.evidenceSource == nil || execution.completionBody != "Verified the page." || execution.finish != "succeeded" {
+		t.Fatalf("evidence source bound=%t completion=%q outcome=%q", execution.evidenceSource != nil, execution.completionBody, execution.finish)
 	}
 }
 

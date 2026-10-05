@@ -140,8 +140,8 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		t.Fatal("native execution omitted its read tools")
 	}
 	tools, handler := source.AgentTools()
-	if len(tools) != 8 {
-		t.Fatalf("read tools = %d, want 8", len(tools))
+	if len(tools) != 9 {
+		t.Fatalf("native tools = %d, want 9", len(tools))
 	}
 	receiptArgs, err := json.Marshal(map[string]any{"project_id": h.project, "reference": issue.ID, "native_attempt_id": owner.data.AttemptID})
 	if err != nil {

@@ -15,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const attachmentMetadataBase = nativeBase + "/attachment-metadata"
@@ -52,6 +51,8 @@ func (s *Service) registerCloudAttachmentRoutes(e *echo.Echo) {
 	write := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	e.POST(attachmentMetadataBase+"/check", s.checkCloudAttachment, write)
 	e.POST(attachmentMetadataBase, s.recordCloudAttachment, write)
+	e.POST(nativeBase+"/attempts/:attempt/evidence/check", s.checkCloudAttachment, s.requireNativeScope(apiScopeWorker))
+	e.POST(nativeBase+"/attempts/:attempt/evidence", s.recordCloudAttachment, s.requireNativeScope(apiScopeWorker))
 	e.GET(attachmentMetadataBase+"/:attachment", s.getCloudAttachment, read)
 	e.DELETE(attachmentMetadataBase+"/:attachment", s.deleteCloudAttachment, write)
 	e.POST(attachmentMetadataBase+"/:attachment/reference", s.referenceCloudAttachment, write)
@@ -62,14 +63,18 @@ func (s *Service) registerCloudAttachmentRoutes(e *echo.Echo) {
 
 func (s *Service) checkCloudAttachment(c echo.Context) error {
 	var input struct {
-		Size   int64                     `json:"size"`
-		Upload *attachment.UploadRequest `json:"upload,omitempty"`
+		Size     int64                       `json:"size"`
+		Upload   *attachment.UploadRequest   `json:"upload,omitempty"`
+		Evidence *attachment.EvidenceRequest `json:"evidence,omitempty"`
 	}
 	if err := c.Bind(&input); err != nil || input.Size < 0 || input.Size > attachment.MaxBytes {
 		return s.nativeAPIError(c, nativeInvalid("Invalid attachment size"))
 	}
 	if input.Upload != nil {
 		return s.prepareCloudAttachment(c, *input.Upload)
+	}
+	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
+		return s.nativeAPIError(c, err)
 	}
 
 	now := s.config.now()
@@ -90,6 +95,9 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.UploadRequest) error {
+	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	input.ID = conversation.NewAttachmentID()
 	if input.Validate() != nil || strings.TrimSpace(input.RequestID) == "" || len(input.RequestID) > 128 || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil {
 		return s.nativeAPIError(c, nativeInvalid("Invalid attachment upload"))
@@ -98,7 +106,18 @@ func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.Upload
 	identity := input.Metadata
 	identity.ID, identity.ProjectID, identity.Uploader = "", "", ""
 	identity.CreatedAt = time.Time{}
-	result, err := s.executeNativeMutation(c.Request().Context(), scope, nativeCommandOptions{OperationID: "attachment.prepare " + string(scope.project), Feature: "collaboration"}, tracker.Mutation{IdempotencyKey: input.RequestID}, identity, func(_ context.Context, _ *sql.Tx, _ nativeScope, _ time.Time) (any, error) {
+	options, command := attachmentEvidenceCommand(scope, "attachment.prepare", input)
+	var requestIdentity any = identity
+	if input.Evidence != nil {
+		if input.Evidence.IdempotencyKey != input.RequestID {
+			return s.nativeAPIError(c, nativeInvalid("Evidence retry identity does not match"))
+		}
+		requestIdentity = struct {
+			Metadata attachment.Metadata
+			Evidence *attachment.EvidenceRequest
+		}{identity, input.Evidence}
+	}
+	result, err := s.executeNativeMutation(c.Request().Context(), scope, options, command, requestIdentity, func(_ context.Context, _ *sql.Tx, _ nativeScope, _ time.Time) (any, error) {
 		return input.Metadata, nil
 	})
 	if err != nil {
@@ -123,12 +142,24 @@ func (s *Service) recordCloudAttachment(c echo.Context) error {
 	if err := c.Bind(&input); err != nil || input.Validate() != nil || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil {
 		return s.nativeAPIError(c, nativeInvalid("Invalid attachment metadata"))
 	}
+	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	key := input.RequestID
 	if key == "" {
 		key = input.ID
 	}
 	scope := nativeRequestScope(c)
-	result, err := s.executeNativeMutation(c.Request().Context(), scope, nativeCommandOptions{OperationID: "attachment.record " + string(scope.project), Feature: "collaboration"}, tracker.Mutation{IdempotencyKey: key}, input.Metadata, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+	input.RequestID = key
+	options, command := attachmentEvidenceCommand(scope, "attachment.record", input)
+	var requestIdentity any = input.Metadata
+	if input.Evidence != nil {
+		if input.Evidence.IdempotencyKey != input.RequestID {
+			return s.nativeAPIError(c, nativeInvalid("Evidence retry identity does not match"))
+		}
+		requestIdentity = input
+	}
+	result, err := s.executeNativeMutation(c.Request().Context(), scope, options, command, requestIdentity, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		record := input.Metadata
 		before, err := s.database.hostedConsumption(ctx, tx, now)
 		if err != nil {
@@ -140,6 +171,11 @@ func (s *Service) recordCloudAttachment(c echo.Context) error {
 		}
 		if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
 			return nil, err
+		}
+		if input.Evidence != nil {
+			if err := recordAttachmentEvidence(ctx, tx, scope, *input.Evidence, record, now); err != nil {
+				return nil, err
+			}
 		}
 		return record, nil
 	})

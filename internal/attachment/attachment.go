@@ -18,6 +18,7 @@ import (
 	_ "golang.org/x/image/webp"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const MaxBytes = conversation.MaxAttachmentBytes
@@ -48,7 +49,15 @@ type Metadata struct {
 
 type UploadRequest struct {
 	Metadata
-	RequestID string `json:"request_id,omitempty"`
+	RequestID string           `json:"request_id,omitempty"`
+	Evidence  *EvidenceRequest `json:"evidence,omitempty"`
+}
+
+type EvidenceRequest struct {
+	tracker.Mutation
+	WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
+	AttemptID  string                   `json:"attempt_id"`
+	Caption    string                   `json:"caption"`
 }
 
 type SourceReference struct {

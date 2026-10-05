@@ -50,6 +50,29 @@ func nativeSSHExecution(t *testing.T, ctx context.Context, execution runner.Exec
 	return wire.Bind(ctx, remote).Execution, closePeers
 }
 
+func TestSSHNativeEvidenceSource(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Remote evidence")
+	h.claim(t, issue.ID)
+	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	remote, closePeers := nativeSSHExecution(t, t.Context(), e, t.TempDir())
+	defer closePeers()
+	remote.(runner.EvidenceSourceExecution).SetEvidenceSource(func(_ context.Context, path string) (runner.ValidationEvidence, error) {
+		if path != "page.png" {
+			return runner.ValidationEvidence{}, os.ErrPermission
+		}
+		return runner.ValidationEvidence{Name: "page.png", ContentType: "image/png", Content: []byte("remote pixels")}, nil
+	})
+	file, err := e.evidenceSource(t.Context(), "page.png")
+	if err != nil || file.Name != "page.png" || string(file.Content) != "remote pixels" {
+		t.Fatalf("remote evidence: %+v, %v", file, err)
+	}
+	if _, err := e.evidenceSource(t.Context(), "../private.png"); err == nil {
+		t.Fatal("remote source refusal was lost")
+	}
+}
+
 func TestSSHNativePublication(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"complete", "capture disconnected", "upload acknowledgment lost"} {
