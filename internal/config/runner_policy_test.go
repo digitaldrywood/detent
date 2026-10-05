@@ -25,6 +25,7 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 	// approval comparison also runs on Windows.
 	workflow.Config.Codex.Shell = "sh"
 	workflow.Config.Hooks.Shell = "sh"
+	workflow.Config.Agent.Skills.MaxSkillsInPrompt = 50
 	// Captured with v0.117.1's config and gate sources. Unlike rebuilding the
 	// approval from today's Config type, these constants catch new digest inputs.
 	approved := policy.Descriptor{
@@ -46,6 +47,7 @@ func TestRunnerPolicyUpgradeKeepsApprovedID(t *testing.T) {
 		match  bool
 	}{
 		{"unchanged upgrade with default runner setup", func(*Workflow) {}, true},
+		{"increased skill prompt cap", func(w *Workflow) { w.Config.Agent.Skills.MaxSkillsInPrompt = 100 }, false},
 		{"configured runner setup", func(w *Workflow) { w.Config.Hooks.RunnerSetup = "scripts/runner-setup.sh" }, false},
 		{"host pacing off", func(w *Workflow) {
 			w.Config.Agent.RateWindowPacing = RateWindowPacing{Mode: RateWindowPacingOff}.Normalized()
