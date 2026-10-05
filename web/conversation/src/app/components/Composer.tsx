@@ -75,6 +75,10 @@ export interface ComposerProps {
   /** True while a turn is producing output: send becomes stop. */
   readonly streaming: boolean;
   readonly placeholder?: string;
+  readonly promptClassName?: string;
+  readonly promptContext?: React.ReactNode;
+  readonly sendLabel?: string;
+  readonly focusRequest?: number;
   /** Stated reason the send is unavailable, e.g. a lost connection. */
   readonly blockedReason?: string | null;
   /**
@@ -639,8 +643,11 @@ export function Composer(props: ComposerProps): React.ReactElement {
                       </div>
                     )}
 
+                    {props.promptContext}
                     <ComposerPromptEditor
                       {...(props.editorRef === undefined ? {} : { editorRef: props.editorRef })}
+                      className={props.promptClassName}
+                      focusRequest={props.focusRequest}
                       id={`${domId}-input`}
                       value={pending === null ? props.value : pending.customAnswer}
                       onChange={pending === null ? props.onChange : pending.onCustomAnswerChange}
@@ -775,6 +782,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
                       )}
                       <ComposerPrimaryActions
                         compact={compactActions}
+                        sendLabel={props.sendLabel}
                         pendingAction={pending === null ? null : pending.action}
                         isRunning={props.streaming && props.onStop !== undefined && !disabled}
 

@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 
 import {
   RIGHT_PANEL_SHEET_CLASS_NAME,
@@ -13,8 +13,10 @@ export function RightPanelSheet(props: {
   underFloatingPreview?: boolean;
 
   label?: string;
+  focusAsk?: boolean;
   onClose: () => void;
 }) {
+  const popup = useRef<HTMLDivElement>(null);
   return (
     <Sheet
       open={props.open}
@@ -25,6 +27,8 @@ export function RightPanelSheet(props: {
       }}
     >
       <SheetPopup
+        ref={popup}
+        initialFocus={() => props.focusAsk ? (popup.current?.querySelector<HTMLElement>("[data-testid=issue-ask-panel] [role=textbox]") ?? true) : true}
         aria-label={props.label ?? "Right panel"}
         transitionDurationMs={props.animationDurationMs}
         side="right"

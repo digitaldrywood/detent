@@ -62,6 +62,7 @@ export interface ComposerPromptEditorProps {
   readonly placeholder: string;
   readonly disabled?: boolean;
   readonly autoFocus?: boolean;
+  readonly focusRequest?: number;
   readonly ariaLabel: string;
   readonly ariaDescribedBy?: string;
   readonly id?: string;
@@ -164,11 +165,11 @@ function EditablePlugin({ editable }: { editable: boolean }): null {
   return null;
 }
 
-function AutoFocusPlugin({ autoFocus }: { autoFocus: boolean }): null {
+function AutoFocusPlugin({ autoFocus, focusRequest }: { autoFocus: boolean; focusRequest?: number | undefined }): null {
   const [editor] = useLexicalComposerContext();
   React.useEffect(() => {
     if (autoFocus) editor.focus();
-  }, [autoFocus, editor]);
+  }, [autoFocus, editor, focusRequest]);
   return null;
 }
 
@@ -393,7 +394,7 @@ export function ComposerPromptEditor(props: ComposerPromptEditorProps): React.Re
         {props.onHistoryStep === undefined ? null : (
           <PromptHistoryPlugin onHistoryStep={props.onHistoryStep} />
         )}
-        <AutoFocusPlugin autoFocus={props.autoFocus === true && !disabled} />
+        <AutoFocusPlugin autoFocus={props.autoFocus === true && !disabled} focusRequest={props.focusRequest} />
         {props.editorRef === undefined ? null : <HandlePlugin handle={props.editorRef} />}
         <HistoryPlugin />
       </div>

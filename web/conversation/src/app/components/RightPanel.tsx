@@ -594,6 +594,7 @@ export function useRightPanelWorkspace(input: {
     </RightPanelTabs>
   ) : (
     <RightPanelSheet
+      focusAsk={activeSurface?.kind === "ask"}
       animationDurationMs={panelAnimationsActive ? panelAnimationDurationMs : 0}
       open={panel.isOpen}
       label={input.title === undefined ? "Right panel" : `Right panel: ${input.title}`}

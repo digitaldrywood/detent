@@ -9,13 +9,14 @@ import {
 import * as Effect from "effect/Effect";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+import { composerText, typeInComposer } from "./composerInput.ts";
+
 import fixture from "../../src/contracts/fixtures/conversation-private.json";
 import type {
   Conversation,
   ConversationListResponse,
 } from "../../src/contracts/conversation.ts";
 import {
-  IssueAskEntry,
   IssueAskPanel,
   useIssueAsk,
 } from "../../src/app/work/IssueAsk.tsx";
@@ -56,12 +57,7 @@ const thread = (id: string, created_at: string): Conversation =>
   }) as Conversation;
 function View() {
   const ask = useIssueAsk("project", "wi_subject");
-  return (
-    <>
-      <IssueAskEntry ask={ask} canWrite />
-      <IssueAskPanel ask={ask} projectId="project" identifier="#28" canWrite />
-    </>
-  );
+  return <IssueAskPanel ask={ask} projectId="project" identifier="#28" canWrite />;
 }
 afterEach(cleanup);
 beforeEach(() => {
@@ -76,38 +72,35 @@ beforeEach(() => {
   mock.refresh.mockResolvedValue(undefined);
 });
 
-it.each(["issue-ask-inline", "issue-ask-panel"])(
-  "%s shows four suggestions and sends the split prompt for the current issue",
-  async (testId) => {
-    render(<View />);
-    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
-    const suggestions = within(screen.getByTestId(testId));
-    const labels = [
-      "Why is this Blocked?",
-      "Summarize the history",
-      "What is left before it can start?",
-      "Split into smaller issues",
-    ];
-    expect(
-      suggestions.getAllByRole("button")
-        .filter((button) => button.textContent !== "Ask" && button.textContent !== "New chat")
-        .map((button) => button.textContent),
-    ).toEqual(labels);
-    fireEvent.click(
-      suggestions.getByRole("button", { name: "Split into smaller issues" }),
-    );
-    await screen.findByTestId("selected-chat");
-    expect(mock.create).toHaveBeenCalledOnce();
-    expect(mock.create.mock.calls[0]?.[0]).toMatchObject({
-      projectId: "project",
-      subjectWorkItemId: "wi_subject",
-      firstMessage: {
-        text: "Use the split-issue skill to break this issue into smaller issues that can each land on their own. Wire up the dependencies so independent pieces can run in parallel, and show me the whole split as one proposal so I can confirm it once.",
-      },
-    });
-    if (testId === "issue-ask-inline") expect(mock.open).toHaveBeenCalledOnce();
-  },
-);
+it("shows suggestions only before the first question and sends the split prompt", async () => {
+  render(<View />);
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  const suggestions = within(screen.getByTestId("issue-ask-panel"));
+  const labels = [
+    "Why is this Blocked?",
+    "Summarize the history",
+    "What is left before it can start?",
+    "Split into smaller issues",
+  ];
+  expect(
+    suggestions.getAllByRole("button")
+      .filter((button) => button.textContent !== "Ask" && button.textContent !== "New question")
+      .map((button) => button.textContent),
+  ).toEqual(labels);
+  fireEvent.click(
+    suggestions.getByRole("button", { name: "Split into smaller issues" }),
+  );
+  await screen.findByTestId("selected-chat");
+  expect(mock.create).toHaveBeenCalledOnce();
+  expect(mock.create.mock.calls[0]?.[0]).toMatchObject({
+    projectId: "project",
+    subjectWorkItemId: "wi_subject",
+    firstMessage: {
+      text: "Use the split-issue skill to break this issue into smaller issues that can each land on their own. Wire up the dependencies so independent pieces can run in parallel, and show me the whole split as one proposal so I can confirm it once.",
+    },
+  });
+  expect(screen.queryByRole("button", { name: "Split into smaller issues" })).toBeNull();
+});
 
 it("keeps the question and create keys on retry and sends the subject with the first message", async () => {
   mock.create.mockResolvedValueOnce({
@@ -116,13 +109,11 @@ it("keeps the question and create keys on retry and sends the subject with the f
   });
   render(<View />);
   await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
-  const input = screen.getByRole("textbox", { name: "Ask about this issue" });
-  fireEvent.focus(input);
-  expect(mock.open).toHaveBeenCalled();
-  fireEvent.change(input, { target: { value: "Why is this Blocked?" } });
+  const input = screen.getByRole("textbox", { name: "Ask message" });
+  await typeInComposer(input, "Why is this Blocked?");
   fireEvent.submit(input.closest("form")!);
   await screen.findByRole("alert");
-  expect((input as HTMLInputElement).value).toBe("Why is this Blocked?");
+  expect(composerText(input)).toBe("Why is this Blocked?");
   fireEvent.submit(input.closest("form")!);
   await screen.findByTestId("selected-chat");
   const [first, second] = mock.create.mock.calls.map((call) => call[0]);
@@ -159,7 +150,7 @@ it("sorts all subject pages newest first and opens the same thread in Chat", asy
   });
 });
 
-it("starts a fresh subject thread from suggestions while keeping prior threads selectable", async () => {
+it("starts a fresh subject thread without suggestions while keeping prior threads selectable", async () => {
   mock.list.mockImplementation(() =>
     Effect.succeed({
       conversations: [thread("conv_old", "2026-09-01T00:00:00Z")],
@@ -168,11 +159,12 @@ it("starts a fresh subject thread from suggestions while keeping prior threads s
   );
   render(<View />);
   await screen.findByTestId("selected-chat");
-  fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+  fireEvent.click(screen.getByRole("button", { name: "New question" }));
   const panel = screen.getByTestId("issue-ask-panel");
-  fireEvent.click(
-    within(panel).getByRole("button", { name: "Summarize the history" }),
-  );
+  expect(within(panel).queryByRole("button", { name: "Summarize the history" })).toBeNull();
+  const input = within(panel).getByRole("textbox", { name: "Ask message" });
+  await typeInComposer(input, "Summarize the history");
+  fireEvent.submit(input.closest("form")!);
   await waitFor(() =>
     expect(screen.getByTestId("selected-chat").textContent).toBe("conv_new"),
   );

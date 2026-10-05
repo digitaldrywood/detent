@@ -45,7 +45,7 @@ import { AttachmentEditor } from "./components/AttachmentEditor.tsx";
 import { canInterrupt, executionCopy, expectedOwner, isActive } from "../lib/execution.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useActivityCitation } from "./lib/useActivityCitation.ts";
-import { IssueAskEntry, IssueAskPanel, useIssueAsk, type IssueAsk } from "./IssueAsk.tsx";
+import { IssueAskPanel, useIssueAsk } from "./IssueAsk.tsx";
 import { ActivityFeed, LiveRow } from "./components/ActivityFeed.tsx";
 import { IssueComposer } from "./components/IssueComposer.tsx";
 import {
@@ -642,7 +642,6 @@ function IssueSurface({
         apply((current) => current === null ? current : { ...current, issue: updated });
         reload();
       }}
-      ask={ask}
       item={item}
       data={data}
       moves={moves}
@@ -774,7 +773,6 @@ function IssueSurface({
 
 interface IssueBodyProps {
   readonly onBodySave: (body: string) => Promise<void>;
-  readonly ask: IssueAsk;
   readonly item: WorkItemView;
   readonly data: IssueData;
   readonly moves: readonly string[];
@@ -1166,8 +1164,6 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
               Sub-issues are not in this milestone: the hub has no parent-child relation yet.
             </TooltipPopup>
           </Tooltip>
-
-          <IssueAskEntry ask={props.ask} canWrite={props.canWrite} />
 
           <IssueResources rows={resources} />
 
