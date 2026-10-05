@@ -1,10 +1,12 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -24,6 +26,99 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
+
+func TestOperatorNativeWorkReadErrors(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "read-errors")
+	fault := f.create(t, "fault item")
+	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-errors")
+	hidden := foreign.create(t, "hidden content")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Other error tenant"})
+	requireNativeStatus(t, response, http.StatusCreated)
+	var organization nativeOrganization
+	decodeHubResponse(t, response, &organization)
+	otherTenant := newNativeFixture(t, f.service, organization.ID, "other-error-tenant")
+	otherItem := otherTenant.create(t, "other tenant content")
+	credential, _, err := f.service.authenticateAPIToken(t.Context(), foreign.token, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/tokens/"+credential.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": f.project.OrganizationID, "project_id": f.project.ID})
+	requireNativeStatus(t, response, http.StatusNoContent)
+	contexts := make(chan context.Context, 1)
+	f.service.echo.POST("/api/v2/organizations/:organization/operator-error-fixture", func(c echo.Context) error {
+		contexts <- c.Request().Context()
+		return c.NoContent(http.StatusOK)
+	}, f.service.operatorAuthority)
+	capture := func(token string) context.Context {
+		response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/operator-error-fixture", token, map[string]any{})
+		requireNativeStatus(t, response, http.StatusOK)
+		ctx := <-contexts
+		return operatortool.BindConnection(ctx, operatortool.ConnectionIdentity(ctx).PrincipalID, "test-client")
+	}
+	ctx := capture(f.token)
+	broader := capture(foreign.token)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json='[]' WHERE native_id=?", fault.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	for _, transport := range []string{"stdio", "http"} {
+		t.Run(transport, func(t *testing.T) {
+			for _, test := range []struct {
+				name, reference, want string
+				ctx                   context.Context
+			}{
+				{"missing", "wi_missing", "work item not found in this project", ctx},
+				{"unauthorized project", string(hidden.WorkItemID), operatortool.ErrProjectScopeRequired.Error(), ctx},
+				{"wrong authorized project", string(hidden.WorkItemID), "work item not found in this project", broader},
+				{"other organization", string(otherItem.WorkItemID), "work item not found in this project", ctx},
+				{"server fault", string(fault.WorkItemID), "Operator tool is unavailable", ctx},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					call := hostedContextProtocol(t, f.service, test.ctx, transport)
+					for _, tool := range []string{operatortool.WorkItem, operatortool.WorkHistory, operatortool.WorkComments, operatortool.WorkRelationships, operatortool.ExplainItem, operatortool.BoardActivity, operatortool.ListComments} {
+						t.Run(tool, func(t *testing.T) {
+							logs.Reset()
+							args := map[string]any{"project_id": string(f.project.ID), "reference": test.reference}
+							if tool == operatortool.ListComments {
+								delete(args, "reference")
+								args["identifier"] = test.reference
+							}
+							reply := call("tools/call", tool, args)
+							var result struct {
+								IsError bool `json:"isError"`
+								Content []struct {
+									Text string `json:"text"`
+								} `json:"content"`
+							}
+							if err := json.Unmarshal(reply.Result, &result); err != nil {
+								t.Fatal(err)
+							}
+							if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != test.want {
+								t.Fatalf("tool error=%s %s, want %q", reply.Result, reply.Error, test.want)
+							}
+							if test.name == "server fault" {
+								var entry struct {
+									Tool          string `json:"tool"`
+									CorrelationID string `json:"correlation_id"`
+									Error         string `json:"error"`
+								}
+								if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+									t.Fatalf("fault log=%s: %v", logs.Bytes(), err)
+								}
+								if entry.Tool != tool || entry.CorrelationID == "" || !strings.Contains(entry.Error, "cannot unmarshal array") {
+									t.Fatalf("lost fault context: %s", logs.Bytes())
+								}
+							} else if logs.Len() != 0 {
+								t.Fatalf("expected read failure logged as server fault: %s", logs.Bytes())
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
 
 func TestOperatorNativeWorkListBytePages(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "bounded-list")
@@ -326,7 +421,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		}
 		foreignArgs = args()
 		foreignArgs["reference"] = string(hidden.WorkItemID)
-		if _, err := call(tool, foreignArgs); !errors.Is(err, explain.ErrNotFound) {
+		if _, err := call(tool, foreignArgs); !errors.Is(err, operatortool.ErrProjectScopeRequired) {
 			t.Fatalf("%s foreign item=%v", tool, err)
 		}
 	}

@@ -124,6 +124,9 @@ func TestWorkReadDirectAuthorityAndSafeFailure(t *testing.T) {
 				if !errors.Is(err, ErrReadUnavailable) || strings.Contains(err.Error(), "secret") {
 					t.Fatal(err)
 				}
+				if test.failure != nil && !errors.Is(err, test.failure) {
+					t.Fatalf("lost underlying read failure: %v", err)
+				}
 			default:
 				if err != nil || probe.calls != 1 {
 					t.Fatalf("err=%v calls=%d", err, probe.calls)

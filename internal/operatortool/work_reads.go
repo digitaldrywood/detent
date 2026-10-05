@@ -37,6 +37,23 @@ const (
 )
 
 var ErrReadUnavailable = errors.New("work read service is unavailable")
+var ErrProjectScopeRequired = errors.New("work item belongs to another project outside this credential's scope; use a credential with that project's scope")
+
+type ReadUnavailableError struct {
+	Err error
+}
+
+func (e *ReadUnavailableError) Error() string {
+	return ErrReadUnavailable.Error()
+}
+
+func (e *ReadUnavailableError) Unwrap() error {
+	return e.Err
+}
+
+func (e *ReadUnavailableError) Is(target error) bool {
+	return target == ErrReadUnavailable
+}
 
 const WorkListPageBytes = MaxResultBytes / 4
 
@@ -324,10 +341,11 @@ func (e *Executor) readWork(ctx context.Context, call Call) (Result, error) {
 	result, err := reader.ReadWork(ctx, call.Name, request)
 	if err != nil {
 		var ambiguous *explain.AmbiguousIdentityError
-		if errors.Is(err, ErrAccessDenied) || errors.Is(err, ErrInvalidArguments) || errors.Is(err, explain.ErrNotFound) || errors.As(err, &ambiguous) {
+		var unavailable *ReadUnavailableError
+		if errors.Is(err, ErrAccessDenied) || errors.Is(err, ErrInvalidArguments) || errors.Is(err, explain.ErrNotFound) || errors.Is(err, ErrProjectScopeRequired) || errors.As(err, &unavailable) || errors.As(err, &ambiguous) {
 			return Result{}, err
 		}
-		return Result{}, ErrReadUnavailable
+		return Result{}, &ReadUnavailableError{Err: err}
 	}
 	if len(result.Content) > MaxResultBytes {
 		return Result{}, fmt.Errorf("%w: result exceeds size limit", ErrReadUnavailable)

@@ -52,7 +52,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			Labels     []nativeLabel         `json:"labels"`
 		}{project, []int{0, 1, 2, 3}, labels}, err)
 	}
-	item, err := s.resolveOperatorNativeItem(ctx, s.database.db, scope, request.Reference)
+	item, err := s.resolveOperatorNativeReadItem(ctx, s.database.db, scope, request.Reference)
 	if err != nil {
 		return operatortool.Result{}, safeWorkReadError(err)
 	}
@@ -142,7 +142,7 @@ func hubWorkResult[T any](r operatorWorkReads, request operatortool.WorkReadRequ
 
 func safeWorkReadError(err error) error {
 	var ambiguous *explain.AmbiguousIdentityError
-	if errors.Is(err, explain.ErrNotFound) || errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.As(err, &ambiguous) {
+	if errors.Is(err, explain.ErrNotFound) || errors.Is(err, operatortool.ErrProjectScopeRequired) || errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.As(err, &ambiguous) {
 		return err
 	}
 	if errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
@@ -152,7 +152,38 @@ func safeWorkReadError(err error) error {
 	if errors.As(err, &native) && native.status == 422 {
 		return operatortool.ErrInvalidArguments
 	}
-	return operatortool.ErrReadUnavailable
+	return &operatortool.ReadUnavailableError{Err: err}
+}
+
+func (s *Service) resolveOperatorNativeReadItem(ctx context.Context, query nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
+	item, err := s.resolveOperatorNativeItem(ctx, query, scope, reference)
+	if !errors.Is(err, sql.ErrNoRows) || !strings.HasPrefix(reference, "wi_") {
+		return item, err
+	}
+	var project string
+	lookupErr := query.QueryRowContext(ctx, "SELECT project_id FROM issues WHERE organization_id=? AND native_id=?", scope.organization, reference).Scan(&project)
+	if errors.Is(lookupErr, sql.ErrNoRows) {
+		return tracker.NativeIssue{}, explain.ErrNotFound
+	}
+	if lookupErr != nil {
+		return tracker.NativeIssue{}, lookupErr
+	}
+	if project == string(scope.project) {
+		return tracker.NativeIssue{}, err
+	}
+	otherScope := scope
+	otherScope.project = tracker.ProjectID(project)
+	authErr := s.requireHostedProject(ctx, query, otherScope, false)
+	if authErr == nil {
+		authErr = authorizeNativeProject(ctx, query, otherScope)
+	}
+	if isNativeNotFound(authErr) || errors.Is(authErr, operatortool.ErrAccessDenied) {
+		return tracker.NativeIssue{}, operatortool.ErrProjectScopeRequired
+	}
+	if authErr != nil {
+		return tracker.NativeIssue{}, authErr
+	}
+	return tracker.NativeIssue{}, explain.ErrNotFound
 }
 
 func (s *Service) resolveOperatorNativeItem(ctx context.Context, query nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
@@ -190,7 +221,7 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	}
 	scope := r.scope
 	scope.project = tracker.ProjectID(query.ProjectID)
-	issue, err := r.service.resolveOperatorNativeItem(ctx, r.service.database.db, scope, query.Reference)
+	issue, err := r.service.resolveOperatorNativeReadItem(ctx, r.service.database.db, scope, query.Reference)
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}

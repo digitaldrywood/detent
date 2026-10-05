@@ -23,6 +23,7 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	s.administration.Chat = s.operatorChat
 	executor := hostedOperatorExecutor{s}
 	s.mcpHTTP = mcp.NewHTTPHandler(executor, s.config.Version, mcp.HTTPConfig{
+		Logger: s.config.Logger,
 		Principal: func(request *http.Request) operatortool.Identity {
 			return operatortool.ConnectionIdentity(request.Context())
 		},

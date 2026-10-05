@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"reflect"
 	"sort"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -202,6 +205,9 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 		want string
 	}{
 		{"internal", errors.New("credential-sensitive-value invitation-secret prompt-body support-token billing-secret sentinel"), "Operator tool is unavailable"},
+		{"missing", explain.ErrNotFound, "work item not found in this project"},
+		{"unauthorized project", operatortool.ErrProjectScopeRequired, operatortool.ErrProjectScopeRequired.Error()},
+		{"read fault", &operatortool.ReadUnavailableError{Err: errors.New("database fault sentinel")}, "Operator tool is unavailable"},
 		{"request", &operatortool.RequestError{Code: "invalid_request", Message: "Read get_project_integration"}, `{"code":"invalid_request","message":"Read get_project_integration"}`},
 		{"revision", &operatortool.ConflictError{Code: "revision_conflict", CurrentRevision: 4}, `{"code":"revision_conflict","current_revision":"4"}`},
 		{"stale", &operatortool.ConflictError{Code: "stale_execution", Details: &operatortool.ConflictDetails{}}, `{"code":"stale_execution","details":{"expected_attempt_id":null,"current_attempt_id":null}}`},
@@ -209,7 +215,8 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 		for _, version := range []string{"2024-11-05", "2025-11-25"} {
 			t.Run(test.name+"/"+version, func(t *testing.T) {
 				executor := &staticExecutor{err: fmt.Errorf("internal secret: %w", test.err)}
-				client := startLiveServer(t, executor)
+				var logs bytes.Buffer
+				client := startLiveServerContext(t, executor, t.Context(), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
 				client.write(strings.Replace(initializeRequest, "2025-11-25", version, 1))
 				client.read()
 				client.write(initializedNotice)
@@ -229,7 +236,28 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 				if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != test.want {
 					t.Fatalf("tool error result = %#v", result)
 				}
-				if test.name == "internal" || version == "2024-11-05" {
+				if test.want == "Operator tool is unavailable" {
+					var entry struct {
+						Tool          string `json:"tool"`
+						CorrelationID string `json:"correlation_id"`
+						RequestID     string `json:"request_id"`
+						Error         string `json:"error"`
+					}
+					if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+						t.Fatalf("fault log=%s: %v", logs.Bytes(), err)
+					}
+					cause := test.err
+					var unavailable *operatortool.ReadUnavailableError
+					if errors.As(cause, &unavailable) {
+						cause = unavailable.Err
+					}
+					if entry.Tool != "fleet_health" || entry.CorrelationID == "" || entry.RequestID != "2" || !strings.Contains(entry.Error, cause.Error()) {
+						t.Fatalf("fault log=%s", logs.Bytes())
+					}
+				} else if logs.Len() != 0 {
+					t.Fatalf("expected tool error logged as a fault: %s", logs.Bytes())
+				}
+				if test.name != "request" && test.name != "revision" && test.name != "stale" || version == "2024-11-05" {
 					if len(result.StructuredContent) != 0 {
 						t.Fatalf("unexpected structured error=%s", result.StructuredContent)
 					}
@@ -525,13 +553,13 @@ func startLiveServer(t *testing.T, executor Executor) *liveClient {
 	return startLiveServerContext(t, executor, t.Context())
 }
 
-func startLiveServerContext(t *testing.T, executor Executor, ctx context.Context) *liveClient {
+func startLiveServerContext(t *testing.T, executor Executor, ctx context.Context, options ...ServerOption) *liveClient {
 	t.Helper()
 	reader, writer := io.Pipe()
 	frames := make(chan []byte, 64)
 	done := make(chan error, 1)
 	go func() {
-		done <- NewServer(executor, "test-version").Serve(ctx, reader, frameWriter{frames: frames})
+		done <- NewServer(executor, "test-version", options...).Serve(ctx, reader, frameWriter{frames: frames})
 	}()
 	t.Cleanup(func() {
 		_ = writer.Close()

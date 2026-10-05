@@ -8,10 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
+
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -34,14 +38,29 @@ type Executor interface {
 type Server struct {
 	executor Executor
 	version  string
+	logger   *slog.Logger
 }
 
-func NewServer(executor Executor, version string) *Server {
+type ServerOption func(*Server)
+
+func WithLogger(logger *slog.Logger) ServerOption {
+	return func(s *Server) {
+		if logger != nil {
+			s.logger = logger
+		}
+	}
+}
+
+func NewServer(executor Executor, version string, options ...ServerOption) *Server {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		version = "dev"
 	}
-	return &Server{executor: executor, version: version}
+	server := &Server{executor: executor, version: version, logger: slog.Default()}
+	for _, option := range options {
+		option(server)
+	}
+	return server
 }
 
 func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) error {
@@ -61,6 +80,7 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 		done:     runContext.Done(),
 		cancel:   cancel,
 		executor: s.executor,
+		logger:   s.logger,
 		version:  s.version,
 		output:   output,
 		state:    stateNew,
@@ -122,6 +142,7 @@ type session struct {
 	done     <-chan struct{}
 	cancel   context.CancelFunc
 	executor Executor
+	logger   *slog.Logger
 	version  string
 	output   io.Writer
 
@@ -220,7 +241,7 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 		if meta.Modern {
 			if err := s.ensureBridge(ctx, meta.Client); err != nil {
 				if message.Method == "tools/call" {
-					return s.writeVersionResult(message.ID, version, message.Method, failedToolCallResult(version, err))
+					return s.writeVersionResult(message.ID, version, message.Method, s.toolFailure(ctx, version, "tools/call", message.ID, err))
 				}
 				return s.writeError(message.ID, codeInvalidParams, operatortool.ErrAccessDenied.Error(), nil)
 			}
@@ -412,7 +433,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 			return
 		}
 		if err != nil {
-			if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, failedToolCallResult(protocolVersion, err)); writeErr != nil {
+			if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, s.toolFailure(callContext, protocolVersion, call.Name, message.ID, err)); writeErr != nil {
 				return
 			}
 			return
@@ -596,12 +617,29 @@ func requestIDKey(raw json.RawMessage) (string, bool) {
 }
 
 func safeToolError(err error) string {
-	for _, safe := range []error{operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
+	if errors.Is(err, explain.ErrNotFound) {
+		return "work item not found in this project"
+	}
+	for _, safe := range []error{operatortool.ErrProjectScopeRequired, operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
 		if errors.Is(err, safe) {
 			return safe.Error()
 		}
 	}
 	return "Operator tool is unavailable"
+}
+
+func (s *session) toolFailure(ctx context.Context, version, name string, id json.RawMessage, err error) toolCallResult {
+	var conflict *operatortool.ConflictError
+	var request *operatortool.RequestError
+	if safeToolError(err) == "Operator tool is unavailable" && !errors.As(err, &conflict) && !errors.As(err, &request) {
+		cause := err
+		var unavailable *operatortool.ReadUnavailableError
+		if errors.As(err, &unavailable) {
+			cause = unavailable.Err
+		}
+		s.logger.ErrorContext(ctx, "operator tool failed", "tool", name, "correlation_id", uuid.NewString(), "request_id", string(id), "error", cause)
+	}
+	return failedToolCallResult(version, err)
 }
 
 func failedToolCallResult(protocolVersion string, err error) toolCallResult {

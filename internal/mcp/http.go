@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -32,6 +33,7 @@ const (
 )
 
 type HTTPConfig struct {
+	Logger             *slog.Logger
 	Principal          func(*http.Request) operatortool.Identity
 	MaxSessions        int
 	SessionIdleTimeout time.Duration
@@ -40,6 +42,7 @@ type HTTPConfig struct {
 }
 
 type HTTPHandler struct {
+	logger             *slog.Logger
 	executor           Executor
 	version            string
 	principal          func(*http.Request) operatortool.Identity
@@ -54,6 +57,10 @@ type HTTPHandler struct {
 }
 
 func NewHTTPHandler(executor Executor, version string, cfg HTTPConfig) *HTTPHandler {
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	maxSessions := cfg.MaxSessions
 	if maxSessions <= 0 {
 		maxSessions = defaultMaxHTTPSessions
@@ -71,6 +78,7 @@ func NewHTTPHandler(executor Executor, version string, cfg HTTPConfig) *HTTPHand
 		generateSessionID = newHTTPSessionID
 	}
 	return &HTTPHandler{
+		logger:             logger,
 		executor:           executor,
 		version:            version,
 		principal:          cfg.Principal,
@@ -172,7 +180,7 @@ func (h *HTTPHandler) initializeSession(writer http.ResponseWriter, req *http.Re
 		writeHTTPTransportError(writer, http.StatusServiceUnavailable, "MCP session could not be created")
 		return
 	}
-	session := newHTTPProtocolSession(sessionID, principal, h.executor, h.version, h.now())
+	session := newHTTPProtocolSession(sessionID, principal, h.executor, h.version, h.now(), h.logger)
 	session.now, session.idle = h.now, h.sessionIdleTimeout
 	frame, notification, err := session.dispatch(req.Context(), message, body)
 	if err != nil {
@@ -378,13 +386,14 @@ type httpProtocolSession struct {
 	idle     time.Duration
 }
 
-func newHTTPProtocolSession(id string, principal operatortool.Identity, executor Executor, version string, now time.Time) *httpProtocolSession {
+func newHTTPProtocolSession(id string, principal operatortool.Identity, executor Executor, version string, now time.Time, logger *slog.Logger) *httpProtocolSession {
 	ctx, cancel := context.WithCancel(context.Background())
 	router := newHTTPResponseRouter()
 	protocol := &session{
 		done:     ctx.Done(),
 		cancel:   cancel,
 		executor: executor,
+		logger:   logger,
 		version:  strings.TrimSpace(version),
 		output:   router,
 		state:    stateNew,
@@ -719,7 +728,7 @@ func (h *HTTPHandler) serveModern(writer http.ResponseWriter, req *http.Request,
 		digest := sha256.Sum256(raw)
 		applicationID = "mcp-" + base64.RawURLEncoding.EncodeToString(digest[:])
 	}
-	requestSession := newHTTPProtocolSession(id, principal, h.executor, h.version, h.now())
+	requestSession := newHTTPProtocolSession(id, principal, h.executor, h.version, h.now(), h.logger)
 	requestSession.modern = true
 	requestSession.connectionID = applicationID
 	if !h.addSession(requestSession) {
