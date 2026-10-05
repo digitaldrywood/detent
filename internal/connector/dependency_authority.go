@@ -36,6 +36,9 @@ func (issue Issue) WithNativeWorkpadAuthority() Issue {
 // IgnoredNativeWorkpadDependency names a recorded dependency absent from the
 // current native list. Recovery uses that same source decision as cleared evidence.
 func (issue Issue) IgnoredNativeWorkpadDependency(blocker workpad.Blocker) string {
+	if issue.Metadata["hub_disposition_attempt_id"] != "" {
+		return ""
+	}
 	if issue.DependencySource != BlockedRefSourceNative || blocker.Predicate != nil && blocker.Predicate.Type != workpad.PredicateIssueState {
 		return ""
 	}

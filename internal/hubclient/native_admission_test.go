@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +18,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -188,6 +193,220 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			request.CandidateReady = nil
 			if again, err := h.scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(again) != min(test.slots, test.budget) {
 				t.Fatalf("released batch did not free slots: %d, %v", len(again), err)
+			}
+		})
+	}
+}
+
+type nativeDependencyRecoveryRunner struct {
+	started chan runner.RunRequest
+}
+
+func (r nativeDependencyRecoveryRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
+	r.started <- request
+	<-ctx.Done()
+	return runner.RunResult{}, ctx.Err()
+}
+
+func TestNativeRecordedDependencyAdmission(t *testing.T) {
+	for _, test := range []struct {
+		name, refusal string
+		qualified     bool
+		advancePolicy bool
+	}{
+		{name: "reported prerequisite without typed relation"},
+		{name: "canonical native reference", qualified: true},
+		{name: "new approved policy recovers historical report", advancePolicy: true},
+		{name: "human action retains hold", refusal: "human"},
+		{name: "operator transition retains hold", refusal: "operator"},
+		{name: "stale revision cannot recover", refusal: "revision"},
+		{name: "stale fence cannot recover", refusal: "fence"},
+		{name: "stale report cannot recover", refusal: "report"},
+		{name: "unrelated native dependency retains hold", refusal: "relation"},
+		{name: "policy change retains hold", refusal: "policy"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHubDependencies(t, "Human Review", []tracker.NativeState{
+				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked", "Human Review"}},
+				{Name: "Blocked", Transitions: []string{"In Progress", "Blocked"}},
+				{Name: "Human Review"},
+				{Name: "Backlog", Transitions: []string{"Done"}},
+				{Name: "Done", Terminal: true, Transitions: []string{"Backlog"}},
+			}, true, true)
+			prerequisite, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Actual prerequisite", State: "Backlog"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := h.createInProgress(t, "Reported dependency")
+			var unrelated tracker.NativeIssue
+			if test.refusal == "relation" {
+				other, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Unrelated prerequisite", State: "Done"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				unrelated = other
+				if err := h.connector.AddIssueDependency(t.Context(), issue.ID, string(other.WorkItemID)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.claim(t, issue.ID)
+			if unrelated.WorkItemID != "" {
+				if _, err := h.admin.Transition(t.Context(), unrelated.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: unrelated.Revision, State: "Backlog", Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			execution := h.scheduler.RunExecution(issue.ID)
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			execution.(runner.DiffExecution).SetDiffSource(nativeChangeDiff(strings.Repeat("a", 40)))
+			if err := execution.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "local_only", WorktreeState: "clean", HeadSHA: strings.Repeat("a", 40), ExternalEffect: "none", EffectState: "none"}); err != nil {
+				t.Fatal(err)
+			}
+			reference := fmt.Sprintf("#%d", prerequisite.Number)
+			if test.qualified {
+				reference = string(h.project) + reference
+			}
+			human := "null"
+			if test.refusal == "human" {
+				human = "Approve the release"
+			}
+			report := fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '%s'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: %s\n```", reference, human)
+			if err := execution.(runner.CompletionExecution).PrepareFinish(t.Context(), "succeeded", report); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.Finish(t.Context(), "succeeded"); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Blocked"); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+				t.Fatal(err)
+			}
+			blocked, err := h.native.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.refusal != "relation" && len(blocked.Dependencies) != 0 {
+				t.Fatalf("fixture fabricated typed dependencies: %+v", blocked.Dependencies)
+			}
+			hydrated, err := h.connector.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+			if err != nil || len(hydrated) != 1 || hydrated[0].WorkpadSignal == nil || len(hydrated[0].WithNativeWorkpadAuthority().WorkpadSignal.Blockers) != 1 {
+				t.Fatalf("native disposition lost its prerequisite: %+v, %v", hydrated, err)
+			}
+			resolved, err := h.connector.FetchIssueStatesByIdentifiers(t.Context(), []string{string(h.project) + fmt.Sprintf("#%d", prerequisite.Number)})
+			if err != nil || len(resolved) != 1 || resolved[0].ID != string(prerequisite.WorkItemID) || resolved[0].Closed {
+				t.Fatalf("native reference resolved incorrectly: %+v, %v", resolved, err)
+			}
+			attempts, history, err := h.connector.recordedBlockerContext(t.Context(), blocked.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt, prior, valid := tracker.RecordedNativeBlockers(blocked, attempts, history)
+			if !valid || prior != "In Progress" {
+				t.Fatalf("current report missing: %+v, %s, %t", attempt, prior, valid)
+			}
+			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "too-early", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, PolicyID: h.descriptor.ID, BlockerAttemptID: attempt.AttemptID, ExpectedRevision: blocked.Revision, State: prior, Reason: "dependency_ready", ReasonDetail: "recorded_blocker_recovery"}
+			if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err == nil {
+				t.Fatal("recovery cleared a genuinely unresolved prerequisite")
+			}
+			if len(h.candidates(t)) != 0 {
+				t.Fatal("blocked prerequisite was admitted")
+			}
+			if test.refusal != "" {
+				if _, err := h.admin.Transition(t.Context(), prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			request.IdempotencyKey = "ready"
+			switch test.refusal {
+			case "revision":
+				request.ExpectedRevision--
+			case "fence":
+				request.FencingToken++
+			case "report":
+				request.BlockerAttemptID = "attempt_unrelated"
+			case "operator":
+				current, err := h.admin.Transition(t.Context(), blocked.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: blocked.Revision, State: "Blocked", Reason: "user_requested"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.ExpectedRevision = current.Revision
+			case "policy":
+				h.repolicy(t)
+			}
+			if test.refusal != "" {
+				if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err == nil || h.state(t, issue.ID) != "Blocked" {
+					t.Fatalf("%s authority was bypassed: %v", test.refusal, err)
+				}
+				return
+			}
+			if test.advancePolicy {
+				h.repolicy(t)
+			}
+			runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = runtimeStore.Close() })
+			started := make(chan runner.RunRequest, 1)
+			orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "Human Review"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: nativeDependencyRecoveryRunner{started: started}, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- orch.Run(ctx) }()
+			t.Cleanup(func() { cancel(); <-done })
+			deadline := time.After(10 * time.Second)
+			for {
+				current, err := orch.State(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				entry := current.Blocked[issue.ID]
+				if len(entry.BlockerEvidence) == 1 && entry.BlockerEvidence[0].Status == "holds" {
+					break
+				}
+				select {
+				case <-started:
+					t.Fatal("native recovery dispatched before prerequisite readiness")
+				case <-deadline:
+					t.Fatalf("native recovery never observed the unmet predicate: %+v", entry)
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			if _, err := h.admin.Transition(t.Context(), prerequisite.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: prerequisite.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := orch.RequestRefresh(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case run := <-started:
+				if run.Issue.ID != issue.ID || run.Issue.State != prior {
+					t.Fatalf("recovery dispatched wrong lane: %+v", run.Issue)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("native recorded recovery did not autonomously dispatch: state=%s", h.state(t, issue.ID))
+			}
+			page, err := h.admin.History(t.Context(), blocked.WorkItemID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var recovered, claimed int64
+			for _, event := range page.Items {
+				if event.Type == "workflow.transitioned" && strings.ReplaceAll(event.Data.ReasonDetail, " ", "_") == "recorded_blocker_recovery" && event.Data.BlockerAttemptID == attempt.AttemptID {
+					recovered = event.AggregateSequence
+				}
+				if event.Type == "scheduler.decision" && event.Data.Decision != nil && event.Data.Decision.Outcome == "claimed" {
+					claimed = event.AggregateSequence
+				}
+			}
+			if recovered == 0 || claimed <= recovered {
+				t.Fatalf("recovery transition then fresh claim missing: recovered=%d claimed=%d", recovered, claimed)
 			}
 		})
 	}

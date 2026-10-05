@@ -132,9 +132,12 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		disposition   *tracker.NativeDisposition
 		finalMessage  string
 		manualHold    bool
+		edited        bool
 		wantCandidate bool
 	}{
 		{name: "native272 instance report remains runnable", finalMessage: instanceReport, wantCandidate: true},
+		{name: "instance report remains runnable after revision edit", finalMessage: instanceReport, edited: true, wantCandidate: true},
+		{name: "recorded prerequisite survives revision edit without relation", finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '#42'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: null\n```", edited: true},
 		{name: "instance report respects manual workflow hold", finalMessage: instanceReport, manualHold: true},
 		{name: "instance and human action remain held", finalMessage: strings.Replace(instanceReport, "human_action: null", "human_action: Approve the exception", 1)},
 		{name: "instance and external blocker remain held", finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1)},
@@ -178,6 +181,11 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			f.release(t)
 			if f.reload(t).Revision != revision {
 				t.Fatal("completion fabricated an item edit")
+			}
+			if test.edited {
+				title := "Updated title"
+				response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(f.issue.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit-title"}, ExpectedRevision: revision, Title: &title})
+				requireNativeStatus(t, response, http.StatusOK)
 			}
 			if got := f.candidate(t); got != test.wantCandidate {
 				t.Fatalf("candidate=%t, want %t", got, test.wantCandidate)

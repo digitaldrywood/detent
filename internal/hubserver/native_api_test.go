@@ -683,6 +683,26 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 			}
 		})
 	}
+	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	reference := fmt.Sprintf("%s#%d", other.project.ID, blocker.Number)
+	if _, err := resolveNativeBlockerReference(t.Context(), f.service.database.db, scope, reference); err == nil {
+		t.Fatal("recorded predicate resolved without its project grant")
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/tokens/"+credential.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": f.project.OrganizationID, "project_id": other.project.ID}), http.StatusNoContent)
+	resolved, err := resolveNativeBlockerReference(t.Context(), f.service.database.db, scope, reference)
+	if err != nil || resolved.WorkItemID != blocker.WorkItemID || resolved.Terminal {
+		t.Fatalf("granted native predicate resolution = %+v, %v", resolved, err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id = ? AND project_id = ?", credential.ID, other.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveNativeBlockerReference(t.Context(), f.service.database.db, scope, reference); err == nil {
+		t.Fatal("recorded predicate retained removed project authority")
+	}
 }
 
 func TestNativeDependenciesAndTransitions(t *testing.T) {

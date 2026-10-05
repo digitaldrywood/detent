@@ -128,7 +128,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	issue.Blockers = []tracker.NativeDependency{}
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
 	args := append([]any{internalID, scope.organization}, grantArgs...)
-	rows, err := query.QueryContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0) FROM issue_dependencies d JOIN issues i ON i.id = d.blocker_issue_id
+	rows, err := query.QueryContext(ctx, `SELECT i.native_id, i.project_id, i.project_id || '#' || i.number, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0) FROM issue_dependencies d JOIN issues i ON i.id = d.blocker_issue_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE d.dependent_issue_id = ? AND i.organization_id = ?
 AND (`+condition+`)
@@ -139,7 +139,7 @@ ORDER BY i.native_id`, args...)
 	defer rows.Close()
 	for rows.Next() {
 		var dependency tracker.NativeDependency
-		if err := rows.Scan(&dependency.ID, &dependency.ProjectID, &dependency.State, &dependency.Terminal); err != nil {
+		if err := rows.Scan(&dependency.ID, &dependency.ProjectID, &dependency.Identifier, &dependency.State, &dependency.Terminal); err != nil {
 			return issue, 0, err
 		}
 		issue.Dependencies = append(issue.Dependencies, dependency.ID)
@@ -467,7 +467,8 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 }
 
 func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
-	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/workflow"), Item: item, RequireLease: true, Feature: "collaboration"}
+	recordedRecovery := request.Reason == "dependency_ready" && request.BlockerAttemptID != ""
+	options := nativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/workflow"), Item: item, RequireLease: !recordedRecovery, Feature: "collaboration"}
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
@@ -475,6 +476,11 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		}
 		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
 			return nil, err
+		}
+		if recordedRecovery {
+			if err := validateNativeRecordedRecovery(ctx, tx, scope, issue, request, now); err != nil {
+				return nil, err
+			}
 		}
 		if !slices.Contains([]string{"user_requested", "worker_progress", "dependency_ready"}, request.Reason) {
 			return nil, nativeInvalid("Transition reason is invalid")
@@ -491,7 +497,7 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		}
 		from := issue.State
 		issue.State = request.State
-		return persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail)}, now)
+		return persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{BlockerAttemptID: request.BlockerAttemptID, FromState: from, ToState: issue.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail)}, now)
 	})
 	if err == nil {
 		s.wakeSpriteRunnersAfter(scope, result)

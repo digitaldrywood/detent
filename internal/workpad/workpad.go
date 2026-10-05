@@ -46,7 +46,7 @@ const (
 
 var symbolicRefPattern = regexp.MustCompile(`^[a-z][a-z0-9+.-]*:[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 
-var refPattern = regexp.MustCompile(`^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#([1-9][0-9]*)$`)
+var refPattern = regexp.MustCompile(`^(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|prj_[a-z0-9]+))?#([1-9][0-9]*)$`)
 
 type Signal struct {
 	// UnknownKeys records ignored YAML field paths for diagnostics only.

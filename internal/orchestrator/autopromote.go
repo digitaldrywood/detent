@@ -737,6 +737,9 @@ func autoPromoteIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool
 }
 
 func rawIssueWorkpadSignal(issue connector.Issue) (*workpad.Signal, bool) {
+	if issue.Metadata["hub_disposition_attempt_id"] != "" && issue.WorkpadSignal != nil {
+		return workpad.CloneSignal(issue.WorkpadSignal), true
+	}
 	if index := currentWorkpadCommentIndex(issue.Comments); index >= 0 {
 		comment := issue.Comments[index]
 		body := comment.Body

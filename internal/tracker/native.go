@@ -154,10 +154,11 @@ type ExternalReference struct {
 }
 
 type NativeDependency struct {
-	ID        NativeWorkItemID `json:"work_item_id"`
-	ProjectID ProjectID        `json:"project_id"`
-	State     string           `json:"state"`
-	Terminal  bool             `json:"terminal"`
+	Identifier string           `json:"identifier,omitempty"`
+	ID         NativeWorkItemID `json:"work_item_id"`
+	ProjectID  ProjectID        `json:"project_id"`
+	State      string           `json:"state"`
+	Terminal   bool             `json:"terminal"`
 }
 
 type NativeComment struct {
@@ -302,6 +303,8 @@ type UpdateComment struct {
 
 type Transition struct {
 	Mutation
+	PolicyID         string   `json:"policy_id,omitempty"`
+	BlockerAttemptID string   `json:"blocker_attempt_id,omitempty"`
 	ExpectedRevision Revision `json:"expected_revision,string"`
 	State            string   `json:"state"`
 	Reason           string   `json:"reason"`
@@ -330,6 +333,7 @@ type CollaborationEvent struct {
 }
 
 type CollaborationData struct {
+	BlockerAttemptID  string                   `json:"blocker_attempt_id,omitempty"`
 	Decision          *NativeSchedulerDecision `json:"decision,omitempty"`
 	Change            *NativeChangeReference   `json:"change,omitempty"`
 	Run               *NativeRunData           `json:"run,omitempty"`
