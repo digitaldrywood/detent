@@ -1,7 +1,7 @@
 import React from "react";
 import { Button } from "../../components/ui/button.tsx";
 import { useClient } from "../client.ts";
-import { OperatorActionPreview } from "./OperatorActionPreview.tsx";
+import { issueSplitParent, OperatorActionPreview } from "./OperatorActionPreview.tsx";
 
 export function InlineActionCard({ proposal, text }: {
   proposal: { readonly action: Record<string, unknown>; readonly conversation_id: string };
@@ -38,8 +38,13 @@ export function InlineActionCard({ proposal, text }: {
   }, [client, proposal, resultKey, status]);
   React.useEffect(() => { if (!confirm && status === "proposed") void execute(); }, [confirm, status, execute]);
   const argumentsValue = proposal.action.arguments;
+  const children = typeof argumentsValue === "object" && argumentsValue !== null && "children" in argumentsValue ? argumentsValue.children : undefined;
   const change = typeof argumentsValue === "object" && argumentsValue !== null
-    ? Object.fromEntries(Object.entries(argumentsValue).filter(([key]) => !["project_id", "request_id", "identifier", "expected_revision"].includes(key)))
+    ? Object.fromEntries(Object.entries(argumentsValue)
+      .filter(([key]) => !["project_id", "request_id", "identifier", "expected_revision"].includes(key))
+      .map(([key, value]) => [key, proposal.action.kind === "propose_issue_split" && key === "parent_work_item_id"
+        ? issueSplitParent(proposal.action, Array.isArray(children) ? children.length : 0).label
+        : value]))
     : argumentsValue;
   return <section className="rounded-lg border p-3 space-y-3" data-testid="operator-action-card">
     <p className="text-sm">{text}</p>
