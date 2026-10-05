@@ -148,11 +148,57 @@ Enter. Input does not echo. Paste it at that prompt rather than running it as
 a shell command. The bootstrap parses it without shell expansion and passes
 its token through the environment to Detent.
 
-The script installs the Go toolchain required by that release, GitHub CLI,
-the npm builds of Codex and Claude Code, and checksum-verified Detent. It
+The script installs the standard runner toolset below and checksum-verified Detent. It
 registers the runner and starts a Sprite Service named `detent-runner`.
 This Service restarts after a cold wake; a host `--service` flag in the pasted
 command is replaced by the Sprite Service.
+
+### Standard runner toolset
+
+Every runner receives the same pinned tools during bootstrap, so agents can
+use them without installing dependencies during a turn. Installed tools and
+browser binaries stay on the Sprite's disk across pauses and runner updates.
+The bootstrap prints their versions and verifies a Chromium headless launch
+and screenshot of a local page before enrolling or starting the runner.
+
+| Tool | Pin | Purpose |
+| --- | --- | --- |
+| Go | Toolchain in the release's `go.mod` | Build and test Go projects with the required compiler. |
+| GitHub CLI (`gh`) | 2.101.0 | GitHub authentication and repository workflows; includes `--attach` for issue and PR comments. |
+| Codex | 0.160.0 | Replace the image's broken preinstalled Codex with the npm CLI. |
+| Claude Code | 2.1.289 | Run the Claude backend using the npm CLI. |
+| Playwright | 1.63.0, with its matching Chromium | Verify web behavior headlessly and take screenshots. |
+| ripgrep (`rg`) | 15.2.0 | Search source text quickly. |
+| fd | 10.3.0 | Find source files quickly. |
+| PostgreSQL client (`psql`) | Ubuntu `postgresql-client-17=17.10-0ubuntu0.25.10.1` | Query PostgreSQL databases for development and diagnostics. |
+| Docker | Ubuntu `docker.io=29.1.3-0ubuntu3~25.10.1`, when supported | Run container-based project dependencies. |
+
+Go, Detent, GitHub CLI and ripgrep downloads are checked against published
+SHA-256 manifests. fd archives are checked against the release's published
+SHA-256 digests pinned in the script. npm verifies package integrity, and APT
+verifies the signed Ubuntu package indexes and package checksums.
+
+Playwright installs Chromium and its Ubuntu system dependencies when the
+headless screenshot probe fails. Its native Linux browser cache is
+`~/.cache/ms-playwright`; the bootstrap preserves explicit browser-cache
+overrides. Only Chromium is installed, including its headless shell. The
+Playwright CLI is on PATH, so `npx playwright` can use the installed version
+from a checkout without a project-specific Playwright dependency. A checkout
+with its own Playwright version may require that version's browsers.
+
+Docker installation first checks root mount, network and PID namespaces and
+writable cgroups. If those capabilities are unavailable, the closing summary
+explains why Docker was skipped. When installed and no accessible daemon is
+running, a Sprite Service named `detent-docker` starts the daemon with persistent
+data under `~/.local/share/detent-runner/docker` and a socket accessible to the
+Sprite user's primary group. Docker runtime support still needs verification
+on the target Sprite with `docker info` and a project container.
+
+Re-running the bootstrap with empty input upgrades tools to these pins and
+skips downloads and package installs for current tools. It repeats the local
+Chromium screenshot probe, reuses the runner identity, restarts the runner
+service and creates a checkpoint. Provider credentials and checkouts remain
+on disk. These are bootstrap operations; agents do not repeat the installs.
 
 Default locations are:
 
