@@ -388,6 +388,10 @@ func checkDoctorProjectWithProgress(
 		}
 	}
 	checks = append(checks, workflowCheck)
+	if laneCheck, ok := checkDoctorWorkflowLanes(id, workflow.Config); ok {
+		checks = append(checks, laneCheck)
+	}
+
 	setDoctorCurrentCheck("Project " + id + " workflow_source_drift")
 	checks = append(checks, checkDoctorWorkflowSourceDrift(ctx, id, project, workflow.Config, deps))
 	instructionWorkflowPath, instructionWorkflowErr := resolveDoctorProjectPath(project, project.Workflow)
@@ -1913,4 +1917,12 @@ func loadDoctorProjectWorkflowUncached(ctx context.Context, project globalconfig
 		return workflow, err
 	}
 	return projectpkg.LoadWorkflowContext(ctx, project)
+}
+
+func checkDoctorWorkflowLanes(id string, cfg workflowconfig.Config) (doctorCheck, bool) {
+	warnings := validationWarningsWithPrefix(cfg.ValidationWarnings(), "tracker.")
+	if len(warnings) == 0 {
+		return doctorCheck{}, false
+	}
+	return doctorCheck{Name: "Project " + id + " workflow lanes", Status: doctorWarn, Detail: strings.Join(warnings, "; "), Hint: "Run detent config migrate on the project configuration file."}, true
 }

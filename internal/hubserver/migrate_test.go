@@ -144,6 +144,12 @@ func TestHubMigrationVerificationScope(t *testing.T) {
 
 func TestHubTimestampMigrations(t *testing.T) {
 	t.Parallel()
+	historicalGoMigrations := []*goose.Migration{}
+	for _, migration := range hubGoMigrations() {
+		if migration.Version <= 71 {
+			historicalGoMigrations = append(historicalGoMigrations, migration)
+		}
+	}
 	for _, test := range []struct {
 		name       string
 		upgrade    bool
@@ -181,7 +187,7 @@ func TestHubTimestampMigrations(t *testing.T) {
 				files[entry.Name()] = &fstest.MapFile{Data: data}
 			}
 			if test.upgrade {
-				if version, err := runMigrationsFromFS(t.Context(), db, files, discardLogger()); err != nil || version != 71 {
+				if version, err := runMigrationsFromFS(t.Context(), db, files, discardLogger(), historicalGoMigrations); err != nil || version != 71 {
 					t.Fatalf("historical migration version=%d error=%v", version, err)
 				}
 			}
@@ -191,12 +197,12 @@ func TestHubTimestampMigrations(t *testing.T) {
 			first := &fstest.MapFile{Data: []byte("-- +goose Up\nCREATE TABLE timestamp_first (value TEXT);\nINSERT INTO timestamp_first SELECT value FROM timestamp_marker;\n")}
 			files["20261005120001_second.sql"] = &fstest.MapFile{Data: []byte("-- +goose Up\nCREATE TABLE timestamp_second (value TEXT);\nINSERT INTO timestamp_second SELECT value FROM timestamp_marker;\n")}
 			if test.outOfOrder {
-				if _, err := runMigrationsFromFS(t.Context(), db, files, discardLogger()); err != nil {
+				if _, err := runMigrationsFromFS(t.Context(), db, files, discardLogger(), historicalGoMigrations); err != nil {
 					t.Fatal(err)
 				}
 			}
 			files["20261005120000_first.sql"] = first
-			if version, err := runMigrationsFromFS(t.Context(), db, files, discardLogger()); err != nil || version != 20261005120001 {
+			if version, err := runMigrationsFromFS(t.Context(), db, files, discardLogger(), historicalGoMigrations); err != nil || version != 20261005120001 {
 				t.Fatalf("timestamp migration version=%d error=%v", version, err)
 			}
 			for _, table := range []string{"timestamp_marker", "timestamp_first", "timestamp_second"} {
@@ -221,7 +227,7 @@ func TestHubTimestampMigrations(t *testing.T) {
 			if err := rows.Err(); err != nil {
 				t.Fatal(err)
 			}
-			if want := len(files) + len(hubGoMigrations()); len(versions) != want {
+			if want := len(files) + len(historicalGoMigrations); len(versions) != want {
 				t.Fatalf("applied versions=%v, want %d entries", versions, want)
 			}
 			wantTail := []int64{71, 20261005120000, 20261005120001}

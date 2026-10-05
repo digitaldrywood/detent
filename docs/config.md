@@ -617,13 +617,44 @@ independent configuration.
 
 `identity` names the Detent persona that owns work. `tracker` connects that
 persona to GitHub, Linear, an embedded SQLite board, or the in-memory tracker.
-The tracker declares active, observed, and terminal workflow states; state maps,
+The tracker declares workflow states in one ordered `tracker.lanes` list; state maps,
 transition automation, admission, planning, stop behavior, and routing all
 refer back to those names. `polling` controls how often Detent refreshes the
 tracker when no event gives it a fresher signal. Its
 `refresh_failure_threshold` controls how many consecutive failures after a
 successful refresh promote project and fleet health to `needs_attention`; a
 project whose first refresh fails needs attention immediately.
+
+
+Each lane has a `name` and a `role`: `active` means dispatchable, `holding`
+means non-dispatchable and non-terminal, and `terminal` means finished. File
+order is the order on Cloud boards and lists, lane pickers, the local dashboard,
+and approved repository workflow policies.
+
+```yaml
+tracker:
+  lanes:
+    - {name: Backlog, role: holding}
+    - {name: Todo, role: active}
+    - {name: In Progress, role: active}
+    - {name: Rework, role: active}
+    - {name: Merging, role: active}
+    - {name: Blocked, role: holding}
+    - {name: Human Review, role: holding}
+    - {name: Done, role: terminal}
+    - {name: Cancelled, role: terminal}
+```
+
+For this transition release, `observed_states`, `active_states`, and
+`terminal_states` are accepted with a migration warning. Their old order is
+preserved: observed, active, then terminal. Mixing `lanes` with any old key,
+even an empty list, is an error. The following release will reject the old keys.
+Run `detent config migrate detent.yaml` (or `detent config migrate WORKFLOW.md`
+for legacy frontmatter) to rewrite the file in place. The command preserves
+lane semantics, comments outside the replaced lists, and the Markdown prompt;
+running it again leaves the file unchanged. An explicit local `lanes` list
+replaces the shared lane list in full. Cloud-authored Markdown is
+migrated automatically by the Hub, preserving each project's stored lane order.
 
 Choose exactly one GitHub status source: ProjectV2, the repository issue
 `Status` field, or repository labels. `dependency_auto_unblock`,
@@ -1234,7 +1265,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `agent.skills.max_skills_in_prompt` | `integer` | `100` | No | must be greater than 0 |
 | `agent.skills.path` | `string` | `".detent/skills"` | No | must be a relative path inside the workspace |
 | `agent.stop_run` | `object` | `see child fields` | No | None |
-| `agent.stop_run.target_state` | `string` | `"Blocked"` | No | must be included in tracker.observed_states |
+| `agent.stop_run.target_state` | `string` | `"Blocked"` | No | must be included in tracker.lanes with role holding |
 | `agents` | `object` | `see child fields` | No | None |
 | `agents.backends` | `list<object>` | `[]` | No | None |
 | `agents.backends[].command` | `string` | `none` | Conditional | is required |
@@ -1511,7 +1542,6 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `server.kanban.show_blocked_alerts` | `boolean` | `false` | No | None |
 | `server.port` | `integer` | `none` | No | must be greater than or equal to 0 |
 | `tracker` | `object` | `see child fields` | No | intake.sources[].creates.status must name a configured tracker state<br>retro.target_state must name a configured tracker state |
-| `tracker.active_states` | `list<string>` | `["Todo","In Progress"]` | No | must include Rework when tracker.dependency_auto_unblock.enabled is true<br>must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true<br>state names must be unique<br>state names must not be blank |
 | `tracker.api_key` | `string` | `none` | Conditional | is required for linear<br>or GitHub App credentials are required for github<br>or GitHub App credentials are required for github_local |
 | `tracker.assignee` | `string` | `none` | No | None |
 | `tracker.authorization` | `object` | `see child fields` | No | None |
@@ -1529,10 +1559,10 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.auto_provision` | `boolean` | `true` | No | None |
 | `tracker.blocked_recovery` | `object` | `see child fields` | No | None |
 | `tracker.blocked_recovery.breaker_cooldown_seconds` | `integer` | `86400` | No | must be greater than or equal to 0 |
-| `tracker.blocked_recovery.enabled` | `boolean` | `false` | Conditional | tracker.active_states must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.reason_codes must not be empty when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.source_states must not be empty when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.target_state is required when tracker.blocked_recovery.enabled is true |
+| `tracker.blocked_recovery.enabled` | `boolean` | `false` | Conditional | tracker.blocked_recovery.reason_codes must not be empty when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.source_states must not be empty when tracker.blocked_recovery.enabled is true<br>tracker.blocked_recovery.target_state is required when tracker.blocked_recovery.enabled is true<br>tracker.lanes with role active must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true |
 | `tracker.blocked_recovery.reason_codes` | `list<string>` | `["merge_conflict","stale_base","missing_current_head_ci"]` | No | must contain only merge_conflict, stale_base, missing_current_head_ci<br>must not be empty when tracker.blocked_recovery.enabled is true |
 | `tracker.blocked_recovery.source_states` | `list<string>` | `["blocked"]` | No | must not be empty when tracker.blocked_recovery.enabled is true<br>state names must be unique<br>state names must not be blank |
-| `tracker.blocked_recovery.target_state` | `string` | `"Rework"` | Conditional | is required when tracker.blocked_recovery.enabled is true<br>tracker.active_states must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true |
+| `tracker.blocked_recovery.target_state` | `string` | `"Rework"` | Conditional | is required when tracker.blocked_recovery.enabled is true<br>tracker.lanes with role active must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true |
 | `tracker.blocker_auto_promote` | `object` | `see child fields` | No | None |
 | `tracker.blocker_auto_promote.blocker_states` | `list<string>` | `["backlog","blocked","human review"]` | No | state names must be unique<br>state names must not be blank |
 | `tracker.blocker_auto_promote.enabled` | `boolean` | `false` | Conditional | tracker.blocker_auto_promote.target_state is required when tracker.blocker_auto_promote.enabled is true |
@@ -1544,7 +1574,7 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.claims.lease_field` | `string` | `none` | Conditional | must not be blank when tracker.claims.enabled is true |
 | `tracker.claims.ttl_seconds` | `integer` | `0` | No | must be greater than 0 when tracker.claims.enabled is true |
 | `tracker.dependency_auto_unblock` | `object` | `see child fields` | No | None |
-| `tracker.dependency_auto_unblock.enabled` | `boolean` | `false` | Conditional | tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true<br>tracker.dependency_auto_unblock.source_states must not be empty when tracker.dependency_auto_unblock.enabled is true<br>tracker.dependency_auto_unblock.target_state is required when tracker.dependency_auto_unblock.enabled is true |
+| `tracker.dependency_auto_unblock.enabled` | `boolean` | `false` | Conditional | tracker.dependency_auto_unblock.source_states must not be empty when tracker.dependency_auto_unblock.enabled is true<br>tracker.dependency_auto_unblock.target_state is required when tracker.dependency_auto_unblock.enabled is true<br>tracker.lanes with role active must include Rework when tracker.dependency_auto_unblock.enabled is true |
 | `tracker.dependency_auto_unblock.readiness` | `string` | `"terminal_or_merged"` | No | must be one of terminal, terminal_or_merged |
 | `tracker.dependency_auto_unblock.source_states` | `list<string>` | `["blocked"]` | No | must not be empty when tracker.dependency_auto_unblock.enabled is true<br>state names must be unique<br>state names must not be blank |
 | `tracker.dependency_auto_unblock.target_state` | `string` | `"Todo"` | Conditional | is required when tracker.dependency_auto_unblock.enabled is true |
@@ -1754,10 +1784,12 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.issues[].url` | `string` | `none` | No | None |
 | `tracker.issues[].workpad_signal` | `mapping` | `none` | No | None |
 | `tracker.kind` | `string` | `none` | Yes | backlog_admission.authors.allow_association requires author association, but tracker.kind memory cannot supply it<br>backlog_admission.sources.untracked requires candidate selector untracked, but tracker.kind memory does not provide github label status drift<br>gate.security_audit.enabled requires tracker.kind github or github_local<br>intake.sources requires tracker.kind github<br>is required<br>must be one of github, github_local, hub_native, linear, memory, local_sqlite<br>release.enabled requires tracker.kind github or github_local<br>tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
+| `tracker.lanes` | `list<object>` | `[{"name":"Backlog","role":"holding"},{"name":"Human Review","role":"holding"},{"name":"Blocked","role":"holding"},{"name":"Todo","role":"active"},{"name":"In Progress","role":"active"},{"name":"Closed","role":"terminal"},{"name":"Cancelled","role":"terminal"},{"name":"Canceled","role":"terminal"},{"name":"Duplicate","role":"terminal"},{"name":"Done","role":"terminal"}]` | No | agent.stop_run.target_state must be included in tracker.lanes with role holding<br>with role active must include Rework when tracker.dependency_auto_unblock.enabled is true<br>with role active must include tracker.blocked_recovery.target_state when tracker.blocked_recovery.enabled is true<br>with role holding state names must not be blank |
+| `tracker.lanes[].name` | `string` | `none` | Conditional | must not be blank |
+| `tracker.lanes[].role` | `string` | `none` | No | must be active, holding or terminal |
 | `tracker.local_sqlite` | `object` | `see child fields` | No | tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite |
 | `tracker.local_sqlite.path` | `string` | `none` | Conditional | is required for local_sqlite |
 | `tracker.local_sqlite.project_id` | `string` | `none` | No | None |
-| `tracker.observed_states` | `list<string>` | `["Backlog","Human Review","Blocked"]` | No | agent.stop_run.target_state must be included in tracker.observed_states<br>state names must be unique<br>state names must not be blank |
 | `tracker.priority_map` | `string or mapping` | `{"High":2,"Low":4,"Medium":3,"No priority":null,"Urgent":1}` | No | option names must not be blank<br>ranks must be integers 1 through 4 or null |
 | `tracker.project_slug` | `string` | `none` | Conditional | is required for github project_v2<br>is required for linear |
 | `tracker.repository` | `string` | `none` | Conditional | is required for github_local<br>is required for intake sources<br>must be owner/name when release.enabled is true |
@@ -1765,7 +1797,6 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 | `tracker.status_field` | `string` | `"Status"` | No | None |
 | `tracker.status_label_prefix` | `string` | `"detent:"` | No | None |
 | `tracker.status_page_url` | `string` | `"https://linearstatus.com" for linear; "https://www.githubstatus.com" for github or github_local; unused otherwise` | No | must be an absolute http or https base URL without credentials, path, query, or fragment |
-| `tracker.terminal_states` | `list<string>` | `["Closed","Cancelled","Canceled","Duplicate","Done"]` | No | state names must be unique<br>state names must not be blank |
 | `tracker.write_probe_issue` | `string` | `none` | No | None |
 | `worker` | `object` | `see child fields` | No | .extra_network_domains: extra network domains must be unique lowercase exact DNS hosts |
 | `worker.allow_local_binding` | `boolean` | `global.worker.allow_local_binding, otherwise false` | No | None |

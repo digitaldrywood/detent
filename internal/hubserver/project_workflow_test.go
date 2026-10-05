@@ -199,12 +199,18 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		}
 	})
 	t.Run("Markdown authoring and repository precedence", func(t *testing.T) {
-		markdown := "---\ntracker:\n  kind: hub_native\n  active_states: [Todo, In Progress, Rework, Merging]\n  observed_states: [Backlog, Blocked, Human Review]\n  terminal_states: [Done, Cancelled]\nplan:\n  enabled: true\n---\nComplete the issue.\n"
+		markdown := "---\ntracker:\n  kind: hub_native\n  lanes: [{name: Backlog, role: holding}, {name: Todo, role: active}, {name: In Progress, role: active}, {name: Rework, role: active}, {name: Merging, role: active}, {name: Blocked, role: holding}, {name: Human Review, role: holding}, {name: Plan Review, role: holding}, {name: Done, role: terminal}, {name: Cancelled, role: terminal}]\nplan:\n  enabled: true\n---\nComplete the issue.\n"
 		request := map[string]any{"idempotency_key": "markdown-workflow", "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": markdown}
 		integration = ProjectIntegration{}
 		browserHostedDecode(t, api(t, "owner", http.MethodPut, base+"/onboarding/integration", request, http.StatusOK), &integration)
 		if integration.WorkflowMarkdown != markdown || integration.Authority["workflow"] != "detent" || len(integration.States) != 10 {
 			t.Fatalf("Cloud Markdown workflow = %#v", integration)
+		}
+		wantOrder := []string{"Backlog", "Todo", "In Progress", "Rework", "Merging", "Blocked", "Human Review", "Plan Review", "Done", "Cancelled"}
+		for index, state := range integration.States {
+			if state.Name != wantOrder[index] {
+				t.Fatalf("Cloud lane %d = %q, want %q", index, state.Name, wantOrder[index])
+			}
 		}
 		var loaded tracker.NativeProject
 		browserHostedDecode(t, api(t, "owner", http.MethodGet, base, nil, http.StatusOK), &loaded)
@@ -279,6 +285,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		browserHostedDecode(t, api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "repository-task"}, Title: "Repository-defined transitions", State: "Todo"}, http.StatusOK), &movable)
 		api(t, "member", http.MethodPost, base+"/work-items/"+string(movable.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "authorized-move"}, ExpectedRevision: movable.Revision, State: "In Progress", Reason: "user_requested"}, http.StatusOK)
 		removedWorkflow := workflow
+		removedWorkflow.Config.Tracker.Lanes = nil
 		removedWorkflow.Config.Tracker.ActiveStates = []string{"Backlog"}
 		removedWorkflow.Config.Tracker.ObservedStates = []string{"Blocked", "Human Review", "Plan Review"}
 		removedWorkflow.Config.Tracker.TerminalStates = []string{"Done"}
@@ -289,6 +296,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		}
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: removed}, http.StatusUnprocessableEntity)
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: hubTestPolicy()}, http.StatusConflict)
+		workflow.Config.Tracker.Lanes = nil
 		workflow.Config.Tracker.ObservedStates = append(workflow.Config.Tracker.ObservedStates, "Customer QA")
 		workflow.Config.Server.Kanban.AllowedTransitions = map[string][]string{"Customer QA": {"Todo"}}
 		workflow.Definition.Revision = strings.Repeat("d", 40)
