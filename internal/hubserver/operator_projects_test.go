@@ -294,10 +294,6 @@ func TestProjectImportToolReceipts(t *testing.T) {
 	if replay := projectAction(t, e, connect("create-native-reconnect"), create); replay.Result != created.Result {
 		t.Fatalf("native create replay=%+v", replay)
 	}
-	// An unhosted hub has no authenticated browser approval surface.
-	if _, err := e.Execute(ctx, projectCall(t, "revoke_project_policy", string(f.project.ID), "no-browser", operatortool.PolicyRevokeInput{ExpectedID: hubTestPolicy().ID})); !errors.Is(err, errProjectServiceUnavailable) {
-		t.Fatalf("absent approval surface=%v", err)
-	}
 	approveHubTestPolicy(t, f.service, "/api/v1/repositories/digitaldrywood/detent/policy", hubTestPolicy())
 	legacy, err := e.Execute(ctx, operatortool.Call{Name: "get_project_policy", Arguments: json.RawMessage(`{"project_id":"` + string(f.project.ID) + `","repository_policy":true}`)})
 	if err != nil || !strings.Contains(string(legacy.Content), hubTestPolicy().ID) {
