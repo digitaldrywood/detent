@@ -106,6 +106,9 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 	if data.Disposition != nil && (eventType != "run.finished" || data.Sequence <= 0 || !slices.Contains([]string{workpad.StatusInProgress, workpad.StatusBlocked, workpad.StatusComplete}, data.Disposition.Status)) {
 		return nativeInvalid("Final disposition requires an ordered terminal event and a supported workpad status")
 	}
+	if data.Disposition != nil && (len(data.Disposition.FinalSummary) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(data.Disposition.FinalSummary)) {
+		return nativeInvalid("Final summary must be bounded UTF-8 text")
+	}
 	if data.Sequence == 0 {
 		if data.Identity != nil || data.Handoff != nil || data.MachineID != "" || data.RunnerID != "" || data.SessionID != "" {
 			return nativeInvalid("Execution metadata requires an ordered event")

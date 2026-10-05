@@ -366,6 +366,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
 	}{
+		{name: "blocked reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "merge_conflict", FinalSummary: "Source conflicts remain unresolved."}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
+		{name: "human action reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait", HumanAction: true, FinalSummary: "The operator must approve the migration."}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
+		{name: "instance limitation reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation", FinalSummary: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403."}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "unfinished clean source retains normalized disposition", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "in_progress"}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "human action retains normalized disposition", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: Approve the rollout\n```", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "native272 instance report retains typed evidence", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "instance:worker-loopback", Owner: workpad.BlockerOwnerInstance, Reason: "sandbox refused listener with EPERM", Unverifiable: true}}}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
@@ -672,9 +675,32 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				if !reflect.DeepEqual(got, test.disposition) {
 					t.Fatalf("disposition=%#v, want %#v", got, test.disposition)
 				}
+				page, err := h.admin.Attempts(t.Context(), item, "")
+				if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0].Disposition, test.disposition) {
+					t.Fatalf("attempts API disposition = %#v, error = %v", page.Items, err)
+				}
 			}
 			if state := h.state(t, issue.ID); state != "In Progress" {
 				t.Fatalf("the execution moved the item to %s; only the orchestrator moves lanes", state)
+			}
+			if test.disposition != nil && test.disposition.FinalSummary != "" {
+				transitionContext := connector.WithLaneTransitionReason(guarded, "The completed turn requires review")
+				if err := h.connector.UpdateIssueState(transitionContext, issue.ID, "In Review"); err != nil {
+					t.Fatal(err)
+				}
+				history, err := h.admin.History(t.Context(), item, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, event := range history.Items {
+					if event.Type == "workflow.transitioned" && event.Data.ToState == "In Review" {
+						found = event.Data.Reason == "worker_progress" && event.Data.ReasonDetail == "The completed turn requires review"
+					}
+				}
+				if !found {
+					t.Fatalf("history lost the transition reason: %#v", history.Items)
+				}
 			}
 		})
 	}

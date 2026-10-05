@@ -31,6 +31,17 @@ func ReportProgress(ctx context.Context) {
 	reporter()
 }
 
+type laneTransitionReasonContextKey struct{}
+
+func WithLaneTransitionReason(ctx context.Context, reason string) context.Context {
+	return context.WithValue(ctx, laneTransitionReasonContextKey{}, reason)
+}
+
+func LaneTransitionReason(ctx context.Context) string {
+	reason, _ := ctx.Value(laneTransitionReasonContextKey{}).(string)
+	return reason
+}
+
 var (
 	ErrNotImplemented                = errors.New("connector operation not implemented")
 	ErrCommentNotCreated             = errors.New("comment was not created")

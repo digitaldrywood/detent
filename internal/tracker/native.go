@@ -303,6 +303,7 @@ type Transition struct {
 	ExpectedRevision Revision `json:"expected_revision,string"`
 	State            string   `json:"state"`
 	Reason           string   `json:"reason"`
+	ReasonDetail     string   `json:"reason_detail,omitempty"`
 }
 
 type DependencyMutation struct {
@@ -338,6 +339,7 @@ type CollaborationData struct {
 	FromState         string                   `json:"from_state,omitempty"`
 	ToState           string                   `json:"to_state,omitempty"`
 	Reason            string                   `json:"reason,omitempty"`
+	ReasonDetail      string                   `json:"reason_detail,omitempty"`
 }
 
 type Page[T any] struct {
@@ -442,6 +444,7 @@ type NativeDisposition struct {
 	Blockers        bool              `json:"blockers"`
 	HumanAction     bool              `json:"human_action"`
 	ReasonCode      string            `json:"reason_code,omitempty"`
+	FinalSummary    string            `json:"final_summary,omitempty"`
 	BlockerEvidence []workpad.Blocker `json:"blocker_evidence,omitempty"`
 }
 

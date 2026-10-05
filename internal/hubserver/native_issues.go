@@ -10,10 +10,12 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeIssue {
@@ -468,6 +470,9 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		if !slices.Contains([]string{"user_requested", "worker_progress", "dependency_ready"}, request.Reason) {
 			return nil, nativeInvalid("Transition reason is invalid")
 		}
+		if len(request.ReasonDetail) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(request.ReasonDetail) {
+			return nil, nativeInvalid("Transition reason detail must be bounded UTF-8 text")
+		}
 		project, err := readNativeProject(ctx, tx, scope)
 		if err != nil {
 			return nil, err
@@ -477,7 +482,7 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 		}
 		from := issue.State
 		issue.State = request.State
-		return persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State, Reason: request.Reason}, now)
+		return persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State, Reason: request.Reason, ReasonDetail: strings.TrimSpace(request.ReasonDetail)}, now)
 	})
 	if err == nil {
 		s.wakeSpriteRunnersAfter(scope, result)

@@ -132,6 +132,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 			comment = fmt.Sprintf("The provider turn completed with %s and no reported blocker or human action. Implementation remains unfinished in %s; the completed turn and any genuine source version are preserved for further work, but issue acceptance is not recorded.", disposition, displayStateName(target))
 		}
 	}
+	if needsReview {
+		comment = nativeCompletionReason(comment, report, event.Result.FinalMessage)
+	}
 	if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
 		o.warnNativeCompletion(issue, fmt.Errorf("comment on the completed run: %w", err))
 	}
@@ -161,6 +164,18 @@ func (o *Orchestrator) completeNativeChangeRun(
 			"changed", change.Changed, "change_id", change.ChangeID)
 	}
 	return true
+}
+
+func nativeCompletionReason(comment string, report *workpad.Signal, finalMessage string) string {
+	if report != nil && report.Invalid == nil {
+		if reason := workpad.Reason(report); reason != "" {
+			comment += "\n\nReason: " + workpad.FinalSummary(reason)
+		}
+	}
+	if summary := workpad.FinalSummary(finalMessage); summary != "" {
+		comment += "\n\nAgent summary:\n" + summary
+	}
+	return comment
 }
 
 // refreshNativeChangeReview reads whether the version the run published is

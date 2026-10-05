@@ -110,12 +110,17 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		humanReview   *bool
 		wantState     string
 		wantComment   string
+		wantReason    string
+		wantSummary   string
 		wantDeferred  bool
 		wantContinue  bool
 		wantAbandoned bool
 		wantTerminal  store.WorkAttemptTerminalState
 		roundTrip     bool
 	}{
+		{name: "blocked comment retains agent reason and summary", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", wantState: "Blocked", wantComment: "detent-status blocked", wantReason: "merge_conflict", wantSummary: "Source conflicts remain unresolved."},
+		{name: "human action comment retains agent reason and summary", change: accepted, states: workflow, finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true, wantReason: "permission_wait", wantSummary: "The operator must approve the migration."},
+		{name: "instance limitation comment retains agent reason and summary", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\nblockers: []\nhuman_action: null\n```", wantState: "Blocked", wantComment: "detent-status blocked", wantReason: "instance_limitation", wantSummary: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403."},
 		{name: "deferred cleanup deadline retains instance attribution", states: workflow, runErr: errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded), wantState: "In Review", wantTerminal: store.WorkAttemptTerminalTimedOut, roundTrip: true},
 		{name: "deferred provider cancellation retains its outcome", states: workflow, runErr: context.Canceled, wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled, roundTrip: true},
 		{name: "failed native stale authority is rejected", states: workflow, runErr: errors.New("provider failed"), updateErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, errors.New("final diff unavailable")), wantAbandoned: true},
@@ -350,6 +355,15 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					}
 				}
 				return
+			}
+			if test.wantReason != "" || test.wantSummary != "" {
+				found := false
+				for _, comment := range tick.comments {
+					found = found || strings.Contains(comment.body, test.wantReason) && strings.Contains(comment.body, test.wantSummary) && !strings.Contains(comment.body, "```detent-status")
+				}
+				if !found {
+					t.Fatalf("comments lost reason %q or summary %q: %#v", test.wantReason, test.wantSummary, tick.comments)
+				}
 			}
 			if test.wantHuman {
 				blocked, ok := state.Blocked[issue.ID]

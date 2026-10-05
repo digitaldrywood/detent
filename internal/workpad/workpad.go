@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -185,15 +186,42 @@ func SignalFromWorkpad(body, url, repo string) (*Signal, bool) {
 	return SignalFromComment(strings.Join(lines[start:], "\n"), url, repo)
 }
 
+const MaxFinalSummaryBytes = 8 << 10
+
+func FinalSummary(body string) string {
+	_, _, start := lastStatusBlock(body)
+	if start >= 0 {
+		body = body[:start]
+	}
+	body = strings.TrimSpace(body)
+	if len(body) > MaxFinalSummaryBytes {
+		body = body[:MaxFinalSummaryBytes-len("…")]
+		for !utf8.ValidString(body) {
+			body = body[:len(body)-1]
+		}
+		body += "…"
+	}
+	return body
+}
+
 func LastStatusBlock(body string) (string, bool) {
+	content, found, _ := lastStatusBlock(body)
+	return content, found
+}
+
+func lastStatusBlock(body string) (string, bool, int) {
 	var last string
+	lastStart, start, offset := -1, -1, 0
 	found := false
 	inFence := false
 	fenceChar := byte(0)
 	fenceLen := 0
 	lines := []string{}
 
-	for _, line := range strings.Split(body, "\n") {
+	for _, line := range strings.SplitAfter(body, "\n") {
+		lineOffset := offset
+		offset += len(line)
+		line = strings.TrimSuffix(line, "\n")
 		trimmed := strings.TrimSpace(line)
 		if !inFence {
 			char, length, ok := statusFenceOpening(trimmed)
@@ -201,6 +229,7 @@ func LastStatusBlock(body string) (string, bool) {
 				continue
 			}
 			inFence = true
+			start = lineOffset
 			fenceChar = char
 			fenceLen = length
 			lines = lines[:0]
@@ -209,13 +238,14 @@ func LastStatusBlock(body string) (string, bool) {
 		if statusFenceClosing(trimmed, fenceChar, fenceLen) {
 			last = strings.Join(lines, "\n")
 			found = true
+			lastStart = start
 			inFence = false
 			continue
 		}
 		lines = append(lines, line)
 	}
 
-	return last, found
+	return last, found, lastStart
 }
 
 func CompletionAuthorizationFromIssueBody(body string) (string, bool, error) {

@@ -298,7 +298,7 @@ func (c *NativeConnector) UpdateIssueState(ctx context.Context, id, state string
 	if issue.State == state {
 		return nil
 	}
-	_, err = c.client.Transition(ctx, issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: expected, State: state, Reason: "worker_progress"})
+	_, err = c.client.Transition(ctx, issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: expected, State: state, Reason: "worker_progress", ReasonDetail: connector.LaneTransitionReason(ctx)})
 	return err
 }
 

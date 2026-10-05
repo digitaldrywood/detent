@@ -557,15 +557,16 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 		})
 	}
 	for _, test := range []struct {
-		name, state, reason string
-		want                int
+		name, state, reason, detail string
+		want                        int
 	}{
-		{"invalid state", "Unknown", "worker_progress", http.StatusUnprocessableEntity},
-		{"raw reason", "Done", "raw prompt contents", http.StatusUnprocessableEntity},
-		{"valid state", "Done", "worker_progress", http.StatusOK},
+		{"invalid state", "Unknown", "worker_progress", "", http.StatusUnprocessableEntity},
+		{"raw reason", "Done", "raw prompt contents", "", http.StatusUnprocessableEntity},
+		{"oversized reason detail", "Done", "worker_progress", strings.Repeat("x", 8<<10+1), http.StatusUnprocessableEntity},
+		{"valid state", "Done", "worker_progress", "The worker completed the requested work", http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedRevision: 1, State: test.state, Reason: test.reason}
+			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedRevision: 1, State: test.state, Reason: test.reason, ReasonDetail: test.detail}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(c.WorkItemID)+"/workflow", f.token, request), test.want)
 		})
 	}

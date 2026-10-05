@@ -622,6 +622,9 @@ to 1 MiB. There are at most 100 labels and 100 assignees, each at most 200 bytes
 priority ranges from 0 (urgent) to 3 (low). Empty label/assignee arrays clear them.
 Unknown request fields and unsupported query parameters fail validation.
 Workflow reasons are `user_requested`, `worker_progress` and `dependency_ready`.
+Workflow mutations may include `reason_detail`, bounded to 8 KiB of UTF-8 text;
+the Hub preserves it in `workflow.transitioned` history. Orchestrator lane writes
+forward the lane ledger's reason as readable text through this field.
 Release reasons are `completed`, `cancelled`, `failed`, `released`,
 `work_item_hydration_failed` and `work_item_identity_missing`.
 
@@ -816,6 +819,14 @@ the command key changes. Changed content, gaps, identity changes, repeated start
 and progress after completion conflict. Client occurrence times never order events.
 Legacy schema 1 events without sequence remain readable and writable for legacy
 attempts, but cannot be mixed into an ordered attempt.
+
+For native Code and Rework turns with a valid final `detent-status`, ordered
+`run.finished` data includes a `disposition` with `status`, `reason_code` when
+reported, blocker and human-action indicators, and `final_summary`. The summary
+contains the text before the final status fence, bounded to 8 KiB with UTF-8
+preserved. Attempts and recovery reads retain this disposition. Non-complete
+completion comments include the same summary and the reported reason; human-action
+parking comments preserve them through the existing human-attention path.
 
 `GET /work-items/{item}/attempts` uses the same authorized pagination contract as
 history. Attempts are ordered by the existing monotonic lease fence. The response
