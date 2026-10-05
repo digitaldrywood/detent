@@ -42,10 +42,10 @@ test("unavailable Hub PR mode is refused and the owner can retry a blocked issue
 
   await askLuna(page, "Please retry the blocked issue.");
   await expect(page.getByTestId("operator-approval-card")).toHaveCount(1);
-  const retry = page.getByTestId("operator-approval-card").last().frameLocator("iframe");
+  const retry = page.getByTestId("operator-approval-card").last();
   await expect(retry.getByText(/Blocked.*Todo/)).toBeVisible();
   expect((await projectRead(page, `work-items/${hub.fixture.work_item}`)).state).toBe("Blocked");
-  await retry.getByRole("button", { name: "Confirm action" }).click();
+  await retry.getByRole("button", { name: "Approve" }).click();
   await expect.poll(async () => (await projectRead(page, `work-items/${hub.fixture.work_item}`)).state).toBe("Todo");
   await expect(page.getByText(/move item: succeeded/)).toBeVisible();
 });
@@ -62,7 +62,7 @@ test("an issue split is reviewed once, cancelled without filing, and confirmed a
   expect((await workItems()).length).toBe(initial.length);
 
   await askLuna(page, "Split this issue into three children.");
-  const cancelled = page.getByTestId("operator-approval-card").last().frameLocator("iframe");
+  const cancelled = page.getByTestId("operator-approval-card").last();
   await expect(cancelled.getByTestId("issue-split-proposal")).toBeVisible();
   await expect(cancelled.getByRole("heading", { name: "1. Split storage", exact: true })).toBeVisible();
   await expect(cancelled.getByRole("heading", { name: "2. Split API", exact: true })).toBeVisible();
@@ -74,9 +74,9 @@ test("an issue split is reviewed once, cancelled without filing, and confirmed a
   expect((await workItems()).length).toBe(initial.length);
 
   await askLuna(page, "Split this issue now, with the same three children.");
-  const confirmed = page.getByTestId("operator-approval-card").last().frameLocator("iframe");
+  const confirmed = page.getByTestId("operator-approval-card").last();
   await expect(confirmed.getByTestId("issue-split-proposal").last()).toBeVisible();
-  await confirmed.getByRole("button", { name: "Confirm action", exact: true }).click();
+  await confirmed.getByRole("button", { name: "Approve", exact: true }).click();
   await expect.poll(async () => (await workItems()).length).toBe(initial.length + 3);
   const children = (await workItems()).filter((item) => item.title.startsWith("Split "));
   const storage = children.find((item) => item.title === "Split storage");
@@ -105,7 +105,7 @@ test("five issues are archived with one confirmation and cancellation preserves 
   expect(await active()).toHaveLength(initial.length);
 
   await askLuna(page, "Archive the test issues.");
-  const cancelled = page.getByTestId("operator-approval-card").last().frameLocator("iframe");
+  const cancelled = page.getByTestId("operator-approval-card").last();
   const preview = cancelled.getByTestId("issue-archive-proposal");
   await expect(preview).toBeVisible();
   await expect(preview.getByRole("listitem")).toHaveCount(5);
@@ -120,9 +120,9 @@ test("five issues are archived with one confirmation and cancellation preserves 
   expect((await projectRead(page, "work-items?archived=true")).items).toHaveLength(0);
 
   await askLuna(page, "Archive the test issues now.");
-  const confirmed = page.getByTestId("operator-approval-card").last().frameLocator("iframe");
+  const confirmed = page.getByTestId("operator-approval-card").last();
   await expect(confirmed.getByTestId("issue-archive-proposal").last()).toBeVisible();
-  await confirmed.getByRole("button", { name: "Confirm action", exact: true }).click();
+  await confirmed.getByRole("button", { name: "Approve", exact: true }).click();
   await expect.poll(async () => (await active()).length).toBe(initial.length - 5);
   await expect(page.getByText(/Archive 5 issues: succeeded/).first()).toBeVisible();
   const archived = (await projectRead(page, "work-items?archived=true")).items;

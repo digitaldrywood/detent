@@ -154,15 +154,14 @@ test("posting an answer remains approval gated", async ({ page }) => {
   await page.keyboard.press("Enter");
   const approval = panel(page)
     .getByTestId("operator-approval-card")
-    .last()
-    .frameLocator("iframe");
+    .last();
   await expect(
-    approval.getByRole("button", { name: "Confirm action" }),
+    approval.getByRole("button", { name: "Approve" }),
   ).toBeVisible();
   expect(
     (await read(page, `work-items/${hub.fixture.work_item}/comments`)).items,
   ).toEqual(before.items);
-  await approval.getByRole("button", { name: "Confirm action" }).click();
+  await approval.getByRole("button", { name: "Approve" }).click();
   await expect
     .poll(
       async () =>
@@ -170,4 +169,44 @@ test("posting an answer remains approval gated", async ({ page }) => {
           .length,
     )
     .toBe(before.items.length + 1);
+});
+
+test("a split is approved inside Ask with its children and dependencies", async ({ page }) => {
+  await openIssue(page);
+  const initial = (await read(page, "work-items")).items;
+  await page.getByRole("textbox", { name: "Ask about this issue", exact: true }).fill("Split this issue");
+  await page.getByTestId("issue-ask-inline").getByRole("button", { name: "Ask", exact: true }).click();
+  const approval = panel(page).getByTestId("operator-approval-card").last();
+  await expect(approval.getByRole("heading", { name: "1. Ask split storage", exact: true })).toBeVisible();
+  await expect(approval.getByRole("heading", { name: "2. Ask split API", exact: true })).toBeVisible();
+  await expect(approval.getByRole("group", { name: "Dependency graph" })).toContainText("2. Ask split API → blocked by → 1. Ask split storage");
+  await expect(approval.locator("iframe")).toHaveCount(0);
+  await expect(panel(page)).not.toContainText("(empty response)");
+  expect((await read(page, "work-items")).items).toHaveLength(initial.length);
+
+  const approvalURL = await page.evaluate(() => performance.getEntriesByType("resource").map((entry) => entry.name).find((name) => name.includes("/chat/approval?")));
+  expect(approvalURL).toBeTruthy();
+  const preview = await page.request.get(approvalURL, { headers: { Accept: "application/json" } });
+  expect(preview.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  const data = await preview.json();
+  const denied = await page.request.post(approvalURL, { headers: { Accept: "application/json" }, form: {
+    csrf: data.csrf, connection_id: data.connection_id, action_id: data.actions[0].id, form_token: "forged", decision: "confirm",
+  } });
+  expect(denied.status()).toBe(403);
+  expect((await read(page, "work-items")).items).toHaveLength(initial.length);
+
+  await approval.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect.poll(async () => (await read(page, "work-items")).items.length).toBe(initial.length + 2);
+  await expect(approval.getByText("Executed", { exact: true })).toBeVisible();
+  await expect(panel(page).getByText(/Split #.*into 2 issues: succeeded/)).toBeVisible();
+  const children = (await read(page, "work-items")).items.filter((item) => item.title.startsWith("Ask split "));
+  const storage = children.find((item) => item.title === "Ask split storage");
+  const api = await read(page, `work-items/${children.find((item) => item.title === "Ask split API").work_item_id}`);
+  expect(api.dependencies).toEqual([storage.work_item_id]);
+  const parent = await read(page, `work-items/${hub.fixture.work_item}`);
+  expect(parent.dependencies).toContain(api.work_item_id);
+  for (const path of [hub.fixture.chat, `${hub.fixture.url}/work/i/${hub.fixture.work_item}`]) {
+    const response = await page.request.get(path);
+    expect(response.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  }
 });

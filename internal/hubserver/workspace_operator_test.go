@@ -1036,7 +1036,41 @@ func TestWorkspaceOperatorBrowserApproval(t *testing.T) {
 		}
 	}
 	form.Set("form_token", match[1])
-	requireNativeStatus(t, f.request(t, owner, http.MethodPost, "/chat/approval", form), http.StatusSeeOther)
+	requestJSON := func(method string, body url.Values) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, "/chat/approval?connection_id=browser", strings.NewReader(body.Encode()))
+		request.Header.Set("Accept", "application/json")
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		request.AddCookie(&http.Cookie{Name: hostedCookie, Value: owner.token})
+		response := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(response, request)
+		return response
+	}
+	preview := requestJSON(http.MethodGet, nil)
+	requireNativeStatus(t, preview, http.StatusOK)
+	var data struct {
+		CSRF    string `json:"csrf"`
+		Actions []struct {
+			ID, Summary, Status string
+			FormToken           string `json:"form_token"`
+		} `json:"actions"`
+	}
+	decodeHubResponse(t, preview, &data)
+	if data.CSRF != hostedCSRF(owner.token) || len(data.Actions) != 1 || data.Actions[0].ID != action.ID || data.Actions[0].FormToken != match[1] || data.Actions[0].Status != "pending" {
+		t.Fatalf("incorrect approval JSON: %s", preview.Body.String())
+	}
+	for _, token := range []string{"forged", match[1]} {
+		form.Set("form_token", token)
+		response := requestJSON(http.MethodPost, form)
+		if token == "forged" {
+			requireNativeStatus(t, response, http.StatusForbidden)
+			continue
+		}
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &data)
+		if data.Actions[0].Status != "succeeded" {
+			t.Fatalf("approval response did not refresh: %s", response.Body.String())
+		}
+	}
 	applied, _ := f.service.operatorChat.Action("browser", action.ID)
 	if applied.Status != chat.ActionSucceeded {
 		t.Fatal(applied)

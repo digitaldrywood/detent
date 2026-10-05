@@ -15,6 +15,7 @@ import { deltaText, type ConversationDetail } from "../../runtime/state/conversa
 /** The three cards a status or tool message can carry. */
 export interface TimelineCards {
   readonly approvalURL?: string;
+  readonly approvalActionID?: string;
   readonly proposal?: IssueProposal;
   readonly issue?: IssueResult;
   readonly attention?: readonly AttentionItem[];
@@ -28,11 +29,13 @@ export function readTimelineCards(message: Message): TimelineCards | undefined {
   const approval = message.data.operator_approval;
   const approvalURL = typeof approval === "object" && approval !== null && "url" in approval && typeof approval.url === "string" && /^\/(?:organizations\/[^/]+\/)?chat\/approval\?connection_id=luna_[a-f0-9]+$/.test(approval.url) ? approval.url : undefined;
   const proposal = readIssueProposal(message.data);
+  const approvalActionID = typeof approval === "object" && approval !== null && "action_id" in approval && typeof approval.action_id === "string" ? approval.action_id : undefined;
   const issue = readIssueResult(message.data);
   const attention = readAttention(message.data);
   if (approvalURL === undefined && proposal === undefined && issue === undefined && attention.length === 0) return undefined;
   return {
     ...(approvalURL === undefined ? {} : { approvalURL }),
+    ...(approvalActionID === undefined ? {} : { approvalActionID }),
     ...(proposal === undefined ? {} : { proposal }),
     ...(issue === undefined ? {} : { issue }),
     ...(attention.length === 0 ? {} : { attention }),
@@ -106,11 +109,24 @@ export interface TimelineSources {
 export function timelineSources(detail: ConversationDetail): TimelineSources {
   const messages: ChatMessage[] = [];
   const workEntries: WorkLogEntry[] = [];
+  const hasContent = (message: Message): boolean =>
+    message.text.trim().length > 0 ||
+    deltaText(detail.deltas[message.id]).trim().length > 0 ||
+    readTimelineCards(message) !== undefined ||
+    (message.attachments?.length ?? 0) > 0;
+  const populatedTurns = new Set(
+    detail.messages.filter((message) =>
+      message.role === "assistant" && message.turn_id !== null &&
+      !isWorkMessage(message) && hasContent(message),
+    ).map((message) => message.turn_id),
+  );
   for (const message of detail.messages) {
     if (isWorkMessage(message)) {
       workEntries.push(toWorkLogEntry(message));
       continue;
     }
+    if (message.role === "assistant" && message.turn_id !== null &&
+      populatedTurns.has(message.turn_id) && !hasContent(message)) continue;
     messages.push(toChatMessage(message, deltaText(detail.deltas[message.id])));
   }
   return { messages, proposedPlans: EMPTY_PROPOSED_PLANS, workEntries };

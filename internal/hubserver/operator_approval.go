@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -108,6 +109,19 @@ func (s *Service) hostedOperatorApproval(c echo.Context) error {
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	c.Response().Header().Set("Referrer-Policy", "same-origin")
+	if strings.Contains(c.Request().Header.Get(echo.HeaderAccept), echo.MIMEApplicationJSON) {
+		actions := make([]map[string]any, 0, len(conversation.Actions))
+		for _, action := range conversation.Actions {
+			actions = append(actions, map[string]any{
+				"id": action.ID, "kind": action.Kind, "summary": chatpkg.ActionSummary(action),
+				"status": action.Status, "description": action.Description, "arguments": action.Arguments,
+				"split": action.IssueSplit(), "archive": action.IssueArchive(),
+				"reason": action.Reason, "result": action.Result, "resource_url": action.ResourceURL,
+				"form_token": tokens[action.ID],
+			})
+		}
+		return c.JSON(http.StatusOK, map[string]any{"connection_id": id, "csrf": s.hostedPageCSRF(c), "actions": actions})
+	}
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
 	return templates.ChatApproval(templates.ChatData{Conversation: conversation, FormToken: s.billingDecisionToken(c, id, ""), ActionTokens: tokens, CSRF: s.hostedPageCSRF(c), ApprovalPath: s.hostedPath("/chat/approval"), ApprovalBasePath: s.hostedBase()}).Render(c.Request().Context(), c.Response())
 }
@@ -160,6 +174,10 @@ func (s *Service) hostedOperatorDecision(c echo.Context) error {
 	}
 	if err != nil {
 		return echo.NewHTTPError(http.StatusConflict, "The operator decision could not be applied; refresh the project and preview")
+	}
+	if strings.Contains(c.Request().Header.Get(echo.HeaderAccept), echo.MIMEApplicationJSON) {
+		c.QueryParams().Set("connection_id", id)
+		return s.hostedOperatorApproval(c)
 	}
 	return c.Redirect(http.StatusSeeOther, s.hostedPath("/chat/approval")+"?connection_id="+url.QueryEscape(id))
 }

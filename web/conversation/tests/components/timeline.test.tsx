@@ -20,7 +20,10 @@ import {
 /** An unlinked chat: answered by a coordinator turn, with no issue behind it. */
 const unlinked = { conversation: conversation({ work_item_id: null, work_item: null }) };
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 function renderTimeline(
   overrides: Parameters<typeof detail>[0] = {},
@@ -48,10 +51,25 @@ describe("Timeline", () => {
     ["https://example.test/chat/approval?connection_id=luna_abcdef", false],
     ["/chat/approval?connection_id=other_connection", false],
   ])("renders only a local Luna approval form: %s", (url, allowed) => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ connection_id: "luna_abcdef", csrf: "csrf", actions: [] })));
+    vi.stubGlobal("fetch", fetch);
     renderTimeline({ messages: [assistantMessage({ kind: "status", data: { operator_approval: { url } } })] });
-    const frame = screen.queryByTitle("Approve project change");
-    expect(frame !== null).toBe(allowed);
-    if (allowed) expect(frame?.getAttribute("src")).toBe(url);
+    expect(screen.queryByTestId("operator-approval-card") !== null).toBe(allowed);
+    expect(document.querySelector("iframe")).toBeNull();
+    if (allowed) expect(fetch).toHaveBeenCalledWith(url, expect.objectContaining({ headers: { Accept: "application/json" } }));
+    else expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["same turn", "turn_reply", false],
+    ["different turn", "turn_other", true],
+  ])("keeps the empty placeholder only without content in the %s", (_name, laterTurn, placeholder) => {
+    const { container } = renderTimeline({ messages: [
+      assistantMessage({ id: "empty", text: "", turn_id: "turn_reply" }),
+      assistantMessage({ id: "later", text: "The split is ready.", turn_id: laterTurn }),
+    ] });
+    expect(container.textContent?.includes("(empty response)")).toBe(placeholder);
+    expect(container.textContent).toContain("The split is ready.");
   });
 
   it("renders a user bubble and an assistant turn", () => {

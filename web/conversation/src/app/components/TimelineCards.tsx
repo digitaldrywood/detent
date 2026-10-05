@@ -16,6 +16,7 @@ import type { TimelineCards } from "../adapters/timelineEntries.ts";
 import { DeliveryChip } from "./DeliveryChip.tsx";
 import { RETRY_COPY } from "./Timeline.tsx";
 import { hubPath } from "../../runtime/basePath.ts";
+import { OperatorApprovalCard } from "./OperatorApprovalCard.tsx";
 
 const ATTENTION_TONE: Record<string, string> = {
   waiting_input: "bg-warning",
@@ -245,7 +246,7 @@ export function DetentTimelineRow({
     <>
       {cards.approvalURL === undefined ? null : (
         <TranscriptCard testId="operator-approval-card">
-          <iframe src={cards.approvalURL} title="Approve project change" className="h-[28rem] w-full rounded-lg border-0" />
+          <OperatorApprovalCard url={cards.approvalURL} actionID={cards.approvalActionID} />
         </TranscriptCard>
       )}
       {cards.proposal === undefined ? null : (

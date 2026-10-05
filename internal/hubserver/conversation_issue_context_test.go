@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -123,6 +124,11 @@ func TestCoordinatorSubjectRefresh(t *testing.T) {
 
 func (f *browserHostedFixture) seedIssueAsk(t *testing.T) {
 	t.Helper()
+	next := f.server.Config.Handler
+	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
 	base := browserHostedOrganizationBase + "/projects/" + f.project + "/work-items/" + f.workItem
 	var issue tracker.NativeIssue
 	browserHostedDecode(t, f.api(t, "owner", http.MethodGet, base, nil, http.StatusOK), &issue)
@@ -139,7 +145,8 @@ func (f *browserHostedFixture) seedIssueAsk(t *testing.T) {
 		if !strings.Contains(request.Prompt, f.workItem) || !strings.Contains(request.Prompt, "<issue_context>") {
 			return runner.AgentTurnResult{}, errors.New("issue subject missing")
 		}
-		if strings.HasSuffix(request.Prompt, "Post answer as comment") {
+		prompt, _, _ := strings.Cut(request.Prompt, "\n\n## Available skills")
+		if strings.HasSuffix(prompt, "Post answer as comment") {
 			raw, err := json.Marshal(map[string]string{"work_item_id": f.workItem, "body": "The issue was blocked for the recorded reason: user_requested."})
 			if err != nil {
 				return runner.AgentTurnResult{}, err
@@ -152,6 +159,30 @@ func (f *browserHostedFixture) seedIssueAsk(t *testing.T) {
 				return runner.AgentTurnResult{}, errors.New(result.Content)
 			}
 			return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "Review the comment and approve it to post."})
+		}
+		if strings.HasSuffix(prompt, "Split this issue") {
+			loaded, err := handle(ctx, runner.AgentToolCall{Name: "load_split_issue_skill", Arguments: json.RawMessage(`{}`)})
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			if !loaded.Success {
+				return runner.AgentTurnResult{}, errors.New(loaded.Content)
+			}
+			raw, err := json.Marshal(chat.IssueSplit{ParentID: f.workItem,
+				Children: []chat.IssueSplitChild{{Title: "Ask split storage", Description: "Create the storage layer.", State: "Todo"}, {Title: "Ask split API", Description: "Use the storage layer.", State: "Todo"}},
+				Edges:    []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}, {Dependent: 0, Blocker: 2}},
+			})
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			result, err := handle(ctx, runner.AgentToolCall{Name: string(chat.ActionIssueSplit), Arguments: raw})
+			if err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			if !result.Success {
+				return runner.AgentTurnResult{}, errors.New(result.Content)
+			}
+			return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "Review the split and approve it to create the children."})
 		}
 		result, err := handle(ctx, runner.AgentToolCall{Name: "read_issue_history", Arguments: json.RawMessage(`{"section":"work_history","limit":200}`)})
 		if err != nil {
