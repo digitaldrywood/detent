@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -42,11 +43,13 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 		name, tool, target             string
 		scope                          apikey.Scope
 		revoked, expired, idle, denied bool
+		pressure                       bool
 	}{
 		{name: "write Done", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite},
 		{name: "write terminal creation", tool: operatortool.FileIssue, target: "Done", scope: apikey.ScopeWrite},
 		{name: "write Cancelled", tool: operatortool.MoveItem, target: "Cancelled", scope: apikey.ScopeWrite},
 		{name: "idle write Done", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite, idle: true},
+		{name: "restored connection under session pressure", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite, pressure: true},
 		{name: "read write denied", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeRead, denied: true},
 		{name: "revoked write", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite, revoked: true, denied: true},
 		{name: "expired write", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite, expired: true, denied: true},
@@ -120,6 +123,34 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 			}
 			if test.expired {
 				operatorSQL(t, f.hostedSecurityFixture, "UPDATE api_tokens SET expires_at=? WHERE id=?", formatHubTime(time.Now().Add(-time.Hour)), key.ID)
+			}
+			if test.pressure {
+				connection := operatortool.CurrentConnection(ctx)
+				storedAt := f.service.config.now().Add(-5 * time.Minute).UTC().Format("2006-01-02T15:04:05.000000000Z")
+				operatorSQL(t, f.hostedSecurityFixture, "UPDATE operator_chat_sessions SET last_used_at=? WHERE connection_id=?", storedAt, connection.ID)
+				for index := 0; index < 256; index++ {
+					if _, err := f.service.operatorChat.Send(t.Context(), fmt.Sprintf("pressure-%d", index), "hello"); !errors.Is(err, chat.ErrUnavailable) {
+						t.Fatal(err)
+					}
+				}
+				if err := f.service.operatorChat.RestoreConnection(t.Context(), connection.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.operatorChat.Send(t.Context(), "next-session", "hello"); !errors.Is(err, chat.ErrUnavailable) {
+					t.Fatal(err)
+				}
+				conversation := f.service.operatorChat.Conversation(connection.ID)
+				if conversation.ConnectionID != connection.ID || conversation.PrincipalID != connection.Identity.PrincipalID || conversation.OrganizationID != connection.Identity.OrganizationID {
+					t.Fatalf("restored connection lost: %+v", conversation)
+				}
+				ctx, err = f.service.operatorChat.OriginatingContext(t.Context(), connection.ID, connection.Identity.PrincipalID, connection.Identity.OrganizationID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var after string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT last_used_at FROM operator_chat_sessions WHERE connection_id=?", connection.ID).Scan(&after); err != nil || after != storedAt {
+					t.Fatalf("read extended lifetime: before=%s after=%s error=%v", storedAt, after, err)
+				}
 			}
 			if test.idle {
 				f.service.operatorChat = chat.NewService(nil, nil, executor, chat.WithClock(func() time.Time { return time.Now().Add(25 * time.Hour) }))

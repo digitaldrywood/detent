@@ -35,7 +35,7 @@ func (s *Service) AttachConnection(ctx context.Context) error {
 	if connection.ID == "" || len(connection.ID) > 256 || !connection.Identity.Valid() || connection.Resolve == nil {
 		return operatortool.ErrAccessDenied
 	}
-	current := s.session(connection.ID)
+	current := s.ensureSession(connection.ID)
 	current.mu.Lock()
 	defer current.mu.Unlock()
 	if err := s.restoreSession(ctx, connection.ID, current); err != nil {
@@ -59,17 +59,7 @@ func (s *Service) AttachConnection(ctx context.Context) error {
 
 func (s *Service) connectionSession(ctx context.Context) (*session, error) {
 	connection := operatortool.CurrentConnection(ctx)
-	now := s.now().UTC()
-	s.mu.Lock()
-	current := s.sessions[connection.ID]
-	if current != nil && now.Sub(current.lastUsedAt) > s.sessionTTL {
-		delete(s.sessions, connection.ID)
-		current = nil
-	}
-	if current != nil && s.store == nil {
-		current.lastUsedAt = now
-	}
-	s.mu.Unlock()
+	current := s.session(connection.ID)
 	if current == nil {
 		if err := s.AttachConnection(ctx); err != nil {
 			return nil, err
