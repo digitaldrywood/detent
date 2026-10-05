@@ -145,9 +145,6 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	if err := s.CheckProjectPolicy(ctx, request.ProjectID, request.Repository, request.Policy); err != nil {
 		return nil, schedulingError(err)
 	}
-	if err := s.PrepareProject(ctx, request.ProjectID); err != nil {
-		return nil, errors.Join(orchestrator.ErrSchedulingUnavailable, err)
-	}
 	if source := s.nativeProjects[request.ProjectID]; source != nil {
 		return s.fetchNativeCandidate(ctx, request, source)
 	}
