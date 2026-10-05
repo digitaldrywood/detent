@@ -79,9 +79,9 @@ func definition(name string, description string, schema string) Definition {
 func LocalProjectCatalog() []Definition {
 	result := []Definition{
 		definition(LocalProjectConfiguration, "Read the selected configuration revision, effective localhost permission and complete policy candidates through the local or enrolled runner owner. Provenance is redacted; a stopped owner is explicit.", localProjectSchema(LocalProjectConfiguration)),
-		definition("apply_local_project_policy", "Apply an approved exact policy to a paused or draining, settled project through its configuration owner. The optional existing allow_local_binding setting includes other localhost services. Cloud requires runner_id and expected_runner_revision. Requires operator approval.", localProjectSchema("apply_local_project_policy")),
-		definition("drain_local_project", "Drain only the selected local project through its existing owner, finishing active work and retaining deferred completion authority. Requires operator approval.", localProjectSchema("drain_local_project")),
-		definition("detach_local_project", "Remove only the selected local registration after settled work and verified mapped Cloud cutover. Saved removal awaits the existing reload receipt. Requires operator approval; never starts a board.", localProjectSchema("detach_local_project")),
+		definition("apply_local_project_policy", "Apply an approved exact policy to a paused or draining, settled project through its configuration owner. The optional existing allow_local_binding setting includes other localhost services. Cloud requires runner_id and expected_runner_revision. Requires current administrator authority.", localProjectSchema("apply_local_project_policy")),
+		definition("drain_local_project", "Drain only the selected local project through its existing owner, finishing active work and retaining deferred completion authority. Requires current administrator authority.", localProjectSchema("drain_local_project")),
+		definition("detach_local_project", "Remove only the selected local registration after settled work and verified mapped Cloud cutover. Saved removal awaits the existing reload receipt. Requires current administrator authority; never starts a board.", localProjectSchema("detach_local_project")),
 	}
 	for i := range result {
 		result[i].Meta = ToolMetadata{Toolset: "local_projects"}

@@ -32,10 +32,6 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	if s.config.Hosted != nil {
 		e.Any("/mcp", echo.WrapHandler(s.mcpHTTP), s.operatorAuthority)
 	}
-	if s.config.Hosted != nil {
-		e.GET("/chat/approval", s.hostedOperatorApproval, s.operatorProjectBrowser)
-		e.POST("/chat/approval", s.hostedOperatorDecision, s.operatorProjectBrowser)
-	}
 }
 
 func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
@@ -166,8 +162,6 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		account = operatortool.Account{Subject: credential.Hosted.Subject, Role: credential.HostedRole, SupportActor: credential.Hosted.SupportActor}
 	}
 	return operatortool.Authority{Account: account, Identity: operatorIdentity(credential, organization), Explainer: operatorWorkReads{service: s, scope: scope}, WorkReads: operatorWorkReads{service: s, scope: scope}, Changes: hubChangeApplication{service: s, scope: scope}, BindContext: func(ctx context.Context) context.Context {
-		// Commands consume the freshly resolved originating credential, even when
-		// the context initially came from a different approving browser.
 		ctx = context.WithValue(ctx, operatorScopeKey{}, scope)
 		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, func(context.Context) (apiCredential, error) { return credential, nil })
 		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })

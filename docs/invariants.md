@@ -328,6 +328,11 @@ Retired lane revocation, indeterminate-lane stops, per-issue infrastructure
 parking and root-level `rateLimit` in mutation documents stay retired.
 Obtain budget information through a separate query. Documentation and negative
 fixtures may name retired mechanisms; runtime code must not restore them.
+
+Server-side MCP confirmation modes, YOLO, pending approval actions and the
+`/chat/approval` page stay retired. The Hub enforces key scope, project access and
+current grants on every call; authorized calls execute directly. Clients own
+confirmation. Luna asks inline by default using its per-user client preference.
 Removing a forbidden symbol from a list does not authorize its resurrection.
 
 **Enforcement:** `TestRepositorySources`, `TestSourceViolations`, and

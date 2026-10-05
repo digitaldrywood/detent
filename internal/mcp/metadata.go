@@ -28,8 +28,6 @@ type requestMetadata struct {
 	Modern  bool
 }
 
-// Metadata describes the protocol only. Identity, grants, application handles
-// and confirmation mode come exclusively from the authenticated application.
 func metadata(message request) (requestMetadata, *rpcError) {
 	var params struct {
 		Meta map[string]json.RawMessage `json:"_meta"`

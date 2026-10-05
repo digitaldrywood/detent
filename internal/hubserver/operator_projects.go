@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"strings"
 	"time"
 
@@ -152,7 +151,6 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		return e.actionResult(previous)
 	}
 	m.ProjectID = selector.ProjectID
-	m.Mode = string(e.service.operatorChat.Conversation(connection.ID).Mode)
 	m, err = m.Bind(selector.RequestID, call.Arguments)
 	if err != nil {
 		return result, operatortool.ErrInvalidArguments
@@ -169,9 +167,6 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		}
 		return hubProjectResult(chatpkg.Action{Kind: chatpkg.ActionKind(call.Name), OrganizationID: connection.Identity.OrganizationID, ProjectID: selector.ProjectID, RequestID: selector.RequestID, Status: chatpkg.ActionSucceeded, Result: string(replay)})
 	}
-	if confirmation, _ := operatortool.ProjectConfirmation(call.Name, call.Arguments); confirmation && e.service.config.Hosted == nil {
-		return result, errProjectServiceUnavailable
-	}
 	action, err := e.service.operatorChat.Submit(ctx, chatpkg.Action{Kind: chatpkg.ActionKind(call.Name), ProjectID: selector.ProjectID, RequestID: selector.RequestID, Arguments: call.Arguments, Title: strings.ReplaceAll(call.Name, "_", " "), Mutation: m})
 	if err != nil {
 		return result, projectToolError(err)
@@ -181,9 +176,8 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 func (e hubProjectExecutor) actionResult(action chatpkg.Action) (operatortool.Result, error) {
 	return hubProjectResult(struct {
 		chatpkg.Action
-		ApprovalURL string `json:"approval_url,omitempty"`
-		ResultTool  string `json:"result_tool"`
-	}{action, action.PendingApprovalURL(e.service.billingApprovalURL(action.ConnectionID)), operatortool.ActionResult})
+		ResultTool string `json:"result_tool"`
+	}{action, operatortool.ActionResult})
 }
 
 func hubProjectResult(value any) (operatortool.Result, error) {
@@ -228,8 +222,7 @@ func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Ac
 func (e hubProjectExecutor) AuditAction(ctx context.Context, action chatpkg.Action, outcome string) {
 	m := action.Mutation
 	m.RetryIdentity, m.InputHash = "", ""
-	if action.Mode != "" {
-		m.Mode = string(action.Mode)
+	if action.Status == chatpkg.ActionSucceeded {
 	}
 	if outcome == "approved" || outcome == "rejected" {
 		m.Confirmation = outcome
@@ -259,10 +252,8 @@ func (e hubProjectExecutor) connectionRead(ctx context.Context, call operatortoo
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
 		return hubProjectResult(struct {
-			ConnectionID string                 `json:"connection_id"`
-			Mode         chatpkg.ConnectionMode `json:"mode"`
-			SetupURL     string                 `json:"setup_url"`
-		}{c.ID, e.service.operatorChat.Conversation(c.ID).Mode, e.service.operatorDashboardURL() + "/chat/approval?connection_id=" + url.QueryEscape(c.ID)})
+			ConnectionID string `json:"connection_id"`
+		}{c.ID})
 	}
 	if request.ActionID == "" {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments

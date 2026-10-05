@@ -52,7 +52,7 @@ func (s *Server) operatorChatTool(ctx context.Context, call operatortool.Call) (
 	if err != nil {
 		return operatortool.Result{}, errOperatorCommandUnavailable
 	}
-	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: request.ProjectID, Action: call.Name, Source: "mcp", CorrelationID: correlation, Mode: string(s.chat.Conversation(operatortool.CurrentConnection(ctx).ID).Mode), Confirmation: "none"}
+	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: request.ProjectID, Action: call.Name, Source: "mcp", CorrelationID: correlation, Confirmation: "none"}
 	outcome := "failed"
 	defer func() { s.auditMutation(ctx, m, outcome) }()
 	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: request.ProjectID})

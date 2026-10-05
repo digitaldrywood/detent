@@ -22,12 +22,12 @@ const (
 // it is independent of JSON-RPC request IDs and is never an approval token.
 func CommandCatalog() []Definition {
 	return append(append(append([]Definition{
-		commandDefinition(MoveItem, "Request an item's configured workflow transition through the application owner. Read get_native_project for native states and allowed transitions; native requests require expected_revision. Ordinary reversible native transitions execute directly; terminal or destructive transitions return a browser approval preview.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1}`, `"identifier","target_state"`, true),
+		commandDefinition(MoveItem, "Request an item's configured workflow transition through the application owner. Read get_native_project for native states and allowed transitions; native requests require expected_revision. Authorized transitions execute directly, including terminal states.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1}`, `"identifier","target_state"`, true),
 		commandDefinition(SetPriority, "Set an item's configured priority directly through the dashboard command.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"priority":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1}`, `"identifier","priority"`, false),
-		commandDefinition(StopRun, "Stop the exact active run and route its item. Requires real operator approval unless the operator selected YOLO for this connection.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"destination":{"type":"string","enum":["Blocked","Backlog","Cancelled","Todo"]},"priority":{"type":"integer","minimum":1,"maximum":4},"reason":{"type":"string","maxLength":280}`, `"identifier","destination"`, true),
+		commandDefinition(StopRun, "Stop the exact active run and route its item. Executes directly with current write authority.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"destination":{"type":"string","enum":["Blocked","Backlog","Cancelled","Todo"]},"priority":{"type":"integer","minimum":1,"maximum":4},"reason":{"type":"string","maxLength":280}`, `"identifier","destination"`, true),
 		fileIssueDefinition(),
 		definition(ActionResult, "Read the outcome of this connection's exact action. This never approves an action.", `{"type":"object","required":["action_id"],"properties":{"action_id":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false}`),
-		definition(ConnectionInfo, "Read this connection's operator-controlled confirmation mode and dashboard setup URL. Tool input cannot change mode.", `{"type":"object","properties":{},"additionalProperties":false}`),
+		definition(ConnectionInfo, "Read this connection's authenticated identity and organization.", `{"type":"object","properties":{},"additionalProperties":false}`),
 	}, WorkCatalog()...), BillingCatalog()...), FleetCatalog()...)
 }
 

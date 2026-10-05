@@ -101,7 +101,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
-	metadata := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: selector.ProjectID, Action: call.Name, Source: "mcp", Mode: "confirmation", Confirmation: "none", CorrelationID: uuid.NewString()}
+	metadata := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, ProjectID: selector.ProjectID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: uuid.NewString()}
 	outcome := "failed"
 	if !definition.Annotations.ReadOnly {
 		defer func() {
@@ -132,9 +132,6 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			return operatortool.Result{}, err
 		}
 		outcome = "authorized"
-		if e.service.operatorChat != nil {
-			metadata.Mode = string(e.service.operatorChat.Conversation(operatortool.CurrentConnection(ctx).ID).Mode)
-		}
 		return operatortool.EncodeResult(struct {
 			EntryUpload bool              `json:"entry_upload"`
 			Mutation    mutation.Metadata `json:"mutation"`
@@ -236,8 +233,6 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			raw, err = e.service.operatorNativeWork(ctx, scope, call.Name, request)
 		}
 	} else {
-		// Hub-only deployments have no daemon explainer, approval service or
-		// orchestrator command owner. They never fall back to compatibility APIs.
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
 	if err != nil {

@@ -41,7 +41,7 @@ const conversationClientEntry = "app/conversation/app.js"
 // is a client route (decisions section 12).
 var (
 	appReservedNamespaces = []string{"/api", "/app", "/auth", "/webhooks", "/static"}
-	appReservedPaths      = []string{"/health", "/invite", "/logout", "/metrics"}
+	appReservedPaths      = []string{"/health", "/invite", "/logout", "/metrics", "/chat/approval"}
 )
 
 // appReserved reports whether a path belongs to the hub rather than the

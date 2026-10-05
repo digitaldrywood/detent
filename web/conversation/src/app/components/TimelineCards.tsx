@@ -15,6 +15,7 @@ import type { ExecutionSurface } from "../lib/execution.ts";
 import type { TimelineCards } from "../adapters/timelineEntries.ts";
 import { DeliveryChip } from "./DeliveryChip.tsx";
 import { RETRY_COPY } from "./Timeline.tsx";
+import { InlineActionCard } from "./InlineActionCard.tsx";
 import { hubPath } from "../../runtime/basePath.ts";
 
 const ATTENTION_TONE: Record<string, string> = {
@@ -243,11 +244,7 @@ export function DetentTimelineRow({
   }
   return (
     <>
-      {cards.approvalURL === undefined ? null : (
-        <TranscriptCard testId="operator-approval-card">
-          <iframe src={cards.approvalURL} title="Approve project change" className="h-[28rem] w-full rounded-lg border-0" />
-        </TranscriptCard>
-      )}
+      {cards.action === undefined ? null : <InlineActionCard proposal={cards.action} text={cards.text} />}
       {cards.proposal === undefined ? null : (
         <ProposalCard
           proposal={cards.proposal}
