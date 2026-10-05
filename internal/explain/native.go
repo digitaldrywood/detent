@@ -49,6 +49,7 @@ func FromNativeEvidence(e tracker.NativeRuntimeEvidence) IssueExplanation {
 			continue
 		}
 		r.Eligibility.Refusals = append(r.Eligibility.Refusals, EligibilityDecision{
+			UnresolvedDependencies: admission.UnresolvedDependencies, Unavailable: admission.Unavailable,
 			RunnerID: admission.RunnerID, Source: admission.Source, State: EligibilityRefused,
 			Outcome: admission.Outcome, Reason: admission.Reason, ReasonCode: admission.ReasonCode, At: admission.ObservedAt,
 		})

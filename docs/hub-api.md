@@ -699,6 +699,17 @@ remain unavailable without actual evidence. `explain_item` projects observed
 refusals separately from historical scheduler decisions. An older Hub retains its
 existing runtime read with runner-specific selection unavailable.
 
+Candidate refusals preserve `no_claimable_work` and expose up to 100 authorized
+`unresolved_dependencies`, each with `work_item_id`, `project_id`, current
+`state` and `terminal`, when the shared claim dependency predicate excludes the
+item. Projects that do not require dependencies never report them as exclusion
+evidence. Per-runner snapshot `observed_at` and projected refusal `at` identify
+the current read. `other_native_candidate_exclusions` remains unavailable when
+dependency evidence does not establish all exclusions; `native_candidate_exclusion`
+remains unavailable for a generic refusal without authorized dependency evidence.
+Truncated dependency evidence also marks `unresolved_dependencies` unavailable.
+These observations do not create recorded scheduler skips or analytics samples.
+
 With `native_admission_observation`, the existing registered-runner heartbeat
 accepts an optional bounded `admission` observation containing `context` and the
 `runner_revision` captured when that context was published. The Hub stamps

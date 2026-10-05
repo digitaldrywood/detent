@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,23 +21,27 @@ import (
 func TestNativeAdmissionExplanation(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name        string
-		label       string
-		body        string
-		dependency  bool
-		context     bool
-		heartbeat   bool
-		another     bool
-		observation string
-		policy      string
-		provider    string
-		stale       bool
-		oldVersion  bool
-		outcome     string
-		code        string
-		unavailable string
-		authority   string
-		status      int
+		name               string
+		label              string
+		body               string
+		dependency         bool
+		extraDependencies  int
+		ignoreDependencies bool
+		privateDependency  bool
+		intake             bool
+		context            bool
+		heartbeat          bool
+		another            bool
+		observation        string
+		policy             string
+		provider           string
+		stale              bool
+		oldVersion         bool
+		outcome            string
+		code               string
+		unavailable        string
+		authority          string
+		status             int
 	}{
 		{name: "stored observation cannot survive revoked credential", heartbeat: true, authority: "revoked", status: http.StatusUnauthorized},
 		{name: "stored observation cannot survive removed grant", heartbeat: true, authority: "grant", status: http.StatusNotFound},
@@ -53,6 +58,12 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		{name: "ordinary label alone proves no refusal", label: "ordinary", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
 		{name: "human owned label refuses before missing provider requirement", label: "human-owned", heartbeat: true, provider: "unknown", outcome: "skipped", code: "inactive_state"},
 		{name: "hosted unfinished dependency refuses", heartbeat: true, dependency: true, outcome: "skipped", code: "no_claimable_work"},
+		{name: "multiple unfinished dependencies retain evidence", heartbeat: true, dependency: true, extraDependencies: 1, outcome: "skipped", code: "no_claimable_work"},
+		{name: "dependency evidence remains bounded", heartbeat: true, dependency: true, extraDependencies: 100, outcome: "skipped", code: "no_claimable_work", unavailable: "unresolved_dependencies"},
+		{name: "dependency and intake retain unknown other exclusions", heartbeat: true, dependency: true, intake: true, outcome: "skipped", code: "no_claimable_work"},
+		{name: "optional unfinished dependency permits candidate", heartbeat: true, dependency: true, ignoreDependencies: true, outcome: "ready"},
+		{name: "optional dependency cannot explain intake refusal", heartbeat: true, dependency: true, ignoreDependencies: true, intake: true, outcome: "skipped", code: "no_claimable_work", unavailable: "native_candidate_exclusion"},
+		{name: "private dependency retains generic refusal", heartbeat: true, dependency: true, privateDependency: true, outcome: "skipped", code: "no_claimable_work", unavailable: "native_candidate_exclusion"},
 		{name: "typed human task refuses without label or selectors", body: "```detent-human\nschema: 1\nkey: operator-task\naction: Record measured costs\nowner: operator\ncompletion_criteria: Provide measurement evidence\napproval_constraint: No purchases authorized\n```", outcome: "skipped", code: "inactive_state"},
 		{name: "tracking epic refuses", label: "epic", context: true, outcome: "skipped", code: "inactive_state"},
 		{name: "approved runner selector refusal", policy: "wrong-runner", outcome: "skipped", code: "selector_no_match"},
@@ -81,9 +92,27 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			}
 			r.enroll(t)
 			issue := f.create(t, "native candidate")
+			var blockers []tracker.NativeIssue
 			if test.dependency {
-				blocker := f.create(t, "unfinished blocker")
-				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (dependent_issue_id, blocker_issue_id, provenance, created_at, updated_at) SELECT a.id, b.id, 'native', ?, ? FROM issues a, issues b WHERE a.native_id = ? AND b.native_id = ?", testTimestamp, testTimestamp, issue.WorkItemID, blocker.WorkItemID); err != nil {
+				blockerFixture := f
+				if test.privateDependency {
+					blockerFixture = newNativeFixture(t, f.service, f.project.OrganizationID, "private-dependency")
+				}
+				for index := range 1 + test.extraDependencies {
+					blocker := blockerFixture.create(t, "unfinished blocker "+strconv.Itoa(index))
+					blockers = append(blockers, blocker)
+					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (dependent_issue_id, blocker_issue_id, provenance, created_at, updated_at) SELECT a.id, b.id, 'native', ?, ? FROM issues a, issues b WHERE a.native_id = ? AND b.native_id = ?", testTimestamp, testTimestamp, issue.WorkItemID, blocker.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.ignoreDependencies {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_dependencies=0 WHERE id=?", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.intake {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO github_imports (id, project_id, issue_number, work_item_id, intake_pending, observed_at) VALUES (?, ?, 1, ?, 1, ?)", newNativeID("import"), f.project.ID, issue.WorkItemID, testTimestamp); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -144,7 +173,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				var baseline tracker.NativeRuntimeEvidence
 				decodeHubResponse(t, before, &baseline)
 				baselineOutcome := "unknown"
-				if test.label == "human-owned" || test.dependency {
+				if test.label == "human-owned" || (test.dependency && !test.ignoreDependencies) || test.intake {
 					baselineOutcome = "skipped"
 				}
 				if baseline.Scheduling.Outcome != baselineOutcome || len(baseline.Admission) != 1 || baseline.Admission[0].SelectorObservedAt != nil {
@@ -239,6 +268,23 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				t.Fatalf("admission is unavailable: %#v", evidence)
 			}
 			a := evidence.Admission[0]
+			var expectedDependencies []tracker.NativeDependency
+			if test.dependency && !test.ignoreDependencies && !test.privateDependency {
+				for _, blocker := range blockers {
+					expectedDependencies = append(expectedDependencies, tracker.NativeDependency{ID: blocker.WorkItemID, ProjectID: blocker.ProjectID, State: blocker.State, Terminal: false})
+				}
+				slices.SortFunc(expectedDependencies, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
+				expectedDependencies = expectedDependencies[:min(100, len(expectedDependencies))]
+			}
+			if !reflect.DeepEqual(a.UnresolvedDependencies, expectedDependencies) {
+				t.Fatalf("candidate dependency evidence=%#v want=%#v", a.UnresolvedDependencies, expectedDependencies)
+			}
+			if len(expectedDependencies) > 0 && !slices.Contains(a.Unavailable, "other_native_candidate_exclusions") {
+				t.Fatalf("dependency presented as sole exclusion: %#v", a)
+			}
+			if test.privateDependency && strings.Contains(response.Body.String(), string(blockers[0].WorkItemID)) {
+				t.Fatal("private dependency escaped its grant")
+			}
 			if a.RunnerID != r.binding.RunnerID || a.RunnerRevision < 1 || a.PolicyID != descriptor.ID || a.Outcome != test.outcome || a.ReasonCode != test.code || !a.ObservedAt.Equal(now) || a.Source != "native_claim_candidate_snapshot" {
 				t.Fatalf("admission=%#v", a)
 			}
@@ -254,6 +300,9 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				}
 			}
 			explanation := explain.FromNativeEvidence(evidence)
+			if test.outcome == "skipped" && (len(explanation.Eligibility.Refusals) == 0 || !reflect.DeepEqual(explanation.Eligibility.Refusals[0].UnresolvedDependencies, expectedDependencies) || !slices.Equal(explanation.Eligibility.Refusals[0].Unavailable, a.Unavailable)) {
+				t.Fatalf("explanation dropped current refusal evidence: %#v", explanation.Eligibility)
+			}
 			if explanation.Eligibility.Latest != nil || evidence.LatestDecision != nil || !slices.Contains(evidence.Unavailable, "historical_scheduler_decision") || explanation.Eligibility.Source != explain.SourceAvailable {
 				t.Fatalf("snapshot became history: %#v", explanation.Eligibility)
 			}
@@ -279,11 +328,21 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				if projected.Eligibility.State != explanation.Eligibility.State || len(projected.Eligibility.Refusals) != len(explanation.Eligibility.Refusals) {
 					t.Fatalf("MCP admission differs: %s", data)
 				}
+				if test.outcome == "skipped" && (len(projected.Eligibility.Refusals) == 0 || !reflect.DeepEqual(projected.Eligibility.Refusals[0].UnresolvedDependencies, expectedDependencies) || !projected.Eligibility.Refusals[0].At.Equal(now) || projected.Eligibility.Refusals[0].Historical || !slices.Equal(projected.Eligibility.Refusals[0].Unavailable, a.Unavailable)) {
+					t.Fatalf("MCP dropped current dependency evidence: %s", data)
+				}
+				if test.privateDependency && strings.Contains(string(data), string(blockers[0].WorkItemID)) {
+					t.Fatal("MCP leaked private dependency")
+				}
 				if test.name == "hosted heartbeat admissible" || test.label == "human-owned" || test.dependency {
 					for _, name := range []string{operatortool.Dashboard, operatortool.BoardState} {
 						data := hostedContextData(t, call("tools/call", name, map[string]any{"project_id": string(f.project.ID)}), false)
 						var board nativeBoardResult
-						if err := json.Unmarshal(data, &board); err != nil || board.Counts.QueuedInventory != 1+map[bool]int{false: 0, true: 1}[test.dependency] || board.Counts.Running != 0 || board.Counts.ClosedInventory != 0 || board.EligibilityTool != operatortool.ExplainItem || !slices.Contains(board.Unavailable, "aggregate_dispatch_readiness") {
+						queued := 1
+						if !test.privateDependency {
+							queued += len(blockers)
+						}
+						if err := json.Unmarshal(data, &board); err != nil || board.Counts.QueuedInventory != queued || board.Counts.Running != 0 || board.Counts.ClosedInventory != 0 || board.EligibilityTool != operatortool.ExplainItem || !slices.Contains(board.Unavailable, "aggregate_dispatch_readiness") {
 							t.Fatalf("native inventory confused with admission: %s err=%v", data, err)
 						}
 					}
@@ -301,15 +360,31 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&leases); err != nil || historyAfter != historyBefore || leases != 0 {
 				t.Fatalf("explanation wrote scheduling state: history=%d/%d leases=%d error=%v", historyBefore, historyAfter, leases, err)
 			}
-			if test.name == "admissible native item" || test.name == "known native label refusal" {
+			if test.dependency && !test.ignoreDependencies && !test.intake && !test.privateDependency && test.extraDependencies < 100 {
+				for _, blocker := range blockers {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(blocker.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "finish-" + string(blocker.WorkItemID)}, ExpectedRevision: 1, State: "Done", Reason: "user_requested"}), http.StatusOK)
+				}
+				now = now.Add(time.Second)
+				ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+				call := hostedContextProtocol(t, f.service, ctx, "http")
+				data := hostedContextData(t, call("tools/call", operatortool.ExplainItem, map[string]any{"project_id": string(f.project.ID), "reference": strconv.Itoa(issue.Number)}), false)
+				var restored explain.IssueExplanation
+				if err := json.Unmarshal(data, &restored); err != nil {
+					t.Fatal(err)
+				}
+				if restored.Eligibility.State != explain.EligibilityEligible || len(restored.Eligibility.Refusals) != 0 || !restored.ObservedAt.Equal(now) || len(restored.NativeRuntime.Admission[0].UnresolvedDependencies) != 0 {
+					t.Fatalf("finished dependencies did not restore current eligibility: %s", data)
+				}
+			}
+			if test.name == "admissible native item" || test.name == "known native label refusal" || (test.dependency && !test.intake && !test.privateDependency && test.extraDependencies < 100) {
 				claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "candidate-parity", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}, WorkflowStates: current.WorkflowStates, LabelExclude: current.LabelExclude}
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 				status := http.StatusOK
-				if test.code != "" {
+				if test.code != "" && !test.dependency {
 					status = http.StatusConflict
 				}
 				requireNativeStatus(t, response, status)
-				if test.code != "" && !strings.Contains(response.Body.String(), `"code":"no_claimable_work"`) {
+				if status == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"no_claimable_work"`) {
 					t.Fatalf("explanation disagrees with claim refusal: %s", response.Body)
 				}
 			}

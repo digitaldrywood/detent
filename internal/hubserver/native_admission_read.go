@@ -68,7 +68,7 @@ func readRunnerAdmissionObservation(ctx context.Context, q nativeQueryer, scope 
 func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID, policyID string, requirements policy.Requirements, runners []runnerauth.Runner, truncated, ready bool, evidence *tracker.NativeRuntimeEvidence, contexts []tracker.NativeAdmissionContext, minimumVersion, nonExecutableReason string) error {
 	now := evidence.ObservedAt
 	query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), WorkItemID: id, AvailableAt: now, Limit: 1}
-	ids, err := nativeCandidateIDs(ctx, q, query, nil, nil, nil, nil, nil, nil, nil)
+	candidate, err := readNativeCandidateSnapshot(ctx, q, query, evidence.Issue)
 	if err != nil {
 		return err
 	}
@@ -93,8 +93,13 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 		switch {
 		case nonExecutableReason != "":
 			refuse("inactive_state", nonExecutableReason)
-		case len(ids) == 0:
+		case len(candidate.IDs) == 0:
 			refuse("no_claimable_work", "The existing native claim candidate query does not select this item")
+			a.UnresolvedDependencies = candidate.UnresolvedDependencies
+			a.Unavailable = append(a.Unavailable, candidate.Unavailable...)
+			if len(a.UnresolvedDependencies) > 0 {
+				a.Reason += "; observed required dependencies remain unfinished"
+			}
 		case !ready:
 			refuse("no_claimable_work", "Current Change version is not ready for native landing")
 		default:
