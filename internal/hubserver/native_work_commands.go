@@ -119,6 +119,10 @@ func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeSc
 			}
 		}
 	}
+	return reportNativeMachineIssueTx(ctx, tx, scope, request, now)
+}
+
+func reportNativeMachineIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.body || char(10) || COALESCE((SELECT group_concat(c.body, char(10)) FROM native_comments c WHERE c.work_item_id = i.native_id), '') FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 ORDER BY ws.terminal, i.number DESC`, scope.organization, scope.project)
 	if err != nil {

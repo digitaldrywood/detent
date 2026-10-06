@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
 )
 
@@ -72,9 +73,10 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	if state == "resolved" {
 		resolved = "IS NOT NULL"
 	}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code FROM health_findings
+	rows, err := s.database.db.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
+ COALESCE((SELECT work_item_id FROM health_finding_issues WHERE finding_id=health_findings.id AND project_id=?), '') FROM health_findings
  WHERE organization_id=? AND resolved_at `+resolved+` AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
- AND (?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>? ORDER BY rowid LIMIT ?`, scope.organization, scope.project, since, since, since, after, limit+1)
+ AND (?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>? ORDER BY rowid LIMIT ?`, scope.project, scope.organization, scope.project, since, since, since, after, limit+1)
 	if err != nil {
 		return page, err
 	}
@@ -86,8 +88,13 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		var subject, opened, seen, evidence string
 		var ended, slackFailed sql.NullString
 		var slackStatus sql.NullInt64
-		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence, &f.EmailUnavailable, &slackFailed, &slackStatus); err != nil {
+		var item tracker.NativeWorkItemID
+		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence, &f.EmailUnavailable, &slackFailed, &slackStatus, &item); err != nil {
 			return page, err
+		}
+		if item != "" {
+			f.FiledBy = "health_detector"
+			f.Issues = []healthFindingIssue{{ProjectID: scope.project, WorkItemID: item}}
 		}
 		if len(page.Items) == limit {
 			page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(last, 10)))
@@ -112,14 +119,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 			}
 			f.ResolvedAt = &at
 		}
-		if len(f.Evidence.Queues) > 0 {
-			queue, ok := f.Evidence.Queues[string(scope.project)]
-			f.Evidence.Queues = map[string]healthQueueEvidence{}
-			if ok {
-				f.Evidence.Queues[string(scope.project)] = queue
-				f.Evidence.Counts["queue_depth"] = queue.QueueDepth
-			}
-		}
+		f.Evidence = scopeHealthEvidence(f.Evidence, scope.project)
 		if slackFailed.Valid {
 			at, err := parseTimeValue(slackFailed.String)
 			if err != nil {

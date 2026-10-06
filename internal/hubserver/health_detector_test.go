@@ -533,7 +533,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else if test.candidates > 0 {
-				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 2 UNION ALL SELECT x+1 FROM n WHERE x<?)
+				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 3 UNION ALL SELECT x+1 FROM n WHERE x<?)
  INSERT INTO issues(organization_id,project_id,workflow_state_id,number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at)
  SELECT i.organization_id,i.project_id,i.workflow_state_id,n.x,'candidate','','open','1',i.source_updated_at,i.synchronized_at,i.created_at,i.updated_at FROM n CROSS JOIN issues i WHERE i.native_id=?`, test.candidates, item.WorkItemID)
 				if err != nil {
