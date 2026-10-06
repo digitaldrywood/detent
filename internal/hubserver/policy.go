@@ -137,9 +137,8 @@ WHERE i.removed_at IS NULL
 )
 SELECT o.descriptor_json, o.source_json, o.runner_id, o.observed_at, o.policy_id,
 EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = o.policy_id),
-(SELECT count(DISTINCT policy_id) FROM current_reports WHERE scope = o.scope),
-EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = ? AND json_type(r.metadata_json, '$.configuration') = 'object')
-FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observed_at DESC, o.runner_id`, formatHubTime(now), approvedID, scope, approvedID)
+(SELECT count(DISTINCT policy_id) FROM current_reports WHERE scope = o.scope)
+FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observed_at DESC, o.runner_id`, formatHubTime(now), scope, approvedID)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +149,7 @@ FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observe
 		var raw, source, id string
 		var observed policy.ObservedPolicy
 		var distinct int
-		var shared bool
-		if err := rows.Scan(&raw, &source, &observed.RunnerID, &observed.ObservedAt, &id, &observed.PreviouslyApproved, &distinct, &shared); err != nil {
+		if err := rows.Scan(&raw, &source, &observed.RunnerID, &observed.ObservedAt, &id, &observed.PreviouslyApproved, &distinct); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		if index, ok := seen[id]; ok {
@@ -165,7 +163,7 @@ FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observe
 		if err := json.Unmarshal([]byte(source), &observed.Source); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
-		observed.Conflict = distinct > 1 || shared || observed.PreviouslyApproved
+		observed.Conflict = distinct > 1 || observed.PreviouslyApproved
 		observed.RunnerIDs = []string{observed.RunnerID}
 		result = append(result, observed)
 	}

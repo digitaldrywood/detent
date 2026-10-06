@@ -896,7 +896,8 @@ func TestHostedBrowserPreview(t *testing.T) {
 		f.seedGitHubTriage(t)
 	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_WORKFLOW_REVISIONS") != "" {
-		f.seedWorkflowRevisions(t)
+		f.seedWorkflowRevisions(t, f.project)
+		f.seedWorkflowRevisions(t, f.privateProject)
 	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_ISSUE_ASK") != "" {
 		f.seedIssueAsk(t)
