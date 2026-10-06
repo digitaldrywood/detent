@@ -16,6 +16,7 @@ import { makeRouter } from "../../src/app/router.tsx";
 import { setComposerText } from "./composerInput.ts";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
+import * as sharedEntry from "../../src/app/entry/shared.ts";
 
 // The router restores scroll on navigation; jsdom has no scrolling.
 Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
@@ -24,7 +25,10 @@ let hub: MockHub | undefined;
 let client: ConversationClient | undefined;
 const nativeFetch = globalThis.fetch;
 
-beforeEach(() => vi.stubGlobal("fetch", sameRealmFetch));
+beforeEach(() => {
+  globalThis.localStorage.clear();
+  vi.stubGlobal("fetch", sameRealmFetch);
+});
 
 afterEach(async () => {
   cleanup();
@@ -33,6 +37,7 @@ afterEach(async () => {
   await hub?.close();
   hub = undefined;
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 /**
@@ -106,6 +111,36 @@ async function control(path: string, body?: unknown): Promise<void> {
 }
 
 describe("the conversation shell", () => {
+  it.each([false, true])("switches the footer workspace through the authenticated owner (shared entry: %s)", async (shared) => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { assign, pathname: "/work", search: "", hash: "" });
+    vi.spyOn(sharedEntry, "behindSharedEntry").mockReturnValue(shared);
+    vi.spyOn(sharedEntry, "useSharedOrganizations").mockReturnValue(shared ? [
+      { id: "org_mock", name: "Mock organization", url: "/organizations/org_mock", current: true },
+      { id: "org_second", name: "Second mock organization", url: "/organizations/org_second", current: false },
+    ] : null);
+    const switches: unknown[] = [];
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/switch")) switches.push(JSON.parse(String(init?.body)));
+      return sameRealmFetch(input, init);
+    });
+    await mountApp({ path: "/work" });
+    const trigger = await screen.findByRole("button", { name: "Switch workspace: Mock organization" });
+    const toolbar = trigger.closest("ul")!;
+    expect([...toolbar.querySelectorAll("button")].slice(0, 4).map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Switch workspace: Mock organization", "Settings", "Pull Requests", "Usage",
+    ]);
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Mock organization" }));
+    expect(assign).not.toHaveBeenCalled();
+    expect(switches).toEqual([]);
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Second mock organization" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(shared ? "/organizations/org_second" : "https://second.mock.test/auth/oidc/start"));
+    if (shared) expect(switches).toEqual([]);
+    else expect(switches).toEqual([{ organization: "org_second", idempotency_key: expect.any(String) }]);
+  });
+
   it("keeps an open chat visible and reconnects after a server_error close", async () => {
     const { router, streamRequests } = await mountApp();
     const composer = await screen.findByLabelText<HTMLElement>("Message", undefined, { timeout: 5_000 });
