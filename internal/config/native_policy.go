@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -183,9 +184,21 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 		if err != nil {
 			return Workflow{}, err
 		}
+		localPrompt := workflow.machinePrompt
+		if localPrompt == "" && workflow.DefinitionSources != nil && workflow.DefinitionSources.HasLocalWorkflow {
+			local, err := splitProjectWorkflow(workflow.DefinitionSources.LocalWorkflow)
+			if err != nil {
+				return Workflow{}, fmt.Errorf("parse machine workflow instructions: %w", err)
+			}
+			localPrompt = string(normalizeProjectDefinitionPrompt(local.prompt))
+		}
 		workflow.Config = nativeProjectBehavior(shared.Config).apply(workflow.Config)
 		workflow.Prompt, workflow.SharedPrompt, workflow.AgentsPrompt = shared.Prompt, shared.SharedPrompt, shared.AgentsPrompt
 		workflow.Authored, workflow.DefinitionSources, workflow.Definition = shared.Authored, shared.DefinitionSources, shared.Definition
+		workflow.machinePrompt = localPrompt
+		if localPrompt != "" && !strings.HasSuffix(workflow.Prompt, localPrompt) {
+			workflow.Prompt = mergeWorkflowPrompts([]byte(workflow.Prompt), []byte(localPrompt))
+		}
 		return workflow, nil
 	}
 	if descriptor.Configuration == nil {

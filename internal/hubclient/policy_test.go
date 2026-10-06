@@ -103,6 +103,7 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 		wantLost     bool
 		reports      int
 	}{
+		{name: "authored external load retains approved configuration", loadApproved: true, approved: &current, status: http.StatusOK, local: current, reports: 1},
 		{name: "legacy external load retains approved configuration", loadApproved: true, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "verified legacy source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "canonical version carries feature approval", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40)}, approved: &previous, status: http.StatusOK, local: current, reports: 1},
@@ -175,6 +176,9 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 			for _, layout := range []workflowconfig.ProjectDefinitionLayout{workflowconfig.ProjectDefinitionLegacy, workflowconfig.ProjectDefinitionSplit, workflowconfig.ProjectDefinitionCloud} {
 				workflow := workflowconfig.Workflow{Config: workflowconfig.Default(), Prompt: "Current supplied instructions.", Definition: workflowconfig.ProjectDefinition{Layout: layout}}
 				workflow.Config.Tracker.Kind = workflowconfig.TrackerHubNative
+				if test.name == "authored external load retains approved configuration" {
+					workflow.DefinitionSources = &workflowconfig.ProjectDefinitionSources{Workflow: []byte("Stale supplied instructions.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n"), HasConfig: true}
+				}
 				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "site", workflow, test.provenance)
 				if test.status == http.StatusServiceUnavailable && layout != workflowconfig.ProjectDefinitionCloud {
 					if err == nil {
@@ -182,7 +186,7 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 					}
 					continue
 				}
-				if test.loadApproved && layout != workflowconfig.ProjectDefinitionCloud {
+				if test.approved != nil && (test.approved.Configuration != nil || test.approved.Authored != nil) && test.provenance == nil && layout != workflowconfig.ProjectDefinitionCloud {
 					if err != nil {
 						t.Fatal(err)
 					}

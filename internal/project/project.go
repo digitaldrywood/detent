@@ -1556,6 +1556,9 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
 	}
+	if managed && update.Workflow.Config.Policy.ID != "" && (workflow.Config.Policy.ID != update.Workflow.Config.Policy.ID || workflow.Config.Policy.SourceRevision != update.Workflow.Config.Policy.SourceRevision) {
+		return errors.New("the approved policy changed during application; read the current policy before retrying")
+	}
 	if previousPolicy.ID != "" && previousPolicy.ID != workflow.Config.Policy.ID && !previousPolicy.SameAuthoredInputs(workflow.Config.Policy) {
 		if !managed && workflow.Config.Policy.Configuration == nil {
 			return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("policy_mismatch: effective policy changed; apply the approved revision through the selected configuration owner after current work finishes"))
