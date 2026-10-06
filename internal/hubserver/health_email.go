@@ -51,12 +51,23 @@ func (s *Service) commitHealthEvaluation(ctx context.Context, tx *sql.Tx, organi
 	if err != nil {
 		return err
 	}
+	issues, err := reportHealthFindings(ctx, tx, organization, now)
+	if err != nil {
+		return err
+	}
 	notifications, err := s.claimHealthEmails(ctx, tx, organization, transitions)
 	if err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	for _, issue := range issues {
+		raw, err := json.Marshal(issue)
+		if err != nil {
+			return err
+		}
+		s.wakeSpriteRunnersAfter(healthIssueScope(organization, issue.ProjectID), raw)
 	}
 	if len(notifications) == 0 {
 		return nil
