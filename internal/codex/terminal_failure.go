@@ -2,6 +2,8 @@ package codex
 
 import (
 	"encoding/json"
+	"strconv"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -19,6 +21,12 @@ func (e *ResponseError) NativeTerminalFailure() tracker.NativeTerminalFailure {
 	nativeRequestFailureMetadata([]byte(e.Message), &failure)
 	if e.Message == "input_too_large" {
 		failure.ProviderCode = e.Message
+	}
+	if maximum, ok := strings.CutPrefix(e.Message, "Input exceeds the maximum length of "); ok {
+		if limit, err := strconv.ParseInt(maximum, 10, 64); err == nil && limit > 0 {
+			failure.ProviderCode = "input_too_large"
+			failure.MaxChars = &limit
+		}
 	}
 	return failure.Public()
 }

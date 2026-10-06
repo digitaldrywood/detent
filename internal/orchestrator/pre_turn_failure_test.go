@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -21,6 +22,12 @@ func TestPreTurnFailuresDrainInstance(t *testing.T) {
 	workspace := fmt.Errorf("%w: after_create exited 1", runpkg.ErrWorkspacePreparation)
 	wrappedStartup := errors.Join(runpkg.NewCancellationCause(startup, "orchestrator.parent_context"), startup)
 	wrappedMergeStartup := errors.Join(runpkg.NewCancellationCause(runpkg.ErrMergeWorkerStartupTimeout, "orchestrator.parent_context"), context.Canceled)
+	inputRefusal := &codex.ResponseError{Request: "turn/start", Code: -32602, Message: "Input exceeds the maximum length of 1048576"}
+	details, ok := codex.ClassifyCapacityError(inputRefusal, nil, time.Now())
+	if !ok || details.Kind != backendcapacity.StartupFailureKind {
+		t.Fatalf("input refusal classification = %+v, classified = %v", details, ok)
+	}
+	inputFailure := backendcapacity.NewError(backendcapacity.Scope{}, details, inputRefusal)
 	for _, tt := range []struct {
 		name     string
 		failures []error
@@ -28,6 +35,7 @@ func TestPreTurnFailuresDrainInstance(t *testing.T) {
 		{"protocol", []error{protocol, protocol, protocol}},
 		{"workspace", []error{workspace, workspace, workspace}},
 		{"startup", []error{startup, startup, startup}},
+		{"turn input refusal", []error{inputFailure, inputFailure, inputFailure}},
 		{"mixed", []error{protocol, startup, workspace}},
 		{"supervisor startup deadline", []error{wrappedStartup, wrappedStartup, wrappedStartup}},
 		{"supervisor merge startup timer", []error{wrappedMergeStartup, wrappedMergeStartup, wrappedMergeStartup}},

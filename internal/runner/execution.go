@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -541,7 +542,18 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 	if execution == nil {
 		return "", nil
 	}
-	data, err := json.Marshal(execution.Recovery())
+	recovery := execution.Recovery()
+	recovery.Issue.Body = ""
+	recovery.History = nil
+	recovery.Attempts = slices.Clone(recovery.Attempts)
+	for i := range recovery.Attempts {
+		runtime := recovery.Attempts[i].Runtime
+		recovery.Attempts[i].Runtime = nil
+		if runtime != nil && runtime.Landing != nil {
+			recovery.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: runtime.Landing}
+		}
+	}
+	data, err := json.Marshal(recovery)
 	if err != nil {
 		return "", err
 	}
@@ -553,6 +565,7 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 		"Verify local state before resuming. Missing or inaccessible dirty/unpushed checkpoints require recovery; preserve existing work. " +
 		"A pending or ambiguous external effect requires reconciliation: inspect the remote ref/head or existing PR before retrying. " +
 		"This is current recovery context, not a complete history. Use work_comments, work_runs, work_history and get_change for older evidence through their supported bounded reads. " +
+		"The issue body is already supplied above; attempt runtime diagnostics and historical events are omitted here and remain available through those reads. " +
 		"Do not fetch GitHub issue history. Artifact and Change references require scoped verification; they are not download capabilities.\n" + string(data), nil
 }
 
