@@ -4,8 +4,10 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 type pilotReviewVersion struct {
@@ -38,22 +40,19 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		human := project == f.project
 		rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: human, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted pilot CI")), Source: "independent", MaxAgeSeconds: 3600}}}
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "pilot-review-policy"}, Policy: rules}), http.StatusOK)
-		response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "pilot-policy-job"}, Title: "Pilot repository review journey", State: "Todo"})
+		response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "pilot-policy-job"}, Title: "Pilot repository review journey", State: "Todo", Labels: []string{"pilot-review"}})
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)
 		path := base + "/work-items/" + string(issue.WorkItemID)
-		response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", runner.Credential, tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: runner.MachineID, SessionID: "pilot-review-" + project, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+		response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", runner.Credential, tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: runner.MachineID, SessionID: "pilot-review-" + project, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, LabelInclude: []string{"pilot-review"}})
 		requireNativeStatus(t, response, http.StatusOK)
 		var lease tracker.NativeLease
 		decodeHubResponse(t, response, &lease)
 		start := nativeStartedEvent(lease)
-		finish := start
-		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"
-		for _, event := range []tracker.NativeRunEvent{start, finish} {
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", runner.Credential, event), http.StatusOK)
-		}
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/leases/"+string(lease.ID)+"/release", runner.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+		start.Data.Identity.Role = "code"
+		start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 41}}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", runner.Credential, start), http.StatusOK)
 		response = f.setupRequest(t, "owner", http.MethodPost, path+"/changes", tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "pilot-review-change"}, Title: "Pilot policy Change Request"})
 		requireNativeStatus(t, response, http.StatusOK)
 		var change tracker.ChangeRequest
@@ -72,6 +71,16 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		}
 		response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/checks", principal+"-credential", changeTestResult(version))
 		versions = append(versions, pilotReviewVersion{path: path, version: version, human: human, ciStatus: response.Code})
+		if got := pilotChangeSummary(t, f, path); got.Status != "needs_evidence" || got.Checks != "success" {
+			t.Fatalf("missing validator marked ready: %+v", got)
+		}
+		validator := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "pilot-validator", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", runner.Credential, validator), http.StatusOK)
+		finish := start
+		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"
+		item := base + "/work-items/" + string(issue.WorkItemID)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/events", runner.Credential, finish), http.StatusOK)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/leases/"+string(lease.ID)+"/release", runner.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 	}
 	return versions
 }
@@ -122,5 +131,5 @@ func TestPilotHostedTwoRepositoryReadiness(t *testing.T) {
 	if versions[0].version.PolicyID == versions[1].version.PolicyID || versions[0].version.ReviewPolicy.ID == versions[1].version.ReviewPolicy.ID {
 		t.Fatal("repository policies share an identity")
 	}
-	t.Log("PILOT readiness independent_ci_http=200 human_approval_http=200 checks=success human_before_review=needs_evidence human_after_review=reviewed automatic=reviewed external=external_gate repositories=2 shared_runner=true")
+	t.Log("PILOT readiness independent_ci_http=200 validator_http=200 human_approval_http=200 checks=success human_before_review=needs_evidence human_after_review=reviewed automatic=reviewed external=external_gate repositories=2 shared_runner=true")
 }
