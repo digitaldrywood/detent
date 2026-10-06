@@ -346,7 +346,7 @@ for (const state of [
   { name: "unassociated repository", installed: false, profile: "native", repository: "", transport: true, visible: false },
   { name: "unavailable transport", installed: false, profile: "native", repository: "acme/orders", transport: false, visible: false },
 ]) {
-  test(`setup GitHub App installation: ${state.name}`, async ({ page }) => {
+  test(`setup and integrations GitHub App installation: ${state.name}`, async ({ page }) => {
     let reads = 0;
     await page.route("**/projects/*/integration", async (route) => {
       const response = await route.fetch();
@@ -377,6 +377,23 @@ for (const state of [
       await expect(page.getByText(/Detent Cloud is (not )?installed on/)).toHaveCount(0);
     }
     expect(reads).toBe(1);
+    await page.goto(new URL(`/settings/integrations?project=${hub.fixture.project_id}`, hub.fixture.url).toString(), { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: /settings$/, level: 2 })).toBeVisible();
+    if (state.visible) {
+      await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toBeVisible();
+      await expect(page.getByText(`Detent Cloud is ${state.installed ? "installed" : "not installed"} on acme/orders`, { exact: true })).toBeVisible();
+      const link = page.getByRole("link", { name: state.installed ? "Manage installation" : "Install the Detent Cloud GitHub App" });
+      await expect(link).toHaveAttribute("href", "https://github.com/apps/detent-cloud/installations/new");
+      await expect(link).toHaveAttribute("target", "_blank");
+      await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+      await expect(install).toHaveCount(state.installed ? 0 : 1);
+      await expectNoSeriousAxeViolations(page, `Integrations GitHub App ${state.name}`);
+    } else {
+      await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toHaveCount(0);
+      await expect(install).toHaveCount(0);
+      await expect(page.getByText(/Detent Cloud is (not )?installed on/)).toHaveCount(0);
+    }
+    expect(reads).toBe(2);
   });
 }
 

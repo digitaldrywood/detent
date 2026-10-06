@@ -122,6 +122,42 @@ describe("settings help interactions", () => {
 
 describe("project settings help", () => {
   it.each([
+    { name: "installed binding", installed: true, repository: "acme/orders", checkout: "", profile: "native", transport: true, visible: true },
+    { name: "not installed binding", installed: false, repository: "acme/orders", checkout: "", profile: "native", transport: true, visible: true },
+    { name: "runner checkout", installed: false, repository: "", checkout: "acme/checkout", profile: "native", transport: true, visible: true },
+    { name: "checkout takes precedence", installed: true, repository: "acme/orders", checkout: "acme/checkout", profile: "native", transport: true, visible: true },
+    { name: "unbound project", installed: false, repository: "", checkout: "", profile: "native", transport: true, visible: false },
+    { name: "compatibility project", installed: true, repository: "acme/orders", checkout: "", profile: "github_compatible", transport: true, visible: false },
+    { name: "unavailable transport", installed: false, repository: "acme/orders", checkout: "", profile: "native", transport: false, visible: false },
+    { name: "unreported installation", installed: undefined, repository: "acme/orders", checkout: "", profile: "native", transport: true, visible: false },
+  ])("shows GitHub App installation for $name to a reader", async (state) => {
+    const url = "https://github.com/apps/detent-cloud/installations/new";
+    renderProject(false, { integration: {
+      ...integration,
+      profile: state.profile,
+      repository: state.repository,
+      checkout_repository: state.checkout,
+      github_transport_available: state.transport,
+      github_app_slug: "detent-cloud",
+      github_app_install_url: url,
+      github_app_installed: state.installed,
+    } });
+    await screen.findByRole("heading", { name: "Example settings" });
+    if (state.visible) {
+      expect(screen.getByRole("heading", { name: "GitHub App" })).toBeTruthy();
+      expect(screen.getByText(`Detent Cloud is ${state.installed ? "installed" : "not installed"} on ${state.checkout || state.repository}`, { exact: true })).toBeTruthy();
+      const link = screen.getByRole("link", { name: state.installed ? "Manage installation" : "Install the Detent Cloud GitHub App" });
+      expect(link.getAttribute("href")).toBe(url);
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    } else {
+      expect(screen.queryByRole("heading", { name: "GitHub App" })).toBeNull();
+      expect(screen.queryByText(/Detent Cloud is (not )?installed on/)).toBeNull();
+      expect(screen.queryByRole("link", { name: /installation|Install the Detent Cloud GitHub App/ })).toBeNull();
+    }
+  });
+
+  it.each([
     [true, "approved"], [false, "approved"],
     [true, "missing"], [false, "missing"],
     [true, "pending"], [false, "pending"],
