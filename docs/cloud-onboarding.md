@@ -287,8 +287,12 @@ Remaining manual steps, which the script never performs:
 Preserve the September 7 choices: local-only history, customer-managed durable
 storage, and explicit opt-in hosted storage through the portable S3 adapter
 (DigitalOcean Spaces initially). No setup default silently uploads artifacts.
-Local history is supported without a bucket or Cloud services. For history with
-execution runners offline, follow [artifact deployment](artifacts-deployment.md):
+Local history keeps artifacts on your own runner without a separate storage
+account or fee; losing that machine loses its artifacts. Customer-managed
+history uses an S3-compatible bucket and artifact gateway that you run and pay
+for. Detent records the binding only and stores neither your artifacts nor your
+storage credentials. For history with execution runners offline, follow
+[artifact deployment](artifacts-deployment.md):
 private S3-compatible bucket, durable catalog, separate TLS gateway, dedicated
 publisher identity, and local storage credentials. Register only the gateway
 origin, service ID and publisher token ID. Never enter the publisher token secret

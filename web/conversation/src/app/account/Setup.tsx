@@ -795,15 +795,15 @@ export function SetupRoute({
           choices={[
             {
               value: "local",
-              name: "Local history",
-              help: "Artifacts remain on the execution host that produced them. Choose this to start without a separate artifact service; access depends on that host being available.",
-              detail: "Artifacts stay on the machine that produced them",
+              name: "Your runner (local history)",
+              help: "Artifacts stay on your runner, the machine in your environment that produced them. Detent stores no artifacts. No separate storage account or fee is needed; access depends on your runner being available. If that machine is lost, so are the artifacts.",
+              detail: "Your runner stores artifacts; no Detent storage or storage fee",
             },
             {
               value: "customer",
-              name: "Customer service",
-              help: "Use an S3-compatible artifact service and independent gateway that you operate. Bind its details below. Hub records the binding but does not test storage or guarantee offline access.",
-              detail: "An S3-compatible service and an independent gateway you run",
+              name: "Your bucket and gateway",
+              help: "Artifacts go to an S3-compatible bucket and artifact gateway that you run and pay for. Bind its details below. Detent records the binding only and never holds your storage credentials or artifacts. A binding does not verify storage or guarantee offline access.",
+              detail: "Your bucket and gateway, your bill; no Detent artifact storage",
             },
           ]}
         />
