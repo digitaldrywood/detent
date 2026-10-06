@@ -21,6 +21,7 @@
 //    initialise most of them, but `NativeState.transitions` can genuinely
 //    arrive as `null`, so that one is nullable as well as optional.
 import * as Schema from "effect/Schema";
+import { AttemptDiagnostics } from "./diagnostics.ts";
 
 // --- Identities -------------------------------------------------------------
 
@@ -443,6 +444,7 @@ export const AttemptStatus = Schema.Literals([
 export type AttemptStatus = typeof AttemptStatus.Type;
 
 export const NativeAttempt = Schema.Struct({
+  ...AttemptDiagnostics,
   sequence: Schema.optional(Schema.String),
   identity: Schema.optional(NativeExecutionIdentity),
   machine_id: Schema.optional(Schema.String),

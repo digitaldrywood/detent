@@ -13,6 +13,7 @@
 // `X-CSRF-Token` from the bootstrap payload, which the hosted boundary
 // requires of any non-GET without an `Authorization` header.
 import * as Schema from "effect/Schema";
+import { IssueExplanation } from "../../../contracts/diagnostics.ts";
 import { ConversationSnapshot } from "../../../contracts/conversation.ts";
 
 import {
@@ -210,6 +211,7 @@ export interface WorkHttp {
     signal?: AbortSignal,
     cursor?: string,
   ) => Promise<AttemptPage>;
+  readonly getExplanation: (projectId: string, itemId: string) => Promise<IssueExplanation>;
   /**
    * The latest stored diff on one issue (decisions.md §18.5), or `{diff: null}`
    * where no attempt has posted one. Issue-addressed rather than
@@ -602,6 +604,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       }),
     listAttempts: (projectId, itemId, limit, signal, cursor) =>
       send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor }), undefined, signal),
+    getExplanation: (projectId, itemId) =>
+      send(IssueExplanation, "GET", url(`${itemBase(projectId, itemId)}/explanation`)),
     getWorkItemDiff: (projectId, itemId) =>
       send(WorkItemDiff, "GET", url(`${itemBase(projectId, itemId)}/diff`)),
     listHistory: (input) =>

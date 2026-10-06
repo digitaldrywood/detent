@@ -491,6 +491,18 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	at := time.Now().UTC()
 	started.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Generation: 27, Phase: "implementation", HeartbeatAt: at, Phases: []tracker.NativePhase{{Name: "implementation", StartedAt: at}}}
 	runtimePath := f.base + "/work-items/" + string(second.WorkItemID)
+	for _, test := range []struct {
+		name   string
+		path   string
+		status int
+	}{
+		{name: "foreign issue", path: f.base + "/work-items/" + string(hidden.WorkItemID) + "/explanation", status: http.StatusNotFound},
+		{name: "unsupported selector", path: runtimePath + "/explanation?attempt_id=foreign", status: http.StatusUnprocessableEntity},
+	} {
+		t.Run("explanation "+test.name, func(t *testing.T) {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, test.path, f.token, nil), test.status)
+		})
+	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, started), http.StatusOK)
 	observed := started
 	observed.Type, observed.IdempotencyKey, observed.Data.Sequence = "run.observed", "runtime-observed", 2
@@ -654,6 +666,18 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	response = performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/runtime?native_attempt_id="+started.Data.AttemptID, f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &runtimeResult.Data)
+	explanationResponse := performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/explanation", f.token, nil)
+	requireNativeStatus(t, explanationResponse, http.StatusOK)
+	var browserExplanation explain.IssueExplanation
+	decodeHubResponse(t, explanationResponse, &browserExplanation)
+	if browserExplanation.Schema != explain.SchemaVersion || browserExplanation.Identity.IssueID != string(second.WorkItemID) || browserExplanation.NativeRuntime.Attempt.AttemptID != started.Data.AttemptID || len(browserExplanation.NativeRuntime.Attempt.Runtime.Activity.Spans) != 0 {
+		t.Fatalf("browser explanation lost native identity or exposed activity details: %#v", browserExplanation)
+	}
+	for _, secret := range []string{"private-command-and-path", "private-parent", "private-instruction-content", "/private/instructions", "secret"} {
+		if strings.Contains(explanationResponse.Body.String(), secret) {
+			t.Fatalf("browser explanation leaked %q", secret)
+		}
+	}
 	rest := runtimeResult.Data.Attempt.Runtime.REST
 	if rest.Source != "ordinary_response_headers" || !strings.Contains(rest.Coverage, "unavailable") || rest.Windows[0].Used != 3820 || !rest.Windows[0].UsedObserved || rest.Windows[0].ObservedAt != at || rest.Windows[0].BudgetScope != "native_landing" || rest.Divergences[0].UnattributedRequests != 2659 {
 		t.Fatalf("REST authority=%#v", rest)
@@ -823,5 +847,6 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, timingPath, f.token, nil), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/runtime", f.token, nil), http.StatusNotFound)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, runtimePath+"/explanation", f.token, nil), http.StatusNotFound)
 
 }
