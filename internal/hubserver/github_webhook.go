@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +11,9 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/connector/github"
 )
 
 const githubWebhookMaxBodyBytes = 2 << 20
@@ -43,7 +45,25 @@ type webhookErrorResponse struct {
 }
 
 func (s *Service) githubWebhook(c echo.Context) error {
-	if len(s.config.GitHubWebhookSecret) == 0 {
+	return s.receiveGitHubWebhook(c, false)
+}
+
+func (s *Service) hostedGitHubWebhook(c echo.Context) error {
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindService {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	for header, query := range map[string]string{
+		"X-GitHub-Delivery": "delivery_id", "X-GitHub-Event": "event_type",
+		"X-GitHub-Hook-ID": "hook_id", "X-GitHub-Hook-Installation-Target-ID": "installation_target", "User-Agent": "user_agent",
+	} {
+		c.Request().Header.Set(header, c.QueryParam(query))
+	}
+	return s.receiveGitHubWebhook(c, true)
+}
+
+func (s *Service) receiveGitHubWebhook(c echo.Context, verifiedByEntry bool) error {
+	if !verifiedByEntry && len(s.config.GitHubWebhookSecret) == 0 {
 		return c.JSON(http.StatusServiceUnavailable, webhookErrorResponse{
 			Code:    "webhook_unavailable",
 			Message: "GitHub webhook verification is not configured",
@@ -75,7 +95,7 @@ func (s *Service) githubWebhook(c echo.Context) error {
 			Message: "GitHub webhook delivery and event headers are required",
 		})
 	}
-	if !validGitHubWebhookSignature(s.config.GitHubWebhookSecret, payload, request.Header.Get("X-Hub-Signature-256")) {
+	if !verifiedByEntry && !github.ValidWebhookSignature(s.config.GitHubWebhookSecret, payload, request.Header.Get("X-Hub-Signature-256")) {
 		return c.JSON(http.StatusUnauthorized, webhookErrorResponse{
 			Code:    "invalid_signature",
 			Message: "GitHub webhook signature is invalid",
@@ -143,20 +163,4 @@ func (s *Service) githubWebhook(c echo.Context) error {
 		DeliveryID: deliveryID,
 		Duplicate:  result.Duplicate,
 	})
-}
-
-func validGitHubWebhookSignature(secret []byte, body []byte, signature string) bool {
-	value, ok := strings.CutPrefix(strings.TrimSpace(signature), "sha256=")
-	if !ok {
-		return false
-	}
-	got, err := hex.DecodeString(value)
-	if err != nil {
-		return false
-	}
-	mac := hmac.New(sha256.New, secret)
-	if _, err := mac.Write(body); err != nil {
-		return false
-	}
-	return hmac.Equal(got, mac.Sum(nil))
 }

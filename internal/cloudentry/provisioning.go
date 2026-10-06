@@ -287,7 +287,7 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 		for {
 			status, err := s.serviceRequest(ctx, *organization, "/internal/v1/health", map[string]string{}, nil)
 			if err == nil && status == http.StatusNoContent {
-				return nil
+				return s.refreshGitHubRoutes(ctx, *organization)
 			}
 			if failure := allocation.Launcher.Failure(organization.ID); failure != nil {
 				return errors.Join(terminalError{code: "tenant_start_failed", detail: failure.Error()}, allocation.Launcher.Stop(organization.ID))

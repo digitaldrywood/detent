@@ -107,7 +107,7 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 	for ctx.Err() == nil {
 		started := time.Now()
 		cmd := exec.CommandContext(ctx, l.Binary, "hub", "serve", "--hosted-config", filepath.Join(spec.Directory, "tenant.yaml"),
-			"--database", filepath.Join(spec.Directory, "hub.db"), "--listen", "unix:"+spec.Socket, "--github-disabled") // #nosec G204 -- the operator-configured Detent binary runs with fixed arguments and no shell.
+			"--database", filepath.Join(spec.Directory, "hub.db"), "--listen", "unix:"+spec.Socket) // #nosec G204 -- the operator-configured Detent binary runs with fixed arguments and no shell.
 		cmd.Env = append(append(baseEnvironment(), l.Environment...), "DETENT_HUB_ADMIN_TOKEN="+token)
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }

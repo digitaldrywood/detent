@@ -7,42 +7,67 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 	t.Parallel()
-	directory := t.TempDir()
-	launcher := &ExecLauncher{Binary: "/usr/bin/false", Configure: func(spec TenantSpec) ([]byte, error) {
-		return []byte("organization_id: " + spec.Organization.ID + "\n"), nil
-	}}
-	spec := TenantSpec{Organization: Organization{ID: "org_exec"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
-	if err := launcher.Start(t.Context(), spec); err != nil {
-		t.Fatal(err)
-	}
-	if err := launcher.Start(t.Context(), spec); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"tenant.yaml", "admin-token"} {
-		info, err := os.Stat(filepath.Join(directory, name))
-		if err != nil || info.Mode().Perm() != 0o600 {
-			t.Fatalf("%s mode = %v, %v", name, info, err)
-		}
-	}
-	token, err := tenantAdminToken(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	again, err := tenantAdminToken(directory)
-	if err != nil || again != token {
-		t.Fatal("tenant admin token was not reused")
-	}
-	if err := launcher.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := launcher.Stop("org_exec"); err != nil {
-		t.Fatal(err)
+	for _, test := range []struct {
+		name        string
+		environment []string
+		want        string
+	}{
+		{name: "without App credentials", want: "\n\n\n"},
+		{name: "product App credentials", environment: []string{"DETENT_HUB_GITHUB_APP_ID=123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY=private-key", "DETENT_HUB_GITHUB_WEBHOOK_SECRET=webhook-secret"}, want: "123\nprivate-key\nwebhook-secret\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			directory := t.TempDir()
+			binary := filepath.Join(directory, "tenant-fixture")
+			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DETENT_TEST_ARGS\"\nprintf '%s\\n' \"$DETENT_HUB_GITHUB_APP_ID\" \"$DETENT_HUB_GITHUB_APP_PRIVATE_KEY\" \"$DETENT_HUB_GITHUB_WEBHOOK_SECRET\" > \"$DETENT_TEST_ENV\"\nexit 1\n"
+			if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			launcher := &ExecLauncher{Binary: binary, RestartLimit: 1, Logger: slog.New(slog.DiscardHandler), Environment: append(test.environment, "DETENT_TEST_ARGS="+filepath.Join(directory, "args"), "DETENT_TEST_ENV="+filepath.Join(directory, "env")), Configure: func(spec TenantSpec) ([]byte, error) {
+				return []byte("organization_id: " + spec.Organization.ID + "\n"), nil
+			}}
+			t.Cleanup(func() { _ = launcher.Close() })
+			spec := TenantSpec{Organization: Organization{ID: "org_exec"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
+			if err := launcher.Start(t.Context(), spec); err != nil {
+				t.Fatal(err)
+			}
+			waitLauncherFailure(t, launcher, "org_exec")
+			arguments, err := os.ReadFile(filepath.Join(directory, "args"))
+			if err != nil || strings.Contains(string(arguments), "--github-disabled") {
+				t.Fatalf("tenant arguments = %s: %v", arguments, err)
+			}
+			environment, err := os.ReadFile(filepath.Join(directory, "env"))
+			if err != nil || string(environment) != test.want {
+				t.Fatalf("tenant environment = %q, want %q: %v", environment, test.want, err)
+			}
+			for _, name := range []string{"tenant.yaml", "admin-token"} {
+				info, err := os.Stat(filepath.Join(directory, name))
+				if err != nil || info.Mode().Perm() != 0o600 {
+					t.Fatalf("%s mode = %v, %v", name, info, err)
+				}
+			}
+			token, err := tenantAdminToken(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			again, err := tenantAdminToken(directory)
+			if err != nil || again != token {
+				t.Fatal("tenant admin token was not reused")
+			}
+			if err := launcher.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := launcher.Stop("org_exec"); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

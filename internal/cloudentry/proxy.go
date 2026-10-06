@@ -283,6 +283,11 @@ func (s *Service) proxy(c echo.Context) error {
 			r.Out.ContentLength = int64(len(body))
 		},
 		ModifyResponse: func(response *http.Response) error {
+			if request.Method != http.MethodGet && request.Method != http.MethodHead && response.StatusCode < http.StatusBadRequest {
+				if err := s.refreshGitHubRoutes(c.Request().Context(), organization); err != nil {
+					return err
+				}
+			}
 			if err := s.attachmentMCPResponse(c, body, response); err != nil {
 				return err
 			}

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
 const testWebhookSecret = "webhook-secret"
@@ -92,6 +94,60 @@ func TestGitHubWebhookDeduplicatesDeliveriesAndRejectsConflicts(t *testing.T) {
 	}
 	if issues != 1 || title != "Original title" {
 		t.Fatalf("issue projection = count %d title %q, want one original issue", issues, title)
+	}
+}
+
+func TestHostedGitHubWebhookDeduplicatesVerifiedDeliveries(t *testing.T) {
+	t.Parallel()
+	f := newHostedSharedFixture(t)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'digitaldrywood/detent' WHERE id = ?", f.project); err != nil {
+		t.Fatal(err)
+	}
+	payload := completeIssueWebhookPayload(t, "Hosted intake", "2026-09-02T12:00:00Z")
+	payload = strings.Replace(payload, `"action":"edited"`, `"action":"opened"`, 1)
+	for _, test := range []struct {
+		name      string
+		unsigned  bool
+		kind      string
+		duplicate bool
+		status    int
+	}{
+		{name: "unsigned internal request", unsigned: true, status: http.StatusUnauthorized},
+		{name: "machine cannot deliver", kind: cloudassert.KindMachine, status: http.StatusNotFound},
+		{name: "verified delivery", status: http.StatusAccepted},
+		{name: "verified redelivery", duplicate: true, status: http.StatusAccepted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			kind := test.kind
+			if kind == "" {
+				kind = cloudassert.KindService
+			}
+			request := hostedSharedRequest{kind: kind, method: http.MethodPost, target: "/internal/v1/github/webhook?delivery_id=hosted-delivery&event_type=issues", body: payload, unsigned: test.unsigned,
+				headers: map[string]string{"X-GitHub-Delivery": "forged-delivery", "X-GitHub-Event": "ping", "X-Hub-Signature-256": "invalid"}}
+			if kind == cloudassert.KindMachine {
+				request.bearer = "detent_invalid"
+			}
+			response := f.serve(t, request)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body)
+			}
+			if test.status == http.StatusAccepted {
+				var receipt webhookResponse
+				if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil || receipt.DeliveryID != "hosted-delivery" || receipt.Duplicate != test.duplicate {
+					t.Fatalf("receipt = %+v: %v", receipt, err)
+				}
+			}
+		})
+	}
+	var inbox, issues, redeliveries int
+	if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT
+ (SELECT count(*) FROM github_webhook_inbox WHERE delivery_id = 'hosted-delivery'),
+ (SELECT count(*) FROM issues WHERE project_id = ?),
+ (SELECT redelivery_count FROM github_webhook_inbox WHERE delivery_id = 'hosted-delivery')`, f.project).Scan(&inbox, &issues, &redeliveries); err != nil {
+		t.Fatal(err)
+	}
+	if inbox != 1 || issues != 1 || redeliveries != 1 {
+		t.Fatalf("inbox = %d, issues = %d, redeliveries = %d", inbox, issues, redeliveries)
 	}
 }
 

@@ -50,6 +50,7 @@ type Config struct {
 	Billing                   *BillingConfig
 	ConfigPath                string
 	Attachments               *attachment.Config
+	GitHubWebhookSecret       []byte
 
 	now                 func() time.Time
 	generateToken       func() (string, error)
@@ -105,6 +106,7 @@ type Service struct {
 	attachments       attachment.Storage
 	attachmentMu      sync.RWMutex
 	attachmentSweepAt time.Time
+	githubRoutes      githubRoutes
 
 	stopAllocator context.CancelFunc
 	allocatorDone chan struct{}
@@ -160,6 +162,9 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.echo.Server.ReadHeaderTimeout = 5 * time.Second
 	service.routes()
 	service.startAllocator(ctx)
+	if err := service.initializeGitHubRoutes(ctx); err != nil {
+		return nil, errors.Join(err, service.Close())
+	}
 	service.startBillingWorker(ctx)
 	return service, nil
 }
@@ -241,6 +246,7 @@ func (s *Service) routes() {
 	e.GET("/support", s.supportPage)
 	e.POST("/support/start", s.startSupport)
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
+	e.POST("/api/v1/webhooks/github", s.githubWebhook)
 	e.GET("/invite", s.startInvitation)
 	s.registerAttachmentRoutes(e)
 	e.Any("/organizations/:organization", s.proxy)

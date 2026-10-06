@@ -368,6 +368,7 @@ type tenantFixture struct {
 	id, provider string
 	path         string
 	config       hubserver.Config
+	service      *hubserver.Service
 }
 
 func originLogin(t *testing.T, handler http.Handler, provider *fakeProvider, user, organization string) string {
@@ -436,6 +437,7 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = shared.Close() })
+	fixture.service = shared
 	return fixture, shared.Handler()
 }
 
@@ -443,6 +445,7 @@ type entryFixture struct {
 	service  *Service
 	provider *fakeProvider
 	tenants  map[string]http.Handler
+	fixtures map[string]tenantFixture
 }
 
 func newEntryFixture(t *testing.T) entryFixture {
@@ -486,7 +489,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 			t.Fatal(err)
 		}
 	}
-	return entryFixture{service: service, provider: provider, tenants: tenants}
+	return entryFixture{service: service, provider: provider, tenants: tenants, fixtures: map[string]tenantFixture{"org_alpha": alpha, "org_beta": beta}}
 }
 
 type handlerTransport struct {
