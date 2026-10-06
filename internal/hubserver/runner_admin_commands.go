@@ -46,8 +46,6 @@ func (s *Service) requireRunnerAdministration(ctx context.Context, tx *sql.Tx, s
 		return operatortool.ErrAccessDenied
 	}
 	if scope.credential.Hosted != nil {
-		// Use current application authority, including the same all-project runner
-		// grants checked by the dashboard, inside the command transaction.
 		if scope.credential.HostedRole == "viewer" {
 			return operatortool.ErrAccessDenied
 		}

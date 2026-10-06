@@ -22,6 +22,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -487,21 +489,64 @@ func TestHostedSecurityStaffMetadataBoundary(t *testing.T) {
 
 func TestHostedSecurityRunnerPermissionsAreSeparate(t *testing.T) {
 	t.Parallel()
-	f := newHostedSecurityFixture(t)
 	for _, test := range []struct {
-		role   string
-		runner bool
-		want   int
+		name, role      string
+		runner, missing bool
+		want            int
 	}{
-		{role: "owner", want: http.StatusNotFound},
-		{role: "admin", want: http.StatusNotFound},
-		{role: "member", runner: true, want: http.StatusOK},
-		{role: "viewer", runner: true, want: http.StatusNotFound},
+		{name: "owner without runner grant", role: "owner", want: http.StatusOK},
+		{name: "admin without runner grant", role: "admin", want: http.StatusOK},
+		{name: "owner with grantless project", role: "owner", missing: true, want: http.StatusOK},
+		{name: "admin with grantless project", role: "admin", missing: true, want: http.StatusOK},
+		{name: "member with runner grant", role: "member", runner: true, want: http.StatusOK},
+		{name: "member with grantless project", role: "member", runner: true, missing: true, want: http.StatusNotFound},
+		{name: "viewer with runner grant", role: "viewer", runner: true, want: http.StatusNotFound},
 	} {
-		t.Run(test.role, func(t *testing.T) {
-			user := f.user(t, test.role, test.role, test.role+"@example.test", "read", "")
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f, ctx := newHostedKeyMCPFixture(t, "dedicated", test.role)
+			user := f.user
 			f.grant(t, user, false, test.runner)
-			requireNativeStatus(t, f.request(t, user, http.MethodGet, "/api/v2/organizations/org_security/runners", nil), test.want)
+			if test.missing {
+				operatorSQL(t, f.hostedSecurityFixture, `INSERT INTO projects(id,organization_id,name,profile,created_at) VALUES ('prj_grantless','org_security','digitaldrywood/detent','github_compatible','now')`)
+				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE project_id='prj_grantless'")
+				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM token_grants WHERE project_id='prj_grantless'")
+			}
+			response := f.request(t, user, http.MethodGet, "/api/v2/organizations/org_security/runners", nil)
+			requireNativeStatus(t, response, test.want)
+			if test.role == "member" && test.missing && !strings.Contains(response.Body.String(), "digitaldrywood/detent") {
+				t.Fatalf("denial does not name missing project: %s", response.Body.String())
+			}
+			credential, err := currentHubOperator(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := f.service.appAllRunnerGrants(t.Context(), credential); got != (test.want == http.StatusOK) {
+				t.Fatalf("Cloud runner controls available=%v", got)
+			}
+			catalogCtx := f.service.withOperatorCatalog(ctx, credential, "org_security")
+			_, catalogErr := f.service.authorizeCatalog(catalogCtx, hubFleetRequirement(operatortool.ListRunnerRouting))
+			_, err = (hubFleetExecutor{f.service}).Execute(ctx, operatortool.Call{Name: operatortool.ListRunnerRouting, Arguments: json.RawMessage(`{}`)})
+			enrollment := runnerauth.EnrollmentRequest{ProjectIDs: []tracker.ProjectID{f.project}, Operations: []string{runnerauth.Read}, TTLSeconds: 900}
+			arguments, encodeErr := json.Marshal(hubFleetRequest{RequestID: "role-enrollment", Enrollment: enrollment})
+			if encodeErr != nil {
+				t.Fatal(encodeErr)
+			}
+			_, enrollmentErr := (hubFleetExecutor{f.service}).Execute(ctx, operatortool.Call{Name: operatortool.CreateRunnerEnrollment, Arguments: arguments})
+			for _, denial := range []error{catalogErr, err, enrollmentErr} {
+				if test.want == http.StatusOK && denial != nil || test.want != http.StatusOK && !errors.Is(denial, operatortool.ErrAccessDenied) {
+					t.Fatalf("operator runner access=%v", denial)
+				}
+				if test.role == "member" && test.missing && !strings.Contains(denial.Error(), "digitaldrywood/detent") {
+					t.Fatalf("operator denial does not name missing project: %v", denial)
+				}
+			}
+			response = f.request(t, user, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments", enrollment)
+			want := test.want
+			if want == http.StatusOK {
+				want = http.StatusCreated
+			}
+			requireNativeStatus(t, response, want)
 			requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items/wi_unknown/change-requests/change_unknown/versions/version_unknown/checks", map[string]any{}), http.StatusNotFound)
 		})
 	}

@@ -35,7 +35,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 			outcomes = append(outcomes, "running", "merging", "became running", "became merging", "archive failure", "history failure", "already archived", "duplicate", "empty", "outside project", "number resolution")
 		}
 		if coordinatorSpriteMutation(tool) {
-			outcomes = append(outcomes, "no runner grant", "runner grant revoked")
+			outcomes = append(outcomes, "no runner grant", "runner grant revoked", "grantless project")
 		}
 		for _, outcome := range outcomes {
 			t.Run(tool+"/"+outcome, func(t *testing.T) {
@@ -59,6 +59,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				u := f.user(t, "luna-owner", "owner", "luna@example.test", "write", "")
 				if coordinatorSpriteMutation(tool) {
 					f.grant(t, u, true, outcome != "no runner grant")
+					if outcome == "grantless project" {
+						operatorSQL(t, f, `INSERT INTO projects(id,organization_id,name,profile,created_at) VALUES ('prj_grantless','org_security','digitaldrywood/detent','github_compatible','now')`)
+						operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE project_id='prj_grantless'")
+						operatorSQL(t, f, "DELETE FROM token_grants WHERE project_id='prj_grantless'")
+					}
 					if _, err := f.service.database.approvePolicy(t.Context(), "org_security/"+string(f.project), "test", policy.Change{Policy: hubTestPolicy()}); err != nil {
 						t.Fatal(err)
 					}
@@ -283,7 +288,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					assertCoordinatorEffect(t, f, id, tool, false)
 					return
 				}
-				if outcome == "running" || outcome == "merging" || outcome == "already archived" || outcome == "duplicate" || outcome == "empty" || outcome == "outside project" || outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "invalid state" || outcome == "cycle" || outcome == "no write grant" || outcome == "no runner grant" || outcome == "wrong role" && (tool == "update_project_integration" || coordinatorSpriteMutation(tool)) {
+				if outcome == "running" || outcome == "merging" || outcome == "already archived" || outcome == "duplicate" || outcome == "empty" || outcome == "outside project" || outcome == "unauthorized" || outcome == "foreign issue" || outcome == "expired session" || outcome == "bad arguments" || outcome == "invalid state" || outcome == "cycle" || outcome == "no write grant" || outcome == "wrong role" && (tool == "update_project_integration" || coordinatorSpriteMutation(tool)) {
 					if result.Success || !strings.Contains(result.Content, "error") {
 						t.Fatalf("unauthorized result: %+v", result)
 					}
@@ -430,7 +435,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
-				changed := outcome == "execute" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "stale" && tool == operatortool.AddComment
+				changed := outcome == "execute" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "runner grant revoked" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
 				if changed {
 					requireNativeStatus(t, response, http.StatusOK)
 				} else if response.Code < 400 {

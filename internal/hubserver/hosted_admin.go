@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -40,8 +42,8 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 		case strings.HasPrefix(c.Path(), enrollmentBase) || strings.HasPrefix(c.Path(), runnerBase) || c.Path() == "/api/v2/organizations/:organization/machines/:machine/routing":
-			if credential.HostedRole == "viewer" || !s.hostedAllRunnerGrants(c.Request().Context(), credential) {
-				return s.nativeAPIError(c, nativeNotFound())
+			if err := s.requireHostedRunnerAdministration(c.Request().Context(), s.database.db, credential); err != nil {
+				return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: err.Error()})
 			}
 			credential.ManageRunners = true
 		default:
@@ -62,9 +64,31 @@ func (s *Service) hostedAllUsageGrants(ctx context.Context, credential apiCreden
 }
 
 func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
-	var projects, granted int
-	err := s.database.db.QueryRowContext(ctx, `SELECT count(*), COALESCE(sum(EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.project_id = p.id AND g.user_id = ? AND g.manage_runner = 1)),0) FROM projects p WHERE p.organization_id = ?`, credential.Hosted.Subject, s.config.Hosted.OrganizationID).Scan(&projects, &granted)
-	return err == nil && projects > 0 && projects == granted
+	return s.requireHostedRunnerAdministration(ctx, s.database.db, credential) == nil
+}
+
+func (s *Service) requireHostedRunnerAdministration(ctx context.Context, query nativeQueryer, credential apiCredential) error {
+	if credential.Hosted == nil || credential.HostedRole != "owner" && credential.HostedRole != "admin" && credential.HostedRole != "member" {
+		return operatortool.ErrAccessDenied
+	}
+	if credential.HostedRole == "owner" || credential.HostedRole == "admin" {
+		return nil
+	}
+	var project, name string
+	err := query.QueryRowContext(ctx, `SELECT p.id,p.name FROM projects p WHERE p.organization_id=? AND NOT EXISTS
+(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=p.organization_id AND g.project_id=p.id AND g.user_id=? AND g.manage_runner=1)
+ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&project, &name)
+	if err == nil {
+		return fmt.Errorf("%w: project %q (%s) lacks a manage_runner grant", operatortool.ErrAccessDenied, name, project)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return operatortool.ErrAccessDenied
+	}
+	var exists bool
+	if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=?)", s.config.Hosted.OrganizationID).Scan(&exists); err != nil || !exists {
+		return operatortool.ErrAccessDenied
+	}
+	return nil
 }
 
 func (s *Service) inviteHostedMember(c echo.Context) error {
@@ -311,11 +335,7 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 			return "", err
 		}
 	}
-	manageRunner := credential.HostedRole == "owner" || credential.HostedRole == "admin"
-	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,?,?,1,?)", credential.Hosted.Subject, s.config.Hosted.OrganizationID, project, manageRunner); err != nil {
-		return "", err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,?,?)", credential.ID, s.config.Hosted.OrganizationID, project); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,?,?) ON CONFLICT DO NOTHING", credential.ID, s.config.Hosted.OrganizationID, project); err != nil {
 		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner)

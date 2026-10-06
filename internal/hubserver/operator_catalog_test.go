@@ -146,7 +146,8 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 						t.Logf("ListTools part=%s elapsed=%s provider_calls=%d resolutions=%d application_calls=%d tools=%d", part.name, time.Since(start), provider.calls, resolutions, application.calls, len(definitions))
 						if part.name == "combined" || part.name == "combined with services" {
 							hasRunnerTool := slices.ContainsFunc(definitions, func(d operatortool.Definition) bool { return d.Name == operatortool.UpdateRunnerCapacity })
-							if hasRunnerTool != test.runners {
+							wantRunners := test.runners || (test.role == "owner" || test.role == "admin") && (test.scope == "" || test.scope == apikey.ScopeAdmin)
+							if hasRunnerTool != wantRunners {
 								t.Fatalf("runner tool visibility=%v, grants=%v", hasRunnerTool, test.runners)
 							}
 							projectTools := []string{operatortool.FileIssue, operatortool.EditItem, operatortool.CreateChange, "save_onboarding"}

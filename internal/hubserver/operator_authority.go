@@ -188,10 +188,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 				return operatortool.ErrAccessDenied
 			}
 			if credential.Hosted != nil {
-				if credential.HostedRole == "viewer" || !s.hostedAllRunnerGrants(ctx, credential) {
-					return operatortool.ErrAccessDenied
-				}
-				return nil
+				return s.requireHostedRunnerAdministration(ctx, s.database.db, credential)
 			}
 			if credential.Scope != apiScopeAdmin {
 				return operatortool.ErrAccessDenied

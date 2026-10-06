@@ -169,12 +169,6 @@ func (s *Service) coordinatorSpriteScope(ctx context.Context, project string, ma
 }
 
 func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope nativeScope, settings spritePoolSettings) error {
-	if scope.credential.Hosted != nil {
-		var granted bool
-		if err := s.database.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM hosted_project_grants WHERE user_id=? AND organization_id=? AND project_id=? AND can_write=1 AND manage_runner=1)`, scope.credential.Hosted.Subject, scope.organization, scope.project).Scan(&granted); err != nil || !granted {
-			return operatortool.ErrAccessDenied
-		}
-	}
 	if err := validateSpritePoolSettings(&settings); err != nil {
 		return err
 	}
