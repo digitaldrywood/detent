@@ -214,7 +214,7 @@ test("suggestions create independent threads and Ask reopens the latest", async 
   await panel(page)
     .getByRole("button", { name: "New question", exact: true })
     .click();
-  await expect(panel(page).getByRole("button", { name: "Summarize the history", exact: true })).toHaveCount(0);
+  await expect(panel(page).getByRole("button", { name: "Summarize the history", exact: true })).toBeVisible();
   await panel(page).getByRole("textbox", { name: "Ask message", exact: true }).fill("What is left before it can start?");
   await page.keyboard.press("Enter");
   await expect(panel(page).getByText(/lane history records/)).toBeVisible();
