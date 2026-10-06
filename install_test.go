@@ -501,6 +501,7 @@ func TestInstallScriptBuildsPreparedSourceWhenReleaseAssetMissing(t *testing.T) 
 		"detent_1.2.3_source/static/app/conversation/app.css":                  "prepared-style",
 		"detent_1.2.3_source/static/app/conversation/chunks/lazy.js":           "prepared-lazy",
 		"detent_1.2.3_source/static/app/conversation/THIRD_PARTY_LICENSES.txt": "prepared-license",
+		"detent_1.2.3_source/static/css/output.css":                            "prepared-dashboard-style",
 	})
 	tmp := t.TempDir()
 	releaseDir := filepath.Join(tmp, "release")
@@ -535,6 +536,7 @@ set -eu
 [ "$(cat static/app/conversation/app.css)" = prepared-style ]
 [ "$(cat static/app/conversation/chunks/lazy.js)" = prepared-lazy ]
 [ "$(cat static/app/conversation/THIRD_PARTY_LICENSES.txt)" = prepared-license ]
+[ "$(cat static/css/output.css)" = prepared-dashboard-style ]
 cat > "$5" <<'EOF'
 #!/usr/bin/env sh
 printf 'prepared-source-ok\n'

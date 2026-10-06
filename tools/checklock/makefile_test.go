@@ -99,7 +99,7 @@ func TestMakeCheckFastOverlapsWorktrees(t *testing.T) {
 set -eu
 case "$*" in
   'build ./...') exec "$DETENT_MAKE_TEST_BINARY" -test.run='^TestMakeCheckFastBuildHelper$' ;;
-  'run ./tools/invariantcheck'|'run ./tools/migrationcheck'|'run ./internal/config/cmd/configdoc -root . -check') exit 0 ;;
+  'run ./tools/invariantcheck'|'run ./tools/migrationcheck'|'run ./internal/config/cmd/configdoc -root .') exit 0 ;;
   'run github.com/sqlc-dev/sqlc/cmd/sqlc@'*' diff -f sqlc/sqlc.yaml') exit 0 ;;
   *) echo "unexpected gate command: $*" >&2; exit 99 ;;
 esac
@@ -231,16 +231,16 @@ func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
 	}
 	tests := []struct {
 		name      string
-		stale     bool
+		broken    string
 		invalid   bool
 		wantTrace string
 		wantError bool
 		staleSQL  bool
 	}{
-		{"stale SQL", false, false, "invariants\nmigrations\nsqlc\n", true, true},
-		{"stale generated sources", true, false, "invariants\nmigrations\nsqlc\ngenerated\n", true, false},
-		{"unchanged inputs", false, false, "invariants\nmigrations\nsqlc\ngenerated\n", false, false},
-		{"invariant failure", false, true, "invariants\n", true, false},
+		{"stale SQL", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\n", true, true},
+		{"broken config generator", "configdoc", false, "invariants\nmigrations\nconfigdoc\n", true, false},
+		{"generation succeeds", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\n", false, false},
+		{"invariant failure", "", true, "invariants\n", true, false},
 	}
 	for _, target := range []string{"check", "check-fast"} {
 		for _, tt := range tests {
@@ -255,12 +255,9 @@ func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
 				write("Makefile", string(makefile), 0o600)
 				write(".golangci-version", "test", 0o600)
 				write("go.mod", "module fixture\n", 0o600)
-				write("input", "current", 0o600)
-				document := "current"
-				if tt.stale {
-					document = "stale"
+				if tt.broken != "" {
+					write("broken-"+tt.broken, "", 0o600)
 				}
-				write("reference", document, 0o600)
 				if tt.staleSQL {
 					write("stale-sql", "", 0o600)
 				}
@@ -282,9 +279,9 @@ case "$*" in
     echo sqlc >> trace
     test ! -f stale-sql
     ;;
-  'run ./internal/config/cmd/configdoc -root . -check')
-    echo generated >> trace
-    cmp input reference
+  'run ./internal/config/cmd/configdoc -root .')
+    echo configdoc >> trace
+    test ! -f broken-configdoc
     ;;
   'build ./...')
     echo build >> trace

@@ -74,8 +74,7 @@ dev:
 	@ls -t tmp/air-combined-*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
 	@ENV=dev LOG_LEVEL=debug DETENT_AIR_VERSION=$(DEV_VERSION) air 2>&1 | tee tmp/air-combined.log
 
-generate:
-	@$(MAKE) app
+generate: assets
 	@go generate ./...
 	@if [ -n "$$(git ls-files --others --exclude-standard -- '*.templ'; git ls-files -- '*.templ')" ]; then \
 		$(TEMPL) generate; \
@@ -83,14 +82,18 @@ generate:
 		echo "No templ files found; skipping templ generate."; \
 	fi
 	@$(MAKE) sqlc
-	@$(MAKE) css
+
+.PHONY: assets generate-docs
+assets: app css
+
+generate-docs:
+	go run ./internal/config/cmd/configdoc -root .
 
 check-migrations:
 	go run ./tools/migrationcheck
 
-check-generated:
+check-generated: generate-docs
 	$(SQLC) diff -f "$(SQLC_CONFIG)"
-	go run ./internal/config/cmd/configdoc -root . -check
 
 css:
 	@if [ -f "$(TAILWIND_INPUT)" ]; then \
@@ -149,11 +152,11 @@ css-watch:
 		echo "No Tailwind input at $(TAILWIND_INPUT); skipping CSS watch."; \
 	fi
 
-build: generate
+build: assets generate-docs
 	@mkdir -p tmp
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) $(CMD_PACKAGE)
 
-test:
+test: generate-docs
 	bash scripts/test-workspace.sh
 	@packages="$$(go list ./...)" && \
 	packages="$$(printf '%s\n' "$$packages" | awk '$$0 != "github.com/digitaldrywood/detent/internal/workspace" && $$0 != "github.com/digitaldrywood/detent/internal/web"')" && \
@@ -161,7 +164,7 @@ test:
 	# Measure the 500ms request budget without competing package tests or builds.
 	$(GO_TEST) ./internal/web
 
-test-fast:
+test-fast: generate-docs
 	$(GO_TEST) -short ./internal/config/... ./internal/gate/... ./internal/invariants/... ./internal/issueorigin/... ./internal/release/... ./internal/releaseprovenance/... ./tools/...
 
 test-race: test-race-hub test-race-orchestrator
@@ -313,6 +316,8 @@ help:
 	@echo "Available targets:"
 	@echo "  dev          Run Air with dev logging and combined log rotation"
 	@echo "  generate     Run go generate, templ, sqlc, Tailwind, and the conversation client"
+	@echo "  generate-docs  Generate config references"
+	@echo "  assets       Build dashboard CSS and the conversation client"
 	@echo "  css          Build Tailwind CSS"
 	@echo "  css-watch    Watch and rebuild Tailwind CSS"
 	@echo "  app          Build the conversation client into static/app/conversation"

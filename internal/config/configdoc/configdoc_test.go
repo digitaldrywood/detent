@@ -1,6 +1,7 @@
 package configdoc
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -140,6 +141,11 @@ func TestConfigDocumentation(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(root, "docs"), 0o755); err != nil {
 			t.Fatal(err)
 		}
+		template := []byte("prose\n" + beginMarker + "\n" + endMarker + "\n")
+		templatePath := filepath.Join(root, "docs", "config.md.in")
+		if err := os.WriteFile(templatePath, template, 0o644); err != nil {
+			t.Fatal(err)
+		}
 		tests := []struct {
 			name string
 			path string
@@ -188,12 +194,17 @@ func TestConfigDocumentation(t *testing.T) {
 		if err := generateArtifacts(root, true, fields, nodes); err != nil {
 			t.Fatal(err)
 		}
-	})
-
-	t.Run("generated artifacts are current", func(t *testing.T) {
-		root := filepath.Clean(filepath.Join("..", "..", ".."))
-		if err := Generate(root, true); err != nil {
-			t.Fatalf("Generate(check) error = %v", err)
+		for _, test := range tests {
+			if err := os.Remove(test.path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := generateArtifacts(root, false, fields, nodes); err != nil {
+			t.Fatalf("generate from authored inputs alone: %v", err)
+		}
+		content, err := os.ReadFile(templatePath)
+		if err != nil || !bytes.Equal(content, template) {
+			t.Fatalf("authored input changed: %v", err)
 		}
 	})
 }

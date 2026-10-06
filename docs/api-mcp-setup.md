@@ -109,8 +109,8 @@ its own public HTTPS origin and deployment mount. Keep the complete shared
 `/organizations/ORG` mount. Do not use another organization's endpoint, a project
 page, `/sse`, or an invented `/api/v1/state` or OpenAPI route. Endpoint discovery
 and request payloads are documented in [Hub API](hub-api.md), especially Native
-collaboration and Changes. [Capability coverage](mcp-capabilities.md) retains
-#3259 as the separate parity tracker.
+collaboration and Changes. [Operator capabilities](mcp-capabilities.md) documents the real catalog and
+deployment availability.
 
 ## Direct API agent handoff
 

@@ -5,4 +5,3 @@
 *.sh text eol=lf
 *_templ.go -merge
 internal/store/sqlc/*.go -merge
-static/css/output.css -merge

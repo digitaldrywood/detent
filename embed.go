@@ -7,7 +7,7 @@ import (
 
 const operatorSkillPath = "internal/operatorskill/detent-operator-introspection/SKILL.md"
 
-//go:embed static/** static/app/conversation/app.js internal/operatorskill/detent-operator-introspection/SKILL.md
+//go:embed static/** internal/operatorskill/detent-operator-introspection/SKILL.md
 var embeddedFiles embed.FS
 
 func StaticFS() fs.FS {

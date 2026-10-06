@@ -280,7 +280,7 @@ install_local() {
 		ldflags="$(cat "$dir/BUILD_LDFLAGS")"
 	else
 		command -v make >/dev/null 2>&1 || abort "Building a source checkout requires make and Node; Go-only builds use the prepared release source archive"
-		(cd "$dir" && make app)
+		(cd "$dir" && make assets)
 		build_version="$(git -C "$dir" describe --tags --always 2>/dev/null || echo dev)"
 		build_commit="$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo none)"
 		build_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

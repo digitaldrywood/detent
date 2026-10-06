@@ -5,7 +5,7 @@ dist: tmp/goreleaser
 before:
   hooks:
     - go mod download
-    - make app
+    - make assets generate-docs
     - make source-metadata VERSION={{ .Version }} COMMIT={{ .FullCommit }} DATE={{ .Date }}
 
 builds:
@@ -32,6 +32,9 @@ source:
   prefix_template: "{{ .ProjectName }}_{{ .Version }}_source/"
   files:
     - static/app/conversation
+    - static/css/output.css
+    - docs/config.md
+    - config.reference.yaml
     - src: tmp/source-metadata/BUILD_LDFLAGS
       dst: .
       strip_parent: true
