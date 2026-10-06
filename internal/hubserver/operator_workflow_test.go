@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"reflect"
 	"strings"
@@ -219,7 +220,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						workflow.Prompt += "Updated policy.\n"
+						workflow.DefinitionSources.Workflow = []byte(string(workflow.DefinitionSources.Workflow) + "Updated policy.\n")
 						updated, err := workflowconfig.ResolvePolicy(workflow)
 						if err != nil {
 							t.Fatal(err)
@@ -227,9 +228,10 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 						invalidIdentity := updated
 						invalidIdentity.ID = descriptor.ID
 						invalidConfiguration := updated
-						configuration := *updated.Configuration
-						configuration.Prompt += "unapproved-private-prompt"
-						invalidConfiguration.Configuration = &configuration
+						authored := *updated.Authored
+						authored.Files = maps.Clone(authored.Files)
+						authored.Files["WORKFLOW.md"] += "unapproved-private-prompt"
+						invalidConfiguration.Authored = &authored
 						invalidConfiguration = invalidConfiguration.WithID()
 						for _, refusal := range []struct {
 							name, code, message string

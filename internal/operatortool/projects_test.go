@@ -29,6 +29,7 @@ func TestProjectArgumentBounds(t *testing.T) {
 		{"negative issue", `{"input":{"issue_number":-1}}`, func() any { return &ProjectRequest[ImportStartInput]{} }, true},
 		{"too many states", `{"input":{"states":[` + strings.TrimSuffix(strings.Repeat(`{},`, 201), ",") + `]}}`, func() any { return &ProjectRequest[ProjectCreateInput]{} }, true},
 		{"too many intake numbers", `{"input":{"numbers":[` + strings.TrimSuffix(strings.Repeat(`1,`, 201), ",") + `]}}`, func() any { return &ProjectRequest[GitHubBatchInput]{} }, true},
+		{"null authored file", `{"input":{"policy":{"authored":{"files":{"AGENTS.md":null}}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, true},
 		{"behavior object", `{"input":{"policy":{"configuration":{"behavior":{"Budget":{"PerIssueMaxUSD":0.25},"ActiveStates":null,"AllowLocalBinding":null},"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
 		{"behavior array", `{"input":{"policy":{"configuration":{"behavior":[{"enabled":true},null,0.25],"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
 		{"behavior string", `{"input":{"policy":{"configuration":{"behavior":"` + strings.Repeat("x", 257) + `","prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},

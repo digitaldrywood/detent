@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -58,6 +59,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				u := f.user(t, "luna-owner", "owner", "luna@example.test", "write", "")
 				if coordinatorSpriteMutation(tool) {
 					f.grant(t, u, true, outcome != "no runner grant")
+					if _, err := f.service.database.approvePolicy(t.Context(), "org_security/"+string(f.project), "test", policy.Change{Policy: hubTestPolicy()}); err != nil {
+						t.Fatal(err)
+					}
 				}
 				if outcome == "number resolution" {
 					seedArchiveIssues(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}, 18, "Todo")
