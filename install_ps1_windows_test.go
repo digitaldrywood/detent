@@ -21,6 +21,10 @@ import (
 const powerShellInstallTimeout = 2 * time.Minute
 
 func TestPowerShellInstallScriptInstallsReleaseArchive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()
@@ -72,6 +76,10 @@ func TestPowerShellInstallScriptInstallsReleaseArchive(t *testing.T) {
 }
 
 func TestPowerShellInstallScriptMapsX86ProcessToOSArchitecture(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	root, err := os.Getwd()

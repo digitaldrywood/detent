@@ -61,6 +61,10 @@ func TestSandboxCapabilityChild(t *testing.T) {
 }
 
 func TestConfigureSandboxCapabilities(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	parent := sandboxCapabilityState(t)
 	var ordinary map[string]string
 	for _, tier := range []string{"", isolation.NativeTrusted, isolation.Sandbox} {

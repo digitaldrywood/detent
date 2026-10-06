@@ -17,6 +17,10 @@ import (
 )
 
 func TestChangeReviewWebAuthorizationAndBinding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	version := tracker.ChangeVersion{ID: "version_example", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), RunID: "run_example", AttemptID: "attempt_example", Code: tracker.ChangeArtifact{SHA256: strings.Repeat("b", 64)}}}
 	ref := artifact.Reference{Scope: artifact.Scope{RunID: version.RunID, AttemptID: version.AttemptID, VersionID: version.ID}, ArtifactID: artifact.NewID("artifact"), Revision: 1, Kind: "diff", State: "complete", SHA256: version.Code.SHA256, Availability: "available", ExpiresAt: time.Now().Add(time.Hour)}

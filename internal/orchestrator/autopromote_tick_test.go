@@ -388,6 +388,10 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 }
 
 func TestTickAutoPromoteHumanReviewIssuesConflictParks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		reason    string
@@ -696,6 +700,10 @@ func TestAutoPromoteConfiguredInProgressSourcePromotesReadyPullRequest(t *testin
 }
 
 func TestTickAutoPromoteCompletedActiveIssues(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)
@@ -1483,6 +1491,10 @@ func successfulReworkGateWaitAttempt(
 }
 
 func TestTickAutoPromotesCompletedGateWaitWhileDispatchRunning(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := t.Context()
@@ -3252,6 +3264,10 @@ func TestTickAutoPromoteStartsValidatorBeforeAutomatedReview(t *testing.T) {
 }
 
 func TestTickAutoPromoteValidatorUnavailableRoutesRework(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := t.Context()
@@ -3300,6 +3316,10 @@ func TestTickAutoPromoteValidatorUnavailableRoutesRework(t *testing.T) {
 }
 
 func TestValidatorVerdictRejectsDifferentPRProvenance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	issue := connector.Issue{ID: "issue-docs", Identifier: "digitaldrywood/pyroapex-mobile#153",
 		PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base-docs", HeadSHA: "head-docs"}}
@@ -3339,6 +3359,10 @@ func TestValidatorVerdictRejectsDifferentPRProvenance(t *testing.T) {
 }
 
 func TestValidatorFailedMemoRejectsDifferentPRProvenance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	issue := connector.Issue{ID: "issue-failed-memo", Identifier: "digitaldrywood/detent#153",
 		PullRequest: &connector.PullRequest{Number: 155, BaseSHA: "base-docs", HeadSHA: "head-docs"}}
@@ -3397,6 +3421,10 @@ func TestValidatorProvenanceFailureStaysRetryable(t *testing.T) {
 }
 
 func TestValidatorDiffFetchFailureUsesInstancePath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name      string
@@ -3456,6 +3484,10 @@ func TestValidatorDiffFetchFailureUsesInstancePath(t *testing.T) {
 }
 
 func TestValidatorRetryDeadlineSurvivesReloadWithOneMaxAttempt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	issue := connector.Issue{ID: "issue-retry-reload", Identifier: "digitaldrywood/detent#3150",
 		PullRequest: &connector.PullRequest{Number: 3151, BaseSHA: "base", HeadSHA: "head"}}
@@ -3507,6 +3539,10 @@ func (c *validatorDiffFailureConnector) PullRequestValidationDiff(context.Contex
 }
 
 func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -3593,6 +3629,10 @@ func TestTickAutoPromoteUsesPersistedValidatorVerdictAfterRestart(t *testing.T) 
 }
 
 func TestTickAutoPromoteValidatorVerdictHeadSHAInvalidatesMemo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -3705,6 +3745,10 @@ func TestTickAutoPromoteValidatorFailureBackoff(t *testing.T) {
 }
 
 func TestTickAutoPromoteValidatorFailureExhaustionRoutesRework(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := t.Context()
@@ -6088,6 +6132,10 @@ func TestHandleRunResultRetriesMergeWorkerWhenRunCompletesWithoutTerminalState(t
 }
 
 func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	// Replays #3445/#3465's recorded worker completion and actual integration,
@@ -7252,6 +7300,10 @@ func (c *autoPromoteTickConnector) SetField(_ context.Context, issueID string, f
 }
 
 func TestTickAutoPromoteLoadsValidatorVerdictAfterWorkpadHydration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := t.Context()

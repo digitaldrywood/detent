@@ -124,6 +124,10 @@ func TestCompletionRebaseProgress(t *testing.T) {
 }
 
 func TestUnfinishedSessionsRetainConfiguredDispatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, lane := range []string{"In Progress", "Rework"} {
 		t.Run(lane, func(t *testing.T) {
@@ -235,6 +239,10 @@ func TestCompletionDiffFingerprint(t *testing.T) {
 }
 
 func TestCompletionRebaseAfterRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name, lane, mode, status, mergeAfter string

@@ -109,6 +109,10 @@ func TestEfficiencyReportRangeUsesInclusiveToDate(t *testing.T) {
 
 // Replays the September 30 audit: 42 verified receipts, only 13 visible Done cards.
 func TestDailyDigestDurableShippedCohort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	ctx := context.Background()
 	location, err := time.LoadLocation("America/Chicago")

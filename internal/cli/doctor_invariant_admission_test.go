@@ -14,6 +14,10 @@ import (
 )
 
 func TestDoctorInvariantAdmission(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	human := `{"provenance":{"origin":"human","initiator":"human","actor":{"login":"operator","kind":"User"}}}`
@@ -147,6 +151,10 @@ func TestDoctorInvariantScopeClassification(t *testing.T) {
 }
 
 func TestDoctorInvariantAdmissionRepeatedEntries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	path := doctorInvariantFixtureDB(t,
@@ -176,6 +184,10 @@ func TestDoctorInvariantAdmissionRepeatedEntries(t *testing.T) {
 }
 
 func TestDoctorInvariantAdmissionUnavailableEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name, kind         string
@@ -234,6 +246,10 @@ func (r doctorAdmissionBatchReader) FetchIssueStatesByIDs(_ context.Context, ids
 }
 
 func TestDoctorInvariantAdmissionBatches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name   string

@@ -21,6 +21,10 @@ import (
 )
 
 func TestCompletionFenceDeferralOutcomes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -108,6 +112,10 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 }
 
 func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -568,6 +576,10 @@ func TestCompletionFenceUnchangedOrUnknownLaneDefers(t *testing.T) {
 }
 
 func TestCompletionFenceRateLimitDeadlineSurvivesRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name  string

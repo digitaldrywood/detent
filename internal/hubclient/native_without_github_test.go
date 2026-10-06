@@ -37,6 +37,10 @@ func (a *environmentRecordingAgent) RunTurn(ctx context.Context, request runner.
 }
 
 func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	isolateNativeChangeGit(t)
 	bin := t.TempDir()
 	ghLog := filepath.Join(t.TempDir(), "gh.log")

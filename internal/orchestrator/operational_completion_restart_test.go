@@ -17,6 +17,10 @@ import (
 // Replays #3058's body publication before attempt 7018 ended, then the
 // 14:14:11Z restart. A completed delivery must not need worker capacity again.
 func TestOperationalBodyCompletionSurvivesRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	finished := time.Date(2026, 9, 30, 13, 59, 24, 0, time.UTC)
 	published := finished.Add(-27 * time.Second)

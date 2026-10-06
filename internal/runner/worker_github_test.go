@@ -32,6 +32,10 @@ import (
 )
 
 func TestNewWorkerGitHubPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -626,6 +630,10 @@ func TestWorkerGitHubCredentialPrincipalClassification(t *testing.T) {
 }
 
 func TestRunnerWorkerGitHubBudgetRecoveryOwnership(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	var identityReads, budgetReads atomic.Int64
 	var actor atomic.Int64
@@ -1066,6 +1074,10 @@ func (b *workerGitHubCaptureBackend) RunTurn(_ context.Context, request AgentTur
 }
 
 func TestWorkerGitHubFilteredEnvironment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 	gh, err := exec.LookPath("gh")
 	if err != nil {
@@ -1091,6 +1103,10 @@ func TestWorkerGitHubFilteredEnvironment(t *testing.T) {
 }
 
 func TestWorkerGitHubCLIAuthStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if runtime.GOOS == "windows" {
 		t.Skip("local HTTP fixture requires Unix sockets")
 	}
@@ -1141,6 +1157,10 @@ func TestWorkerGitHubCLIAuthStatus(t *testing.T) {
 }
 
 func TestWorkerGitHubCLIAuthenticationPreflight(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	// Keep real gh startup outside the parallel helper-process fixtures. The
 	// production probe deadline still applies, including on hosted Windows.
 	if _, err := exec.LookPath("gh"); err != nil {
@@ -1192,6 +1212,10 @@ func TestWorkerGitHubCLIAuthenticationPreflight(t *testing.T) {
 }
 
 func TestWorkerGitHubClassificationSecondaryCooldown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {

@@ -38,6 +38,10 @@ func TestHTTPSRemoteURL(t *testing.T) {
 }
 
 func TestRepositoryURLReadsTheConfiguredRemote(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	source := initSourceRepo(t)
 	remote := initBareRemote(t)

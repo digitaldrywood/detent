@@ -205,6 +205,10 @@ func TestSyncLatestGlobalConfigReconcilesMissedWatchEvent(t *testing.T) {
 }
 
 func TestGlobalConfigReloaderConvergesWhenFileChangesDuringReconciliation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("disk configuration reconciliation with wall-clock deadlines")
+	}
+
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "global.yaml")

@@ -17,6 +17,10 @@ import (
 )
 
 func TestRunReportHTMLWritesSelfContainedPage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	median := 3600.0
 	recorded := operations.Report{

@@ -11,6 +11,10 @@ import (
 )
 
 func TestArtifactMaintenanceCommands(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog maintenance integration")
+	}
+
 	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 	for _, operation := range []string{"usage", "backup", "invalid config", "public listener"} {
 		t.Run(operation, func(t *testing.T) {

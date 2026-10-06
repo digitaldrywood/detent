@@ -62,6 +62,10 @@ func TestValidationOwnerActivity(t *testing.T) {
 }
 
 func TestValidationLongHeldOwner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name            string

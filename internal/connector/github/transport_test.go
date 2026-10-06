@@ -16,6 +16,10 @@ import (
 )
 
 func TestPooledHTTPClientReusesSequentialConnections(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -84,6 +88,10 @@ func TestPooledHTTPClientReusesSequentialConnections(t *testing.T) {
 }
 
 func TestConnectorUsesOnePooledClientForGitHubAppAndGraphQL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)

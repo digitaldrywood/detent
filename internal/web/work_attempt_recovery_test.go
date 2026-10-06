@@ -16,6 +16,10 @@ import (
 )
 
 func TestWorkAttemptReceiptAPI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 
 	recovery := &fakeWorkAttemptRecovery{
@@ -54,6 +58,10 @@ func TestWorkAttemptReceiptAPI(t *testing.T) {
 }
 
 func TestWorkAttemptReceiptHTMXAllowsDashboardUICookie(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 
 	recovery := &fakeWorkAttemptRecovery{

@@ -26,6 +26,10 @@ import (
 // requireSessionPTY skips a terminal test on a build with no pseudo-terminal.
 func requireSessionPTY(t *testing.T) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("real pseudo-terminal and relay integration")
+	}
+
 	if !workspaceterminal.Supported {
 		t.Skip("this platform has no pseudo-terminal")
 	}
@@ -127,6 +131,10 @@ func TestSessionServesTheTerminalChannel(t *testing.T) {
 }
 
 func TestSessionTerminalReportsTheCapability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	requireSessionPTY(t)
 
@@ -231,6 +239,10 @@ func awaitTerminalEnding(t *testing.T, f *sessionFixture) (workspacesession.Term
 }
 
 func TestSessionTerminalCloseEndsTheShell(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	requireSessionPTY(t)
 
@@ -410,6 +422,10 @@ func errorCode(t *testing.T, frame workspacesession.Frame) string {
 // while the shell is producing output and expects that output, and output
 // produced after the redial, to arrive on the new socket.
 func TestSessionTerminalOutputSurvivesARelayRedial(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	requireSessionPTY(t)
 

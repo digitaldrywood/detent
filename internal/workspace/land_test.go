@@ -86,6 +86,10 @@ func (f landingFixture) absorb(t *testing.T) {
 }
 
 func TestLocalGitCreateReviewedLanding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
@@ -351,6 +355,10 @@ func preserveLandingOwner(t *testing.T, path string) func() {
 }
 
 func TestLocalGitLandChangeMethods(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name        string
@@ -403,6 +411,10 @@ func TestLocalGitLandChangeMethods(t *testing.T) {
 }
 
 func TestLocalGitLandChangeRefusals(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		integration bool
@@ -539,6 +551,10 @@ func TestClassifyLandingPush(t *testing.T) {
 }
 
 func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	f := newLandingFixture(t)
 	first, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash", Message: "Land the feature"})

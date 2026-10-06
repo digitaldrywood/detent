@@ -569,6 +569,10 @@ func enrollAppRunner(t *testing.T, f *browserHostedFixture, name string, version
 }
 
 func TestAppBootstrapWorkspaceAvailability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, test := range []struct {
 		name                         string
 		service, terminal            bool

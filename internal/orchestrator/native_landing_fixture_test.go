@@ -48,6 +48,9 @@ func nativeLandingGit(t *testing.T, ctx context.Context, dir string, args ...str
 
 func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, mergeStatus int, sourceConflict bool) *nativeLandingJourney {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("real git and native landing integration")
+	}
 	if mergeStatus == 0 {
 		mergeStatus = http.StatusMethodNotAllowed
 	}

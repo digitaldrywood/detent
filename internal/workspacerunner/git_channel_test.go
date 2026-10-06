@@ -112,6 +112,10 @@ func (f *sessionFixture) errorAnswer(t *testing.T) workspacesession.ErrorPayload
 }
 
 func TestSessionServesTheGitChannel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	root := repositoryWorktree(t)
 	f := startSessionWith(t, root, nil, nil)
@@ -169,6 +173,10 @@ func TestSessionServesTheGitChannel(t *testing.T) {
 // claim gate matches on the first; the workspace resource has to carry the
 // second, because the header enables its git group from it.
 func TestSessionReportsGitOnlyForARepository(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	if !workspacerunner.Capabilities(workspacerunner.DefaultSupport()).Git {
 		t.Fatal("the runner serves the git channel in principle")
@@ -218,6 +226,10 @@ func TestSessionReportsGitOnlyForARepository(t *testing.T) {
 // it. Status still answers: a reader who may only read still wants the branch
 // name the header shows.
 func TestSessionRefusesAGitWriteOnAReadOnlyWorkspace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	root := repositoryWorktree(t)
 	f := startSessionWith(t, root, func(checkout *hubclient.WorkspaceCheckout) {
@@ -247,6 +259,10 @@ func TestSessionRefusesAGitWriteOnAReadOnlyWorkspace(t *testing.T) {
 // something stale, and a commit under one writes into a worktree another runner
 // now owns.
 func TestSessionDropsAGitFrameAfterLeaseLoss(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	root := repositoryWorktree(t)
 	expired := time.Now()
@@ -266,6 +282,10 @@ func TestSessionDropsAGitFrameAfterLeaseLoss(t *testing.T) {
 }
 
 func TestSessionRefusesAGitFrameItCannotActOn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	root := repositoryWorktree(t)
 
@@ -339,6 +359,10 @@ func TestSessionRefusesAGitFrameItCannotActOn(t *testing.T) {
 // a refusal. The request was allowed and git said no, and a person acting on
 // that needs what git said rather than a paraphrase of it.
 func TestSessionAnswersAFailedGitCommandWithGitsOwnWords(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	root := repositoryWorktree(t)
 	// A remote that is not there: the push is allowed, reaches git, and fails
@@ -375,6 +399,10 @@ func TestSessionAnswersAFailedGitCommandWithGitsOwnWords(t *testing.T) {
 // binds; heartbeat with the build's answer and the header enables a git group
 // over a worktree that is not a repository.
 func TestGitCapabilityIsClaimedAtBindAndNarrowedByTheHeartbeat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -482,6 +510,10 @@ type gitlessWorktree struct {
 func (w gitlessWorktree) ProvidesGit() bool { return w.git }
 
 func TestSessionAdvertisesGitOnlyWhenTheBackendProvidesIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -512,6 +544,10 @@ func TestSessionAdvertisesGitOnlyWhenTheBackendProvidesIt(t *testing.T) {
 }
 
 func TestGitWorktreeProvidesGitOnlyOverLocalGit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 	gitBackend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: t.TempDir(), SourceRoot: initWorktreeSourceRepo(t)})
 	if err != nil {

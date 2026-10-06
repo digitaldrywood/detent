@@ -15,6 +15,10 @@ import (
 // These regressions catch unreviewed dashboard additions, stale/duplicate decisions,
 // hidden form action variants, and premature parent parity claims.
 func TestDashboardCapabilityCoverage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("repository-wide dashboard source audit")
+	}
+
 	matrix, err := Load()
 	if err != nil {
 		t.Fatal(err)

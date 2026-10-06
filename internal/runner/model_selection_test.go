@@ -200,14 +200,14 @@ func TestAutomaticModelSelectionFailures(t *testing.T) {
 		fallback, failure, rejected bool
 		clearFallbackOrder          bool
 	}{
-		{name: "Astra unavailable", catalog: selectionCatalog()[:1], fallback: true},
-		{name: "Astra retired", catalog: []AgentModel{selectionCatalog()[0], {ID: "gpt-6-astra", Upgrade: "replacement"}}, fallback: true},
+		{name: "Astra unavailable", catalog: selectionCatalog()[1:2], fallback: true},
+		{name: "Astra retired", catalog: []AgentModel{selectionCatalog()[1], {ID: "gpt-6-astra", Upgrade: "replacement"}}, fallback: true},
 		{name: "neither available", failure: true},
 		{name: "catalog unavailable", catalogErr: errors.New("catalog transport details"), fallback: true, fallbackReason: "automatic model selection: model catalog unavailable: catalog transport details"},
 		{name: "catalog unavailable with fail configured", catalogErr: errors.New("catalog transport details"), unavailable: "fail", failure: true, wantErrorDetail: "catalog transport details"},
 		{name: "catalog unavailable with empty fallback order", catalogErr: errors.New("catalog transport details"), clearFallbackOrder: true, failure: true, wantErrorDetail: "catalog transport details"},
 		{name: "catalog unavailable with explicit model", catalogErr: errors.New("catalog transport details"), body: "model: gpt-6-astra", failure: true, wantErrorDetail: "catalog transport details"},
-		{name: "fail configured", catalog: selectionCatalog()[:1], unavailable: "fail", failure: true},
+		{name: "fail configured", catalog: selectionCatalog()[1:2], unavailable: "fail", failure: true},
 		{name: "invalid explicit model", catalog: selectionCatalog(), body: "model: absent", rejected: true},
 		{name: "invalid explicit effort", catalog: selectionCatalog(), body: "effort: absent", rejected: true},
 		{name: "invalid role inherits global effort", catalog: selectionCatalog(), body: "effort: low\ncode:\n  effort: absent", rejected: true},
@@ -557,7 +557,7 @@ func TestEffortCeilingPolicyBoundaries(t *testing.T) {
 		{name: "disabled", mutate: func(p *config.ModelSelection) { p.Enabled = new(false) }, body: "model: gpt-6-astra\neffort: max", want: "max"},
 		{name: "disabled catalog unavailable", mutate: func(p *config.ModelSelection) { p.Enabled = new(false) }, body: "model: gpt-6-astra", catalogErr: errors.New("initialize failed without automatic selection"), wantDetail: "initialize failed without automatic selection", wantError: true, wantNoRejection: true},
 		{name: "excluded backend", kind: config.AgentBackendClaudeCode, body: "model: gpt-6-astra\neffort: xhigh", want: "xhigh"},
-		{name: "fallback stays bounded", catalog: selectionCatalog()[:1], body: "effort: xhigh", want: "medium"},
+		{name: "fallback stays bounded", catalog: selectionCatalog()[1:2], body: "effort: xhigh", want: "medium"},
 		{name: "resume no issue override", resume: true, want: "medium"},
 		{name: "resume role override", resume: true, body: "code:\n  effort: low", want: "low"},
 		{name: "resume unknown effort falls back", resume: true, body: "effort: unknown", want: "medium"},

@@ -18,6 +18,10 @@ import (
 )
 
 func TestRunnerCapacityOwner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	for _, scenario := range []string{"apply and reload", "stale configuration", "concurrent configuration", "concurrent replay", "concurrent machine", "different identity", "different selected path", "different machine", "immutable configuration"} {
 		t.Run(scenario, func(t *testing.T) {
 			concurrent := strings.HasPrefix(scenario, "concurrent ")

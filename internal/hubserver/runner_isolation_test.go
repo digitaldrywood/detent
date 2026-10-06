@@ -59,6 +59,10 @@ func TestRunnerIsolationHeartbeatWithdrawsTier(t *testing.T) {
 }
 
 func TestIsolationMigrationPreservesRecordings(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "migration.db"))
 	if err != nil {
 		t.Fatal(err)

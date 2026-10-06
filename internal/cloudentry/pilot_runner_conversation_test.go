@@ -18,6 +18,10 @@ import (
 )
 
 func TestSharedOriginRunnerConversationBind(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	for _, test := range []struct {
 		name    string
 		billing billing.Provider

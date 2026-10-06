@@ -513,6 +513,10 @@ func csrfFrom(t *testing.T, body string) string {
 }
 
 func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	alice := newBrowser(t, f.service.Handler())
@@ -600,6 +604,10 @@ func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
 }
 
 func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name       string
@@ -695,6 +703,10 @@ func TestSharedEntryLogoutRevokesLocalAndProviderSessions(t *testing.T) {
 }
 
 func TestSharedEntryBoundaries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	f.service.config.Build = buildinfo.Info{Version: "1.2.4", Commit: strings.Repeat("a", 40)}
@@ -742,6 +754,10 @@ func TestSharedEntryBoundaries(t *testing.T) {
 }
 
 func TestSharedEntryLoginTransactions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	alice := newBrowser(t, f.service.Handler())
@@ -806,6 +822,10 @@ func stateOf(t *testing.T, response page) string {
 }
 
 func TestSharedEntryInvitation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name, message           string
@@ -1005,6 +1025,10 @@ func TestConfigRequiresLoopbackListener(t *testing.T) {
 }
 
 func TestSharedEntrySupportAccess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	f := newEntryFixture(t)
 	support := newBrowser(t, f.service.Handler())
@@ -1066,6 +1090,10 @@ func TestSharedEntrySupportAccess(t *testing.T) {
 }
 
 func TestStoreDSN(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct{ path, want, escaped string }{
 		{"/tmp/registry.db", "/tmp/registry.db", "/tmp/registry.db"},

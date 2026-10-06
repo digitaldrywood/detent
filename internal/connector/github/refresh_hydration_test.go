@@ -17,6 +17,10 @@ import (
 )
 
 func TestRefreshHydrationResumes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, edited := range []bool{false, true} {
 		t.Run(fmt.Sprintf("edited=%t", edited), func(t *testing.T) {
 			const stamp = "2026-09-16T20:00:00Z"
@@ -117,6 +121,10 @@ func TestRefreshHydrationResumes(t *testing.T) {
 }
 
 func TestCandidateHydrationShape(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, fetch := range []bool{true, false} {
 		t.Run(fmt.Sprintf("fetch=%t", fetch), func(t *testing.T) {
 			requests := 0
@@ -182,6 +190,10 @@ func TestCandidateHydrationShape(t *testing.T) {
 }
 
 func TestCandidatePRStatusShape(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, count := range []int{1, 20, 41} {
 		t.Run(strconv.Itoa(count), func(t *testing.T) {
 			requests := 0
@@ -221,6 +233,10 @@ func TestCandidatePRStatusShape(t *testing.T) {
 }
 
 func TestRefreshCommentRevisionPagination(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, scenario := range []string{"unchanged", "edited old comment", "missing timestamp", "repeated cursor", "request failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			stamp := "2026-09-16T20:00:00Z"
@@ -296,6 +312,10 @@ func TestRefreshCommentRevisionPagination(t *testing.T) {
 
 // Empty refresh batches are valid for both candidate and observed-state reads.
 func TestRefreshPullRequestsEmpty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, tc := range []struct {
 		name   string
 		issues []connector.Issue
@@ -320,6 +340,10 @@ func TestRefreshPullRequestsEmpty(t *testing.T) {
 }
 
 func TestLabelRefreshSharesFreshSchedulerEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	const repo = "fixture/labels"
 	const stamp = "2026-09-30T20:00:00Z"
 	for _, reader := range []string{"refresh", "ids", "identifiers", "probe", "project-ids", "project-identifiers"} {

@@ -18,6 +18,10 @@ import (
 // The baseline runs the legacy per-issue PR detail path against the same
 // fixture. It is a modeled comparison, not a measurement of an old live build.
 func TestCandidateHourlyWorkload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	for _, workload := range []struct {
 		name                string
 		projects, refreshes int

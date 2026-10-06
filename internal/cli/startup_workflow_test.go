@@ -159,6 +159,10 @@ func TestStartupIsolatesWorkflowLoadFailure(t *testing.T) {
 }
 
 func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("workspace startup and reload integration")
+	}
+
 	t.Parallel()
 
 	for _, tt := range []struct {

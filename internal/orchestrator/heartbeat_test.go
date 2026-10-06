@@ -118,6 +118,10 @@ func TestCompleteTerminalRunningClearsInFlightHeartbeatLease(t *testing.T) {
 }
 
 func TestHeartbeatManagerReportsProcessLivenessWhileRenewingActiveRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	identity := startHeartbeatWorkerProcess(t)
 	exited := startHeartbeatWorkerProcess(t, true)
 
@@ -259,6 +263,10 @@ func TestClaimableChecksLocalWorkerLivenessBeforeReclaim(t *testing.T) {
 }
 
 func TestClaimableChecksPersistedProcessIdentityBeforeReclaim(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	now := time.Now().UTC()
 	identity := startHeartbeatWorkerProcess(t)
 	issue := claimTestIssue("issue-persisted-reclaim-guard")
@@ -331,6 +339,9 @@ func boolCount(value bool) int {
 
 func startHeartbeatWorkerProcess(t *testing.T, exitNormally ...bool) procgroup.Identity {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("worker subprocess lifecycle integration")
+	}
 	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestHeartbeatWorkerProcessHelper$")
 	cmd.Env = append(os.Environ(), "DETENT_HEARTBEAT_PROCESS_HELPER=1")
 	procgroup.Configure(t.Context(), cmd)

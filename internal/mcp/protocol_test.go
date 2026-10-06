@@ -574,9 +574,11 @@ func TestModernHTTPRequestCancellation(t *testing.T) {
 
 // Catch transport-specific authority/schema bypass for application reads.
 func TestProtocolWorkReadParity(t *testing.T) {
+	t.Parallel()
 	for _, transport := range []string{"stdio", "http"} {
 		for _, version := range supportedVersions() {
 			t.Run(transport+"/"+version, func(t *testing.T) {
+				t.Parallel()
 				fixture := newProtocolFixture(t, transport, version)
 				fixture.application.reads = operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{WorkReads: protocolWorkReader{}}))
 				for _, definition := range operatortool.WorkReadCatalog() {

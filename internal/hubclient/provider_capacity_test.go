@@ -39,6 +39,10 @@ var hubDatabasePath = testenv.DatabaseTemplate(func(ctx context.Context, path st
 })
 
 func TestProviderSchedulerEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 	for _, unavailable := range []string{"intake off during admission", "fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "quota reset"} {
 		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })

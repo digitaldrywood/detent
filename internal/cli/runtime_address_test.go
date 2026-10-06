@@ -69,6 +69,10 @@ func TestDashboardUsesHeldListenerAddress(t *testing.T) {
 }
 
 func TestUpdateThroughDiscoveredListener(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, tt := range []struct {
 		name                  string
 		released, nonLoopback bool

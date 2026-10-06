@@ -227,6 +227,10 @@ func TestLaneReportsOnlyAReleaseThatReallyFailed(t *testing.T) {
 }
 
 func TestLaneHoldsAWorkspaceUntilItEnds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	claimer := &scriptedClaimer{
 		claims:   []claimResult{{lease: lease("lease-open")}},
@@ -316,6 +320,10 @@ func (c *countingClaimer) count() int {
 }
 
 func TestLaneIdlesOnAHubWithoutWorkspaceSessions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	tests := []struct {
 		name     string

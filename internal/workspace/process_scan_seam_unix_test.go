@@ -12,6 +12,10 @@ var realProcessScanRoots sync.Map
 
 func useRealProcessScan(t *testing.T, root string) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("real host process scan integration")
+	}
+
 	canonical, err := canonicalExistingPath(root)
 	if err != nil {
 		t.Fatal(err)

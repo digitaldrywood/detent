@@ -27,6 +27,10 @@ func (c *attemptTriageConnector) CreateComment(ctx context.Context, id, body str
 }
 
 func TestAttemptAllowanceTriagePublication(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name                           string
@@ -129,6 +133,10 @@ func (attemptTriageRunner) Run(_ context.Context, req runpkg.RunRequest) (runpkg
 }
 
 func TestDispatchRetainsConfiguredModeAfterPriorSessions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name     string
@@ -214,6 +222,10 @@ func TestDispatchRetainsConfiguredModeAfterPriorSessions(t *testing.T) {
 }
 
 func TestAttemptAllowancePreservesOperatorCompletionLane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, lane := range []string{"Done", "Blocked"} {
 		t.Run(lane, func(t *testing.T) {
@@ -242,6 +254,10 @@ func TestAttemptAllowancePreservesOperatorCompletionLane(t *testing.T) {
 }
 
 func TestAttemptAllowanceTriageInfrastructureFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name    string
@@ -324,6 +340,10 @@ func TestAttemptAllowanceTriageInfrastructureFailure(t *testing.T) {
 }
 
 func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name   string
@@ -362,6 +382,10 @@ func TestAttemptAllowanceTriageFallbackCompletion(t *testing.T) {
 }
 
 func TestAttemptAllowanceLiveHead(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name, ci, mergeable, want, passState            string

@@ -274,6 +274,10 @@ func TestWorkOSOrganizationScopedReauthenticationReusesSession(t *testing.T) {
 }
 
 func TestWorkOSConfiguredIssuer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name    string
@@ -291,8 +295,8 @@ func TestWorkOSConfiguredIssuer(t *testing.T) {
 			fixture := newWorkOSFixture(t)
 			fixture.mode.Store("custom-issuer")
 			provider, err := auth.NewHostedProvider("workos", auth.WorkOSConfig{
-				APIURL: fixture.server.URL, IssuerURL: tt.issuer, ClientID: "client_detent", APIKey: "fixture-secret",
-				RedirectURL: "https://app.example.com/auth/callback", HTTPClient: fixture.server.Client(),
+				APIURL: fixture.apiURL, IssuerURL: tt.issuer, ClientID: "client_detent", APIKey: "fixture-secret",
+				RedirectURL: "https://app.example.com/auth/callback", HTTPClient: fixture.client,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -327,10 +331,10 @@ func TestWorkOSIssuerDefault(t *testing.T) {
 			t.Parallel()
 			fixture := newWorkOSFixture(t)
 			fixture.mode.Store("fixed-issuer")
-			fixture.issuer.Store(tt.tokenIss(fixture.server.URL))
+			fixture.issuer.Store(tt.tokenIss(fixture.apiURL))
 			provider, err := auth.NewHostedProvider("workos", auth.WorkOSConfig{
-				APIURL: fixture.server.URL + tt.apiSuffix, IssuerURL: tt.issuer, ClientID: "client_detent", APIKey: "fixture-secret",
-				RedirectURL: "https://app.example.com/auth/callback", HTTPClient: fixture.server.Client(),
+				APIURL: fixture.apiURL + tt.apiSuffix, IssuerURL: tt.issuer, ClientID: "client_detent", APIKey: "fixture-secret",
+				RedirectURL: "https://app.example.com/auth/callback", HTTPClient: fixture.client,
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -345,7 +349,7 @@ func TestWorkOSIssuerDefault(t *testing.T) {
 			if !errors.Is(err, auth.ErrHostedIdentity) || auth.HostedIdentityReason(err) != tt.wantReason {
 				t.Fatalf("Exchange() error = %v, reason = %q, want %q", err, auth.HostedIdentityReason(err), tt.wantReason)
 			}
-			if _, issuer := auth.HostedIdentityDetails(err); issuer != tt.tokenIss(fixture.server.URL) {
+			if _, issuer := auth.HostedIdentityDetails(err); issuer != tt.tokenIss(fixture.apiURL) {
 				t.Fatalf("token issuer detail = %q", issuer)
 			}
 		})
@@ -424,8 +428,8 @@ func TestWorkOSRequestDebugLogging(t *testing.T) {
 	f := newWorkOSFixture(t)
 	var output bytes.Buffer
 	provider, err := auth.NewHostedProvider("workos", auth.WorkOSConfig{
-		APIURL: f.server.URL, ClientID: "client_detent", APIKey: "fixture-secret",
-		RedirectURL: "https://app.example.com/auth/callback", HTTPClient: f.server.Client(),
+		APIURL: f.apiURL, ClientID: "client_detent", APIKey: "fixture-secret",
+		RedirectURL: "https://app.example.com/auth/callback", HTTPClient: f.client,
 		Logger: slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	if err != nil {
@@ -547,6 +551,10 @@ func TestWorkOSCreationRecoversCommittedProviderWrites(t *testing.T) {
 }
 
 func TestWorkOSInvitationAccountLookup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	t.Parallel()
 	f := newWorkOSFixture(t)
 	p := f.provider(t)
@@ -682,6 +690,10 @@ func (t workosFixtureTransport) RoundTrip(request *http.Request) (*http.Response
 }
 
 func TestWorkOSInvalidArgumentsAndRedirects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	f := newWorkOSFixture(t)
 	p := f.provider(t)
@@ -727,7 +739,8 @@ func TestWorkOSInvalidArgumentsAndRedirects(t *testing.T) {
 
 type workosFixture struct {
 	t          *testing.T
-	server     *httptest.Server
+	apiURL     string
+	client     *http.Client
 	key        *rsa.PrivateKey
 	wrongKey   *rsa.PrivateKey
 	now        time.Time
@@ -740,30 +753,35 @@ type workosFixture struct {
 	sessionOrg *string
 }
 
-func newWorkOSFixture(t *testing.T) *workosFixture {
-	t.Helper()
+var fixtureSigningKeys = sync.OnceValues(func() ([2]*rsa.PrivateKey, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		t.Fatal(err)
+		return [2]*rsa.PrivateKey{}, err
 	}
 	wrongKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	return [2]*rsa.PrivateKey{key, wrongKey}, err
+})
+
+func newWorkOSFixture(t *testing.T) *workosFixture {
+	t.Helper()
+	keys, err := fixtureSigningKeys()
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &workosFixture{t: t, key: key, wrongKey: wrongKey, now: time.Now().UTC().Truncate(time.Second), codes: make(map[string]bool)}
+	f := &workosFixture{t: t, key: keys[0], wrongKey: keys[1], now: time.Now().UTC().Truncate(time.Second), codes: make(map[string]bool)}
 	f.mode.Store("valid")
 	f.redirect.Store("")
 	f.issuer.Store("")
-	f.server = httptest.NewServer(http.HandlerFunc(f.serveHTTP))
-	t.Cleanup(f.server.Close)
+	f.apiURL = "https://workos.test"
+	f.client = &http.Client{Transport: workosFixtureTransport{handler: http.HandlerFunc(f.serveHTTP)}}
 	return f
 }
 
 func (f *workosFixture) provider(t *testing.T) auth.HostedProvider {
 	t.Helper()
 	provider, err := auth.NewHostedProvider("workos", auth.WorkOSConfig{
-		APIURL: f.server.URL, ClientID: "client_detent", APIKey: "fixture-secret",
-		RedirectURL: "https://app.example.com/auth/callback", HTTPClient: f.server.Client(),
+		APIURL: f.apiURL, ClientID: "client_detent", APIKey: "fixture-secret",
+		RedirectURL: "https://app.example.com/auth/callback", HTTPClient: f.client,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -916,7 +934,7 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 		return
 	}
 	claims := map[string]any{
-		"iss": f.server.URL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
+		"iss": f.apiURL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
 		"org_id": "org_customer", "iat": f.now.Unix(), "exp": f.now.Add(10 * time.Minute).Unix(),
 	}
 	user := map[string]any{"id": "user_customer", "email": "Customer@Example.com", "email_verified": true}
@@ -928,9 +946,9 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 	}
 	switch mode {
 	case "issuer-slash":
-		claims["iss"] = f.server.URL + "/user_management/client_detent/"
+		claims["iss"] = f.apiURL + "/user_management/client_detent/"
 	case "legacy-issuer":
-		claims["iss"] = f.server.URL
+		claims["iss"] = f.apiURL
 	case "fixed-issuer":
 		claims["iss"] = f.issuer.Load().(string)
 	case "custom-issuer":

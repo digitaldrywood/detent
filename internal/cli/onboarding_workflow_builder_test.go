@@ -138,6 +138,10 @@ func TestProbeOnboardingRepositoryIgnoresNestedNodeTestScriptForRootGate(t *test
 }
 
 func TestBuildOnboardingWorkflowPreservesArtifactPresetGate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/artifacts.git")
@@ -180,6 +184,10 @@ func TestBuildOnboardingWorkflowPreservesArtifactPresetGate(t *testing.T) {
 }
 
 func TestBuildOnboardingWorkflowWorkerModelFixtures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -240,6 +248,10 @@ func TestBuildOnboardingWorkflowWorkerModelFixtures(t *testing.T) {
 }
 
 func TestBuildOnboardingWorkflowRejectsInvalidWorkerModelAnswers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -297,6 +309,10 @@ func TestBuildOnboardingWorkflowRejectsInvalidWorkerModelAnswers(t *testing.T) {
 }
 
 func TestBuildOnboardingWorkflowSessionContextMultiplierIsOptIn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -350,6 +366,10 @@ func TestBuildOnboardingWorkflowSessionContextMultiplierIsOptIn(t *testing.T) {
 }
 
 func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -485,6 +505,10 @@ func TestBuildOnboardingWorkflowRendersReviewFlowVariants(t *testing.T) {
 }
 
 func TestBuildOnboardingWorkflowRendersIntakeProfiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -591,6 +615,10 @@ func TestBuildOnboardingWorkflowRendersIntakeProfiles(t *testing.T) {
 }
 
 func TestBuildOnboardingWorkflowWritesAgentGuidance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -708,6 +736,10 @@ func TestBuildOnboardingWorkflowWritesAgentGuidance(t *testing.T) {
 }
 
 func TestBuildOnboardingWorkflowRejectsInvalidIntakeProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
@@ -736,6 +768,10 @@ func TestRenderOnboardingWorkflowPromptReplacesCRLFExecutionFlow(t *testing.T) {
 }
 
 func TestBuildOnboardingWorkflowRejectsMalformedAnswers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")
@@ -765,6 +801,10 @@ func TestBuildOnboardingWorkflowRejectsMalformedAnswers(t *testing.T) {
 }
 
 func TestBuildOnboardingWorkflowGeneratesParseablePausedProject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 
 	root := initOnboardingWorkflowBuilderGitRepository(t, "https://github.com/acme/api.git")

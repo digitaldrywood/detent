@@ -8,6 +8,10 @@ import (
 )
 
 func TestValidatorContextStorageRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	cfg := Config{Backend: BackendSQLite, Path: filepath.Join(t.TempDir(), "verdicts.db")}
 	first, err := Open(t.Context(), cfg)
 	if err != nil {

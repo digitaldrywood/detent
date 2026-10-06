@@ -26,6 +26,10 @@ import (
 )
 
 func TestDashboardReadClientStateScoping(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -75,6 +79,10 @@ func TestDashboardReadClientStateScoping(t *testing.T) {
 }
 
 func TestDashboardReadClientStateBoundsEveryCollection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	payload := stateFixture()
@@ -124,6 +132,10 @@ func TestDashboardReadClientStateBoundsEveryCollection(t *testing.T) {
 }
 
 func TestDashboardReadClientStateProblemsMatchExplain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -224,6 +236,10 @@ func TestDashboardReadClientStateProblemsMatchExplain(t *testing.T) {
 }
 
 func TestStateCommandOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {

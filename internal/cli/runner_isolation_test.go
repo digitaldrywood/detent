@@ -65,6 +65,10 @@ func TestProbeBackendRejectsUnsupportedCommand(t *testing.T) {
 }
 
 func TestBackendProbeReapsDescendantPipes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess cancellation integration")
+	}
+
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 	started := time.Now()
@@ -79,6 +83,10 @@ func TestBackendProbeReapsDescendantPipes(t *testing.T) {
 }
 
 func TestBackendProbeReapsChildrenAfterParentExits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if runtime.GOOS == "windows" {
 		t.Skip("requires Unix process groups")
 	}

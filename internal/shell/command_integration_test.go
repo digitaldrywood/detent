@@ -26,6 +26,10 @@ func TestShellArgumentProcess(t *testing.T) {
 }
 
 func TestCommandWithArgsExecution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real shell process integration")
+	}
+
 	t.Parallel()
 
 	executable, err := os.Executable()

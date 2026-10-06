@@ -580,6 +580,10 @@ func TestProbeDoctorShipSkillChecksEnablementCacheAndVersion(t *testing.T) {
 }
 
 func TestCheckDoctorWorkflowRuntimeLintFindsWaitDeadlockAndCeilingDeaths(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
@@ -642,6 +646,10 @@ func TestCheckDoctorWorkflowRuntimeLintFindsWaitDeadlockAndCeilingDeaths(t *test
 }
 
 func TestDoctorWaitStatusIncidentsPreservesContinuousWaitSemantics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 8, 18, 14, 0, 0, 0, time.UTC)
@@ -739,6 +747,10 @@ func TestDoctorWaitStatusIncidentsPreservesContinuousWaitSemantics(t *testing.T)
 }
 
 func TestDoctorWaitStatusIncidentsQueryUsesBoundedPlan(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	db := openDoctorWorkflowLintDB(t)
@@ -779,6 +791,10 @@ func TestDoctorWaitStatusIncidentsQueryUsesBoundedPlan(t *testing.T) {
 }
 
 func TestCheckDoctorWorkflowRuntimeLintCleanHistoryIsQuiet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
@@ -814,6 +830,10 @@ func TestCheckDoctorWorkflowRuntimeLintCleanHistoryIsQuiet(t *testing.T) {
 }
 
 func TestCheckDoctorWorkflowRuntimeLintTracksWaitIncidentAcrossLaneChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)
@@ -850,6 +870,10 @@ func TestCheckDoctorWorkflowRuntimeLintTracksWaitIncidentAcrossLaneChange(t *tes
 }
 
 func TestCheckDoctorWorkflowRuntimeLintIgnoresDeathsBelowRaisedCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 7, 12, 17, 0, 0, 0, time.UTC)

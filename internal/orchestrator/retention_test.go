@@ -70,6 +70,10 @@ func TestRetentionQuarantineWarningOncePerPath(t *testing.T) {
 }
 
 func TestRetentionUnremovableQuarantineWarnsOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod on Windows does not deny directory removal; warning deduplication is covered by TestRetentionQuarantineWarningOncePerPath")

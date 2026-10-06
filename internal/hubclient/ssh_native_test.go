@@ -51,6 +51,10 @@ func nativeSSHExecution(t *testing.T, ctx context.Context, execution runner.Exec
 }
 
 func TestSSHNativeEvidenceSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	h := newNativeChangeHub(t, true)
 	issue := h.createInProgress(t, "Remote evidence")
@@ -74,6 +78,10 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 }
 
 func TestSSHNativePublication(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, scenario := range []string{"complete", "capture disconnected", "upload acknowledgment lost"} {
 		t.Run(scenario, func(t *testing.T) {

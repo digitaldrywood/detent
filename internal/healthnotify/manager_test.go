@@ -21,6 +21,10 @@ import (
 )
 
 func TestManagerDeliversConfiguredWebhook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	received := make(chan Event, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

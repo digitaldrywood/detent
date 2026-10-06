@@ -9,6 +9,10 @@ import (
 )
 
 func TestCollectReleaseRulesetsFailsClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 
 	if runtime.GOOS == "windows" {

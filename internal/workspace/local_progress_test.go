@@ -9,6 +9,10 @@ import (
 )
 
 func TestLocalProgressBase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -49,6 +53,10 @@ func TestLocalProgressBase(t *testing.T) {
 }
 
 func TestLocalProgressRebaseSameFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	source := initSourceRepo(t)
 	path := filepath.Join(t.TempDir(), "worker")
@@ -84,6 +92,10 @@ func TestLocalProgressRebaseSameFile(t *testing.T) {
 }
 
 func TestLocalProgressPatchFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	source := initSourceRepo(t)
 	tests := []struct {
@@ -111,6 +123,10 @@ func TestLocalProgressPatchFailures(t *testing.T) {
 }
 
 func TestLocalProgressPatchLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	source := initSourceRepo(t)
 	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte(strings.Repeat("implementation\n", 1024)), 0o600); err != nil {
@@ -145,6 +161,10 @@ func TestLocalProgressPatchLimit(t *testing.T) {
 }
 
 func TestLocalProgressObservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	source := initSourceRepo(t)
 	root := t.TempDir()

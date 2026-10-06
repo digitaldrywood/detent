@@ -17,6 +17,10 @@ import (
 )
 
 func TestDoctorInvariantsCancelsDescendants(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess cancellation integration")
+	}
+
 	root := t.TempDir()
 	controlPath := filepath.Join(root, "startup.control")
 	if err := syscall.Mkfifo(controlPath, 0o600); err != nil {

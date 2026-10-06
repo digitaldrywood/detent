@@ -154,6 +154,10 @@ func TestCloudEntitlementAdministrators(t *testing.T) {
 }
 
 func TestCloudRegistryAndKeyCommands(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite registry integration")
+	}
+
 	t.Parallel()
 	registry := filepath.Join(t.TempDir(), "registry.db")
 	run := func(env map[string]string, args ...string) (string, error) {

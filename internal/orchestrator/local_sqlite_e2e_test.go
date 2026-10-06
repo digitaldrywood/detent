@@ -24,6 +24,10 @@ const localSQLiteE2EWaitTimeout = 10 * time.Second
 // snapshot carries the fields the kanban board renders (state lane and
 // stage_updated_at for the "In lane" footer).
 func TestLocalSQLiteLifecycleEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "video-work-items.db")
@@ -133,6 +137,10 @@ func TestLocalSQLiteLifecycleEndToEnd(t *testing.T) {
 }
 
 func TestLocalSQLiteArtifactLifecycleEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "artifact-work-items.db")
@@ -295,6 +303,10 @@ func TestLocalSQLiteStatuslessCompletionReleasesClaimAndSchedulesRetry(t *testin
 }
 
 func TestLocalSQLiteArtifactReworkUsesConfiguredStatusField(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "artifact-rework.db")

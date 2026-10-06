@@ -1147,6 +1147,10 @@ func TestAddProjectCommandEmitsJSONResult(t *testing.T) {
 }
 
 func TestAddProjectReportsDirtyGlobalConfigRepository(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	tests := []struct {
 		name       string
 		formatArgs []string

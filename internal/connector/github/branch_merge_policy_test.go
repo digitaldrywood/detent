@@ -18,6 +18,10 @@ import (
 )
 
 func TestRepositoryBranchMergePolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name            string
@@ -91,6 +95,10 @@ func TestRepositoryBranchMergePolicy(t *testing.T) {
 }
 
 func TestAttachRequiredBranchChecksCarriesStrictPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name   string
@@ -131,6 +139,10 @@ func TestAttachRequiredBranchChecksCarriesStrictPolicy(t *testing.T) {
 }
 
 func TestRefreshMergeQueuePolicyTracksRuleChanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	var enabled atomic.Bool
 	enabled.Store(true)
@@ -176,6 +188,10 @@ func TestRefreshMergeQueuePolicyTracksRuleChanges(t *testing.T) {
 }
 
 func TestInspectMergeQueueScopesPolicyToPullRequestTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	targets := []struct {
 		repository, branch string
@@ -240,6 +256,10 @@ func TestInspectMergeQueueScopesPolicyToPullRequestTarget(t *testing.T) {
 }
 
 func TestBranchRulesPlanAvailability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, tt := range []struct {
 		name, body      string
 		status          int
@@ -351,6 +371,10 @@ func TestBranchRulesPlanAvailability(t *testing.T) {
 }
 
 func TestMergeQueueRefusalRefreshesCachedBranchPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, failRefresh := range []bool{false, true} {
 		t.Run(fmt.Sprintf("refresh failure=%t", failRefresh), func(t *testing.T) {

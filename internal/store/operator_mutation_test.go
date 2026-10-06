@@ -15,6 +15,10 @@ import (
 // Catch duplicate execution after response loss/restart, competing claims,
 // changed payloads, and collisions across actor/organization/operation.
 func TestOperatorMutationDurableRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "mutation.db")
 	backend, err := Open(t.Context(), Config{Path: path})

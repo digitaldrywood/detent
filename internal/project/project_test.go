@@ -159,6 +159,10 @@ func TestNewConfiguresScheduledRoutines(t *testing.T) {
 }
 
 func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	runtimeStore, err := store.Open(context.Background(), store.Config{
@@ -326,6 +330,10 @@ func TestNewLeavesBacklogAdmissionDisabledByDefault(t *testing.T) {
 }
 
 func TestProjectGitHubRuntimeTokenRefreshesAfterAuthFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	requests := make(chan string, 2)
@@ -962,6 +970,10 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 }
 
 func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	writeProjectGitHubWorkflow(t, workflowPath, int(time.Hour/time.Millisecond), "initial")

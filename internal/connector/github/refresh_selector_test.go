@@ -14,6 +14,10 @@ import (
 )
 
 func TestProjectRefreshInstanceSelector(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, mode := range []string{"schema fallback", "incomplete evidence", "batched evidence", "304", "partial failure", "observed routing"} {
 		for _, count := range []int{8, 484} {
 			t.Run(mode+"/"+strconv.Itoa(count), func(t *testing.T) {
@@ -226,6 +230,10 @@ func addSelectorFixtureProjectFields(data map[string]any, variables map[string]a
 }
 
 func TestRefreshSelectorPredicatesAndMetadata(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, tt := range []struct {
 		name      string
 		hint      connector.IssueFilterHint
@@ -350,6 +358,10 @@ func TestRefreshSelectorPredicatesAndMetadata(t *testing.T) {
 }
 
 func TestRefreshSelectedEvidenceChangesWithoutIssueTimestamp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	const stamp = "2026-09-16T20:00:00Z"
 	cycle := 0
 	hydration := map[string]int{}

@@ -15,6 +15,10 @@ import (
 )
 
 func TestLocalIntakeCohortLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	queued := dispatchTestIssue("queued", "Todo")
@@ -141,6 +145,10 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 }
 
 func TestLocalIntakeDispatchesOnlyDurableContinuations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, lane := range []string{"In Progress", "Rework", "Merging"} {
 		t.Run(lane, func(t *testing.T) {
 			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "local"}, LocalIntakeDisabled: true, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}})

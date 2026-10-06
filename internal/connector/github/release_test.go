@@ -15,6 +15,10 @@ import (
 )
 
 func TestConnectorInspectReleaseRepository(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -87,6 +91,10 @@ func TestConnectorInspectReleaseRepository(t *testing.T) {
 }
 
 func TestConnectorCreateTagPublishesAnnotatedReference(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	requests := make(chan string, 3)
@@ -121,6 +129,10 @@ func TestConnectorCreateTagPublishesAnnotatedReference(t *testing.T) {
 }
 
 func TestReleaseReportsReconcileResponseLoss(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, lost := range []bool{false, true} {
 		t.Run(strconv.FormatBool(lost), func(t *testing.T) {
@@ -180,6 +192,10 @@ func TestReleaseReportsReconcileResponseLoss(t *testing.T) {
 }
 
 func TestReleaseTagReconciliation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, target := range []string{"head", "other"} {
 		t.Run(target, func(t *testing.T) {
@@ -235,6 +251,10 @@ func writeReleaseJSON(t *testing.T, w http.ResponseWriter, value any) {
 }
 
 func TestReleaseCheckEvidenceCompleteness(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name                    string
@@ -274,6 +294,10 @@ func TestReleaseCheckEvidenceCompleteness(t *testing.T) {
 }
 
 func TestReleaseTagOriginRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name, message string
@@ -319,6 +343,10 @@ func TestReleaseTagOriginRecovery(t *testing.T) {
 }
 
 func TestReleaseRerunReconciliation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name, sha, status  string
@@ -356,6 +384,10 @@ func TestReleaseRerunReconciliation(t *testing.T) {
 }
 
 func TestReleaseCrossRepositoryOrigins(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeReleaseJSON(t, w, []map[string]any{{"number": 10, "body": "Fixes other/repo#9\nFixes #8"}})
@@ -378,6 +410,10 @@ func TestReleaseCrossRepositoryOrigins(t *testing.T) {
 }
 
 func TestReleaseReportPublicationProtection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, visibility := range []publication.Visibility{publication.VisibilityPublic, publication.VisibilityPrivate} {
 		t.Run(string(visibility), func(t *testing.T) {
@@ -416,6 +452,10 @@ func TestReleaseReportPublicationProtection(t *testing.T) {
 }
 
 func TestReleaseTagPublicationProtection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, visibility := range []publication.Visibility{publication.VisibilityPublic, publication.VisibilityPrivate, publication.VisibilityUnknown} {
 		t.Run(string(visibility), func(t *testing.T) {

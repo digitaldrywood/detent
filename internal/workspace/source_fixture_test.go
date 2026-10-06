@@ -63,6 +63,10 @@ func buildSourceRepoSeed(ctx context.Context, dir string) error {
 }
 
 func TestSourceRepoFixturesAreIndependent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	for _, name := range []string{"existing directory", "nested directory"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

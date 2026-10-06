@@ -26,6 +26,10 @@ import (
 )
 
 func TestNativeAdmissionBatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name         string
@@ -456,6 +460,10 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 }
 
 func TestNativeAdmissionCompetingRunners(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true}}, true)
 	h.scheduler.machine.Capacity = 6

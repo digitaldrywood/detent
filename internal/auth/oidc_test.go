@@ -99,6 +99,10 @@ func TestOIDCProviderAuthorizationAndTokenValidation(t *testing.T) {
 }
 
 func TestOIDCProviderRejectsDiscoveryIssuerMismatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	var server *httptest.Server
@@ -135,15 +139,11 @@ type fakeOIDCIssuer struct {
 
 func newFakeOIDCIssuer(t *testing.T) *fakeOIDCIssuer {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	keys, err := fixtureSigningKeys()
 	if err != nil {
-		t.Fatalf("GenerateKey() error = %v", err)
+		t.Fatal(err)
 	}
-	invalidKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("GenerateKey(invalid) error = %v", err)
-	}
-	issuer := &fakeOIDCIssuer{t: t, key: key, invalidKey: invalidKey}
+	issuer := &fakeOIDCIssuer{t: t, key: keys[0], invalidKey: keys[1]}
 	issuer.server = httptest.NewServer(http.HandlerFunc(issuer.serveHTTP))
 	t.Cleanup(issuer.server.Close)
 	return issuer

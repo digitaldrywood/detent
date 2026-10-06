@@ -22,6 +22,10 @@ import (
 )
 
 func TestStopRecordedRunBeforeProjectStartup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name           string

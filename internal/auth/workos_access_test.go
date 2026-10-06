@@ -22,7 +22,7 @@ func (f *workosFixture) refresh(w http.ResponseWriter, r *http.Request, request 
 		return
 	}
 	claims := map[string]any{
-		"iss": f.server.URL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
+		"iss": f.apiURL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
 		"org_id": "org_customer", "role": "member", "iat": f.now.Unix(), "exp": f.now.Add(5 * time.Minute).Unix(),
 	}
 	response := map[string]any{"user": map[string]any{"id": "user_customer", "email": "customer@example.com", "email_verified": true}, "organization_id": "org_customer", "refresh_token": "refresh_rotated"}
@@ -45,7 +45,7 @@ func TestWorkOSVerifyAccessIsLocal(t *testing.T) {
 	provider := f.provider(t)
 	base := func() map[string]any {
 		return map[string]any{
-			"iss": f.server.URL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
+			"iss": f.apiURL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
 			"org_id": "org_customer", "role": "admin", "iat": f.now.Unix(), "exp": f.now.Add(5 * time.Minute).Unix(),
 		}
 	}
@@ -113,7 +113,7 @@ func TestWorkOSVerifyAccessKeySetUnavailable(t *testing.T) {
 	f := newWorkOSFixture(t)
 	f.mode.Store("jwks-down")
 	claims := map[string]any{
-		"iss": f.server.URL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
+		"iss": f.apiURL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
 		"org_id": "org_customer", "role": "admin", "iat": f.now.Unix(), "exp": f.now.Add(5 * time.Minute).Unix(),
 	}
 	_, err := f.provider(t).VerifyAccess(t.Context(), signTestJWT(t, f.key, claims))
@@ -123,6 +123,10 @@ func TestWorkOSVerifyAccessKeySetUnavailable(t *testing.T) {
 }
 
 func TestWorkOSRefreshAccess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	tests := []struct {
 		name     string
 		mode     string

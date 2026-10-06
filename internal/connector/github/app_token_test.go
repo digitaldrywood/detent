@@ -23,6 +23,10 @@ import (
 )
 
 func TestInstallationTokenSourceMintsAndCachesToken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
@@ -113,6 +117,10 @@ func TestInstallationTokenSourceMintsAndCachesToken(t *testing.T) {
 }
 
 func TestInstallationTokenSourceRefreshesNearExpiry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
@@ -167,6 +175,10 @@ func TestInstallationTokenSourceRefreshesNearExpiry(t *testing.T) {
 }
 
 func TestInstallationTokenSourceLoadsPrivateKeyPathAndGHESURL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
@@ -239,6 +251,10 @@ func TestInstallationTokenSourceReportsInvalidPrivateKey(t *testing.T) {
 }
 
 func TestTokenResolverUsesConfiguredGitHubApp(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)

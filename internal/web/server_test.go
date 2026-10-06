@@ -7024,6 +7024,10 @@ func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
 }
 
 func TestStateAndHealthReportWorkspaceCleanupFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -7058,6 +7062,10 @@ func TestStateAndHealthReportWorkspaceCleanupFailures(t *testing.T) {
 }
 
 func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -7229,6 +7237,10 @@ func TestHealthReportsCICondition(t *testing.T) {
 }
 
 func TestHealthReportsUnevaluablePauseExitCondition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -9308,6 +9320,10 @@ func TestServerEventsBuildDashboardScopeOnce(t *testing.T) {
 }
 
 func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	deps := testDeps(t)
@@ -10095,6 +10111,10 @@ func TestServerEventsSendsTickEvents(t *testing.T) {
 }
 
 func TestServerEventsStreamsPastHTTPTimeouts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	t.Parallel()
 
 	// Header parsing needs a realistic scheduling budget even though this test
@@ -11633,6 +11653,10 @@ func TestServerAPIErrorRoutes(t *testing.T) {
 }
 
 func TestServerUsageAPIReportsAggregates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -11844,6 +11868,10 @@ func TestWorkflowMetricsStateAPIIncludesLaneTrendComparisons(t *testing.T) {
 }
 
 func TestProjectDiagnosticsRendersRuntimeStoreEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()
@@ -12383,6 +12411,9 @@ func newLibraryTestServer(t *testing.T) *web.Server {
 
 func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *local.Connector, *refreshProbe) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable local SQLite integration")
+	}
 
 	conn, err := local.New(local.Config{
 		Path:           filepath.Join(t.TempDir(), "work-items.db"),
@@ -14099,6 +14130,9 @@ func openEventStream(t *testing.T, server *web.Server) io.ReadCloser {
 
 func startWebServer(t *testing.T, server *web.Server) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
 
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -14356,6 +14390,10 @@ func int64Pointer(value int64) *int64 {
 }
 
 func TestCapacityClearEndpointRecoveryMode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		mode, project string

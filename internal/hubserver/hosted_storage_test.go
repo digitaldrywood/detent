@@ -24,6 +24,10 @@ func hostedStorageConfig(t *testing.T) Config {
 
 func openHostedStorage(t *testing.T, cfg Config) *database {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	started := time.Now()
 	defer func() { t.Logf("hub_fixture_open_seconds=%.6f", time.Since(started).Seconds()) }()
 	db, err := openDatabase(t.Context(), cfg.normalized())
@@ -229,6 +233,10 @@ func TestHostedDatabaseRejectsExistingContent(t *testing.T) {
 }
 
 func TestHostedDatabaseRejectsInvalidBinding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, field := range []string{"organization", "public URL", "provider without bootstrap"} {
 		t.Run(field, func(t *testing.T) {

@@ -105,6 +105,10 @@ func testPart(sequence int, data string) Part {
 }
 
 func TestUploadRecoveryAndImmutableManifests(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	for _, lost := range []bool{false, true} {
 		t.Run(fmt.Sprintf("lost_reply_%t", lost), func(t *testing.T) {
@@ -223,6 +227,10 @@ func (p *testPublisher) Publish(_ context.Context, ref Reference) error {
 }
 
 func TestArtifactFailureStates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name   string
@@ -261,6 +269,10 @@ func TestArtifactFailureStates(t *testing.T) {
 }
 
 func TestHostedConcurrentReservationsAndDowngrade(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	cfg := testConfig(t)
 	cfg.Mode = "hosted"
@@ -304,6 +316,10 @@ func TestHostedConcurrentReservationsAndDowngrade(t *testing.T) {
 }
 
 func TestAbandonedUploadsAndDeletionRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	for _, kind := range []string{"log", "diff"} {
 		t.Run(kind, func(t *testing.T) {
@@ -361,6 +377,10 @@ func TestAbandonedUploadsAndDeletionRecovery(t *testing.T) {
 }
 
 func TestCatalogOwnershipAndBackup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	s, m := testService(t)
 	if other, err := NewService(t.Context(), s.config, m, nil); err == nil {
@@ -406,6 +426,10 @@ func TestCatalogOwnershipAndBackup(t *testing.T) {
 }
 
 func TestCatalogRejectsInvalidDatabases(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	for _, kind := range []string{"memory", "uri", "wrong application", "future version"} {
 		t.Run(kind, func(t *testing.T) {
@@ -447,6 +471,10 @@ func TestCatalogRejectsInvalidDatabases(t *testing.T) {
 }
 
 func TestAbandonedUnverifiedObjectKeepsReservationUntilCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	for _, outage := range []bool{false, true} {
 		t.Run(strconv.FormatBool(outage), func(t *testing.T) {
@@ -493,6 +521,10 @@ func TestAbandonedUnverifiedObjectKeepsReservationUntilCleanup(t *testing.T) {
 }
 
 func TestRestoredCatalogCannotResurrectDeletedArtifact(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	s, storage := testService(t)
 	r := testReservation(s)
@@ -538,6 +570,10 @@ func TestRestoredCatalogCannotResurrectDeletedArtifact(t *testing.T) {
 }
 
 func TestArtifactManifestHeadroom(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	for _, size := range []int64{4096, 16384} {
 		t.Run(strconv.FormatInt(size, 10), func(t *testing.T) {
@@ -569,6 +605,10 @@ func TestArtifactManifestHeadroom(t *testing.T) {
 }
 
 func TestReservationCustodyBinding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	for _, mode := range []string{"customer", "hosted"} {
 		t.Run(mode, func(t *testing.T) {

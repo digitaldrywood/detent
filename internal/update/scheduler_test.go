@@ -16,6 +16,10 @@ import (
 )
 
 func TestSchedulerDetectsFixtureReleaseWithoutApplying(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

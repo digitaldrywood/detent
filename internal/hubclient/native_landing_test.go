@@ -22,6 +22,10 @@ import (
 // reviewed version and its merge method, and recording the landing finishes
 // the item and the Change Request.
 func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name         string
@@ -58,6 +62,10 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 }
 
 func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name   string
@@ -421,6 +429,10 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 // target of an item that reached the landing lane without a reviewed
 // version: it is a refusal the run reports, not a landing.
 func TestNativeExecutionLandingTargetRefusesUnreviewed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	h := newNativeChangeHubWithStates(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"Merging", "Done"}},
@@ -463,6 +475,10 @@ func (h *nativeChangeHub) candidatesIn(t *testing.T, states ...string) []connect
 }
 
 func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},

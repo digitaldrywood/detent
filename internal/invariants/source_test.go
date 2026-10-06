@@ -25,6 +25,10 @@ type sourcePolicy struct {
 }
 
 func TestRepositorySources(t *testing.T) {
+	if testing.Short() {
+		t.Skip("repository-wide package loading and type checking")
+	}
+
 	root := repositoryRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, "internal/invariants/source_policy.json"))
 	if err != nil {

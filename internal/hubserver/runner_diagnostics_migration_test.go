@@ -12,6 +12,10 @@ import (
 )
 
 func TestRunnerLocalChecksMigrationPreservesArchive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, version := range []int64{43, 44, 51} {
 		t.Run(strconv.FormatInt(version, 10), func(t *testing.T) {

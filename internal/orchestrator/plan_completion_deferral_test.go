@@ -17,6 +17,10 @@ import (
 )
 
 func TestPlanCompletionCoordinationDeferral(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, restart := range []bool{false, true} {
 		name := "retry"
 		if restart {
@@ -202,6 +206,10 @@ func (r *planCompletionRunner) Run(_ context.Context, _ runpkg.RunRequest) (runp
 }
 
 func TestPlanCompletionPublicationRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, scenario := range []string{"lost response", "crash after comment", "comment read unavailable", "tracker lane unavailable"} {
 		t.Run(scenario, func(t *testing.T) {
 			now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)

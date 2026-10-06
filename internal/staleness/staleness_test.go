@@ -483,6 +483,10 @@ func mutateDecisions(decisions []Decision, mutate func(*Decision)) []Decision {
 }
 
 func TestNewNotifierDeliversWebhook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	received := make(chan Notification, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

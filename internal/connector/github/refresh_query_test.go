@@ -15,6 +15,10 @@ import (
 )
 
 func TestRefreshBoardQueryIsThin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct{ Query string }
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -40,6 +44,10 @@ func TestRefreshBoardQueryIsThin(t *testing.T) {
 }
 
 func TestRefreshBoardResumesFailedPage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, failure := range []string{"page error", "cancelled"} {
 		t.Run(failure, func(t *testing.T) {
 			var first, second int
@@ -109,6 +117,10 @@ func TestRefreshBoardResumesFailedPage(t *testing.T) {
 }
 
 func TestRefreshThinBodyFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, failure := range []string{"unsupported scheduler", "incomplete evidence", "graphql backoff"} {
 		t.Run(failure, func(t *testing.T) {
 			for _, count := range []int{1, 152} {
@@ -215,6 +227,10 @@ func TestRefreshThinBodyFallback(t *testing.T) {
 }
 
 func TestRefreshConfiguredSchedulerStates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, tt := range []struct {
 		name                       string
 		active, observed, terminal []string
@@ -280,6 +296,10 @@ func TestRefreshConfiguredSchedulerStates(t *testing.T) {
 }
 
 func TestRefreshBoardChangedBetweenAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, change := range []string{"revision", "count", "missing revision", "during resume"} {
 		t.Run(change, func(t *testing.T) {
 			phase, first, second := 0, 0, 0
@@ -368,6 +388,10 @@ func TestRefreshBoardChangedBetweenAttempts(t *testing.T) {
 }
 
 func TestRefreshBusyBoardCompletes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, change := range []string{"timestamp", "count", "local revision"} {
 		t.Run(change, func(t *testing.T) {
 			pages := 0
@@ -405,6 +429,10 @@ func TestRefreshBusyBoardCompletes(t *testing.T) {
 }
 
 func TestRefreshTruncatedEnumeration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, total := range []int{3, 15} {
 		t.Run(strconv.Itoa(total), func(t *testing.T) {
 			pages := 0

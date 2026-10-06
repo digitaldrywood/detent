@@ -1017,6 +1017,10 @@ func TestHostedSecuritySupportLoginAndExit(t *testing.T) {
 }
 
 func TestHostedSecurityLogsExcludeCustomerContent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	var logs bytes.Buffer
 	provider := newHostedSecurityProvider()

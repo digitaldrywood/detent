@@ -13,6 +13,10 @@ import (
 )
 
 func TestManagerCandidateWindowOrdersByPersistedEvaluation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name    string
@@ -63,6 +67,10 @@ func TestManagerCandidateWindowOrdersByPersistedEvaluation(t *testing.T) {
 }
 
 func TestManagerCandidateWindowCoverage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name     string
@@ -171,6 +179,10 @@ func TestManagerCandidateWindowCoverage(t *testing.T) {
 }
 
 func TestManagerCandidateWindowReconsidersRestoredSnapshot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name   string

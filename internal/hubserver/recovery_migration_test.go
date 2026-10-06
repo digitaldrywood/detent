@@ -14,6 +14,10 @@ import (
 )
 
 func TestRecoveryInterruptedMigration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 	for _, stage := range []string{"schema", "version"} {
 		t.Run(stage, func(t *testing.T) {
@@ -83,6 +87,10 @@ func TestRecoveryInterruptedMigration(t *testing.T) {
 }
 
 func TestRecoveryMigrationProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	path := os.Getenv("DETENT_TEST_MIGRATION_PATH")
 	if path == "" {
 		return

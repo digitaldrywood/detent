@@ -13,6 +13,10 @@ import (
 )
 
 func TestServiceReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service, profiling, or filesystem watcher integration")
+	}
+
 	for _, withListener := range []bool{false, true} {
 		name := "capture"
 		if withListener {

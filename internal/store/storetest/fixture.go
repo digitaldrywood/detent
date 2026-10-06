@@ -15,6 +15,9 @@ var databasePath = testenv.DatabaseTemplate(func(ctx context.Context, path strin
 
 func Open(t testing.TB) store.Store {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
 
 	backend, err := store.Open(t.Context(), store.Config{
 		Backend: store.BackendSQLite,

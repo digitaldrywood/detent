@@ -13,6 +13,10 @@ import (
 )
 
 func TestAcknowledgementsProjectsPersistedAndLiveState(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
 	if err != nil {
@@ -69,6 +73,10 @@ func TestAcknowledgementsProjectsPersistedAndLiveState(t *testing.T) {
 }
 
 func TestAcknowledgementsReleaseExpiredRecurringEpisode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "detent.db")})
 	if err != nil {

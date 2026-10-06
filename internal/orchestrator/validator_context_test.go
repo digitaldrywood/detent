@@ -27,6 +27,10 @@ func TestValidatorAcceptanceContextIdentity(t *testing.T) {
 }
 
 func TestValidatorContextMemoReuse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, verdict := range []string{gate.ValidatorVerdictRework, gate.ValidatorVerdictPass, gate.ValidatorVerdictWait} {
 		t.Run(verdict, func(t *testing.T) {
 			issue := connector.Issue{ID: "mobile200", Identifier: "digitaldrywood/pyroapex-mobile#200", Description: "Require reproduction", PullRequest: &connector.PullRequest{Number: 207, BaseSHA: "base", HeadSHA: "same-head"}}
@@ -67,6 +71,10 @@ func TestValidatorContextMemoReuse(t *testing.T) {
 }
 
 func TestValidatorLegacyContextNotReusable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	issue := connector.Issue{ID: "legacy", Identifier: "o/r#1", PullRequest: &connector.PullRequest{Number: 2, BaseSHA: "base", HeadSHA: "head"}}
 	memo := openValidatorMemoStore(t)
 	for _, v := range []string{gate.ValidatorVerdictPass, gate.ValidatorVerdictRework, gate.ValidatorVerdictWait} {
@@ -84,6 +92,10 @@ func TestValidatorLegacyContextNotReusable(t *testing.T) {
 }
 
 func TestValidatorChangedContextReviewsOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	for _, verdict := range []string{gate.ValidatorVerdictRework, gate.ValidatorVerdictPass, gate.ValidatorVerdictWait} {
 		t.Run(verdict, func(t *testing.T) {
 			cfg := autoPromoteValidatorTestConfig()
@@ -135,6 +147,10 @@ func (c *currentValidatorTaskConnector) setBody(body string) {
 }
 
 func TestValidatorContextSchedulesOnceAndRejectsHeldResult(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	cfg := autoPromoteValidatorTestConfig()
 	issue := connector.Issue{ID: "held", Identifier: "o/r#200", Description: "A", PullRequest: &connector.PullRequest{Number: 207, BaseSHA: "base", HeadSHA: "head", State: "OPEN"}}
 	tracker := &currentValidatorTaskConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, body: "A"}

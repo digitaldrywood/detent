@@ -36,6 +36,10 @@ func captureGitCommand(t *testing.T, dir string, args ...string) string {
 }
 
 func TestCaptureGitChangedFileContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name        string
@@ -111,6 +115,10 @@ func TestCaptureGitChangedFileContext(t *testing.T) {
 }
 
 func TestCaptureGitRename(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	dir := t.TempDir()
 	captureGitCommand(t, dir, "init", "-b", "main")
@@ -158,6 +166,10 @@ func TestMediaValidation(t *testing.T) {
 }
 
 func TestCaptureGitLiteralPaths(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	for _, name := range []string{"a[1].txt", ":(exclude)secret.txt"} {
 		t.Run(name, func(t *testing.T) {

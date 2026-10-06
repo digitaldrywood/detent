@@ -76,6 +76,10 @@ func newWorkspaceLaneTestScheduler(t *testing.T, projects map[string]string) orc
 	transport := readinessRoundTripper(func(request *http.Request) (*http.Response, error) {
 		response := httptest.NewRecorder()
 		response.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodGet && request.URL.Path == "/api/v2/organizations/org_test/projects/prj_test" {
+			_, _ = response.WriteString(`{}`)
+			return response.Result(), nil
+		}
 		response.WriteHeader(http.StatusConflict)
 		_, _ = response.WriteString(`{"code":"policy_mismatch","message":"No approved project policy"}`)
 		return response.Result(), nil

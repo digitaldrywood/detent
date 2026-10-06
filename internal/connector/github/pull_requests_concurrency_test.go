@@ -16,6 +16,10 @@ import (
 )
 
 func TestConnectorHydratesLinkedPullRequestsConcurrently(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	const issueCount = 4
@@ -67,6 +71,10 @@ func TestConnectorHydratesLinkedPullRequestsConcurrently(t *testing.T) {
 }
 
 func TestConnectorKeepsHydratingCandidatesWhenChecksReferenceIsNotFound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -145,6 +153,10 @@ func TestConnectorKeepsHydratingCandidatesWhenChecksReferenceIsNotFound(t *testi
 }
 
 func TestConnectorFiniteFanoutCompletesPriorityHydrationBeforeConcurrentTail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	firstStarted := make(chan struct{})
@@ -216,6 +228,10 @@ func TestConnectorFiniteFanoutCompletesPriorityHydrationBeforeConcurrentTail(t *
 }
 
 func TestConnectorFiniteFanoutPreservesPriorityWithPaginatedHydration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

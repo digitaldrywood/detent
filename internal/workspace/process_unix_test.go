@@ -165,6 +165,10 @@ func TestReapProcessesRejectsUnsafePaths(t *testing.T) {
 }
 
 func TestWorkspaceScanOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	tests := []struct {
 		name         string
 		command      string
@@ -280,6 +284,10 @@ func TestWorkspaceScanOutput(t *testing.T) {
 }
 
 func TestWorkspaceScanOutputStderr(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	tests := []struct {
 		name   string
 		stderr string
@@ -327,6 +335,10 @@ func TestWorkspaceScanOutputStderr(t *testing.T) {
 }
 
 func TestLsofWorkspaceProcessIDs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	if _, err := exec.LookPath("lsof"); err != nil {
 		t.Skip("lsof is unavailable")
 	}
@@ -496,6 +508,10 @@ func TestWorkspaceProcessIDsScanBudget(t *testing.T) {
 }
 
 func TestWorkspaceScanOutputCancellationWithInheritedPipes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, command := range []string{
 		"printf observed; sleep 60 & echo $! >&3; wait",
 		"printf observed; sleep 60 & echo $! >&3; exit 0",

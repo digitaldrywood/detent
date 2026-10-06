@@ -19,6 +19,10 @@ import (
 )
 
 func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	h := newNativeChangeHub(t, true)
 	h.admin.client.baseURL.Scheme = "https"
 	transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {

@@ -19,6 +19,10 @@ import (
 // Catches a verified programmatic merge disappearing from the board when no
 // terminal worker attempt exists, including after runtime state is discarded.
 func TestBoardDurableProgrammaticCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	cfg := store.Config{Backend: store.BackendSQLite, Path: storetest.NewDatabasePath(t)}
 	backend, err := store.Open(t.Context(), cfg)

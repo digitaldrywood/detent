@@ -280,6 +280,10 @@ func TestReworkGateWaitSafetyMatrix(t *testing.T) {
 }
 
 func TestReworkGateWaitReloadReconcilesRepairs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name         string
@@ -361,6 +365,10 @@ func TestReworkGateWaitReloadReconcilesRepairs(t *testing.T) {
 }
 
 func TestReworkGateWaitRestoreDispatchesCurrentHeadValidatorRework(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	for _, tt := range []struct {
@@ -500,6 +508,10 @@ func TestReworkGateWaitRestoreDispatchesCurrentHeadValidatorRework(t *testing.T)
 }
 
 func TestReworkGateWaitRestoreRequiresCurrentHeadHydration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	for _, tt := range []struct {

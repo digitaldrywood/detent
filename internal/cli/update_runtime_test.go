@@ -156,6 +156,9 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 		t.Fatal("runtimeUpdateIdle() with empty registry = false, want true")
 	}
 	t.Run("restored completion still owns pending work", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("durable completion restore integration")
+		}
 		now := time.Now()
 		runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
 		if err != nil {

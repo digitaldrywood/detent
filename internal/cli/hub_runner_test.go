@@ -16,6 +16,10 @@ import (
 )
 
 func TestHubRunnerCommandsKeepCredentialsPrivate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, action := range []string{"enroll", "renew", "rotate"} {
 		t.Run(action, func(t *testing.T) {

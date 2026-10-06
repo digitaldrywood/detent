@@ -55,6 +55,10 @@ func (c *terminalRefreshConnector) FetchIssueStatesByIDs(ctx context.Context, id
 }
 
 func TestRunDispatchesQueuedRequestsWithoutPolling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time lifecycle and timeout integration")
+	}
+
 	for _, scenario := range []string{"priority", "candidate became terminal", "slow terminal refresh", "owner shutdown"} {
 		t.Run(scenario, func(t *testing.T) {
 			registry, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "strict", Capacity: 1}}}, nil)

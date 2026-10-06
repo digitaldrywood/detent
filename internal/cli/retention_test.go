@@ -14,6 +14,10 @@ import (
 )
 
 func TestStatusRetentionTotals(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, count := range []int{0, 2} {
 		t.Run(string(rune('0'+count)), func(t *testing.T) {

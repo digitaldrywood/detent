@@ -16,6 +16,10 @@ import (
 // These are application effects persisted in native_commands, not a transport
 // dedup map. The lost response occurs after the real hub commits the resource.
 func TestNativeMutationRetryAfterResponseLoss(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	h := newNativeChangeHub(t)
 	var drop atomic.Bool
 	original := h.admin.client.httpClient.Transport

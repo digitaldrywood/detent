@@ -17,6 +17,10 @@ import (
 )
 
 func TestCandidateColdRequestCounts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	prAlias := regexp.MustCompile(`(pr[0-9]+): repository\(owner:"fixture",name:"project"\) \{ pullRequest\(number:([0-9]+)\)`)
 	for _, count := range []int{0, 1, 19, 20, 21, 40, 41} {
 		t.Run(fmt.Sprintf("PR status/%d", count), func(t *testing.T) {
@@ -195,6 +199,10 @@ func TestCandidateColdRequestCounts(t *testing.T) {
 }
 
 func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, mode := range []string{"board", "labels", "refresh"} {
 		t.Run(mode, func(t *testing.T) {
 			lane := "Backlog"
@@ -305,6 +313,10 @@ func TestCandidateBatchedPaginationAndAuthority(t *testing.T) {
 func ptrCandidateNode(node githubIssueNode) *githubIssueNode { return &node }
 
 func TestCandidateEvidenceFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, test := range []struct{ name, response string }{
 		{"rate limited", `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`},
 		{"missing native relation", `{"data":{"issue0":{"id":"I1","comments":{"totalCount":0}}}}`},
@@ -361,6 +373,10 @@ func TestCandidateEvidenceFallback(t *testing.T) {
 }
 
 func TestCandidateEvidenceIndependentConnections(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, paginate := range []string{"comments", "dependencies"} {
 		t.Run(paginate, func(t *testing.T) {
 			original := githubIssueNode{ID: "I1", Comments: nodeConnection[issueComment]{TotalCount: 1, Nodes: []issueComment{{ID: "C1"}}}, BlockedBy: &issueNodesConnection{Nodes: []githubIssueNode{{ID: "B1"}}}}
@@ -409,6 +425,10 @@ func TestCandidateEvidenceIndependentConnections(t *testing.T) {
 }
 
 func TestCandidateBoardBatchedCursor(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, limit := range []int{1, 2} {
 		t.Run(strconv.Itoa(limit), func(t *testing.T) {
 			var calls int
@@ -477,6 +497,10 @@ func TestCandidateBoardBatchedCursor(t *testing.T) {
 }
 
 func TestCandidateBodyDependencyRefresh(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, read := range []string{"candidates", "refresh"} {
 		for _, mode := range []string{"shared prose", "external prose", "native", "reopened", "closed", "expired", "snapshot", "rate limited"} {
 			t.Run(read+"/"+mode, func(t *testing.T) {

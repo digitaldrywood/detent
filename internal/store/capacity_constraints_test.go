@@ -117,6 +117,10 @@ func TestCapacityConstraintReason(t *testing.T) {
 }
 
 func TestQueryCapacityConstraintWaitsNormalizesFiveMinuteSamples(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	ctx := context.Background()

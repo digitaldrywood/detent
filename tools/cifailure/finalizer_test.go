@@ -10,6 +10,10 @@ import (
 )
 
 func TestScheduledFinalizer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	t.Parallel()
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq is required for the scheduled shell fixture")

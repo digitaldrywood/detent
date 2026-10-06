@@ -16,6 +16,10 @@ import (
 )
 
 func TestMergeRequiredCheckStreakEscalation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -114,6 +118,10 @@ func TestMergeRequiredCheckStreakEscalation(t *testing.T) {
 }
 
 func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -187,6 +195,10 @@ func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
 }
 
 func TestMergeRequiredCheckStreakClearsOnTerminalCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	orch, tracker, state, closeStore := newMergeRequiredCheckTestOrchestrator(t, true)
@@ -215,6 +227,10 @@ func TestMergeRequiredCheckStreakClearsOnTerminalCompletion(t *testing.T) {
 }
 
 func TestMergeRequiredCheckStreakClearsWhenBlocked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	orch, tracker, state, closeStore := newMergeRequiredCheckTestOrchestrator(t, true)

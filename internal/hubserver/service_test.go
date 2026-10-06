@@ -168,6 +168,10 @@ func TestServeRequiresListener(t *testing.T) {
 }
 
 func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	const runDeadlockGuard = time.Minute

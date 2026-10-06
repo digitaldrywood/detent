@@ -274,6 +274,10 @@ func TestOutboxReclaimsInterruptedProcessingAfterTimeout(t *testing.T) {
 }
 
 func TestServiceCloseCancelsAndDrainsOutboxWorker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	for _, holdConnection := range []bool{false, true} {

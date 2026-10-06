@@ -251,6 +251,10 @@ func TestRecordedBlockerPredicateRegistry(t *testing.T) {
 }
 
 func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	now := time.Date(2026, 8, 16, 18, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name             string
@@ -318,6 +322,10 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 }
 
 func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	now := time.Date(2026, 9, 24, 3, 0, 0, 0, time.UTC)
 	parkedAt := now.Add(-time.Hour).Add(500 * time.Millisecond)
 	const source = "digitaldrywood/detent#685"

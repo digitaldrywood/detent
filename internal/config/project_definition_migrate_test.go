@@ -10,6 +10,10 @@ import (
 )
 
 func TestProjectDefinitionMigrationPreservesContentAndSemantics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("disk configuration migration integration")
+	}
+
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -77,6 +81,10 @@ func TestProjectDefinitionMigrationPreservesContentAndSemantics(t *testing.T) {
 }
 
 func TestProjectDefinitionMigrationGolden(t *testing.T) {
+	if testing.Short() {
+		t.Skip("disk configuration migration integration")
+	}
+
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -148,6 +156,10 @@ func TestProjectDefinitionMigrationFailureLeavesOriginalsUnchanged(t *testing.T)
 }
 
 func TestProjectDefinitionMigrationRollsBackRenameFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("disk configuration migration integration")
+	}
+
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -187,6 +199,10 @@ func TestProjectDefinitionMigrationRollsBackRenameFailure(t *testing.T) {
 }
 
 func TestProjectDefinitionMigrationRepairsLegacyLocalFrontmatterAfterSharedSplit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("disk configuration migration integration")
+	}
+
 	t.Parallel()
 
 	dir := t.TempDir()

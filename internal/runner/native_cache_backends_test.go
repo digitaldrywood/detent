@@ -22,6 +22,10 @@ var nativeCacheVariables = []string{"GOCACHE", "GOMODCACHE", "GOBIN", "GOLANGCI_
 // Exercise real backend process construction; the helper exits before speaking
 // either provider protocol, after recording only the invariant's environment.
 func TestINV12BackendToolchainEnvironment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	for _, backendKind := range []string{"codex", "claude_code", "pi_agent"} {
 		for _, mode := range []string{"absent", "host", "explicit"} {
 			t.Run(backendKind+"/"+mode, func(t *testing.T) {

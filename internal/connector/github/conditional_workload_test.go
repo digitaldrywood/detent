@@ -14,6 +14,10 @@ import (
 // The endpoint counts come from the 2026-09-29 warm label-status refresh.
 // Keeping the path order fixed exposes the cascading misses of an undersized cache.
 func TestClientRESTConditionalFullRefreshWorkload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	repo := pullRequestRepo{Owner: "fixture", Name: "detent"}
 	paths := make([]string, 0, 443+399+247+263)
 	for n := 1; n <= 443; n++ {

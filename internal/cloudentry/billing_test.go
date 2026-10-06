@@ -83,6 +83,10 @@ func signedEvent(body string) (string, string) {
 }
 
 func TestSharedBillingJourney(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live service integration")
+	}
+
 	t.Parallel()
 	stripe := &fakeBilling{customers: map[string]string{}}
 	allowances := func(projects int64) map[string]int64 {

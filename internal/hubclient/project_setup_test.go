@@ -18,6 +18,10 @@ import (
 )
 
 func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture runs POSIX setup hooks")

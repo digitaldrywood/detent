@@ -239,6 +239,10 @@ func TestReapWorkerProcessesRevalidatesArtifactsAfterRetry(t *testing.T) {
 }
 
 func TestReapWorkerProcessesPreservesInterruptedSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	for _, failures := range []int{1, 5} {
@@ -508,6 +512,10 @@ func TestReapWorkerProcessesClassifiesCleanupOnlyFailures(t *testing.T) {
 }
 
 func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		projectID, host string
@@ -564,6 +572,10 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 }
 
 func TestStartupRetainsOwnedWorkAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		name, host string
@@ -627,6 +639,10 @@ func TestStartupRetainsOwnedWorkAttempts(t *testing.T) {
 
 // Pool names are scheduling labels; every registered worker belongs to this instance.
 func TestReapPoolWorkerProcesses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tc := range []struct {
 		reason, host string

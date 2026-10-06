@@ -20,6 +20,10 @@ import (
 )
 
 func TestAPITokensAreHashedScopedRotatableAndRedacted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	const (

@@ -269,6 +269,10 @@ func TestDispatchCandidateStatusBeforeMaintenance(t *testing.T) {
 }
 
 func TestRetiredParkReferenceCohort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	for _, mode := range []string{"id-only", "inline", "fresh", "missing", "failure", "partial failure", "independent failure", "independent forbidden", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			paths := map[string]int{}

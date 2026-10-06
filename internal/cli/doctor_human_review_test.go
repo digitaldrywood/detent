@@ -87,6 +87,10 @@ func TestDoctorHumanReviewLane(t *testing.T) {
 }
 
 func TestDoctorNativeHumanReviewLane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name, response string

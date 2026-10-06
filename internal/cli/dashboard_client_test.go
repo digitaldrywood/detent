@@ -25,6 +25,10 @@ import (
 )
 
 func TestDashboardReadClientExecutesSharedOperatorTool(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	want := json.RawMessage(`{"generated_at":"2026-08-08T02:30:00Z","freshness":"last_known","expires_at":"2026-08-08T02:45:00Z","items":[]}`)
@@ -60,6 +64,10 @@ func TestDashboardReadClientExecutesSharedOperatorTool(t *testing.T) {
 }
 
 func TestDashboardReadClientOperatorToolFailures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	t.Run("mutation rejected before HTTP", func(t *testing.T) {
@@ -136,6 +144,10 @@ func jsonEqualBytes(left []byte, right []byte) bool {
 }
 
 func TestDashboardReadClientExplainIssueReferences(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -190,6 +202,10 @@ func TestDashboardReadClientExplainIssueReferences(t *testing.T) {
 }
 
 func TestDashboardReadClientAcknowledgesIssueParks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	want := dashboardExplanationFixture(false)
@@ -215,6 +231,10 @@ func TestDashboardReadClientAcknowledgesIssueParks(t *testing.T) {
 }
 
 func TestDashboardReadClientCreditsIssueProgress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	want := store.IssueProgressCredit{
@@ -245,6 +265,10 @@ func TestDashboardReadClientCreditsIssueProgress(t *testing.T) {
 }
 
 func TestDashboardReadClientCredentialPrecedence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -290,6 +314,10 @@ func TestDashboardReadClientCredentialPrecedence(t *testing.T) {
 }
 
 func TestDashboardReadClientSuppliedBadCredentialIsNotMasked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	const badToken = "supplied-bad-token"
@@ -326,6 +354,10 @@ func TestDashboardReadClientSuppliedBadCredentialIsNotMasked(t *testing.T) {
 }
 
 func TestDashboardReadClientTransportAndCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	t.Run("unreachable", func(t *testing.T) {
@@ -375,6 +407,10 @@ func TestDashboardReadClientTransportAndCancellation(t *testing.T) {
 }
 
 func TestDashboardReadClientRejectsUnsupportedSuccessfulModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	result := dashboardExplanationFixture(false)
@@ -512,6 +548,10 @@ func dashboardExplanationFixture(degraded bool) explain.IssueExplanation {
 }
 
 func TestIssueCommandOutputAndScoping(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -601,6 +641,10 @@ func TestIssueCommandOutputAndScoping(t *testing.T) {
 }
 
 func TestIssueCommandCreditsProgress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 
 	credit := store.IssueProgressCredit{
@@ -698,6 +742,10 @@ func (s issueCommandSnapshot) Snapshot(context.Context) (explain.SnapshotObserva
 }
 
 func TestIssueCommandMissingNumberReferences(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	issue := telemetry.Issue{ID: "I_example", Identifier: "digitaldrywood/detent#2337", ProjectID: "detent", State: "Merging"}
 	service := explain.New(explain.Dependencies{Snapshots: issueCommandSnapshot{observation: explain.SnapshotObservation{

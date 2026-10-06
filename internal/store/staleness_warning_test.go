@@ -7,6 +7,10 @@ import (
 )
 
 func TestStalenessWarningStatePersistsAcrossReopen(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "runtime.db")
 	remindedAt := time.Date(2026, 8, 20, 14, 0, 0, 0, time.UTC)
@@ -47,6 +51,10 @@ func TestStalenessWarningStatePersistsAcrossReopen(t *testing.T) {
 }
 
 func TestReconcileStalenessWarningStatesRetainsOnlyLiveEpisodes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	inactiveBefore := now.Add(-30 * 24 * time.Hour)
 	tests := []struct {

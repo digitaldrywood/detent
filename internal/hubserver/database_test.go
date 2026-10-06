@@ -226,6 +226,10 @@ func TestOpenRejectsInvalidDatabasePaths(t *testing.T) {
 }
 
 func TestOpenRejectsNetworkFilesystemBeforeTakingOwnership(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	directory := t.TempDir()
@@ -305,6 +309,10 @@ func TestSQLiteDSNEncodesAbsolutePaths(t *testing.T) {
 }
 
 func TestOpenRejectsUnrecognizedDatabase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	tests := []struct {
@@ -460,6 +468,10 @@ func TestOpenMigratesLegacyWebhookPayloads(t *testing.T) {
 }
 
 func TestOpenMigratesConversationOriginHistories(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite migration history integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name          string
@@ -718,6 +730,10 @@ func TestSchemaEnforcesIdentityAndAppendOnlyConstraints(t *testing.T) {
 }
 
 func TestOpenExcludesAnotherHubProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+
 	path := filepath.Join(t.TempDir(), "hub.db")
 	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
 	command.Env = append(os.Environ(), "DETENT_HUB_OWNER_HELPER="+path)
@@ -774,6 +790,10 @@ func TestOpenExcludesAnotherHubProcess(t *testing.T) {
 }
 
 func TestHubOwnerHelperProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	path := os.Getenv("DETENT_HUB_OWNER_HELPER")
 	if path == "" {
 		return
@@ -885,6 +905,10 @@ func TestBackupCancellationRemovesPartialDestination(t *testing.T) {
 
 func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	started := time.Now()
 	defer func() { t.Logf("hub_fixture_open_seconds=%.6f", time.Since(started).Seconds()) }()
 	if cfg.Logger == nil {

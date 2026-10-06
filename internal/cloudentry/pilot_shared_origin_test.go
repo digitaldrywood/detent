@@ -501,6 +501,10 @@ func (b *pilotBrowser) stream(t *testing.T, path string) pilotStream {
 // enrollment and execution, artifact endpoints, entitlements, durable
 // provisioning retry, capacity refusal and entry restart.
 func TestSharedOriginPilotAcceptance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	p := newSharedOriginPilot(t, 2, 1)
 	origin, err := url.Parse(p.base)
 	if err != nil {
@@ -1087,6 +1091,10 @@ func TestSharedOriginPilotPreview(t *testing.T) {
 }
 
 func TestSharedOriginAPIKeyConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	p := newSharedOriginPilot(t, 1, 1)
 	owner := p.browser(t)
 	pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_dana:"), http.StatusSeeOther)

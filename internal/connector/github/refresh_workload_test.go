@@ -21,6 +21,10 @@ import (
 // Five isolated projects simulate an hour of normal refresh, not admission.
 // The fixture clock and serialized counters make request counts deterministic.
 func TestProjectRefreshHourlyWorkload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	for _, resumed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("large board four refreshes hourly/resumed=%t", resumed), func(t *testing.T) { testLargeProjectRefreshHourlyWorkload(t, resumed, "Todo", false) })
 	}
@@ -535,6 +539,10 @@ func testLargeProjectRefreshHourlyWorkload(t *testing.T, resumed bool, candidate
 }
 
 func TestProjectRefreshIncrementalFields(t *testing.T) {
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
+
 	for _, changingProject := range []bool{false, true} {
 		t.Run(strconv.FormatBool(changingProject), func(t *testing.T) {
 			testLargeProjectRefreshHourlyWorkload(t, false, "Todo", false, changingProject)

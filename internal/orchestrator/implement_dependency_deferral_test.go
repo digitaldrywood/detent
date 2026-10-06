@@ -165,6 +165,10 @@ func TestCompletedDependencyWaitPreservesUnrelatedParks(t *testing.T) {
 }
 
 func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	for _, tt := range []struct {
 		name          string
@@ -450,6 +454,10 @@ func TestHistoricalDependencyDeferralUsesCurrentProseRefs(t *testing.T) {
 }
 
 func TestDependencyDeferralEvidenceAndReleaseAcrossRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "detent.db")

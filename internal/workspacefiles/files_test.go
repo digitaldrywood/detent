@@ -369,6 +369,10 @@ func itoa(value int) string {
 }
 
 func TestListHonoursGitignoreUnlessTheReaderAsksForIt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not available; the ignore decoration is git's own answer")
@@ -472,6 +476,10 @@ func TestSymlinkedDirectoriesCannotAliasDeniedPaths(t *testing.T) {
 }
 
 func TestListPagesALargeDirectoryInOrder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real process or filesystem integration")
+	}
+
 	t.Parallel()
 	service, worktree, _ := newWorktree(t)
 	crowded := filepath.Join(worktree, "crowded")
@@ -520,6 +528,10 @@ func TestListPagesALargeDirectoryInOrder(t *testing.T) {
 }
 
 func TestStatReportsWhetherGitIgnoresThePath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not available; the ignore decoration is git's own answer")

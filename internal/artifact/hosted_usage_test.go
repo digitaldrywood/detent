@@ -17,6 +17,10 @@ func (f allowanceFunction) Limits(ctx context.Context, organization string) (Lim
 }
 
 func TestHostedTrafficAndAdmittedCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	for _, mode := range []string{"customer", "hosted"} {
 		t.Run(mode, func(t *testing.T) {
@@ -94,6 +98,10 @@ func TestHostedTrafficAndAdmittedCompletion(t *testing.T) {
 }
 
 func TestHostedRelayQuotaAndRemoteLimits(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+
 	t.Parallel()
 	for _, test := range []struct {
 		name   string
@@ -150,6 +158,10 @@ func TestHostedRelayQuotaAndRemoteLimits(t *testing.T) {
 }
 
 func TestHostedTrafficSettingsSurviveRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("SQLite catalog integration")
+	}
+
 	t.Parallel()
 	cfg := testConfig(t)
 	cfg.Mode, cfg.HostedOptIn = "hosted", true
