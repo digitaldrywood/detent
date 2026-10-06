@@ -51,6 +51,8 @@ type nativeExecution struct {
 	conversationContinuation bool
 	settled                  bool
 	change                   *runner.NativeChange
+	finalizationSource       *tracker.NativeChangeReference
+	finalizationAttempt      string
 	preparedOutcome          string
 	preparedMessage          string
 	preparedDisposition      *tracker.NativeDisposition
@@ -401,6 +403,16 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 		return preparationErr
 	}
 	e.data.Disposition = e.preparedDisposition
+	if change := e.change; change != nil {
+		finalization := (tracker.NativeFinalization{
+			ObservedAt: e.scheduler.now().UTC(), Settled: e.settled,
+			Changed: change.Changed, Files: change.Files, ChangeID: change.ChangeID,
+			VersionID: change.VersionID, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA,
+			Reviewed: change.Reviewed, VersionError: change.VersionError, VersionCode: change.VersionCode,
+			Error: change.Error, SourceVersion: e.finalizationSource, SourceAttemptID: e.finalizationAttempt,
+		}).Public()
+		e.data.Finalization = &finalization
+	}
 	return errors.Join(preparationErr, e.append(ctx, "run.finished", outcome, nil))
 }
 

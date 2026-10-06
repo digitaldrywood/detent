@@ -62,6 +62,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, Files: len(diff.Files),
 	}
 	e.change = change
+	e.finalizationSource, e.finalizationAttempt = nil, ""
 	if !change.Changed {
 		detail, err := e.claim.source.client.currentChange(ctx, e.claim.lease.WorkItemID)
 		if err != nil {
@@ -76,6 +77,8 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 			if version.ID != detail.Change.CurrentVersion {
 				continue
 			}
+			e.finalizationSource = &tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+			e.finalizationAttempt = version.AttemptID
 			change.Changed, change.ChangeID, change.BaseSHA, change.HeadSHA = true, detail.Change.ID, version.BaseSHA, version.HeadSHA
 			if version.HeadSHA == diff.HeadSHA {
 				if err := e.publishVersion(ctx, diff, change); err != nil {

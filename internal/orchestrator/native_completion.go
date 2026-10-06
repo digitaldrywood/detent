@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -146,6 +148,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 	}
 	if !humanReview && !blocked && (change != nil && change.VersionError != "" || !ok && (needsReview || changed && !change.Reviewed)) {
+		o.observeNativeCompletion(ctx, event, false)
 		if err := o.abandonClaim(ctx, issueID); err != nil {
 			return handoff(err)
 		}
@@ -202,6 +205,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
 		o.warnNativeCompletion(issue, fmt.Errorf("comment on the completed run: %w", err))
 	}
+	if !changed || needsReview {
+		o.observeNativeCompletion(ctx, event, !needsReview && !unfinished)
+	}
 	if err := o.abandonClaim(ctx, issueID); err != nil {
 		return handoff(err)
 	}
@@ -234,6 +240,21 @@ func (o *Orchestrator) completeNativeChangeRun(
 			"changed", changed, "change_id", changeID)
 	}
 	return true
+}
+
+func (o *Orchestrator) observeNativeCompletion(ctx context.Context, event runpkg.Completion, accepted bool) {
+	execution := event.Request.Execution
+	if execution == nil {
+		if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+			execution = source.RunExecution(event.IssueID)
+		}
+	}
+	if runtime, ok := execution.(runpkg.RuntimeExecution); ok {
+		at := time.Now().UTC()
+		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: at, Phase: "completed", Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: accepted, ObservedAt: at}}); err != nil {
+			o.warnNativeCompletion(event.Request.Issue, fmt.Errorf("observe host completion: %w", err))
+		}
+	}
 }
 
 func (o *Orchestrator) continueNativeLandingRun(ctx context.Context, state *State, event runpkg.Completion, running Running) error {

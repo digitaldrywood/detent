@@ -97,6 +97,22 @@ func validCommitID(value string) bool {
 }
 
 func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
+	if f := data.Finalization; f != nil {
+		if eventType != "run.finished" || data.Sequence <= 0 || f.ObservedAt.IsZero() || f.Files < 0 ||
+			f.ChangeID != "" && !validNativeID(f.ChangeID, "change") || f.VersionID != "" && !validNativeID(f.VersionID, "version") ||
+			f.BaseSHA != "" && !validCommitID(f.BaseSHA) || f.HeadSHA != "" && !validCommitID(f.HeadSHA) ||
+			f.SourceAttemptID != "" && !validNativeID(f.SourceAttemptID, "attempt") || f.VersionCode != "" && (!validExecutionName(f.VersionCode) || strings.ContainsAny(f.VersionCode, "/:\\")) ||
+			len(f.VersionError) > tracker.NativeFinalizationTextLimit || len(f.Error) > tracker.NativeFinalizationTextLimit || !utf8.ValidString(f.VersionError) || !utf8.ValidString(f.Error) {
+			return nativeInvalid("Finalizer observations require bounded identity and text on an ordered terminal event")
+		}
+		if f.VersionID != "" && f.ChangeID == "" || f.SourceAttemptID != "" && f.SourceVersion == nil {
+			return nativeInvalid("Finalizer source identity requires its owning Change and version")
+		}
+		if v := f.SourceVersion; v != nil && (v.ChangeID != f.ChangeID || !validNativeID(v.ChangeID, "change") || !validNativeID(v.VersionID, "version") || !validCommitID(v.HeadSHA)) {
+			return nativeInvalid("Invalid finalizer source version identity")
+		}
+		*f = f.Public()
+	}
 	if len(data.Evidence) != 0 {
 		return nativeInvalid("Attempt evidence is owned by attachment uploads")
 	}
@@ -385,6 +401,19 @@ func scanNativeAttempt(rows *sql.Rows, now time.Time) (tracker.NativeAttempt, er
 		return attempt, err
 	}
 	attempt.Current = !released.Valid && !now.Before(attempt.LeaseRenewedAt) && now.Before(expiry)
+	if released.Valid {
+		at, err := parseTimeValue(released.String)
+		if err != nil {
+			return attempt, err
+		}
+		attempt.ClaimReleasedAt = &at
+	}
+	attempt.FinalizationAvailability = "unavailable"
+	if attempt.Finalization != nil {
+		public := attempt.Finalization.Public()
+		attempt.Finalization = &public
+		attempt.FinalizationAvailability = "available"
+	}
 	attempt.RuntimeFreshness = "unavailable"
 	if attempt.Runtime != nil {
 		attempt.RuntimeFreshness = "available"

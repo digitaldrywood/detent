@@ -15,6 +15,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -513,6 +514,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				return
 			}
 			if test.wantSettled {
+				if test.republish && test.runErr == nil && finalState == runpkg.FinalStateCompleted {
+					if len(publisher.observations) == 0 || publisher.observations[len(publisher.observations)-1].Completion == nil || publisher.observations[len(publisher.observations)-1].Completion.AcceptanceRecorded || publisher.observations[len(publisher.observations)-1].Completion.ObservedAt.IsZero() {
+						t.Fatalf("settled refusal omitted host nonacceptance observation: %+v", publisher.observations)
+					}
+				}
 				if len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.Retry) != 0 || len(state.deferredCompletions) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(attempts.completions) != 1 {
 					t.Fatalf("native settlement accepted, relaned, or replayed immutable outcome: updates=%v completed=%v retry=%v releases=%d attempts=%v", tick.updates, state.Completed, state.Retry, scheduling.releases, attempts.completions)
 				}
@@ -852,11 +858,19 @@ func (s *nativeCompletionScheduling) ReleaseClaim(ctx context.Context, issueID, 
 
 type nativeCompletionPublisher struct {
 	nativeLandingJourneyExecution
+	observations  []tracker.NativeRuntimeObservation
 	change        *runpkg.NativeChange
 	prepared      int
 	prepare       func()
 	validationErr error
 }
+
+func (p *nativeCompletionPublisher) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
+	p.observations = append(p.observations, observation)
+	return nil
+}
+
+func (*nativeCompletionPublisher) FlushRuntime(context.Context) error { return nil }
 
 func (p *nativeCompletionPublisher) Validate(context.Context) error { return p.validationErr }
 

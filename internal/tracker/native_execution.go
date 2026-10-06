@@ -45,16 +45,18 @@ type NativeChangeReference struct {
 
 type NativeAttempt struct {
 	NativeRunData
-	Status             string            `json:"status"`
-	StartedAt          time.Time         `json:"started_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
-	Checkpoint         *NativeCheckpoint `json:"checkpoint,omitempty"`
-	WorkItemRevision   Revision          `json:"work_item_revision,string"`
-	DispatchGeneration int64             `json:"dispatch_generation,string"`
-	LeaseRenewedAt     time.Time         `json:"lease_renewed_at"`
-	LeaseExpiresAt     time.Time         `json:"lease_expires_at"`
-	Current            bool              `json:"current"`
-	RuntimeFreshness   string            `json:"runtime_freshness"`
+	FinalizationAvailability string            `json:"finalization_availability"`
+	ClaimReleasedAt          *time.Time        `json:"claim_released_at,omitempty"`
+	Status                   string            `json:"status"`
+	StartedAt                time.Time         `json:"started_at"`
+	UpdatedAt                time.Time         `json:"updated_at"`
+	Checkpoint               *NativeCheckpoint `json:"checkpoint,omitempty"`
+	WorkItemRevision         Revision          `json:"work_item_revision,string"`
+	DispatchGeneration       int64             `json:"dispatch_generation,string"`
+	LeaseRenewedAt           time.Time         `json:"lease_renewed_at"`
+	LeaseExpiresAt           time.Time         `json:"lease_expires_at"`
+	Current                  bool              `json:"current"`
+	RuntimeFreshness         string            `json:"runtime_freshness"`
 }
 
 type NativePhase struct {
@@ -64,6 +66,7 @@ type NativePhase struct {
 }
 
 type NativeRuntimeObservation struct {
+	Completion     *NativeCompletionObservation     `json:"completion,omitempty"`
 	PhasesDropped  int                              `json:"phases_dropped"`
 	LocalAttemptID int64                            `json:"local_attempt_id,omitempty"`
 	Generation     uint64                           `json:"generation,omitempty"`
@@ -76,6 +79,37 @@ type NativeRuntimeObservation struct {
 	REST           *NativeRESTEvidence              `json:"rest,omitempty"`
 	GitHub         *NativeGitHubScope               `json:"github,omitempty"`
 }
+
+type NativeCompletionObservation struct {
+	Source             string    `json:"source"`
+	Coverage           string    `json:"coverage"`
+	AcceptanceRecorded bool      `json:"acceptance_recorded"`
+	ObservedAt         time.Time `json:"observed_at"`
+}
+
+type NativeFinalization struct {
+	Unavailable     []string               `json:"unavailable"`
+	ObservedAt      time.Time              `json:"observed_at"`
+	Source          string                 `json:"source"`
+	Coverage        string                 `json:"coverage"`
+	Settled         bool                   `json:"settled"`
+	Changed         bool                   `json:"changed"`
+	Files           int                    `json:"files"`
+	ChangeID        string                 `json:"change_id,omitempty"`
+	VersionID       string                 `json:"version_id,omitempty"`
+	BaseSHA         string                 `json:"base_sha,omitempty"`
+	HeadSHA         string                 `json:"head_sha,omitempty"`
+	Reviewed        bool                   `json:"reviewed"`
+	VersionError    string                 `json:"version_error,omitempty"`
+	VersionCode     string                 `json:"version_code,omitempty"`
+	Error           string                 `json:"error,omitempty"`
+	TextTruncated   bool                   `json:"text_truncated"`
+	TextRedacted    bool                   `json:"text_redacted"`
+	SourceVersion   *NativeChangeReference `json:"source_version,omitempty"`
+	SourceAttemptID string                 `json:"source_attempt_id,omitempty"`
+}
+
+const NativeFinalizationTextLimit = 4096
 
 func (r *NativeRuntimeObservation) WithoutActivitySpans() *NativeRuntimeObservation {
 	if r == nil {
