@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -54,6 +55,12 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	t.Helper()
 	h := newNativeChangeHubTransport(t, "Human Review", hubserverPlanStates(), true)
+	previousPolicyID := h.descriptor.ID
+	h.descriptor.Gates.HumanReview = true
+	h.descriptor = h.descriptor.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previousPolicyID, Policy: h.descriptor}); err != nil {
+		t.Fatal(err)
+	}
 	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Plan then implement", Body: "Update the README."})
 	if err != nil {
 		t.Fatal(err)
