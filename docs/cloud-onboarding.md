@@ -296,8 +296,19 @@ or storage credentials in the hosted form. Run `verify-storage`, then test openi
 a retained artifact with execution runners stopped. A registered binding is
 configuration evidence, not a storage-health or offline-availability guarantee.
 
-Native issue creation works with GitHub disabled. If the deployment has GitHub
-transport, attach a repository explicitly before enabling manual imports, summary
+Native issue creation works with GitHub disabled. To connect GitHub:
+
+1. Associate the repository as `owner/name` in Project setup after cloning it on
+   an enrolled runner.
+2. [Install the Detent Cloud GitHub App](https://github.com/apps/detent-cloud/installations/new)
+   on the repository or organization. Choose all repositories or only selected
+   repositories, including this project's repository. The App requests Issues
+   and Pull requests read/write, and Contents, Checks, Commit statuses and
+   Metadata read permissions.
+3. Open Project setup to read whether Detent Cloud is installed on `owner/name`.
+   New GitHub issues enter Triage automatically once the App is installed.
+
+If the deployment has GitHub transport, attach a repository before manual imports, summary
 projection or repository/PR integration. Each choice is separate; saving setup
 progress does not activate an integration. Existing profile, repository binding,
 idle-work and revision checks still apply. Import execution and summary publication

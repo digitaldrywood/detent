@@ -30,6 +30,7 @@ func newHubCommand(opts options) *cobra.Command {
 		appID, privateKey := opts.lookupEnv("DETENT_HUB_GITHUB_APP_ID"), opts.lookupEnv("DETENT_HUB_GITHUB_APP_PRIVATE_KEY")
 		if appID != "" && privateKey != "" {
 			transport = hubgithub.NewAppTransport(connectorgithub.InstallationTokenConfig{AppID: appID, PrivateKey: privateKey, LookupEnv: opts.lookupEnv})
+			cfg.GitHubAppInstallation = transport.AppInstallation
 		} else {
 			if cfg.Hosted != nil {
 				return errors.New("hosted GitHub intake requires the product GitHub App credentials")

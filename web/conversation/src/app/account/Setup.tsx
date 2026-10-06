@@ -461,7 +461,7 @@ export function SetupRoute({
       }),
     );
     integration.set(bound);
-    await onboarding.refresh();
+    await Promise.all([onboarding.refresh(), integration.refresh()]);
     return bound;
   });
 
@@ -575,6 +575,9 @@ export function SetupRoute({
 
   const next = () => setActiveIndex((index) => Math.min(index + 1, steps.length - 1));
   const back = () => setActiveIndex((index) => Math.max(index - 1, 0));
+  const associatedRepository = integration.value?.checkout_repository || integration.value?.repository;
+  const githubApp = integration.value;
+  const showGitHubApp = githubApp?.profile === "native" && associatedRepository && githubApp.github_transport_available === true && githubApp.github_app_slug && githubApp.github_app_install_url;
 
   const bodies: Record<string, React.ReactNode> = {
     "Repository configuration": (
@@ -631,6 +634,19 @@ export function SetupRoute({
         </div>
         <ControlError message={bindRepository.error?.message ?? null} />
         <ControlError message={integration.error?.message ?? null} />
+        {showGitHubApp ? (
+          <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
+            <p className="text-[13px] text-muted-foreground">
+              New GitHub issues enter Triage automatically once the Detent Cloud GitHub App is installed on this repository or the whole organization. {" "}
+              <a className="text-primary underline underline-offset-2" href={githubApp.github_app_install_url} target="_blank" rel="noopener noreferrer">Install the Detent Cloud GitHub App</a>.
+            </p>
+            {githubApp.github_app_installed === undefined ? null : (
+              <p className="text-[13px] text-muted-foreground">
+                Detent Cloud is {githubApp.github_app_installed ? "installed" : "not installed"} on {associatedRepository}
+              </p>
+            )}
+          </div>
+        ) : null}
         {onboarding.value.observed_policies?.[0] ? (
           <details className="mb-2.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
             <summary className="cursor-pointer text-sm">{policyConflict ? "Conflicting runner configurations: inspect and approve one shared definition" : "Review runner-reported policy"}</summary>

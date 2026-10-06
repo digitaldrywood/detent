@@ -421,9 +421,11 @@ export function ProjectSettingsView({
           title="Intake"
           help={{
             label: "Intake",
-            text: "Manual intake imports a GitHub issue and its discussion into Detent when you request it; it does not automatically import every new issue. Disabled prevents new manual imports and keeps previously imported work. The project profile determines who owns the imported fields.",
+            text: integration.profile === "native"
+              ? "New GitHub issues enter Triage automatically once the Detent Cloud GitHub App is installed on the associated repository. You can also import existing issues and their discussion manually. The native project owns the imported work in Detent."
+              : "Compatibility projects import selected GitHub issues and their discussion when you request manual intake. Disabled prevents new manual imports and keeps previously imported work. GitHub owns the imported fields until native cutover.",
           }}
-          description="Import selected GitHub issues into this project."
+          description={integration.profile === "native" ? "New GitHub issues enter Triage automatically; existing issues can be imported manually." : "Import selected GitHub issues into this project."}
           control={
             <NativeSelect
               aria-label="Intake"
