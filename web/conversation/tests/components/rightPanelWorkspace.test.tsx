@@ -31,7 +31,12 @@ function Panel({ scopeKey = "item_1", attemptId = "attempt_1", workItemId = "ite
 
 const CLIENT = {
   http: { origin: "", apiBase: "/api/v2/organizations/acme", csrfToken: "csrf" },
-  bootstrap: { feature: { workspaces: true }, projects: [{ id: "proj_1", can_write: true, capabilities: { files: true } }] },
+  bootstrap: {
+    organization: { id: "acme" },
+    actor: { principal_id: "person_1" },
+    feature: { workspaces: true },
+    projects: [{ id: "proj_1", can_write: true, capabilities: { files: true } }],
+  },
 } as unknown as ConversationClient;
 
 function view(props: React.ComponentProps<typeof Panel> = {}, client = CLIENT) {
