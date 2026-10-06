@@ -71,7 +71,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	if state == "resolved" {
 		resolved = "IS NOT NULL"
 	}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json FROM health_findings
+	rows, err := s.database.db.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable FROM health_findings
  WHERE organization_id=? AND resolved_at `+resolved+` AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
  AND (?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>? ORDER BY rowid LIMIT ?`, scope.organization, scope.project, since, since, since, after, limit+1)
 	if err != nil {
@@ -84,7 +84,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		var rowid int64
 		var subject, opened, seen, evidence string
 		var ended sql.NullString
-		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence); err != nil {
+		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence, &f.EmailUnavailable); err != nil {
 			return page, err
 		}
 		if len(page.Items) == limit {

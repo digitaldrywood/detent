@@ -80,14 +80,12 @@ func (s *Service) evaluateOrganizationHealth(ctx context.Context, organization t
 	if err != nil {
 		return err
 	}
-	if err := writeHealthEvaluation(ctx, tx, organization, now, evaluateHealth(now, snapshot)); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.commitHealthEvaluation(ctx, tx, organization, now, evaluateHealth(now, snapshot))
 }
 
-func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time, findings []healthFinding) error {
+func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time, findings []healthFinding) ([]string, error) {
 	fingerprints := make([]string, 0, len(findings))
+	transitions := []string{}
 	for _, f := range findings {
 		fingerprints = append(fingerprints, f.Fingerprint)
 		var id string
@@ -97,38 +95,54 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 			err = tx.QueryRowContext(ctx, `SELECT id FROM health_findings WHERE organization_id=? AND fingerprint=? AND resolved_at>=? AND julianday(resolved_at)>=julianday(?) ORDER BY resolved_at DESC LIMIT 1`, organization, f.Fingerprint, cutoff.UTC().Format("2006-01-02T15:04:05"), formatHubTime(cutoff)).Scan(&id)
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
+			return nil, err
 		}
 
 		subject, err := json.Marshal(f.Subject)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		projects, err := json.Marshal(f.Projects)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		evidence, err := json.Marshal(f.Evidence)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if id == "" {
 			id = newNativeID("finding")
+			transitions = append(transitions, id)
 			_, err = tx.ExecContext(ctx, `INSERT INTO health_findings(id,organization_id,fingerprint,signal,class,subject_json,projects_json,opened_at,last_seen_at,severity,summary,next_action,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, organization, f.Fingerprint, f.Signal, f.Class, string(subject), string(projects), formatHubTime(now), formatHubTime(now), f.Severity, f.Summary, f.NextAction, string(evidence))
 		} else {
 			_, err = tx.ExecContext(ctx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,summary=?,next_action=?,evidence_json=? WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Summary, f.NextAction, string(evidence), id, organization)
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	raw, err := json.Marshal(fingerprints)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE health_findings SET resolved_at=? WHERE organization_id=? AND resolved_at IS NULL AND fingerprint NOT IN (SELECT value FROM json_each(?))`, formatHubTime(now), organization, string(raw)); err != nil {
-		return err
+	rows, err := tx.QueryContext(ctx, `UPDATE health_findings SET resolved_at=? WHERE organization_id=? AND resolved_at IS NULL AND fingerprint NOT IN (SELECT value FROM json_each(?)) RETURNING id`, formatHubTime(now), organization, string(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		transitions = append(transitions, id)
+		if len(transitions) > healthReadLimit {
+			return nil, errHealthReadLimit
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at) VALUES(?,?) ON CONFLICT(organization_id) DO UPDATE SET last_tick_at=excluded.last_tick_at`, organization, formatHubTime(now))
-	return err
+	return transitions, err
 }
