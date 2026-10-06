@@ -29,7 +29,24 @@ selected safe analyzer set.
 
 Follow the repository's [validation policy](../AGENTS.md#validation) and
 [failure reporting policy](../AGENTS.md#deployment-and-release-failure-reporting).
-Focused diagnostics do not become merge gates or local-gate statuses. The
+Run `make check-land` before reporting source work complete, fix failures in the
+same run, and report its printed wall time. It uses the scheduled lint version
+and configuration, vet and baseline-aware NilAway, `go build ./...`,
+`go test -short ./...`, invariants, migration and generated-source checks.
+Conversation typecheck, vitest and build run when `web/conversation` differs
+from the merge base with `origin/develop`, including staged, unstaged and
+untracked changes. Set `CHECK_LAND_BASE` to the actual landing base when it
+differs. A missing base ref fails the target. A fresh worktree builds missing
+embedded conversation assets with Node 24; ignored bundles are never staged.
+The target runs sequentially, stops on a failed stage and prints its exit code
+and elapsed seconds. Budget it at 5–10 minutes on the Mac Studio. Lint and vet
+use the scheduled tools; they and short tests stay in the landing gate. If a
+complete run exceeds ten minutes, report stage timings before moving expensive
+integration or race diagnostics to the scheduled suite.
+
+Landing uses the approved `gate.run: make check-land`; a command failure returns
+the item to Rework with the output. Focused diagnostics and full scheduled
+suites do not publish a required local commit status. The
 scheduled suite validates pinned integrated develop commits for release tags;
 every failing Detent scheduled job enters native Todo at least High under the
 human-approved reporting policy, including infrastructure and unclassified

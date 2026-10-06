@@ -22,8 +22,8 @@ func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, op
 	return l.prepareRework(ctx, info, issue, opts)
 }
 
-func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Issue, sourceHead, sourceDigest string, observed RecoveryState) (bool, error) {
-	info, err := l.normalizeInfo(info, issue)
+func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Issue, sourceHead, sourceDigest string, observed RecoveryState) (verified bool, err error) {
+	info, err = l.normalizeInfo(info, issue)
 	if err != nil {
 		return false, err
 	}
@@ -73,7 +73,7 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 	if err != nil {
 		return false, err
 	}
-	defer os.RemoveAll(scratch)
+	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
 	replay := filepath.Join(scratch, "source")
 	if _, err := runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "clone", "--shared", "--no-checkout", "--", info.Path, replay); err != nil {
 		return false, err

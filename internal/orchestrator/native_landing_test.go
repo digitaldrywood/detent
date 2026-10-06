@@ -92,6 +92,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 	}{
 		{name: "absorbed Rework uses the existing landing completion owner", absorbed: true, landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
+		{name: "a red gate returns to Rework with failing output", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, GateFailed: true, Refusal: "short-test-failure-sentinel"}, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "short-test-failure-sentinel", wantMoves: 1},
 		{name: "a refused landing returns to review with the reason", landing: refused, hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "enable GitHub pull request mode", wantMoves: 1},
 		{name: "a conflict enters rework without human review", landing: conflict, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "a conflict enters configured rework with human review", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
@@ -398,7 +399,10 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			if journey != nil && metadata["native_head_sha"] != landingHead {
 				t.Fatalf("protection refusal lost reviewed head: %#v", metadata)
 			}
-			if !test.landing.Landed && (metadata["native_landing_refusal"] != test.landing.RefusalKind || metadata["native_merge_sha"] != nil) {
+			if test.landing.GateFailed && metadata["native_gate_failed"] != true {
+				t.Fatalf("missing gate failure evidence: %#v", metadata)
+			}
+			if !test.landing.Landed && (metadata["native_landing_refusal"] != test.landing.RefusalKind && !test.landing.GateFailed || metadata["native_merge_sha"] != nil) {
 				t.Fatalf("refusal became landing evidence: %#v", metadata)
 			}
 		})

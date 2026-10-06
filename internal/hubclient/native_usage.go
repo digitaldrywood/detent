@@ -2,7 +2,7 @@ package hubclient
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"slices"
 	"strings"
 
@@ -22,7 +22,7 @@ func (e *nativeExecution) RecordUsage(_ context.Context, entry tracker.NativeUsa
 	defer e.mu.Unlock()
 	for _, existing := range e.data.Usage {
 		if existing.Provider == strings.TrimSpace(entry.Provider) && existing.Model == strings.TrimSpace(entry.Model) && existing.Currency != "" && entry.Currency != "" && existing.Currency != entry.Currency {
-			return fmt.Errorf("attempt usage cannot combine currencies for the same provider and model")
+			return errors.New("attempt usage cannot combine currencies for the same provider and model")
 		}
 	}
 	e.data.Usage = mergeNativeUsage(e.data.Usage, entry)

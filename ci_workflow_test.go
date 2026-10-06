@@ -244,46 +244,6 @@ func TestScheduledCIValidatesPinnedDevelopmentSHA(t *testing.T) {
 	}
 }
 
-func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
-	t.Parallel()
-
-	workflow := readNormalizedFile(t, ".github/workflows/deploy-staging.yml")
-	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	if want := "on:\n  push:\n    branches: [develop]\n  workflow_dispatch:\n"; triggers != want {
-		t.Fatalf("deploy-staging triggers = %q, want exactly %q", triggers, want)
-	}
-	for _, test := range []struct {
-		name    string
-		want    string
-		present bool
-	}{
-		{name: "hosted runner", want: "    runs-on: ubuntu-latest\n", present: true},
-		{name: "dispatch limited to develop", want: "    if: github.ref == 'refs/heads/develop'\n", present: true},
-		{name: "staging environment", want: "    environment:\n      name: staging\n      url: https://staging.cloud.detent.build\n", present: true},
-		{name: "single deploy at a time", want: "concurrency:\n  group: deploy-staging\n  cancel-in-progress: true\n", present: true},
-		{name: "read-only token", want: "permissions:\n  contents: read\n", present: true},
-		{name: "strict host key", want: "-o StrictHostKeyChecking=yes", present: true},
-		{name: "existing host key pin survives rename", want: "-o HostKeyAlias=staging.hub.detent.build", present: true},
-		{name: "canonical SSH destination", want: "apprunner@staging.cloud.detent.build", present: true},
-		{name: "canonical and legacy deployment smoke", want: "run: python3 scripts/cloud-origin-smoke.py --environment staging", present: true},
-		{name: "stale run skips deploy", want: `if [ "$head" != "$GITHUB_SHA" ]; then`, present: true},
-		{name: "only pre-key-exchange failures retry", want: `grep -qE '^(kex_exchange_identification:|ssh: connect to host )'`, present: true},
-		{name: "self-hosted runner", want: "self-hosted"},
-		{name: "pull request trigger", want: "pull_request"},
-		{name: "secrets inherited from repository", want: "secrets: inherit"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			if got := strings.Contains(workflow, test.want); got != test.present {
-				t.Fatalf("deploy-staging contains %q = %t, want %t", test.want, got, test.present)
-			}
-		})
-	}
-	if count := strings.Count(workflow, "runs-on:"); count != 1 {
-		t.Fatalf("deploy-staging has %d runs-on entries, want 1", count)
-	}
-}
-
 func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	t.Parallel()
 

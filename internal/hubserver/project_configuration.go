@@ -33,6 +33,7 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 	if err != nil {
 		return operatortool.Result{}, err
 	}
+	defer rows.Close()
 	type observation struct {
 		runner   string
 		raw      string
@@ -42,7 +43,6 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 	for rows.Next() {
 		var item observation
 		if err := rows.Scan(&item.runner, &item.raw, &item.settings); err != nil {
-			rows.Close()
 			return operatortool.Result{}, err
 		}
 		observations = append(observations, item)
@@ -172,66 +172,69 @@ func (s *Service) configurationRequestAuthority(ctx context.Context, tx *sql.Tx,
 	return authorizeNativeProject(ctx, tx, scope)
 }
 
-func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, scope nativeScope, observation *runnerauth.ProjectConfiguration, now time.Time) (*runnerauth.ProjectConfigurationRequest, error) {
+func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, scope nativeScope, observation *runnerauth.ProjectConfiguration, now time.Time) (runnerauth.ProjectConfigurationRequest, error) {
 	path := "$." + jsonPathKey(string(scope.project))
 	if observation != nil {
 		if err := observation.Validate(); err != nil || observation.ProjectID != string(scope.project) {
-			return nil, nativeInvalid("Invalid project configuration observation")
+			return runnerauth.ProjectConfigurationRequest{}, nativeInvalid("Invalid project configuration observation")
 		}
 		observation.ObservedAt = now
 		observation.RunnerID, observation.RunnerRevision = "", 0
 		observation.Pending = false
 		raw, err := json.Marshal(observation)
 		if err != nil {
-			return nil, err
+			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", path, string(raw), scope.organization, scope.credential.Runner.RunnerID); err != nil {
-			return nil, err
+			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 	}
 	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
 	if err != nil {
-		return nil, err
+		return runnerauth.ProjectConfigurationRequest{}, err
 	}
-	command := r.Routing.ProjectConfigurationCommand
+	command := r.ProjectConfigurationCommand
 	if command == nil || command.Request.ProjectID != string(scope.project) {
-		return nil, nil
+		return runnerauth.ProjectConfigurationRequest{}, nil
 	}
 	request := command.Request
 	var credential apiCredential
 	if json.Unmarshal(command.Issuer, &credential) != nil {
-		return nil, nativeInvalid("Invalid project configuration request")
+		return runnerauth.ProjectConfigurationRequest{}, nativeInvalid("Invalid project configuration request")
 	}
-	finish := func(view runnerauth.ProjectConfiguration) (*runnerauth.ProjectConfigurationRequest, error) {
+	finish := func(view runnerauth.ProjectConfiguration) (runnerauth.ProjectConfigurationRequest, error) {
 		view.RunnerID, view.RunnerRevision = r.RunnerID, command.RunnerRevision
 		raw, err := json.Marshal(view)
 		if err != nil {
-			return nil, err
+			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		operation := request.Operation + " " + r.RunnerID + " " + string(scope.project)
 		if _, err := tx.ExecContext(ctx, "UPDATE native_commands SET response_json = ? WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?", string(raw), scope.organization, credential.ID, operation, request.RequestID); err != nil {
-			return nil, err
+			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		settings := settingsFromRouting(r.Routing)
 		settings.ProjectConfigurationCommand = nil
 		rawSettings, err := json.Marshal(settings)
 		if err != nil {
-			return nil, err
+			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, project_configuration_json = json_set(project_configuration_json, ?, json(?)) WHERE organization_id = ? AND id = ?", string(rawSettings), path, string(raw), scope.organization, r.RunnerID)
-		return nil, err
+		if err != nil {
+			return runnerauth.ProjectConfigurationRequest{}, err
+		}
+		return runnerauth.ProjectConfigurationRequest{}, nil
 	}
 	if observation != nil && observation.RequestID == request.RequestID {
 		return finish(*observation)
 	}
-	refuse := func() (*runnerauth.ProjectConfigurationRequest, error) {
+	refuse := func() (runnerauth.ProjectConfigurationRequest, error) {
 		var raw string
 		if err := tx.QueryRowContext(ctx, "SELECT json_extract(project_configuration_json, ?) FROM runner_identities WHERE organization_id = ? AND id = ?", path, scope.organization, r.RunnerID).Scan(&raw); err != nil {
-			return nil, err
+			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		var view runnerauth.ProjectConfiguration
 		if err := json.Unmarshal([]byte(raw), &view); err != nil {
-			return nil, err
+			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		view.RequestID, view.Applied, view.Saved, view.Pending = request.RequestID, false, false, false
 		view.Constraint = "The selected policy was not applied; verify approval and supported workflow through the existing policy owner."
@@ -250,10 +253,13 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 			return refuse()
 		}
 	}
-	return &request, nil
+	return request, nil
 }
 
 func jsonPathKey(key string) string {
-	raw, _ := json.Marshal(key)
+	raw, err := json.Marshal(key)
+	if err != nil {
+		panic(err)
+	}
 	return string(raw)
 }

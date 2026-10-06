@@ -67,16 +67,20 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 		t.Run(transport, func(t *testing.T) {
 			for _, test := range []struct {
 				name, reference, want string
-				ctx                   context.Context
+				broader               bool
 			}{
-				{"missing", "wi_missing", "work item not found in this project", ctx},
-				{"unauthorized project", string(hidden.WorkItemID), operatortool.ErrProjectScopeRequired.Error(), ctx},
-				{"wrong authorized project", string(hidden.WorkItemID), "work item not found in this project", broader},
-				{"other organization", string(otherItem.WorkItemID), "work item not found in this project", ctx},
-				{"server fault", string(fault.WorkItemID), "Operator tool is unavailable", ctx},
+				{"missing", "wi_missing", "work item not found in this project", false},
+				{"unauthorized project", string(hidden.WorkItemID), operatortool.ErrProjectScopeRequired.Error(), false},
+				{"wrong authorized project", string(hidden.WorkItemID), "work item not found in this project", true},
+				{"other organization", string(otherItem.WorkItemID), "work item not found in this project", false},
+				{"server fault", string(fault.WorkItemID), "Operator tool is unavailable", false},
 			} {
 				t.Run(test.name, func(t *testing.T) {
-					call := hostedContextProtocol(t, f.service, test.ctx, transport)
+					callCtx := ctx
+					if test.broader {
+						callCtx = broader
+					}
+					call := hostedContextProtocol(t, f.service, callCtx, transport)
 					for _, tool := range []string{operatortool.WorkItem, operatortool.WorkHistory, operatortool.WorkComments, operatortool.WorkRelationships, operatortool.ExplainItem, operatortool.BoardActivity, operatortool.ListComments} {
 						t.Run(tool, func(t *testing.T) {
 							logs.Reset()

@@ -125,13 +125,16 @@ completion contract owns tracker publication and grants workers no extra writes.
 
 ## Validation
 
-The operator has disabled blocking CI and local validation gates for this
-repository. Do not require `make check`, `make check-fast`, a coverage gate,
-or a local commit status before pushing or merging. The self-hosted project's
-configured `gate.run` is `true`; it runs no validation and publishes no status.
-Every `make` test, lint, vet, and build target is still capped by `TEST_PROCS`
-(default 4) so worktrees that do run gates share the host (see
-[docs/development.md](docs/development.md)).
+Run `make check-land` before reporting source work complete and fix every
+failure in the same run. Do not hand back a red gate. Landing runs the same
+configured target; a failed command returns the item to Rework with its output.
+The target runs the whole-repository short unit suite, lint, vet, the scheduled
+baseline-aware NilAway audit, build, invariants, migrations and generated-source
+checks. Conversation changes also run typecheck, vitest and build. Full
+integration, race, coverage and fuzz suites remain scheduled release validation.
+No local commit status or additional CI producer is required. Every target
+shares the host through `TEST_PROCS` (default 4); see
+[docs/development.md](docs/development.md).
 
 Add a test only when it asserts a behavior no existing test asserts. Before
 writing one, name the failure it would catch; if you cannot, do not write it.
@@ -143,8 +146,8 @@ review (see [docs/test-suite-audit.md](docs/test-suite-audit.md)).
 
 Focused `go test -timeout=60s ./<touched-package>/...`, `go vet`, targeted
 regressions, and [safety-critical coverage and fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)
-are available for diagnostics during edits; they do not become completion
-gates. Give each diagnostic `go test` command an explicit timeout appropriate to
+are available for diagnostics during edits. `make check-land` is the
+completion gate. Give each diagnostic `go test` command an explicit timeout appropriate to
 the selected fixtures instead of using Go's ten-minute default. Use a longer
 timeout when the named diagnostic needs it. Inspect a timeout or instance failure
 before repeating the command; do not retry an unchanged unsupported fixture.

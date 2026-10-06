@@ -505,9 +505,10 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 			}
 			if test.statement != "" {
 				var target any = r.binding.RunnerID
-				if test.target == "lease" {
+				switch test.target {
+				case "lease":
 					target = lease.ID
-				} else if test.target == "project" {
+				case "project":
 					target = string(f.project.OrganizationID) + "/" + string(f.project.ID)
 				}
 				if _, err := d.db.ExecContext(t.Context(), test.statement, target); err != nil {

@@ -269,20 +269,23 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 						}
 						for _, receiptCase := range []struct {
 							name    string
-							ctx     context.Context
 							call    operatortool.Call
 							durable bool
 						}{
 							{name: "initial response"},
-							{name: "action result", ctx: ctx, call: operatortool.Call{Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + applied.ID + `"}`)}},
-							{name: "idempotent retry", ctx: ctx, call: call},
-							{name: "durable reconnect replay", ctx: reconnect, call: call, durable: true},
+							{name: "action result", call: operatortool.Call{Name: operatortool.ActionResult, Arguments: json.RawMessage(`{"action_id":"` + applied.ID + `"}`)}},
+							{name: "idempotent retry", call: call},
+							{name: "durable reconnect replay", call: call, durable: true},
 						} {
 							t.Run(receiptCase.name, func(t *testing.T) {
 								result := initial
-								if receiptCase.ctx != nil {
+								if receiptCase.call.Name != "" {
+									receiptCtx := ctx
+									if receiptCase.durable {
+										receiptCtx = reconnect
+									}
 									var err error
-									result, err = executor.Execute(receiptCase.ctx, receiptCase.call)
+									result, err = executor.Execute(receiptCtx, receiptCase.call)
 									if err != nil {
 										t.Fatalf("receipt failed: %v", err)
 									}

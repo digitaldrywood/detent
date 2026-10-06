@@ -115,6 +115,9 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if kept, found := keptLanding(ctx, normalized.Path, head, baseRef); found {
 		return kept, nil
 	}
+	if err := l.validateLanding(ctx, normalized, issue, opts.ValidationCommand, head); err != nil {
+		return LandResult{}, err
+	}
 	if opts.External == nil {
 		previous, exists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
 		if err != nil {

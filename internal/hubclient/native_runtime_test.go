@@ -148,6 +148,9 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 	}
 	profile.Status = "completed"
 	profile.FinishedAt = profile.AsOf
+	if len(profile.Spans) == 0 {
+		t.Fatal("missing runtime span")
+	}
 	profile.Spans[0].FinishedAt = profile.AsOf
 	profile.Spans[0].Outcome = "completed"
 	if err := execution.ObserveRuntime(t.Context(), observation); err != nil {

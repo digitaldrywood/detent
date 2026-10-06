@@ -43,7 +43,7 @@ func ModelSelectionCatalog() []Definition {
 			t = reflect.TypeFor[ProjectRequest[ModelSelectionInput]]()
 		}
 		schema := modelSelectionSchema(t)
-		properties := schema["properties"].(map[string]any)
+		properties := schemaObject(schema["properties"])
 		if IsOrganizationModelSelection(name) {
 			delete(properties, "project_id")
 			schema["required"] = []string{}
@@ -54,7 +54,7 @@ func ModelSelectionCatalog() []Definition {
 			schema["required"] = []string{"project_id"}
 		}
 		if !read {
-			selection := properties["input"].(map[string]any)["properties"].(map[string]any)["selection"].(map[string]any)
+			selection := schemaObject(schemaObject(schemaObject(properties["input"])["properties"])["selection"])
 			if IsOrganizationModelSelection(name) {
 				selection["type"] = "object"
 			} else {

@@ -128,6 +128,7 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 				execution.recovery = tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "current"}, Attempts: []tracker.NativeAttempt{{Status: "interrupted", NativeRunData: tracker.NativeRunData{PolicyID: "previous"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", WorktreeState: "unpushed", HeadSHA: execution.target.HeadSHA}}}}
 			}
 			cfg := config.Config{}
+			cfg.Gate.Run = "true"
 			cfg.Worker.GitHubToken = test.name
 			cfg.Tracker.Kind = config.TrackerGitHub
 			cfg.Tracker.Endpoint = "https://native-prepare.test/graphql"
@@ -279,6 +280,7 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			})}
 			t.Cleanup(func() { http.DefaultClient = originalClient })
 			cfg := config.Config{}
+			cfg.Gate.Run = "true"
 			cfg.Worker.GitHubToken = t.Name()
 			cfg.Tracker.Kind = config.TrackerGitHub
 			cfg.Tracker.Endpoint = "https://native-landing.test/graphql"
@@ -360,6 +362,7 @@ func TestLandNativeChange(t *testing.T) {
 		prepared       *NativeLandingTarget
 		infrastructure bool
 		wantMessage    string
+		gateFailure    bool
 	}{
 		{name: "lands and records", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantMessage: wantMessage},
@@ -368,6 +371,7 @@ func TestLandNativeChange(t *testing.T) {
 		{name: "opted-in project uses GitHub PR landing", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: "Land " + head + "\n\nChange Request change_1, round 0, head " + head + "."},
 		{name: "quota retains reviewed identity and actual metrics", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{githubRequest: true}, wantErr: "github rate limited", quota: true},
+		{name: "gate command failure retains output and reviewed identity", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.ValidationError{Output: "lint-error-sentinel", Err: errors.New("exit status 1")}}, wantOutput: RunOutputNativeLandingRefused, gateFailure: true},
 		{name: "a refusal is reported, not recorded", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "the base branch main refused the push"}},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalProtected},
 		{name: "a GitHub conflict retains reviewed identity without a landing receipt", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalConflict, Reason: "Pull Request is not mergeable (HTTP 405)"}},
@@ -434,13 +438,16 @@ func TestLandNativeChange(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if result.NativeLanding != nil && (result.NativeLanding.GateFailed != test.gateFailure || test.gateFailure && !strings.Contains(result.NativeLanding.Refusal, "lint-error-sentinel")) {
+				t.Fatalf("gate failure lost evidence: %#v", result.NativeLanding)
+			}
 			if result.FinalState != FinalStateCompleted || result.Output != test.wantOutput || result.NativeLanding == nil {
 				t.Fatalf("result = %#v", result)
 			}
 			if result.ForgeWriteCompleted != (test.wantGitHub && test.wantRecorded == 1) {
 				t.Fatalf("forge landing completion evidence = %t", result.ForgeWriteCompleted)
 			}
-			if result.NativeLanding.RefusalKind != test.wantRefusal || result.NativeLanding.Landed != (test.wantRefusal == "") {
+			if result.NativeLanding.RefusalKind != test.wantRefusal || result.NativeLanding.Landed != (test.wantRefusal == "" && !test.gateFailure) {
 				t.Fatalf("landing = %#v", result.NativeLanding)
 			}
 			if result.NativeLanding.ChangeID != target.ChangeID || result.NativeLanding.VersionID != target.VersionID || result.NativeLanding.HeadSHA != head || test.wantRefusal != "" && result.NativeLanding.MergeSHA != "" {
@@ -456,7 +463,7 @@ func TestLandNativeChange(t *testing.T) {
 				t.Fatalf("PR message = %q, want %q", backend.received.Message, test.wantMessage)
 			}
 			if test.wantRecorded == 1 {
-				if backend.received.HeadSHA != head || backend.received.Method != "merge" || !backend.received.PushAttemptBranch || (!test.wantGitHub && (!strings.Contains(backend.received.Message, "Add a sign-in link") || !strings.Contains(backend.received.Message, "round 2"))) {
+				if backend.received.ValidationCommand != "make check" || backend.received.HeadSHA != head || backend.received.Method != "merge" || !backend.received.PushAttemptBranch || (!test.wantGitHub && (!strings.Contains(backend.received.Message, "Add a sign-in link") || !strings.Contains(backend.received.Message, "round 2"))) {
 					t.Fatalf("land options = %#v", backend.received)
 				}
 				if stub.recorded[0].MergeSHA != merge || stub.recorded[0].BaseRef != "main" || stub.recorded[0].ChangeID != "change_1" {
@@ -561,6 +568,7 @@ func TestNativeLandingQuotaFinishesRun(t *testing.T) {
 	quota := &github.StatusError{StatusCode: 403, Err: github.ErrRateLimited, CredentialIdentity: "runner", RateLimitKind: "primary_exhausted", ObservedAt: now, ResetAt: now.Add(time.Hour)}
 	backend := &landingBackend{Backend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, err: quota}
 	cfg := config.Config{}
+	cfg.Gate.Run = "true"
 	cfg.Worker.GitHubToken = "runner-token"
 	cfg.Tracker.Kind = config.TrackerGitHub
 	cfg.Tracker.Endpoint = "https://native-finish.test/graphql"

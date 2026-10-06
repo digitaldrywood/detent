@@ -188,7 +188,7 @@ func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope n
 		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") {
 			return nil
 		}
-		if report.Receipt == nil || report.Receipt.Request != *current || report.Receipt.Status != "running" && !(current.FollowHub && report.Receipt.Status == "refused") {
+		if report.Receipt == nil || report.Receipt.Request != *current || report.Receipt.Status != "running" && (!current.FollowHub || report.Receipt.Status != "refused") {
 			return nil
 		}
 	}

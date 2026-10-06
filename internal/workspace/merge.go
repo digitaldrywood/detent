@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -416,7 +417,14 @@ func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue
 	l.logger.Info("validating merge resolution", "workspace_path", info.Path, "command", command)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("merge resolution gate failed: %w: %s", errors.Join(ctx.Err(), err), output)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var exited *exec.ExitError
+		if errors.As(err, &exited) && exited.Exited() {
+			return &ValidationError{Output: string(output), Err: err}
+		}
+		return fmt.Errorf("merge resolution gate failed: %w: %s", err, output)
 	}
 	return nil
 }
@@ -449,3 +457,13 @@ func rejectMergeHistory(ctx context.Context, path, remoteHead string, cause erro
 	}
 	return MergePrepareResult{Status: MergePrepareStatusConflict, Message: cause.Error()}, nil
 }
+
+type ValidationError struct {
+	Output string
+	Err    error
+}
+
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("merge resolution gate failed: %v: %s", e.Err, e.Output)
+}
+func (e *ValidationError) Unwrap() error { return e.Err }

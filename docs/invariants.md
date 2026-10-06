@@ -114,7 +114,7 @@ Workspace-session retained-worktree affinity governs separate workspace items;
 its retention interval does not establish availability of an unpublished
 project issue commit.
 
-Landing refusal destinations belong to the workflow owner. Conflicts prefer
+Landing refusal destinations belong to the workflow owner. Conflicts and command gate failures prefer
 configured Rework, then the first allowed dispatchable non-terminal lane.
 Other refusals prefer the configured review lane, then the first allowed
 non-dispatchable non-terminal lane. Terminal, operator-only and self-transitions
@@ -204,9 +204,12 @@ only `contributor-assistant/github-action` on `pull_request_target` and
 `issue_comment`, without checking out or executing PR code. The action owns
 signature records on the dedicated, unprotected `cla-signatures` branch.
 
-Ordinary submission and merge do not wait for CI, local validation, coverage,
-fuzz duration or scheduled validation. The self-hosted project runs `true`,
-publishes no local status and sets `gate.required_status_checks: []`.
+Source completion and landing run `make check-land` and fix failures before
+submission. A failed landing command returns to configured Rework with the
+failing output. Full integration tests, race, coverage and fuzz validation
+remain in the scheduled suite. The project publishes no local status and sets
+`gate.required_status_checks: []`; ordinary merge does not wait for an additional
+CI producer or scheduled validation.
 Reported failed CI and native base-branch requirements remain authoritative.
 `gate.automated_review: "off"` removes pending-review waits; reported P1
 findings still require Rework. Other projects retain their configured policies.

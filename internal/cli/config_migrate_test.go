@@ -3,11 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
 
 func TestConfigMigrateCommand(t *testing.T) {

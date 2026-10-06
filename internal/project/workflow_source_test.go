@@ -483,7 +483,7 @@ func TestWorkflowWatchersUseReloadedHostBackends(t *testing.T) {
 			commitWorkflowSourceRepo(t, repo, "initial")
 			updateWorkflowSourceRef(t, repo, "origin/main", "HEAD")
 			project := &Project{cfg: globalconfig.Project{Workflow: path, WorkflowRef: ref, Workdir: repo}}
-			factory := resolveWorkflowWatcherFactory(Dependencies{}, project.Config(), "", slog.New(slog.DiscardHandler), project.Config)
+			factory := resolveWorkflowWatcherFactory(t.Context(), Dependencies{}, project.Config(), "", slog.New(slog.DiscardHandler), project.Config)
 			watcher, err := factory(path)
 			if err != nil {
 				t.Fatal(err)

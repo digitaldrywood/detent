@@ -1605,7 +1605,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						case http.MethodGet:
 							response.WriteString("[]")
 						case http.MethodPost:
-							response.WriteString(fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":%q,"ref":%q},"base":{"ref":"main"}}`, target.HeadSHA, info.Branch))
+							fmt.Fprintf(response, `{"number":7,"state":"open","head":{"sha":%q,"ref":%q},"base":{"ref":"main"}}`, target.HeadSHA, info.Branch)
 						case http.MethodPut:
 							var body map[string]string
 							if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body["sha"] != target.HeadSHA || body["merge_method"] != target.Method || !strings.HasSuffix(request.URL.Path, "/pulls/7/merge") {

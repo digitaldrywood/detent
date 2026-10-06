@@ -672,7 +672,7 @@ func (s *Service) planForVersion(ctx context.Context, target string, exact bool)
 		Binary:         s.cfg.ExecutablePath,
 	}
 
-	if IsDevelopmentVersion(s.cfg.CurrentVersion) && !(exact && (info.Source == InstallSourceRelease || info.Source == InstallSourceGoInstall || info.Source == InstallSourceHomebrew)) {
+	if IsDevelopmentVersion(s.cfg.CurrentVersion) && (!exact || info.Source != InstallSourceRelease && info.Source != InstallSourceGoInstall && info.Source != InstallSourceHomebrew) {
 		status.Action = ActionRefused
 		switch info.Source {
 		case InstallSourceGoInstall:
@@ -700,7 +700,7 @@ func (s *Service) planForVersion(ctx context.Context, target string, exact bool)
 	status.LatestVersion = displayVersion(release.TagName)
 	status.Critical = releaseCritical(release)
 	cmp, err := CompareVersions(release.TagName, s.cfg.CurrentVersion)
-	if err != nil && !(exact && IsDevelopmentVersion(s.cfg.CurrentVersion)) {
+	if err != nil && (!exact || !IsDevelopmentVersion(s.cfg.CurrentVersion)) {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, Release{}, err

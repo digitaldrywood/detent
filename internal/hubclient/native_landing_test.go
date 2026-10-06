@@ -390,7 +390,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		for _, attempt := range attempts.Items {
 			if attempt.Identity.Role == runner.RoleMerge {
 				merges++
-				if attempt.MachineID != tracker.MachineID(h.scheduler.machine.ID) {
+				if attempt.MachineID != h.scheduler.machine.ID {
 					t.Fatalf("landing ran away from reviewed head: %+v", attempt)
 				}
 			}

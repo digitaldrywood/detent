@@ -376,6 +376,10 @@ func (s *Service) Backup(ctx context.Context, destination string) error {
 }
 
 func (s *Service) Close() error {
+	return s.CloseContext(context.Background())
+}
+
+func (s *Service) CloseContext(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
@@ -384,7 +388,7 @@ func (s *Service) Close() error {
 		s.notifications.closeAll()
 		var mcpErr error
 		if s.mcpHTTP != nil {
-			mcpErr = s.mcpHTTP.Shutdown(context.Background())
+			mcpErr = s.mcpHTTP.Shutdown(ctx)
 		}
 		httpErr := s.echo.Close()
 		if errors.Is(httpErr, http.ErrServerClosed) {
@@ -401,7 +405,7 @@ func (s *Service) Close() error {
 			s.conversations.stop()
 		}
 		if s.workspaces != nil {
-			s.workspaces.Stop()
+			s.workspaces.StopContext(ctx)
 		}
 		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, reconcileErr, s.database.Close())
 	})

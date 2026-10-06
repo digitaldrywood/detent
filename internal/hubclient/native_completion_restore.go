@@ -32,7 +32,7 @@ type nativeCompletionState struct {
 func (e *nativeExecution) CompletionState() json.RawMessage {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	data, _ := json.Marshal(nativeCompletionState{
+	data, err := json.Marshal(nativeCompletionState{
 		Lease: e.claim.lease, Data: e.data, Pending: e.pending,
 		Diff: e.lastDiff, StoredSeq: e.storedSeq,
 		WorktreeState: e.worktreeState, WorktreeHead: e.worktreeHead,
@@ -40,6 +40,9 @@ func (e *nativeExecution) CompletionState() json.RawMessage {
 		PreparedOutcome: e.preparedOutcome, PreparedMessage: e.preparedMessage,
 		PreparedDisposition: e.preparedDisposition,
 	})
+	if err != nil {
+		return nil
+	}
 	return data
 }
 

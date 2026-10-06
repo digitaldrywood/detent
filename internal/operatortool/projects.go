@@ -115,7 +115,10 @@ func ProjectCatalog() []Definition {
 			required = append(required, "import_id")
 		}
 		schema["required"] = required
-		raw, _ := json.Marshal(schema) //nolint:errcheck // Generated schemas contain only JSON primitives, slices and maps.
+		raw, err := json.Marshal(schema)
+		if err != nil {
+			panic(err)
+		}
 		out = append(out, Definition{Name: name, Description: "Read authorized project application data: " + strings.ReplaceAll(name, "_", " ") + ". Setup returns the existing browser flow and requirements.", InputSchema: raw, Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}})
 	}
 	out = append(out,
@@ -141,10 +144,10 @@ func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 	schema := projectSchema(reflect.TypeFor[ProjectRequest[T]]())
 	schema["required"] = []string{"project_id", "request_id", "input"}
 	if name == "import_sprite_usage" {
-		input := schema["properties"].(map[string]any)["input"].(map[string]any)
-		observations := input["properties"].(map[string]any)["observations"].(map[string]any)
+		input := schemaObject(schemaObject(schema["properties"])["input"])
+		observations := schemaObject(schemaObject(input["properties"])["observations"])
 		observations["minItems"], observations["maxItems"] = 1, 128
-		properties := observations["items"].(map[string]any)["properties"].(map[string]any)
+		properties := schemaObject(schemaObject(observations["items"])["properties"])
 		properties["quantity"] = map[string]any{"type": []string{"number", "null"}, "minimum": 0}
 		properties["amount_micros"] = map[string]any{"type": []string{"integer", "null"}, "minimum": -1e15, "maximum": 1e15}
 		properties["unit_price_micros"] = map[string]any{"type": []string{"integer", "null"}, "minimum": 0, "maximum": 1e15}
@@ -155,7 +158,10 @@ func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 	if name == "create_native_project" || name == "create_hosted_project" {
 		schema["required"] = []string{"request_id", "input"}
 	}
-	raw, _ := json.Marshal(schema) //nolint:errcheck // Generated schemas contain only JSON primitives, slices and maps.
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
 	return Definition{Name: name, Description: "Use the shared dashboard application command: " + strings.ReplaceAll(name, "_", " ") + ". Current scoped authority is required; request_id is the business retry key.", InputSchema: raw, Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: openWorld}, Meta: ToolMetadata{Toolset: "projects"}}
 }
 
@@ -290,4 +296,12 @@ func projectStringLimit(key string) int {
 		return 2048
 	}
 	return 256
+}
+
+func schemaObject(value any) map[string]any {
+	object, ok := value.(map[string]any)
+	if !ok {
+		panic("generated schema is not an object")
+	}
+	return object
 }
