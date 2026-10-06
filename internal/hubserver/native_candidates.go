@@ -2,10 +2,12 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const nativeCandidateDependenciesSatisfied = `(p.require_dependencies = 0 OR NOT EXISTS (
@@ -193,47 +195,120 @@ WHERE i.organization_id = `,
 	if encodingErr != nil {
 		return nil, encodingErr
 	}
-	unpublished, err := unpublishedNativeCompletionIDs(ctx, tx, statement+")", args)
-	if err != nil {
-		return nil, err
-	}
-	statement += ` AND ` + fmt.Sprintf(notAlreadyAnsweredClause, jsonList(unpublished))
 	statement += `), ranked AS NOT MATERIALIZED (SELECT *, CASE WHEN label_rank < ` + bind(len(labelRanks)) + ` THEN 0 ELSE unblockers END AS unblocker_rank FROM candidates)`
 	order := "merging, priority, label_rank, state_rank, unblocker_rank, unranked, queue_rank, created, identifier, id"
-	statement += ` SELECT id FROM ranked WHERE 1 = 1`
-	if query.After > 0 {
-		statement += ` AND (` + order + `) > (SELECT ` + order + ` FROM ranked WHERE id = ` + bind(query.After) + `)`
+	baseArgs := args
+	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
+		args = append([]any(nil), baseArgs...)
+		page := statement + `, page AS MATERIALIZED (SELECT * FROM ranked WHERE 1 = 1`
+		if anchor {
+			page += ` AND id = ` + bind(after)
+		} else {
+			if after > 0 {
+				page += ` AND (` + order + `) > (SELECT ` + order + ` FROM ranked WHERE id = ` + bind(after) + `)`
+			}
+			if !query.AvailableAt.IsZero() {
+				page += ` AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id = ranked.id AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(` + bind(formatHubTime(query.AvailableAt)) + `))`
+			}
+		}
+		page += ` ORDER BY ` + order + ` LIMIT ` + bind(limit) + `)`
+		return readNativeCandidatePage(ctx, tx, page+nativeCandidateCompletionEvidence+` ORDER BY page.`+strings.ReplaceAll(order, ", ", ", page."), args)
 	}
-	if !query.AvailableAt.IsZero() {
-		statement += ` AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id = ranked.id AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(` + bind(formatHubTime(query.AvailableAt)) + `))`
+	if query.After > 0 {
+		ids, _, _, err := readPage(query.After, 1, true)
+		if err != nil {
+			return nil, err
+		}
+		if len(ids) == 0 {
+			return nil, providerWait("provider_candidate_changed", "Queue changed during provider selection; refresh the candidate page")
+		}
 	}
 	limit := min(100, max(1, query.Limit))
 	if query.Limit == 0 {
 		limit = 100
 	}
-	statement += ` ORDER BY ` + order + ` LIMIT ` + bind(limit)
-	if query.After > 0 {
-		statement = strings.Replace(statement, ` SELECT id FROM ranked WHERE 1 = 1`, `, page AS (SELECT id FROM ranked WHERE 1 = 1`, 1)
-		statement += `) SELECT id FROM page UNION ALL SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM ranked WHERE id = ` + bind(query.After) + `)`
+	var ids []tracker.WorkItemID
+	after := query.After
+	for len(ids) < limit {
+		remaining := limit - len(ids)
+		page, last, scanned, err := readPage(after, remaining, false)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, page...)
+		if scanned < remaining {
+			break
+		}
+		after = last
 	}
-	if encodingErr != nil {
-		return nil, encodingErr
-	}
-	rows, err := tx.QueryContext(ctx, statement, args...)
+	return ids, nil
+}
+
+const nativeCandidateCompletionEvidence = `
+ SELECT page.id, ` + notAlreadyAnsweredClause + `, i.project_id,
+ json_type(a.data_json, '$.disposition') = 'object',
+ CASE WHEN COALESCE(json_type(a.data_json, '$.disposition'), 'null') = 'null'
+   AND length(CAST(COALESCE(json_extract(a.data_json, '$.completion_body'), '') AS BLOB)) <= 65536
+   THEN COALESCE(json_extract(a.data_json, '$.completion_body'), '') ELSE '' END AS completion_body,
+ COALESCE(json_extract(a.checkpoint_json, '$.head_sha'), ''),
+ COALESCE(json_extract(a.checkpoint_json, '$.workspace_digest'), '')
+ FROM page JOIN issues i ON i.id = page.id
+ JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
+ JOIN workflow_states ws ON ws.id = i.workflow_state_id
+ LEFT JOIN native_attempts a ON a.organization_id = i.organization_id AND a.project_id = i.project_id AND a.work_item_id = i.native_id
+ AND lower(trim(ws.detent_state)) <> 'merging'
+ AND a.status = 'succeeded' AND a.work_item_revision >= i.revision AND a.dispatch_generation >= i.dispatch_generation
+ AND a.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
+   WHERE latest.organization_id = a.organization_id AND latest.project_id = a.project_id AND latest.work_item_id = a.work_item_id)
+ AND (COALESCE(json_type(a.data_json, '$.disposition'), 'null') = 'null'
+   OR (json_extract(a.data_json, '$.disposition.status') = 'complete'
+     AND json_extract(a.data_json, '$.disposition.blockers') = 0
+     AND json_extract(a.data_json, '$.disposition.human_action') = 0
+     AND COALESCE(json_extract(a.data_json, '$.disposition.reason_code'), '') = ''
+     AND COALESCE(json_array_length(a.data_json, '$.disposition.blocker_evidence'), 0) = 0))
+ AND json_extract(a.checkpoint_json, '$.worktree_state') IN ('dirty', 'unpushed')
+ AND json_extract(a.checkpoint_json, '$.resume') = 'resume_session'
+ AND json_extract(a.checkpoint_json, '$.availability') = 'available'
+ AND json_extract(a.checkpoint_json, '$.storage') = 'local_only'
+ AND json_extract(a.checkpoint_json, '$.external_effect') = 'none'
+ AND json_extract(a.checkpoint_json, '$.effect_state') = 'none'
+ AND COALESCE(json_extract(a.checkpoint_json, '$.effect_id'), '') = ''
+ AND json_extract(a.checkpoint_json, '$.head_sha') IS NOT NULL
+ AND json_extract(a.checkpoint_json, '$.workspace_digest') IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM change_issue_links l JOIN change_versions v ON v.change_id = l.change_id
+   WHERE l.organization_id = a.organization_id AND l.project_id = a.project_id AND l.work_item_id = a.work_item_id
+   AND json_extract(v.record_json, '$.head_sha') = json_extract(a.checkpoint_json, '$.head_sha'))`
+
+func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement string, args []any) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
+	rows, err := q.QueryContext(ctx, statement, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query native candidates: %w", err)
+		return nil, 0, 0, fmt.Errorf("query native candidates: %w", err)
 	}
 	defer rows.Close()
 	var ids []tracker.WorkItemID
+	var last tracker.WorkItemID
+	scanned := 0
 	for rows.Next() {
-		var id tracker.WorkItemID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
+		var unanswered bool
+		var project, body, head, digest string
+		var typed sql.NullBool
+		if err := rows.Scan(&last, &unanswered, &project, &typed, &body, &head, &digest); err != nil {
+			return nil, 0, 0, err
 		}
-		if id == 0 {
-			return nil, providerWait("provider_candidate_changed", "Queue changed during provider selection; refresh the candidate page")
+		scanned++
+		if !unanswered {
+			if !validCommitID(head) || !validCommitID(digest) {
+				continue
+			}
+			if !typed.Bool {
+				signal, reported := workpad.SignalFromComment(body, "", project)
+				if !reported || signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusComplete || len(signal.Blockers) != 0 ||
+					signal.HumanAction != "" || signal.ReasonCode != "" || signal.Fields["completion_kind"] == "operational" {
+					continue
+				}
+			}
 		}
-		ids = append(ids, id)
+		ids = append(ids, last)
 	}
-	return ids, rows.Err()
+	return ids, last, scanned, rows.Err()
 }

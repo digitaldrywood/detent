@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,10 +22,12 @@ import (
 )
 
 type dispatchQueryProbe struct {
-	queries    atomic.Int64
-	candidates atomic.Int64
-	rows       atomic.Int64
-	query      atomic.Pointer[dispatchProbedQuery]
+	queries          atomic.Int64
+	candidates       atomic.Int64
+	rows             atomic.Int64
+	query            atomic.Pointer[dispatchProbedQuery]
+	completionBodies atomic.Int64
+	maxArgumentBytes atomic.Int64
 }
 
 type dispatchProbedQuery struct {
@@ -67,8 +70,17 @@ func (c dispatchProbeConn) QueryContext(ctx context.Context, query string, args 
 	if err == nil && strings.HasPrefix(query, "WITH candidates AS") {
 		c.probe.candidates.Add(1)
 		values := make([]any, 0, len(args))
+		argumentBytes := int64(0)
 		for _, arg := range args {
 			values = append(values, arg.Value)
+			if value, ok := arg.Value.(string); ok {
+				argumentBytes += int64(len(value))
+			}
+		}
+		for old := c.probe.maxArgumentBytes.Load(); argumentBytes > old; old = c.probe.maxArgumentBytes.Load() {
+			if c.probe.maxArgumentBytes.CompareAndSwap(old, argumentBytes) {
+				break
+			}
 		}
 		c.probe.query.Store(&dispatchProbedQuery{query, values})
 		return dispatchProbeRows{rows, c.probe}, nil
@@ -80,6 +92,11 @@ func (r dispatchProbeRows) Next(values []driver.Value) error {
 	err := r.Rows.Next(values)
 	if err == nil {
 		r.probe.rows.Add(1)
+		for index, column := range r.Columns() {
+			if strings.Contains(column, "completion_body") && values[index] != nil && values[index] != "" {
+				r.probe.completionBodies.Add(1)
+			}
+		}
 	}
 	return err
 }
@@ -333,6 +350,7 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 }
 
 func TestNativeCandidateQueryBound(t *testing.T) {
+	var bindBytes int64
 	for _, test := range []struct {
 		size        int
 		unpublished bool
@@ -346,6 +364,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			}
 			defer tx.Rollback()
 			var tail tracker.NativeIssue
+			var issues []tracker.NativeIssue
 			for index := range test.size {
 				request := tracker.CreateIssue{Title: fmt.Sprintf("candidate-%d", index), State: "Todo"}
 				if index == test.size-1 {
@@ -356,6 +375,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				issues = append(issues, tail)
 			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
@@ -378,6 +398,32 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 				event.Data.CompletionBody = "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json = json_remove(data_json, '$.disposition') WHERE work_item_id = ?", tail.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				for _, issue := range issues[:len(issues)-1] {
+					leaseID := newNativeID("lease")
+					result, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases
+(lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at)
+SELECT ?, i.id, l.machine_id, ?, l.expires_at, l.acquired_at, l.renewed_at, l.released_at, l.created_at, l.updated_at
+FROM leases l JOIN issues i ON i.native_id = ? WHERE l.lease_id = ?`, leaseID, newNativeID("session"), issue.WorkItemID, lease.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					fence, err := result.LastInsertId()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts
+(id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, checkpoint_json, started_at, updated_at, work_item_revision, dispatch_generation)
+SELECT ?, a.organization_id, a.project_id, i.native_id, ?, ?, ?, a.sequence, a.status, a.data_json, a.checkpoint_json, a.started_at, a.updated_at, i.revision, i.dispatch_generation
+FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?`, newNativeID("attempt"), leaseID, fence, newNativeID("run"), issue.WorkItemID, tail.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE leases SET released_at = NULL, expires_at = ? WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)`, formatHubTime(f.service.config.now().Add(time.Hour)), issues[0].WorkItemID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			probe := measureDispatchQueries(t, f.service)
 			tx, err = f.service.database.db.BeginTx(t.Context(), nil)
@@ -389,7 +435,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", tail.WorkItemID).Scan(&tailID); err != nil {
 				t.Fatal(err)
 			}
-			query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), Limit: 9, DispatchPriorityByState: []string{"Todo"}, DispatchPriorityByLabel: []string{"hotfix"}}
+			query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), Limit: 9, AvailableAt: f.service.config.now(), DispatchPriorityByState: []string{"Todo"}, DispatchPriorityByLabel: []string{"hotfix"}}
 			began := time.Now()
 			ids, err := claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
 			if err != nil {
@@ -397,11 +443,69 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			}
 			elapsed := time.Since(began)
 			wantRows := int64(9)
-			if test.unpublished {
-				wantRows++
-			}
 			if len(ids) != 9 || ids[0] != tailID || probe.rows.Load() != wantRows {
 				t.Fatalf("ids=%v tail=%d returned_rows=%d", ids, tailID, probe.rows.Load())
+			}
+			if bindBytes == 0 {
+				bindBytes = probe.maxArgumentBytes.Load()
+			}
+			if probe.maxArgumentBytes.Load() != bindBytes {
+				t.Fatalf("bind payload grew with candidate cohort: got=%d want=%d", probe.maxArgumentBytes.Load(), bindBytes)
+			}
+			if test.unpublished {
+				if probe.completionBodies.Load() != 9 {
+					t.Fatalf("first page completion_bodies=%d bind_bytes=%d", probe.completionBodies.Load(), probe.maxArgumentBytes.Load())
+				}
+				seen := slices.Clone(ids)
+				pages := 1
+				for len(ids) == query.Limit {
+					query.After = ids[len(ids)-1]
+					before := probe.completionBodies.Load()
+					ids, err = claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if work := probe.completionBodies.Load() - before; work != int64(len(ids)+1) {
+						t.Fatalf("page=%d bodies=%d want=%d including cursor", pages, work, len(ids)+1)
+					}
+					for _, id := range ids {
+						if slices.Contains(seen, id) {
+							t.Fatalf("page repeated candidate %d", id)
+						}
+					}
+					seen = append(seen, ids...)
+					pages++
+				}
+				var leasedID tracker.WorkItemID
+				if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", issues[0].WorkItemID).Scan(&leasedID); err != nil {
+					t.Fatal(err)
+				}
+				if len(seen) != test.size-1 || slices.Contains(seen, leasedID) || probe.maxArgumentBytes.Load() != bindBytes {
+					t.Fatalf("paged=%d leased=%d bind_bytes=%d", len(seen), leasedID, probe.maxArgumentBytes.Load())
+				}
+				t.Logf("pages=%d candidates=%d legacy_bodies=%d max_bind_bytes=%d", pages, len(seen), probe.completionBodies.Load(), probe.maxArgumentBytes.Load())
+				for index, issue := range issues[:200] {
+					body := "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```"
+					if index%2 == 0 {
+						body = strings.Replace(body, "schema: 1", "schema: 2", 1)
+					}
+					if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE work_item_id = ?`, body, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = 0 WHERE issue_id = (SELECT id FROM issues WHERE native_id = ?)", issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override = CASE WHEN issue_id = ? THEN 1 ELSE COALESCE(priority_override, 2) END", tailID); err != nil {
+					t.Fatal(err)
+				}
+				query.After, query.Limit = 0, 1
+				before := probe.completionBodies.Load()
+				ids, err = claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
+				if err != nil || !slices.Equal(ids, []tracker.WorkItemID{tailID}) || probe.completionBodies.Load()-before != 200 {
+					t.Fatalf("after nonqualifying reports ids=%v bodies=%d err=%v", ids, probe.completionBodies.Load()-before, err)
+				}
+				t.Logf("claim-sized selection examined %d reports before ranked qualifying candidate", probe.completionBodies.Load()-before)
 			}
 			captured := probe.query.Load()
 			plan, err := tx.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+captured.statement, captured.args...)
@@ -426,6 +530,15 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 				t.Fatal(err)
 			}
 			query.After = ids[0]
+			if test.unpublished {
+				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE work_item_id = ?`, "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```", tail.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				before := probe.completionBodies.Load()
+				if _, err := claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil); !isProviderWait(err) || probe.completionBodies.Load()-before != 1 {
+					t.Fatalf("answered cursor must refresh without reading next page: bodies=%d err=%v", probe.completionBodies.Load()-before, err)
+				}
+			}
 			if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET archived = 1 WHERE id = ?", query.After); err != nil {
 				t.Fatal(err)
 			}
