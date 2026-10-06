@@ -318,8 +318,11 @@ func operatorPolicyScope(ctx context.Context, query nativeQueryer, scope nativeS
 	if err != nil {
 		return "", err
 	}
+	if integration.Profile == "native" && integration.RepositoryID == 0 && integration.CheckoutRepository != "" {
+		return string(scope.organization) + "/" + string(scope.project), nil
+	}
 	if integration.RepositoryID == 0 || integration.Repository == "" {
-		return "", errProjectServiceUnavailable
+		return "", &operatortool.RequestError{Code: "invalid_request", Message: "Project has no linked repository policy; use repository_policy:false for its project policy"}
 	}
 	return "repository:" + strings.ToLower(integration.Repository), nil
 }
