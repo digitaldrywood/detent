@@ -103,6 +103,17 @@ export function registerCommand(input: RegisterCommandInput): string {
 
 export const MAX_RUNNER_CAPACITY = 16;
 
+export function spriteBootstrapPin(version: string): { ref: string; release: string | null } {
+  if (/^v?\d+\.\d+\.\d+$/.test(version)) {
+    const release = `v${version.replace(/^v/, "")}`;
+    return { ref: release, release };
+  }
+  const commit = /^(?:operator-landed-)?([a-f0-9]{7,40})$/.exec(version)?.[1];
+  return { ref: commit ?? "latest", release: null };
+}
+
+const LATEST_RELEASE_COMMAND = 'detent_release_url=$(curl -fsSL -o /dev/null -w "%{url_effective}" https://github.com/digitaldrywood/detent/releases/latest) && detent_release=${detent_release_url##*/}';
+
 /** The Hub limits a runner's display name to 200 bytes of UTF-8. */
 export const MAX_RUNNER_NAME_BYTES = 200;
 
@@ -217,7 +228,12 @@ export function EnrollRunnerDialog({
   }, [api, open, location, selectedKey]);
   const canWake = sprites.value?.length === selected.length && sprites.value.every((entry) => entry.present === true);
   const publishedVersion = fleet.value?.current ?? bootstrap?.version ?? "";
-  const release = /^v?\d+\.\d+\.\d+$/.test(publishedVersion) ? `v${publishedVersion.replace(/^v/, "")}` : null;
+  const pin = spriteBootstrapPin(publishedVersion);
+  const downloadRef = pin.ref === "latest" ? '${detent_release}' : pin.ref;
+  const downloadCommand = `${pin.ref === "latest" ? `${LATEST_RELEASE_COMMAND} && ` : ""}curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/${downloadRef}/scripts/sprite-runner-bootstrap.sh -o sprite-runner-bootstrap.sh`;
+  const bootstrapCommand = pin.release === null
+    ? `${LATEST_RELEASE_COMMAND} && bash sprite-runner-bootstrap.sh --version "$detent_release"`
+    : `bash sprite-runner-bootstrap.sh --version ${pin.release}`;
   const [showToken, setShowToken] = React.useState(false);
   const [connected, setConnected] = React.useState<FleetRunner | null>(null);
 
@@ -290,7 +306,7 @@ export function EnrollRunnerDialog({
 
   const nameFits = runnerNameFits(name);
   const spriteNameFits = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name.trim());
-  const ready = fleet.value !== undefined && selected.length > 0 && capacity !== null && nameFits && (location === "machine" || (spriteNameFits && release !== null));
+  const ready = fleet.value !== undefined && selected.length > 0 && capacity !== null && nameFits && (location === "machine" || spriteNameFits);
   const baselinePending = enrollment === null && fleet.value === undefined;
   const step = connected !== null ? 2 : enrollment !== null ? 1 : 0;
 
@@ -347,10 +363,10 @@ export function EnrollRunnerDialog({
               {location === "sprite" ? <>
                 <p className="text-xs text-muted-foreground">The Sprite gets the same name as this runner. Use lowercase letters, numbers and hyphens.</p>
                 {!spriteNameFits ? <p className="text-xs text-destructive-foreground">Enter a lowercase Sprite name, up to 63 characters, starting and ending with a letter or number.</p> : null}
-                {release === null ? <ControlError message="The Hub has not published a release version for the Sprite bootstrap." /> : null}
+                {pin.release === null ? <p className="text-xs text-warning">The bootstrap installs the latest tagged release. Upgrade the runner to {publishedVersion || "the Hub’s build"} afterwards.</p> : null}
                 {sprites.loading ? <p className="text-xs text-muted-foreground">Checking Sprites tokens…</p> : sprites.value?.filter((entry) => entry.present !== true).map((entry) => (
                   <p key={entry.id} className="text-xs text-warning">
-                    {entry.present === false ? "No Sprites token is set" : "Could not check the Sprites token"} for {projects.find((project) => project.id === entry.id)?.name}. Without it the Hub cannot wake the Sprite.{" "}
+                    {entry.present === false ? "No Sprites token is set" : "Could not check the Sprites token"} for {projects.find((project) => project.id === entry.id)?.name}. Without it the Hub cannot wake the Sprite for this project; uncheck the project to continue without it.{" "}
                     <a className="underline" href={`${bootstrap?.base_path ?? ""}/settings/integrations?project=${encodeURIComponent(entry.id)}#sprites`}>Set a Sprites token</a>
                   </p>
                 ))}
@@ -474,11 +490,12 @@ export function EnrollRunnerDialog({
                     <li>Open its console.
                       <CopyableCommand value={`sprite console -s ${enrollment.name}`} label="the console command" />
                     </li>
-                    <li>Inside the Sprite, download the bootstrap script pinned to {release}.
-                      <CopyableCommand value={`curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/${release}/scripts/sprite-runner-bootstrap.sh -o sprite-runner-bootstrap.sh`} label="the download command" />
+                    <li>Inside the Sprite, download the bootstrap script {pin.ref === "latest" ? "from the latest tagged release" : `pinned to ${pin.ref}`}.
+                      <CopyableCommand value={downloadCommand} label="the download command" />
                     </li>
                     <li>Run the bootstrap. It installs Detent and the toolchain, registers the runner, and starts the detent-runner Sprite Service.
-                      <CopyableCommand value={`bash sprite-runner-bootstrap.sh --version ${release}`} label="the bootstrap command" />
+                      <CopyableCommand value={bootstrapCommand} label="the bootstrap command" />
+                      {pin.release === null ? <p className="text-xs text-warning">Upgrade the installed runner to {publishedVersion || "the Hub’s build"} afterwards.</p> : null}
                     </li>
                     <li>Copy this enrollment command and paste it at the bootstrap’s hidden prompt.
                       <CopyableCommand value={enrollment.command} displayValue={enrollment.maskedCommand} label="the register command" />
