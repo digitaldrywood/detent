@@ -17,7 +17,9 @@ import (
 // and move the item the ways a person or the orchestrator would.
 type dispatchGuardFixture struct {
 	*conversationWorkerFixture
-	worktreeState string
+	worktreeState  string
+	completionBody string
+	checkpoint     *tracker.NativeCheckpoint
 }
 
 func newDispatchGuardFixture(t *testing.T) dispatchGuardFixture {
@@ -73,11 +75,16 @@ func (f dispatchGuardFixture) finish(t *testing.T, disposition ...*tracker.Nativ
 	if len(disposition) > 0 {
 		event.Data.Disposition = disposition[0]
 	}
+	event.Data.CompletionBody = f.completionBody
 	checkpoint := event
 	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", newNativeID("checkpoint"), ""
 	checkpoint.Data.Disposition = nil
+	checkpoint.Data.CompletionBody = ""
 	checkpoint.Data.Handoff = nativeTestCheckpoint()
 	checkpoint.Data.Handoff.WorktreeState = f.worktreeState
+	if f.checkpoint != nil {
+		checkpoint.Data.Handoff = f.checkpoint
+	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, checkpoint), http.StatusOK)
 	event.Data.Sequence++
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
@@ -129,16 +136,22 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	t.Parallel()
 	instanceReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```"
 	definitionReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:tool\n    reason: approved portable project configuration and workflow prose unavailable\nhuman_action: null\n```"
+	completeReport := "Source ready for finalization.\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
 	for _, test := range []struct {
-		name          string
-		disposition   *tracker.NativeDisposition
-		finalMessage  string
-		worktreeState string
-		manualHold    bool
-		edited        bool
-		continued     bool
-		commented     bool
-		wantCandidate bool
+		name           string
+		disposition    *tracker.NativeDisposition
+		finalMessage   string
+		worktreeState  string
+		manualHold     bool
+		edited         bool
+		continued      bool
+		commented      bool
+		wantCandidate  bool
+		legacy         bool
+		retainedSource bool
+		checkpointEdit func(*tracker.NativeCheckpoint)
+		publication    string
+		terminal       bool
 	}{
 		{name: "completed instance report is answered", finalMessage: instanceReport},
 		{name: "completed definition blocker is answered with clean source", finalMessage: definitionReport},
@@ -164,6 +177,37 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "unfinished external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", Blockers: true}},
 		{name: "unfinished human action keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}},
 		{name: "missing legacy disposition keeps the answer"},
+		{name: "legacy complete unpublished retained source is runnable", finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true},
+		{name: "typed complete unpublished retained source is runnable", finalMessage: completeReport, retainedSource: true, wantCandidate: true},
+		{name: "typed complete without legacy body is runnable", disposition: &tracker.NativeDisposition{Status: "complete"}, retainedSource: true, wantCandidate: true},
+		{name: "legacy complete dirty retained source is runnable", finalMessage: completeReport, legacy: true, retainedSource: true, worktreeState: "dirty", wantCandidate: true},
+		{name: "legacy retained source without report stays answered", legacy: true, retainedSource: true},
+		{name: "legacy instance report with retained source stays answered", finalMessage: instanceReport, legacy: true, retainedSource: true},
+		{name: "legacy definition blocker with retained source stays answered", finalMessage: definitionReport, legacy: true, retainedSource: true},
+		{name: "legacy human action with retained source stays answered", finalMessage: strings.Replace(completeReport, "human_action: null", "human_action: Approve the exception", 1), legacy: true, retainedSource: true},
+		{name: "legacy external blocker with retained source stays answered", finalMessage: strings.Replace(completeReport, "blockers: []", "blockers:\n  - ref: '#42'\n    reason: Await dependency", 1), legacy: true, retainedSource: true},
+		{name: "legacy malformed report with retained source stays answered", finalMessage: strings.Replace(completeReport, "schema: 1", "schema: 2", 1), legacy: true, retainedSource: true},
+		{name: "legacy complete with invalid reason stays answered", finalMessage: strings.Replace(completeReport, "status: complete", "status: complete\nreason_code: permission_wait", 1), legacy: true, retainedSource: true},
+		{name: "typed blocker overrides legacy complete", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, finalMessage: completeReport, legacy: true, retainedSource: true},
+		{name: "typed human action overrides legacy complete", disposition: &tracker.NativeDisposition{Status: "complete", HumanAction: true}, finalMessage: completeReport, legacy: true, retainedSource: true},
+		{name: "typed instance reason overrides legacy complete", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation"}, finalMessage: completeReport, legacy: true, retainedSource: true},
+		{name: "legacy in progress retained source stays answered", finalMessage: strings.Replace(completeReport, "status: complete", "status: in_progress", 1), legacy: true, retainedSource: true},
+		{name: "legacy complete with missing head stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.HeadSHA = "" }},
+		{name: "legacy complete with missing digest stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.WorkspaceDigest = "" }},
+		{name: "legacy complete with unavailable source stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.Availability = "missing" }},
+		{name: "legacy complete requiring manual recovery stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) { c.Resume = "manual_recovery" }},
+		{name: "legacy complete with pending publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
+			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", newNativeID("effect")
+		}},
+		{name: "legacy complete with ambiguous publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
+			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "ambiguous", newNativeID("effect")
+		}},
+		{name: "legacy complete with genuine publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "owned"},
+		{name: "legacy complete with published retained head stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "head"},
+		{name: "unrelated historical publication preserves retained source", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "unrelated", wantCandidate: true},
+		{name: "earlier published head from same attempt preserves retained source", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "earlier", wantCandidate: true},
+		{name: "legacy complete preserves manual hold", finalMessage: completeReport, legacy: true, retainedSource: true, manualHold: true},
+		{name: "legacy complete preserves terminal lane", finalMessage: completeReport, legacy: true, retainedSource: true, terminal: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -171,7 +215,21 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			if test.worktreeState != "" {
 				f.worktreeState = test.worktreeState
 			}
-			if test.finalMessage != "" {
+			f.completionBody = test.finalMessage
+			if test.retainedSource {
+				f.worktreeState = "unpushed"
+				if test.worktreeState != "" {
+					f.worktreeState = test.worktreeState
+				}
+				f.checkpoint = nativeTestCheckpoint()
+				f.checkpoint.WorktreeState = f.worktreeState
+				f.checkpoint.HeadSHA = strings.Repeat("b", 40)
+				f.checkpoint.WorkspaceDigest = strings.Repeat("d", 64)
+				if test.checkpointEdit != nil {
+					test.checkpointEdit(f.checkpoint)
+				}
+			}
+			if test.finalMessage != "" && !test.legacy {
 				if signal, reported := workpad.SignalFromComment(test.finalMessage, "", ""); reported && signal != nil && signal.Invalid == nil {
 					test.disposition = &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, BlockerEvidence: signal.Blockers}
 				}
@@ -186,11 +244,33 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			}
 			revision := f.reload(t).Revision
 			f.finish(t, test.disposition)
+			if test.publication != "" {
+				rules := tracker.ChangeReviewPolicy{PolicyID: f.policy, RequireReview: true}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
+				path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes"
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.worker, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Title: "Retained source", Body: "Owned source publication"})
+				requireNativeStatus(t, response, http.StatusOK)
+				var change tracker.ChangeRequest
+				decodeHubResponse(t, response, &change)
+				input := changeTestInput()
+				if test.publication == "owned" || test.publication == "earlier" {
+					input.RunID, input.AttemptID = f.run, f.attempt
+				}
+				if test.publication == "unrelated" || test.publication == "earlier" {
+					input.HeadSHA = strings.Repeat("c", 40)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ChangeVersionInput: input}), http.StatusOK)
+			}
+			if test.terminal {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET terminal=1 WHERE project_id=? AND detent_state='Fixing'", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/attempts/"+f.attempt, f.worker, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var attempt tracker.NativeAttempt
 			decodeHubResponse(t, response, &attempt)
-			if attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != f.worktreeState || attempt.WorkItemRevision != revision || attempt.DispatchGeneration != 0 {
+			if attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.CompletionBody != test.finalMessage || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != f.worktreeState || attempt.WorkItemRevision != revision || attempt.DispatchGeneration != 0 || test.legacy && test.disposition == nil && attempt.Disposition != nil {
 				t.Fatalf("completion lost successful current-revision evidence: %#v", attempt)
 			}
 			claim := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
@@ -233,6 +313,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			if test.wantCandidate {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.nativeFixture.worker(t, "other-worker"), claim), http.StatusNotFound)
 				f.claim(t)
+				if f.lease.FencingToken <= attempt.FencingToken {
+					t.Fatal("reclaim did not grant newer fenced authority")
+				}
 				if test.edited || test.continued {
 					f.succeed(t, test.disposition)
 					if f.candidate(t) {
