@@ -666,12 +666,12 @@
         {
           "source": "internal/cloudentry/service.go",
           "kind": "route",
-          "definition": "e.GET(\"/health\", func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\"}) }) [route=\"/health\"]",
+          "definition": "e.GET(\"/health\", func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\", \"version\": s.config.Build.Version, \"commit\": s.config.Build.Commit}) }) [route=\"/health\"]",
           "occurrence": 1,
-          "line": 215,
+          "line": 217,
           "method": "GET",
           "path": "\"/health\"",
-          "handler": "func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\"}) }",
+          "handler": "func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\", \"version\": s.config.Build.Version, \"commit\": s.config.Build.Commit}) }",
           "resolved_path": "/health"
         }
       ],
@@ -12756,9 +12756,9 @@
         {
           "source": "web/conversation/src/app/account/api.ts",
           "kind": "request",
-          "definition": "send(PolicyApproval,\"GET\",`${project(projectId)}/policy`)",
+          "definition": "send(PolicyApproval,\"GET\",`${project(projectId)}/policy${after ? `?after=${encodeURIComponent(after)}` : \"\"}`)",
           "occurrence": 1,
-          "line": 294
+          "line": 302
         }
       ],
       "availability": [
@@ -37597,6 +37597,358 @@
       "status": "implemented",
       "coverage": "TestSpriteUsageAPI; TestHostedMonthlyCostsAccess; TestCostLedgerReplay; TestCostLedgerScopeIsolation",
       "decision": "Scope project requires its current read grant. Scope organization requires administrator access and grants to every current project. Reads preserve historical project attribution and use the same UTC monthly contract."
+    },
+    {
+      "id": "hubserver.get_organization_model_selection",
+      "summary": "Get Cloud organization model selection",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_org_api.go",
+          "kind": "route",
+          "definition": "e.GET(hostedOrganizationBase+\"/model-selection\", s.getOrganizationModelSelection, session) [route=\"/api/v2/organizations/:organization/model-selection\"]",
+          "occurrence": 1,
+          "line": 37,
+          "method": "GET",
+          "path": "hostedOrganizationBase + \"/model-selection\"",
+          "handler": "s.getOrganizationModelSelection",
+          "resolved_path": "/api/v2/organizations/:organization/model-selection"
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(CloudModelSelection,\"GET\",`${projectId === undefined ? base : project(projectId)}/model-selection`)",
+          "occurrence": 1,
+          "line": 179
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor",
+          "unsupported": "Organization defaults require an authenticated hosted session; no session API is installed here."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor",
+          "unsupported": "Organization defaults require an authenticated hosted session; no session API is installed here."
+        }
+      ],
+      "authority": {
+        "role": "Organization member/viewer for reads; current hosted owner/admin for mutations",
+        "credential_scope": "Hosted session only; bearer credentials refused",
+        "project_grant": "Organization scope retained; no project selector or project grant required",
+        "ownership": "Current connection organization; project IDs resolve only within that organization; no authority fields accepted"
+      },
+      "preconditions": [
+        "Existing model-selection service and authenticated current organization",
+        "Mutations require expected_revision and a business request_id; validate the resulting effective selection transactionally",
+        "Organization selection is required; nullable project selection restores organization inheritance"
+      ],
+      "confirmation": [
+        {
+          "when": "Authorized direct application call; existing non-material command semantics",
+          "class": "none"
+        }
+      ],
+      "application": "readCloudModelSelection; updateCloudModelSelectionOperation; executeNativeMutation and nativeCommandReplay",
+      "extraction": "HTTP and MCP share the typed model-selection operation, current authority and durable command receipts; existing HTTP operation IDs and input hashes retained",
+      "tool": {
+        "set": "projects",
+        "name": "get_organization_model_selection",
+        "arguments": "{\"additionalProperties\":false,\"properties\":{},\"required\":[],\"type\":\"object\"}",
+        "result": "Bounded organization/project observation with revision, stored selection and effective selection; updates return the existing action/command receipt",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
+      "owner": "digitaldrywood/detent#3342",
+      "status": "implemented",
+      "coverage": "TestHostedModelSelectionTools; TestModelSelectionToolAuthority; TestNativeModelSelectionTools; TestModelSelectionArgumentBounds; TestCloudModelSelection; TestDashboardCapabilityCoverage",
+      "decision": "Registered projects tools execute through the existing model-selection owners. Organization authority remains session-only. Parameterized browser requests use the organization tool when projectId is absent and the corresponding project tool otherwise. No new UI, mechanism, credential or grant."
+    },
+    {
+      "id": "hubserver.update_organization_model_selection",
+      "summary": "Update Cloud organization model selection",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_org_api.go",
+          "kind": "route",
+          "definition": "e.PUT(hostedOrganizationBase+\"/model-selection\", s.updateOrganizationModelSelection, session) [route=\"/api/v2/organizations/:organization/model-selection\"]",
+          "occurrence": 1,
+          "line": 38,
+          "method": "PUT",
+          "path": "hostedOrganizationBase + \"/model-selection\"",
+          "handler": "s.updateOrganizationModelSelection",
+          "resolved_path": "/api/v2/organizations/:organization/model-selection"
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(CloudModelSelection,\"PUT\",`${input.projectId === undefined ? base : project(input.projectId)}/model-selection`,{ expected_revision: input.revision, selection: input.selection, idempotency_key: input.key, })",
+          "occurrence": 1,
+          "line": 181
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor",
+          "unsupported": "Organization defaults require an authenticated hosted session; no session API is installed here."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor",
+          "unsupported": "Organization defaults require an authenticated hosted session; no session API is installed here."
+        }
+      ],
+      "authority": {
+        "role": "Organization member/viewer for reads; current hosted owner/admin for mutations",
+        "credential_scope": "Hosted session only; bearer credentials refused",
+        "project_grant": "Organization scope retained; no project selector or project grant required",
+        "ownership": "Current connection organization; project IDs resolve only within that organization; no authority fields accepted"
+      },
+      "preconditions": [
+        "Existing model-selection service and authenticated current organization",
+        "Mutations require expected_revision and a business request_id; validate the resulting effective selection transactionally",
+        "Organization selection is required; nullable project selection restores organization inheritance"
+      ],
+      "confirmation": [
+        {
+          "when": "Authorized direct application call; existing non-material command semantics",
+          "class": "none"
+        }
+      ],
+      "application": "readCloudModelSelection; updateCloudModelSelectionOperation; executeNativeMutation and nativeCommandReplay",
+      "extraction": "HTTP and MCP share the typed model-selection operation, current authority and durable command receipts; existing HTTP operation IDs and input hashes retained",
+      "tool": {
+        "set": "projects",
+        "name": "update_organization_model_selection",
+        "arguments": "{\"$defs\":{\"model_selection_selector\":{\"additionalProperties\":false,\"properties\":{\"and\":{\"items\":{\"$ref\":\"#/$defs/model_selection_selector\"},\"maxItems\":200,\"type\":\"array\"},\"assignee_in\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"author_in\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"fields\":{\"items\":{\"additionalProperties\":false,\"properties\":{\"name\":{\"maxLength\":256,\"type\":\"string\"},\"value\":{\"maxLength\":256,\"type\":\"string\"}},\"required\":[\"name\",\"value\"],\"type\":\"object\"},\"maxItems\":200,\"type\":\"array\"},\"labels\":{\"additionalProperties\":false,\"properties\":{\"exclude\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"include\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"}},\"required\":[],\"type\":\"object\"},\"or\":{\"items\":{\"$ref\":\"#/$defs/model_selection_selector\"},\"maxItems\":200,\"type\":\"array\"},\"priority_in\":{\"items\":{\"maximum\":2147483647,\"minimum\":0,\"type\":\"integer\"},\"maxItems\":200,\"type\":\"array\"}},\"required\":[],\"type\":\"object\"}},\"additionalProperties\":false,\"properties\":{\"input\":{\"additionalProperties\":false,\"properties\":{\"expected_revision\":{\"maxLength\":20,\"pattern\":\"^[0-9]+$\",\"type\":\"string\"},\"selection\":{\"additionalProperties\":false,\"properties\":{\"backend_kinds\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"complex_model\":{\"maxLength\":256,\"type\":\"string\"},\"default_level\":{\"maxLength\":256,\"type\":\"string\"},\"enabled\":{\"type\":\"boolean\"},\"fallback_order\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"levels\":{\"additionalProperties\":{\"additionalProperties\":false,\"properties\":{\"effort\":{\"maxLength\":256,\"type\":\"string\"},\"max_session_duration_ms\":{\"maximum\":2147483647,\"minimum\":0,\"type\":\"integer\"},\"max_session_tokens\":{\"maximum\":2147483647,\"minimum\":0,\"type\":\"integer\"},\"model\":{\"maxLength\":256,\"type\":\"string\"}},\"required\":[],\"type\":\"object\"},\"maxProperties\":200,\"propertyNames\":{\"maxLength\":256},\"type\":\"object\"},\"normal_model\":{\"maxLength\":256,\"type\":\"string\"},\"preset\":{\"maxLength\":256,\"type\":\"string\"},\"rules\":{\"items\":{\"additionalProperties\":false,\"properties\":{\"disabled\":{\"type\":\"boolean\"},\"efforts\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"level\":{\"maxLength\":256,\"type\":\"string\"},\"name\":{\"maxLength\":256,\"type\":\"string\"},\"roles\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"selector\":{\"$ref\":\"#/$defs/model_selection_selector\"}},\"required\":[\"name\",\"level\"],\"type\":\"object\"},\"maxItems\":200,\"type\":\"array\"},\"sources\":{\"additionalProperties\":{\"maxLength\":256,\"type\":\"string\"},\"maxProperties\":200,\"propertyNames\":{\"maxLength\":256},\"type\":\"object\"},\"stages\":{\"additionalProperties\":{\"additionalProperties\":false,\"properties\":{\"effort\":{\"maxLength\":256,\"type\":\"string\"},\"issue_complexity\":{\"type\":\"boolean\"},\"level\":{\"maxLength\":256,\"type\":\"string\"},\"model\":{\"maxLength\":256,\"type\":\"string\"}},\"required\":[],\"type\":\"object\"},\"maxProperties\":200,\"propertyNames\":{\"maxLength\":256},\"type\":\"object\"},\"unavailable\":{\"maxLength\":256,\"type\":\"string\"}},\"required\":[],\"type\":\"object\"}},\"required\":[\"expected_revision\",\"selection\"],\"type\":\"object\"},\"request_id\":{\"maxLength\":128,\"type\":\"string\"}},\"required\":[\"request_id\",\"input\"],\"type\":\"object\"}",
+        "result": "Bounded organization/project observation with revision, stored selection and effective selection; updates return the existing action/command receipt",
+        "annotations": {
+          "readOnly": false,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
+      "owner": "digitaldrywood/detent#3342",
+      "status": "implemented",
+      "coverage": "TestHostedModelSelectionTools; TestModelSelectionToolAuthority; TestNativeModelSelectionTools; TestModelSelectionArgumentBounds; TestCloudModelSelection; TestDashboardCapabilityCoverage",
+      "decision": "Registered projects tools execute through the existing model-selection owners. Organization authority remains session-only. Parameterized browser requests use the organization tool when projectId is absent and the corresponding project tool otherwise. No new UI, mechanism, credential or grant."
+    },
+    {
+      "id": "hubserver.get_project_model_selection",
+      "summary": "Get Cloud project model selection",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/integration.go",
+          "kind": "route",
+          "definition": "e.GET(nativeBase+\"/model-selection\", s.getCloudModelSelection, s.requireNativeScope(apiScopeWorker, apiScopeOperator)) [route=\"/api/v2/organizations/:organization/projects/:project/model-selection\"]",
+          "occurrence": 1,
+          "line": 218,
+          "method": "GET",
+          "path": "nativeBase + \"/model-selection\"",
+          "handler": "s.getCloudModelSelection",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/model-selection"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor",
+          "unsupported": "No native project model-selection owner is installed in credential-maintenance mode."
+        }
+      ],
+      "authority": {
+        "role": "Organization member/viewer for reads; current hosted owner/admin for mutations",
+        "credential_scope": "Native project worker/operator read authority; operator/admin mutation authority; hosted API-key mutations retain the existing admin key requirement",
+        "project_grant": "Current native project grant; hosted writes require current can_write and issuer/key project grants",
+        "ownership": "Current connection organization; project IDs resolve only within that organization; no authority fields accepted"
+      },
+      "preconditions": [
+        "Existing model-selection service and authenticated current organization",
+        "Mutations require expected_revision and a business request_id; validate the resulting effective selection transactionally",
+        "Organization selection is required; nullable project selection restores organization inheritance"
+      ],
+      "confirmation": [
+        {
+          "when": "Authorized direct application call; existing non-material command semantics",
+          "class": "none"
+        }
+      ],
+      "application": "readCloudModelSelection; updateCloudModelSelectionOperation; executeNativeMutation and nativeCommandReplay",
+      "extraction": "HTTP and MCP share the typed model-selection operation, current authority and durable command receipts; existing HTTP operation IDs and input hashes retained",
+      "tool": {
+        "set": "projects",
+        "name": "get_project_model_selection",
+        "arguments": "{\"additionalProperties\":false,\"properties\":{\"project_id\":{\"maxLength\":256,\"type\":\"string\"}},\"required\":[\"project_id\"],\"type\":\"object\"}",
+        "result": "Bounded organization/project observation with revision, stored selection and effective selection; updates return the existing action/command receipt",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
+      "owner": "digitaldrywood/detent#3342",
+      "status": "implemented",
+      "coverage": "TestHostedModelSelectionTools; TestModelSelectionToolAuthority; TestNativeModelSelectionTools; TestModelSelectionArgumentBounds; TestCloudModelSelection; TestDashboardCapabilityCoverage",
+      "decision": "Registered projects tools execute through the existing model-selection owners. Organization authority remains session-only. Parameterized browser requests use the organization tool when projectId is absent and the corresponding project tool otherwise. No new UI, mechanism, credential or grant."
+    },
+    {
+      "id": "hubserver.update_project_model_selection",
+      "summary": "Update Cloud project model selection",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/integration.go",
+          "kind": "route",
+          "definition": "e.PUT(nativeBase+\"/model-selection\", s.updateCloudModelSelection, s.requireNativeScope(apiScopeOperator, apiScopeAdmin)) [route=\"/api/v2/organizations/:organization/projects/:project/model-selection\"]",
+          "occurrence": 1,
+          "line": 219,
+          "method": "PUT",
+          "path": "nativeBase + \"/model-selection\"",
+          "handler": "s.updateCloudModelSelection",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/model-selection"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "native"
+          ],
+          "service": "Hub model-selection application owner and hubProjectExecutor",
+          "unsupported": "No native project model-selection owner is installed in credential-maintenance mode."
+        }
+      ],
+      "authority": {
+        "role": "Organization member/viewer for reads; current hosted owner/admin for mutations",
+        "credential_scope": "Native project worker/operator read authority; operator/admin mutation authority; hosted API-key mutations retain the existing admin key requirement",
+        "project_grant": "Current native project grant; hosted writes require current can_write and issuer/key project grants",
+        "ownership": "Current connection organization; project IDs resolve only within that organization; no authority fields accepted"
+      },
+      "preconditions": [
+        "Existing model-selection service and authenticated current organization",
+        "Mutations require expected_revision and a business request_id; validate the resulting effective selection transactionally",
+        "Organization selection is required; nullable project selection restores organization inheritance"
+      ],
+      "confirmation": [
+        {
+          "when": "Authorized direct application call; existing non-material command semantics",
+          "class": "none"
+        }
+      ],
+      "application": "readCloudModelSelection; updateCloudModelSelectionOperation; executeNativeMutation and nativeCommandReplay",
+      "extraction": "HTTP and MCP share the typed model-selection operation, current authority and durable command receipts; existing HTTP operation IDs and input hashes retained",
+      "tool": {
+        "set": "projects",
+        "name": "update_project_model_selection",
+        "arguments": "{\"$defs\":{\"model_selection_selector\":{\"additionalProperties\":false,\"properties\":{\"and\":{\"items\":{\"$ref\":\"#/$defs/model_selection_selector\"},\"maxItems\":200,\"type\":\"array\"},\"assignee_in\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"author_in\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"fields\":{\"items\":{\"additionalProperties\":false,\"properties\":{\"name\":{\"maxLength\":256,\"type\":\"string\"},\"value\":{\"maxLength\":256,\"type\":\"string\"}},\"required\":[\"name\",\"value\"],\"type\":\"object\"},\"maxItems\":200,\"type\":\"array\"},\"labels\":{\"additionalProperties\":false,\"properties\":{\"exclude\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"include\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"}},\"required\":[],\"type\":\"object\"},\"or\":{\"items\":{\"$ref\":\"#/$defs/model_selection_selector\"},\"maxItems\":200,\"type\":\"array\"},\"priority_in\":{\"items\":{\"maximum\":2147483647,\"minimum\":0,\"type\":\"integer\"},\"maxItems\":200,\"type\":\"array\"}},\"required\":[],\"type\":\"object\"}},\"additionalProperties\":false,\"properties\":{\"input\":{\"additionalProperties\":false,\"properties\":{\"expected_revision\":{\"maxLength\":20,\"pattern\":\"^[0-9]+$\",\"type\":\"string\"},\"selection\":{\"additionalProperties\":false,\"properties\":{\"backend_kinds\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"complex_model\":{\"maxLength\":256,\"type\":\"string\"},\"default_level\":{\"maxLength\":256,\"type\":\"string\"},\"enabled\":{\"type\":\"boolean\"},\"fallback_order\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"levels\":{\"additionalProperties\":{\"additionalProperties\":false,\"properties\":{\"effort\":{\"maxLength\":256,\"type\":\"string\"},\"max_session_duration_ms\":{\"maximum\":2147483647,\"minimum\":0,\"type\":\"integer\"},\"max_session_tokens\":{\"maximum\":2147483647,\"minimum\":0,\"type\":\"integer\"},\"model\":{\"maxLength\":256,\"type\":\"string\"}},\"required\":[],\"type\":\"object\"},\"maxProperties\":200,\"propertyNames\":{\"maxLength\":256},\"type\":\"object\"},\"normal_model\":{\"maxLength\":256,\"type\":\"string\"},\"preset\":{\"maxLength\":256,\"type\":\"string\"},\"rules\":{\"items\":{\"additionalProperties\":false,\"properties\":{\"disabled\":{\"type\":\"boolean\"},\"efforts\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"level\":{\"maxLength\":256,\"type\":\"string\"},\"name\":{\"maxLength\":256,\"type\":\"string\"},\"roles\":{\"items\":{\"maxLength\":256,\"type\":\"string\"},\"maxItems\":200,\"type\":\"array\"},\"selector\":{\"$ref\":\"#/$defs/model_selection_selector\"}},\"required\":[\"name\",\"level\"],\"type\":\"object\"},\"maxItems\":200,\"type\":\"array\"},\"sources\":{\"additionalProperties\":{\"maxLength\":256,\"type\":\"string\"},\"maxProperties\":200,\"propertyNames\":{\"maxLength\":256},\"type\":\"object\"},\"stages\":{\"additionalProperties\":{\"additionalProperties\":false,\"properties\":{\"effort\":{\"maxLength\":256,\"type\":\"string\"},\"issue_complexity\":{\"type\":\"boolean\"},\"level\":{\"maxLength\":256,\"type\":\"string\"},\"model\":{\"maxLength\":256,\"type\":\"string\"}},\"required\":[],\"type\":\"object\"},\"maxProperties\":200,\"propertyNames\":{\"maxLength\":256},\"type\":\"object\"},\"unavailable\":{\"maxLength\":256,\"type\":\"string\"}},\"required\":[],\"type\":[\"object\",\"null\"]}},\"required\":[\"expected_revision\",\"selection\"],\"type\":\"object\"},\"project_id\":{\"maxLength\":256,\"type\":\"string\"},\"request_id\":{\"maxLength\":128,\"type\":\"string\"}},\"required\":[\"project_id\",\"request_id\",\"input\"],\"type\":\"object\"}",
+        "result": "Bounded organization/project observation with revision, stored selection and effective selection; updates return the existing action/command receipt",
+        "annotations": {
+          "readOnly": false,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
+      "owner": "digitaldrywood/detent#3342",
+      "status": "implemented",
+      "coverage": "TestHostedModelSelectionTools; TestModelSelectionToolAuthority; TestNativeModelSelectionTools; TestModelSelectionArgumentBounds; TestCloudModelSelection; TestDashboardCapabilityCoverage",
+      "decision": "Registered projects tools execute through the existing model-selection owners. Organization authority remains session-only. Parameterized browser requests use the organization tool when projectId is absent and the corresponding project tool otherwise. No new UI, mechanism, credential or grant."
     }
   ]
 }

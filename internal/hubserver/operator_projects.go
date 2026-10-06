@@ -42,6 +42,9 @@ func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Defin
 	}
 	defs := []operatortool.Definition{}
 	for _, d := range append(operatortool.ProjectCatalog(), operatortool.LocalProjectCatalog()...) {
+		if operatortool.IsModelSelection(d.Name) && !e.modelSelectionCatalogAllowed(ctx, d) {
+			continue
+		}
 		if d.Name == "project_settings" || d.Name == "demo_setup_scenarios" {
 			continue
 		}
@@ -128,7 +131,7 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 	if operatortool.DecodeProjectArguments(call.Arguments, &selector) != nil || strings.TrimSpace(selector.RequestID) == "" || len(selector.Input) == 0 || selector.Input[0] != '{' {
 		return result, operatortool.ErrInvalidArguments
 	}
-	if strings.TrimSpace(selector.ProjectID) == "" && call.Name != "create_native_project" && call.Name != "create_hosted_project" {
+	if strings.TrimSpace(selector.ProjectID) == "" && call.Name != "create_native_project" && call.Name != "create_hosted_project" && !operatortool.IsOrganizationModelSelection(call.Name) {
 		return result, operatortool.ErrInvalidArguments
 	}
 	if (call.Name == "create_native_project" || call.Name == "create_hosted_project") && selector.ProjectID != "" {
@@ -268,6 +271,11 @@ func (e hubProjectExecutor) connectionRead(ctx context.Context, call operatortoo
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(string(action.Kind), false), ProjectID: action.ProjectID}); err != nil {
 		return operatortool.Result{}, err
 	}
+	if operatortool.IsModelSelection(string(action.Kind)) {
+		if _, err := e.modelSelectionCommand(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandPreview); err != nil {
+			return operatortool.Result{}, err
+		}
+	}
 	if err := e.authorizeCreatedProjectResult(ctx, string(action.Kind), json.RawMessage(action.Result), action.Status); err != nil {
 		return operatortool.Result{}, err
 	}
@@ -289,6 +297,9 @@ const (
 )
 
 func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call, mode projectCommandMode) (json.RawMessage, error) {
+	if operatortool.IsModelSelection(call.Name) {
+		return e.modelSelectionCommand(ctx, call, mode)
+	}
 	s := e.service
 	scope, err := e.projectScope(ctx)
 	if err != nil {
