@@ -17,7 +17,7 @@ func TestStoreEscapedPaths(t *testing.T) {
 		applicationID int64
 		version       int
 	}{
-		{"registry", registryApplicationID, 5},
+		{"registry", registryApplicationID, 20261006163000},
 		{"auth", authApplicationID, 4},
 	} {
 		for _, directory := range []string{"plain", "cloud entry café 数据库 #100%"} {

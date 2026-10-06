@@ -146,7 +146,7 @@ func (s *Service) sharedHostedSession(ctx context.Context, c echo.Context) (auth
 	if !claims.AccessExpiresAt.After(now) || !auth.ValidOrganizationRole(claims.Role) {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
-	if identity.SupportActor != "" && (!hostedEmailListed(s.config.Hosted.StaffEmails, identity.SupportActor) || !hostedEmailListed(s.config.Hosted.SupportActors, identity.SupportActor) || !auth.ValidSupportReason(identity.SupportReason)) {
+	if identity.SupportActor != "" && !auth.ValidSupportReason(identity.SupportReason) {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
@@ -285,7 +285,7 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err == nil {
 		name = strings.TrimSpace(request.OrganizationName)
 	}
-	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 || hostedEmailListed(s.config.Hosted.StaffEmails, claims.Email) {
+	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 {
 		return invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
 	}
 	ctx := c.Request().Context()
@@ -368,9 +368,6 @@ func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
 	var request hostedSharedInvitation
 	if err := decodeAPIJSON(c, &request); err != nil || claims.Subject == "" || claims.Email == "" {
 		return invalidAPIRequest(c, errors.New("invalid invitation"))
-	}
-	if hostedEmailListed(s.config.Hosted.StaffEmails, claims.Email) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "invitation_unavailable", Message: "This invitation is unavailable"})
 	}
 	identity := auth.Identity{Subject: claims.Subject, Email: claims.Email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: claims.Subject, SessionID: claims.ProviderSession}}
 	s.hostedMutationMu.Lock()

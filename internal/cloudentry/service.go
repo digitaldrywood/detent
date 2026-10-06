@@ -40,6 +40,7 @@ type Config struct {
 	Issuer                    string
 	SigningKey                ed25519.PrivateKey
 	Provider                  auth.HostedProvider
+	Platform                  PlatformConfig
 	StaffEmails               []string
 	SupportActors             []string
 	EntitlementAdministrators []string
@@ -81,9 +82,6 @@ func (c Config) validate() error {
 		return err
 	}
 	if err := c.Allocation.validate(); err != nil {
-		return err
-	}
-	if err := c.validateEntitlementAdministrators(); err != nil {
 		return err
 	}
 	if !safeID(c.Issuer) || len(c.SigningKey) != ed25519.PrivateKeySize || c.Provider == nil || strings.TrimSpace(c.StateDir) == "" {
@@ -144,6 +142,12 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, err
 	}
 	registry.now = cfg.now
+	if err := registry.seedPlatformMembers(ctx, cfg); err != nil {
+		return nil, errors.Join(err, registry.Close())
+	}
+	if len(cfg.StaffEmails)+len(cfg.SupportActors)+len(cfg.EntitlementAdministrators) > 0 {
+		cfg.Logger.Warn("legacy platform email lists are deprecated and used only to seed an empty registry")
+	}
 	authStorage, err := openStore(ctx, filepath.Join(cfg.StateDir, "auth.db"), authApplicationID, "auth")
 	if err != nil {
 		return nil, errors.Join(err, registry.Close())
@@ -243,6 +247,10 @@ func (s *Service) routes() {
 	e.GET("/api/cloud/platform/health", s.platformHealthJSON)
 	e.GET("/api/cloud/platform/organizations/:organization/entitlements", s.platformEntitlementsJSON)
 	e.POST("/api/cloud/platform/organizations/:organization/entitlements", s.changePlatformEntitlement)
+	e.GET("/api/cloud/platform/members", s.platformMembersJSON)
+	e.POST("/api/cloud/platform/members", s.changePlatformMember)
+	e.PATCH("/api/cloud/platform/members/:email", s.changePlatformMember)
+	e.DELETE("/api/cloud/platform/members/:email", s.changePlatformMember)
 	e.GET("/support", s.supportPage)
 	e.POST("/support/start", s.startSupport)
 	e.POST("/webhooks/stripe/:mode", s.stripeWebhook)
@@ -313,7 +321,7 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	method := c.Request().Method
 	// Staff and support sessions reach across organizations, so they are
 	// re-verified on every request rather than trusted for the recheck window.
-	cacheable := !s.staff(session.Email) && session.Identity.SupportActor == ""
+	cacheable := s.platformRole(c.Request().Context(), session.Email) == "" && session.Identity.SupportActor == ""
 	if cacheable && (method == http.MethodGet || method == http.MethodHead) && session.Identity.ExpiresAt.After(now) && s.verified.fresh(session.Hash, now) {
 		return session, nil
 	}
@@ -331,19 +339,24 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	return session, nil
 }
 
-func (s *Service) supportActor(email string) bool {
-	return s.staff(email) && listed(s.config.SupportActors, email)
+func (s *Service) supportActor(ctx context.Context, email string) bool {
+	role := s.platformRole(ctx, email)
+	return role == "admin" || role == "support"
 }
 
-func (s *Service) landing(email string, identity auth.HostedIdentity) string {
-	if s.platformIdentity(email, identity) {
-		return platformPath
+func (s *Service) landing(ctx context.Context, email string, identity auth.HostedIdentity) string {
+	if !s.platformIdentity(ctx, email, identity) {
+		return "/organizations"
 	}
-	return "/organizations"
-}
-
-func (s *Service) staff(email string) bool {
-	return listed(s.config.StaffEmails, email)
+	choices, err := s.organizationChoices(ctx, accountSession{Subject: identity.Subject, Email: email, Identity: identity})
+	if err != nil || len(choices) > 0 {
+		return "/organizations"
+	}
+	canCreate, err := s.canCreate(ctx, accountSession{Subject: identity.Subject, Email: email, Identity: identity})
+	if err != nil || canCreate {
+		return "/organizations"
+	}
+	return platformPath
 }
 
 func listed(values []string, email string) bool {
@@ -387,7 +400,7 @@ func (s *Service) loginDenied(c echo.Context, status int, message string, denial
 
 func (s *Service) home(c echo.Context) error {
 	if session, err := s.session(c); err == nil {
-		return c.Redirect(http.StatusSeeOther, s.landing(session.Email, session.Identity))
+		return c.Redirect(http.StatusSeeOther, s.landing(c.Request().Context(), session.Email, session.Identity))
 	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err

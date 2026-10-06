@@ -83,7 +83,7 @@ func TestPlatformAuthorization(t *testing.T) {
 	support.login("/auth/oidc/start", "user_support:")
 	staff := newBrowser(t, f.service.Handler())
 	staff.login("/auth/oidc/start", "user_staff:")
-	f.provider.member("user_staff", "porg_alpha", "member")
+	f.provider.member("user_staff", "porg_alpha", "owner")
 	scoped := newBrowser(t, f.service.Handler())
 	scoped.login("/auth/oidc/start", "user_staff:porg_alpha")
 	impersonation := supportIdentityBrowser(t, f)
@@ -100,7 +100,7 @@ func TestPlatformAuthorization(t *testing.T) {
 			{"anonymous", anonymous, "", map[bool]int{true: http.StatusSeeOther, false: http.StatusUnauthorized}[page], map[bool]string{true: "/auth/oidc/start?return=%2Fplatform"}[page]},
 			{"customer", customer, "user_alice", http.StatusForbidden, ""},
 			{"support session identity", impersonation, "user_alice", http.StatusForbidden, ""},
-			{"staff organization session", scoped, "user_staff", http.StatusForbidden, ""},
+			{"staff organization session", scoped, "user_staff", http.StatusOK, ""},
 			{"staff", staff, "user_staff", http.StatusOK, ""},
 			{"support staff", support, "user_support", http.StatusOK, ""},
 		} {
@@ -116,8 +116,8 @@ func TestPlatformAuthorization(t *testing.T) {
 		}
 	}
 	for _, event := range platformEvents {
-		if got := platformAuditCount(t, f.service, "user_staff", event); got != 1 {
-			t.Errorf("staff audit %s = %d, want 1", event, got)
+		if got := platformAuditCount(t, f.service, "user_staff", event); got != 2 {
+			t.Errorf("staff audit %s = %d, want 2", event, got)
 		}
 		if got := platformAuditCount(t, f.service, "user_alice", event); got != 0 {
 			t.Errorf("customer audit %s = %d, want 0", event, got)
@@ -225,17 +225,18 @@ func TestPlatformStaffLanding(t *testing.T) {
 
 	t.Parallel()
 	f := newEntryFixture(t)
-	f.provider.member("user_support", "porg_alpha", "member")
+	f.provider.member("user_support", "porg_alpha", "owner")
+	f.provider.users["user_staff"] = "staff@example.test"
 	for _, test := range []struct {
 		name, target, code, landing, home string
 		chooserStatus                     int
 		chooserLocation                   string
-		staff                             bool
+		platformRole                      string
 	}{
-		{"staff default", "/auth/oidc/start", "user_support:", "/platform", "/platform", http.StatusSeeOther, "/platform", true},
-		{"staff chooser return", "/organizations", "user_support:", "/organizations", "/platform", http.StatusSeeOther, "/platform", true},
-		{"customer default", "/auth/oidc/start", "user_alice:", "/organizations", "/organizations", http.StatusOK, "", false},
-		{"staff organization session", "/auth/oidc/start", "user_support:porg_alpha", "/organizations", "/organizations", http.StatusOK, "", false},
+		{"member with organizations", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support"},
+		{"member without organizations", "/auth/oidc/start", "user_staff:", "/platform", "/platform", http.StatusOK, "", "viewer"},
+		{"customer default", "/auth/oidc/start", "user_alice:", "/organizations", "/organizations", http.StatusOK, "", ""},
+		{"member organization session", "/auth/oidc/start", "user_support:porg_alpha", "/organizations", "/organizations", http.StatusOK, "", "support"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			b := newBrowser(t, f.service.Handler())
@@ -252,7 +253,7 @@ func TestPlatformStaffLanding(t *testing.T) {
 				_, body := b.get(path)
 				var session map[string]any
 				decodeJSON(t, body, &session)
-				if session["staff"] != test.staff || session["can_create"] != false {
+				if session["platform_role"] != test.platformRole || session["can_create"] != false {
 					t.Fatalf("%s = %s", path, body)
 				}
 			}
@@ -260,7 +261,7 @@ func TestPlatformStaffLanding(t *testing.T) {
 	}
 }
 
-func TestStaffCannotCreateOrJoinOrganizations(t *testing.T) {
+func TestPlatformMembersCreateAndJoinOrganizations(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
@@ -272,8 +273,10 @@ func TestStaffCannotCreateOrJoinOrganizations(t *testing.T) {
 		f := newProvisioningFixture(t, 3, nil)
 		f.provider.users["user_staff"] = "staff@example.test"
 		staff := newBrowser(t, f.service.Handler())
-		staff.login("/auth/oidc/start", "user_staff:")
-		if response, _ := staff.get("/organizations/new"); response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/platform" {
+		if landing := staff.login("/auth/oidc/start", "user_staff:"); landing != "/organizations" {
+			t.Fatalf("member who may create lands at %q", landing)
+		}
+		if response, _ := staff.get("/organizations/new"); response.StatusCode != http.StatusOK {
 			t.Fatalf("staff create page = %d %q", response.StatusCode, response.Header.Get("Location"))
 		}
 		_, body := staff.get("/api/cloud/session")
@@ -283,19 +286,23 @@ func TestStaffCannotCreateOrJoinOrganizations(t *testing.T) {
 		}
 		decodeJSON(t, body, &session)
 		created := staff.do(http.MethodPost, "/organizations", url.Values{"name": {"Staff org"}, "creation_key": {"staff-creation-key-0001"}, "csrf": {session.CSRF}}, json)
-		if session.CanCreate || created.StatusCode != http.StatusForbidden || !strings.Contains(created.Body, "staff_session") {
+		if !session.CanCreate || created.StatusCode != http.StatusCreated {
 			t.Fatalf("staff create = %d %s", created.StatusCode, created.Body)
 		}
 		organizations, err := f.service.registry.List(t.Context())
-		if err != nil || len(organizations) != 0 {
+		if err != nil || len(organizations) != 1 {
 			t.Fatalf("staff create recorded organizations %+v (%v)", organizations, err)
 		}
 	})
 	t.Run("join", func(t *testing.T) {
 		t.Parallel()
 		f := newEntryFixture(t)
-		if _, err := f.provider.Invite(t.Context(), "porg_alpha", "support@example.test", "", ""); err != nil {
-			t.Fatal(err)
+		alice := newBrowser(t, f.service.Handler())
+		alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+		_, page := alice.get("/organizations/org_alpha/organization")
+		invitation := alice.do(http.MethodPost, "/organizations/org_alpha/organization/invite", url.Values{"email": {"support@example.test"}, "role": {"member"}, "csrf": {csrfFrom(t, page)}}, nil)
+		if invitation.StatusCode != http.StatusSeeOther {
+			t.Fatalf("invite platform member = %d: %s", invitation.StatusCode, invitation.Body)
 		}
 		staff := newBrowser(t, f.service.Handler())
 		staff.login("/auth/oidc/start", "user_support:")
@@ -306,13 +313,13 @@ func TestStaffCannotCreateOrJoinOrganizations(t *testing.T) {
 			t.Fatalf("invitation start = %d", start.StatusCode)
 		}
 		callback, _ := invited.get("/auth/oidc/callback?" + url.Values{"code": {"user_support:"}, "state": {provider.Query().Get("state")}}.Encode())
-		if callback.StatusCode != http.StatusForbidden {
+		if callback.StatusCode != http.StatusSeeOther {
 			t.Fatalf("staff invitation callback = %d", callback.StatusCode)
 		}
-		if memberships, _ := f.provider.Memberships(t.Context(), "user_support", ""); len(memberships) != 0 {
+		if memberships, _ := f.provider.Memberships(t.Context(), "user_support", ""); len(memberships) != 1 {
 			t.Fatalf("staff joined a customer organization: %+v", memberships)
 		}
-		if got := platformAuditCount(t, f.service, "user_support", "invitation_accepted"); got != 0 {
+		if got := platformAuditCount(t, f.service, "user_support", "invitation_accepted"); got != 1 {
 			t.Fatalf("staff invitation audited as accepted %d times", got)
 		}
 	})
@@ -425,7 +432,7 @@ func TestPlatformTenantFanOutIsBounded(t *testing.T) {
 			seed := make([]byte, ed25519.SeedSize)
 			provider := newFakeProvider()
 			provider.users["user_support"] = "support@example.test"
-			service, err := Open(t.Context(), Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
+			service, err := Open(t.Context(), Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
 				StaffEmails: []string{"support@example.test"}, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
 				transport: func(Organization) (http.RoundTripper, error) { return transport, nil }, platformDeadline: test.deadline})
 			if err != nil {
@@ -504,7 +511,7 @@ func TestStaffSessionsReverifyEveryRead(t *testing.T) {
 			if test.staff {
 				staff = append(staff, test.email)
 			}
-			service, err := Open(t.Context(), Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
+			service, err := Open(t.Context(), Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: provider,
 				StaffEmails: staff, StateDir: t.TempDir(), Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{},
 				transport: func(Organization) (http.RoundTripper, error) { return &fanOutTransport{}, nil }})
 			if err != nil {

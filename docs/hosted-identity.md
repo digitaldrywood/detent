@@ -463,8 +463,28 @@ Routine staff and instance-admin bearer tokens receive no such exception.
 
 ## Support access
 
-Routine staff membership is a metadata identity only, even if someone gives the
-same account a customer membership. Exceptional support needs all of:
+On the shared entry, platform membership is independent of tenant membership.
+An `admin`, `support`, `billing`, or `viewer` can read `/platform`; `admin` manages
+members, `admin` and `support` can start support access, and `admin` and `billing`
+can grant or revoke complimentary plans. The same account can own or join customer
+organizations; tenant access uses only that tenant's membership and project grants.
+Platform powers apply only on the entry console. Support impersonation sessions
+cannot use the console.
+
+The registry's `platform_members` stores normalized emails and one role per member.
+Set `platform.bootstrap_admin_email` to restore an operator admin on each startup;
+the entry refuses to start without that address or an existing admin. The deprecated
+entry lists `staff_emails`, `support_actors`, and `entitlement_administrators` seed an
+empty registry as viewer, support, and billing respectively; an address in both
+privileged lists becomes admin. Populated registries use their roles exclusively.
+The members API audits reads and writes, records append-only changes, requires
+CSRF, a reason, idempotency key and expected revision for writes, and protects the
+last admin, bootstrap address removal, and caller role changes. Browser assertions
+and session payloads carry `platform_role`; tenant hubs expose it in the bootstrap
+actor for navigation and derive no tenant permissions from it.
+
+Without a shared entry, hosted-mode hubs retain their configured staff and support
+lists and metadata-only staff policy. Exceptional support needs all of:
 
 - WorkOS impersonation enabled by a WorkOS Admin in the intended environment.
 - A WorkOS team role permitted to impersonate in that environment; restrict this
@@ -492,18 +512,18 @@ contain opaque IDs, actual/effective identities, reason code, start/end or expir
 and route-template action metadata. They exclude query strings, request bodies,
 raw errors, credentials and bearer capabilities. See [WorkOS impersonation](https://workos.com/docs/authkit/impersonation).
 
-On the shared origin the entry owns this flow. A staff session whose verified email
-is in the entry's `staff_emails` and `support_actors` opens `/support`, selects an
+On the shared origin the entry owns this flow. A verified account with registry
+role `admin` or `support` opens `/support`, selects an
 organization and submits **Start support sign-in** (CSRF and exact Origin). The
 entry records a one-use, ten-minute transaction bound to that browser, staff
 session, actor and organization. The WorkOS impersonation callback must return in
 the same browser with the same actor, an allowed reason and the selected
 organization's provider ID; the resulting support authorization belongs only to
 that staff session and organization and never becomes an ordinary session. Every
-routed request rechecks the support actor lists and the support access token,
+routed request rechecks the registry support role and the support access token,
 whose `act` claim must name the same actor, and the refresh bound above applies to
-the impersonation session. The tenant, which must list the same actor in its
-own `staff_emails` and `support_actors`, shows the actual/effective identity banner,
+the impersonation session. The tenant trusts the entry's signed support assertion
+and shows the actual/effective identity banner,
 audits `session_started` when it first sees the support session, audits each
 content action as before, and audits `session_ended` when sign-out revokes it.
 

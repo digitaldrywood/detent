@@ -116,7 +116,7 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	}
 	subject, email := session.Subject, session.Email
 	if authorized.Support {
-		if !s.supportActor(session.Email) || authorized.EffectiveEmail == "" {
+		if !s.supportActor(ctx, session.Email) || authorized.EffectiveEmail == "" {
 			s.dropAuthorization(ctx, authorized)
 			return http.StatusForbidden, "", errNoSession
 		}
@@ -140,6 +140,9 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	claims.SupportActor, claims.SupportReason = identity.SupportActor, identity.SupportReason
 	claims.SessionCreatedAt, claims.SessionExpiresAt = identity.CreatedAt, identity.ExpiresAt
 	claims.Role, claims.AccessExpiresAt = access.Role, access.ExpiresAt
+	if !authorized.Support {
+		claims.PlatformRole = s.platformRole(ctx, email)
+	}
 	claims.Binding, claims.CSRF = authorized.Binding, cloudassert.CSRFToken(session.CSRFSecret, organization.ID)
 	return http.StatusOK, verification, nil
 }
@@ -381,9 +384,6 @@ func (s *Service) signedCallCSRF(ctx context.Context, organization Organization,
 }
 
 func (s *Service) acceptInvitation(ctx context.Context, organization Organization, subject, email, providerSession, token string) error {
-	if s.staff(email) {
-		return errors.New("staff accounts cannot accept customer invitations")
-	}
 	status, err := s.serviceRequest(ctx, organization, "/internal/v1/invitations/accept", map[string]string{"token": token}, func(claims *cloudassert.Claims) {
 		claims.Subject, claims.Email, claims.ProviderSession = subject, email, providerSession
 	})
@@ -413,9 +413,6 @@ func (s *Service) revokeAtTenants(parent context.Context, items []authorization)
 }
 
 func (s *Service) acceptInvitationID(ctx context.Context, organization Organization, subject, email, providerSession, id string) error {
-	if s.staff(email) {
-		return auth.ErrHostedIdentity
-	}
 	status, err := s.serviceRequest(ctx, organization, "/internal/v1/invitations/accept", map[string]string{"invitation_id": id}, func(claims *cloudassert.Claims) {
 		claims.Subject, claims.Email, claims.ProviderSession = subject, email, providerSession
 	})

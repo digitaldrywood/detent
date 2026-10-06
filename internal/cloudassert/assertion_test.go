@@ -65,6 +65,13 @@ func TestVerify(t *testing.T) {
 			c.IssuedAt, c.ExpiresAt = now.Add(time.Minute), now.Add(70*time.Second)
 		}},
 		{name: "browser missing binding", key: key, mutate: func(c *cloudassert.Claims) { c.Binding = "" }},
+		{name: "platform admin", key: key, ok: true, mutate: func(c *cloudassert.Claims) { c.PlatformRole = "admin" }},
+		{name: "platform support", key: key, ok: true, mutate: func(c *cloudassert.Claims) { c.PlatformRole = "support" }},
+		{name: "platform billing", key: key, ok: true, mutate: func(c *cloudassert.Claims) { c.PlatformRole = "billing" }},
+		{name: "platform viewer", key: key, ok: true, mutate: func(c *cloudassert.Claims) { c.PlatformRole = "viewer" }},
+		{name: "unknown platform role", key: key, mutate: func(c *cloudassert.Claims) { c.PlatformRole = "owner" }},
+		{name: "support session platform role", key: key, mutate: func(c *cloudassert.Claims) { c.PlatformRole, c.SupportActor = "admin", "support@example.test" }},
+		{name: "service platform role", key: key, mutate: func(c *cloudassert.Claims) { c.PlatformRole, c.Kind = "admin", cloudassert.KindService }},
 		{name: "browser missing role", key: key, mutate: func(c *cloudassert.Claims) { c.Role = "" }},
 		{name: "browser unknown role", key: key, mutate: func(c *cloudassert.Claims) { c.Role = "superuser" }},
 		{name: "browser missing access expiry", key: key, mutate: func(c *cloudassert.Claims) { c.AccessExpiresAt = time.Time{} }},
@@ -105,7 +112,11 @@ func TestVerify(t *testing.T) {
 				body = test.body
 			}
 			verifier := &cloudassert.Verifier{PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Issuer: "entry", Audience: "org_a", Generation: 2, Now: func() time.Time { return now }}
-			_, err = verifier.Verify(value, method, path, []byte(body))
+			verified, verifyErr := verifier.Verify(value, method, path, []byte(body))
+			err = verifyErr
+			if err == nil && verified.PlatformRole != claims.PlatformRole {
+				t.Fatalf("platform role = %q, want %q", verified.PlatformRole, claims.PlatformRole)
+			}
 			if (err == nil) != test.ok {
 				t.Fatalf("Verify error = %v, want ok %v", err, test.ok)
 			}

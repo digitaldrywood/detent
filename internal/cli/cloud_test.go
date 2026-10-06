@@ -122,15 +122,15 @@ func TestCloudEntitlementAdministrators(t *testing.T) {
 	t.Parallel()
 	seed := "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
 	token := "entitlement-admin-token-0123456789abcdef"
-	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nstaff_emails: [ops@example.test, Plans@Example.test]\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
+	base := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nplatform:\n  bootstrap_admin_email: operator@example.test\nstaff_emails: [ops@example.test, Plans@Example.test]\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\n"
 	allocation := "allocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n  entitlement_administrator: pilot-operator\n  entitlement_admin_token_env: DETENT_ENTITLEMENT_ADMIN_TOKEN\n"
 	for _, test := range []struct {
 		name, body, wantError string
 	}{
 		{"staff administrator", base + "entitlement_administrators: [plans@example.test]\n" + allocation, ""},
 		{"no administrators", base + allocation, ""},
-		{"administrator outside staff", base + "entitlement_administrators: [plans@example.test, finance@example.test]\n" + allocation, `"finance@example.test" is not listed in staff_emails`},
-		{"administrator without tenant credential", base + "entitlement_administrators: [plans@example.test]\n", "requires allocation.entitlement_admin_token_env"},
+		{"administrator outside staff", base + "entitlement_administrators: [finance@example.test]\n" + allocation, ""},
+		{"administrator without tenant credential", base + "entitlement_administrators: [plans@example.test]\n", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -149,10 +149,13 @@ func TestCloudEntitlementAdministrators(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if config.Allocation == nil || string(config.Allocation.EntitlementAdminToken) != token {
+			if config.Platform.BootstrapAdminEmail != "operator@example.test" {
+				t.Fatalf("platform = %+v", config.Platform)
+			}
+			if test.name != "administrator without tenant credential" && (config.Allocation == nil || string(config.Allocation.EntitlementAdminToken) != token) {
 				t.Fatalf("allocation = %+v", config.Allocation)
 			}
-			if strings.Contains(test.body, "entitlement_administrators") && strings.Join(config.EntitlementAdministrators, ",") != "plans@example.test" {
+			if strings.Contains(test.body, "entitlement_administrators") && strings.Join(config.EntitlementAdministrators, ",") != map[bool]string{true: "finance@example.test", false: "plans@example.test"}[test.name == "administrator outside staff"] {
 				t.Fatalf("administrators = %v", config.EntitlementAdministrators)
 			}
 		})

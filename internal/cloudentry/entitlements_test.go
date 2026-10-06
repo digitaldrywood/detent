@@ -14,30 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 )
 
-func TestEntitlementAdministratorsMustBeStaff(t *testing.T) {
-	t.Parallel()
-	token := []byte(pilotOperatorToken)
-	for _, test := range []struct {
-		name       string
-		admins     []string
-		allocation *AllocationConfig
-		want       string
-	}{
-		{"none configured", nil, nil, ""},
-		{"staff administrator", []string{"Staff@Example.test"}, &AllocationConfig{EntitlementAdminToken: token}, ""},
-		{"administrator outside staff", []string{"staff@example.test", "finance@example.test"}, &AllocationConfig{EntitlementAdminToken: token}, `"finance@example.test" must also be listed in staff_emails`},
-		{"administrator without tenant credential", []string{"staff@example.test"}, &AllocationConfig{}, "requires allocation.entitlement_admin_token_env"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			err := Config{StaffEmails: []string{"staff@example.test"}, EntitlementAdministrators: test.admins, Allocation: test.allocation}.validateEntitlementAdministrators()
-			if test.want == "" && err != nil || test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
-				t.Fatalf("error = %v, want %q", err, test.want)
-			}
-		})
-	}
-}
-
 func pilotSupportSession(t *testing.T, p *sharedOriginPilot, organization string) *pilotBrowser {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
