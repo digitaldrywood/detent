@@ -429,6 +429,7 @@ func TestCutoverSourceClosureAndProjectionCoalescing(t *testing.T) {
 		t.Run(strconv.FormatBool(closeSource), func(t *testing.T) {
 			f := newIntegrationFixture(t, &importFixtureBackend{})
 			backend := &recordingOutboxBackend{}
+			f.service.outbox.stop()
 			f.service.config.OutboxBackend = backend
 			job := finishImportFixture(t, f, startImportFixture(t, f, 1, false, 0))
 			finishImportFixture(t, f, startImportFixture(t, f, 2, false, 0))

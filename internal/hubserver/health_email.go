@@ -58,6 +58,9 @@ func (s *Service) commitHealthEvaluation(ctx context.Context, tx *sql.Tx, organi
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	if s.outbox != nil {
+		s.outbox.signal()
+	}
 	if len(notifications) == 0 {
 		return nil
 	}

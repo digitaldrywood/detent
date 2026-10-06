@@ -34,6 +34,9 @@ const hostedOrganizationBase = "/api/v2/organizations/:organization"
 
 func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	session := s.hostedSessionOnly
+	e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, session)
+	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, session)
+	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, session)
 	e.GET(hostedOrganizationBase+"/model-selection", s.getOrganizationModelSelection, session)
 	e.PUT(hostedOrganizationBase+"/model-selection", s.updateOrganizationModelSelection, session)
 	e.GET(hostedOrganizationBase+"/members", s.listHostedMembers, session)

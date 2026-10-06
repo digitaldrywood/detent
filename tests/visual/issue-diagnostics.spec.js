@@ -59,3 +59,9 @@ test("unavailable reads retain the tab and the unavailable states", async ({ pag
   await expect(page.getByText("Attempts unavailable.", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry diagnostics", exact: true })).toBeVisible();
 });
+
+test("Slack issue link opens the Diagnostics tab", async ({ page }) => {
+  await installDiagnostics(page, hub.fixture, "Blocked", false, "?tab=diagnostics");
+  await expect(page.getByRole("tab", { name: "Diagnostics", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("issue-diagnostics").getByRole("heading", { name: "Evidence", exact: true })).toBeVisible();
+});

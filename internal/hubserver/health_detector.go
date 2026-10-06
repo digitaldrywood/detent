@@ -126,6 +126,9 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 			id = newNativeID("finding")
 			transitions = append(transitions, id)
 			_, err = tx.ExecContext(ctx, `INSERT INTO health_findings(id,organization_id,fingerprint,signal,class,subject_json,projects_json,opened_at,last_seen_at,severity,summary,next_action,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, organization, f.Fingerprint, f.Signal, f.Class, string(subject), string(projects), formatHubTime(now), formatHubTime(now), f.Severity, f.Summary, f.NextAction, string(evidence))
+			if err == nil && f.Severity == "attention" {
+				err = enqueueSlackOpened(ctx, tx, organization, id, now)
+			}
 		} else {
 			_, err = tx.ExecContext(ctx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,summary=?,next_action=?,evidence_json=? WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Summary, f.NextAction, string(evidence), id, organization)
 		}
@@ -135,6 +138,9 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 	}
 	raw, err := json.Marshal(fingerprints)
 	if err != nil {
+		return nil, err
+	}
+	if err := enqueueSlackResolved(ctx, tx, organization, raw, now); err != nil {
 		return nil, err
 	}
 	rows, err := tx.QueryContext(ctx, `UPDATE health_findings SET resolved_at=? WHERE organization_id=? AND resolved_at IS NULL AND fingerprint NOT IN (SELECT value FROM json_each(?)) RETURNING id`, formatHubTime(now), organization, string(raw))

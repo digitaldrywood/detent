@@ -35,21 +35,28 @@ type healthEvidence struct {
 	Reason     string                         `json:"reason,omitempty"`
 }
 
+type healthSlackFailure struct {
+	Code       string    `json:"code"`
+	StatusCode int       `json:"status_code"`
+	At         time.Time `json:"at"`
+}
+
 type healthFinding struct {
-	ID               string         `json:"id"`
-	Fingerprint      string         `json:"fingerprint"`
-	Signal           string         `json:"signal"`
-	Class            string         `json:"class"`
-	Subject          healthSubject  `json:"subject"`
-	Projects         []string       `json:"-"`
-	OpenedAt         time.Time      `json:"opened_at"`
-	LastSeenAt       time.Time      `json:"last_seen_at"`
-	ResolvedAt       *time.Time     `json:"resolved_at"`
-	Severity         string         `json:"severity"`
-	Summary          string         `json:"summary"`
-	NextAction       string         `json:"next_action"`
-	Evidence         healthEvidence `json:"evidence"`
-	EmailUnavailable bool           `json:"email_unavailable,omitempty"`
+	SlackUnavailable *healthSlackFailure `json:"slack_unavailable,omitempty"`
+	ID               string              `json:"id"`
+	Fingerprint      string              `json:"fingerprint"`
+	Signal           string              `json:"signal"`
+	Class            string              `json:"class"`
+	Subject          healthSubject       `json:"subject"`
+	Projects         []string            `json:"-"`
+	OpenedAt         time.Time           `json:"opened_at"`
+	LastSeenAt       time.Time           `json:"last_seen_at"`
+	ResolvedAt       *time.Time          `json:"resolved_at"`
+	Severity         string              `json:"severity"`
+	Summary          string              `json:"summary"`
+	NextAction       string              `json:"next_action"`
+	Evidence         healthEvidence      `json:"evidence"`
+	EmailUnavailable bool                `json:"email_unavailable,omitempty"`
 }
 
 type healthRunner struct {
