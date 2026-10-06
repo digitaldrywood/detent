@@ -103,6 +103,15 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 		case !ready:
 			refuse("no_claimable_work", "Current Change version is not ready for native landing")
 		default:
+			allowed, reason, err := placementClaimAllowed(ctx, q, scope, r.MachineID, id, now, nil)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				refuse("no_claimable_work", reason)
+				evidence.Admission = append(evidence.Admission, a)
+				continue
+			}
 			exclusions := r.Exclusions(scope.project, requirements, false)
 			if len(exclusions) > 0 {
 				refuse(exclusions[0].Code, exclusions[0].Message)

@@ -76,6 +76,16 @@ projects:
 				if !ready {
 					continue
 				}
+				allowed, reason, err := placementClaimAllowed(ctx, tx, candidateScope, r.MachineID, id, now, query.ProviderCandidates)
+				if err != nil {
+					return 0, false, err
+				}
+				if !allowed {
+					if err := recordNativeSchedulingOutcome(ctx, tx, &candidateScope, id, tracker.NativeSchedulerDecision{Source: "native_runner_routing", Outcome: "skipped", Reason: reason}, now); err != nil {
+						return 0, false, err
+					}
+					continue
+				}
 
 				if _, _, err := selectProviderCapacity(ctx, tx, query, id, now); err != nil {
 					if errors.Is(err, ErrNoClaimableWork) || isProviderWait(err) {

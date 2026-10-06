@@ -101,6 +101,17 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 		return nil
 	}
 	now := s.config.now()
+	placement, err := readPlacementSnapshot(ctx, tx, scope, now, nil)
+	if err != nil {
+		return err
+	}
+	input := spriteScaleInput{Depth: placement.SpriteTarget, Free: placement.SpriteFree, Pending: placement.Pending, Floor: settings.MinRunners, Ceiling: ceiling, Count: count, CreateLimit: placement.ProviderFree}
+	if placement.Policy.Mode == "local_first" {
+		input.Floor = min(input.Floor, placement.Policy.OverflowSlots)
+	}
+	if decideSpriteScale(input).Create == 0 {
+		return nil
+	}
 	before, err := s.database.hostedConsumption(ctx, tx, now)
 	if err != nil {
 		return err

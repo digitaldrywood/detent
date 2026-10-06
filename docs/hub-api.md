@@ -46,16 +46,56 @@ members. Arbitrary command output is suppressed; logs retain stage progress and
 failure status without provider or enrollment credentials. Enrollment does not
 prove provider authentication, checkout readiness or approved repository policy.
 
-Dispatchable native mutations size the pool from queued depth and free capacity,
-including pending bootstrap and successful wakes. Paused members are woken before
-creation. Capacity estimates respect host and reported shared-provider bounds;
-claims still use the existing admission, policy, routing and lease owners. Idle
-deletion drains members only after active host leases finish and preserves the
-current floor. Heartbeats, finish/release and the existing Hub maintenance cycle
-provide lifecycle triggers; no separate scaler or provider retry loop runs.
-Failed or interrupted bootstrap leaves a member for deletion; a later native
-scale-up may provision its replacement. PR publication and landing remain on
-the local runner.
+Pool settings accept a project-scoped `placement` object. Its `mode` is
+`blended` (local and Sprite runners eligible without preference weights),
+`sprites_only` (local execution excluded), or `local_first`. Existing settings
+and projects without a pool resolve to `blended`; omitting `placement` from a
+PUT preserves the saved policy. Changing placement affects new claims only.
+Runner owner allowlists, organization project rank, issue priority and age
+retain their existing scheduling owner; placement never preempts running work
+or modifies grants.
+
+`local_first` requires explicit positive `todo_threshold` and `overflow_slots`
+(1–100). There are no implicit numeric defaults and no overflow delay. At the
+threshold boundary, overflow becomes eligible; below it, warm Sprites cannot
+claim queued work. A Sprite still cannot claim an item with compatible free
+local capacity, even when it polls first. Overflow slots bound concurrent Sprite
+work, rather than provisioning one Sprite per queued item. `max_runners` remains
+the managed instance ceiling. Optional `max_sprite_slots` (0–100) bounds Sprite
+claims independently of instance count and warm capacity; zero preserves the
+existing runner/host/provider limits. Local-first also enforces `overflow_slots`
+as a concurrent Sprite-work limit, using the smaller bound when both are set.
+The configured warm floor remains independent of demand, limited to the
+overflow size in local-first mode; warm capacity does not authorize claims below
+the threshold.
+
+Only unleased, unanswered, dependency-ready, policy-compatible **Todo** work
+contributes demand. Backlog, other dispatchable states, unresolved dependencies,
+workspace items and incompatible model/host requirements never trigger overflow
+or state promotion. Capacity estimates apply approved requirements, runner and
+host ceilings, current runner health/availability, and reported shared-provider
+limits. Existing Sprite provider reports describe bootstrap compatibility; a
+first pool enrollment has unknown provider readiness until it reports capacity.
+Claims retain the runner's authoritative provider selection and admission gates.
+Exhausted Sprite provider accounts exclude Sprite work without excluding an
+independent eligible local account. Future monthly Sprite budget eligibility
+belongs in the existing admission owner.
+
+The existing lifecycle uses the same resolved placement snapshot for wake and
+provision decisions, and rechecks inside the creation transaction. Pending
+bootstrap and recent successful wakes contribute capacity once. Eligible paused
+members are woken before creation. The Sprite-pool API returns
+`placement_decision` with the resolved policy, ready Todo demand, compatible
+local capacity, Sprite usage, pending capacity, provisionable slots and the
+current explanation. Current admission reads and recorded routing refusals
+explain claim exclusions; these reads add no UI.
+
+Idle deletion drains members only after active host leases finish and preserves
+the current floor. Heartbeats, finish/release and the existing Hub maintenance
+cycle provide lifecycle triggers; no separate scaler or provider retry loop
+runs. Failed or interrupted bootstrap leaves a member for deletion; a later
+native scale-up may provision its replacement. PR publication and landing
+remain on the local runner.
 
 ## Approved repository policy
 
