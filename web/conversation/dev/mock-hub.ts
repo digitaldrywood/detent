@@ -2576,6 +2576,11 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     }
 
     if (tail === "fleet" && method === "GET") {
+      if (url.searchParams.get("include") === "names") {
+        const runners = organizationMode === "empty" ? [] : SEED_FLEET.runners;
+        json(response, 200, { runner_names: Object.fromEntries(runners.map((runner) => [runner.id, { display_name: runner.display_name, hostname: runner.hostname }])) });
+        return true;
+      }
       // Any member reads the fleet. Spend is nullable on purpose: an
       // organization with no metering has no number, and the screen says so
       // rather than drawing a zero that looks like a measurement.

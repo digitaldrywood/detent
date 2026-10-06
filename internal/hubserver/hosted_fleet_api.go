@@ -114,8 +114,12 @@ type hostedRunnerName struct {
 	Hostname    string `json:"hostname"`
 }
 
-func readHostedRunnerNames(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID) (map[string]hostedRunnerName, error) {
-	rows, err := query.QueryContext(ctx, `SELECT r.id, r.display_name, m.hostname FROM runner_identities r JOIN machines m ON m.id = r.machine_id WHERE r.organization_id = ? AND r.removed_at IS NOT NULL`, organization)
+type hostedRunnerNamesResponse struct {
+	RunnerNames map[string]hostedRunnerName `json:"runner_names"`
+}
+
+func readHostedRunnerNames(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, includeActive bool) (map[string]hostedRunnerName, error) {
+	rows, err := query.QueryContext(ctx, `SELECT r.id, r.display_name, m.hostname FROM runner_identities r JOIN machines m ON m.id = r.machine_id WHERE r.organization_id = ? AND (r.removed_at IS NOT NULL OR ?)`, organization, includeActive)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +142,14 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	result, err := s.readHostedFleet(c.Request().Context(), credential)
+	var result any
+	if c.QueryParam("include") == "names" {
+		var names map[string]hostedRunnerName
+		names, err = readHostedRunnerNames(c.Request().Context(), s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
+		result = hostedRunnerNamesResponse{RunnerNames: names}
+	} else {
+		result, err = s.readHostedFleet(c.Request().Context(), credential)
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -178,7 +189,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
-	names, err := readHostedRunnerNames(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+	names, err := readHostedRunnerNames(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), false)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}

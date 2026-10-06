@@ -65,15 +65,12 @@ export function useRunnerNames(): RunnerNames {
         apiBase: client.http.apiBase,
         csrfToken: client.http.csrfToken,
       })
-        .fleet()
+        .fleetNames()
         .then((fleet) => {
           if (scope !== owner) return NO_RUNNER_NAMES;
           const next = new Map<string, RunnerName>();
           for (const [id, runner] of Object.entries(fleet.runner_names ?? {})) {
             next.set(id, { display: runner.display_name, host: runner.hostname });
-          }
-          for (const runner of fleet.runners) {
-            next.set(runner.id, { display: runner.display_name, host: runner.hostname });
           }
           cached = { at: Date.now(), names: next };
           return next as RunnerNames;

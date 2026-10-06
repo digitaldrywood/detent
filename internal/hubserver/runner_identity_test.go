@@ -127,7 +127,7 @@ func TestRunnerRemoval(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath(), r.redemption.Credential, nil), status)
 			if test.finished {
-				names, err := readHostedRunnerNames(t.Context(), f.service.database.db, f.project.OrganizationID)
+				names, err := readHostedRunnerNames(t.Context(), f.service.database.db, f.project.OrganizationID, false)
 				if err != nil || names[r.binding.RunnerID].DisplayName != "Runner" {
 					t.Fatalf("historical name lookup = %#v, %v", names, err)
 				}
