@@ -55,7 +55,15 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if errors.Is(event.Err, runpkg.ErrExecutionAuthorityUnavailable) {
 		return handoff(event.Err)
 	}
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	humanReview := cfg.humanReviewEnabled() || autoPromoteOptoutLabel(issue, cfg)
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
+		if !humanReview {
+			if o.handlePreTurnFailure(ctx, state, event, running) {
+				return true
+			}
+			return handoff(fmt.Errorf("native worker did not complete: %s", firstNonBlank(errorString(event.Err), finalState)))
+		}
 		states, err := reader.WorkflowStates(ctx)
 		if err != nil {
 			return handoff(fmt.Errorf("read native workflow states: %w", err))
@@ -101,7 +109,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if changed && change.VersionID == "" && change.VersionError == "" {
 		return handoff(errors.New("the native change has no published current version"))
 	}
-	if (change == nil || change.VersionError == "") && o.completeRecordedInstanceBlockers(ctx, state, event, running, report) {
+	if o.completeRecordedInstanceBlockers(ctx, state, event, running, report) {
 		return true
 	}
 	states, err := reader.WorkflowStates(ctx)
@@ -113,20 +121,23 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	accepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusComplete && len(report.Blockers) == 0 && report.HumanAction == ""
 	needsReview := !changed && !accepted || reported && !accepted
-	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	review := cfg.reviewTargetState()
 	if autoPromoteOptoutLabel(issue, cfg) {
 		review = cfg.SourceState
 	}
 	target, ok := connector.CompletionLane(states, issue.State, review, changed || needsReview)
 	if changed || needsReview {
-		target, ok = connector.LandingRefusalLane(states, issue.State, review, false)
+		if humanReview || report != nil && report.Invalid == nil && report.HumanAction != "" {
+			target, ok = connector.LandingRefusalLane(states, issue.State, review, false)
+		} else {
+			target, ok = "", false
+		}
 	}
-	if blocked && (change == nil || change.VersionError == "") {
-		target, ok = connector.LandingRefusalLane(states, issue.State, "Blocked", false)
+	if blocked {
+		target, ok = connector.CompletionLane(states, issue.State, "Blocked", true)
 	}
-	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework"
-	unfinished := validatorRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "" && change.VersionError == ""
+	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
+	unfinished := validatorRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
 	if unfinished && nativePlanStateExists(states, cfg.ReworkState) && dispatchableState(states, cfg.ReworkState) {
 		if normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
 			target, ok = issue.State, true
@@ -134,7 +145,10 @@ func (o *Orchestrator) completeNativeChangeRun(
 			target, ok = rework, true
 		}
 	}
-	if changed && change.Reviewed && !needsReview && !autoPromoteOptoutLabel(issue, cfg) {
+	if change != nil && change.VersionError != "" && !blocked && !unfinished {
+		return handoff(errors.New(change.VersionError))
+	}
+	if changed && change.Reviewed && !needsReview && !unfinished && !autoPromoteOptoutLabel(issue, cfg) {
 		if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); direct && dispatchableState(states, landing) {
 			target, ok = landing, true
 		} else if _, allowed := connector.CompletionLane(states, issue.State, "", false); allowed {
@@ -147,6 +161,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 	}
 	if !ok {
+		if change != nil && change.VersionError != "" {
+			return handoff(errors.New(change.VersionError))
+		}
 		if changed || needsReview {
 			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", strings.TrimSpace(issue.State), review))
 		}
@@ -163,7 +180,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		if report != nil && report.Invalid == nil {
 			disposition = "detent-status " + report.Status
 		}
-		comment = fmt.Sprintf("The provider turn completed with %s. Moved from %s to %s for review; the completed turn and any genuine source version are preserved, but issue acceptance is not recorded.", disposition, displayStateName(issue.State), displayStateName(target))
+		comment = fmt.Sprintf("The provider turn completed with %s. Moved from %s to %s; the completed turn and any genuine source version are preserved, but issue acceptance is not recorded.", disposition, displayStateName(issue.State), displayStateName(target))
 		if unfinished && normalizeState(target) == normalizeState(cfg.ReworkState) {
 			comment = fmt.Sprintf("The provider turn completed with %s and no reported blocker or human action. Implementation remains unfinished in %s; the completed turn and any genuine source version are preserved for further work, but issue acceptance is not recorded.", disposition, displayStateName(target))
 		}
@@ -341,7 +358,7 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 func nativeCompletionComment(change *runpkg.NativeChange, from, to string) string {
 	from, to = displayStateName(from), displayStateName(to)
 	if change.VersionError != "" {
-		return fmt.Sprintf("The run completed, but Change Request %s could not publish its final version for head %s: %s. Moved from %s to %s for review.",
+		return fmt.Sprintf("The run completed, but Change Request %s could not publish its final version for head %s: %s. Moved from %s to %s.",
 			change.ChangeID, shortCommit(change.HeadSHA), change.VersionError, from, to)
 	}
 	if change.Changed {
