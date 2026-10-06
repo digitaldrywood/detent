@@ -27,11 +27,12 @@ import (
 )
 
 type testExecution struct {
-	recovery    tracker.NativeRecovery
-	validateErr error
-	checkpoint  *tracker.NativeCheckpoint
-	finish      string
-	started     bool
+	recovery     tracker.NativeRecovery
+	validateErr  error
+	checkpoint   *tracker.NativeCheckpoint
+	finish       string
+	started      bool
+	onCheckpoint func(tracker.NativeCheckpoint)
 }
 
 func (e *testExecution) Guard(ctx context.Context) (context.Context, func(), error) {
@@ -44,6 +45,9 @@ func (e *testExecution) Start(context.Context, tracker.NativeExecutionIdentity) 
 	return nil
 }
 func (e *testExecution) Checkpoint(_ context.Context, checkpoint tracker.NativeCheckpoint) error {
+	if e.onCheckpoint != nil {
+		e.onCheckpoint(checkpoint)
+	}
 	e.checkpoint = &checkpoint
 	return nil
 }
@@ -197,7 +201,10 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		advancedBase            bool
 		revokeAfterVerification bool
 		foreign                 string
+		secondRecovery          bool
 	}{
+		{name: "verified paused checkpoint converges", rework: true, paused: true, secondRecovery: true},
+		{name: "verified paused checkpoint converges with advanced base", rework: true, paused: true, advancedBase: true, secondRecovery: true},
 		{name: "already paused unpushed rework", rework: true, paused: true},
 		{name: "already paused worker resolves", rework: true, paused: true, resolved: true},
 		{name: "already paused inherited signing", rework: true, paused: true, signedPause: true},
@@ -494,6 +501,21 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			reconciledCheckpoints := 0
+			if test.secondRecovery {
+				if beforeRun.WorkspaceFingerprint == sourceCheckpoint.WorkspaceDigest {
+					t.Fatal("fixture did not reproduce local_checkpoint_changed")
+				}
+				execution.onCheckpoint = func(checkpoint tracker.NativeCheckpoint) {
+					if backend.prepared {
+						return
+					}
+					reconciledCheckpoints++
+					if !execution.started || checkpoint.HeadSHA != beforeRun.HeadSHA || checkpoint.WorkspaceDigest != beforeRun.WorkspaceFingerprint || checkpoint.Resume != "resume_session" {
+						t.Fatalf("recovery published an unverified checkpoint: %+v", checkpoint)
+					}
+				}
+			}
 			indexPath := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "--git-path", "index"))
 			indexBefore, err := os.ReadFile(indexPath)
 			if err != nil {
@@ -664,6 +686,27 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 					}
 					if err != nil || resumed.ResumedFromSessionID.Int64 != from || resumed.WorkAttemptID.Int64 != currentAttemptID || resumed.FinalState.String != "failed" {
 						t.Fatalf("persisted continuation=%+v error=%v", resumed, err)
+					}
+				}
+				if test.secondRecovery {
+					if reconciledCheckpoints == 0 {
+						t.Fatal("first recovery did not publish the reconciled checkpoint before preparation")
+					}
+					if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: currentAttemptID, CompletedAt: started.Add(2 * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalCapacity, WorkerMetadataJSON: string(metadata)}); err != nil {
+						t.Fatal(err)
+					}
+					nextAttemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: "work", WorkerType: "agent", StartedAt: started.Add(3 * time.Minute), WorkerMetadataJSON: string(metadata)})
+					if err != nil {
+						t.Fatal(err)
+					}
+					next := &testExecution{recovery: execution.recovery}
+					next.recovery.Attempts = append([]tracker.NativeAttempt(nil), execution.recovery.Attempts...)
+					next.recovery.Attempts[0].Checkpoint = execution.checkpoint
+					next.recovery.Attempts[0].Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: currentAttemptID, Identity: identity}
+					execution = next
+					_, nextErr := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: next, WorkAttemptID: nextAttemptID, Issue: issue, Mode: RunModeImplement})
+					if !errors.Is(nextErr, overload) || agent.calls != 2 || !next.started || next.checkpoint == nil || next.checkpoint.WorkspaceDigest != beforeRun.WorkspaceFingerprint {
+						t.Fatalf("reconciled second attempt did not run: error=%v calls=%d checkpoint=%+v", nextErr, agent.calls, next.checkpoint)
 					}
 				}
 			}
@@ -840,7 +883,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 					Checkpoint:    &tracker.NativeCheckpoint{Resume: "resume_session", Availability: "available", Storage: "local_only", WorktreeState: "dirty", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"},
 				}}}
 				test.edit(&recovery, &local, &available)
-				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh, false)
+				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh)
 				wantAction, wantReason := test.action, test.reason
 				if mode == RetryModeFresh && wantAction == "resume_session" {
 					wantAction, wantReason = "fresh_checkout", "session_restart_required"

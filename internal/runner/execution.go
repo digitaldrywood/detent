@@ -448,7 +448,7 @@ func (req RunRequest) operatorFreshRetry() bool {
 	return req.RetryMode == RetryModeFresh && req.RecoveryAttemptID > 0
 }
 
-func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.RecoveryState, sessionAvailable bool, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, operatorFresh, preparedSource bool) (string, string) {
+func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.RecoveryState, sessionAvailable bool, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, operatorFresh bool) (string, string) {
 	if len(recovery.Attempts) == 0 {
 		return "fresh_checkout", "no_prior_attempt"
 	}
@@ -465,8 +465,8 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	}
 	sameMachine := previous.MachineID == recovery.Lease.MachineID
 	localAvailable := sameMachine && local != nil
-	checkpointMatches := localAvailable && (preparedSource || checkpoint.HeadSHA == local.HeadSHA && checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest == local.WorkspaceFingerprint)
-	if localAvailable && !preparedSource && checkpoint.WorktreeState != "clean" && (checkpoint.HeadSHA != local.HeadSHA || checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest != local.WorkspaceFingerprint) {
+	checkpointMatches := localAvailable && checkpoint.HeadSHA == local.HeadSHA && checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest == local.WorkspaceFingerprint
+	if localAvailable && checkpoint.WorktreeState != "clean" && (checkpoint.HeadSHA != local.HeadSHA || checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest != local.WorkspaceFingerprint) {
 		if nativeInterruptedResumeAttempt(recovery) == nil && (len(local.TrackedPaths) != 0 || len(local.UntrackedPaths) != 0 || local.UnpushedCommits > 0) {
 			return "fresh_checkout", "local_work_preserved"
 		}
@@ -507,7 +507,7 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 		state = req.ResumeState
 	}
 	sessionAvailable := !agentResumeStateEmpty(state) && verifyAgentResume(ctx, backend, process, agentResumeFromState(state)) == nil
-	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry(), false)
+	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry())
 	if issue.NativeRework && reason == "local_checkpoint_changed" && local != nil {
 		if preparer, ok := source.(workspace.ReworkPreparer); ok {
 			if err := req.Execution.Validate(ctx); err != nil {
@@ -523,7 +523,20 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 				return store.AgentResumeState{}, err
 			}
 			if verified && err == nil && checkpoint.WorktreeState == "unpushed" {
-				action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry(), true)
+				reconciled := *checkpoint
+				observed := executionCheckpoint(local)
+				reconciled.HeadSHA, reconciled.WorkspaceDigest, reconciled.WorktreeState = observed.HeadSHA, observed.WorkspaceDigest, observed.WorktreeState
+				recovery.Attempts = append([]tracker.NativeAttempt(nil), recovery.Attempts...)
+				recovery.Attempts[len(recovery.Attempts)-1].Checkpoint = &reconciled
+				action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry())
+				if action != "manual_recovery" {
+					if err := req.Execution.Start(ctx, identity); err != nil {
+						return store.AgentResumeState{}, err
+					}
+					if err := req.Execution.Checkpoint(ctx, reconciled); err != nil {
+						return store.AgentResumeState{}, err
+					}
+				}
 			}
 		}
 	}

@@ -1203,7 +1203,7 @@ func terminalStateForRun(err error, finalState string) store.WorkAttemptTerminal
 
 func runnerWorkAttemptErrorClass(err error) string {
 	if errors.Is(err, runpkg.ErrNativeRecoveryRequired) {
-		return workAttemptErrorInterrupted
+		return workAttemptErrorWorkspace
 	}
 	var deliverableErr *runpkg.DeliverableCommandError
 	if errors.As(err, &deliverableErr) && deliverableErr != nil && deliverableErr.OperationClass == "post_push" {

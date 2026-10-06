@@ -1505,7 +1505,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	freshCheckout := req.Execution != nil && !nativeLanding && nativeCheckpointPolicyChanged(req.Execution.Recovery())
 	if freshCheckout {
 		recovery := req.Execution.Recovery()
-		action, reason := nativeRecoveryAction(recovery, nil, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{}, false, false)
+		action, reason := nativeRecoveryAction(recovery, nil, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{}, false)
 		if action == "manual_recovery" {
 			return RunResult{}, fmt.Errorf("%w: %s", ErrNativeRecoveryRequired, reason)
 		}
