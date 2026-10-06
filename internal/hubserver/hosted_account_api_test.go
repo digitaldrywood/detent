@@ -296,6 +296,11 @@ func TestAccountClientRoutes(t *testing.T) {
 			want:   []string{"GET " + project + "/policy"},
 		},
 		{
+			name:   "health findings conditional cursor query",
+			source: "send(HealthFindingsRead, \"GET\", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=open${cursor ? `&cursor=${encodeURIComponent(cursor)}` : \"\"}`)",
+			want:   []string{"GET " + hostedOrganizationBase + "/projects/:param/health/findings"},
+		},
+		{
 			name:   "hub path",
 			source: "send(null, \"POST\", hubPath(\"/logout\"), {})",
 			want:   []string{"POST /logout"},
@@ -352,7 +357,7 @@ var accountClientOptionalSegment = regexp.MustCompile(`\$\{[^}]*\? "([^"]*)" : "
 
 var accountClientScope = regexp.MustCompile(`\$\{[\w.]+ === undefined \? base : project\([\w.]+\)\}`)
 
-var accountClientQuery = regexp.MustCompile("\\$\\{[\\w.]+ \\? `\\?[^`]*` : \"\"\\}")
+var accountClientQuery = regexp.MustCompile("\\$\\{[\\w.]+ \\? `[?&][^`]*` : \"\"\\}")
 
 func accountClientVariants(key string) []string {
 	key = accountClientQuery.ReplaceAllString(key, "")
