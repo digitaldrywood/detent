@@ -45,7 +45,7 @@ export function workPaginationFixture() {
     return { waiting, release };
   };
   const client = {
-    bootstrap: { projects, organization: { id: "org_mock", name: "Fixture" } },
+    bootstrap: { projects, actor: { principal_id: "fixture-principal" }, organization: { id: "org_mock", name: "Fixture" } },
     http: { origin: "", apiBase, csrfToken: "fixture-csrf" },
   } as unknown as ConversationClient;
   return { client, fetch, control, requests, deferPage };

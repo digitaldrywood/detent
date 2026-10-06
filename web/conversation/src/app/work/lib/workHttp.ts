@@ -128,6 +128,8 @@ export interface WorkHttpOptions {
   readonly apiBase: string;
   readonly csrfToken: string;
   readonly fetch?: FetchLike;
+  readonly onAuthorizationRejected?: () => void;
+  readonly onConfirmed?: (issue: NativeIssue) => void;
 }
 
 export interface ListWorkItemsInput {
@@ -480,9 +482,16 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         parsed = undefined;
       }
     }
-    if (!response.ok) throw errorFromBody(response.status, parsed);
+    if (!response.ok) {
+      if (!signal?.aborted && [401, 403].includes(response.status)) options.onAuthorizationRejected?.();
+      throw errorFromBody(response.status, parsed);
+    }
     try {
-      return Schema.decodeUnknownSync(schema)(parsed);
+      const decoded = Schema.decodeUnknownSync(schema)(parsed);
+      if (MUTATIONS.has(method) && typeof decoded === "object" && decoded !== null && "work_item_id" in decoded && "revision" in decoded && "state" in decoded) {
+        options.onConfirmed?.(Schema.decodeUnknownSync(NativeIssue)(decoded));
+      }
+      return decoded;
     } catch (cause) {
       throw new WorkApiError({
         status: response.status,

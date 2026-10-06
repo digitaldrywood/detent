@@ -37,6 +37,7 @@ import {
 import { isApiError } from "../../contracts/index.ts";
 import { hubPath } from "../../runtime/basePath.ts";
 import { WorkAttachment } from "../../contracts/workAttachments.ts";
+import { clearBoardCache } from "../work/lib/boardStore.ts";
 
 /** A decoded failure from the hosted API, or the network under it. */
 export class AccountError extends Error {
@@ -242,15 +243,21 @@ export function makeAccountApi(options: AccountApiOptions) {
         token: input.token,
         idempotency_key: input.key,
       }),
-    switchOrganization: (input: { organization: string; key: string }) =>
-      send(NextResponse, "POST", `${base}/switch`, {
+    switchOrganization: async (input: { organization: string; key: string }) => {
+      const next = await send(NextResponse, "POST", `${base}/switch`, {
         organization: input.organization,
         idempotency_key: input.key,
-      }),
+      });
+      clearBoardCache();
+      return next;
+    },
     startSupport: (input: { key: string }) =>
       send(SupportResponse, "POST", `${base}/support/start`, { idempotency_key: input.key }),
     /** `POST /logout` answers 204 for a JSON caller (§12, "Serving"). */
-    logout: () => send(null, "POST", hubPath("/logout"), {}),
+    logout: async () => {
+      await send(null, "POST", hubPath("/logout"), {});
+      clearBoardCache();
+    },
 
     // --- Projects -----------------------------------------------------------
     projects: () => send(ProjectsResponse, "GET", `${base}/projects`),

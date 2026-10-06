@@ -6,6 +6,7 @@ import * as Stream from "effect/Stream";
 import { Atom } from "effect/unstable/reactivity";
 
 import { AccountBootstrap } from "../contracts/account.ts";
+import { authorizeBoardCache, boardAccountKey, clearBoardCache } from "../app/work/lib/boardStore.ts";
 import {
   type Answers,
   Bootstrap,
@@ -115,6 +116,7 @@ export async function loadBootstrap(
   let response = await request("/app/bootstrap");
   if (response.status === 404) response = await request("/chat/bootstrap");
   if (!response.ok) {
+    if ([401, 403].includes(response.status)) clearBoardCache();
     let body: unknown = undefined;
     try {
       body = await response.json();
@@ -155,6 +157,7 @@ export interface RetryMessageInput {
 
 export function makeClient(options: ClientOptions) {
   const origin = options.origin ?? "";
+  authorizeBoardCache(boardAccountKey({ http: { origin, apiBase: options.bootstrap.api_base }, bootstrap: options.bootstrap }));
   const http = makeHttpClient({
     origin,
     apiBase: options.bootstrap.api_base,

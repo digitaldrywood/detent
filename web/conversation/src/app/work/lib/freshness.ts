@@ -30,6 +30,8 @@ export interface BoardChipInput {
   readonly streaming: boolean;
   /** True while the board's read is in flight. */
   readonly loading: boolean;
+  readonly refreshing?: boolean;
+  readonly cached?: boolean;
   /** When the data on screen was read. */
   readonly asOf: number | null;
   /** Re-reads the board. Offered only where the stream is actually down. */
@@ -70,6 +72,15 @@ export function boardConnectionChip(input: BoardChipInput): BoardChip {
       detail: stamp.length > 0 ? `data as of ${stamp}` : input.app.detail,
       action: { label: "Reload", onClick: input.onReload },
       tooltip: staleBoardTooltip(input.app.label, stamp),
+    };
+  }
+  if (input.refreshing || input.cached) {
+    return {
+      tone: "",
+      label: input.refreshing ? "Updating" : "Cached",
+      detail: stamp.length > 0 ? `data as of ${stamp}` : null,
+      action: input.refreshing ? null : { label: "Reload", onClick: input.onReload },
+      tooltip: staleBoardTooltip(input.refreshing ? "Updating" : "Cached", stamp),
     };
   }
   if (!input.streaming) {

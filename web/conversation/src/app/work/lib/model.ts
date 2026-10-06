@@ -57,6 +57,7 @@ export interface ChangeView {
 export type Observation = "known" | "unchecked" | "unavailable" | "partial";
 
 export interface WorkItemView {
+  readonly reserveWorkerSpace?: boolean;
   readonly observations?: { readonly worker: Observation; readonly change: Observation };
   readonly archived?: boolean;
   readonly id: string;

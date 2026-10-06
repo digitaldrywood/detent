@@ -212,26 +212,32 @@ export function IssueCard({
         {item.title}
       </button>
 
-      {live && attempt !== null ? (
+      {(live && attempt !== null) || (item.reserveWorkerSpace && !terminal) ? (
         <div
-          data-testid="worker-strip"
-          className="mt-0.5 flex items-center gap-2 overflow-hidden whitespace-nowrap rounded-lg border border-border bg-muted px-2.5 py-2 text-xs"
+          data-testid={live && attempt !== null ? "worker-strip" : undefined}
+          aria-busy={item.observations?.worker === "unchecked"}
+          className={cn("mt-0.5 flex h-9 items-center gap-2 overflow-hidden whitespace-nowrap rounded-lg px-2.5 text-xs",
+            live && attempt !== null && "border border-border bg-muted")}
         >
-          <span
-            aria-hidden
-            className="size-1.5 shrink-0 rounded-full bg-success motion-safe:animate-status-pulse"
-          />
-          <span className="text-foreground">{attempt.model ?? attempt.backend ?? "runner"}</span>
-          <span className="min-w-0 truncate text-muted-foreground">
-            {[attempt.backend, attempt.runner].filter((part) => part !== null).join(" · ")}
-          </span>
-          <span className="ml-auto shrink-0 text-muted-foreground tabular-nums">
-            <ElapsedText at={attempt.startedAt} now={now} />
-          </span>
+          {live && attempt !== null ? (
+            <>
+              <span
+                aria-hidden
+                className="size-1.5 shrink-0 rounded-full bg-success motion-safe:animate-status-pulse"
+              />
+              <span className="text-foreground">{attempt.model ?? attempt.backend ?? "runner"}</span>
+              <span className="min-w-0 truncate text-muted-foreground">
+                {[attempt.backend, attempt.runner].filter((part) => part !== null).join(" · ")}
+              </span>
+              <span className="ml-auto shrink-0 text-muted-foreground tabular-nums">
+                <ElapsedText at={attempt.startedAt} now={now} />
+              </span>
+            </>
+          ) : null}
         </div>
       ) : null}
 
-      <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <div className="mt-0.5 flex min-h-5 items-center gap-1.5 text-[11px] text-muted-foreground">
         {status === null ? null : (
           <Pill
             tone={status.tone}
