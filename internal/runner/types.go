@@ -848,6 +848,7 @@ type NativeLanding struct {
 	Landed      bool
 	MergeSHA    string
 	BaseRef     string
+	BaseSHA     string
 	Method      string
 	RefusalKind string
 	Refusal     string

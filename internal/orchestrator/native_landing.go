@@ -43,7 +43,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
-	if !landing.Landed && landing.RefusalKind == workspace.LandRefusalBaseMoved {
+	if !landing.Landed && landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA == "" {
 		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt, landing.Refusal,
 			"merge_worker_waiting", "waiting to retry landing of ")
 		return true
@@ -82,7 +82,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		}
 		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 		destination := cfg.reviewTargetState()
-		rework := landing.GateFailed || landing.RefusalKind == workspace.LandRefusalConflict
+		rework := landing.GateFailed || landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved
 		if rework {
 			destination = cfg.ReworkState
 		}
@@ -133,6 +133,9 @@ func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
 		return nil
 	}
 	metadata := map[string]any{"native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
+	if landing.BaseSHA != "" {
+		metadata["native_base_sha"] = landing.BaseSHA
+	}
 	if landing.GateFailed {
 		metadata["native_gate_failed"] = true
 	}

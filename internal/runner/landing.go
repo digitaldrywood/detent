@@ -99,6 +99,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	if errors.As(err, &refusal) {
 		if refusal.Kind == workspace.LandRefusalBaseMoved {
 			waiting := r.refusedLanding(req, target, refusal.Kind, err.Error())
+			waiting.NativeLanding.BaseSHA = refusal.BaseSHA
 			waiting.WorkspaceBranch = info.Branch
 			return waiting, nil
 		}

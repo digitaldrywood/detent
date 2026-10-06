@@ -78,8 +78,9 @@ const (
 // not an infrastructure failure: retrying the same landing gives the same
 // answer until something changes, so the reason is reported on the change.
 type LandRefusal struct {
-	Kind   string
-	Reason string
+	Kind    string
+	Reason  string
+	BaseSHA string
 }
 
 func (r *LandRefusal) Error() string {

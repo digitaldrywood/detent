@@ -382,7 +382,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	return completionErr
 }
 
-func nativeConflictRework(recovery tracker.NativeRecovery) bool {
+func nativeLandingRework(recovery tracker.NativeRecovery) bool {
 	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
 		runtime := recovery.Attempts[i].Runtime
 		if runtime == nil || runtime.Landing == nil {
@@ -392,7 +392,7 @@ func nativeConflictRework(recovery tracker.NativeRecovery) bool {
 		if recovery.Change != nil && (landing.ChangeID != recovery.Change.ChangeID || landing.VersionID != recovery.Change.VersionID || landing.HeadSHA != recovery.Change.HeadSHA) {
 			return false
 		}
-		return !landing.Landed && landing.RefusalKind == workspace.LandRefusalConflict
+		return !landing.Landed && (landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA != "")
 	}
 	return false
 }
