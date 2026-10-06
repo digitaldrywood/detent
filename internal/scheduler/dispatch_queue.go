@@ -158,6 +158,7 @@ func (g *GlobalDispatchGate) updateRequestLocked(result <-chan DispatchResult, r
 	for _, call := range g.waiting {
 		if call.result == result {
 			call.request, call.now = req, now
+			call.project.Rank = req.ProjectRank
 			return
 		}
 	}

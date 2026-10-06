@@ -2,14 +2,12 @@ package hubserver
 
 import (
 	"net/http"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRunnerProblemsHeartbeat(t *testing.T) {
@@ -68,22 +66,17 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 
 func TestRunnerHubProblems(t *testing.T) {
 	for _, test := range []struct {
-		code           string
-		protocol       int
-		rejected, home bool
+		code     string
+		protocol int
+		rejected bool
 	}{
-		{"version_unsupported", 3, false, false},
-		{"settings_rejected", 2, true, false},
-		{"home_project_unservable", 2, false, true},
+		{"version_unsupported", 3, false},
+		{"settings_rejected", 2, true},
 	} {
 		t.Run(test.code, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			r.enroll(t)
-			if test.home {
-				change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}, HomeProjectIDs: []tracker.ProjectID{f.project.ID}}}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
-			}
 			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "protocol_major": test.protocol, "settings_rejected": test.rejected, "backend_isolation": isolation.Report{"codex": {isolation.NativeTrusted}}, "problems": []runnerauth.Problem{runnerauth.NewProblem("keep_awake_failed")}}
 			post := func() {
 				t.Helper()
@@ -129,50 +122,5 @@ func TestRunnerHubProblems(t *testing.T) {
 				t.Fatalf("did not clear: %+v", view)
 			}
 		})
-	}
-}
-
-func TestHostedRunnerProblemsVisibility(t *testing.T) {
-	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-	r := runnerauth.Runner{Health: "needs_attention", ConnectionHealth: "online", Problems: []runnerauth.Problem{runnerauth.NewProblem("home_project_unservable")}, Routing: runnerauth.Routing{HomeProjectIDs: []tracker.ProjectID{"prj_visible", "prj_hidden"}}}
-	view := hostedFleetRunnerView(r, "test", map[tracker.ProjectID]bool{"prj_visible": true}, now)
-	if view.Health != "online" || len(view.Problems) != 0 {
-		t.Fatalf("hidden home diagnostics leaked: %+v", view)
-	}
-	view = hostedFleetRunnerView(r, "test", map[tracker.ProjectID]bool{"prj_visible": true, "prj_hidden": true}, now)
-	if view.Health != "needs_attention" || len(view.Problems) != 1 {
-		t.Fatalf("visible diagnostic missing: %+v", view)
-	}
-	if len(r.Problems) != 1 {
-		t.Fatal("visibility filtering mutated the original runner")
-	}
-}
-
-func TestRunnerHomeProblemSettingsClear(t *testing.T) {
-	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
-	f := newNativeFixture(t, service, "", "home-problem-settings")
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
-	r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted}}
-	r.enroll(t)
-	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}
-	for _, home := range []bool{true, false, true} {
-		now = now.Add(time.Minute)
-		change.HomeProjectIDs = []tracker.ProjectID{}
-		if home {
-			change.HomeProjectIDs = []tracker.ProjectID{f.project.ID}
-		}
-		response := performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change)
-		requireNativeStatus(t, response, http.StatusOK)
-		var view runnerauth.Runner
-		decodeHubResponse(t, response, &view)
-		if home {
-			if view.Health != "needs_attention" || len(view.Problems) != 1 || !view.Problems[0].FirstSeen.Equal(now) {
-				t.Fatalf("new home problem=%+v, now=%s", view.Problems, now)
-			}
-		} else if len(view.Problems) != 0 {
-			t.Fatalf("resolved home problem remained: %+v", view.Problems)
-		}
-		change.ExpectedRevision++
 	}
 }

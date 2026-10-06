@@ -242,11 +242,11 @@ func TestRunnerCapacityOwner(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			gate, err := buildGlobalDispatchPools(cfg, nil)
+			gate, err := buildGlobalDispatchPools(cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			candidate := scheduler.ProjectCandidate{ID: "capacity-test", Weight: 1}
+			candidate := scheduler.ProjectCandidate{ID: "capacity-test"}
 			var slots []scheduler.Slot
 			for range 2 {
 				slot, ok, err := gate.TryAcquire(t.Context(), candidate, scheduler.SlotRequest{State: "implement", Host: "local", Weight: 1}, time.Now())
@@ -262,7 +262,7 @@ func TestRunnerCapacityOwner(t *testing.T) {
 					}
 				}
 			})
-			if err := applyGlobalRuntimeConfig(gate, nil, nil, saved); err != nil {
+			if err := applyGlobalRuntimeConfig(gate, nil, saved); err != nil {
 				t.Fatal(err)
 			}
 			for range 4 {

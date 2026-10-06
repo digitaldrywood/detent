@@ -3927,12 +3927,12 @@ func TestRunDrainsInFlightValidatorStageOnShutdown(t *testing.T) {
 	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue, runningIssue}}
 	runner := newBlockingAutoPromoteValidatorRunner()
 	t.Cleanup(runner.Release)
-	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 
 	orch, err := New(Config{
 		PollInterval:        time.Hour,
 		MaxConcurrentAgents: 1,
-		Project:             scheduler.ProjectCandidate{ID: "alpha", Weight: 1},
+		Project:             scheduler.ProjectCandidate{ID: "alpha"},
 		AutoPromote: AutoPromoteConfig{
 			Enabled:       true,
 			QuietDuration: 10 * time.Minute,
@@ -7200,7 +7200,7 @@ func openValidatorMemoStore(t *testing.T) store.Store {
 
 func autoPromoteValidatorTestConfig() Config {
 	return normalizeConfig(Config{
-		Project:             scheduler.ProjectCandidate{ID: "detent", Weight: 1},
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
 		PollInterval:        time.Minute,
 		MaxConcurrentAgents: 1,
 		AutoPromote: AutoPromoteConfig{
@@ -7249,7 +7249,7 @@ func waitForGlobalDispatchSlot(t *testing.T, globalGate scheduler.ProjectDispatc
 	defer ticker.Stop()
 
 	for {
-		slot, ok, err := globalGate.TryAcquire(t.Context(), scheduler.ProjectCandidate{ID: projectID, Weight: 1}, scheduler.SlotRequest{State: "Todo"}, time.Now())
+		slot, ok, err := globalGate.TryAcquire(t.Context(), scheduler.ProjectCandidate{ID: projectID}, scheduler.SlotRequest{State: "Todo"}, time.Now())
 		if err != nil {
 			t.Fatalf("TryAcquire() error = %v", err)
 		}

@@ -207,7 +207,7 @@ func TestAgentPoolsFixHotReloadsScheduler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("globalconfig.Read() error = %v", err)
 	}
-	registry, err := buildGlobalDispatchPools(initial, nil)
+	registry, err := buildGlobalDispatchPools(initial)
 	if err != nil {
 		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
 	}
@@ -219,7 +219,7 @@ func TestAgentPoolsFixHotReloadsScheduler(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil,
 		func(next globalconfig.Config) error {
-			return applyGlobalRuntimeConfig(registry, nil, nil, next)
+			return applyGlobalRuntimeConfig(registry, nil, next)
 		},
 		nil,
 	)

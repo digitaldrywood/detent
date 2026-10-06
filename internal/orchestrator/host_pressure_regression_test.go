@@ -369,7 +369,7 @@ func TestSustainedIOPressureUsesConfiguredAdmissionFloor(t *testing.T) {
 	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	project := scheduler.ProjectCandidate{ID: "detent"}
 	gate := scheduler.NewGlobalDispatchGate(
-		scheduler.NewRoundRobin(scheduler.Config{Capacity: 4}),
+		scheduler.NewStrictPriority(scheduler.Config{Capacity: 4}),
 		project,
 	)
 	orch := &Orchestrator{

@@ -39,7 +39,7 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 
 	events := hub.New[project.Event]()
 	sched := scheduler.NewCountingSemaphore(scheduler.Config{Capacity: 3})
-	global := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 8}))
+	global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 8}))
 	created := make(chan orchestrator.Config, 1)
 	createdDeps := make(chan orchestrator.Dependencies, 1)
 	workflowCfg := workflowConfigWithMemoryIssue("issue-1")
@@ -117,8 +117,7 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 		if len(cfg.Authorization.And) != 2 {
 			t.Fatalf("Authorization.And = %#v, want workflow and project selectors", cfg.Authorization.And)
 		}
-		if cfg.Project.ID != "detent" || cfg.Project.Pool != "code" ||
-			cfg.Project.Weight != 2 || cfg.Project.Priority != 10 {
+		if cfg.Project.ID != "detent" || cfg.Project.Pool != "code" {
 			t.Fatalf("orchestrator Project = %#v, want detent in code pool with weight 2 priority 10", cfg.Project)
 		}
 	case <-time.After(projectTestWaitTimeout):
@@ -1291,7 +1290,7 @@ func TestProjectUnpauseRebuildsGlobalDispatchCandidate(t *testing.T) {
 		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Run paused project."},
 	}, project.Dependencies{
 		Runner:             runner,
-		GlobalDispatchGate: scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1})),
+		GlobalDispatchGate: scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1})),
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)

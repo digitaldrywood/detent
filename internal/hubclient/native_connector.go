@@ -624,3 +624,19 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	}
 	return issue
 }
+
+func (c *NativeConnector) DispatchProjectRank() int {
+	r := c.client.client.runner
+	if r == nil {
+		return 2147483647
+	}
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	if r.routing == nil {
+		return 2147483647
+	}
+	if rank, ok := r.routing.Routing.ProjectRanks[c.client.project]; ok {
+		return rank
+	}
+	return 2147483647
+}

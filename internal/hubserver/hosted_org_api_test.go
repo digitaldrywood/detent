@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -303,5 +304,41 @@ func browserHostedDecode(t *testing.T, response *httptest.ResponseRecorder, targ
 	t.Helper()
 	if err := json.Unmarshal(response.Body.Bytes(), target); err != nil {
 		t.Fatalf("decode %s: %v", response.Body.String(), err)
+	}
+}
+
+func TestHostedProjectRank(t *testing.T) {
+	for _, scenario := range []struct {
+		name, account string
+		change        func(*projectRankChange)
+		status        int
+	}{
+		{"owner reorders", "owner", func(*projectRankChange) {}, http.StatusOK},
+		{"viewer cannot reorder", "viewer", func(*projectRankChange) {}, http.StatusForbidden},
+		{"stale revision", "owner", func(c *projectRankChange) { c.ExpectedRevision-- }, http.StatusConflict},
+		{"duplicate project", "owner", func(c *projectRankChange) { c.ProjectIDs[1] = c.ProjectIDs[0] }, http.StatusUnprocessableEntity},
+		{"foreign project", "owner", func(c *projectRankChange) { c.ProjectIDs[0] = "prj_foreign" }, http.StatusUnprocessableEntity},
+		{"incomplete list", "owner", func(c *projectRankChange) { c.ProjectIDs = c.ProjectIDs[:1] }, http.StatusUnprocessableEntity},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newBrowserHostedFixture(t, true)
+			path := browserHostedOrganizationBase + "/project-rank"
+			var before organizationProjectRank
+			browserHostedDecode(t, f.api(t, "owner", http.MethodGet, path, nil, http.StatusOK), &before)
+			ids := slices.Clone(before.ProjectIDs)
+			slices.Reverse(ids)
+			change := projectRankChange{ExpectedRevision: before.Revision, ProjectIDs: ids}
+			scenario.change(&change)
+			f.api(t, scenario.account, http.MethodPut, path, change, scenario.status)
+			var after organizationProjectRank
+			browserHostedDecode(t, f.api(t, "owner", http.MethodGet, path, nil, http.StatusOK), &after)
+			expected, revision := before.ProjectIDs, before.Revision
+			if scenario.status == http.StatusOK {
+				expected, revision = ids, revision+1
+			}
+			if !slices.Equal(after.ProjectIDs, expected) || after.Revision != revision {
+				t.Fatalf("rank changed incorrectly: %#v", after)
+			}
+		})
 	}
 }

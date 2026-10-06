@@ -78,8 +78,8 @@ func TestPoolRegistryConcurrentAcquisitionRetainsSlotIdentity(t *testing.T) {
 	for _, capacity := range []int{1, 2} {
 		for _, higherFirst := range []bool{false, true} {
 			t.Run(fmt.Sprintf("capacity=%d/higherFirst=%t", capacity, higherFirst), func(t *testing.T) {
-				higher := ProjectCandidate{ID: "higher", Pool: "code", Priority: 1}
-				lower := ProjectCandidate{ID: "lower", Pool: "code", Priority: 4}
+				higher := ProjectCandidate{ID: "higher", Pool: "code", Rank: 1}
+				lower := ProjectCandidate{ID: "lower", Pool: "code", Rank: 4}
 				projects := []ProjectCandidate{lower, higher}
 				if higherFirst {
 					projects[0], projects[1] = projects[1], projects[0]
@@ -159,7 +159,7 @@ func TestPoolRegistryRanksBorrowersAcrossPools(t *testing.T) {
 		{name: "strict project rank", kind: "strict", higherPriority: 1, lowerPriority: 4},
 		{name: "round robin lane rank", kind: "round_robin", higherLane: 1, lowerLane: 4},
 		{name: "weighted lane rank", kind: "weighted", higherLane: 1, lowerLane: 4},
-		{name: "mixed mode neutral project rank", kind: "round_robin", lowerKind: "strict", lowerPriority: 4, higherLane: 4, lowerLane: 1},
+		{name: "issue priority wins across legacy modes", kind: "round_robin", lowerKind: "strict", higherPriority: 4, lowerPriority: 1, higherLane: 1, lowerLane: 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lowerKind := tc.lowerKind
@@ -167,8 +167,8 @@ func TestPoolRegistryRanksBorrowersAcrossPools(t *testing.T) {
 				lowerKind = tc.kind
 			}
 			lender := ProjectCandidate{ID: "lender"}
-			higher := ProjectCandidate{ID: "higher", Pool: "alpha", Priority: tc.higherPriority}
-			lower := ProjectCandidate{ID: "lower", Pool: "beta", Priority: tc.lowerPriority}
+			higher := ProjectCandidate{ID: "higher", Pool: "alpha", Rank: tc.higherPriority}
+			lower := ProjectCandidate{ID: "lower", Pool: "beta", Rank: tc.lowerPriority}
 			registry, err := NewPoolRegistry([]PoolConfig{
 				{Name: DefaultPoolName, Scheduler: Config{Kind: tc.kind, Capacity: 1}},
 				{Name: "alpha", BurstTo: 2, Scheduler: Config{Kind: tc.kind, Capacity: 1}},

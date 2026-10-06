@@ -202,10 +202,9 @@ for (const width of [1440, 390]) {
       ...fleet.runners[1], revision: 4, capacity_limit: 4,
       routing: {
         display_name: "Build runner", state: "active", capacity_limit: 4,
-        project_ids: ["proj_preview", "prj_unknown"], home_project_ids: ["prj_unknown"],
+        project_ids: ["proj_preview", "prj_unknown"],
         tags: ["linux"], isolation_tier: "sandbox", host_services: [],
         availability: { timezone: "UTC", windows: [], hard_deadline: "" },
-        spillover: { mode: "never", after_minutes: 0 },
       },
     };
     let current = { ...fleet, editable: true, runners: [runner] };
@@ -249,7 +248,7 @@ for (const width of [1440, 390]) {
     await expect(row).toContainText("disabled · Limit 0");
     expect(writes.map((write) => [write.state, write.capacity_limit])).toEqual([["draining", 2], ["disabled", 0]]);
     expect(writes[1].project_ids).toEqual(["proj_preview", "prj_unknown"]);
-    expect(writes[1].home_project_ids).toEqual(["prj_unknown"]);
+    expect(writes[1]).not.toHaveProperty("home_project_ids");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     expect(errors).toEqual([]);
   });

@@ -25,12 +25,11 @@ if (location.protocol === "file:") {
     { ...fleet.runners[0], claim_refusal_reason: "" },
     { ...fleet.runners[1], display_name: "Build runner", health: "needs_attention", host_capacity: 4, claim_refusal_reason: "", problems: [problem] },
     { ...fleet.runners[1], id: "runner_outside", display_name: "Night runner", health: "outside_hours", host_capacity: 1, claim_refusal_reason: "" },
-  ].map((runner) => ({ ...runner, state: "active", revision: 1, routing: {
+  ].map((runner) => ({ ...runner, state: "active", revision: 1, can_edit_projects: true, routing: {
     display_name: runner.display_name, state: "active", capacity_limit: runner.capacity_limit,
-    project_ids: ["proj_preview", "prj_unreadable"], home_project_ids: ["proj_preview"], tags: ["linux"],
+    project_ids: ["proj_preview", "prj_unreadable"], tags: ["linux"],
     isolation_tier: "sandbox", host_services: ["tcp:127.0.0.1:8080"],
     availability: { timezone: "America/Chicago", windows: ["Mon-Fri 09:00-17:00"], hard_deadline: "30m" },
-    spillover: { mode: "after", after_minutes: 5 },
   } })) };
   globalThis.fetch = async (input, init) => {
     if (String(input).endsWith("/sprite-pool")) return new Response(JSON.stringify(spritePool));

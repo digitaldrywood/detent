@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestPoolRegistryGrantsIndependentCapacity(t *testing.T) {
@@ -17,14 +16,10 @@ func TestPoolRegistryGrantsIndependentCapacity(t *testing.T) {
 
 	registry := newPoolRegistry(t,
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "round_robin", 1, nil),
-			poolConfig("video", "round_robin", 2, nil),
+			poolConfig(scheduler.DefaultPoolName, "round_robin", 1),
+			poolConfig("video", "round_robin", 2),
 		},
-		[]scheduler.ProjectCandidate{
-			{ID: "code", Pool: scheduler.DefaultPoolName},
-			{ID: "video-a", Pool: "video"},
-			{ID: "video-b", Pool: "video"},
-		},
+		[]scheduler.ProjectCandidate{{ID: "code", Pool: scheduler.DefaultPoolName}, {ID: "video-a", Pool: "video"}, {ID: "video-b", Pool: "video"}},
 	)
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	slots := acquirePoolSlots(t, registry, now,
@@ -56,14 +51,11 @@ func TestPoolRegistryPressureCapacityComposesAcrossPools(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			projects := []scheduler.ProjectCandidate{
-				{ID: "code"},
-				{ID: "video", Pool: "video"},
-			}
+			projects := []scheduler.ProjectCandidate{{ID: "code"}, {ID: "video", Pool: "video"}}
 			registry := newPoolRegistry(t,
 				[]scheduler.PoolConfig{
-					poolConfig(scheduler.DefaultPoolName, "round_robin", 2, nil),
-					poolConfig("video", "round_robin", 2, nil),
+					poolConfig(scheduler.DefaultPoolName, "round_robin", 2),
+					poolConfig("video", "round_robin", 2),
 				},
 				projects,
 			)
@@ -101,8 +93,8 @@ func TestPoolRegistryPressureCapacityCountsDrainingPools(t *testing.T) {
 	video := scheduler.ProjectCandidate{ID: "video", Pool: "video"}
 	registry := newPoolRegistry(t,
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
-			poolConfig("video", "weighted", 1, nil),
+			poolConfig(scheduler.DefaultPoolName, "weighted", 1),
+			poolConfig("video", "weighted", 1),
 		},
 		[]scheduler.ProjectCandidate{video},
 	)
@@ -110,7 +102,7 @@ func TestPoolRegistryPressureCapacityCountsDrainingPools(t *testing.T) {
 
 	reassigned := scheduler.ProjectCandidate{ID: "video"}
 	if err := registry.Reconfigure(
-		[]scheduler.PoolConfig{poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil)},
+		[]scheduler.PoolConfig{poolConfig(scheduler.DefaultPoolName, "weighted", 1)},
 		[]scheduler.ProjectCandidate{reassigned},
 	); err != nil {
 		t.Fatalf("remove Reconfigure() error = %v", err)
@@ -147,17 +139,14 @@ func TestPoolRegistryWithoutBurstRemainsRigid(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			videoPool := poolConfig("video", "round_robin", 1, nil)
+			videoPool := poolConfig("video", "round_robin", 1)
 			videoPool.BurstTo = test.burstTo
 			registry := newPoolRegistry(t,
 				[]scheduler.PoolConfig{
-					poolConfig(scheduler.DefaultPoolName, "round_robin", 1, nil),
+					poolConfig(scheduler.DefaultPoolName, "round_robin", 1),
 					videoPool,
 				},
-				[]scheduler.ProjectCandidate{
-					{ID: "video-a", Pool: "video"},
-					{ID: "video-b", Pool: "video"},
-				},
+				[]scheduler.ProjectCandidate{{ID: "video-a", Pool: "video"}, {ID: "video-b", Pool: "video"}},
 			)
 			slot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "video-a", Pool: "video"})[0]
 			assertPoolUnavailable(t, registry, scheduler.ProjectCandidate{ID: "video-b", Pool: "video"})
@@ -174,18 +163,11 @@ func TestPoolRegistryWithoutBurstRemainsRigid(t *testing.T) {
 func TestPoolRegistryBorrowsIdleCapacityUntilReleased(t *testing.T) {
 	t.Parallel()
 
-	projects := []scheduler.ProjectCandidate{
-		{ID: "code-a"},
-		{ID: "code-b"},
-		{ID: "video-a", Pool: "video"},
-		{ID: "video-b", Pool: "video"},
-		{ID: "video-c", Pool: "video"},
-		{ID: "video-d", Pool: "video"},
-	}
+	projects := []scheduler.ProjectCandidate{{ID: "code-a"}, {ID: "code-b"}, {ID: "video-a", Pool: "video"}, {ID: "video-b", Pool: "video"}, {ID: "video-c", Pool: "video"}, {ID: "video-d", Pool: "video"}}
 	registry := newPoolRegistry(t,
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "round_robin", 2, nil),
-			elasticPoolConfig("video", "round_robin", 1, 3, nil),
+			poolConfig(scheduler.DefaultPoolName, "round_robin", 2),
+			elasticPoolConfig("video", "round_robin", 1, 3),
 		},
 		projects,
 	)
@@ -235,8 +217,8 @@ func TestPoolRegistryReadyLenderNeverHoldsIdleCapacity(t *testing.T) {
 	videoB := scheduler.ProjectCandidate{ID: "video-b", Pool: "video"}
 	registry := newPoolRegistry(t,
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "round_robin", 1, nil),
-			elasticPoolConfig("video", "round_robin", 1, 2, nil),
+			poolConfig(scheduler.DefaultPoolName, "round_robin", 1),
+			elasticPoolConfig("video", "round_robin", 1, 2),
 		},
 		[]scheduler.ProjectCandidate{code, videoA, videoB},
 	)
@@ -257,18 +239,12 @@ func TestPoolRegistryReadyLenderNeverHoldsIdleCapacity(t *testing.T) {
 func TestPoolRegistryPriorRefusalNeverHoldsBorrowedCapacity(t *testing.T) {
 	t.Parallel()
 
-	projects := []scheduler.ProjectCandidate{
-		{ID: "lender"},
-		{ID: "alpha-a", Pool: "alpha"},
-		{ID: "alpha-b", Pool: "alpha"},
-		{ID: "beta-a", Pool: "beta"},
-		{ID: "beta-b", Pool: "beta"},
-	}
+	projects := []scheduler.ProjectCandidate{{ID: "lender"}, {ID: "alpha-a", Pool: "alpha"}, {ID: "alpha-b", Pool: "alpha"}, {ID: "beta-a", Pool: "beta"}, {ID: "beta-b", Pool: "beta"}}
 	registry := newPoolRegistry(t,
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "round_robin", 1, nil),
-			elasticPoolConfig("alpha", "round_robin", 1, 2, nil),
-			elasticPoolConfig("beta", "round_robin", 1, 2, nil),
+			poolConfig(scheduler.DefaultPoolName, "round_robin", 1),
+			elasticPoolConfig("alpha", "round_robin", 1, 2),
+			elasticPoolConfig("beta", "round_robin", 1, 2),
 		},
 		projects,
 	)
@@ -290,17 +266,10 @@ func TestPoolRegistryPriorRefusalNeverHoldsBorrowedCapacity(t *testing.T) {
 func TestPoolRegistryReloadDropsBorrowerAtBurstCeiling(t *testing.T) {
 	t.Parallel()
 
-	projects := []scheduler.ProjectCandidate{
-		{ID: "lender"},
-		{ID: "alpha-a", Pool: "alpha"},
-		{ID: "alpha-b", Pool: "alpha"},
-		{ID: "alpha-c", Pool: "alpha"},
-		{ID: "beta-a", Pool: "beta"},
-		{ID: "beta-b", Pool: "beta"},
-	}
-	defaultPool := poolConfig(scheduler.DefaultPoolName, "round_robin", 2, nil)
-	alphaPool := elasticPoolConfig("alpha", "round_robin", 1, 3, nil)
-	betaPool := elasticPoolConfig("beta", "round_robin", 1, 2, nil)
+	projects := []scheduler.ProjectCandidate{{ID: "lender"}, {ID: "alpha-a", Pool: "alpha"}, {ID: "alpha-b", Pool: "alpha"}, {ID: "alpha-c", Pool: "alpha"}, {ID: "beta-a", Pool: "beta"}, {ID: "beta-b", Pool: "beta"}}
+	defaultPool := poolConfig(scheduler.DefaultPoolName, "round_robin", 2)
+	alphaPool := elasticPoolConfig("alpha", "round_robin", 1, 3)
+	betaPool := elasticPoolConfig("beta", "round_robin", 1, 2)
 	registry := newPoolRegistry(
 		t,
 		[]scheduler.PoolConfig{defaultPool, alphaPool, betaPool},
@@ -336,15 +305,11 @@ func TestPoolRegistryReloadDropsBorrowerAtBurstCeiling(t *testing.T) {
 func TestPoolRegistryElasticStrictPriorityPreservesRunningSlots(t *testing.T) {
 	t.Parallel()
 
-	projects := []scheduler.ProjectCandidate{
-		{ID: "code-urgent", Priority: 0},
-		{ID: "video-a", Pool: "video", Priority: 4},
-		{ID: "video-b", Pool: "video", Priority: 4},
-	}
+	projects := []scheduler.ProjectCandidate{{ID: "code-urgent", Rank: 0}, {ID: "video-a", Pool: "video", Rank: 4}, {ID: "video-b", Pool: "video", Rank: 4}}
 	registry := newPoolRegistry(t,
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "strict", 1, nil),
-			elasticPoolConfig("video", "strict", 1, 2, nil),
+			poolConfig(scheduler.DefaultPoolName, "strict", 1),
+			elasticPoolConfig("video", "strict", 1, 2),
 		},
 		projects,
 	)
@@ -361,18 +326,13 @@ func TestPoolRegistryElasticStrictPriorityPreservesRunningSlots(t *testing.T) {
 func TestPoolRegistryReconfiguresBurstWhileRunning(t *testing.T) {
 	t.Parallel()
 
-	projects := []scheduler.ProjectCandidate{
-		{ID: "video-a", Pool: "video"},
-		{ID: "video-b", Pool: "video"},
-		{ID: "video-c", Pool: "video"},
-		{ID: "video-d", Pool: "video"},
-	}
-	defaultPool := poolConfig(scheduler.DefaultPoolName, "weighted", 2, nil)
-	rigidVideo := poolConfig("video", "weighted", 1, nil)
+	projects := []scheduler.ProjectCandidate{{ID: "video-a", Pool: "video"}, {ID: "video-b", Pool: "video"}, {ID: "video-c", Pool: "video"}, {ID: "video-d", Pool: "video"}}
+	defaultPool := poolConfig(scheduler.DefaultPoolName, "weighted", 2)
+	rigidVideo := poolConfig("video", "weighted", 1)
 	registry := newPoolRegistry(t, []scheduler.PoolConfig{defaultPool, rigidVideo}, projects)
 	slots := acquirePoolSlots(t, registry, time.Time{}, projects[0])
 
-	elasticVideo := elasticPoolConfig("video", "weighted", 1, 3, nil)
+	elasticVideo := elasticPoolConfig("video", "weighted", 1, 3)
 	if err := registry.Reconfigure([]scheduler.PoolConfig{defaultPool, elasticVideo}, projects); err != nil {
 		t.Fatalf("add burst Reconfigure() error = %v", err)
 	}
@@ -414,13 +374,10 @@ func TestPoolRegistryScopesSchedulingState(t *testing.T) {
 			t.Parallel()
 			registry := newPoolRegistry(t,
 				[]scheduler.PoolConfig{
-					poolConfig(scheduler.DefaultPoolName, mode, 1, nil),
-					poolConfig("video", mode, 1, nil),
+					poolConfig(scheduler.DefaultPoolName, mode, 1),
+					poolConfig("video", mode, 1),
 				},
-				[]scheduler.ProjectCandidate{
-					{ID: "alpha", Pool: scheduler.DefaultPoolName},
-					{ID: "zulu", Pool: "video"},
-				},
+				[]scheduler.ProjectCandidate{{ID: "alpha", Pool: scheduler.DefaultPoolName}, {ID: "zulu", Pool: "video"}},
 			)
 			registry.MarkReady(scheduler.ProjectCandidate{ID: "zulu", Pool: "video"})
 			slot, ok, decision, err := registry.TryAcquireWithDecision(
@@ -447,62 +404,18 @@ func TestPoolRegistryStrictPriorityPreservesRunningSlots(t *testing.T) {
 
 	registry := newPoolRegistry(t,
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "strict", 1, nil),
-			poolConfig("video", "strict", 1, nil),
+			poolConfig(scheduler.DefaultPoolName, "strict", 1),
+			poolConfig("video", "strict", 1),
 		},
-		[]scheduler.ProjectCandidate{
-			{ID: "code-low", Priority: 4},
-			{ID: "code-urgent", Priority: 0},
-			{ID: "video-low", Pool: "video", Priority: 4},
-		},
+		[]scheduler.ProjectCandidate{{ID: "code-low", Rank: 4}, {ID: "code-urgent", Rank: 0}, {ID: "video-low", Pool: "video", Rank: 4}},
 	)
 	registry.MarkIdle(scheduler.ProjectCandidate{ID: "code-urgent"})
-	codeSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "code-low", Priority: 4})[0]
-	videoSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "video-low", Priority: 4})[0]
-	assertPoolUnavailable(t, registry, scheduler.ProjectCandidate{ID: "code-urgent", Priority: 0})
+	codeSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "code-low", Rank: 4})[0]
+	videoSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "video-low", Rank: 4})[0]
+	assertPoolUnavailable(t, registry, scheduler.ProjectCandidate{ID: "code-urgent", Rank: 0})
 	releasePoolSlots(t, registry, []scheduler.Slot{codeSlot, videoSlot})
-	urgentSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "code-urgent", Priority: 0})[0]
+	urgentSlot := acquirePoolSlots(t, registry, time.Time{}, scheduler.ProjectCandidate{ID: "code-urgent", Rank: 0})[0]
 	releasePoolSlots(t, registry, []scheduler.Slot{urgentSlot})
-}
-
-func TestPoolRegistryFairShareIgnoresOtherPoolHistory(t *testing.T) {
-	t.Parallel()
-
-	usage := &fairShareStore{usage: []store.FairShareUsage{
-		{ProjectID: "alpha", Dispatches: 5},
-		{ProjectID: "beta", Dispatches: 10},
-		{ProjectID: "video", Dispatches: 0},
-	}}
-	registry := newPoolRegistry(t,
-		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "fair_share", 1, usage),
-			poolConfig("video", "fair_share", 1, usage),
-		},
-		[]scheduler.ProjectCandidate{
-			{ID: "alpha"},
-			{ID: "beta"},
-			{ID: "video", Pool: "video"},
-		},
-	)
-	registry.MarkReady(scheduler.ProjectCandidate{ID: "alpha"})
-	registry.MarkReady(scheduler.ProjectCandidate{ID: "beta"})
-	registry.MarkReady(scheduler.ProjectCandidate{ID: "video", Pool: "video"})
-
-	slot, ok, decision, err := registry.TryAcquireWithDecision(
-		context.Background(),
-		scheduler.ProjectCandidate{ID: "alpha"},
-		scheduler.SlotRequest{State: "Todo"},
-		time.Time{},
-	)
-	if err != nil {
-		t.Fatalf("TryAcquireWithDecision() error = %v", err)
-	}
-	if !ok || decision.SelectedProjectID != "alpha" {
-		t.Fatalf("TryAcquireWithDecision() ok = %t decision = %#v, want alpha", ok, decision)
-	}
-	if err := registry.Release(slot); err != nil {
-		t.Fatalf("Release() error = %v", err)
-	}
 }
 
 func TestPoolRegistryReconfigureDrainsLoweredCapacity(t *testing.T) {
@@ -511,15 +424,15 @@ func TestPoolRegistryReconfigureDrainsLoweredCapacity(t *testing.T) {
 	projects := []scheduler.ProjectCandidate{{ID: "video-a", Pool: "video"}, {ID: "video-b", Pool: "video"}}
 	registry := newPoolRegistry(t,
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
-			poolConfig("video", "weighted", 2, nil),
+			poolConfig(scheduler.DefaultPoolName, "weighted", 1),
+			poolConfig("video", "weighted", 2),
 		},
 		projects,
 	)
 	slots := acquirePoolSlots(t, registry, time.Time{}, projects...)
 	if err := registry.Reconfigure([]scheduler.PoolConfig{
-		poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
-		poolConfig("video", "weighted", 1, nil),
+		poolConfig(scheduler.DefaultPoolName, "weighted", 1),
+		poolConfig("video", "weighted", 1),
 	}, projects); err != nil {
 		t.Fatalf("Reconfigure() error = %v", err)
 	}
@@ -544,8 +457,8 @@ func TestPoolRegistryRemovedPoolDrainsAcrossReplacementGeneration(t *testing.T) 
 	video := scheduler.ProjectCandidate{ID: "video", Pool: "video"}
 	registry := newPoolRegistry(t,
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
-			poolConfig("video", "weighted", 1, nil),
+			poolConfig(scheduler.DefaultPoolName, "weighted", 1),
+			poolConfig("video", "weighted", 1),
 		},
 		[]scheduler.ProjectCandidate{video},
 	)
@@ -553,7 +466,7 @@ func TestPoolRegistryRemovedPoolDrainsAcrossReplacementGeneration(t *testing.T) 
 
 	reassigned := scheduler.ProjectCandidate{ID: "video"}
 	if err := registry.Reconfigure(
-		[]scheduler.PoolConfig{poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil)},
+		[]scheduler.PoolConfig{poolConfig(scheduler.DefaultPoolName, "weighted", 1)},
 		[]scheduler.ProjectCandidate{reassigned},
 	); err != nil {
 		t.Fatalf("remove Reconfigure() error = %v", err)
@@ -565,8 +478,8 @@ func TestPoolRegistryRemovedPoolDrainsAcrossReplacementGeneration(t *testing.T) 
 
 	if err := registry.Reconfigure(
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
-			poolConfig("video", "weighted", 1, nil),
+			poolConfig(scheduler.DefaultPoolName, "weighted", 1),
+			poolConfig("video", "weighted", 1),
 		},
 		[]scheduler.ProjectCandidate{video},
 	); err != nil {
@@ -589,14 +502,14 @@ func TestPoolRegistryPauseIncludesPoolsAddedWhilePaused(t *testing.T) {
 	t.Parallel()
 
 	registry := newPoolRegistry(t,
-		[]scheduler.PoolConfig{poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil)},
+		[]scheduler.PoolConfig{poolConfig(scheduler.DefaultPoolName, "weighted", 1)},
 		[]scheduler.ProjectCandidate{{ID: "code"}},
 	)
 	resume := registry.PauseDispatch()
 	if err := registry.Reconfigure(
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
-			poolConfig("video", "weighted", 1, nil),
+			poolConfig(scheduler.DefaultPoolName, "weighted", 1),
+			poolConfig("video", "weighted", 1),
 		},
 		[]scheduler.ProjectCandidate{{ID: "code"}, {ID: "video", Pool: "video"}},
 	); err != nil {
@@ -617,7 +530,7 @@ func TestPoolRegistryUsesDefaultPoolForLegacyProjects(t *testing.T) {
 	t.Parallel()
 
 	registry := newPoolRegistry(t,
-		[]scheduler.PoolConfig{poolConfig(scheduler.DefaultPoolName, "strict", 1, nil)},
+		[]scheduler.PoolConfig{poolConfig(scheduler.DefaultPoolName, "strict", 1)},
 		[]scheduler.ProjectCandidate{{ID: "legacy"}},
 	)
 	gate := registry.GateFor("legacy")
@@ -656,8 +569,8 @@ func TestProjectPoolGateRoutesLifecycleToCurrentPool(t *testing.T) {
 	project := scheduler.ProjectCandidate{ID: "video", Pool: "video"}
 	registry := newPoolRegistry(t,
 		[]scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
-			poolConfig("video", "weighted", 1, nil),
+			poolConfig(scheduler.DefaultPoolName, "weighted", 1),
+			poolConfig("video", "weighted", 1),
 		},
 		[]scheduler.ProjectCandidate{project},
 	)
@@ -677,8 +590,8 @@ func TestProjectPoolGateRoutesLifecycleToCurrentPool(t *testing.T) {
 		t.Fatalf("GateFor() type = %T, want project cycle gate", gate)
 	}
 
-	cycleGate.BeginProjectCycle(scheduler.ProjectCandidate{Priority: 2})
-	gate.MarkReady(scheduler.ProjectCandidate{Priority: 2})
+	cycleGate.BeginProjectCycle(scheduler.ProjectCandidate{Rank: 2})
+	gate.MarkReady(scheduler.ProjectCandidate{Rank: 2})
 	cycleGate.EndProjectCycle("")
 	slot, acquired, err := gate.TryAcquire(
 		context.Background(),
@@ -717,21 +630,21 @@ func TestPoolRegistryRejectsInvalidConfigurations(t *testing.T) {
 		pools []scheduler.PoolConfig
 		want  string
 	}{
-		{name: "missing default", pools: []scheduler.PoolConfig{poolConfig("video", "weighted", 1, nil)}, want: `"default" is required`},
+		{name: "missing default", pools: []scheduler.PoolConfig{poolConfig("video", "weighted", 1)}, want: `"default" is required`},
 		{name: "blank name", pools: []scheduler.PoolConfig{{Scheduler: scheduler.Config{Capacity: 1}}}, want: "name is required"},
 		{name: "duplicate", pools: []scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
-			poolConfig(scheduler.DefaultPoolName, "weighted", 1, nil),
+			poolConfig(scheduler.DefaultPoolName, "weighted", 1),
+			poolConfig(scheduler.DefaultPoolName, "weighted", 1),
 		}, want: `"default" is duplicated`},
 		{name: "nonpositive capacity", pools: []scheduler.PoolConfig{{Name: scheduler.DefaultPoolName}}, want: "capacity must be positive"},
 		{name: "burst below guarantee", pools: []scheduler.PoolConfig{{
 			Name: scheduler.DefaultPoolName, BurstTo: 1, Scheduler: scheduler.Config{Kind: "weighted", Capacity: 2},
 		}}, want: "burst capacity must be greater than or equal to capacity"},
 		{name: "unsupported scheduling", pools: []scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "unknown", 1, nil),
+			poolConfig(scheduler.DefaultPoolName, "unknown", 1),
 		}, want: "unsupported scheduler backend"},
 		{name: "non-global scheduler", pools: []scheduler.PoolConfig{
-			poolConfig(scheduler.DefaultPoolName, "counting_semaphore", 1, nil),
+			poolConfig(scheduler.DefaultPoolName, "counting_semaphore", 1),
 		}, want: "unsupported scheduler backend"},
 	}
 
@@ -774,13 +687,12 @@ func newPoolRegistry(
 	return registry
 }
 
-func poolConfig(name string, kind string, capacity int, fairShare scheduler.FairShareStore) scheduler.PoolConfig {
+func poolConfig(name string, kind string, capacity int) scheduler.PoolConfig {
 	return scheduler.PoolConfig{
 		Name: name,
 		Scheduler: scheduler.Config{
-			Kind:           kind,
-			Capacity:       capacity,
-			FairShareStore: fairShare,
+			Kind:     kind,
+			Capacity: capacity,
 		},
 	}
 }
@@ -790,9 +702,9 @@ func elasticPoolConfig(
 	kind string,
 	capacity int,
 	burstTo int,
-	fairShare scheduler.FairShareStore,
+
 ) scheduler.PoolConfig {
-	config := poolConfig(name, kind, capacity, fairShare)
+	config := poolConfig(name, kind, capacity)
 	config.BurstTo = burstTo
 	return config
 }
@@ -877,15 +789,11 @@ func TestPoolRegistryQueuedBorrowersUseFreedCapacity(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			projects := []scheduler.ProjectCandidate{
-				{ID: "lender"},
-				{ID: "higher", Pool: "alpha", Priority: 1},
-				{ID: "lower", Pool: "beta", Priority: 4},
-			}
+			projects := []scheduler.ProjectCandidate{{ID: "lender"}, {ID: "higher", Pool: "alpha", Rank: 1}, {ID: "lower", Pool: "beta", Rank: 4}}
 			registry := newPoolRegistry(t, []scheduler.PoolConfig{
-				poolConfig(scheduler.DefaultPoolName, "strict", 1, nil),
-				elasticPoolConfig("alpha", "strict", 1, 2, nil),
-				elasticPoolConfig("beta", "strict", 1, 2, nil),
+				poolConfig(scheduler.DefaultPoolName, "strict", 1),
+				elasticPoolConfig("alpha", "strict", 1, 2),
+				elasticPoolConfig("beta", "strict", 1, 2),
 			}, projects)
 			held := acquirePoolSlots(t, registry, time.Now(), projects...)
 			order := []int{2, 1}

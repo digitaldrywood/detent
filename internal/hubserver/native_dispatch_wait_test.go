@@ -435,7 +435,7 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 			if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", tail.WorkItemID).Scan(&tailID); err != nil {
 				t.Fatal(err)
 			}
-			query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), Limit: 9, AvailableAt: f.service.config.now(), DispatchPriorityByState: []string{"Todo"}, DispatchPriorityByLabel: []string{"hotfix"}}
+			query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), Limit: 9, AvailableAt: f.service.config.now().Truncate(time.Second), DispatchPriorityByState: []string{"Todo"}, DispatchPriorityByLabel: []string{"hotfix"}}
 			began := time.Now()
 			ids, err := claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
 			if err != nil {

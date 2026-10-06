@@ -1860,8 +1860,6 @@ func projectOrchestratorConfig(project globalconfig.Project, workflow workflowco
 	cfg.Project = scheduler.ProjectCandidate{
 		ID:                       project.ID,
 		Pool:                     project.Pool,
-		Weight:                   project.Weight,
-		Priority:                 project.Priority,
 		Paused:                   project.Paused,
 		ActiveHours:              workflow.ActiveHours,
 		ActiveHoursOverrideUntil: overrideUntil,
@@ -2135,8 +2133,6 @@ func projectSchedulerCandidate(project globalconfig.Project, workflow workflowco
 	return scheduler.ProjectCandidate{
 		ID:                       project.ID,
 		Pool:                     project.Pool,
-		Weight:                   project.Weight,
-		Priority:                 project.Priority,
 		Paused:                   project.Paused,
 		ActiveHours:              EffectiveActiveHours(project, workflow.ActiveHours),
 		ActiveHoursOverrideUntil: overrideUntil,

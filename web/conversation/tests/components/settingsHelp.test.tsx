@@ -181,9 +181,8 @@ describe("runner settings help", () => {
     const save = vi.fn();
     const routing: RunnerRouting = {
       display_name: "Example runner", tags: ["linux"], state: "active", capacity_limit: 6,
-      project_ids: ["prj_example"], home_project_ids: [], isolation_tier: "sandbox", host_services: [],
+      project_ids: ["prj_example"], isolation_tier: "sandbox", host_services: [],
       availability: { timezone: "", windows: [], hard_deadline: "" },
-      spillover: { mode: "never", after_minutes: 0 },
     };
     render(<RunnersSectionView fleet={{ ...fleet, editable: true, runners: [{ ...fleet.runners[0]!, routing }] }} onSaveRouting={save} />);
     await user.click(screen.getByRole("button", { name: `Manage ${fleet.runners[0]!.display_name}` }));

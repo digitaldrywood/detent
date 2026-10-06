@@ -51,7 +51,7 @@ func (s *Service) requireRunnerAdministration(ctx context.Context, tx *sql.Tx, s
 		if scope.credential.HostedRole == "viewer" {
 			return operatortool.ErrAccessDenied
 		}
-		scope.credential.ManageRunners = true
+		scope.credential.ManageRunners = !scope.requireHostedAdmin
 		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
 			return err
 		}

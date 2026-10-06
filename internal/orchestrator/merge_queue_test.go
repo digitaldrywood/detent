@@ -754,7 +754,7 @@ func TestNativeMergeQueueUrgentAdmissionPreservesAging(t *testing.T) {
 			now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 			ordinary := nativeMergeQueueTestIssue(601, "success")
 			urgent := nativeMergeQueueTestIssue(602, "success")
-			urgent.Labels = []string{"hotfix"}
+			urgent.Priority = intPointer(1)
 			recent := now.Add(-time.Minute)
 			ordinary.StageUpdatedAt = &recent
 			urgent.StageUpdatedAt = &recent
@@ -798,7 +798,7 @@ func TestNativeMergeQueueBoundsAdmissionWithoutWorkerFallback(t *testing.T) {
 		t.Fatalf("worker candidates = %v, want no integration fallback", candidates)
 	}
 	urgent := nativeMergeQueueTestIssue(704, "success")
-	urgent.Labels = []string{"hotfix"}
+	urgent.Priority = intPointer(1)
 	tracker.enqueued = nil
 	orch.delegateNativeMergeQueueIssues(context.Background(), &state, []connector.Issue{issues[2], urgent}, now.Add(time.Minute))
 	if want := []string{urgent.ID, issues[2].ID}; !reflect.DeepEqual(tracker.enqueued, want) {

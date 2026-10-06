@@ -32,7 +32,7 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 			cfg := normalizeConfig(Config{
 				MaxConcurrentAgents: 10, MergeFastPathEnabled: true,
 				ActiveStates: []string{"Todo", "In Progress", "Merging", "Rework"}, TerminalStates: []string{"Done"},
-				Project: scheduler.ProjectCandidate{ID: "detent", Weight: 1},
+				Project: scheduler.ProjectCandidate{ID: "detent"},
 			})
 			state := providerWindowState(cfg, tt.workers)
 			if tt.outage {
@@ -50,7 +50,7 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 			}
 			issue := readyMergeCapacityIssue("ready", 2371)
 			tracker := &contextCheckedMergeConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}}
-			global := scheduler.NewRoundRobin(scheduler.Config{Capacity: 1})
+			global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 1})
 			globalGate := scheduler.NewGlobalDispatchGate(global)
 			if tt.full {
 				_, acquired, err := globalGate.TryAcquire(t.Context(), cfg.Project, scheduler.SlotRequest{State: "In Progress"}, now)
@@ -338,11 +338,11 @@ func TestReadyMergeCapacityOrdering(t *testing.T) {
 
 func TestReadyMergeRespectsGlobalPause(t *testing.T) {
 	t.Parallel()
-	cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, MergeFastPathEnabled: true, ActiveStates: []string{"In Progress", "Merging"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent", Weight: 1}})
+	cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, MergeFastPathEnabled: true, ActiveStates: []string{"In Progress", "Merging"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}})
 	state := providerWindowState(cfg, 1)
 	issue := readyMergeCapacityIssue("ready", 2371)
 	tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}
-	global := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+	global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 	resume := global.PauseDispatch()
 	defer resume()
 	orch := &Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: global, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -372,14 +372,14 @@ func TestReadyMergeControlBoundsIndependentRepositories(t *testing.T) {
 		t.Run(fmt.Sprintf("project_workers_%d", workers), func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 9, 2, 19, 35, 0, time.UTC)
-			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, MergeFastPathEnabled: true, ActiveStates: []string{"In Progress", "Merging"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent", Weight: 1}})
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, MergeFastPathEnabled: true, ActiveStates: []string{"In Progress", "Merging"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}})
 			state := providerWindowState(cfg, workers)
 			first := readyMergeCapacityIssue("first", 2371)
 			second := readyMergeCapacityIssue("second", 2372)
 			second.PRRepository = "digitaldrywood/other"
 			second.PullRequest.URL = "https://github.test/digitaldrywood/other/pull/2372"
 			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{first, second}}}
-			global := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+			global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			if _, ok, err := global.TryAcquire(t.Context(), cfg.Project, scheduler.SlotRequest{State: "In Progress"}, now); !ok || err != nil {
 				t.Fatalf("fill global capacity: ok=%t err=%v", ok, err)
 			}
@@ -408,11 +408,11 @@ func TestCapacityWaitReasonsMatchDispatchStatus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 9, 2, 19, 35, 0, time.UTC)
-			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent", Weight: 1}})
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}})
 			state := providerWindowState(cfg, tt.workers)
 			issue := dispatchTestIssue("queued", "Todo")
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
-			global := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+			global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			if _, ok, err := global.TryAcquire(t.Context(), cfg.Project, scheduler.SlotRequest{State: "In Progress"}, now); !ok || err != nil {
 				t.Fatalf("fill global capacity: ok=%t err=%v", ok, err)
 			}
@@ -431,7 +431,7 @@ func TestReadyMergeNeverReservesFreedCapacity(t *testing.T) {
 		t.Run(fmt.Sprintf("remaining_%t", remaining), func(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 9, 2, 19, 35, 0, time.UTC)
-			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, MergeFastPathEnabled: true, ActiveStates: []string{"Todo", "In Progress", "Merging"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent", Weight: 1}})
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, MergeFastPathEnabled: true, ActiveStates: []string{"Todo", "In Progress", "Merging"}, TerminalStates: []string{"Done"}, Project: scheduler.ProjectCandidate{ID: "detent"}})
 			state := providerWindowState(cfg, 0)
 			issue := readyMergeCapacityIssue("ready", 2371)
 			issues := []connector.Issue{issue}
@@ -439,7 +439,7 @@ func TestReadyMergeNeverReservesFreedCapacity(t *testing.T) {
 				issues = append(issues, dispatchTestIssue("queued", "Todo"))
 			}
 			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: issues}}
-			global := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+			global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			slot, ok, err := global.TryAcquire(t.Context(), cfg.Project, scheduler.SlotRequest{State: "In Progress"}, now)
 			if !ok || err != nil {
 				t.Fatalf("fill capacity: ok=%t err=%v", ok, err)
@@ -452,7 +452,7 @@ func TestReadyMergeNeverReservesFreedCapacity(t *testing.T) {
 			if err := global.Release(slot); err != nil {
 				t.Fatal(err)
 			}
-			otherSlot, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other", Weight: 1}, scheduler.SlotRequest{State: "In Progress"}, now)
+			otherSlot, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other"}, scheduler.SlotRequest{State: "In Progress"}, now)
 			if err != nil || !acquired {
 				t.Fatalf("other acquired=%t decision=%+v err=%v, remaining=%t", acquired, decision, err, remaining)
 			}

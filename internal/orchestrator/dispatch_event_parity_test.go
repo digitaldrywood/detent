@@ -25,8 +25,8 @@ func TestQueuedCompletionsReleaseCapacityBeforeRefill(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, Project: scheduler.ProjectCandidate{ID: "fixture", Weight: 1}, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
-			gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}), cfg.Project)
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, Project: scheduler.ProjectCandidate{ID: "fixture"}, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}), cfg.Project)
 			state := newState(cfg)
 			first := dispatchTestIssue("first", "Todo")
 			second := dispatchTestIssue("second", "Todo")

@@ -1235,9 +1235,13 @@ func (o *Orchestrator) acquireGlobalDispatchSlot(
 	req := scheduler.SlotRequest{
 		State:            issue.State,
 		Host:             workerHost,
-		Priority:         o.dispatchStatePriority(issue.State),
+		Priority:         dispatchpriority.Priority(issue.Priority),
 		PressureCapacity: pressureCapacity,
 	}
+	if issue.CreatedAt != nil {
+		req.CreatedAt = *issue.CreatedAt
+	}
+	req.IssueID = issue.Identifier
 	var (
 		slot     scheduler.Slot
 		ok       bool
@@ -1245,9 +1249,9 @@ func (o *Orchestrator) acquireGlobalDispatchSlot(
 		err      error
 	)
 	if detailed, hasDecision := o.globalDispatchGate.(detailedProjectDispatchGate); hasDecision {
-		slot, ok, decision, err = detailed.TryAcquireWithDecision(ctx, o.cfg.Project, req, now)
+		slot, ok, decision, err = detailed.TryAcquireWithDecision(ctx, o.dispatchProjectCandidate(), req, now)
 	} else {
-		slot, ok, err = o.globalDispatchGate.TryAcquire(ctx, o.cfg.Project, req, now)
+		slot, ok, err = o.globalDispatchGate.TryAcquire(ctx, o.dispatchProjectCandidate(), req, now)
 		if ok {
 			decision.Reason = scheduler.DispatchGateReasonGranted
 		}

@@ -41,11 +41,11 @@ func TestBootRegistryRebuildDispatchesStrandedActiveIssueDespiteReadyHigherPrior
 	issue.State = "In Progress"
 	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}})
 
-	poisonedGate, err := buildGlobalDispatchPools(global, nil)
+	poisonedGate, err := buildGlobalDispatchPools(global)
 	if err != nil {
 		t.Fatalf("buildGlobalDispatchPools() error = %v", err)
 	}
-	phantom := scheduler.ProjectCandidate{ID: "detent", Weight: 1, Priority: 0}
+	phantom := scheduler.ProjectCandidate{ID: "detent", Rank: 0}
 	poisonedGate.MarkReady(phantom)
 	strandedRunner := newRestartRecoveryRunner()
 	stranded, stopStranded := runRestartRecoveryOrchestrator(t, tracker, strandedRunner, poisonedGate, configuredCandidate)
@@ -65,7 +65,7 @@ func TestBootRegistryRebuildDispatchesStrandedActiveIssueDespiteReadyHigherPrior
 	}
 	stopStranded()
 
-	restartedGate, err := buildGlobalDispatchPools(global, nil)
+	restartedGate, err := buildGlobalDispatchPools(global)
 	if err != nil {
 		t.Fatalf("buildGlobalDispatchPools() after restart error = %v", err)
 	}

@@ -29,6 +29,7 @@ import {
   ProjectSecretStatus,
   SpritePool,
   ProjectsResponse,
+  OrganizationProjectRank,
   type ProjectGrant,
   RunnerEnrollment,
   SupportResponse,
@@ -253,6 +254,8 @@ export function makeAccountApi(options: AccountApiOptions) {
     logout: () => send(null, "POST", hubPath("/logout"), {}),
 
     // --- Projects -----------------------------------------------------------
+    projectRank: () => send(OrganizationProjectRank, "GET", `${base}/project-rank`),
+    updateProjectRank: (input: { expectedRevision: number; projectIds: readonly string[] }) => send(OrganizationProjectRank, "PUT", `${base}/project-rank`, { expected_revision: input.expectedRevision, project_ids: input.projectIds }),
     projects: () => send(ProjectsResponse, "GET", `${base}/projects`),
     createProject: (input: { name: string; grantAccess: boolean; key: string }) =>
       send(Schema.Unknown, "POST", `${base}/projects`, {
@@ -405,11 +408,9 @@ export function makeAccountApi(options: AccountApiOptions) {
       state: string;
       capacityLimit: number;
       projectIds: readonly string[];
-      homeProjectIds?: readonly string[];
       isolationTier?: string;
       hostServices?: readonly string[];
       availability?: { timezone: string; windows: readonly string[]; hard_deadline: string };
-      spillover?: { mode: string; after_minutes: number };
     }) =>
       send(Schema.Unknown, "PUT", `${base}/runners/${encodeURIComponent(input.runner)}/routing`, {
         expected_revision: input.revision,
@@ -418,11 +419,9 @@ export function makeAccountApi(options: AccountApiOptions) {
         state: input.state,
         capacity_limit: input.capacityLimit,
         project_ids: input.projectIds,
-        ...(input.homeProjectIds !== undefined ? { home_project_ids: input.homeProjectIds } : {}),
         ...(input.isolationTier !== undefined ? { isolation_tier: input.isolationTier } : {}),
         ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}),
         ...(input.availability !== undefined ? { availability: input.availability } : {}),
-        ...(input.spillover !== undefined ? { spillover: input.spillover } : {}),
       }),
     bindRepository: (input: {
       projectId: string;

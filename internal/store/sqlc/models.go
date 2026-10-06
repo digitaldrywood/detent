@@ -254,14 +254,6 @@ type EfficiencyReceipt struct {
 	RefreshedAt           string         `json:"refreshed_at"`
 }
 
-type FairShareUsage struct {
-	ProjectID      string `json:"project_id"`
-	Weight         int64  `json:"weight"`
-	Dispatches     int64  `json:"dispatches"`
-	RuntimeSeconds int64  `json:"runtime_seconds"`
-	UpdatedAt      string `json:"updated_at"`
-}
-
 type HealthNotificationState struct {
 	Identity  string `json:"identity"`
 	StateJson string `json:"state_json"`

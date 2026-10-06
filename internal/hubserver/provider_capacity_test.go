@@ -251,19 +251,17 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		winner      int
 	}{
 		{name: "legacy numeric order", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
-		{name: "merging first overrides urgent todo", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{1, 0, 2}, winner: 1},
-		{name: "home routing honors merging first", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, unavailable: "home", want: []int{1, 0, 2}, winner: 1},
-		{name: "partial home order keeps todo eligible", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging"}, unavailable: "home", want: []int{0, 1, 2}},
-		{name: "another project order", states: []string{"Merging", "Todo", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Rework", "Merging"}, want: []int{1, 2, 0}, winner: 1},
-		{name: "source lane order", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{2, 1, 0}, winner: 2},
+		{name: "issue priority beats merging lane", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{0, 2, 1}},
+		{name: "configured lane preference yields to age", states: []string{"Merging", "Todo", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Rework", "Merging"}, want: []int{0, 1, 2}},
+		{name: "source lanes yield to age", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{0, 1, 2}},
 		{name: "numeric priority precedes source lane", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{0, 1, 2}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{0, 1, 2}},
-		{name: "configured labels precede source lanes", states: []string{"Todo", "Rework", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "Todo"}, labels: []string{"hotfix", "bug"}, want: []int{0, 1, 2}},
-		{name: "queue rank breaks equal policy ties", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{"c", "a", "b"}, want: []int{1, 2, 0}, winner: 1},
+		{name: "configured labels and lanes yield to age", states: []string{"Todo", "Rework", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "Todo"}, labels: []string{"hotfix", "bug"}, want: []int{0, 1, 2}},
+		{name: "queue rank yields to age", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{"c", "a", "b"}, want: []int{0, 1, 2}},
 		{name: "precise creation order breaks unranked ties", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{" ", "  ", "   "}, created: []string{"2026-10-02T12:00:00.000000002Z", "2026-10-02T12:00:00Z", "2026-10-02T12:00:00.000000001Z"}, want: []int{1, 2, 0}, winner: 1},
-		{name: "unblocker count precedes queue rank", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, unavailable: "unblocker", want: []int{1, 0}, winner: 1},
+		{name: "unblocker count yields to age", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, unavailable: "unblocker", want: []int{0, 1}},
 		{name: "required review is retained", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "required review", want: []int{1, 2}, winner: 1},
-		{name: "unavailable merging provider falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
-		{name: "changed merging revision falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "revision", want: []int{0, 1, 2}, winner: 1},
+		{name: "unavailable merging provider falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
+		{name: "changed merging revision falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{0, 1, 2}, order: []string{"Merging", "Todo"}, unavailable: "revision", want: []int{0, 1, 2}, winner: 1},
 		{name: "unreviewed merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "review", want: []int{1, 2}, winner: 1},
 		{name: "dependency held merging falls through", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "dependency", want: []int{1, 2}, winner: 1},
 		{name: "leased merging leaves next slot for todo", states: []string{"Merging", "Todo", "Todo"}, priorities: []int{3, 0, 2}, order: []string{"Merging", "Todo"}, unavailable: "lease", want: []int{1, 2}, winner: 1},
@@ -273,9 +271,6 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
-			if test.unavailable == "home" {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/runners/"+r.binding.RunnerID+"/routing", testHubAdminToken, runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "runner", State: "active", CapacityLimit: 8, ProjectIDs: []tracker.ProjectID{f.project.ID}, HomeProjectIDs: []tracker.ProjectID{f.project.ID}}}), http.StatusOK)
-			}
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			for _, state := range []string{"Merging", "Rework"} {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, dispatchable, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)", f.project.ID, state, state, testTimestamp, testTimestamp); err != nil {

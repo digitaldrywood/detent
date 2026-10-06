@@ -236,8 +236,8 @@ func TestDurableRecoveryPreservesDispatchFailureBackoff(t *testing.T) {
 					state = newState(host.cfg)
 					host.connector = completionRefillConnector{hydratingDispatchConnector: hydratingDispatchConnector{issue: issue}, fetch: func(context.Context) ([]connector.Issue, error) { return []connector.Issue{issue}, nil }}
 				}
-				gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
-				slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other", Weight: 1}, scheduler.SlotRequest{State: "Todo"}, now)
+				gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+				slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "other"}, scheduler.SlotRequest{State: "Todo"}, now)
 				if err != nil || !acquired {
 					t.Fatalf("hold global slot = %v, %v", acquired, err)
 				}

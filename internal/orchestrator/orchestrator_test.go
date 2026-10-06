@@ -320,7 +320,7 @@ func TestRunRecordsLaneTransitionMetrics(t *testing.T) {
 		MaxConcurrentAgents:    1,
 		MaxRetryBackoff:        time.Hour,
 		FailureRetryBaseDelay:  time.Hour,
-		Project:                scheduler.ProjectCandidate{ID: "detent", Weight: 1},
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
 		ActiveStates:           []string{"Todo", "In Progress"},
 		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
 		ContinuationRetryDelay: time.Second,
@@ -779,7 +779,7 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 	tracker.stateIssues = []connector.Issue{issue}
 	runner := newBlockingRunner()
 	var logs bytes.Buffer
-	global := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}))
+	global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
 
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:         time.Hour,
@@ -811,7 +811,7 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 	}
 
 	orch.BeginDrain()
-	slot, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "unrelated", Weight: 1}, scheduler.SlotRequest{State: "Todo"}, time.Now())
+	slot, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "unrelated"}, scheduler.SlotRequest{State: "Todo"}, time.Now())
 	if err != nil || !acquired {
 		t.Fatalf("selected drain stopped unrelated dispatch: acquired=%t decision=%+v error=%v", acquired, decision, err)
 	}

@@ -146,7 +146,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted builder", Tags: []string{"Build"}, State: "active", CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{project.ID}, IsolationTier: "native-trusted", Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}, Spillover: runnerauth.Spillover{Mode: "after", AfterMinutes: 0}}}
+	change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted builder", Tags: []string{"Build"}, State: "active", CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{project.ID}, IsolationTier: "native-trusted", Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Sun 00:00-24:00"}}}}
 	if err := fleetAdmin.UpdateRunner(t.Context(), file.Identity.RunnerID, change); err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	cached, err := runnerauth.LoadRoutingCache(path)
-	if err != nil || cached.Revision != 2 || cached.Routing.IsolationTier != "native-trusted" || cached.Routing.Spillover.Mode != "after" || len(cached.Routing.ProjectIDs) != 1 {
+	if err != nil || cached.Revision != 2 || cached.Routing.IsolationTier != "native-trusted" || len(cached.Routing.ProjectIDs) != 1 {
 		t.Fatalf("heartbeat routing cache = %#v, %v", cached, err)
 	}
 	if err := os.Chmod(runnerauth.RoutingCachePath(path), 0o644); err != nil {

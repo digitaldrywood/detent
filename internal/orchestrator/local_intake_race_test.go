@@ -34,8 +34,8 @@ func TestLocalIntakeStopsRacingDispatchAndResumes(t *testing.T) {
 	tracker := &pendingDispatchConnector{fakeConnector: newFakeConnector(issue), started: make(chan struct{}), release: make(chan struct{})}
 	tracker.stateIssues = []connector.Issue{issue}
 	runner := newBlockingRunner()
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}))
-	cfg := orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local", Weight: 1}, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Merging"}, ObservedStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MergeFastPathEnabled: true}
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
+	cfg := orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Merging"}, ObservedStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MergeFastPathEnabled: true}
 	applied := make(chan struct{})
 	orch, err := orchestrator.New(cfg, orchestrator.Dependencies{Connector: tracker, Runner: runner, GlobalDispatchGate: gate, Logger: slog.New(intakeBarrierHandler{Handler: slog.NewTextHandler(io.Discard, nil), applied: applied, once: &sync.Once{}})})
 	if err != nil {
@@ -77,7 +77,7 @@ func TestLocalIntakeStopsRacingDispatchAndResumes(t *testing.T) {
 		t.Fatalf("racing first admission: %s", request.Issue.ID)
 	default:
 	}
-	slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "cloud-runner", Weight: 1}, scheduler.SlotRequest{State: "Todo"}, time.Now())
+	slot, acquired, _, err := gate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "cloud-runner"}, scheduler.SlotRequest{State: "Todo"}, time.Now())
 	if err != nil || !acquired {
 		t.Fatalf("local intake disabled Cloud capacity: acquired=%t err=%v", acquired, err)
 	}

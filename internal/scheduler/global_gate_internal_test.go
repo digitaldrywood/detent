@@ -9,8 +9,8 @@ import (
 func TestGlobalDispatchGateSetProjectsCleansCycleRecords(t *testing.T) {
 	t.Parallel()
 
-	configured := ProjectCandidate{ID: "configured", Weight: 1}
-	orphan := ProjectCandidate{ID: "orphan", Weight: 1}
+	configured := ProjectCandidate{ID: "configured"}
+	orphan := ProjectCandidate{ID: "orphan"}
 	for _, tt := range []struct {
 		name      string
 		cycle     ProjectCandidate
@@ -54,8 +54,8 @@ func TestGlobalDispatchGateReadyRequests(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			gate := NewGlobalDispatchGate(NewStrictPriority(Config{Capacity: tt.capacity}))
-			lower := &dispatchRequest{ctx: t.Context(), project: ProjectCandidate{ID: "lower", Priority: 4}, request: SlotRequest{State: "Todo"}}
-			higher := &dispatchRequest{ctx: t.Context(), project: ProjectCandidate{ID: "higher", Priority: 1}, request: SlotRequest{State: "Merging", Weight: tt.higherWeight}}
+			lower := &dispatchRequest{ctx: t.Context(), project: ProjectCandidate{ID: "lower", Rank: 4}, request: SlotRequest{State: "Todo"}}
+			higher := &dispatchRequest{ctx: t.Context(), project: ProjectCandidate{ID: "higher", Rank: 1}, request: SlotRequest{State: "Merging", Weight: tt.higherWeight}}
 			gate.dispatchLocked([]*dispatchRequest{lower, higher})
 			if higher.granted != tt.wantHigher || lower.granted != tt.wantLower {
 				t.Fatalf("higher/lower grants = %t/%t, want %t/%t", higher.granted, lower.granted, tt.wantHigher, tt.wantLower)
@@ -102,9 +102,9 @@ func TestGlobalDispatchGateConcurrentReadyRequests(t *testing.T) {
 				decision DispatchGateDecision
 			}
 			results := make(chan result, 2)
-			for _, project := range []ProjectCandidate{{ID: "lower", Priority: 4}, {ID: "higher", Priority: 1}} {
+			for _, project := range []ProjectCandidate{{ID: "lower", Rank: 4}, {ID: "higher", Rank: 1}} {
 				go func() {
-					slot, ok, decision, err := gate.TryAcquireWithDecision(t.Context(), project, SlotRequest{State: "Todo", Priority: project.Priority}, time.Time{})
+					slot, ok, decision, err := gate.TryAcquireWithDecision(t.Context(), project, SlotRequest{State: "Todo", Priority: project.Rank}, time.Time{})
 					results <- result{project.ID, slot, ok, err, decision}
 				}()
 			}

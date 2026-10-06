@@ -1508,6 +1508,13 @@
           "path": "\"/organizations/:organization/*\"",
           "handler": "s.proxy",
           "resolved_path": "/organizations/:organization/*"
+        },
+        {
+          "source": "internal/web/templates/hosted.templ",
+          "kind": "attribute",
+          "definition": "href={ templ.URL(data.RetryURL) }",
+          "occurrence": 1,
+          "line": 54
         }
       ],
       "availability": [
@@ -1573,7 +1580,7 @@
       "owner": "digitaldrywood/detent#3335",
       "status": "excluded",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Exact transport/protocol plumbing site. Application payload operations are inventoried separately; do not expose an HTTP or relay proxy tool."
+      "decision": "Exact transport/protocol plumbing site. Application payload operations are inventoried separately; do not expose an HTTP or relay proxy tool. The unavailable-page retry link reloads the current organization path through this existing proxy transport; it introduces no application command."
     },
     {
       "id": "cloudentry.resume_provisioning",
@@ -24039,7 +24046,7 @@
     },
     {
       "id": "hubserver.update_runner_routing",
-      "summary": "Update runner routing",
+      "summary": "Update runner settings and owner allowed projects",
       "audience": "operator",
       "sources": [
         {
@@ -24056,9 +24063,9 @@
         {
           "source": "web/conversation/src/app/account/api.ts",
           "kind": "request",
-          "definition": "send(Schema.Unknown,\"PUT\",`${base}/runners/${encodeURIComponent(input.runner)}/routing`,{ expected_revision: input.revision, display_name: input.displayName, tags: input.tags, state: input.state, capacity_limit: input.capacityLimit, project_ids: input.projectIds, ...(input.homeProjectIds !== undefined ? { home_project_ids: input.homeProjectIds } : {}), ...(input.isolationTier !== undefined ? { isolation_tier: input.isolationTier } : {}), ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}), ...(input.availability !== undefined ? { availability: input.availability } : {}), ...(input.spillover !== undefined ? { spillover: input.spillover } : {}), })",
+          "definition": "send(Schema.Unknown,\"PUT\",`${base}/runners/${encodeURIComponent(input.runner)}/routing`,{ expected_revision: input.revision, display_name: input.displayName, tags: input.tags, state: input.state, capacity_limit: input.capacityLimit, project_ids: input.projectIds, ...(input.isolationTier !== undefined ? { isolation_tier: input.isolationTier } : {}), ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}), ...(input.availability !== undefined ? { availability: input.availability } : {}), })",
           "occurrence": 1,
-          "line": 406
+          "line": 409
         },
         {
           "source": "web/conversation/src/app/fleet/RunnerDetailSheet.tsx",
@@ -24122,7 +24129,7 @@
         "role": "unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project",
         "credential_scope": "existing instance admin or authenticated hosted browser runner administration",
         "project_grant": "not project-scoped; organization/instance authority still enforced",
-        "ownership": "current organization/account; no cross-organization resource lookup"
+        "ownership": "Current organization; only the enrollment owner may change allowed projects. Other runner administration retains current role and grants"
       },
       "preconditions": [
         "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
@@ -37949,6 +37956,200 @@
       "status": "implemented",
       "coverage": "TestHostedModelSelectionTools; TestModelSelectionToolAuthority; TestNativeModelSelectionTools; TestModelSelectionArgumentBounds; TestCloudModelSelection; TestDashboardCapabilityCoverage",
       "decision": "Registered projects tools execute through the existing model-selection owners. Organization authority remains session-only. Parameterized browser requests use the organization tool when projectId is absent and the corresponding project tool otherwise. No new UI, mechanism, credential or grant."
+    },
+    {
+      "id": "hubserver.organization_project_rank",
+      "summary": "Read organization project scheduling order",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_org_api.go",
+          "kind": "route",
+          "definition": "e.GET(hostedOrganizationBase+\"/project-rank\", s.hostedProjectRank, session) [route=\"/api/v2/organizations/:organization/project-rank\"]",
+          "occurrence": 1,
+          "line": 46,
+          "method": "GET",
+          "path": "hostedOrganizationBase + \"/project-rank\"",
+          "handler": "s.hostedProjectRank",
+          "resolved_path": "/api/v2/organizations/:organization/project-rank"
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(OrganizationProjectRank,\"GET\",`${base}/project-rank`)",
+          "occurrence": 1,
+          "line": 251
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "Current organization owner or admin",
+        "credential_scope": "Hosted browser session or current admin-scope tool connection",
+        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "ownership": "current organization/account; no cross-organization resource lookup"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); current scope, project access and grants are checked on every call; confirmation belongs to clients.",
+        "Current owner/admin authority; updates require the current scheduling revision and every organization project exactly once."
+      ],
+      "confirmation": [
+        {
+          "when": "authorized call; the client controls user confirmation",
+          "class": "none"
+        }
+      ],
+      "application": "readOrganizationProjectRank / Service.updateOrganizationProjectRankCommand",
+      "extraction": "HTTP and administration tools share the organization rank read and revisioned transaction; existing authorization, audit and mutation receipt paths apply.",
+      "tool": {
+        "set": "organization",
+        "name": "organization_project_rank",
+        "arguments": "Empty object; organization and identity come from the current connection",
+        "result": "Current organization project IDs in scheduling order and scheduling revision; updates return the existing action receipt and revised order",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3344",
+      "status": "implemented",
+      "coverage": "TestHostedProjectRank; TestHostedProjectRankTools",
+      "decision": "Organization administration exposes the same rank order approved for Cloud settings, using the shared command and current owner/admin authority."
+    },
+    {
+      "id": "hubserver.organization_project_rank_update",
+      "summary": "Update organization project scheduling order",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/hosted_org_api.go",
+          "kind": "route",
+          "definition": "e.PUT(hostedOrganizationBase+\"/project-rank\", s.updateHostedProjectRank, session) [route=\"/api/v2/organizations/:organization/project-rank\"]",
+          "occurrence": 1,
+          "line": 47,
+          "method": "PUT",
+          "path": "hostedOrganizationBase + \"/project-rank\"",
+          "handler": "s.updateHostedProjectRank",
+          "resolved_path": "/api/v2/organizations/:organization/project-rank"
+        },
+        {
+          "source": "web/conversation/src/app/account/api.ts",
+          "kind": "request",
+          "definition": "send(OrganizationProjectRank,\"PUT\",`${base}/project-rank`,{ expected_revision: input.expectedRevision, project_ids: input.projectIds })",
+          "occurrence": 1,
+          "line": 252
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "hub application service",
+          "unsupported": "This route is not registered in this deployment; use the corresponding deployment application operation, where present."
+        }
+      ],
+      "authority": {
+        "role": "Current organization owner or admin",
+        "credential_scope": "Hosted browser session or current admin-scope tool connection",
+        "project_grant": "not project-scoped; organization/instance authority still enforced",
+        "ownership": "current organization/account; no cross-organization resource lookup"
+      },
+      "preconditions": [
+        "Current authenticated principal and organization; current role, scope, project grant and ownership at execution",
+        "Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.",
+        "Mutations reuse the shared audit/retry contract (#3338); current scope, project access and grants are checked on every call; confirmation belongs to clients.",
+        "Current owner/admin authority; updates require the current scheduling revision and every organization project exactly once."
+      ],
+      "confirmation": [
+        {
+          "when": "authorized call; the client controls user confirmation",
+          "class": "none"
+        }
+      ],
+      "application": "readOrganizationProjectRank / Service.updateOrganizationProjectRankCommand",
+      "extraction": "HTTP and administration tools share the organization rank read and revisioned transaction; existing authorization, audit and mutation receipt paths apply.",
+      "tool": {
+        "set": "organization",
+        "name": "organization_project_rank_update",
+        "arguments": "expected_revision >= 1, project_ids with at most 200 identifiers of 1\u2013256 bytes, and request_id with 1\u2013128 bytes; organization and identity come from the current connection",
+        "result": "Current organization project IDs in scheduling order and scheduling revision; updates return the existing action receipt and revised order",
+        "annotations": {
+          "readOnly": false,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": true
+        }
+      },
+      "owner": "digitaldrywood/detent#3344",
+      "status": "implemented",
+      "coverage": "TestHostedProjectRank; TestHostedProjectRankTools",
+      "decision": "Organization administration exposes the same rank order approved for Cloud settings, using the shared command and current owner/admin authority."
     }
   ]
 }

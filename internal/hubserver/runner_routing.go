@@ -18,7 +18,7 @@ import (
 )
 
 const runnerIdentitySelect = `SELECT r.id, r.organization_id, r.machine_id, r.token_id, r.display_name, r.tags_json, r.state, r.capacity_limit,
-r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json, r.routing_settings_json, r.home_dry_since,
+r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json, r.routing_settings_json,
 m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expires_at, t.revoked_at,
 (SELECT json_group_array(project_id) FROM (SELECT project_id FROM token_grants WHERE token_id = r.token_id ORDER BY project_id)),
 r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json
@@ -30,9 +30,9 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 	var projects, problems, isolationRaw, capacityRaw, providerRaw, updateRaw string
 	var protocol int
 	var rejected bool
-	var revoked, dry sql.NullString
+	var revoked sql.NullString
 	err := row.Scan(&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
-		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings, &dry,
+		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings,
 		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw)
 	if err != nil {
 		return r, nil, time.Time{}, err
@@ -68,14 +68,6 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected); err != nil {
 		return r, nil, time.Time{}, err
 	}
-	if dry.Valid {
-		since, err := parseTimeValue(dry.String)
-		if err != nil {
-			return r, nil, time.Time{}, err
-		}
-		r.HomeDrySince = &since
-	}
-	r.HomeStatus = r.HomeWorkStatus(now)
 	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
 		return r, nil, time.Time{}, err
 	}
@@ -99,6 +91,9 @@ func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tra
 		return r, err
 	}
 	if err := applyUrgentRunnerRouting(ctx, db, &r); err != nil {
+		return r, err
+	}
+	if err := applyRunnerProjectRanks(ctx, db, &r); err != nil {
 		return r, err
 	}
 	r.Leases = []runnerauth.RunnerLease{}
@@ -167,15 +162,13 @@ type runnerSettings struct {
 	ProjectConfigurationCommand *runnerauth.ProjectConfigurationCommand `json:"project_configuration_request,omitempty"`
 	UpdateRequest               *runnerauth.UpdateRequest               `json:"update_request,omitempty"`
 	CapacityRequest             *runnerauth.CapacityRequest             `json:"capacity_request,omitempty"`
-	HomeProjectIDs              []tracker.ProjectID                     `json:"home_project_ids"`
 	IsolationTier               string                                  `json:"isolation_tier"`
 	HostServices                []string                                `json:"host_services"`
 	Availability                runnerauth.Availability                 `json:"availability"`
-	Spillover                   runnerauth.Spillover                    `json:"spillover"`
 }
 
 func settingsFromRouting(r runnerauth.Routing) runnerSettings {
-	return runnerSettings{ProjectConfigurationCommand: r.ProjectConfigurationCommand, UpdateRequest: r.UpdateRequest, CapacityRequest: r.CapacityRequest, HomeProjectIDs: r.HomeProjectIDs, IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability, Spillover: r.Spillover}
+	return runnerSettings{ProjectConfigurationCommand: r.ProjectConfigurationCommand, UpdateRequest: r.UpdateRequest, CapacityRequest: r.CapacityRequest, IsolationTier: r.IsolationTier, HostServices: r.HostServices, Availability: r.Availability}
 }
 
 func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
@@ -189,8 +182,6 @@ func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
 	routing.IsolationTier = settings.IsolationTier
 	routing.HostServices = settings.HostServices
 	routing.Availability = settings.Availability
-	routing.Spillover = settings.Spillover
-	routing.HomeProjectIDs = settings.HomeProjectIDs
 	return nil
 }
 
@@ -198,6 +189,9 @@ func readRunnerRoutingSnapshot(ctx context.Context, db nativeQueryer, organizati
 	runner, _, _, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), func() time.Time { return now })
 	if err == nil {
 		err = applyUrgentRunnerRouting(ctx, db, &runner)
+	}
+	if err == nil {
+		err = applyRunnerProjectRanks(ctx, db, &runner)
 	}
 	return runnerauth.RoutingSnapshot{RunnerID: id, Revision: runner.Revision, Routing: runner.Routing}, err
 }
@@ -232,11 +226,9 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 
 type runnerRoutingRequest struct {
 	runnerauth.RoutingChange
-	IsolationTier  *string                  `json:"isolation_tier"`
-	HostServices   *[]string                `json:"host_services"`
-	Availability   *runnerauth.Availability `json:"availability"`
-	Spillover      *runnerauth.Spillover    `json:"spillover"`
-	HomeProjectIDs *[]tracker.ProjectID     `json:"home_project_ids"`
+	IsolationTier *string                  `json:"isolation_tier"`
+	HostServices  *[]string                `json:"host_services"`
+	Availability  *runnerauth.Availability `json:"availability"`
 }
 
 // effective preserves optional settings exactly as the dashboard command does.
@@ -259,16 +251,6 @@ func (request runnerRoutingRequest) effective(current runnerauth.Routing) runner
 		change.Availability = current.Availability
 	} else {
 		change.Availability = *request.Availability
-	}
-	if request.Spillover == nil || request.Spillover.Mode == "" && request.Spillover.AfterMinutes == 0 {
-		change.Spillover = current.Spillover
-	} else {
-		change.Spillover = *request.Spillover
-	}
-	if request.HomeProjectIDs == nil {
-		change.HomeProjectIDs = current.HomeProjectIDs
-	} else {
-		change.HomeProjectIDs = *request.HomeProjectIDs
 	}
 	change.Routing = change.Normalized()
 	return change
@@ -302,6 +284,15 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		if r.Revision != change.ExpectedRevision {
 			return nil, nativeConflict(tracker.Revision(r.Revision))
 		}
+		if !slices.Equal(request.Normalized().ProjectIDs, r.ProjectIDs) {
+			owned, err := runnerOwnedBy(ctx, tx, organization, r.RunnerID, scope.credential)
+			if err != nil {
+				return nil, err
+			}
+			if !owned {
+				return nil, &nativeError{Code: "access_denied", Message: "Only the runner owner may change its allowed projects", status: http.StatusForbidden}
+			}
+		}
 		change = request.effective(r.Routing)
 		if change.CapacityLimit != r.CapacityLimit {
 			change.CapacityRequest = nil
@@ -329,7 +320,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET display_name = ?, tags_json = ?, state = ?, capacity_limit = ?, routing_settings_json = ?, home_dry_since = CASE WHEN ? THEN NULL ELSE home_dry_since END, revision = revision + 1 WHERE id = ?`, change.DisplayName, tags, change.State, change.CapacityLimit, settings, !slices.Equal(change.HomeProjectIDs, r.HomeProjectIDs) || change.Spillover != r.Spillover, r.RunnerID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE runner_identities SET display_name = ?, tags_json = ?, state = ?, capacity_limit = ?, routing_settings_json = ?, revision = revision + 1 WHERE id = ?`, change.DisplayName, tags, change.State, change.CapacityLimit, settings, r.RunnerID); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM token_grants WHERE token_id = (SELECT token_id FROM runner_identities WHERE id = ?)", r.RunnerID); err != nil {
@@ -548,4 +539,35 @@ func validateRunnerLeaseTx(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 		return runnerauth.Runner{}, err
 	}
 	return r, nil
+}
+
+func applyRunnerProjectRanks(ctx context.Context, db nativeQueryer, r *runnerauth.Runner) error {
+	rows, err := db.QueryContext(ctx, "SELECT p.id, p.scheduling_rank FROM projects p JOIN token_grants g ON g.project_id = p.id AND g.organization_id = p.organization_id WHERE g.token_id = (SELECT token_id FROM runner_identities WHERE id = ?) AND p.organization_id = ?", r.RunnerID, r.OrganizationID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	r.ProjectRanks = map[tracker.ProjectID]int{}
+	for rows.Next() {
+		var id tracker.ProjectID
+		var rank int
+		if err := rows.Scan(&id, &rank); err != nil {
+			return err
+		}
+		r.ProjectRanks[id] = rank
+	}
+	return rows.Err()
+}
+
+func runnerOwnedBy(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, runner string, credential apiCredential) (bool, error) {
+	user := ""
+	if credential.Hosted != nil {
+		user = credential.Hosted.Subject
+	}
+	var owned bool
+	err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_identities r
+ JOIN runner_enrollments e ON e.id = r.enrollment_id JOIN api_tokens t ON t.id = e.created_by
+ LEFT JOIN hosted_members m ON m.principal_id = e.created_by
+ WHERE r.id = ? AND r.organization_id = ? AND (e.created_by = ? OR (? <> '' AND (t.hosted_user_id = ? OR m.user_id = ?))))`, runner, organization, credential.ID, user, user, user).Scan(&owned)
+	return owned, err
 }

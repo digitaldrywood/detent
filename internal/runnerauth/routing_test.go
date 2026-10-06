@@ -23,9 +23,6 @@ func TestRoutingNormalizationAndValidation(t *testing.T) {
 		{"invalid state", Routing{DisplayName: "Builder", State: "paused"}, false},
 		{"negative capacity", Routing{DisplayName: "Builder", State: "active", CapacityLimit: -1}, false},
 		{"duplicate project", Routing{DisplayName: "Builder", State: "active", ProjectIDs: []tracker.ProjectID{"prj_a", "prj_a"}}, false},
-		{"authorized home", Routing{DisplayName: "Builder", State: "active", ProjectIDs: []tracker.ProjectID{"prj_a"}, HomeProjectIDs: []tracker.ProjectID{"prj_a"}}, true},
-		{"unauthorized home", Routing{DisplayName: "Builder", State: "active", HomeProjectIDs: []tracker.ProjectID{"prj_a"}}, false},
-		{"duplicate home", Routing{DisplayName: "Builder", State: "active", ProjectIDs: []tracker.ProjectID{"prj_a"}, HomeProjectIDs: []tracker.ProjectID{"prj_a", "prj_a"}}, false},
 		{"empty project", Routing{DisplayName: "Builder", State: "active", ProjectIDs: []tracker.ProjectID{""}}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -78,9 +75,6 @@ func TestRoutingSettingsValidation(t *testing.T) {
 		{"negative deadline", func(r *Routing) {
 			r.Availability = Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, HardDeadline: "-1m"}
 		}, false},
-		{"zero spillover", func(r *Routing) { r.Spillover = Spillover{Mode: "after", AfterMinutes: 0} }, true},
-		{"negative spillover", func(r *Routing) { r.Spillover = Spillover{Mode: "after", AfterMinutes: -1} }, false},
-		{"unknown spillover", func(r *Routing) { r.Spillover.Mode = "always" }, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := Routing{DisplayName: "Runner", State: "active", CapacityLimit: 1}
@@ -145,42 +139,6 @@ func TestRunnerEligibility(t *testing.T) {
 			}
 			if len(got) != 1 || got[0].Code != test.code {
 				t.Fatalf("exclusions = %#v, want %s", got, test.code)
-			}
-		})
-	}
-}
-
-func TestRunnerHomeWorkStatus(t *testing.T) {
-	t.Parallel()
-	since := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	for _, test := range []struct {
-		name     string
-		home     bool
-		dry      *time.Time
-		mode     string
-		minutes  int
-		elapsed  time.Duration
-		want     string
-		eligible bool
-	}{
-		{"no homes", false, &since, "after", 0, time.Minute, "", false},
-		{"home work", true, nil, "after", 5, time.Minute, "Preferring home work", false},
-		{"waiting", true, &since, "after", 5, 4 * time.Minute, "Waiting for home work (4m)", false},
-		{"threshold", true, &since, "after", 5, 5 * time.Minute, "Spilled over", true},
-		{"never", true, &since, "never", 0, 5 * time.Minute, "Waiting for home work (5m)", false},
-		{"future clock", true, &since, "after", 0, -time.Minute, "Waiting for home work (0m)", false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			r := Runner{HomeDrySince: test.dry, Routing: Routing{Spillover: Spillover{Mode: test.mode, AfterMinutes: test.minutes}}}
-			if test.home {
-				r.HomeProjectIDs = []tracker.ProjectID{"prj_a"}
-			}
-			now := since.Add(test.elapsed)
-			if got := r.HomeWorkStatus(now); got != test.want {
-				t.Fatalf("status = %q, want %q", got, test.want)
-			}
-			if got := r.SpilloverEligible(now); got != test.eligible {
-				t.Fatalf("eligible = %v, want %v", got, test.eligible)
 			}
 		})
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
@@ -71,15 +72,20 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 	req := scheduler.SlotRequest{
 		ProjectCapacity: projectCapacity, ProjectStateCapacity: stateCapacity, ProjectHostCapacity: hostCapacity,
 		State: slotIssue.State, Host: workerHost, HostCandidates: hosts,
-		Priority: o.dispatchStatePriority(slotIssue.State), PressureCapacity: pressureCapacity,
+		Priority: dispatchpriority.Priority(slotIssue.Priority), PressureCapacity: pressureCapacity,
 	}
+	if slotIssue.CreatedAt != nil {
+		req.CreatedAt = *slotIssue.CreatedAt
+	}
+	req.IssueID = slotIssue.Identifier
+	req.ProjectRank = o.dispatchProjectCandidate().Rank
 	if pending, exists := o.globalDispatchPending[action.issue.ID]; exists {
 		pending.action = action
 		o.globalDispatchPending[action.issue.ID] = pending
 		gate.Update(pending.result, req, now)
 		return scheduler.Slot{}, false, scheduler.DispatchGateDecision{Reason: scheduler.DispatchGateReasonGlobalCapacityFull}
 	}
-	result, cancel, decision := gate.Submit(ctx, o.cfg.Project, req, now, o.globalDispatchReady)
+	result, cancel, decision := gate.Submit(ctx, o.dispatchProjectCandidate(), req, now, o.globalDispatchReady)
 	select {
 	case grant := <-result:
 		cancel()

@@ -140,13 +140,10 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 						if len(r.ProviderCapacity) > 0 {
 							a.Unavailable = append(a.Unavailable, "provider_candidate_requirement")
 						}
-						if len(r.HomeProjectIDs) > 0 {
-							a.Unavailable = append(a.Unavailable, "runner_home_candidate_selection")
-						}
 						if len(a.Unavailable) == 0 {
 							a.Outcome = "ready"
 						} else {
-							a.Reason += "; local provider or home selection remains unavailable"
+							a.Reason += "; local provider selection remains unavailable"
 						}
 					}
 				}

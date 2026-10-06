@@ -124,8 +124,8 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				},
 				err: brake,
 			}
-			project := scheduler.ProjectCandidate{ID: "detent", Weight: 1}
-			dispatchGate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+			project := scheduler.ProjectCandidate{ID: "detent"}
+			dispatchGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			activeStates := tt.activeStates
 			if len(activeStates) == 0 {
 				activeStates = []string{"Todo", "In Progress", "Rework"}

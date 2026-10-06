@@ -154,12 +154,11 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 		DisplayName: "Build runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID},
 		IsolationTier: "native-trusted", HostServices: []string{"tcp:127.0.0.1:8080"},
 		Availability: runnerauth.Availability{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}, HardDeadline: "30m"},
-		Spillover:    runnerauth.Spillover{Mode: "after", AfterMinutes: 0},
 	}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
 	var stored runnerauth.Runner
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &stored)
-	if stored.IsolationTier != "native-trusted" || stored.Availability.HardDeadline != "30m" || stored.Spillover.Mode != "after" || len(stored.HostServices) != 1 {
+	if stored.IsolationTier != "native-trusted" || stored.Availability.HardDeadline != "30m" || len(stored.HostServices) != 1 {
 		t.Fatalf("stored settings = %#v", stored.Routing)
 	}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/projects/"+string(f.project.ID)+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
@@ -167,14 +166,14 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var snapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, response, &snapshot)
-	if snapshot.RunnerID != r.binding.RunnerID || snapshot.Revision != stored.Revision || snapshot.Routing.IsolationTier != "native-trusted" || snapshot.Routing.Availability.HardDeadline != "30m" || snapshot.Routing.Spillover.Mode != "after" {
+	if snapshot.RunnerID != r.binding.RunnerID || snapshot.Revision != stored.Revision || snapshot.Routing.IsolationTier != "native-trusted" || snapshot.Routing.Availability.HardDeadline != "30m" {
 		t.Fatalf("heartbeat routing = %#v", snapshot)
 	}
 	legacy := runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: runnerauth.Routing{DisplayName: "Renamed", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID}}}
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, legacy)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &stored)
-	if stored.DisplayName != "Renamed" || stored.IsolationTier != "native-trusted" || stored.Spillover.Mode != "after" {
+	if stored.DisplayName != "Renamed" || stored.IsolationTier != "native-trusted" {
 		t.Fatalf("legacy routing update lost settings: %#v", stored.Routing)
 	}
 	partial := map[string]any{"expected_revision": stored.Revision, "display_name": "Renamed", "tags": stored.Tags, "state": stored.State,
@@ -182,7 +181,7 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, partial)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &stored)
-	if stored.IsolationTier != "sandbox" || len(stored.HostServices) != 1 || stored.Availability.HardDeadline != "30m" || stored.Spillover.Mode != "after" {
+	if stored.IsolationTier != "sandbox" || len(stored.HostServices) != 1 || stored.Availability.HardDeadline != "30m" {
 		t.Fatalf("partial routing update lost settings: %#v", stored.Routing)
 	}
 	partial["expected_revision"] = stored.Revision
@@ -190,17 +189,16 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, partial)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &stored)
-	if len(stored.HostServices) != 0 || stored.Availability.HardDeadline != "30m" || stored.Spillover.Mode != "after" {
+	if len(stored.HostServices) != 0 || stored.Availability.HardDeadline != "30m" {
 		t.Fatalf("explicit host service clear lost settings: %#v", stored.Routing)
 	}
 	partial["expected_revision"] = stored.Revision
 	partial["availability"] = runnerauth.Availability{Windows: []string{}}
-	partial["spillover"] = runnerauth.Spillover{Mode: "never"}
 	response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, partial)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &stored)
-	if stored.IsolationTier != "sandbox" || len(stored.Availability.Windows) != 0 || stored.Availability.HardDeadline != "" || stored.Spillover.Mode != "never" {
-		t.Fatalf("explicit availability and spillover clear lost settings: %#v", stored.Routing)
+	if stored.IsolationTier != "sandbox" || len(stored.Availability.Windows) != 0 || stored.Availability.HardDeadline != "" {
+		t.Fatalf("explicit availability clear lost settings: %#v", stored.Routing)
 	}
 	disabled := runnerauth.RoutingChange{ExpectedRevision: stored.Revision, Routing: stored.Routing}
 	disabled.State = "disabled"
@@ -567,6 +565,7 @@ func TestRunnerRoutingAdministratorControls(t *testing.T) {
 		{"invalid tag", func(c *runnerauth.RoutingChange) { c.Tags = []string{"not a tag"} }, false, http.StatusUnprocessableEntity},
 		{"invalid state", func(c *runnerauth.RoutingChange) { c.State = "unknown" }, false, http.StatusUnprocessableEntity},
 		{"negative capacity", func(c *runnerauth.RoutingChange) { c.CapacityLimit = -1 }, false, http.StatusUnprocessableEntity},
+		{"nonowner allowlist edit", func(c *runnerauth.RoutingChange) { c.ProjectIDs = []tracker.ProjectID{} }, false, http.StatusForbidden},
 		{"unknown project", func(c *runnerauth.RoutingChange) { c.ProjectIDs = []tracker.ProjectID{"prj_unknown"} }, false, http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -574,6 +573,11 @@ func TestRunnerRoutingAdministratorControls(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "admin")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
+			if test.name == "nonowner allowlist edit" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_enrollments SET created_by = (SELECT id FROM api_tokens WHERE token_hash = ?) WHERE runner_id = ?", apikey.HashToken(f.token), r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Trusted", State: "active", Tags: []string{"production"}, CapacityLimit: 1, ProjectIDs: []tracker.ProjectID{f.project.ID}}}
 			test.change(&change)
 			token := testHubAdminToken

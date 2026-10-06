@@ -14,9 +14,6 @@ import (
 
 func runnerHubProblems(r runnerauth.Runner, report isolation.Report, protocol int, rejected bool) []runnerauth.Problem {
 	problems := []runnerauth.Problem{}
-	if len(r.HomeProjectIDs) > 0 && !report.Supports(r.IsolationTier) {
-		problems = append(problems, runnerauth.NewProblem("home_project_unservable"))
-	}
 	if rejected {
 		problems = append(problems, runnerauth.NewProblem("settings_rejected"))
 	}
@@ -36,7 +33,7 @@ func applyRunnerProblems(r *runnerauth.Runner, raw, isolationRaw string, protoco
 		return err
 	}
 	current := slices.DeleteFunc(slices.Clone(previous), func(p runnerauth.Problem) bool {
-		return p.Code == "home_project_unservable" || p.Code == "settings_rejected" || p.Code == "version_unsupported"
+		return p.Code == "settings_rejected" || p.Code == "version_unsupported"
 	})
 	current = append(current, runnerHubProblems(*r, report, protocol, rejected)...)
 	r.Problems = runnerauth.MergeProblems(previous, current, r.LastHeartbeatAt)

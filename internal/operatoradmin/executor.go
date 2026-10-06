@@ -18,28 +18,29 @@ var ErrUnavailable = errors.New("administration operation is unavailable")
 
 // Input is an application input, decoded against each individual tool schema.
 type Input struct {
-	Grants         []ProjectGrant `json:"grants,omitzero"`
-	RequestID      string         `json:"request_id,omitempty"`
-	Offset         int            `json:"offset,omitempty"`
-	Limit          int            `json:"limit,omitempty"`
-	OrganizationID string         `json:"organization_id,omitempty"`
-	Name           string         `json:"name,omitempty"`
-	ConfirmName    string         `json:"confirm_name,omitempty"`
-	InvitationID   string         `json:"invitation_id,omitempty"`
-	MemberID       string         `json:"member_id,omitempty"`
-	Email          string         `json:"email,omitempty"`
-	Role           string         `json:"role,omitempty"`
-	ProjectID      string         `json:"project_id,omitempty"`
-	Write          bool           `json:"write,omitempty"`
-	Runner         bool           `json:"runner,omitempty"`
-	Revoke         bool           `json:"revoke,omitempty"`
-	CredentialID   string         `json:"credential_id,omitempty"`
-	Scopes         []string       `json:"scopes,omitempty"`
-	ProjectAccess  string         `json:"project_access,omitempty"`
-	ProjectIDs     []string       `json:"project_ids,omitempty"`
-	ExpiresIn      string         `json:"expires_in,omitempty"`
-	Grace          string         `json:"grace,omitempty"`
-	Reason         string         `json:"reason,omitempty"`
+	Grants           []ProjectGrant `json:"grants,omitzero"`
+	RequestID        string         `json:"request_id,omitempty"`
+	Offset           int            `json:"offset,omitempty"`
+	Limit            int            `json:"limit,omitempty"`
+	OrganizationID   string         `json:"organization_id,omitempty"`
+	Name             string         `json:"name,omitempty"`
+	ConfirmName      string         `json:"confirm_name,omitempty"`
+	InvitationID     string         `json:"invitation_id,omitempty"`
+	MemberID         string         `json:"member_id,omitempty"`
+	Email            string         `json:"email,omitempty"`
+	Role             string         `json:"role,omitempty"`
+	ProjectID        string         `json:"project_id,omitempty"`
+	Write            bool           `json:"write,omitempty"`
+	Runner           bool           `json:"runner,omitempty"`
+	Revoke           bool           `json:"revoke,omitempty"`
+	CredentialID     string         `json:"credential_id,omitempty"`
+	Scopes           []string       `json:"scopes,omitempty"`
+	ProjectAccess    string         `json:"project_access,omitempty"`
+	ExpectedRevision int64          `json:"expected_revision,omitempty"`
+	ProjectIDs       []string       `json:"project_ids,omitempty"`
+	ExpiresIn        string         `json:"expires_in,omitempty"`
+	Grace            string         `json:"grace,omitempty"`
+	Reason           string         `json:"reason,omitempty"`
 }
 
 type ProjectGrant struct {

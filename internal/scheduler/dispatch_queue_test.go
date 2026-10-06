@@ -33,7 +33,7 @@ func TestQueuedDispatchRanksSynchronousAndQueuedCallersTogether(t *testing.T) {
 				}
 				results := make(chan result, 2)
 				lock()
-				for _, project := range []ProjectCandidate{{ID: "lower", Priority: 4}, {ID: "higher", Priority: 1}} {
+				for _, project := range []ProjectCandidate{{ID: "lower", Rank: 4}, {ID: "higher", Rank: 1}} {
 					go func() {
 						out := result{id: project.ID}
 						if (project.ID == "higher") == higherQueued {
@@ -103,11 +103,11 @@ func TestQueuedDispatchReleaseIncludesEnrolledCallers(t *testing.T) {
 			if err != nil || !ok {
 				t.Fatalf("initial grant = %t %v", ok, err)
 			}
-			lower, cancel, _ := gate.(QueuedProjectDispatchGate).Submit(t.Context(), ProjectCandidate{ID: "lower", Priority: 4}, SlotRequest{State: "Todo"}, time.Now(), nil)
+			lower, cancel, _ := gate.(QueuedProjectDispatchGate).Submit(t.Context(), ProjectCandidate{ID: "lower", Rank: 4}, SlotRequest{State: "Todo"}, time.Now(), nil)
 			defer cancel()
 			// Freeze a caller after intake enrollment and before mutex acquisition.
 			// Release must use this same intake, not only the retained queue.
-			higher := &dispatchRequest{ctx: t.Context(), project: ProjectCandidate{ID: "higher", Priority: 1}, request: SlotRequest{State: "Todo"}, now: time.Now()}
+			higher := &dispatchRequest{ctx: t.Context(), project: ProjectCandidate{ID: "higher", Rank: 1}, request: SlotRequest{State: "Todo"}, now: time.Now()}
 			enroll(higher)
 			if err := gate.Release(held); err != nil {
 				t.Fatal(err)
@@ -139,80 +139,100 @@ func TestQueuedDispatchReleaseIncludesEnrolledCallers(t *testing.T) {
 }
 
 func TestQueuedDispatchRanksIndependentRequests(t *testing.T) {
-	for _, registry := range []bool{false, true} {
-		for _, higherFirst := range []bool{false, true} {
-			name := "gate"
-			if registry {
-				name = "registry"
-			}
-			if higherFirst {
-				name += "/higher-first"
-			} else {
-				name += "/lower-first"
-			}
-			t.Run(name, func(t *testing.T) {
-				var gate ProjectDispatchGate = NewGlobalDispatchGate(NewStrictPriority(Config{Capacity: 1}))
+	for _, orderCase := range []struct {
+		name                          string
+		higherRank, lowerRank         int
+		higherPriority, lowerPriority int
+		higherAge, lowerAge           time.Duration
+		refresh                       bool
+	}{
+		{"issue priority beats project rank", 4, 1, 1, 2, time.Hour, -time.Hour, false},
+		{"project rank breaks priority ties", 1, 4, 2, 2, time.Hour, -time.Hour, false},
+		{"oldest issue breaks remaining ties", 1, 1, 2, 2, -time.Hour, time.Hour, false},
+		{"local refresh preserves Cloud rank", 1, 4, 2, 2, time.Hour, -time.Hour, true},
+	} {
+		for _, registry := range []bool{false, true} {
+			for _, higherFirst := range []bool{false, true} {
+				name := orderCase.name + "/gate"
 				if registry {
-					r, err := NewPoolRegistry([]PoolConfig{{Name: DefaultPoolName, Scheduler: Config{Kind: "strict", Capacity: 1}}}, nil)
-					if err != nil {
+					name = orderCase.name + "/registry"
+				}
+				if higherFirst {
+					name += "/higher-first"
+				} else {
+					name += "/lower-first"
+				}
+				t.Run(name, func(t *testing.T) {
+					var gate ProjectDispatchGate = NewGlobalDispatchGate(NewStrictPriority(Config{Capacity: 1}))
+					if registry {
+						r, err := NewPoolRegistry([]PoolConfig{{Name: DefaultPoolName, Scheduler: Config{Kind: "strict", Capacity: 1}}}, nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						gate = r
+					}
+					running, ok, err := gate.TryAcquire(t.Context(), ProjectCandidate{ID: "running", Rank: 5}, SlotRequest{State: "Todo"}, time.Now())
+					if err != nil || !ok {
+						t.Fatalf("initial grant: %t %v", ok, err)
+					}
+					projects := []ProjectCandidate{{ID: "lower", Rank: orderCase.lowerRank}, {ID: "higher", Rank: orderCase.higherRank}}
+					if higherFirst {
+						projects[0], projects[1] = projects[1], projects[0]
+					}
+					results := make(map[string]<-chan DispatchResult)
+					for _, project := range projects {
+						priority, age := orderCase.lowerPriority, orderCase.lowerAge
+						if project.ID == "higher" {
+							priority, age = orderCase.higherPriority, orderCase.higherAge
+						}
+						result, cancel, decision := gate.(QueuedProjectDispatchGate).Submit(t.Context(), project, SlotRequest{State: "Todo", Priority: priority, CreatedAt: time.Unix(100000, 0).Add(age)}, time.Now(), make(chan struct{}, 1))
+						t.Cleanup(cancel)
+						if decision.Reason != DispatchGateReasonGlobalCapacityFull {
+							t.Fatalf("refusal = %+v", decision)
+						}
+						results[project.ID] = result
+						select {
+						case got := <-result:
+							t.Fatalf("running work replaced: %+v", got)
+						default:
+						}
+					}
+					if orderCase.refresh {
+						gate.(interface{ SetProjects([]ProjectCandidate) }).SetProjects([]ProjectCandidate{{ID: "running"}, {ID: "lower"}, {ID: "higher"}})
+					}
+					if err := gate.Release(running); err != nil {
 						t.Fatal(err)
 					}
-					gate = r
-				}
-				running, ok, err := gate.TryAcquire(t.Context(), ProjectCandidate{ID: "running", Priority: 5}, SlotRequest{State: "Todo"}, time.Now())
-				if err != nil || !ok {
-					t.Fatalf("initial grant: %t %v", ok, err)
-				}
-				projects := []ProjectCandidate{{ID: "lower", Priority: 4}, {ID: "higher", Priority: 1}}
-				if higherFirst {
-					projects[0], projects[1] = projects[1], projects[0]
-				}
-				results := make(map[string]<-chan DispatchResult)
-				for _, project := range projects {
-					result, cancel, decision := gate.(QueuedProjectDispatchGate).Submit(t.Context(), project, SlotRequest{State: "Todo"}, time.Now(), make(chan struct{}, 1))
-					t.Cleanup(cancel)
-					if decision.Reason != DispatchGateReasonGlobalCapacityFull {
-						t.Fatalf("refusal = %+v", decision)
-					}
-					results[project.ID] = result
+					var higher DispatchResult
 					select {
-					case got := <-result:
-						t.Fatalf("running work replaced: %+v", got)
+					case higher = <-results["higher"]:
+					default:
+						t.Fatal("higher request was not granted on release")
+					}
+					if higher.Err != nil || higher.Slot == (Slot{}) {
+						t.Fatalf("higher result = %+v", higher)
+					}
+					select {
+					case got := <-results["lower"]:
+						t.Fatalf("lower granted too soon: %+v", got)
 					default:
 					}
-				}
-				if err := gate.Release(running); err != nil {
-					t.Fatal(err)
-				}
-				var higher DispatchResult
-				select {
-				case higher = <-results["higher"]:
-				default:
-					t.Fatal("higher request was not granted on release")
-				}
-				if higher.Err != nil || higher.Slot == (Slot{}) {
-					t.Fatalf("higher result = %+v", higher)
-				}
-				select {
-				case got := <-results["lower"]:
-					t.Fatalf("lower granted too soon: %+v", got)
-				default:
-				}
-				if err := gate.Release(higher.Slot); err != nil {
-					t.Fatal(err)
-				}
-				select {
-				case lower := <-results["lower"]:
-					if lower.Err != nil || lower.Slot == (Slot{}) {
-						t.Fatalf("lower result = %+v", lower)
-					}
-					if err := gate.Release(lower.Slot); err != nil {
+					if err := gate.Release(higher.Slot); err != nil {
 						t.Fatal(err)
 					}
-				default:
-					t.Fatal("lower request was not granted on the next release")
-				}
-			})
+					select {
+					case lower := <-results["lower"]:
+						if lower.Err != nil || lower.Slot == (Slot{}) {
+							t.Fatalf("lower result = %+v", lower)
+						}
+						if err := gate.Release(lower.Slot); err != nil {
+							t.Fatal(err)
+						}
+					default:
+						t.Fatal("lower request was not granted on the next release")
+					}
+				})
+			}
 		}
 	}
 }
@@ -229,7 +249,7 @@ func TestQueuedDispatchPreservesProjectCeilings(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			gate := NewGlobalDispatchGate(NewStrictPriority(Config{Capacity: 3}))
-			high := ProjectCandidate{ID: "higher", Priority: 1}
+			high := ProjectCandidate{ID: "higher", Rank: 1}
 			first, ok, err := gate.TryAcquire(t.Context(), high, tt.request, time.Now())
 			if err != nil || !ok {
 				t.Fatalf("initial grant = %t %v", ok, err)
@@ -239,7 +259,7 @@ func TestQueuedDispatchPreservesProjectCeilings(t *testing.T) {
 			if decision.Reason != tt.want {
 				t.Fatalf("reason = %q, want %q", decision.Reason, tt.want)
 			}
-			lower, ok, err := gate.TryAcquire(t.Context(), ProjectCandidate{ID: "lower", Priority: 4}, SlotRequest{State: "Todo"}, time.Now())
+			lower, ok, err := gate.TryAcquire(t.Context(), ProjectCandidate{ID: "lower", Rank: 4}, SlotRequest{State: "Todo"}, time.Now())
 			if err != nil || !ok {
 				t.Fatalf("lower blocked by unstartable request = %t %v", ok, err)
 			}
@@ -521,7 +541,7 @@ func TestStandingDispatchRequestUpdates(t *testing.T) {
 			defer cancelFirst()
 			second, cancelSecond, _ := queue.Submit(t.Context(), project, SlotRequest{State: "Todo", Priority: 2}, now, nil)
 			defer cancelSecond()
-			queue.Update(first, SlotRequest{State: "Rework", Priority: 0, HostCandidates: []HostCandidate{{Host: "updated-host"}}}, now.Add(time.Minute))
+			queue.Update(first, SlotRequest{State: "Rework", Priority: 1, HostCandidates: []HostCandidate{{Host: "updated-host"}}}, now.Add(time.Minute))
 			if err := gate.Release(held); err != nil {
 				t.Fatal(err)
 			}

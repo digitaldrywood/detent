@@ -21,16 +21,14 @@ test("runner sheet saves through the fleet and persists routing after reload", a
   await expect(sheet).toBeVisible();
   await sheet.getByRole("radio", { name: "Draining Finishes what it has" }).check();
   await sheet.getByRole("spinbutton", { name: "Jobs at once", exact: true }).fill("1");
-  const home = sheet.getByRole("checkbox", { name: /^Home / }).first();
-  const homeName = await home.getAttribute("aria-label");
-  await home.check();
+  const allowed = sheet.getByRole("checkbox").first();
+  const projectName = await allowed.locator("..").innerText();
+  await allowed.uncheck();
   await sheet.getByRole("radio", { name: /^Full host access/ }).check();
   await sheet.getByLabel("Host services the sandbox may reach").fill("tcp:127.0.0.1:8080");
   await sheet.getByLabel("Availability", { exact: true }).selectOption("hours");
   await sheet.getByRole("combobox", { name: /^Time zone/ }).selectOption("America/Chicago");
   await sheet.getByLabel("Stop running work after hours end").fill("30m");
-  await sheet.getByLabel("Queued work spillover").selectOption("after");
-  await sheet.getByLabel("Queued work wait in minutes").fill("5");
   await sheet.getByRole("button", { name: "Save runner" }).click();
   await expect(sheet).toHaveCount(0);
   await expect(row).toContainText("draining · Limit 1");
@@ -38,22 +36,18 @@ test("runner sheet saves through the fleet and persists routing after reload", a
   await page.getByRole("button", { name: "Manage Settings runner" }).click();
   const saved = page.getByRole("dialog", { name: "Settings runner", exact: true });
   await expect(saved.getByRole("radio", { name: /^Full host access/ })).toBeChecked();
-  await expect(saved.getByLabel(homeName, { exact: true })).toBeChecked();
+  await expect(saved.getByRole("checkbox", { name: projectName.trim(), exact: true })).not.toBeChecked();
   await expect(saved.getByRole("spinbutton", { name: "Jobs at once", exact: true })).toHaveValue("1");
   await expect(saved.getByLabel("Host services the sandbox may reach")).toHaveValue("tcp:127.0.0.1:8080");
   await expect(saved.getByLabel("Day range 1")).toHaveValue("Mon-Fri");
   await expect(saved.getByLabel("From 1")).toHaveValue("09:00");
   await expect(saved.getByLabel("Until 1")).toHaveValue("17:00");
   await expect(saved.getByLabel("Stop running work after hours end")).toHaveValue("30m");
-  await expect(saved.getByLabel("Queued work wait in minutes")).toHaveValue("5");
-  await expect(saved.getByTestId("home-status")).toContainText("Preferring home work");
-  await saved.getByLabel("Queued work spillover").selectOption("never");
+  await saved.getByRole("checkbox", { name: projectName.trim(), exact: true }).check();
   await saved.getByRole("button", { name: "Save runner" }).click();
   await expect(saved).toHaveCount(0);
   await page.reload();
   await page.getByRole("button", { name: "Manage Settings runner" }).click();
-  await expect(page.getByLabel("Queued work spillover")).toHaveValue("never");
-  await expect(page.getByLabel("Queued work wait in minutes")).toHaveCount(0);
 
   await page.goto(hub.fixture.accounts.viewer);
   await page.goto(new URL("/settings/runners", hub.fixture.url).toString());
@@ -84,4 +78,22 @@ test("runner outside hours stays contextual on its row", async ({ page }) => {
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.reload();
   await expect(page.getByTestId("host-card").getByText("Outside hours", { exact: true })).toBeVisible();
+});
+
+test("organization project rank persists and viewers cannot edit it", async ({ page }) => {
+  await page.goto(hub.fixture.accounts.owner);
+  await page.goto(new URL("/settings/general", hub.fixture.url).toString());
+  const list = page.getByRole("list", { name: "Project rank", exact: true });
+  await expect(list).toBeVisible();
+  const before = await list.getByRole("listitem").allTextContents();
+  await list.getByRole("listitem").nth(1).getByRole("button", { name: / up$/ }).click();
+  const reordered = await list.getByRole("listitem").allTextContents();
+  expect(reordered[0]).not.toBe(before[0]);
+  await page.getByRole("button", { name: "Save project rank", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.reload();
+  await expect(list.getByRole("listitem").first()).toHaveText(reordered[0]);
+  await page.goto(hub.fixture.accounts.viewer);
+  await page.goto(new URL("/settings/general", hub.fixture.url).toString());
+  await expect(page.getByRole("button", { name: "Save project rank", exact: true })).toHaveCount(0);
 });

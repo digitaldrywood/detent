@@ -2267,8 +2267,8 @@ func TestAcquireCapacityReleaseClearsDerivedAdmissionReservation(t *testing.T) {
 			t.Parallel()
 
 			now := time.Date(2026, 7, 31, 13, 2, 34, 0, time.UTC)
-			higher := scheduler.ProjectCandidate{ID: "detent", Pool: tt.pool, Priority: 0}
-			lower := scheduler.ProjectCandidate{ID: "gopher-ai", Pool: tt.pool, Priority: 3}
+			higher := scheduler.ProjectCandidate{ID: "detent", Pool: tt.pool, Rank: 0}
+			lower := scheduler.ProjectCandidate{ID: "gopher-ai", Pool: tt.pool, Rank: 3}
 			pools := []scheduler.PoolConfig{{
 				Name:      scheduler.DefaultPoolName,
 				Scheduler: scheduler.Config{Kind: "strict", Capacity: 1},
@@ -2327,8 +2327,8 @@ func TestAcquireCapacityReleaseErrorPreservesDerivedAdmissionDemand(t *testing.T
 
 	releaseErr := errors.New("release slot")
 	now := time.Date(2026, 7, 31, 13, 2, 34, 0, time.UTC)
-	higher := scheduler.ProjectCandidate{ID: "detent", Priority: 0}
-	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Priority: 3}
+	higher := scheduler.ProjectCandidate{ID: "detent", Rank: 0}
+	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Rank: 3}
 	global := &releaseErrorGlobalScheduler{
 		GlobalScheduler: scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
 		err:             releaseErr,
@@ -2369,8 +2369,8 @@ func TestAcquireCapacityFailedAcquireClearsDerivedAdmissionReservation(t *testin
 	t.Parallel()
 
 	now := time.Date(2026, 7, 31, 13, 2, 34, 0, time.UTC)
-	higher := scheduler.ProjectCandidate{ID: "detent", Pool: "video", Priority: 0}
-	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Pool: "video", Priority: 3}
+	higher := scheduler.ProjectCandidate{ID: "detent", Pool: "video", Rank: 0}
+	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Pool: "video", Rank: 3}
 	gate, err := scheduler.NewPoolRegistry(
 		[]scheduler.PoolConfig{
 			{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "strict", Capacity: 1}},

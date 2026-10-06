@@ -43,6 +43,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 	f.Add(1, 0, 0, "old-output", "same-deliverable", int64(1), "old-receipt", "recut", int64(1), "new-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(0))
 	f.Add(2, 0, 0, "new-output", "new-deliverable", int64(1), "same-receipt", "recut", int64(2), "same-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(1))
 	f.Add(1, 0, 0, "tracked-output", "changed", int64(1), "same-head", "recut", int64(1), "same-head", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, true, uint8(1))
+	f.Add(0, 0, 0, "", "clean", int64(1), "enhancement", "", int64(2), "bug", "", int64(0), int64(0), false, int64(10), int64(0), int64(0), false, false, uint8(0))
 	for _, scenario := range []uint8{4, 5, 6, 7} {
 		f.Add(0, 0, 0, "", "clean", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, scenario)
 	}
@@ -260,6 +261,21 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 			t.Fatalf("ranking depends on input order: forward=%#v reverse=%#v", rankingIssueIDs(forward), rankingIssueIDs(reverse))
 		}
 
+		normalizePriority := func(priority int) int {
+			if priority < 1 || priority > 4 {
+				return 5
+			}
+			return priority
+		}
+		wantFirst := leftIssue.ID
+		if normalizePriority(rightPriority) < normalizePriority(leftPriority) ||
+			(normalizePriority(rightPriority) == normalizePriority(leftPriority) && stageUpdatedAt.Before(createdAt)) {
+			wantFirst = rightIssue.ID
+		}
+		if forward[0].ID != wantFirst {
+			t.Fatalf("priority then age selected %s, want %s", forward[0].ID, wantFirst)
+		}
+
 		assertPriorityOnlyCapacity(t, gateScenario%4, now)
 	})
 }
@@ -267,8 +283,8 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 func assertPriorityOnlyCapacity(t *testing.T, scenario uint8, now time.Time) {
 	t.Helper()
 
-	higher := scheduler.ProjectCandidate{ID: "detent", Weight: 1, Priority: 0}
-	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Weight: 1, Priority: 3}
+	higher := scheduler.ProjectCandidate{ID: "detent", Rank: 0}
+	lower := scheduler.ProjectCandidate{ID: "gopher-ai", Rank: 3}
 	gate := scheduler.NewGlobalDispatchGate(
 		scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
 		higher,
@@ -279,7 +295,7 @@ func assertPriorityOnlyCapacity(t *testing.T, scenario uint8, now time.Time) {
 	case 0:
 		gate.BeginProjectCycle(higher)
 		gate.EndProjectCycle(higher.ID)
-		candidate := scheduler.ProjectCandidate{ID: higher.ID + "/admission", Weight: 1, Priority: higher.Priority}
+		candidate := scheduler.ProjectCandidate{ID: higher.ID + "/admission", Rank: higher.Rank}
 		slot := requireSafetyGateGranted(t, gate, candidate, now)
 		if err := gate.Release(slot); err != nil {
 			t.Fatalf("release dynamic candidate: %v", err)
@@ -321,7 +337,7 @@ func assertPriorityOnlyCapacity(t *testing.T, scenario uint8, now time.Time) {
 		gate = scheduler.NewGlobalDispatchGate(global, higher, lower)
 		gate.BeginProjectCycle(higher)
 		gate.EndProjectCycle(higher.ID)
-		candidate := scheduler.ProjectCandidate{ID: higher.ID + "/admission", Weight: 1, Priority: higher.Priority}
+		candidate := scheduler.ProjectCandidate{ID: higher.ID + "/admission", Rank: higher.Rank}
 		slot := requireSafetyGateGranted(t, gate, candidate, now)
 		if err := gate.Release(slot); !errors.Is(err, releaseErr) {
 			t.Fatalf("release dynamic candidate: %v, want %v", err, releaseErr)

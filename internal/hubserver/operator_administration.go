@@ -23,6 +23,7 @@ func (s *Service) operatorAdministration() *operatoradmin.Executor {
 	names := []string{operatortool.OrganizationSession, operatortool.OrganizationList}
 	if s.config.Hosted != nil {
 		names = append(names, operatortool.CredentialList, operatortool.CredentialCreate, operatortool.CredentialRevoke)
+		names = append(names, operatortool.OrganizationProjectRank, operatortool.OrganizationProjectRankUpdate)
 		names = append(names, operatortool.MembershipList, operatortool.InvitationSend, operatortool.InvitationRevoke, operatortool.MemberRemove, operatortool.MemberRole, operatortool.MemberGrant)
 		if _, ok := s.config.Hosted.Provider.(auth.InvitationAdministration); ok {
 			names = append(names, operatortool.InvitationEdit)
@@ -295,6 +296,8 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 		return nil, err
 	}
 	switch name {
+	case operatortool.OrganizationProjectRank:
+		return readOrganizationProjectRank(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID))
 	case operatortool.OrganizationSession:
 		setup := hostedAccountSetup{}
 		if credential.Hosted != nil && credential.SessionHash != "" {
@@ -374,6 +377,16 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 	}
 	preview := operatoradmin.Preview{Summary: name, Current: in}
 	switch name {
+	case operatortool.OrganizationProjectRankUpdate:
+		current, err := readOrganizationProjectRank(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+		if err != nil {
+			return preview, err
+		}
+		preview.ResourceID = s.config.Hosted.OrganizationID
+		preview.Current = struct {
+			Rank  organizationProjectRank `json:"rank"`
+			Input operatoradmin.Input     `json:"input"`
+		}{current, in}
 	case operatortool.InvitationEdit, operatortool.InvitationResend:
 		view, err := s.pendingHostedInvitationFor(ctx, s.database.db, credential, in.InvitationID)
 		if err != nil {
@@ -493,6 +506,12 @@ func (a hubAdministration) Execute(ctx context.Context, name string, in operator
 	output := operatoradmin.Output{ResourceID: m.ResourceID}
 	var data any
 	switch name {
+	case operatortool.OrganizationProjectRankUpdate:
+		ids := make([]tracker.ProjectID, len(in.ProjectIDs))
+		for i, id := range in.ProjectIDs {
+			ids[i] = tracker.ProjectID(id)
+		}
+		data, err = s.updateOrganizationProjectRankCommand(ctx, credential, projectRankChange{ExpectedRevision: in.ExpectedRevision, ProjectIDs: ids})
 	case operatortool.MemberRemove:
 		err = s.removeHostedMemberFor(ctx, credential, in.MemberID)
 	case operatortool.MemberRole:

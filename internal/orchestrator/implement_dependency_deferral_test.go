@@ -202,7 +202,7 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 			unrelated := dispatchTestIssue("unrelated", "Todo")
 			unrelated.Identifier = "digitaldrywood/detent#1"
 			tracker := memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{issue, blocker, unrelated}})
-			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent", Weight: 1}, MaxConcurrentAgents: 1, PrioritizeUnblockers: true, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Merging", "Rework", "In Progress", "Todo"}})
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, MaxConcurrentAgents: 1, PrioritizeUnblockers: true, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, DispatchPriorityByState: []string{"Merging", "Rework", "In Progress", "Todo"}})
 			path := filepath.Join(t.TempDir(), "detent.db")
 			backend, err := store.Open(ctx, store.Config{Path: path})
 			if err != nil {
@@ -218,7 +218,7 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+			globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			slot, acquired, err := globalGate.TryAcquire(ctx, cfg.Project, scheduler.SlotRequest{State: issue.State}, now)
 			if err != nil || !acquired {
 				t.Fatalf("initial slot: %v, %v", acquired, err)

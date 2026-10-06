@@ -8,29 +8,31 @@ import (
 )
 
 const (
-	OrganizationSession = "organization_session"
-	SessionLogout       = "session_logout"
-	OrganizationList    = "organization_list"
-	OrganizationSwitch  = "organization_switch"
-	OrganizationCreate  = "organization_create"
-	OrganizationDelete  = "organization_delete"
-	ProvisioningPage    = "provisioning_page"
-	ResumeProvisioning  = "resume_provisioning"
-	InvitationAccept    = "invitation_accept"
-	MembershipList      = "membership_list"
-	InvitationSend      = "invitation_send"
-	InvitationEdit      = "invitation_edit"
-	InvitationResend    = "invitation_resend"
-	InvitationRevoke    = "invitation_revoke"
-	MemberRemove        = "member_remove"
-	MemberRole          = "member_role"
-	MemberGrant         = "member_grant"
-	CredentialList      = "credential_list"
-	CredentialCreate    = "credential_create"
-	CredentialRotate    = "credential_rotate"
-	CredentialRevoke    = "credential_revoke"
-	CredentialGrant     = "credential_grant"
-	SupportStart        = "support_start"
+	OrganizationSession           = "organization_session"
+	SessionLogout                 = "session_logout"
+	OrganizationList              = "organization_list"
+	OrganizationSwitch            = "organization_switch"
+	OrganizationCreate            = "organization_create"
+	OrganizationDelete            = "organization_delete"
+	ProvisioningPage              = "provisioning_page"
+	ResumeProvisioning            = "resume_provisioning"
+	InvitationAccept              = "invitation_accept"
+	OrganizationProjectRank       = "organization_project_rank"
+	OrganizationProjectRankUpdate = "organization_project_rank_update"
+	MembershipList                = "membership_list"
+	InvitationSend                = "invitation_send"
+	InvitationEdit                = "invitation_edit"
+	InvitationResend              = "invitation_resend"
+	InvitationRevoke              = "invitation_revoke"
+	MemberRemove                  = "member_remove"
+	MemberRole                    = "member_role"
+	MemberGrant                   = "member_grant"
+	CredentialList                = "credential_list"
+	CredentialCreate              = "credential_create"
+	CredentialRotate              = "credential_rotate"
+	CredentialRevoke              = "credential_revoke"
+	CredentialGrant               = "credential_grant"
+	SupportStart                  = "support_start"
 )
 
 // AdministrationCatalog describes application commands, never arbitrary paths
@@ -45,6 +47,8 @@ func AdministrationCatalog() []Definition {
 		adminDefinition(SessionLogout, "End the current account session and provider sessions with current authority. Later calls and retries are denied; sign in and reconnect for new access.", "", "", false, true),
 		adminDefinition(OrganizationSession, "Read fresh organization/session authority without credentials.", "", "", true, false),
 		adminDefinition(OrganizationList, "List owned or joined organization contexts with fresh destinations.", `"offset":{"type":"integer","minimum":0,"maximum":100000},"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false),
+		adminDefinition(OrganizationProjectRank, "Read the organization project scheduling order and its current revision.", "", "", true, false),
+		adminDefinition(OrganizationProjectRankUpdate, "Replace the organization project scheduling order with every project exactly once, using the current revision.", `"expected_revision":{"type":"integer","minimum":1},"project_ids":`+projects, `"expected_revision","project_ids"`, false, false),
 		adminDefinition(MembershipList, "Read memberships, invitations and project grants visible to the current principal.", `"offset":{"type":"integer","minimum":0,"maximum":100000},"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false),
 		adminDefinition(CredentialList, "Read credential metadata and grants; never returns credential hashes or tokens.", `"offset":{"type":"integer","minimum":0,"maximum":100000},"limit":{"type":"integer","minimum":1,"maximum":200}`, "", true, false),
 		adminDefinition(OrganizationSwitch, "Select an owned organization and return its fresh authenticated connection destination. Reconnect there; existing grants are never transferred.", `"organization_id":`+id, `"organization_id"`, false, false),
