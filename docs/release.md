@@ -110,19 +110,19 @@ owner are serialized.
 
 The Makefile pins sqlc in `SQLC_VERSION`; `make generate`, `make sqlc`, and
 `make setup` use that version. Commit regenerated SQL output with query changes.
-`make check-generated` checks SQL output with `sqlc diff` and checks the generated
-configuration reference without rewriting either. The scheduled full suite
-runs it on the pinned `develop` commit. Local checks remain optional diagnostics
+`make check-generated` checks committed SQL output with `sqlc diff` and
+generates ignored configuration references. The scheduled full suite runs it on
+the pinned `develop` commit. Local checks remain optional diagnostics
 under [AGENTS.md validation](../AGENTS.md#validation), without a mandatory
 PR-worktree gate or local status publication.
-GoReleaser builds committed Go sources and regenerates the conversation client
-through `make app` from that exact tag's npm lockfile using Node 24. Conversation
-output is ignored in feature commits. Staging and private operator builds use
+GoReleaser builds committed Go sources and generates documentation, dashboard
+CSS and the conversation client through `make assets generate-docs` from that
+exact tag's npm lockfiles using Node 24. Conversation output is ignored in feature commits. Staging and private operator builds use
 the same entry point before Go compilation.
 
 GoReleaser publishes `detent_<version>_source.tar.gz`, containing the exact
-tagged source, every generated conversation asset and `BUILD_LDFLAGS` with the
-version, full commit and build date. It is included in the existing signed
+tagged source, generated documentation, dashboard CSS, every conversation asset
+and `BUILD_LDFLAGS` with the version, full commit and build date. It is included in the existing signed
 checksums alongside the binary archives. Go-only consumers build this prepared
 archive; automatic GitHub source archives and Go module downloads do not
 contain ignored output. The tag and signed provenance still refer to the
@@ -134,5 +134,5 @@ The shell and PowerShell installers use this checksum-verified source archive
 when the platform binary asset is unavailable. Local checkout installation
 regenerates assets before compiling; prepared source installation uses its
 packaged assets and build identity. Private operator source compositions use
-`make build`, or `make app` before a custom Go build. No public prebuilt bundle
+`make build`, or `make assets` before a custom Go build. No public prebuilt bundle
 is substituted for private source.

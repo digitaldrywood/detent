@@ -65,10 +65,11 @@ func Generate(root string, check bool) error {
 
 func generateArtifacts(root string, check bool, fields []fieldDetails, nodes []*schemaNode) error {
 	docsPath := filepath.Join(root, "docs", "config.md")
+	templatePath := filepath.Join(root, "docs", "config.md.in")
 	referencePath := filepath.Join(root, "config.reference.yaml")
-	currentDocs, err := os.ReadFile(docsPath)
+	currentDocs, err := os.ReadFile(templatePath)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", docsPath, err)
+		return fmt.Errorf("read %s: %w", templatePath, err)
 	}
 	normalizedDocs := normalizeLineEndings(currentDocs)
 	renderedDocs, err := renderDocs(normalizedDocs, renderMarkdown(fields))
@@ -79,7 +80,11 @@ func generateArtifacts(root string, check bool, fields []fieldDetails, nodes []*
 
 	if check {
 		var stale []string
-		if !bytes.Equal(normalizedDocs, renderedDocs) {
+		publishedDocs, readErr := os.ReadFile(docsPath)
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return fmt.Errorf("read %s: %w", docsPath, readErr)
+		}
+		if !bytes.Equal(normalizeLineEndings(publishedDocs), renderedDocs) {
 			stale = append(stale, filepath.ToSlash(filepath.Join("docs", "config.md")))
 		}
 		currentReference, readErr := os.ReadFile(referencePath)
@@ -90,7 +95,7 @@ func generateArtifacts(root string, check bool, fields []fieldDetails, nodes []*
 			stale = append(stale, filepath.Base(referencePath))
 		}
 		if len(stale) > 0 {
-			return fmt.Errorf("generated config documentation is stale: %s; run go generate ./... to refresh it", strings.Join(stale, ", "))
+			return fmt.Errorf("generated config documentation is stale: %s; run make generate-docs to refresh it", strings.Join(stale, ", "))
 		}
 		return nil
 	}

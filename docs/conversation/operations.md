@@ -4,7 +4,7 @@
 
 This runbook was written against PR #2635, which was never merged; parts of it have been ported to `main` since. What `main` ships today:
 
-- The React client in `web/conversation` (Vite; `npm run dev`, `dev:mock`, `build`, `typecheck` and `test`) builds into the committed `static/app/conversation/`. `make app`, `make app-dev`, `make app-test` and `make check-app` drive it, and `make check` runs `check-app`.
+- The React client in `web/conversation` (Vite; `npm run dev`, `dev:mock`, `build`, `typecheck` and `test`) builds into ignored `static/app/conversation/`. `make app`, `make app-dev`, `make app-test` and `make check-app` drive it, and `make check` runs `check-app`.
 - A hosted hub (`detent hub serve --hosted-config`) serves the client shell from `internal/hubserver` for every client route the Templ hosted pages do not already own. Behind the shared entry (`detent cloud serve --entry-config`, `internal/cloudentry`) the tenant hub serves under the base path `/organizations/<organization>`, and the entry handles sign-in, the organization chooser and routing to the tenant.
 - The conversation API and worker endpoints (bind, unbind, controls, turn events), turn preferences, references, Settled and its sweep, attachments, provider thread origin, restart normalization and explicit dispatch requests. The `conversation:` section accepts `enabled`, `model`, `question_timeout`, `settle_window` and `control_queue_size`.
 - Stored attempt diffs, the read-only pull request panel (`GET …/work-items/:item/pull-requests`) and the optional `?include=change` surface on a single work item.
@@ -1119,12 +1119,14 @@ make setup      # Go tooling, root npm deps, and npm ci in web/conversation
 make generate   # go generate, templ, sqlc, Tailwind, and the client build
 ```
 
-`make generate` runs `make app`, which runs `npm ci` when `node_modules` is
-missing and then the Vite build, emitting `static/app/conversation/`: the shell
+`make generate` runs `make assets`, including `make app`, which installs the
+locked dependencies with `npm ci` and then runs the Vite build, emitting `static/app/conversation/`: the shell
 `index.html`, the entry `app.js`, `app.css`, code-split `chunks/` and `assets/`,
 and `THIRD_PARTY_LICENSES.txt`.
-That output is committed, following the precedent of `static/css/output.css`,
-so `go build` never needs Node. Run `make app` on its own when only the client
+The client output and `static/css/output.css` are ignored build artifacts.
+Use `make build` to prepare both before compiling a runnable UI, or `make assets`
+before a custom Go build. A plain checkout compiles with Go alone but needs
+prepared assets to serve the UI. Run `make app` on its own when only the client
 changed.
 
 Then start a standalone hosted hub whose configuration file carries the section from
@@ -1343,7 +1345,7 @@ restore that snapshot with the older binary. Verify a snapshot with
 
 | Symptom | Cause | Action |
 |---|---|---|
-| `GET /chat` (or `/organizations/<organization>/chat`) returns 503 `client_unavailable` | `app/conversation/index.html` is missing from the embedded static tree, so the binary was built without the client. | Run `make app` (or `make generate`) and rebuild. The built output is committed, so this normally only follows deleting `static/app/conversation/` or building from a tree where it was never generated. |
+| `GET /chat` (or `/organizations/<organization>/chat`) returns 503 `client_unavailable` | `app/conversation/index.html` is missing from the embedded static tree, so the binary was built without the client. | Run `make build`, or `make assets` before a custom Go build. The client output is ignored, so a plain checkout needs asset preparation before compiling a runnable UI. |
 | An unlinked chat's message stays `saved` and nothing answers it | Main has no coordinator of either kind. | Expected on main. Link the chat to an issue; the saved messages become the first attempt's controls. |
 | Chat message receipt is `queued` and the execution stays `waiting_for_runner` | Not yet on main (coordinator row). No hub-side coordinator is configured, so the message opened a coordinator work item and no enrolled runner with a fresh live-control (`codex`) provider report has claimed it yet. | Check `capabilities.coordinator` in the bootstrap payload and the runners' provider reports (`GET .../runners`). A runner whose codex observation is older than `providercapacity.MaxAge`, whose heartbeat is stale, or that holds no grant on the project will never receive the item. |
 | A coordinator item is never claimed | Not yet on main. The claim loop skips coordinator items for every credential that is not an enrolled runner with a fresh live-control report; legacy machine registrations never receive them. | Enrol the runner, confirm its heartbeat and provider report are fresh, and confirm its grant covers the project. List the items with `include=coordinator`. |

@@ -10,3 +10,6 @@ detent-release.key
 *.key
 
 /static/app/conversation/
+/static/css/output.css
+/docs/config.md
+/config.reference.yaml

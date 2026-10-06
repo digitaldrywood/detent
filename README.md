@@ -461,8 +461,9 @@ The prepared archive includes JavaScript, CSS, lazy chunks and attribution from
 the tagged source; compilation needs only Go, without Node or Make. Keep
 `BUILD_LDFLAGS` to retain the release version and full source commit.
 
-Raw Git checkouts and GitHub's automatic source archives need Node 24 and
-`make app` before Go compilation. `go install github.com/digitaldrywood/detent/cmd/detent@latest`
+Raw Git checkouts and GitHub's automatic source archives compile with Go alone;
+prepare the UI with Node 24 and `make assets` before running it.
+`go install github.com/digitaldrywood/detent/cmd/detent@latest`
 is no longer supported: Go module archives contain tracked source only.
 Published tags continue to identify the exact validated source commit, with no
 generated commit substituted underneath them. Developers and private operators
