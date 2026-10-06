@@ -1165,7 +1165,6 @@ func (r *Runner) runAgentTurn(
 		runRequest.deliverableRecoveryBranch,
 		runRequest.sessionTurnOffset,
 	)
-	usage := newSessionTokenUsage(!agentResumeEmpty(turnRequest.Resume))
 	if !result.RuntimeIdentity.IsZero() {
 		eventAt := r.now()
 		progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: result.RuntimeIdentity}, eventAt)
@@ -1178,6 +1177,7 @@ func (r *Runner) runAgentTurn(
 	conversation := conversationRunFromContext(ctx)
 	turnRequest = conversation.prepareTurn(turnRequest)
 	providerResume := turnRequest.Resume
+	usage := newSessionTokenUsage(!agentResumeEmpty(providerResume))
 	profileWorkflow, _, _, _ := r.runtimeSnapshot()
 	profileStage := "implementation"
 	if runRole(runRequest.Mode, runRequest.Issue) == RoleRework {
