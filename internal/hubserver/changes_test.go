@@ -190,6 +190,9 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	t.Parallel()
 	f := newChangeFixture(t, nil)
 	other := newNativeFixture(t, f.service, "", "other")
+	snapshot := linkedSnapshot()
+	snapshot.URL = "https://github.com/digitaldrywood/detent/issues/12"
+	f.service.config.ImportBackend = linkedTestImporter{snapshot: snapshot}
 	repositoryID, _ := seedProjection(t, f.service.database.db)
 	for _, statement := range []struct {
 		query string
