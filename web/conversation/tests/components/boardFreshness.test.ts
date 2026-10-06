@@ -39,6 +39,12 @@ function chip(overrides: Partial<Parameters<typeof boardConnectionChip>[0]> = {}
 }
 
 describe("the board's connection chip", () => {
+  it.each(["Updating", "Cached"])("labels retained data as %s even with connected streams", (label) => {
+    const result = chip({ refreshing: label === "Updating", cached: true });
+    expect(result.label).toBe(label);
+    expect(result.detail).toBe(`data as of ${STAMP}`);
+    expect(result.tone).not.toBe("dc-ok");
+  });
   it("reads Live, with nothing to press, while the app and the stream are both up", () => {
     const result = chip();
     expect(result.label).toBe("Live");

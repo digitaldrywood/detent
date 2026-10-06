@@ -30,6 +30,7 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet
 import { ClientContext } from "../../src/app/client.ts";
 import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
 import { DEFAULT_VIEW_STATE, parseViewState, serializeViewState } from "../../src/app/work/lib/viewState.ts";
+import { clearBoardCache } from "../../src/app/work/lib/boardStore.ts";
 import { useBoard, useNow } from "../../src/app/work/lib/useWork.ts";
 import { resetRunnerNamesForTests } from "../../src/app/work/lib/runnerNames.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
@@ -60,7 +61,7 @@ vi.mock("../../src/app/work/components/WorkList.tsx", async (original) => {
   } };
 });
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); clearBoardCache(); });
 
 const NOW = Date.parse("2026-09-09T12:00:00Z");
 const PROJECT = projectFixture as unknown as NativeProject;
@@ -829,6 +830,92 @@ describe("the Work clock render boundary", () => {
   });
 });
 
+describe("the cached Work read", () => {
+  it("shows a cold spinner, then core cards while optional details remain pending", async () => {
+    let releaseBase!: () => void;
+    let releaseDetails!: () => void;
+    const base = new Promise<void>((resolve) => { releaseBase = resolve; });
+    const details = new Promise<void>((resolve) => { releaseDetails = resolve; });
+    await pagedWork("/work", (fetch) => async (input, init) => {
+      if (String(input).includes("/work-items?") || /\/projects\/[^/]+$/.test(String(input))) await base;
+      if (/\/(attempts|changes)(\?|$)/.test(String(input))) await details;
+      return fetch(input, init);
+    });
+    const spinner = await screen.findByText("Loading work…");
+    expect(spinner.getAttribute("role")).toBe("status");
+    expect(spinner.parentElement?.getAttribute("aria-busy")).toBe("true");
+    expect(screen.queryByTestId("work-stats")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Lanes/ })).toBeNull();
+    expect(screen.queryByText(/Every lane is hidden|Nothing matches|Create your first/)).toBeNull();
+    await act(async () => { releaseBase(); });
+    await settledWork();
+    expect(screen.getByText("Observed later-page worker")).not.toBeNull();
+    expect(screen.queryByText("Loading work…")).toBeNull();
+    await act(async () => { releaseDetails(); });
+  });
+
+  it("shares concurrent base reads and shows memory cards on the first return render", async () => {
+    const fixture = workPaginationFixture();
+    await fixture.control();
+    let hold = false;
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fixture.fetch>) => {
+      if (hold) await pending;
+      return fixture.fetch(...args);
+    });
+    const snapshots: ReturnType<typeof useBoard>[] = [];
+    function Probe() {
+      const board = useBoard(null, DEFAULT_VIEW_STATE);
+      snapshots.push(board);
+      return <div>{board.items.length}</div>;
+    }
+    const mounted = render(<ClientContext.Provider value={fixture.client}><Probe /><Probe /></ClientContext.Provider>);
+    await waitFor(() => expect(snapshots.at(-1)!.resolved).toBe(true));
+    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))).toHaveLength(1);
+    expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha"))).toHaveLength(1);
+    mounted.unmount();
+    hold = true;
+    const before = snapshots.length;
+    render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
+    expect(snapshots[before]!.items.length).toBeGreaterThan(0);
+    expect(snapshots[before]!.loading).toBe(false);
+    expect(snapshots[before]!.live).toBe(false);
+    expect(snapshots.at(-1)!.items.length).toBeGreaterThan(0);
+    await act(async () => { release(); });
+  });
+
+  it("keeps the successful read timestamp when stream activity starts a held refresh", async () => {
+    const sources: EventTarget[] = [];
+    vi.stubGlobal("EventSource", class extends EventTarget {
+      readyState = 1;
+      constructor() { super(); sources.push(this); }
+      close() {}
+    });
+    const fixture = workPaginationFixture();
+    await fixture.control();
+    let hold = false;
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fixture.fetch>) => {
+      if (hold) await pending;
+      return fixture.fetch(...args);
+    });
+    let current!: ReturnType<typeof useBoard>;
+    function Probe() { current = useBoard(null, DEFAULT_VIEW_STATE); return <div />; }
+    render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
+    await waitFor(() => expect(current.resolved).toBe(true));
+    const stamp = current.asOf;
+    hold = true;
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "40" })));
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "41" })));
+    await waitFor(() => expect(current.refreshing).toBe(true));
+    expect(current.asOf).toBe(stamp);
+    expect(current.loading).toBe(false);
+    await act(async () => { release(); });
+  });
+});
+
 describe("the live Work continuation intent", () => {
   it("cancels a continuation when the actual filter selection changes", async () => {
     const fixture = workPaginationFixture();
@@ -1067,7 +1154,7 @@ describe("the filter-first Work surface", () => {
     await fixture.control({ revoked: true });
     blocked = true;
     const before = observed.length;
-    const nextClient = { ...fixture.client, http: { ...fixture.client.http, csrfToken: "other-client" } };
+    const nextClient = { ...fixture.client, bootstrap: { ...fixture.client.bootstrap, actor: { ...fixture.client.bootstrap.actor, principal_id: "other-account" } } };
     mounted.rerender(<ClientContext.Provider value={nextClient}><BoardProbe /></ClientContext.Provider>);
     expect(observed.slice(before).every((value) => value.items === 0 && value.labels === 0)).toBe(true);
     blocked = false;
@@ -1131,7 +1218,7 @@ describe("the filter-first Work surface", () => {
     expect(await screen.findByTestId("work-error")).not.toBeNull();
     expect(screen.queryByTestId("issue-card")).toBeNull();
     expect(screen.queryByTestId("work-list-row")).toBeNull();
-    expect(screen.getByTestId("stat-running").textContent).toBe("0 running");
+    expect(screen.queryByTestId("stat-running")).toBeNull();
   });
 
   it("finishes a slow first read and retains usable work during continuous activity", async () => {

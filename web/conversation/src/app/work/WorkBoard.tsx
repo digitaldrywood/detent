@@ -13,7 +13,7 @@
 // into a silent overwrite.
 import React from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { PlusIcon } from "lucide-react";
+import { LoaderCircleIcon, PlusIcon } from "lucide-react";
 
 import { Button } from "../../components/ui/button.tsx";
 import { useAccountBootstrap } from "../account/context.ts";
@@ -181,36 +181,10 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   // workflow, which in the all-projects scope is not one workflow — so a card
   // whose project was not the one loaded for lanes gets the lanes it can reach
   // through its own state's transitions or, failing that, none.
-  const [transitions, setTransitions] = React.useState<
-    ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>
-  >(new Map());
-  React.useEffect(() => {
-    let cancelled = false;
-    const ids = [...new Set(board.items.map((item) => item.projectId))];
-    void Promise.all(
-      ids.map(async (id) => {
-        const project = await http.getProject(id).catch(() => null);
-        return project === null ? null : ([id, project] as const);
-      }),
-    ).then((loaded) => {
-      if (cancelled) return;
-      const moves = new Map<string, ReadonlyMap<string, readonly string[]>>();
-      for (const entry of loaded) {
-        if (entry === null) continue;
-        const [id, project] = entry;
-        moves.set(
-          id,
-          new Map(
-            project.states.map((state) => [state.name, transitionsFrom(project, state.name)]),
-          ),
-        );
-      }
-      setTransitions(moves);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [http, board.items]);
+  const transitions = React.useMemo(() => new Map(board.workflows.map((project) => [
+    project.project_id,
+    new Map(project.states.map((state) => [state.name, transitionsFrom(project, state.name)])),
+  ])), [board.workflows]);
 
   const movesFor = React.useCallback(
     (item: WorkItemView): readonly string[] =>
@@ -295,6 +269,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     app: shell.connection,
     streaming: board.live,
     loading: board.loading,
+    refreshing: board.refreshing,
+    cached: board.cached,
     asOf: board.asOf,
     onReload: board.reload,
   });
@@ -314,7 +290,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const canCreateHere = newIssue.canCreate && creatable.length > 0;
   const firstRun =
     noProjects ||
-    (!board.loading && board.error === null && board.items.length === 0 && !narrowed(view) &&
+    (board.resolved && board.error === null && board.items.length === 0 && !narrowed(view) &&
       !board.hasMore);
   const firstRunPanel = firstRun ? (
     <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} />
@@ -324,7 +300,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     <WorkTopBar
       context="Work"
       title={scopeName}
-      meta={boardScopeMeta(projectId, client.bootstrap.projects.length, items.length)}
+      meta={board.resolved ? boardScopeMeta(projectId, client.bootstrap.projects.length, items.length) : undefined}
       connection={chip}
       showConnectionDetailOnMobile={chip.label === "Live"}
       actions={
@@ -358,7 +334,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     <>
       {topBar}
 
-      <WorkToolbar
+      {board.workflows.length > 0 ? <WorkToolbar
         view={view}
         onChange={setView}
         lanes={board.lanes}
@@ -369,16 +345,16 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
           priority: board.priorities,
         }}
         searchRef={searchRef}
-      />
+      /> : null}
 
-      <StatsRow
+      {board.resolved ? <StatsRow
         stats={stats}
         totals={board.totals}
         hasMore={board.hasMore}
         loadedCount={board.items.length}
         loading={board.loading}
         onLoadMore={board.loadMore}
-      />
+      /> : null}
 
       {board.error === null ? null : (
         <div className="mx-5 mb-3 rounded-lg border border-error/32 bg-error-surface px-3 py-2 text-error-foreground text-sm">
@@ -389,8 +365,13 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto">
-        {firstRunPanel ?? (view.view === "list" ? (
+      <div className="min-h-0 flex-1 overflow-auto" aria-busy={!board.resolved && board.loading}>
+        {!board.resolved ? (board.loading ? (
+          <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground text-sm" role="status">
+            <LoaderCircleIcon aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" />
+            Loading work…
+          </div>
+        ) : null) : firstRunPanel ?? (view.view === "list" ? (
           <WorkList
             items={items}
             showProject={projectId === null}
