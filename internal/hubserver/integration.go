@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -240,6 +241,9 @@ func repositoryOwnership(ctx context.Context, query nativeQueryer, id int64) (st
 	var profile string
 	var enabled bool
 	err := query.QueryRowContext(ctx, "SELECT profile, github_repository_enabled FROM projects WHERE repository_id = ?", id).Scan(&profile, &enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
 	return profile, enabled, err
 }
 

@@ -180,7 +180,7 @@ func applyWebhook(ctx context.Context, tx *sql.Tx, delivery storedWebhook, now t
 		if err != nil {
 			return webhookProcessResult{}, err
 		}
-		if (delivery.EventType == "issues" && profile == "native") || (delivery.EventType != "issues" && !enabled) {
+		if profile == "" || (delivery.EventType == "issues" && profile == "native") || (delivery.EventType != "issues" && !enabled) {
 			return webhookProcessResult{Outcome: webhookOutcomeIgnored, RepositoryID: &id}, nil
 		}
 	}
@@ -454,7 +454,7 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 	if err != nil {
 		return projectionApplyResult{}, err
 	}
-	if profile == "native" {
+	if profile != "github_compatible" {
 		return projectionApplyResult{Stale: true}, nil
 	}
 	var issueID int64

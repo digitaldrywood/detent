@@ -22,7 +22,7 @@ const testWebhookSecret = "webhook-secret"
 func TestGitHubWebhookRejectsUnverifiableSignaturesWithoutReceipt(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 	payload := completeIssueWebhookPayload(t, "Issue", "2026-09-02T12:00:00Z")
 	tests := []struct {
 		name      string
@@ -53,7 +53,7 @@ func TestGitHubWebhookRejectsUnverifiableSignaturesWithoutReceipt(t *testing.T) 
 func TestGitHubWebhookDeduplicatesDeliveriesAndRejectsConflicts(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 	payload := completeIssueWebhookPayload(t, "Original title", "2026-09-02T12:00:00Z")
 	for attempt := range 2 {
 		response := sendSignedWebhookRequest(t, service, "duplicate-delivery", "issues", payload)
@@ -151,10 +151,84 @@ func TestHostedGitHubWebhookDeduplicatesVerifiedDeliveries(t *testing.T) {
 	}
 }
 
+func TestHostedGitHubWebhooksDoNotCreateProjects(t *testing.T) {
+	t.Parallel()
+	for _, binding := range []string{"unbound", "checkout", "repository"} {
+		for _, event := range []string{"push", "installation", "installation_repositories", "issues", "pull_request"} {
+			t.Run(binding+"/"+event, func(t *testing.T) {
+				t.Parallel()
+				f := newHostedSharedFixture(t)
+				if binding != "unbound" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'digitaldrywood/detent', github_repository_enabled = 1 WHERE id = ?", f.project); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if binding == "repository" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO repositories(github_node_id,github_owner,github_name,created_at,updated_at) VALUES ('R_repo','digitaldrywood','detent',?,?)", testTimestamp, testTimestamp); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id = (SELECT id FROM repositories WHERE github_node_id = 'R_repo') WHERE id = ?", f.project); err != nil {
+						t.Fatal(err)
+					}
+				}
+				payload := completeIssueWebhookPayload(t, "No project creation", "2026-09-02T12:00:00Z")
+				if event == "pull_request" {
+					payload = completePullRequestWebhookPayload(t, "No project creation", "2026-09-02T12:00:00Z")
+				}
+				if event == "push" || event == "installation" || event == "installation_repositories" {
+					var body map[string]any
+					if err := json.Unmarshal([]byte(payload), &body); err != nil {
+						t.Fatal(err)
+					}
+					delete(body, "issue")
+					switch event {
+					case "push":
+						delete(body, "action")
+						body["ref"] = "refs/heads/main"
+						body["after"] = "abc123"
+					case "installation", "installation_repositories":
+						body["installation"] = map[string]any{"id": 123, "account": map[string]any{"login": "digitaldrywood"}}
+						key := "repositories"
+						body["action"] = "created"
+						if event == "installation_repositories" {
+							key = "repositories_added"
+							body["action"] = "added"
+						}
+						body[key] = []any{body["repository"]}
+						delete(body, "repository")
+					}
+					encoded, err := json.Marshal(body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					payload = string(encoded)
+				}
+				response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost,
+					target: "/internal/v1/github/webhook?delivery_id=no-project&event_type=" + event, body: payload})
+				requireNativeStatus(t, response, http.StatusAccepted)
+				var projects int
+				var status string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects").Scan(&projects); err != nil {
+					t.Fatal(err)
+				}
+				if projects != 1 {
+					t.Fatalf("projects = %d, want only the existing native project", projects)
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT status FROM github_webhook_inbox WHERE delivery_id = 'no-project'").Scan(&status); err != nil {
+					t.Fatal(err)
+				}
+				if status != "processed" && status != "ignored" {
+					t.Fatalf("webhook status = %q, want processed or ignored", status)
+				}
+			})
+		}
+	}
+}
+
 func TestGitHubWebhookAcknowledgesDurableReceiptWhenProcessingFails(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, false)
 	for _, repository := range []struct {
 		nodeID string
 		owner  string
@@ -170,6 +244,11 @@ func TestGitHubWebhookAcknowledgesDurableReceiptWhenProcessingFails(t *testing.T
 			t.Fatalf("insert repository %s: %v", repository.nodeID, err)
 		}
 	}
+	var repositoryID int64
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM repositories WHERE github_name='detent'").Scan(&repositoryID); err != nil {
+		t.Fatal(err)
+	}
+	seedCompatibilityProject(t, service.database.db, repositoryID)
 	payload := strings.Replace(
 		completeIssueWebhookPayload(t, "Issue", "2026-09-02T12:00:00Z"),
 		`"node_id":"R_repo"`,
@@ -240,7 +319,7 @@ func TestGitHubWebhookSourceOrderingConverges(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), func() time.Time {
 				return time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
-			})
+			}, true)
 			for deliveryIndex, payload := range test.payloads {
 				response := sendSignedWebhookRequest(t, service, fmt.Sprintf("ordering-%d-%d", index, deliveryIndex), "issues", payload)
 				if response.Code != http.StatusAccepted {
@@ -270,7 +349,7 @@ func TestGitHubWebhookEqualTimestampConflictConvergesAndHydrates(t *testing.T) {
 	for index, payloads := range orders {
 		service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), func() time.Time {
 			return time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
-		})
+		}, true)
 		for deliveryIndex, payload := range payloads {
 			response := sendSignedWebhookRequest(t, service, fmt.Sprintf("tie-%d-%d", index, deliveryIndex), "issues", payload)
 			if response.Code != http.StatusAccepted {
@@ -302,7 +381,7 @@ func TestGitHubWebhookEqualTimestampConflictConvergesAndHydrates(t *testing.T) {
 func TestGitHubWebhookPartialPayloadRequestsOnlyTargetedHydration(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, false)
 	payload := `{"action":"edited","repository":{"full_name":"digitaldrywood/detent"},"issue":{"number":2069}}`
 	response := sendSignedWebhookRequest(t, service, "partial-issue", "issues", payload)
 	if response.Code != http.StatusAccepted {
@@ -342,7 +421,7 @@ func TestGitHubWebhookCoalescesNewestHydrationSource(t *testing.T) {
 	wantVersion := "1:" + hex.EncodeToString(newerDigest[:])
 	orders := [][]string{{older, newer}, {newer, older}}
 	for orderIndex, payloads := range orders {
-		service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+		service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 		for deliveryIndex, payload := range payloads {
 			response := sendSignedWebhookRequest(t, service, fmt.Sprintf("partial-order-%d-%d", orderIndex, deliveryIndex), "issues", payload)
 			if response.Code != http.StatusAccepted {
@@ -391,7 +470,7 @@ func TestGitHubWebhookTargetsChecksWithoutRepositoryRefresh(t *testing.T) {
 	}
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 			response := sendSignedWebhookRequest(t, service, fmt.Sprintf("checks-%d", index), test.event, test.payload)
 			if response.Code != http.StatusAccepted {
 				t.Fatalf("status = %d body = %s, want %d", response.Code, response.Body.String(), http.StatusAccepted)
@@ -411,7 +490,7 @@ func TestGitHubWebhookTargetsChecksWithoutRepositoryRefresh(t *testing.T) {
 func TestGitHubWebhookUpdatesPullRequestWithoutClearingSummaries(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 	initial := completePullRequestWebhookPayload(t, "Initial PR", "2026-09-02T11:00:00Z")
 	response := sendSignedWebhookRequest(t, service, "pr-initial", "pull_request", initial)
 	if response.Code != http.StatusAccepted {
@@ -444,7 +523,7 @@ func TestGitHubWebhookUpdatesPullRequestWithoutClearingSummaries(t *testing.T) {
 func TestGitHubWebhookMapsAndClearsWorkflowStateFromLabels(t *testing.T) {
 	t.Parallel()
 
-	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+	service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 	initial := completeIssueWebhookPayload(t, "Initial issue", "2026-09-02T11:00:00Z")
 	response := sendSignedWebhookRequest(t, service, "workflow-initial", "issues", initial)
 	if response.Code != http.StatusAccepted {
@@ -547,7 +626,7 @@ func TestGitHubWebhookDeletedIssueCannotRemainSchedulable(t *testing.T) {
 	}
 	for testIndex, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now)
+			service := openWebhookTestService(t, filepath.Join(t.TempDir(), "hub.db"), time.Now, true)
 			response := sendSignedWebhookRequest(t, service, fmt.Sprintf("deleted-seed-%d", testIndex), "issues", completeIssueWebhookPayload(t, "Seed issue", "2026-09-02T11:00:00Z"))
 			if response.Code != http.StatusAccepted {
 				t.Fatalf("seed status = %d body = %s", response.Code, response.Body.String())
@@ -604,6 +683,7 @@ func TestGitHubWebhookPayloadRetentionPreservesAuditAndProjection(t *testing.T) 
 		WebhookMaintenanceInterval: time.Hour,
 		now:                        func() time.Time { return now },
 	})
+	seedWebhookCompatibilityProject(t, service)
 	payload := completeIssueWebhookPayload(t, "Retained issue", "2026-09-02T12:00:00Z")
 	response := sendSignedWebhookRequest(t, service, "retention", "issues", payload)
 	if response.Code != http.StatusAccepted {
@@ -655,7 +735,7 @@ func TestGitHubWebhookStartupReplaysPendingReceipt(t *testing.T) {
 
 	databasePath := filepath.Join(t.TempDir(), "hub.db")
 	now := time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)
-	service := openWebhookTestService(t, databasePath, func() time.Time { return now })
+	service := openWebhookTestService(t, databasePath, func() time.Time { return now }, true)
 	payload := []byte(completeIssueWebhookPayload(t, "Replayed issue", "2026-09-02T12:00:00Z"))
 	digest := sha256.Sum256(payload)
 	if _, err := service.database.recordWebhook(t.Context(), webhookReceipt{
@@ -673,7 +753,7 @@ func TestGitHubWebhookStartupReplaysPendingReceipt(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	reopened := openWebhookTestService(t, databasePath, func() time.Time { return now.Add(time.Minute) })
+	reopened := openWebhookTestService(t, databasePath, func() time.Time { return now.Add(time.Minute) }, true)
 	var status string
 	var title string
 	if err := reopened.database.db.QueryRowContext(t.Context(), `
@@ -721,14 +801,30 @@ func readIssueProjectionSnapshot(t *testing.T, service *Service) issueProjection
 	return snapshot
 }
 
-func openWebhookTestService(t *testing.T, databasePath string, now func() time.Time) *Service {
+func openWebhookTestService(t *testing.T, databasePath string, now func() time.Time, compatibility bool) *Service {
 	t.Helper()
-	return openTestService(t, Config{
+	service := openTestService(t, Config{
 		DatabasePath:               databasePath,
 		GitHubWebhookSecret:        []byte(testWebhookSecret),
 		WebhookMaintenanceInterval: time.Hour,
 		now:                        now,
 	})
+	if compatibility {
+		seedWebhookCompatibilityProject(t, service)
+	}
+	return service
+}
+
+func seedWebhookCompatibilityProject(t *testing.T, service *Service) {
+	t.Helper()
+	if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO repositories(github_node_id,github_owner,github_name,created_at,updated_at) VALUES ('R_repo','digitaldrywood','detent',?,?) ON CONFLICT DO NOTHING`, testTimestamp, testTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	var repositoryID int64
+	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM repositories WHERE github_owner='digitaldrywood' AND github_name='detent'").Scan(&repositoryID); err != nil {
+		t.Fatal(err)
+	}
+	seedCompatibilityProject(t, service.database.db, repositoryID)
 }
 
 func sendSignedWebhookRequest(t *testing.T, service *Service, deliveryID string, event string, payload string) *httptest.ResponseRecorder {
