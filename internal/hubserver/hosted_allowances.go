@@ -134,6 +134,10 @@ func (d *database) checkHostedGrowth(ctx context.Context, tx *sql.Tx, before map
 	if err != nil {
 		return err
 	}
+	return d.checkHostedConsumptionGrowth(ctx, tx, before, after, now, completion)
+}
+
+func (d *database) checkHostedConsumptionGrowth(ctx context.Context, tx *sql.Tx, before, after map[string]int64, now time.Time, completion bool) error {
 	entitlement, err := d.hostedEntitlement(ctx, tx, now)
 	if err != nil {
 		return err
