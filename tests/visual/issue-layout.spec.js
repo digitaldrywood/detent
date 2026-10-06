@@ -171,9 +171,8 @@ test("mobile issue retains its original layout without a review dialog", async (
 test("selected Surface Diff yields the aside and keeps Properties reachable", async ({ page }) => {
   const fixture = changeFixture("surface", "src/surface.ts");
   await openIssue(page, [fixture], { latest: fixture.diff });
-  await page.getByRole("button", { name: /^Toggle right panel/ }).click();
-  await page.getByRole("button", { name: "Add panel surface", exact: true }).click();
-  await page.getByRole("menuitem", { name: /^Diff/ }).click();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.getByTestId("command-palette").getByText("Open Diff panel", { exact: true }).click();
   await expect(page.getByTestId("diff-file-section")).toHaveAttribute("data-diff-path", "src/surface.ts");
   await expect(page.getByTestId("diff-round")).toContainText(fixture.diff.head_sha.slice(0, 7));
   await expect(page.getByRole("complementary", { name: "Properties", exact: true })).toHaveCount(0);
