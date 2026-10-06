@@ -15,9 +15,7 @@ import (
 func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope, runner string, observation policy.Observation) (resultErr error) {
 	source := observation.Source
 	descriptor := observation.Descriptor
-	if source == nil || descriptor.Workflow == nil || !source.DefaultBranchReachable ||
-		!validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" ||
-		source.Commit != descriptor.Workflow.Revision || strings.HasPrefix(scope, "repository:") {
+	if strings.HasPrefix(scope, "repository:") {
 		return nil
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -29,17 +27,39 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope, 
 			resultErr = errors.Join(resultErr, tx.Rollback())
 		}
 	}()
-	repository, err := policyRepository(ctx, tx, scope)
+	approval, err := readProjectPolicy(ctx, tx, scope)
 	if err != nil {
-		return err
+		var nativeErr *nativeError
+		if !errors.As(err, &nativeErr) || nativeErr.Code != "policy_mismatch" {
+			return err
+		}
 	}
-	if repository == "" || !strings.EqualFold(repository, source.Repository) {
+	current := approval.Policy.ID
+	carryover := current != "" && descriptor.SameAuthoredInputs(approval.Policy)
+	if descriptor.Workflow != nil {
+		if source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision {
+			return tx.Commit()
+		}
+		repository, err := policyRepository(ctx, tx, scope)
+		if err != nil {
+			return err
+		}
+		if repository == "" || !strings.EqualFold(repository, source.Repository) {
+			return tx.Commit()
+		}
+		if !carryover && !source.DefaultBranchReachable {
+			return tx.Commit()
+		}
+	} else {
+		if !carryover {
+			return tx.Commit()
+		}
+		if err := validateWorkflowPolicy(ctx, tx, scope, descriptor); err != nil {
+			return err
+		}
+	}
+	if carryover && descriptor.Authored.Version < approval.Policy.Authored.Version {
 		return tx.Commit()
-	}
-	var current string
-	err = tx.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", scope).Scan(&current)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
 	}
 	if current != descriptor.ID {
 		if _, err := d.approvePolicyInTx(ctx, tx, scope, runner, policy.Change{ExpectedID: current, Policy: descriptor}); err != nil {
@@ -64,7 +84,10 @@ FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organ
 }
 
 func recordWorkflowApply(ctx context.Context, tx *sql.Tx, scope, actor, current string, descriptor policy.Descriptor, now time.Time) error {
-	entry := policy.WorkflowApply{DefinitionDigest: descriptor.SourceDigest, AppliedBy: actor, AppliedAt: formatHubTime(now), Commit: descriptor.Workflow.Revision}
+	entry := policy.WorkflowApply{DefinitionDigest: descriptor.SourceDigest, AppliedBy: actor, AppliedAt: formatHubTime(now)}
+	if descriptor.Workflow != nil {
+		entry.Commit = descriptor.Workflow.Revision
+	}
 	repository, err := policyRepository(ctx, tx, scope)
 	if err != nil {
 		return err

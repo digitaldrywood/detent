@@ -1,11 +1,9 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 
@@ -48,17 +46,20 @@ func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
 		return resolveNativePolicy(workflow)
 	}
 	cfg = normalizePolicyConfig(cfg)
-	defaults := Default()
-	defaults.normalize()
-	raw, err := canonicalPolicyJSON(struct {
+	if workflow.DefinitionSources != nil {
+		authored, err := authoredProjectDefinitionVersion(*workflow.DefinitionSources, workflow.Authored.Version)
+		if err != nil {
+			return policy.Descriptor{}, err
+		}
+		workflow.Authored = authored
+		return resolvePolicyDescriptor(workflow, authored.Digest, authored.Digest, authored.Digest)
+	}
+	raw, err := json.Marshal(struct {
 		Config Config
 		Prompt string
-	}{cfg, workflow.Prompt}, struct {
-		Config Config
-		Prompt string
-	}{normalizePolicyConfig(defaults), ""})
+	}{cfg, workflow.Prompt})
 	if err != nil {
-		return policy.Descriptor{}, fmt.Errorf("digest effective project policy: %w", err)
+		return policy.Descriptor{}, fmt.Errorf("digest project policy: %w", err)
 	}
 	return resolvePolicyDescriptor(workflow, workflow.Definition.Revision, workflow.SourceHash, policy.Digest(raw))
 }
@@ -99,6 +100,7 @@ func resolvePolicyDescriptor(workflow Workflow, revision, sourceDigest, configDi
 			descriptor.Workflow.Revision = workflow.Definition.Revision
 		}
 	}
+	descriptor.Authored = workflow.Authored
 	descriptor = descriptor.WithID()
 	return descriptor, descriptor.Validate()
 }
@@ -150,67 +152,4 @@ func normalizePolicyConfig(cfg Config) Config {
 		cfg.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 	}
 	return cfg
-}
-
-func canonicalPolicyJSON(value, defaults any) ([]byte, error) {
-	values := make([]any, 2)
-	for i, input := range []any{value, defaults} {
-		raw, err := json.Marshal(input)
-		if err != nil {
-			return nil, err
-		}
-		decoder := json.NewDecoder(bytes.NewReader(raw))
-		decoder.UseNumber()
-		if err := decoder.Decode(&values[i]); err != nil {
-			return nil, err
-		}
-	}
-	canonical, _ := canonicalPolicyValue(values[0], values[1])
-	return json.Marshal(canonical)
-}
-
-func canonicalPolicyValue(value, defaults any) (any, bool) {
-	value = canonicalPolicyEmpty(value)
-	defaults = canonicalPolicyEmpty(defaults)
-	if reflect.DeepEqual(value, defaults) {
-		return nil, false
-	}
-	if defaults == nil {
-		return value, true
-	}
-	if fields, ok := value.(map[string]any); ok {
-		defaultFields, _ := defaults.(map[string]any)
-		canonical := make(map[string]any)
-		for name, field := range fields {
-			defaultField, exists := defaultFields[name]
-			if !exists {
-				canonical[name] = field
-			} else if item, include := canonicalPolicyValue(field, defaultField); include {
-				canonical[name] = item
-			}
-		}
-		for name, field := range defaultFields {
-			if _, exists := fields[name]; !exists {
-				if item, include := canonicalPolicyValue(nil, field); include {
-					canonical[name] = item
-				}
-			}
-		}
-		return canonical, len(canonical) > 0
-	}
-	return value, true
-}
-
-func canonicalPolicyEmpty(value any) any {
-	switch value := value.(type) {
-	case map[string]any:
-		if len(value) == 0 {
-			return nil
-		}
-	case []any:
-		if len(value) == 0 {
-			return nil
-		}
-	}
-	return value
 }

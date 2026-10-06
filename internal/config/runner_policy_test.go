@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -29,8 +30,8 @@ func TestRunnerPolicyCanonicalInputs(t *testing.T) {
 		match  bool
 	}{
 		{"unchanged upgrade with default runner setup", func(*Workflow) {}, true},
-		{"changed skill prompt cap", func(w *Workflow) { w.Config.Agent.Skills.MaxSkillsInPrompt++ }, false},
-		{"configured runner setup", func(w *Workflow) { w.Config.Hooks.RunnerSetup = "scripts/runner-setup.sh" }, false},
+		{"changed skill prompt cap", func(w *Workflow) { w.Config.Agent.Skills.MaxSkillsInPrompt++ }, true},
+		{"configured runner setup", func(w *Workflow) { w.Config.Hooks.RunnerSetup = "scripts/runner-setup.sh" }, true},
 		{"host pacing off", func(w *Workflow) {
 			w.Config.Agent.RateWindowPacing = RateWindowPacing{Mode: RateWindowPacingOff}.Normalized()
 		}, true},
@@ -38,28 +39,28 @@ func TestRunnerPolicyCanonicalInputs(t *testing.T) {
 			w.Config.Agent.RateWindowPacing = RateWindowPacing{Mode: RateWindowPacingFloor, FloorPercent: 35}.Normalized()
 		}, true},
 		{"host pacing freshness", func(w *Workflow) { w.Config.Agent.RateWindowPacing.StaleAfterSeconds = 600 }, true},
-		{"model selection", func(w *Workflow) { w.Config.Agents.ModelSelection.NormalModel = new("gpt-6-sol") }, false},
+		{"model selection", func(w *Workflow) { w.Config.Agents.ModelSelection.NormalModel = new("gpt-6-sol") }, true},
 		{"empty extra domains", func(w *Workflow) { w.Config.Worker.ExtraNetworkDomains = []string{} }, true},
 		{"project domain grant", func(w *Workflow) {
 			w.Config.Worker.ExtraNetworkDomains = []string{"fonts.googleapis.com", "fonts.gstatic.com"}
-		}, false},
+		}, true},
 		{"explicit local binding refusal", func(w *Workflow) { value := false; w.Config.Worker.AllowLocalBinding = &value }, true},
-		{"local binding grant", func(w *Workflow) { value := true; w.Config.Worker.AllowLocalBinding = &value }, false},
+		{"local binding grant", func(w *Workflow) { value := true; w.Config.Worker.AllowLocalBinding = &value }, true},
 		{"absent host selection", func(w *Workflow) { w.Config.Worker.HostSelection = "" }, true},
 		{"empty host caps", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{} }, true},
 		{"empty required checks", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{} }, true},
 		{"historical opt-out label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "requires-human-review" }, true},
-		{"disabled default followups", func(w *Workflow) { w.Config.Agent.Followups.Enabled = false }, false},
+		{"disabled default followups", func(w *Workflow) { w.Config.Agent.Followups.Enabled = false }, true},
 		{"zero human review", func(w *Workflow) { w.Config.Review = Review{} }, true},
-		{"explicit host preference", func(w *Workflow) { w.Config.Worker.HostSelection = "preference" }, false},
-		{"explicit host cap", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{"local": 2} }, false},
-		{"explicit local status", func(w *Workflow) { w.Config.Gate.LocalStatus = "local-gate" }, false},
-		{"explicit required check", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{"build"} }, false},
-		{"explicit human review", func(w *Workflow) { w.Config.Review.Human = true }, false},
-		{"custom opt-out label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "custom-review" }, false},
-		{"explicit gate command", func(w *Workflow) { w.Config.Gate.Run = "true" }, false},
-		{"explicit workspace root", func(w *Workflow) { w.Config.Workspace.Root = "other-workspaces" }, false},
-		{"effective prompt", func(w *Workflow) { w.Prompt += "Different instructions." }, false},
+		{"explicit host preference", func(w *Workflow) { w.Config.Worker.HostSelection = "preference" }, true},
+		{"explicit host cap", func(w *Workflow) { w.Config.Worker.HostCaps = map[string]int{"local": 2} }, true},
+		{"explicit local status", func(w *Workflow) { w.Config.Gate.LocalStatus = "local-gate" }, true},
+		{"explicit required check", func(w *Workflow) { w.Config.Gate.RequiredStatusChecks = []string{"build"} }, true},
+		{"explicit human review", func(w *Workflow) { w.Config.Review.Human = true }, true},
+		{"custom opt-out label", func(w *Workflow) { w.Config.Agent.AutoPromote.OptoutLabel = "custom-review" }, true},
+		{"explicit gate command", func(w *Workflow) { w.Config.Gate.Run = "true" }, true},
+		{"explicit workspace root", func(w *Workflow) { w.Config.Workspace.Root = "other-workspaces" }, true},
+		{"effective prompt", func(w *Workflow) { w.Prompt += "Different instructions." }, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := workflow
@@ -84,91 +85,82 @@ func TestRunnerPolicyCanonicalInputs(t *testing.T) {
 			}
 		})
 	}
-	for _, legacyDigest := range []string{
-		"64781f2210b0388368f365317cd9eae84869403c9da2d6f517675bcd45582808",
-		"433e272c428e2239be1a6ceb1275419d3f43c5a2cdcbf1c6061fecb91c54135a",
-		"9042ea475c8d207ccffc8c3edca499fefb0e341264a88163767e486294d3ac4d",
-	} {
-		legacy := approved
-		legacy.ConfigDigest = legacyDigest
-		legacy = legacy.WithID()
-		if err := legacy.Validate(); err != nil {
-			t.Fatal(err)
-		}
-		current, err := ResolvePolicy(workflow)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if current.Match(legacy) == nil {
-			t.Fatal("legacy nondefault pacing approval matched a different policy identity")
-		}
-	}
-
 }
 
-func TestRunnerPolicyDefaultedFields(t *testing.T) {
+func TestRunnerPolicyAuthoredDefinition(t *testing.T) {
 	t.Parallel()
-	type previousConfig struct {
-		Command string
-	}
-	type upgradedConfig struct {
-		Command string
-		Added   any
-	}
-	base := policy.Descriptor{
-		SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")),
-	}
-	raw, err := canonicalPolicyJSON(previousConfig{Command: "make test"}, previousConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	base.ConfigDigest = policy.Digest(raw)
-	approved := base.WithID()
-	for _, test := range []struct {
-		name     string
-		defaults any
-		changed  any
-	}{
-		{"zero string", "", "configured"},
-		{"default string", "automatic", "configured"},
-		{"zero bool", false, true},
-		{"default bool", true, false},
-		{"zero integer", 0, 1},
-		{"default integer", 10, 20},
-		{"large integer", int64(9007199254740992), int64(9007199254740993)},
-		{"zero pointer", (*int)(nil), new(1)},
-		{"default pointer", new(10), new(20)},
-		{"cleared default pointer", new(10), (*int)(nil)},
-		{"empty slice", []string{}, []string{"configured"}},
-		{"default slice", []string{"automatic"}, []string{}},
-		{"empty map", map[string]int{}, map[string]int{"configured": 0}},
-		{"null map member", map[string]any{}, map[string]any{"configured": nil}},
-		{"added null map member", map[string]any{"automatic": 10}, map[string]any{"automatic": 10, "configured": nil}},
-		{"default map", map[string]int{"automatic": 10}, map[string]int{}},
-		{"nested defaults", struct{ Limit int }{10}, struct{ Limit int }{20}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			for _, value := range []struct {
-				name  string
-				added any
-				match bool
-			}{
-				{"default", test.defaults, true},
-				{"nondefault", test.changed, false},
-			} {
-				t.Run(value.name, func(t *testing.T) {
-					raw, err := canonicalPolicyJSON(
-						upgradedConfig{Command: "make test", Added: value.added},
-						upgradedConfig{Added: test.defaults},
-					)
-					if err != nil {
-						t.Fatal(err)
+	for _, tracker := range []string{"memory", "hub_native"} {
+		t.Run(tracker, func(t *testing.T) {
+			sources := ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: " + tracker + "\ngate:\n  run: echo 1\n"), HasConfig: true}
+			load := func(sources ProjectDefinitionSources) policy.Descriptor {
+				t.Helper()
+				workflow, err := ParseProjectDefinition(sources)
+				if err != nil {
+					t.Fatal(err)
+				}
+				descriptor, err := ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tracker == "hub_native" {
+					resolved, err := ResolveSharedPolicy(descriptor)
+					if err != nil || !reflect.DeepEqual(resolved.Authored, descriptor.Authored) {
+						t.Fatalf("authored snapshot is not idempotent: %+v %v", resolved.Authored, err)
 					}
-					candidate := base
-					candidate.ConfigDigest = policy.Digest(raw)
-					candidate = candidate.WithID()
-					if (candidate.ID == approved.ID) != value.match {
-						t.Fatalf("policy ID = %s, want match %t with %s", candidate.ID, value.match, approved.ID)
+				}
+				return descriptor
+			}
+			approved := load(sources)
+			for _, test := range []struct {
+				name   string
+				change func(*ProjectDefinitionSources)
+				match  bool
+			}{
+				{"same files", func(*ProjectDefinitionSources) {}, true},
+				{"key order and whitespace", func(s *ProjectDefinitionSources) {
+					s.Config = []byte("gate: {run: echo 1}\ntracker: {kind: " + tracker + "}\nschema: 1\n\n")
+				}, true},
+				{"authored YAML aliases", func(s *ProjectDefinitionSources) {
+					s.Config = []byte("schema: 1\ntracker:\n  kind: " + tracker + "\nplan: &options\n  enabled: true\ngate:\n  run: true\n  validator: *options\n")
+				}, false},
+				{"instance-only authored tuning", func(s *ProjectDefinitionSources) {
+					s.Config = append([]byte(string(s.Config)), []byte("agent:\n  max_concurrent_agents: 2\nserver:\n  port: 3030\nworker:\n  ssh_hosts: [local]\n")...)
+				}, tracker == "hub_native"},
+				{"one byte config change", func(s *ProjectDefinitionSources) {
+					s.Config = []byte(strings.ReplaceAll(string(s.Config), "echo 1", "echo 2"))
+				}, false},
+				{"one byte prompt change", func(s *ProjectDefinitionSources) { s.Workflow = []byte("Run the work!\n") }, false},
+				{"authored gate", func(s *ProjectDefinitionSources) {
+					s.Config = []byte(strings.ReplaceAll(string(s.Config), "run: echo 1", "run: false"))
+				}, false},
+				{"authored selector", func(s *ProjectDefinitionSources) {
+					s.Config = append([]byte(string(s.Config)), []byte("runners:\n  profile: restricted\n  profiles:\n    restricted:\n      machine_id: machine_privileged\n")...)
+				}, false},
+				{"authored checks", func(s *ProjectDefinitionSources) {
+					s.Config = []byte(strings.ReplaceAll(string(s.Config), "run: echo 1", "run: echo 1\n  required_status_checks: [build]"))
+				}, false},
+				{"authored comment", func(s *ProjectDefinitionSources) {
+					s.Config = append([]byte(string(s.Config)), []byte("# Operator guidance\n")...)
+				}, false},
+				{"explicit default", func(s *ProjectDefinitionSources) {
+					s.Config = append([]byte(string(s.Config)), []byte("review:\n  human: false\n")...)
+				}, false},
+				{"local override", func(s *ProjectDefinitionSources) {
+					s.LocalConfig = []byte("schema: 1\nreview:\n  human: true\n")
+					s.HasLocalConfig = true
+				}, false},
+				{"local prompt", func(s *ProjectDefinitionSources) {
+					s.LocalWorkflow = []byte("Operator instruction.\n")
+					s.HasLocalWorkflow = true
+				}, false},
+				{"agent guidance independent of defaults", func(s *ProjectDefinitionSources) { s.Agents = []byte("Human guidance.\n"); s.HasAgents = true }, false},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					candidate := sources
+					test.change(&candidate)
+					actual := load(candidate)
+					if (actual.ID == approved.ID) != test.match || (actual.ConfigDigest == approved.ConfigDigest) != test.match || (actual.SourceRevision == approved.SourceRevision) != test.match || (actual.Match(approved) == nil) != test.match {
+						t.Fatalf("identity = %+v, want match %t", actual.Authored, test.match)
 					}
 				})
 			}
@@ -194,8 +186,8 @@ func TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Match(approved) == nil || !current.Gates.SecurityAudit {
-		t.Fatal("explicit security audit matched the policy without an audit")
+	if current.Match(approved) != nil || !current.Gates.SecurityAudit {
+		t.Fatal("runtime projection changed identity or lost the audit")
 	}
 }
 
@@ -264,8 +256,8 @@ func TestRunnerPolicyCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if proposal.Match(descriptor) == nil {
-				t.Fatal("untrusted policy relaxation matched approved descriptor")
+			if proposal.Match(descriptor) != nil {
+				t.Fatal("runtime projection changed authored identity")
 			}
 		})
 	}
@@ -301,7 +293,7 @@ func TestNativeSharedPolicy(t *testing.T) {
 		t.Helper()
 		workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
 			WorkflowPath: host + "/WORKFLOW.md",
-			Workflow:     []byte("---\ntracker:\n  kind: hub_native\n  api_key: " + host + "-secret\nworkspace:\n  root: " + host + "/worktrees\nworker:\n  ssh_hosts: [local]\nhooks:\n  before_run: " + host + "/isolate.sh\nplan:\n  enabled: true\ngate:\n  run: true\n  validator:\n    enabled: true\nagent:\n  auto_promote:\n    enabled: true\n---\nRun the work.\n"),
+			Workflow:     []byte("---\ntracker:\n  kind: hub_native\n  api_key: " + host + "-secret\nworkspace:\n  root: " + host + "/worktrees\nworker:\n  ssh_hosts: [local]\nhooks:\n  before_run: " + host + "/isolate.sh\nplan:\n  enabled: true\ngate:\n  run: true\n  validator:\n    enabled: true\nagent:\n  auto_promote:\n    enabled: true\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress]\n---\nRun the work.\n"),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -329,7 +321,7 @@ func TestNativeSharedPolicy(t *testing.T) {
 		change func(*Workflow)
 		match  bool
 	}{
-		{"other host", func(*Workflow) {}, true},
+		{"other host", func(w *Workflow) { *w = air }, true},
 		{"runtime credential", func(w *Workflow) {
 			w.Config.Tracker.APIKey = "runtime-token"
 			w.Config.Worker.GitHubToken = "worker-token"
@@ -339,17 +331,17 @@ func TestNativeSharedPolicy(t *testing.T) {
 			w.Config.Worker.SSHHosts = []string{"another-host"}
 			w.Config.Worker.HostCaps = map[string]int{"another-host": 2}
 		}, true},
-		{"planning", func(w *Workflow) { w.Config.Plan.Enabled = false }, false},
-		{"transitions", func(w *Workflow) { w.Config.Server.Kanban.AllowedTransitions = map[string][]string{"Todo": {"Done"}} }, false},
-		{"validation", func(w *Workflow) { w.Config.Gate.Validator.Enabled = false }, false},
-		{"promotion", func(w *Workflow) { w.Config.Agent.AutoPromote.Enabled = false }, false},
-		{"instructions", func(w *Workflow) { w.Prompt += "Keep a human review hold." }, false},
-		{"admission guidance", func(w *Workflow) { w.SharedPrompt += "Different admission criteria." }, false},
+		{"planning", func(w *Workflow) { w.Config.Plan.Enabled = false }, true},
+		{"transitions", func(w *Workflow) { w.Config.Server.Kanban.AllowedTransitions = map[string][]string{"Todo": {"Done"}} }, true},
+		{"validation", func(w *Workflow) { w.Config.Gate.Validator.Enabled = false }, true},
+		{"promotion", func(w *Workflow) { w.Config.Agent.AutoPromote.Enabled = false }, true},
+		{"instructions", func(w *Workflow) { w.Prompt += "Keep a human review hold." }, true},
+		{"admission guidance", func(w *Workflow) { w.SharedPrompt += "Different admission criteria." }, true},
 		{"empty network grants", func(w *Workflow) { w.Config.Worker.ExtraNetworkDomains = []string{} }, true},
-		{"network grant", func(w *Workflow) { w.Config.Worker.ExtraNetworkDomains = []string{"example.com"} }, false},
+		{"network grant", func(w *Workflow) { w.Config.Worker.ExtraNetworkDomains = []string{"example.com"} }, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			local := air
+			local := pro
 			tt.change(&local)
 			descriptor, err := ResolvePolicy(local)
 			if err != nil {
@@ -389,10 +381,62 @@ func TestNativeSharedPolicy(t *testing.T) {
 	if err := ValidateSharedPolicy(roundtrip); err != nil {
 		t.Fatal(err)
 	}
-	forged := roundtrip
-	forged.Gates.AutoPromote = false
-	forged = forged.WithID()
-	if err := ValidateSharedPolicy(forged); err == nil {
-		t.Fatal("accepted gate metadata inconsistent with shared configuration")
+	for _, test := range []struct {
+		name    string
+		change  func(*policy.Descriptor)
+		invalid bool
+	}{
+		{"gate projection", func(d *policy.Descriptor) { d.Gates.AutoPromote = false }, false},
+		{"nil configuration gate projection", func(d *policy.Descriptor) { d.Configuration = nil; d.Gates.AutoPromote = false }, false},
+		{"nil configuration selector projection", func(d *policy.Descriptor) { d.Configuration = nil; d.Requirements.MachineID = "machine_privileged" }, false},
+		{"nil configuration profile projection", func(d *policy.Descriptor) { d.Configuration = nil; d.Profile = "privileged" }, false},
+		{"nil configuration with invented digest", func(d *policy.Descriptor) {
+			d.Configuration = nil
+			d.Authored.Digest = policy.Digest([]byte("invented identity"))
+			d.SourceDigest, d.ConfigDigest, d.SourceRevision = d.Authored.Digest, d.Authored.Digest, d.Authored.Digest
+			d.Gates.AutoPromote = false
+		}, true},
+		{"copied digest with changed authored gate", func(d *policy.Descriptor) {
+			d.Authored.Files["WORKFLOW.md"] = strings.ReplaceAll(d.Authored.Files["WORKFLOW.md"], "run: true", "run: false")
+		}, true},
+		{"copied digest with changed local grant", func(d *policy.Descriptor) {
+			d.Authored.Files["detent.local.yaml"] = "schema: 1\nworker:\n  allow_local_binding: true\n"
+		}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := roundtrip
+			authored := *roundtrip.Authored
+			authored.Files = make(map[string]string)
+			for name, content := range roundtrip.Authored.Files {
+				authored.Files[name] = content
+			}
+			candidate.Authored = &authored
+			test.change(&candidate)
+			candidate = candidate.WithID()
+			resolved, err := ResolveSharedPolicy(candidate)
+			if test.invalid {
+				if err == nil {
+					t.Fatal("changed authored source accepted copied digest")
+				}
+				if _, err := ApplyNativePolicy(pro, candidate); err == nil {
+					t.Fatal("applied changed authored source with copied digest")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.ID != approved.ID || resolved.Profile != approved.Profile || !reflect.DeepEqual(resolved.Requirements, approved.Requirements) || !reflect.DeepEqual(resolved.Gates, approved.Gates) {
+				t.Fatal("projection replaced authoritative authored policy")
+			}
+			applied, err := ApplyNativePolicy(pro, candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := ResolvePolicy(applied)
+			if err != nil || actual.ID != approved.ID || actual.Profile != approved.Profile || !reflect.DeepEqual(actual.Requirements, approved.Requirements) || !reflect.DeepEqual(actual.Gates, approved.Gates) {
+				t.Fatalf("applied projection replaced authored policy: %+v %v", actual, err)
+			}
+		})
 	}
 }
