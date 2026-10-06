@@ -60,10 +60,11 @@ func (o *Orchestrator) completeNativeChangeRun(
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	humanReview := cfg.humanReviewEnabled() || autoPromoteOptoutLabel(issue, cfg)
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
+		recoveryRequired := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
 		if !humanReview && o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
 		}
-		if humanReview {
+		if humanReview || recoveryRequired {
 			states, err := reader.WorkflowStates(ctx)
 			if err != nil {
 				return handoff(fmt.Errorf("read native workflow states: %w", err))
@@ -73,8 +74,18 @@ func (o *Orchestrator) completeNativeChangeRun(
 			if !allowed {
 				return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", issue.State, review))
 			}
-			if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason); err != nil {
-				return handoff(fmt.Errorf("move failed native item to %s: %w", target, err))
+			metadata := workflowLaneMetadata{}
+			if recoveryRequired {
+				metadata.ReasonDetail = event.Err.Error()
+			}
+			var transitionErr error
+			if recoveryRequired {
+				transitionErr = o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason, metadata)
+			} else {
+				transitionErr = o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason)
+			}
+			if transitionErr != nil {
+				return handoff(fmt.Errorf("move failed native item to %s: %w", target, transitionErr))
 			}
 		}
 		if err := o.abandonClaim(ctx, issueID); err != nil {

@@ -25,9 +25,15 @@ type nativeWorkflowConnector struct {
 	states       []connector.WorkflowState
 	statesErr    error
 	beforeStates func()
+	reasons      []string
 	// reviewed is the change's review state when the completion is applied;
 	// nil answers as a failed read.
 	reviewed *bool
+}
+
+func (c *nativeWorkflowConnector) UpdateIssueState(ctx context.Context, id, state string) error {
+	c.reasons = append(c.reasons, connector.LaneTransitionReason(ctx))
+	return c.autoPromoteTickConnector.UpdateIssueState(ctx, id, state)
 }
 
 func (c *nativeWorkflowConnector) ChangeReviewed(context.Context, string, string, string) (bool, error) {
@@ -136,7 +142,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		roundTrip     bool
 		lifecycle     string
 		validationErr error
+		wantRecovery  bool
 	}{
+		{name: "checkpoint mismatch leaves dispatch without human review", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Human Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "checkpoint mismatch leaves dispatch with human review", states: workflow, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "deferred checkpoint mismatch retains refusal after restart", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Human Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true, roundTrip: true},
+		{name: "persisted policy mismatch leaves dispatch", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: policy_mismatch: persisted session policy changed", runpkg.ErrNativeRecoveryRequired), wantState: "Human Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
+		{name: "checkpoint mismatch without destination retains completion", states: hosted, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantDeferred: true, roundTrip: true},
+		{name: "checkpoint mismatch lane write refusal retains completion", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), updateErr: connector.ErrStateUpdateBlocked, wantDeferred: true},
 		{name: "settled head refusal retires deferred completion authority", lifecycle: "refusal", republish: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, VersionError: "the final attempt diff does not identify the current Change Request head"}, states: fourLanes, statesErr: errors.New("workflow temporarily unavailable"), humanReview: &no, wantSettled: true, roundTrip: true},
 		{name: "settled policy refusal retires deferred completion authority", lifecycle: "refusal", republish: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, VersionError: "policy mismatch", VersionCode: "policy_mismatch"}, states: landing, statesErr: errors.New("workflow temporarily unavailable"), reviewed: &yes, humanReview: &no, wantSettled: true},
 		{name: "no review missing report retires completion authority", lifecycle: "settle", change: &runpkg.NativeChange{}, states: fourLanes, humanReview: &no, wantSettled: true, roundTrip: true},
@@ -709,6 +722,19 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					receipt := attempts.completions[0]
 					if receipt.ErrorClass != workAttemptErrorWorkspace || !allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: receipt.MetricsJSON}) {
 						t.Fatal("native cleanup failure consumed issue failure allowance")
+					}
+				}
+				if test.wantRecovery {
+					receipt := attempts.completions[0]
+					reasons := tracker.(*nativeWorkflowConnector).reasons
+					if len(reasons) != 1 || reasons[0] != test.runErr.Error() || receipt.ErrorClass != workAttemptErrorWorkspace || !allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: receipt.MetricsJSON}) || len(state.FailureBreaker.Failures) != 0 || dispatchableState(test.states, tick.stateIssues[0].State) {
+						t.Fatalf("checkpoint recovery lost mismatch or instance attribution: reasons=%v receipt=%+v state=%s", reasons, receipt, tick.stateIssues[0].State)
+					}
+					for range 3 {
+						orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
+					}
+					if len(tick.updates) != 1 || scheduling.releases != 1 || len(state.Retry) != 0 || len(state.deferredCompletions) != 0 || len(attempts.completions) != 1 {
+						t.Fatal("checkpoint refusal repeated a transition or scheduled another attempt")
 					}
 				}
 				if test.wantState != "" {

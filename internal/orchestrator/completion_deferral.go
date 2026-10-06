@@ -27,26 +27,27 @@ const (
 )
 
 type deferredCompletion struct {
-	Schema              int                            `json:"schema"`
-	Running             Running                        `json:"running"`
-	Request             deferredCompletionRequest      `json:"request"`
-	Result              runpkg.RunResult               `json:"result"`
-	Error               string                         `json:"error,omitempty"`
-	TerminalState       store.WorkAttemptTerminalState `json:"terminal_state,omitempty"`
-	WorkerProcessReap   bool                           `json:"worker_process_reap,omitempty"`
-	CompletedAt         time.Time                      `json:"completed_at"`
-	Retryable           bool                           `json:"retryable,omitempty"`
-	RetryAttempt        int                            `json:"retry_attempt,omitempty"`
-	RetryDelay          time.Duration                  `json:"retry_delay,omitempty"`
-	FenceRetryAt        time.Time                      `json:"fence_retry_at,omitzero"`
-	DeferredAt          time.Time                      `json:"deferred_at"`
-	Availability        deferredCompletionAvailability `json:"availability"`
-	DeliverableRecovery *deferredDeliverableRecovery   `json:"deliverable_recovery,omitempty"`
-	ForgeAvailability   *forgeWaitMetadata             `json:"worker_forge_availability,omitempty"`
-	GitHubRESTQuota     *github.StatusError            `json:"github_rest_quota,omitempty"`
-	Persisted           bool                           `json:"-"`
-	Execution           json.RawMessage                `json:"execution,omitempty"`
-	AuthorityRestored   bool                           `json:"-"`
+	Schema                 int                            `json:"schema"`
+	Running                Running                        `json:"running"`
+	Request                deferredCompletionRequest      `json:"request"`
+	Result                 runpkg.RunResult               `json:"result"`
+	Error                  string                         `json:"error,omitempty"`
+	TerminalState          store.WorkAttemptTerminalState `json:"terminal_state,omitempty"`
+	WorkerProcessReap      bool                           `json:"worker_process_reap,omitempty"`
+	NativeRecoveryRequired bool                           `json:"native_recovery_required,omitempty"`
+	CompletedAt            time.Time                      `json:"completed_at"`
+	Retryable              bool                           `json:"retryable,omitempty"`
+	RetryAttempt           int                            `json:"retry_attempt,omitempty"`
+	RetryDelay             time.Duration                  `json:"retry_delay,omitempty"`
+	FenceRetryAt           time.Time                      `json:"fence_retry_at,omitzero"`
+	DeferredAt             time.Time                      `json:"deferred_at"`
+	Availability           deferredCompletionAvailability `json:"availability"`
+	DeliverableRecovery    *deferredDeliverableRecovery   `json:"deliverable_recovery,omitempty"`
+	ForgeAvailability      *forgeWaitMetadata             `json:"worker_forge_availability,omitempty"`
+	GitHubRESTQuota        *github.StatusError            `json:"github_rest_quota,omitempty"`
+	Persisted              bool                           `json:"-"`
+	Execution              json.RawMessage                `json:"execution,omitempty"`
+	AuthorityRestored      bool                           `json:"-"`
 }
 
 type deferredDeliverableRecovery struct {
@@ -82,18 +83,19 @@ type deferredCompletionAvailability struct {
 func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr error, deferredAt time.Time) deferredCompletion {
 	running.CompletionOwnershipReleased = true
 	record := deferredCompletion{
-		Schema:            deferredCompletionSchema,
-		TerminalState:     terminalStateForRun(event.Err, event.Result.FinalState),
-		WorkerProcessReap: errors.Is(event.Err, runpkg.ErrWorkerProcessReap),
-		Running:           running,
-		Request:           deferredCompletionRequestFromRun(event.Request),
-		Result:            event.Result,
-		Error:             errorString(event.Err),
-		CompletedAt:       event.CompletedAt,
-		Retryable:         event.Retryable,
-		RetryAttempt:      event.RetryAttempt,
-		RetryDelay:        event.RetryDelay,
-		DeferredAt:        deferredAt,
+		Schema:                 deferredCompletionSchema,
+		TerminalState:          terminalStateForRun(event.Err, event.Result.FinalState),
+		WorkerProcessReap:      errors.Is(event.Err, runpkg.ErrWorkerProcessReap),
+		NativeRecoveryRequired: errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired),
+		Running:                running,
+		Request:                deferredCompletionRequestFromRun(event.Request),
+		Result:                 event.Result,
+		Error:                  errorString(event.Err),
+		CompletedAt:            event.CompletedAt,
+		Retryable:              event.Retryable,
+		RetryAttempt:           event.RetryAttempt,
+		RetryDelay:             event.RetryDelay,
+		DeferredAt:             deferredAt,
 	}
 	// Error interfaces do not round-trip through JSON. Retain actual quota
 	// response evidence so completion replay uses the same capacity owner.
@@ -186,6 +188,9 @@ func (r deferredCompletion) completion() runpkg.Completion {
 	if strings.TrimSpace(r.Error) != "" {
 		event.Err = errors.New(r.Error)
 	}
+	if r.NativeRecoveryRequired {
+		event.Err = fmt.Errorf("%w: %s", runpkg.ErrNativeRecoveryRequired, strings.TrimPrefix(r.Error, runpkg.ErrNativeRecoveryRequired.Error()+": "))
+	}
 	if r.GitHubRESTQuota != nil {
 		quota := *r.GitHubRESTQuota
 		quota.Err = errors.Join(github.ErrRateLimited, event.Err)
@@ -210,7 +215,9 @@ func (r deferredCompletion) completion() runpkg.Completion {
 		}
 		switch r.TerminalState {
 		case store.WorkAttemptTerminalCancelled:
-			event.Err = errors.Join(event.Err, context.Canceled)
+			if !r.NativeRecoveryRequired {
+				event.Err = errors.Join(event.Err, context.Canceled)
+			}
 		case store.WorkAttemptTerminalTimedOut:
 			event.Err = errors.Join(event.Err, context.DeadlineExceeded)
 		}

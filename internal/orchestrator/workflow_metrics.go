@@ -38,6 +38,7 @@ type WorkflowMetricsMetadataUpdater interface {
 }
 
 type workflowLaneMetadata struct {
+	ReasonDetail          string                                     `json:"reason_detail,omitempty"`
 	DeliveryTimeSource    string                                     `json:"delivery_time_source,omitempty"`
 	TerminalOutcome       string                                     `json:"terminal_outcome,omitempty"`
 	StateFieldID          int                                        `json:"-"`

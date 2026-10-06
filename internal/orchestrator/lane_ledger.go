@@ -85,7 +85,7 @@ func (o *Orchestrator) finishObservedLaneRun(ctx context.Context, state *State, 
 }
 
 func (o *Orchestrator) writeTrackerLane(ctx context.Context, issueID, target string, metadata workflowLaneMetadata) error {
-	ctx = connector.WithLaneTransitionReason(ctx, strings.ReplaceAll(o.laneWrites[issueID].Reason, "_", " "))
+	ctx = connector.WithLaneTransitionReason(ctx, firstNonBlank(metadata.ReasonDetail, strings.ReplaceAll(o.laneWrites[issueID].Reason, "_", " ")))
 	if metadata.StateFieldID > 0 {
 		setter, ok := o.connector.(connector.IssueFieldSetter)
 		if !ok {
