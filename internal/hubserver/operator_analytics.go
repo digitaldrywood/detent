@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -38,6 +39,9 @@ type nativeAnalyticsPhase struct {
 	AverageSeconds float64 `json:"average_seconds"`
 }
 type nativeAnalyticsAttempt struct {
+	UsageRowsObserved   int                              `json:"usage_rows_observed"`
+	Identity            agentidentity.Identity           `json:"identity,omitzero"`
+	Landing             *tracker.NativeLandingReceipt    `json:"landing,omitempty"`
 	AttemptID           string                           `json:"attempt_id"`
 	WorkItemID          string                           `json:"work_item_id"`
 	Status              string                           `json:"status"`
@@ -223,8 +227,8 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		}
 	}
 	out.Landings = operatortool.OffsetPage(landings, r.RowOffset, r.Limit)
-	rows, err := q.QueryContext(ctx, `SELECT id, work_item_id, status, started_at, updated_at, coalesce(json_extract(data_json,'$.runtime.phases'),'[]'), coalesce(json_extract(data_json,'$.runtime.phases_dropped'),0), coalesce(json_extract(data_json,'$.runtime.activity'),'null')
-FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(started_at)<julianday(?) AND julianday(updated_at)>=julianday(?) ORDER BY started_at,id LIMIT ?`, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), maxAnalyticsPopulation+1)
+	rows, err := q.QueryContext(ctx, `SELECT id, work_item_id, status, started_at, updated_at, coalesce(json_extract(data_json,'$.runtime.phases'),'[]'), coalesce(json_extract(data_json,'$.runtime.phases_dropped'),0), coalesce(json_extract(data_json,'$.runtime.activity'),'null'), coalesce(json_extract(data_json,'$.runtime.identity'),'{}'), coalesce(json_extract(data_json,'$.runtime.landing'),'null'), (SELECT count(*) FROM attempt_usage u WHERE u.attempt_id=native_attempts.id AND u.organization_id=native_attempts.organization_id AND u.project_id=native_attempts.project_id AND julianday(u.period)>=julianday(?) AND julianday(u.period)<julianday(?))
+FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(started_at)<julianday(?) AND julianday(updated_at)>=julianday(?) ORDER BY started_at,id LIMIT ?`, formatHubTime(w.From), formatHubTime(w.To), scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), maxAnalyticsPopulation+1)
 	if err != nil {
 		return out, err
 	}
@@ -233,9 +237,15 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(star
 	phases := map[string]nativeAnalyticsPhase{}
 	for rows.Next() {
 		var a nativeAnalyticsAttempt
-		var from, to, raw, activityRaw string
+		var from, to, raw, activityRaw, identityRaw, landingRaw string
 		var dropped int
-		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Status, &from, &to, &raw, &dropped, &activityRaw); err != nil {
+		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Status, &from, &to, &raw, &dropped, &activityRaw, &identityRaw, &landingRaw, &a.UsageRowsObserved); err != nil {
+			return out, err
+		}
+		if err := json.Unmarshal([]byte(identityRaw), &a.Identity); err != nil {
+			return out, err
+		}
+		if err := json.Unmarshal([]byte(landingRaw), &a.Landing); err != nil {
 			return out, err
 		}
 		if len(attempts) == maxAnalyticsPopulation {

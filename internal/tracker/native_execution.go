@@ -131,6 +131,10 @@ func (r *NativeRuntimeObservation) WithoutActivitySpans() *NativeRuntimeObservat
 }
 
 type NativeLandingReceipt struct {
+	FromState   string    `json:"from_state,omitempty"`
+	TargetState string    `json:"target_state,omitempty"`
+	Refusal     string    `json:"refusal,omitempty"`
+	GateFailed  bool      `json:"gate_failed,omitempty"`
 	Rebased     bool      `json:"rebased,omitempty"`
 	ChangeID    string    `json:"change_id,omitempty"`
 	VersionID   string    `json:"version_id,omitempty"`

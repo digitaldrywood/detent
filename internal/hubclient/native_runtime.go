@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -208,7 +207,8 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 		identity = *e.data.Identity
 	}
 	e.mu.Unlock()
-	if err := e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: time.Now().UTC(), Identity: agentidentity.Identity{Role: "merge", BackendKind: "git"}}); err != nil {
+	runtimeIdentity := runner.NativeLandingIdentity(time.Now().UTC())
+	if err := e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: time.Now().UTC(), Identity: runtimeIdentity}); err != nil {
 		return err
 	}
 	if err := e.Start(ctx, identity); err != nil {
@@ -221,7 +221,7 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 }
 
 func (e *nativeExecution) ObserveLanding(ctx context.Context, landing runner.NativeLanding) error {
-	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: time.Now().UTC(), Landing: &tracker.NativeLandingReceipt{ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, Landed: landing.Landed, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased, RefusalKind: landing.RefusalKind, ObservedAt: time.Now().UTC()}})
+	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: time.Now().UTC(), Landing: &tracker.NativeLandingReceipt{ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, Landed: landing.Landed, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased, RefusalKind: landing.RefusalKind, Refusal: landing.RefusalKind, GateFailed: landing.GateFailed, ObservedAt: time.Now().UTC()}})
 }
 
 func (e *nativeExecution) FlushRuntime(ctx context.Context) error {

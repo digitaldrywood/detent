@@ -520,6 +520,15 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	}{
 		{"changed local identity", func(r *tracker.NativeRuntimeObservation) { r.LocalAttemptID++; r.Activity = nil }, http.StatusConflict},
 		{"older heartbeat", func(r *tracker.NativeRuntimeObservation) { r.HeartbeatAt = at.Add(-time.Second) }, http.StatusConflict},
+		{"worker supplied landing destination", func(r *tracker.NativeRuntimeObservation) {
+			r.Landing = &tracker.NativeLandingReceipt{RefusalKind: "conflict", TargetState: "Done", ObservedAt: at}
+		}, http.StatusUnprocessableEntity},
+		{"free text landing refusal", func(r *tracker.NativeRuntimeObservation) {
+			r.Landing = &tracker.NativeLandingReceipt{RefusalKind: "conflict", Refusal: "private command and credentials", ObservedAt: at}
+		}, http.StatusUnprocessableEntity},
+		{"landing version without its Change owner", func(r *tracker.NativeRuntimeObservation) {
+			r.Landing = &tracker.NativeLandingReceipt{VersionID: "version_" + strings.Repeat("b", 32), RefusalKind: "conflict", ObservedAt: at}
+		}, http.StatusUnprocessableEntity},
 		{"forged landing", func(r *tracker.NativeRuntimeObservation) {
 			r.Landing = &tracker.NativeLandingReceipt{ChangeID: "change_" + strings.Repeat("a", 32), VersionID: "version_" + strings.Repeat("b", 32), HeadSHA: strings.Repeat("c", 40), Landed: true, MergeSHA: strings.Repeat("d", 40), BaseRef: "develop", Method: "squash", ObservedAt: at}
 		}, http.StatusNotFound},
@@ -703,7 +712,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	response = performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/workflow", worker, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "runner-done", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedRevision: second.Revision, State: "Done", Reason: "worker_progress"})
 	requireNativeStatus(t, response, http.StatusOK)
 	result, err = call(operatortool.ExplainItem, selectArgs)
-	if err != nil || json.Unmarshal(result.Content, &explanation) != nil || explanation.LatestTransition == nil || explanation.LatestTransition.Actor.Kind != "runner" || explanation.LatestTransition.Reason != "worker_progress" || explanation.Attempt.NativeID != started.Data.AttemptID || explanation.NativeRuntime.Attempt.Runtime.Landing.Landed || explanation.NativeRuntime.Attempt.Runtime.Landing.RefusalKind != "nothing_to_land" {
+	if err != nil || json.Unmarshal(result.Content, &explanation) != nil || explanation.LatestTransition == nil || explanation.LatestTransition.Actor.Kind != "runner" || explanation.LatestTransition.Reason != "worker_progress" || explanation.Attempt.NativeID != started.Data.AttemptID || explanation.NativeRuntime.Attempt.Runtime.Landing.Landed || explanation.NativeRuntime.Attempt.Runtime.Landing.RefusalKind != "nothing_to_land" || explanation.NativeRuntime.Attempt.Runtime.Landing.Refusal != "nothing_to_land" || explanation.NativeRuntime.Attempt.Runtime.Landing.TargetState != "Done" || slices.Contains(explanation.NativeRuntime.Unavailable, "attempt_landing_receipt") {
 		t.Fatalf("native explanation=%s %v", result.Content, err)
 	}
 	projected := explanation.NativeRuntime.Attempt

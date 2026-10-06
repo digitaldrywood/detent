@@ -585,6 +585,9 @@ func TestNativeLandingQuotaFinishesRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := r.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "native", State: "Merging"}, Mode: RunModeMerge, Execution: execution})
+	if result.RuntimeIdentity.Role != RoleMerge || result.RuntimeIdentity.BackendKind != "git" || result.RuntimeIdentity.ResolvedModel.Value != "none" {
+		t.Fatalf("native landing result identity = %#v", result.RuntimeIdentity)
+	}
 	if !errors.Is(err, github.ErrRateLimited) || execution.finish != "failed" || !execution.stopped || len(execution.recorded) != 0 || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.Landed {
 		t.Fatalf("quota run = %#v, execution %#v, error %v", result, execution, err)
 	}

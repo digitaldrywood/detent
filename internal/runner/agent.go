@@ -1499,6 +1499,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	landing, nativeLanding := req.Execution.(LandingExecution)
 	nativeLanding = nativeLanding && mode == RunModeMerge
 	if nativeLanding {
+		identity := NativeLandingIdentity(r.now())
+		defer func() { returnValue.RuntimeIdentity = identity }()
 		req.ResumeState = store.AgentResumeState{}
 		req.RetryMode = RetryModeFresh
 	}

@@ -269,6 +269,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`, data.AttemptID, scop
 			return false, false, err
 		}
 	}
+	if data.Runtime != nil && data.Runtime.Landing != nil {
+		if err := recordAttemptLanding(ctx, tx, scope, item, data.AttemptID, *data.Runtime.Landing); err != nil {
+			return false, false, err
+		}
+	}
 	if data.Handoff != nil {
 		checkpoint, err := marshalNative(data.Handoff)
 		if err != nil {

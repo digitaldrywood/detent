@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,8 +38,12 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 		otherMachine string
 		policyChange func(*policy.Descriptor)
 		wantRework   bool
+		refusal      string
 	}{
 		{name: "plain git by default"},
+		{name: "conflict receipt returns to Rework", refusal: "conflict"},
+		{name: "protected base receipt returns to review", refusal: "base_protected"},
+		{name: "landing command failure receipt returns to Rework", refusal: "validation"},
 		{name: "approved GitHub PR policy", github: true},
 		{name: "SSH native landing", ssh: true},
 		{name: "landing and coding in one refresh", batch: true},
@@ -57,7 +63,7 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh, test.batch, test.otherMachine, test.policyChange, test.wantRework)
+			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh, test.batch, test.otherMachine, test.policyChange, test.wantRework, test.refusal)
 		})
 	}
 }
@@ -84,7 +90,7 @@ func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 	}
 }
 
-func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantRework bool) {
+func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantRework bool, refusalKinds ...string) {
 	t.Helper()
 	intakeCalls := 0
 	backend := intakeRepositoryBackend{snapshot: func(request hubserver.GitHubImportRequest) tracker.GitHubIssueSnapshot {
@@ -326,6 +332,10 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err != nil || evidence.Attempt == nil || evidence.Attempt.PolicyID != h.descriptor.ID || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.LocalAttemptID != 168 || evidence.Attempt.Runtime.Generation != 27 || evidence.Attempt.Runtime.Phase != "merging" || evidence.Attempt.Runtime.Identity.BackendKind != "git" || !evidence.Attempt.Current {
 		t.Fatalf("landing attempt=%#v err=%v", evidence.Attempt, err)
 	}
+	identity := evidence.Attempt.Runtime.Identity
+	if identity.Role != "merge" || identity.BackendID != "git" || identity.Provider.Value != "none" || identity.ResolvedModel.Value != "none" || identity.ReasoningEffort.Value != "none" {
+		t.Fatalf("plain git landing identity = %#v", identity)
+	}
 	target, err := execution.LandingTarget(guarded)
 	if err != nil {
 		t.Fatal(err)
@@ -343,13 +353,55 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := execution.RecordLanding(guarded, runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, RefusalKind: "conflict"}); err == nil {
 		t.Fatal("a refusal was recorded as a landing")
 	}
-	refused := runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, RefusalKind: "conflict", Refusal: "private command and credentials"}
+	refusalKind := "conflict"
+	if len(refusalKinds) > 0 && refusalKinds[0] != "" {
+		refusalKind = refusalKinds[0]
+	}
+	gateFailed := refusalKind == "validation"
+	if gateFailed {
+		refusalKind = ""
+	}
+	refused := runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, RefusalKind: refusalKind, GateFailed: gateFailed, Refusal: "private command and credentials"}
 	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, refused); err != nil {
 		t.Fatal(err)
 	}
 	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
-	if err != nil || evidence.Attempt.Runtime.Landing == nil || evidence.Attempt.Runtime.Landing.Landed || evidence.Attempt.Runtime.Landing.RefusalKind != "conflict" || evidence.Change.Change.Landed != nil {
+	if err != nil || evidence.Attempt.Runtime.Landing == nil || evidence.Attempt.Runtime.Landing.Landed || evidence.Attempt.Runtime.Landing.RefusalKind != refusalKind || evidence.Change.Change.Landed != nil {
 		t.Fatalf("refused receipt=%#v err=%v", evidence, err)
+	}
+	refusalReceipt := *evidence.Attempt.Runtime.Landing
+	sequence := evidence.Attempt.Sequence
+	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, refused); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
+	if err != nil || evidence.Attempt.Sequence != sequence || !reflect.DeepEqual(*evidence.Attempt.Runtime.Landing, refusalReceipt) || slices.Contains(evidence.Unavailable, "attempt_landing_receipt") {
+		t.Fatalf("refusal replay changed receipt: %#v, error %v", evidence, err)
+	}
+	detail, err := h.admin.Change(t.Context(), item, change.ChangeID)
+	if err != nil || len(detail.Versions) != 1 || !reflect.DeepEqual(detail.Versions[0].Landing, &refusalReceipt) || refusalReceipt.Refusal != refusalKind || refusalReceipt.FromState != "Merging" {
+		t.Fatalf("version refusal receipt = %#v, error %v", detail, err)
+	}
+	if len(refusalKinds) > 0 && refusalKinds[0] != "" {
+		if err := nativeLanding.Finish(guarded, "succeeded"); err != nil {
+			t.Fatal(err)
+		}
+		target := "Human Review"
+		if refusalKind == "conflict" || gateFailed {
+			target = "Rework"
+		}
+		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, target); err != nil {
+			t.Fatal(err)
+		}
+		evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
+		if err != nil || evidence.Attempt.Runtime.Landing.TargetState != target {
+			t.Fatalf("refusal destination = %#v, error %v", evidence, err)
+		}
+		detail, err = h.admin.Change(t.Context(), item, change.ChangeID)
+		if err != nil || !reflect.DeepEqual(detail.Versions[0].Landing, evidence.Attempt.Runtime.Landing) || detail.Change.Landed != nil {
+			t.Fatalf("version lost refusal destination = %#v, error %v", detail, err)
+		}
+		return
 	}
 	landed := runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Landed: true, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: target.Method, Rebased: true}
 	if err := execution.RecordLanding(guarded, landed); err != nil {
@@ -375,6 +427,19 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, landed); err != nil {
 		t.Fatal(err)
 	}
+	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	landedReceipt := *evidence.Attempt.Runtime.Landing
+	sequence = evidence.Attempt.Sequence
+	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, landed); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
+	if err != nil || evidence.Attempt.Sequence != sequence || !reflect.DeepEqual(*evidence.Attempt.Runtime.Landing, landedReceipt) {
+		t.Fatalf("landing replay changed receipt: %#v, error %v", evidence, err)
+	}
 	if err := nativeLanding.Finish(guarded, "succeeded"); err != nil {
 		t.Fatal(err)
 	}
@@ -388,11 +453,11 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if state := h.state(t, issue.ID); state != "Done" {
 		t.Fatalf("after landing the item is in %s, want Done", state)
 	}
-	detail, err := h.admin.Change(t.Context(), item, change.ChangeID)
+	detail, err = h.admin.Change(t.Context(), item, change.ChangeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(detail.Versions) != 1 || detail.Versions[0].PolicyID != publishedPolicyID || detail.Change.Landed == nil || !detail.Change.Landed.Rebased || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" {
+	if len(detail.Versions) != 1 || !reflect.DeepEqual(detail.Versions[0].Landing, evidence.Attempt.Runtime.Landing) || detail.Versions[0].Landing.FromState != "Merging" || detail.Versions[0].Landing.TargetState != "Done" || detail.Versions[0].PolicyID != publishedPolicyID || detail.Change.Landed == nil || !detail.Change.Landed.Rebased || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" {
 		t.Fatalf("landed change = %#v, summary %#v", detail.Change.Landed, detail.Summary)
 	}
 	if otherMachine != "" {
