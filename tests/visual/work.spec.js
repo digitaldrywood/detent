@@ -376,13 +376,10 @@ test.describe("the work board", () => {
     const sidebar = page.locator("aside.dc-side");
     await expect(sidebar.getByTestId("nav-work")).toHaveAttribute("aria-current", "page");
 
-    // Browse keeps only what the footer icon row does not already serve
-    // (decisions.md §17.4): Pull requests, Usage and Settings left the group
-    // when the footer took them, so none of the four rows left is a duplicate
-    // and none of them is served yet.
-    for (const id of ["activity", "diagnostics", "reports", "library"]) {
+    for (const id of ["activity", "reports", "library"]) {
       await expect(sidebar.getByTestId(`nav-${id}`)).toBeDisabled();
     }
+    await expect(sidebar.getByTestId("nav-diagnostics")).toBeEnabled();
     for (const id of ["changes", "usage", "settings"]) {
       await expect(sidebar.getByTestId(`nav-${id}`)).toHaveCount(0);
     }

@@ -39,6 +39,7 @@ import {
 import { isApiError } from "../../contracts/index.ts";
 import { hubPath } from "../../runtime/basePath.ts";
 import { WorkAttachment } from "../../contracts/workAttachments.ts";
+import { DiagnosticsReport, HealthFindingsRead } from "../../contracts/diagnostics.ts";
 import { clearBoardCache } from "../work/lib/boardStore.ts";
 
 /** A decoded failure from the hosted API, or the network under it. */
@@ -463,6 +464,28 @@ export function makeAccountApi(options: AccountApiOptions) {
 
     // --- Fleet, plan and billing --------------------------------------------
     fleet: () => send(FleetResponse, "GET", `${base}/fleet`),
+    diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
+    healthFindings: async (projects: readonly string[]): Promise<HealthFindingsRead> => {
+      const reads = await Promise.all(projects.map(async (project) => {
+        const items: HealthFindingsRead["items"][number][] = [];
+        let cursor = "";
+        let lastTick: string | null = null;
+        do {
+          const page = await send(HealthFindingsRead, "GET", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=open${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+          items.push(...page.items);
+          lastTick = page.last_tick_at;
+          cursor = page.next_cursor ?? "";
+        } while (cursor);
+        return { items, last_tick_at: lastTick };
+      }));
+      const ticks = reads.map((read) => read.last_tick_at).filter((tick): tick is string => tick !== null);
+      return {
+        items: [...new Map(reads.flatMap((read) => read.items).map((finding) => [finding.id, finding])).values()],
+        last_tick_at: ticks.length > 0 && ticks.length === reads.length
+          ? ticks.toSorted((left, right) => Date.parse(left) - Date.parse(right))[0]!
+          : null,
+      };
+    },
     fleetNames: () => send(FleetNamesResponse, "GET", `${base}/fleet?include=names`),
     plan: () => send(PlanReport, "GET", `${base}/plan`),
     billing: () => send(BillingReport, "GET", `${base}/billing`),

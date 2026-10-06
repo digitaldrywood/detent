@@ -362,6 +362,65 @@ func TestHostedUsageReportAccess(t *testing.T) {
 	f.usage(t, "owner", browserHostedOrganizationBase+"/usage?range=1y", http.StatusUnprocessableEntity)
 	f.usage(t, "owner", browserHostedOrganizationBase+"/usage?project=proj_missing", http.StatusNotFound)
 	f.usage(t, "", browserHostedOrganizationBase+"/usage", http.StatusUnauthorized)
+	t.Run("diagnostics", func(t *testing.T) {
+		for _, account := range []string{"owner", "viewer"} {
+			var report diagnosticsReport
+			usageDecode(t, f.usage(t, account, browserHostedOrganizationBase+"/diagnostics?range=30d", http.StatusOK), &report)
+			if report.Findings != nil || report.Ready != nil || report.DetectorTick != nil || report.Refused != nil {
+				t.Fatalf("unrecorded diagnostics became measurements: %+v", report)
+			}
+			var slots float64
+			for _, bucket := range report.Capacity {
+				slots += bucket.Slots
+			}
+			if slots <= 0 || len(report.Coverage) != 9 {
+				t.Fatalf("missing recorded lease capacity or coverage: %+v", report)
+			}
+		}
+		f.usage(t, "", browserHostedOrganizationBase+"/diagnostics", http.StatusUnauthorized)
+		f.usage(t, "staff", browserHostedOrganizationBase+"/diagnostics", http.StatusForbidden)
+		f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=1y", http.StatusUnprocessableEntity)
+		now := f.service.config.now().UTC().Add(-time.Minute)
+		var item string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 1", "org_browser_preview", f.project).Scan(&item); err != nil {
+			t.Fatal(err)
+		}
+		scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		for _, outcome := range []string{"ready", "skipped"} {
+			data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: outcome, Reason: "host_capacity", At: now}}
+			if err := appendNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", data, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.landing',json(?)),updated_at=? WHERE id='attempt_browser_usage_0_0'`, fmt.Sprintf(`{"landed":false,"refusal_kind":"conflict","observed_at":%q}`, formatHubTime(now)), formatHubTime(now)); err != nil {
+			t.Fatal(err)
+		}
+		var report diagnosticsReport
+		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=24h", http.StatusOK), &report)
+		if report.Ready == nil || *report.Ready != 1 || report.Skipped == nil || *report.Skipped != 1 || len(report.SkipReasons) != 1 || report.SkipReasons[0].Reason != "host_capacity" {
+			t.Fatalf("recorded scheduler decisions missing: %+v", report)
+		}
+		if len(report.Refused) != 1 || report.Refused[0].Reason != "conflict" || report.Refused[0].Count != 1 || report.Coverage[7].Observed == nil || *report.Coverage[7].Observed != 1 {
+			t.Fatalf("recorded landing refusal missing: %+v", report)
+		}
+		t.Run("repeated refusal remains counted after retry storm classification", func(t *testing.T) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.landing',json(?)),updated_at=?`, fmt.Sprintf(`{"landed":false,"refusal_kind":"conflict","observed_at":%q}`, formatHubTime(now)), formatHubTime(now)); err != nil {
+				t.Fatal(err)
+			}
+			usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=24h", http.StatusOK), &report)
+			if len(report.Refused) != 1 || report.Refused[0].Count != browserUsageDays*len(browserUsageEntries) {
+				t.Fatalf("repeated refusal missing: %+v", report.Refused)
+			}
+		})
+	})
 }
 
 // The endpoint aggregates the rows the store holds: the seeded days fold
