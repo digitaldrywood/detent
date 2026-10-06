@@ -192,9 +192,11 @@ func TestCompletedDependencyWaitAdmitsPrerequisiteAfterRestart(t *testing.T) {
 				issue = implementProgressIssue("published-head", "Test")
 			}
 			issue.State = tt.lane
+			issue.Priority = new(1)
 			issue.AssignedToWorker = true
 			issue.BranchName = "saved-work"
 			blocker := dispatchTestIssue("blocker", "Todo")
+			blocker.Priority = new(2)
 			blocker.Identifier = "digitaldrywood/detent#2282"
 			issue.Description = "Depends on: " + blocker.Identifier
 			issue.Comments = []connector.IssueComment{{Body: implementProgressWorkpadComment(blocker.Identifier, "")}}
