@@ -26,10 +26,7 @@ func applyTestHealth(t *testing.T, f nativeFixture, now time.Time, findings []he
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, findings); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
+	if err := f.service.commitHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, findings); err != nil {
 		t.Fatal(err)
 	}
 }

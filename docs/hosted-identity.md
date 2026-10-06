@@ -54,6 +54,16 @@ directory:
 ```
 
 Set `workos_organization_id` at the root when binding an existing organization.
+Optional `smtp` configures health finding emails to active organization owners:
+`host`, `port` (default 587), `from`, and, when authentication is required,
+`username` and `password_env`. The password is resolved from the named server
+environment variable; literal passwords are rejected. This uses the existing
+SMTP transport. Attention findings attempt one opening and one resolution email
+per finding record, including recurrences within the sixty-minute reopen window.
+Watch findings send no email. Without SMTP, findings retain an
+`email_unavailable` marker exposed by the existing health reads. Delivery is
+attempted after the finding commits; failures are logged without retrying.
+
 The WorkOS API key is resolved from the named server environment variable; do
 not put its value in YAML. Optional `workos.api_url` and `workos.issuer_url`
 support configured provider endpoints; HTTP is accepted only on loopback for

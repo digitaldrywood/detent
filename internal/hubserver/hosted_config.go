@@ -17,6 +17,7 @@ type HostedDestination struct {
 }
 
 type HostedConfig struct {
+	EmailSender              auth.EmailSender
 	Billing                  *HostedBillingConfig
 	EntitlementAdministrator string
 	EntitlementAdminToken    []byte

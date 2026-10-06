@@ -16,6 +16,7 @@ import (
 )
 
 type hostedFileConfig struct {
+	SMTP                     *hostedSMTPFileConfig         `yaml:"smtp"`
 	Profiling                profiling.Config              `yaml:"profiling,omitempty"`
 	Billing                  *hostedBillingFileConfig      `yaml:"billing"`
 	EntitlementAdministrator string                        `yaml:"entitlement_administrator"`
@@ -41,6 +42,35 @@ type hostedFileConfig struct {
 		APIURL    string `yaml:"api_url"`
 		IssuerURL string `yaml:"issuer_url"`
 	} `yaml:"workos"`
+}
+
+type hostedSMTPFileConfig struct {
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"`
+	Username    string `yaml:"username"`
+	PasswordEnv string `yaml:"password_env"`
+	From        string `yaml:"from"`
+}
+
+func readHostedSMTPSender(config *hostedSMTPFileConfig, lookupEnv func(string) string) (auth.EmailSender, error) {
+	if config == nil {
+		return nil, nil
+	}
+	var password string
+	if config.PasswordEnv != "" {
+		if !validEnvName(config.PasswordEnv) {
+			return nil, errors.New("SMTP password environment variable name is invalid")
+		}
+		password = lookupEnv(config.PasswordEnv)
+		if password == "" {
+			return nil, errors.New("SMTP password is unavailable")
+		}
+	}
+	port := config.Port
+	if port == 0 {
+		port = 587
+	}
+	return auth.NewSMTPSender(auth.SMTPConfig{Host: config.Host, Port: port, Username: config.Username, Password: password, From: config.From})
 }
 
 type hostedSharedEntryFileConfig struct {
@@ -165,7 +195,12 @@ func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubser
 			return nil, err
 		}
 	}
+	sender, err := readHostedSMTPSender(config.SMTP, lookupEnv)
+	if err != nil {
+		return nil, err
+	}
 	return &hubserver.HostedConfig{
+		EmailSender:              sender,
 		Billing:                  billingConfig,
 		EntitlementAdministrator: config.EntitlementAdministrator, EntitlementAdminToken: entitlementToken,
 		Plans:          config.Plans,

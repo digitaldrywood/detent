@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -14,6 +15,21 @@ import (
 )
 
 const smtpTimeout = 10 * time.Second
+
+type EmailMessage struct {
+	To      string
+	Subject string
+	Body    string
+}
+
+type EmailSender interface {
+	SendEmail(context.Context, EmailMessage) error
+}
+
+type SMTPSender interface {
+	Sender
+	EmailSender
+}
 
 type SMTPConfig struct {
 	Host     string
@@ -32,7 +48,7 @@ type smtpSender struct {
 	timeout  time.Duration
 }
 
-func NewSMTPSender(cfg SMTPConfig) (Sender, error) {
+func NewSMTPSender(cfg SMTPConfig) (SMTPSender, error) {
 	host := strings.TrimSpace(cfg.Host)
 	if host == "" {
 		return nil, errors.New("smtp host is required")
@@ -57,10 +73,17 @@ func NewSMTPSender(cfg SMTPConfig) (Sender, error) {
 	}, nil
 }
 
-func (s *smtpSender) SendMagicLink(ctx context.Context, message Message) (err error) {
+func (s *smtpSender) SendMagicLink(ctx context.Context, message Message) error {
+	return s.SendEmail(ctx, EmailMessage{To: message.To, Subject: "Your Detent sign-in link", Body: magicLinkBody(message)})
+}
+
+func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err error) {
+	if strings.ContainsAny(message.To+message.Subject, "\r\n") {
+		return errors.New("email headers are invalid")
+	}
 	recipient, parseErr := mail.ParseAddress(strings.TrimSpace(message.To))
 	if parseErr != nil || recipient == nil || recipient.Address == "" {
-		return errors.New("magic link recipient is invalid")
+		return errors.New("email recipient is invalid")
 	}
 	deadline := time.Now().Add(s.timeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
@@ -104,7 +127,7 @@ func (s *smtpSender) SendMagicLink(ctx context.Context, message Message) (err er
 	if err != nil {
 		return fmt.Errorf("start smtp message: %w", err)
 	}
-	if _, err := writer.Write(magicLinkMessage(s.from, recipient.Address, message)); err != nil {
+	if _, err := writer.Write(emailMessage(s.from, recipient.Address, message)); err != nil {
 		return errors.Join(fmt.Errorf("write smtp message: %w", err), writer.Close())
 	}
 	if err := writer.Close(); err != nil {
@@ -117,13 +140,17 @@ func (s *smtpSender) SendMagicLink(ctx context.Context, message Message) (err er
 	return nil
 }
 
-func magicLinkMessage(from string, to string, message Message) []byte {
-	body := "Use this link to sign in to Detent:\r\n\r\n" + message.URL + "\r\n\r\nThis link can be used once and expires at " + message.ExpiresAt.UTC().Format(time.RFC3339) + ".\r\n"
+func magicLinkBody(message Message) string {
+	return "Use this link to sign in to Detent:\r\n\r\n" + message.URL + "\r\n\r\nThis link can be used once and expires at " + message.ExpiresAt.UTC().Format(time.RFC3339) + ".\r\n"
+}
+
+func emailMessage(from string, to string, message EmailMessage) []byte {
 	headers := "From: " + from + "\r\n" +
 		"To: " + to + "\r\n" +
-		"Subject: Your Detent sign-in link\r\n" +
+		"Subject: " + mime.QEncoding.Encode("utf-8", message.Subject) + "\r\n" +
 		"MIME-Version: 1.0\r\n" +
 		"Content-Type: text/plain; charset=UTF-8\r\n" +
 		"Content-Transfer-Encoding: 8bit\r\n\r\n"
+	body := strings.ReplaceAll(strings.ReplaceAll(message.Body, "\r\n", "\n"), "\n", "\r\n")
 	return []byte(headers + body)
 }
