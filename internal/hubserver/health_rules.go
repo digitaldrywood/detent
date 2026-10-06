@@ -4,8 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -42,21 +45,45 @@ type healthSlackFailure struct {
 }
 
 type healthFinding struct {
-	SlackUnavailable *healthSlackFailure `json:"slack_unavailable,omitempty"`
-	ID               string              `json:"id"`
-	Fingerprint      string              `json:"fingerprint"`
-	Signal           string              `json:"signal"`
-	Class            string              `json:"class"`
-	Subject          healthSubject       `json:"subject"`
-	Projects         []string            `json:"-"`
-	OpenedAt         time.Time           `json:"opened_at"`
-	LastSeenAt       time.Time           `json:"last_seen_at"`
-	ResolvedAt       *time.Time          `json:"resolved_at"`
-	Severity         string              `json:"severity"`
-	Summary          string              `json:"summary"`
-	NextAction       string              `json:"next_action"`
-	Evidence         healthEvidence      `json:"evidence"`
-	EmailUnavailable bool                `json:"email_unavailable,omitempty"`
+	SlackUnavailable *healthSlackFailure  `json:"slack_unavailable,omitempty"`
+	ID               string               `json:"id"`
+	Fingerprint      string               `json:"fingerprint"`
+	Signal           string               `json:"signal"`
+	Class            string               `json:"class"`
+	Subject          healthSubject        `json:"subject"`
+	Projects         []string             `json:"-"`
+	OpenedAt         time.Time            `json:"opened_at"`
+	LastSeenAt       time.Time            `json:"last_seen_at"`
+	ResolvedAt       *time.Time           `json:"resolved_at"`
+	Severity         string               `json:"severity"`
+	Summary          string               `json:"summary"`
+	NextAction       string               `json:"next_action"`
+	Evidence         healthEvidence       `json:"evidence"`
+	EmailUnavailable bool                 `json:"email_unavailable,omitempty"`
+	FiledBy          string               `json:"filed_by,omitempty"`
+	Issues           []healthFindingIssue `json:"issues,omitempty"`
+}
+
+type healthFindingIssue struct {
+	ProjectID  tracker.ProjectID        `json:"project_id"`
+	WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
+}
+
+func scopeHealthEvidence(evidence healthEvidence, project tracker.ProjectID) healthEvidence {
+	if len(evidence.Queues) == 0 {
+		return evidence
+	}
+	queue, ok := evidence.Queues[string(project)]
+	evidence.Queues = map[string]healthQueueEvidence{}
+	evidence.Counts = maps.Clone(evidence.Counts)
+	if ok {
+		evidence.Queues[string(project)] = queue
+		if evidence.Counts == nil {
+			evidence.Counts = map[string]int{}
+		}
+		evidence.Counts["queue_depth"] = queue.QueueDepth
+	}
+	return evidence
 }
 
 type healthRunner struct {

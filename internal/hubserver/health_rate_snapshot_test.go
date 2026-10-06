@@ -57,7 +57,7 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 	}
 	defer tx.Rollback()
 	states := nativeFixtureStates()
-	states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true}, tracker.NativeState{Name: "Merging", Dispatchable: true})
+	states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true}, tracker.NativeState{Name: "Merging", Dispatchable: true}, tracker.NativeState{Name: "Backlog"})
 	if err := applyNativeProjectStates(t.Context(), tx, scope, states, now.Add(-8*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}

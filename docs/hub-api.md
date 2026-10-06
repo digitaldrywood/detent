@@ -777,9 +777,24 @@ or resolved at or after that time. The response includes `items`, an optional
 successful evaluation).
 
 The Hub evaluates static health rules every minute using current state and
-at most 24 hours of recorded events. It writes only findings and its successful
-tick, without claiming work, changing lanes, making model calls, or creating
-issues. A finding preserves its ID and opening time while active and when
+at most 24 hours of recorded events. Findings and their native issue reports
+share a transaction with the successful tick. The existing machine reporter
+files instance findings into dispatchable Todo at High with the infrastructure
+label and other classes into nondispatchable Backlog. Reports remain attributed
+to the detector instance, even when the subject is a work item. The detector
+does not claim work, change existing lanes, or make model calls.
+
+Finding reads include `filed_by: health_detector` and project-scoped `issues`
+links (`project_id`, `work_item_id`); issue bodies carry the finding ID, summary,
+next action, evidence and origin fingerprint. Changed evidence and reopened
+findings comment occurrences on matching open issues; unchanged observations
+do not repeat comments. Resolutions comment their time without closing issues.
+Terminal matches are already handled and remain unchanged. Existing human
+questions, holds, lanes, stronger priority, origin and imported history remain
+with the reporter owner. The operator can retire this project's external
+board-audit filing sweep after deploying the detector reporter.
+
+A finding preserves its ID and opening time while active and when
 reopened within 60 minutes of resolution. A later recurrence opens a new
 record with the same signal/subject fingerprint. Evidence lists are bounded
 to 20 IDs. Evaluations read at most 100 projects, 1,000 enrolled runners,
