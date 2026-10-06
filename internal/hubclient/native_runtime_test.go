@@ -13,6 +13,54 @@ import (
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
+func TestNativeAttemptTerminalActivityReceipts(t *testing.T) {
+	for _, tt := range []struct {
+		name, outcome string
+		duration      time.Duration
+		merge         bool
+	}{
+		{name: "failed", outcome: "failed", duration: 20 * time.Second},
+		{name: "two seconds", outcome: "succeeded", duration: 2 * time.Second},
+		{name: "interrupted", outcome: "interrupted", duration: 3 * time.Second},
+		{name: "merge", outcome: "failed", duration: 20 * time.Second, merge: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+				{Name: "Done", Terminal: true},
+			}, true)
+			issue := h.createInProgress(t, tt.name)
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			at := time.Now().UTC().Add(-time.Minute)
+			clock := at
+			h.scheduler.now = func() time.Time { return clock }
+			if tt.merge {
+				if err := execution.StartLanding(t.Context(), 42, 2); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			clock = at.Add(tt.duration)
+			if err := execution.Finish(t.Context(), tt.outcome); err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+			if err != nil || evidence.Attempt == nil || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Activity == nil {
+				t.Fatalf("terminal receipt missing: evidence=%+v err=%v", evidence, err)
+			}
+			p := evidence.Attempt.Runtime.Activity
+			if p.Summary == nil || !p.StartedAt.Equal(at) || !p.FinishedAt.Equal(clock) || !p.Summary.Through.Equal(clock) || p.Breakdown().ElapsedSeconds != tt.duration.Seconds() {
+				t.Fatalf("terminal receipt does not cover attempt: %+v", p)
+			}
+			if tt.merge && p.Breakdown().ObservedSeconds != tt.duration.Seconds() {
+				t.Fatalf("programmatic merge time unobserved: %+v", p.Breakdown())
+			}
+		})
+	}
+}
+
 func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")

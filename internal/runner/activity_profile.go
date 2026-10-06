@@ -164,6 +164,9 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 	}
 	recorder := &activityRecorder{queue: make(chan activityObservation, 256), wake: make(chan struct{}, 1), done: make(chan struct{})}
 	started := r.now()
+	if !request.StartedAt.IsZero() && request.StartedAt.Before(started) {
+		started = request.StartedAt
+	}
 	go func() {
 		defer close(recorder.done)
 		profile := workflowmetrics.ActivityProfile{
@@ -256,6 +259,7 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 						for _, index := range open {
 							profile.Spans[index].Outcome = "unobserved"
 						}
+						profile.SummarizeThrough(profile.FinishedAt)
 						persist()
 						return
 					}

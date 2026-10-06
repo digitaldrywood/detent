@@ -51,7 +51,7 @@ func projectNativeAnalyticsActivity(out *nativeAnalyticsProject, a *nativeAnalyt
 		}
 		return
 	}
-	out.Activity.OmissionCoverage = "cumulative_selected_attempt_receipts; hourly_attribution_unavailable"
+	out.Activity.OmissionCoverage = "cumulative_selected_attempt_receipts; hourly_timing_when_retained; omission_counts_not_hourly_attributed"
 	addNativeAnalyticsActivity(&out.Activity.nativeAnalyticsActivityTiming, p, out.Window.From, out.Window.To)
 	out.Activity.DroppedEvents += p.Dropped
 	out.Activity.UnpairedEvents += p.Unpaired
@@ -81,19 +81,9 @@ func addNativeAnalyticsActivity(out *nativeAnalyticsActivityTiming, p workflowme
 	}
 	out.ProfilesObserved++
 	out.Partial = out.Partial || p.Coverage != "complete" || p.Dropped > 0 || p.Unpaired > 0 || p.DetailOmitted > 0 || p.ProjectionOmitted > 0
-	var b workflowmetrics.ActivityBreakdown
-	if !start.After(p.StartedAt) && !finish.Before(end) {
-		b = p.Breakdown()
-	} else {
-		if p.Summary != nil && start.Before(p.Summary.DetailFrom) {
-			detailStart := minTime(finish, p.Summary.DetailFrom)
-			out.UnallocatedSeconds += detailStart.Sub(start).Seconds()
-			out.Partial = true
-			start = detailStart
-		}
-		p.StartedAt, p.AsOf, p.FinishedAt, p.Summary = start, finish, time.Time{}, nil
-		b = p.Breakdown()
-	}
+	b, unallocated := p.BreakdownBetween(start, finish)
+	out.UnallocatedSeconds += unallocated
+	out.Partial = out.Partial || unallocated > 0
 	out.Timing.ElapsedSeconds += b.ElapsedSeconds
 	out.Timing.ObservedSeconds += b.ObservedSeconds
 	out.Timing.UnknownSeconds += b.UnknownSeconds
@@ -128,7 +118,37 @@ func validAnalyticsActivity(p workflowmetrics.ActivityProfile) bool {
 	if s.Through.Before(p.StartedAt) || s.Through.After(end) || s.DetailFrom.Before(p.StartedAt) || s.DetailFrom.After(s.Through) {
 		return false
 	}
-	b := s.Breakdown
+	if len(s.Hourly) > workflowmetrics.ActivityHourLimit || !validAnalyticsBreakdown(s.Breakdown, s.Through.Sub(p.StartedAt).Seconds()) {
+		return false
+	}
+	previous := p.StartedAt
+	var elapsed, observed, unknown, concurrent float64
+	kinds := make(map[string]float64)
+	for _, hour := range s.Hourly {
+		if hour.From.Before(previous) || !hour.To.After(hour.From) || hour.To.After(s.Through) || hour.To.After(hour.From.UTC().Truncate(time.Hour).Add(time.Hour)) || !validAnalyticsBreakdown(hour.Breakdown, hour.To.Sub(hour.From).Seconds()) {
+			return false
+		}
+		previous = hour.To
+		elapsed += hour.Breakdown.ElapsedSeconds
+		observed += hour.Breakdown.ObservedSeconds
+		unknown += hour.Breakdown.UnknownSeconds
+		concurrent += hour.Breakdown.ConcurrentSeconds
+		for kind, seconds := range hour.Breakdown.ByKind {
+			kinds[kind] += seconds
+		}
+	}
+	if elapsed > s.Breakdown.ElapsedSeconds+0.001 || observed > s.Breakdown.ObservedSeconds+0.001 || unknown > s.Breakdown.UnknownSeconds+0.001 || concurrent > s.Breakdown.ConcurrentSeconds+0.001 {
+		return false
+	}
+	for kind, seconds := range kinds {
+		if seconds > s.Breakdown.ByKind[kind]+0.001 {
+			return false
+		}
+	}
+	return true
+}
+
+func validAnalyticsBreakdown(b workflowmetrics.ActivityBreakdown, elapsed float64) bool {
 	for _, seconds := range []float64{b.ElapsedSeconds, b.ObservedSeconds, b.UnknownSeconds, b.ConcurrentSeconds} {
 		if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 {
 			return false
@@ -141,7 +161,7 @@ func validAnalyticsActivity(p workflowmetrics.ActivityProfile) bool {
 		}
 		sum += seconds
 	}
-	return math.Abs(b.ElapsedSeconds-s.Through.Sub(p.StartedAt).Seconds()) < 0.001 && math.Abs(b.ElapsedSeconds-b.ObservedSeconds-b.UnknownSeconds) < 0.001 && b.ConcurrentSeconds <= b.ObservedSeconds && math.Abs(sum-b.ElapsedSeconds) < 0.001 && math.Abs(b.ByKind["unobserved"]-b.UnknownSeconds) < 0.001 && math.Abs(b.ByKind["concurrent"]-b.ConcurrentSeconds) < 0.001
+	return math.Abs(b.ElapsedSeconds-elapsed) < 0.001 && math.Abs(b.ElapsedSeconds-b.ObservedSeconds-b.UnknownSeconds) < 0.001 && b.ConcurrentSeconds <= b.ObservedSeconds && math.Abs(sum-b.ElapsedSeconds) < 0.001 && math.Abs(b.ByKind["unobserved"]-b.UnknownSeconds) < 0.001 && math.Abs(b.ByKind["concurrent"]-b.ConcurrentSeconds) < 0.001
 }
 
 func nativeAnalyticsAttemptPage(attempts []nativeAnalyticsAttempt, offset, limit int) operatortool.ReadPage[nativeAnalyticsAttempt] {

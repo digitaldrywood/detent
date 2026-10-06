@@ -210,8 +210,11 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	}
 	result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkAttemptReceipt, Arguments: receiptArgs})
 	var receipt operatortool.WorkReadResult[tracker.NativeRuntimeEvidence]
-	if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &receipt) != nil || receipt.Data.Attempt == nil || receipt.Data.Attempt.Runtime != nil || !strings.Contains(result.Content, "runtime_phase_heartbeat") || !strings.Contains(result.Content, "instruction_activity") {
-		t.Fatalf("git-only receipt fabricated runtime: %s, err=%v", result.Content, err)
+	if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &receipt) != nil || receipt.Data.Attempt == nil || receipt.Data.Attempt.Runtime == nil || receipt.Data.Attempt.Runtime.Activity == nil {
+		t.Fatalf("git-only activity receipt unavailable: %s, err=%v", result.Content, err)
+	}
+	if p := receipt.Data.Attempt.Runtime.Activity; p.SessionID != 0 || p.Summary == nil || len(p.Spans) != 0 || p.Breakdown().ObservedSeconds != 0 || !receipt.Data.Attempt.Runtime.Identity.IsZero() {
+		t.Fatalf("git-only receipt fabricated provider activity: %+v", p)
 	}
 	at := time.Now().UTC().Add(-2 * time.Second)
 	observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "merging", HeartbeatAt: at, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 2, Stage: "merge", Status: "running", Coverage: "partial", StartedAt: at, AsOf: at, Spans: []workflowmetrics.ActivitySpan{{ID: "git", Kind: "implementation", Outcome: "running", StartedAt: at}}}}
