@@ -51,7 +51,7 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	var internalID tracker.WorkItemID
 	var labels, assignees, actor, created, updated, activity, externalID string
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
-	var repositoryOwner, repositoryName string
+	var repositoryOwner, repositoryName, importedURL string
 	var sourceNumber int
 	var provenance sql.NullString
 	var priority sql.NullInt64
@@ -63,7 +63,7 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
  i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
  i.actor_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
- COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0)
+ COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -72,7 +72,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 		&internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
 		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
-		&repositoryOwner, &repositoryName, &sourceNumber)
+		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL)
 	if err != nil {
 		return issue, 0, err
 	}
@@ -98,7 +98,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	if issue.LinkedSource != nil {
 		sourceURL = issue.LinkedSource.URL
 	}
-	issue.ExternalReferences = nativeSourceReferences(externalID, repositoryOwner, repositoryName, sourceNumber, sourceURL, issue.Provenance)
+	issue.ExternalReferences = nativeSourceReferences(externalID, repositoryOwner, repositoryName, sourceNumber, sourceURL, importedURL, issue.Provenance)
 	if externalID != "" && issue.Provenance == nil {
 		issue.Provenance = &tracker.Provenance{Provider: "github", ExternalID: externalID, AuthorID: sourceAuthor}
 		if issue.Provenance.CreatedAt, err = parseTimeValue(sourceCreated); err != nil {
@@ -293,10 +293,19 @@ func createNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, reque
 		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}}
 	issue.Blockers = []tracker.NativeDependency{}
 	issue.IgnoreDependencies = !project.RequireDependencies
-	issue.ExternalReferences = []tracker.ExternalReference{}
-	if issue.Provenance != nil {
-		issue.ExternalReferences = append(issue.ExternalReferences, tracker.ExternalReference{Provider: issue.Provenance.Provider, Kind: "issue", ID: issue.Provenance.ExternalID})
+	var importedURL string
+	var sourceNumber sql.NullInt64
+	if issue.Provenance != nil && issue.Provenance.Provider == "github" {
+		importedURL = githubMigrationSourceURL(issue.Body)
+		if importedURL != "" {
+			_, _, number, err := tracker.ParseGitHubIssueURL(importedURL)
+			if err != nil {
+				return tracker.NativeIssue{}, err
+			}
+			sourceNumber = sql.NullInt64{Int64: int64(number), Valid: true}
+		}
 	}
+	issue.ExternalReferences = nativeSourceReferences("", "", "", 0, "", importedURL, issue.Provenance)
 	for _, state := range project.States {
 		if state.Name == issue.State {
 			if state.OperatorOnly && scope.credential.Scope == apiScopeWorker && !machineIntake {
@@ -334,8 +343,8 @@ func createNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, reque
 	if issue.Provenance != nil {
 		author = issue.Provenance.AuthorID
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO issues (native_id, organization_id, project_id, number, workflow_state_id, title, body, url, github_state, labels_json, assignees_json, source_version, source_updated_at, synchronized_at, created_at, updated_at, author_login, actor_json, provenance_json, native_source_key, native_created_at, native_updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, '', 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, ?)`, issue.WorkItemID, scope.organization, scope.project, issue.Number, workflowID, issue.Title, issue.Body, labels, assignees, formatHubTime(now), formatHubTime(now), author, actor, provenance, sourceKey, formatHubTime(now), formatHubTime(now))
+	result, err := tx.ExecContext(ctx, `INSERT INTO issues (native_id, organization_id, project_id, number, workflow_state_id, title, body, url, github_number, github_state, labels_json, assignees_json, source_version, source_updated_at, synchronized_at, created_at, updated_at, author_login, actor_json, provenance_json, native_source_key, native_created_at, native_updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, ?)`, issue.WorkItemID, scope.organization, scope.project, issue.Number, workflowID, issue.Title, issue.Body, importedURL, sourceNumber, labels, assignees, formatHubTime(now), formatHubTime(now), author, actor, provenance, sourceKey, formatHubTime(now), formatHubTime(now))
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}

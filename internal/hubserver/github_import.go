@@ -397,6 +397,9 @@ func importGitHubIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, integ
 	if err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, "UPDATE issues SET url = ? WHERE native_id = ?", source.URL, current.WorkItemID); err != nil {
+		return err
+	}
 	current.SourceUpdatedAt = formatHubTime(source.UpdatedAt)
 	return nil
 }

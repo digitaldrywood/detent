@@ -34,7 +34,7 @@ func (b *importFixtureBackend) FetchImportPage(_ context.Context, request GitHub
 	comment := GitHubImportRecord{SourceKey: "comment:" + id, Kind: "comment", Data: json.RawMessage(`{"body":"Full historical comment"}`), Body: "Full historical comment", Provenance: tracker.Provenance{Provider: "github", ExternalID: "C_" + id, AuthorID: "U_author", AuthorDisplayName: "author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
 	switch request.Stage {
 	case "issue":
-		return GitHubImportPage{Issue: &IssueSource{NodeID: id, Number: request.IssueNumber, Title: "Imported issue", Body: strings.Repeat("Complete body. ", 100), URL: "https://github.com/digitaldrywood/detent/issues/1", State: "open", AuthorID: "author", Labels: []string{"Todo"}, Assignees: []string{}, CreatedAt: now.Add(-time.Hour), UpdatedAt: now}, Records: []GitHubImportRecord{{SourceKey: "issue:" + id, Kind: "issue", Data: json.RawMessage(`{"id":"` + id + `"}`)}}, Gaps: []string{"Deleted comments and edit revisions are unavailable"}}, nil
+		return GitHubImportPage{Issue: &IssueSource{NodeID: id, Number: request.IssueNumber, Title: "Imported issue", Body: strings.Repeat("Complete body. ", 100), URL: fmt.Sprintf("https://github.com/digitaldrywood/detent/issues/%d", request.IssueNumber), State: "open", AuthorID: "author", Labels: []string{"Todo"}, Assignees: []string{}, CreatedAt: now.Add(-time.Hour), UpdatedAt: now}, Records: []GitHubImportRecord{{SourceKey: "issue:" + id, Kind: "issue", Data: json.RawMessage(`{"id":"` + id + `"}`)}}, Gaps: []string{"Deleted comments and edit revisions are unavailable"}}, nil
 	case "comments":
 		if request.Cursor == "" {
 			return GitHubImportPage{Records: []GitHubImportRecord{comment}, NextCursor: "page2"}, nil
@@ -242,6 +242,9 @@ func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 			decodeHubResponse(t, r, &issue)
 			if len(issue.Body) < 1000 || len(issue.Dependencies) != 1 {
 				t.Fatalf("imported content/dependencies = %+v", issue)
+			}
+			if tracker.AppendGitHubIssueClosingReferences("Landing", issue.ExternalReferences) != "Landing\n\nCloses digitaldrywood/detent#1" {
+				t.Fatalf("imported issue lost closing identity: %+v", issue.ExternalReferences)
 			}
 			body := "Native body"
 			r = performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "native-edit"}, ExpectedRevision: issue.Revision, Body: &body})

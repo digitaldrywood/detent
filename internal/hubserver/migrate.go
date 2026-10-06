@@ -24,7 +24,7 @@ func runMigrations(ctx context.Context, db *sql.DB, logger *slog.Logger) (int64,
 	if err != nil {
 		return 0, fmt.Errorf("open hub migrations: %w", err)
 	}
-	return runMigrationsFromFS(ctx, db, migrations, logger, hubGoMigrations())
+	return runMigrationsFromFS(ctx, db, migrations, logger, hubGoMigrations(logger))
 }
 
 func runMigrationsFromFS(ctx context.Context, db *sql.DB, migrations fs.FS, logger *slog.Logger, goMigrations []*goose.Migration) (int64, error) {
@@ -143,7 +143,11 @@ func currentSchemaVersion(ctx context.Context, db *sql.DB) (int64, error) {
 	return version, nil
 }
 
-func hubGoMigrations() []*goose.Migration {
+func hubGoMigrations(loggers ...*slog.Logger) []*goose.Migration {
+	logger := slog.Default()
+	if len(loggers) > 0 {
+		logger = loggers[0]
+	}
 	return []*goose.Migration{
 		goose.NewGoMigration(40,
 			&goose.GoFunc{RunTx: backfillChangeReviewPolicies},
@@ -152,6 +156,9 @@ func hubGoMigrations() []*goose.Migration {
 		goose.NewGoMigration(64, &goose.GoFunc{RunTx: migrateAttachmentReferences}, nil),
 		goose.NewGoMigration(65, &goose.GoFunc{RunTx: migrateConversationOrigin}, nil),
 		goose.NewGoMigration(20261005231500, &goose.GoFunc{RunTx: migrateCloudWorkflowLanes}, nil),
+		goose.NewGoMigration(20261006023000, &goose.GoFunc{RunTx: func(ctx context.Context, tx *sql.Tx) error {
+			return migrateGitHubIssueReferences(ctx, tx, logger)
+		}}, nil),
 	}
 }
 
