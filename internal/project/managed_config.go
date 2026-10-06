@@ -27,10 +27,19 @@ type ConfigurationOwner struct {
 	manager  *Manager
 	attempts store.WorkAttemptStore
 	handoff  CutoverVerifier
+	settings store.LocalConfigurationStore
 }
 
 func NewConfigurationOwner(selected globalconfig.Config, runtime func() globalconfig.Config, manager *Manager, attempts store.WorkAttemptStore, handoff CutoverVerifier) *ConfigurationOwner {
-	return &ConfigurationOwner{selected: selected, runtime: runtime, manager: manager, attempts: attempts, handoff: handoff}
+	owner := &ConfigurationOwner{selected: selected, runtime: runtime, manager: manager, attempts: attempts, handoff: handoff}
+	if !selected.Client.Configured() {
+		if settings, ok := attempts.(store.LocalConfigurationStore); ok {
+			if _, err := settings.LocalConfiguration(context.Background(), selected); err == nil {
+				owner.settings = settings
+			}
+		}
+	}
+	return owner
 }
 
 func MissingConfigurationOwner(id string) ManagedConfigView {
@@ -44,10 +53,10 @@ func (o *ConfigurationOwner) Read(ctx context.Context, id string) ManagedConfigV
 	o.manager.operationMu.Lock()
 	defer o.manager.operationMu.Unlock()
 	view := MissingConfigurationOwner(id)
-	err := globalconfig.Mutate(o.selected.Path, func(cfg *globalconfig.Config, revision string) bool {
+	err := o.mutate(ctx, func(cfg *globalconfig.Config, revision string) bool {
 		view = o.observe(ctx, *cfg, revision, id)
 		return false
-	}, globalconfig.WithProjectPathLiterals())
+	})
 	if err != nil {
 		view.Constraint = "The selected local configuration cannot be read or validated."
 	}
@@ -64,7 +73,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 	saved := false
 	var resume *Project
 	var draining bool
-	err := globalconfig.Mutate(o.selected.Path, func(cfg *globalconfig.Config, revision string) bool {
+	err := o.mutate(ctx, func(cfg *globalconfig.Config, revision string) bool {
 		view = o.observe(ctx, *cfg, revision, request.ProjectID)
 		if view.Constraint != "" || ctx.Err() != nil {
 			return false
@@ -164,7 +173,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 			view.Constraint = "The configuration operation is unsupported."
 			return false
 		}
-	}, globalconfig.WithProjectPathLiterals())
+	})
 	if err != nil {
 		view.Applied = false
 		view.Constraint = "The selected local configuration could not be validated or written."
@@ -177,26 +186,26 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 			return view
 		}
 		savedBinding := view.Saved
-		readErr := globalconfig.Mutate(o.selected.Path, func(cfg *globalconfig.Config, revision string) bool {
+		readErr := o.mutate(ctx, func(cfg *globalconfig.Config, revision string) bool {
 			view = o.observe(ctx, *cfg, revision, request.ProjectID)
 			view.Saved = savedBinding
 			view.Applied = view.Constraint == "" && view.EffectivePolicy != nil && view.EffectivePolicy.ID == request.PolicyID && view.EffectivePolicy.SourceRevision == request.SourceRevision
 			return false
-		}, globalconfig.WithProjectPathLiterals())
+		})
 		if readErr != nil {
 			view.Applied = false
 			view.Constraint = "The saved configuration receipt cannot be read."
 		}
 	}
 	if saved {
-		readErr := globalconfig.Mutate(o.selected.Path, func(cfg *globalconfig.Config, revision string) bool {
+		readErr := o.mutate(ctx, func(cfg *globalconfig.Config, revision string) bool {
 			view = o.observe(ctx, *cfg, revision, request.ProjectID)
 			view.Saved = !view.Registered
 			if view.Registered {
 				view.Constraint = "The selected registration changed after removal was saved; read the current configuration before retrying."
 			}
 			return false
-		}, globalconfig.WithProjectPathLiterals())
+		})
 		if readErr != nil {
 			view.Constraint = "The saved configuration receipt cannot be read."
 			return view
@@ -393,4 +402,15 @@ func pauseSettledConfiguration(ctx context.Context, p *Project, view ManagedConf
 		return err
 	}
 	return p.requireSettledWork(ctx)
+}
+
+func (o *ConfigurationOwner) mutate(ctx context.Context, mutate func(*globalconfig.Config, string) bool) error {
+	if o.settings == nil {
+		return globalconfig.Mutate(o.selected.Path, mutate, globalconfig.WithProjectPathLiterals())
+	}
+	cfg, err := globalconfig.Read(o.selected.Path, globalconfig.WithoutProjectConfiguration(), globalconfig.WithProjectPathLiterals())
+	if err != nil {
+		return err
+	}
+	return o.settings.MutateLocalConfiguration(ctx, cfg, mutate)
 }

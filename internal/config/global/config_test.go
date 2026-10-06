@@ -1466,7 +1466,6 @@ func TestReadReportsInvalidConfig(t *testing.T) {
 				"apiVersion: is required",
 				"kind: is required",
 				"global: is required",
-				"projects: is required",
 			},
 		},
 		{

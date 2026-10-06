@@ -408,7 +408,10 @@ func (s *Server) executeFleetAction(ctx context.Context, a chatpkg.Action) (stri
 	return string(result.Content), nil
 }
 
-func (s *Server) fleetMutationRequirement(name, projectID string) operatortool.Requirement {
+func (s *Server) fleetMutationRequirement(ctx context.Context, name, projectID string) operatortool.Requirement {
+	if s.usesLocalSettingsTool(ctx, name) {
+		return localSettingsRequirement(name, projectID)
+	}
 	if operatortool.IsLocalProjectTool(name) {
 		return operatortool.Requirement{Scope: apikey.ScopeAdmin, ProjectID: projectID}
 	}

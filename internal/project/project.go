@@ -265,7 +265,7 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 	}
 
 	workflow := normalizeWorkflow(cfg.Workflow)
-	workflow.Config = workflow.Config.WithAgentDefaults(cfg.Project.GlobalAgents, cfg.Project.GlobalBudget).WithWorkerDefaults(cfg.Project.GlobalWorker)
+	workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg.Project)
 	workflow.Config = WithMappedNativeTracker(workflow.Config, deps.Scheduling, id)
 	if err := configureProjectPolicy(ctx, cfg.Project, &workflow, deps.Scheduling); err != nil {
 		return nil, projectDefinitionError{err: err}
@@ -612,7 +612,7 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 
 	p.mu.Lock()
 	workflow := p.workflow
-	workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget).WithWorkerDefaults(cfg.GlobalWorker)
+	workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg)
 	if workflow.Config.Policy.Configuration != nil {
 		resolved, err := workflowconfig.ApplyNativePolicy(workflow, workflow.Config.Policy)
 		if err != nil {
@@ -1551,7 +1551,7 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	previousPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
-	workflow.Config = workflow.Config.WithAgentDefaults(projectConfig.GlobalAgents, projectConfig.GlobalBudget).WithWorkerDefaults(projectConfig.GlobalWorker)
+	workflow.Config = applyProjectAgentDefaults(workflow.Config, projectConfig)
 	workflow.Config = WithMappedNativeTracker(workflow.Config, scheduling, normalizeProjectID(ID(projectConfig.ID)))
 	if err := configureProjectPolicy(ctx, projectConfig, &workflow, scheduling); err != nil {
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
@@ -1859,6 +1859,7 @@ func projectOrchestratorConfig(project globalconfig.Project, workflow workflowco
 	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
 	cfg.Project = scheduler.ProjectCandidate{
 		ID:                       project.ID,
+		Rank:                     project.Priority,
 		Pool:                     project.Pool,
 		Paused:                   project.Paused,
 		ActiveHours:              workflow.ActiveHours,
@@ -2132,6 +2133,7 @@ func projectSchedulerCandidate(project globalconfig.Project, workflow workflowco
 	overrideUntil := activehours.ParsePersistedOverride(project.ActiveHoursOverrideUntil)
 	return scheduler.ProjectCandidate{
 		ID:                       project.ID,
+		Rank:                     project.Priority,
 		Pool:                     project.Pool,
 		Paused:                   project.Paused,
 		ActiveHours:              EffectiveActiveHours(project, workflow.ActiveHours),
@@ -2530,7 +2532,7 @@ func resolveWorkflowWatcherFactory(
 					return workflow, err
 				}
 				workflow = normalizeWorkflow(workflow)
-				workflow.Config = workflow.Config.WithAgentDefaults(project.GlobalAgents, project.GlobalBudget).WithWorkerDefaults(project.GlobalWorker)
+				workflow.Config = applyProjectAgentDefaults(workflow.Config, project)
 				workflow.Config = workflowConfigWithProjectIdentity(project, workflow.Config)
 				workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
 				return workflow, nil
@@ -2576,4 +2578,11 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func applyProjectAgentDefaults(cfg workflowconfig.Config, project globalconfig.Project) workflowconfig.Config {
+	if project.ModelSelection != nil {
+		cfg.Agents.ModelSelection = *project.ModelSelection
+	}
+	return cfg.WithAgentDefaults(project.GlobalAgents, project.GlobalBudget).WithWorkerDefaults(project.GlobalWorker)
 }

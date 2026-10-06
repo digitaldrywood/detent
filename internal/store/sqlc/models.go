@@ -331,6 +331,24 @@ type MergeRequiredCheckStreak struct {
 	HeadSha                   string `json:"head_sha"`
 }
 
+type Organization struct {
+	ID                     string `json:"id"`
+	SchedulingRevision     int64  `json:"scheduling_revision"`
+	ConfigurationRevision  int64  `json:"configuration_revision"`
+	ModelSelectionJson     string `json:"model_selection_json"`
+	ModelSelectionRevision int64  `json:"model_selection_revision"`
+}
+
+type Project struct {
+	ID                     string         `json:"id"`
+	OrganizationID         string         `json:"organization_id"`
+	ConfigurationJson      string         `json:"configuration_json"`
+	SchedulingRank         int64          `json:"scheduling_rank"`
+	CreatedAt              string         `json:"created_at"`
+	ModelSelectionJson     sql.NullString `json:"model_selection_json"`
+	ModelSelectionRevision int64          `json:"model_selection_revision"`
+}
+
 type ProjectDispatchStatus struct {
 	ProjectID              string         `json:"project_id"`
 	CandidateCount         int64          `json:"candidate_count"`
@@ -480,6 +498,12 @@ type StalenessWarningState struct {
 	RemindedAt     sql.NullString `json:"reminded_at"`
 	AcknowledgedAt sql.NullString `json:"acknowledged_at"`
 	LastSeenAt     sql.NullString `json:"last_seen_at"`
+}
+
+type TokenGrant struct {
+	TokenID        string `json:"token_id"`
+	OrganizationID string `json:"organization_id"`
+	ProjectID      string `json:"project_id"`
 }
 
 type UsageEvent struct {
