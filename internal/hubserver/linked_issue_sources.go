@@ -88,7 +88,7 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 		request.Title = fmt.Sprintf("GitHub issue %s#%d", repository, number)
 	}
 	request.GitHubIssueURL = ""
-	issue, err := createNativeIssueTx(ctx, tx, scope, request, now)
+	issue, err := createNativeIssueDraft(ctx, tx, scope, request, now, false)
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}

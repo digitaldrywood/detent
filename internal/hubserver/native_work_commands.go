@@ -344,8 +344,8 @@ func (s *Service) operatorCreateNativeWork(ctx context.Context, scope nativeScop
 	if err != nil {
 		return nil, err
 	}
-	if request.State == "" && len(project.States) > 0 {
-		request.State = project.States[0].Name
+	if request.State == "" && request.GitHubIssueURL == "" {
+		request.State = defaultNativeIssueState(project.States)
 	}
 	return s.createNativeIssueCommand(ctx, scope, request)
 }

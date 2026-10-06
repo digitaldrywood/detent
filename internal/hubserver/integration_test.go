@@ -29,7 +29,7 @@ func (b *importFixtureBackend) FetchImportPage(_ context.Context, request GitHub
 		id = "I_blocker"
 	}
 	if request.IssueNumber > 2 {
-		id = "I_new"
+		id = fmt.Sprintf("I_new_%d", request.IssueNumber)
 	}
 	comment := GitHubImportRecord{SourceKey: "comment:" + id, Kind: "comment", Data: json.RawMessage(`{"body":"Full historical comment"}`), Body: "Full historical comment", Provenance: tracker.Provenance{Provider: "github", ExternalID: "C_" + id, AuthorID: "U_author", AuthorDisplayName: "author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
 	switch request.Stage {
@@ -104,6 +104,9 @@ func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 		}
 		tx.Rollback()
 		want := 1
+		if !pending {
+			want = 2
+		}
 		if len(ids) != want {
 			t.Fatalf("claim candidates during intake=%t: %+v", pending, ids)
 		}
@@ -129,6 +132,38 @@ func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 	decodeHubResponse(t, r, &issue)
 	if job.IntakePending || len(issue.Dependencies) != 0 {
 		t.Fatalf("restarted intake kept removed dependency: %+v, %+v", job, issue.Dependencies)
+	}
+	for i, triage := range []bool{false, true} {
+		t.Run(fmt.Sprintf("default-with-triage-%t", triage), func(t *testing.T) {
+			states := append([]tracker.NativeState{{Name: "Backlog", Transitions: []string{"Todo"}}}, nativeFixtureStates()...)
+			if triage {
+				states = nativeTriageStates(states)
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if !triage {
+				if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET repository_id=NULL WHERE id=?", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := applyNativeProjectStates(t.Context(), tx, scope, states, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET repository_id=(SELECT id FROM repositories WHERE github_node_id='R_repo') WHERE id=?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			job := advanceImportFixture(t, f, startImportFixture(t, f, i+4, false, 0))
+			issue := readWorkItem(t, f, tracker.NativeWorkItemID(job.WorkItemID), "")
+			if issue.State != "Backlog" || issue.LinkedSource != nil {
+				t.Fatalf("imported issue=%+v", issue)
+			}
+		})
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -55,7 +56,68 @@ func (f nativeFixture) link(t *testing.T, key string) tracker.NativeIssue {
 func TestLinkedIssueCreation(t *testing.T) {
 	t.Parallel()
 	f := linkedFixture(t)
-	first := f.link(t, "link")
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET repository_id=NULL WHERE id=?", f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	states := append([]tracker.NativeState{{Name: "Backlog", Transitions: []string{"Todo"}}}, nativeFixtureStates()...)
+	states = append(states, tracker.NativeState{Name: "Cancelled", Terminal: true})
+	if err := applyNativeProjectStates(t.Context(), tx, scope, states, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var first tracker.NativeIssue
+	for _, test := range []struct {
+		name, state, source, wantState string
+		want                           int
+	}{
+		{"default without Triage", "", "", "Backlog", http.StatusOK},
+		{"linked intake", "", "github.com/Acme/Orders/issues/12", "Triage", http.StatusOK},
+		{"default with Triage first", "", "", "Backlog", http.StatusOK},
+		{"explicit unlinked Triage", "Triage", "", "", http.StatusUnprocessableEntity},
+		{"explicit ordinary state", "Todo", "", "Todo", http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.source != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=(SELECT id FROM repositories WHERE github_node_id='R_repo') WHERE id=?", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: test.name}, Title: test.name, State: test.state, GitHubIssueURL: test.source}
+			r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+			requireNativeStatus(t, r, test.want)
+			if test.want != http.StatusOK {
+				requireNativeCode(t, r, test.want, "invalid_request")
+				return
+			}
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, r, &issue)
+			if issue.State != test.wantState || (issue.LinkedSource != nil) != (test.source != "") {
+				t.Fatalf("created issue=%+v", issue)
+			}
+			if test.source != "" {
+				first = issue
+			}
+			project, err := readNativeProject(t.Context(), f.service.database.db, scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantStates := states
+			if first.WorkItemID != "" {
+				wantStates = nativeTriageStates(states)
+			}
+			if !reflect.DeepEqual(project.States, wantStates) {
+				t.Fatalf("states=%+v want=%+v", project.States, wantStates)
+			}
+		})
+	}
 	if len(first.ExternalReferences) < 1 || first.ExternalReferences[0].Repository != "acme/orders" || first.ExternalReferences[0].Number != 12 {
 		t.Fatalf("linked issue lost source reference: %+v", first.ExternalReferences)
 	}

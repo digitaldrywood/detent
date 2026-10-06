@@ -56,14 +56,14 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		fields := map[string]any{"title": "Priority", "description": "Exact rank", "priority": rank}
 		raw, failed := call("file_issue", "rank-"+strconv.Itoa(rank), fields)
 		var item tracker.NativeIssue
-		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Priority == nil || *item.Priority != rank-1 {
+		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Priority == nil || *item.Priority != rank-1 || item.State != "Todo" {
 			t.Fatalf("rank %d=%s %v", rank, raw, err)
 		}
 	}
 	linkedArgs := map[string]any{"github_issue_url": "github.com/Acme/Orders/issues/12", "state": "Todo"}
 	linkedRaw, failed := call("file_issue", "linked", linkedArgs)
 	var linked tracker.NativeIssue
-	if err := json.Unmarshal(linkedRaw, &linked); err != nil || failed || linked.LinkedSource == nil || linked.LinkedSource.URL != "https://github.com/acme/orders/issues/12" {
+	if err := json.Unmarshal(linkedRaw, &linked); err != nil || failed || linked.State != "Triage" || linked.LinkedSource == nil || linked.LinkedSource.URL != "https://github.com/acme/orders/issues/12" {
 		t.Fatalf("linked creation=%s %v", linkedRaw, err)
 	}
 	for _, key := range []string{"linked", "duplicate-link"} {
@@ -126,6 +126,27 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatalf("foreign association refusal=%s failed=%t err=%v", raw, failed, err)
 		}
 	})
+	for _, test := range []struct {
+		name, state string
+		failed      bool
+	}{
+		{"default with Triage first", "", false},
+		{"explicit unlinked Triage", "Triage", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			raw, failed := call("file_issue", test.name, map[string]any{"title": test.name, "state": test.state})
+			if failed != test.failed {
+				t.Fatalf("creation=%s failed=%t", raw, failed)
+			}
+			if failed {
+				return
+			}
+			var item tracker.NativeIssue
+			if err := json.Unmarshal(raw, &item); err != nil || item.State != "Todo" || item.LinkedSource != nil {
+				t.Fatalf("creation=%s err=%v", raw, err)
+			}
+		})
+	}
 	id := string(created.WorkItemID)
 	identifier := string(f.project.ID) + "#" + strconv.Itoa(created.Number)
 	for _, test := range []struct {

@@ -373,18 +373,11 @@ func importGitHubIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, integ
 	}
 	err := tx.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE project_id = ? AND github_node_id = ?", scope.project, source.NodeID).Scan(&current.WorkItemID)
 	if errors.Is(err, sql.ErrNoRows) && integration.Profile == "native" {
-		project, readErr := readNativeProject(ctx, tx, scope)
-		if readErr != nil {
-			return readErr
-		}
-		if len(project.States) == 0 {
-			return nativeInvalid("Native intake requires configured states")
-		}
 		author := source.AuthorID
 		if author == "" {
 			author = "unavailable"
 		}
-		issue, createErr := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: source.Title, Body: source.Body, State: project.States[0].Name, Labels: source.Labels, Assignees: source.Assignees, Provenance: &tracker.Provenance{Provider: "github", ExternalID: source.NodeID, AuthorID: author, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ObservedAt: now}}, now)
+		issue, createErr := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: source.Title, Body: source.Body, Labels: source.Labels, Assignees: source.Assignees, Provenance: &tracker.Provenance{Provider: "github", ExternalID: source.NodeID, AuthorID: author, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt, ObservedAt: now}}, now)
 		if createErr != nil {
 			return createErr
 		}
