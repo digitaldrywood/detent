@@ -736,60 +736,152 @@ func TestOpenExcludesAnotherHubProcess(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process lifecycle integration")
 	}
+	for _, test := range []struct {
+		name                    string
+		shared, cancel, sibling bool
+	}{
+		{name: "standalone refuses contention"},
+		{name: "shared entry waits for previous owner", shared: true},
+		{name: "shared entry cancels ownership wait", shared: true, cancel: true},
+		{name: "shared entry refuses live sibling", shared: true, sibling: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hub.db")
+			command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
+			command.Env = append(os.Environ(), "DETENT_HUB_OWNER_HELPER="+path, "GOCOVERDIR="+t.TempDir())
+			stdin, err := command.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			stdout, err := command.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stderr strings.Builder
+			command.Stderr = &stderr
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waited := false
+			t.Cleanup(func() {
+				_ = stdin.Close()
+				if !waited {
+					_ = command.Wait()
+				}
+			})
+			ready, err := bufio.NewReader(stdout).ReadString('\n')
+			if err != nil || strings.TrimSpace(ready) != "ready" {
+				t.Fatalf("helper readiness = %q: %v", ready, err)
+			}
 
-	path := filepath.Join(t.TempDir(), "hub.db")
-	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
-	command.Env = append(os.Environ(), "DETENT_HUB_OWNER_HELPER="+path)
-	stdin, err := command.StdinPipe()
-	if err != nil {
-		t.Fatalf("StdinPipe() error = %v", err)
+			if test.sibling {
+				ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+				defer cancel()
+				contender := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
+				contender.Env = append(os.Environ(), "DETENT_HUB_OWNER_HELPER="+path, "DETENT_HUB_OWNER_CONTENDER=1", "GOCOVERDIR="+t.TempDir())
+				output, err := contender.CombinedOutput()
+				if err != nil || !strings.Contains(string(output), "held\n") {
+					t.Fatalf("live sibling contender = %v, %s", err, output)
+				}
+				return
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			cfg := Config{DatabasePath: path, Logger: discardLogger()}
+			waiting := make(chan struct{}, 1)
+			if test.shared {
+				cfg = hostedSharedTestConfig(path, newHostedSecurityProvider(), hostedSharedKey(7), 1)
+				cfg.Logger = slog.New(databaseLockWaitHandler{Handler: slog.DiscardHandler, waiting: waiting})
+			}
+			type opened struct {
+				service *Service
+				err     error
+			}
+			result := make(chan opened, 1)
+			go func() {
+				service, err := Open(ctx, cfg)
+				result <- opened{service: service, err: err}
+			}()
+			if test.shared {
+				select {
+				case <-waiting:
+				case got := <-result:
+					if got.service != nil {
+						_ = got.service.Close()
+					}
+					t.Fatalf("shared tenant exited instead of waiting: %v", got.err)
+				case <-time.After(20 * time.Second):
+					t.Fatal("tenant did not wait on previous owner")
+				}
+				if test.cancel {
+					cancel()
+				} else {
+					_ = stdin.Close()
+				}
+			}
+			var got opened
+			select {
+			case got = <-result:
+			case <-time.After(20 * time.Second):
+				t.Fatal("tenant startup did not finish")
+			}
+			if got.service != nil {
+				t.Cleanup(func() { _ = got.service.Close() })
+			}
+			switch {
+			case !test.shared:
+				if !errors.Is(got.err, instancelock.ErrHeld) {
+					t.Fatalf("Open() = %v, want held", got.err)
+				}
+			case test.cancel:
+				if !errors.Is(got.err, context.Canceled) {
+					t.Fatalf("Open() = %v, want cancellation", got.err)
+				}
+			default:
+				if got.err != nil {
+					t.Fatalf("Open() after holder exit = %v", got.err)
+				}
+				if err := got.service.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := stdin.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+				t.Fatal(err)
+			}
+			if err := command.Wait(); err != nil {
+				t.Fatalf("holder exit = %v, %s", err, stderr.String())
+			}
+			waited = true
+			service := openTestService(t, cfg)
+			if service.database.path == "" {
+				t.Fatal("reopened database path is empty")
+			}
+			if test.shared {
+				_, err := Open(t.Context(), cfg)
+				if !errors.Is(err, instancelock.ErrHeld) {
+					t.Fatalf("same-process contender = %v, want held", err)
+				}
+			}
+		})
 	}
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		t.Fatalf("StdoutPipe() error = %v", err)
-	}
-	var stderr strings.Builder
-	command.Stderr = &stderr
-	if err := command.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	waited := false
-	t.Cleanup(func() {
-		stdin.Close()
-		if !waited {
-			command.Wait()
+}
+
+type databaseLockWaitHandler struct {
+	slog.Handler
+	waiting chan struct{}
+}
+
+func (h databaseLockWaitHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h databaseLockWaitHandler) Handle(ctx context.Context, record slog.Record) error {
+	if record.Message == "hosted service event" {
+		select {
+		case h.waiting <- struct{}{}:
+		default:
 		}
-	})
-
-	ready, err := bufio.NewReader(stdout).ReadString('\n')
-	if err != nil {
-		t.Fatalf("read helper readiness: %v, stderr = %s", err, stderr.String())
 	}
-	if strings.TrimSpace(ready) != "ready" {
-		t.Fatalf("helper readiness = %q, want ready", ready)
-	}
-
-	service, err := Open(t.Context(), Config{DatabasePath: path, Logger: discardLogger()})
-	if err == nil {
-		service.Close()
-		t.Fatal("Open() error = nil, want ownership error")
-	}
-	if !errors.Is(err, instancelock.ErrHeld) {
-		t.Fatalf("Open() error = %v, want instance lock held", err)
-	}
-
-	if err := stdin.Close(); err != nil {
-		t.Fatalf("close helper stdin: %v", err)
-	}
-	if err := command.Wait(); err != nil {
-		t.Fatalf("helper process error = %v, stderr = %s", err, stderr.String())
-	}
-	waited = true
-
-	service = openTestService(t, Config{DatabasePath: path})
-	if service.database.path == "" {
-		t.Fatal("reopened database path is empty")
-	}
+	return h.Handler.Handle(ctx, record)
 }
 
 func TestHubOwnerHelperProcess(t *testing.T) {
@@ -801,6 +893,19 @@ func TestHubOwnerHelperProcess(t *testing.T) {
 	if path == "" {
 		return
 	}
+	if os.Getenv("DETENT_HUB_OWNER_CONTENDER") != "" {
+		cfg := hostedSharedTestConfig(path, newHostedSecurityProvider(), hostedSharedKey(7), 1)
+		service, err := Open(t.Context(), cfg)
+		if service != nil {
+			_ = service.Close()
+		}
+		if !errors.Is(err, instancelock.ErrHeld) {
+			t.Fatalf("live sibling contention = %v", err)
+		}
+		fmt.Fprintln(os.Stdout, "held")
+		return
+	}
+
 	service, err := Open(t.Context(), Config{DatabasePath: path, Logger: discardLogger()})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)

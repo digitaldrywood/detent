@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shirou/gopsutil/v4/process"
+
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -53,7 +55,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, fmt.Errorf("validate hub database filesystem: %w", err)
 	}
 
-	lock, err := instancelock.Acquire(path + ".lock")
+	lock, err := acquireDatabaseLock(ctx, cfg, path+".lock")
 	if err != nil {
 		return nil, fmt.Errorf("acquire hub database ownership: %w", err)
 	}
@@ -118,6 +120,37 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, errors.Join(err, store.Close())
 	}
 	return store, nil
+}
+
+func acquireDatabaseLock(ctx context.Context, cfg Config, path string) (*instancelock.Lock, error) {
+	wait := cfg.Hosted != nil && cfg.Hosted.SharedEntry != nil
+	logged := false
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		lock, err := instancelock.Acquire(path)
+		var held *instancelock.HeldError
+		if !wait || !errors.As(err, &held) || held.Owner.PID == os.Getpid() {
+			return lock, err
+		}
+		if holder, inspectErr := process.NewProcessWithContext(ctx, int32(held.Owner.PID)); inspectErr == nil {
+			if parent, parentErr := holder.PpidWithContext(ctx); parentErr == nil && parent > 1 && int(parent) == os.Getppid() {
+				return nil, err
+			}
+		}
+		if !logged {
+			cfg.Logger.InfoContext(ctx, "waiting for previous tenant Hub database ownership", "path", path, "owner_pid", held.Owner.PID)
+			logged = true
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func canonicalDatabasePath(rawPath string) (string, error) {

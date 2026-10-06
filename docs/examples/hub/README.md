@@ -138,8 +138,23 @@ operator can grant complimentary access on the shared deployment.
 For each organization the entry creates `tenant_root/ORG/` (mode 0700) holding the
 generated `tenant.yaml` (no secrets), `hub.db` and a private per-tenant Hub admin
 token, and runs `detent hub serve --hosted-config ... --listen unix:socket_root/ORG.sock`
-as a supervised child (restarted with backoff; stopped when the entry stops). A child
-that exits `retry_limit` times in a row without staying up for five minutes is no
+as a supervised child (restarted with backoff; stopped when the entry stops). The
+entry interrupts all children together and waits for their exit before releasing
+its own databases. A child has 15 seconds to exit before the launcher kills and
+reaps it. Keep all tenants in the entry's systemd cgroup: use `KillMode=mixed`
+with `TimeoutStopSec=45` (or longer), never `KillMode=process`. This gives the
+entry time to drain requests and join tenants while systemd retains final cgroup
+cleanup authority. Shared-entry tenants wait cancellably for a previous process
+to release their database ownership lock; same-process and live-sibling
+contention still fails immediately.
+
+The restricted release `deploy` command may use `systemctl restart` with these
+shutdown semantics, or stop, wait for the service cgroup to empty, then start.
+Release workflows run the hosted smoke test after deployment and stop promotion
+on failure. Verify repeated restarts with at least two serving tenants and all
+17 hosted smoke checks before accepting a rollout.
+
+A child that exits `retry_limit` times in a row without staying up for five minutes is no
 longer restarted: during setup the organization moves to `failed` with the reason
 shown on the provisioning screen and the platform console, and resuming setup
 starts it again. The
