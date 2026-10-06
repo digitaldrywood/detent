@@ -188,6 +188,14 @@ registers the runner and starts a Sprite Service named `detent-runner`.
 This Service restarts after a cold wake; a host `--service` flag in the pasted
 command is replaced by the Sprite Service.
 
+The bootstrap fills missing `global.io.degraded_max_concurrent_agents` and
+`global.cpu.degraded_max_concurrent_agents` settings with `1`, preserving
+operator values and the rest of the configuration. Sprite I/O pressure can
+exceed the default threshold even while idle; this floor lets one agent
+proceed under I/O or CPU pressure. Project, pool, provider, and other capacity
+limits still apply. The printed summary shows the configured floors. See
+[host pressure configuration](config.md).
+
 ### Standard runner toolset
 
 Every runner receives the same pinned tools during bootstrap, so agents can
@@ -212,6 +220,8 @@ Go, Detent, GitHub CLI and ripgrep downloads are checked against published
 SHA-256 manifests. fd archives are checked against the release's published
 SHA-256 digests pinned in the script. npm verifies package integrity, and APT
 verifies the signed Ubuntu package indexes and package checksums.
+The pinned `yaml` Node package (2.8.3) merges the pressure defaults while
+preserving existing values and YAML comments.
 
 Playwright installs Chromium and its Ubuntu system dependencies when the
 headless screenshot probe fails. Its native Linux browser cache is
@@ -330,29 +340,7 @@ Projects**, select the project, and open its **Settings**. Review the reported
 policy and use **Approve updated policy** if offered. An owner/admin with the
 project's write access must approve it before dispatch.
 
-## 8. Allow one agent under Sprite resource pressure
-
-Edit the runner's `~/.config/detent-runner/global.yaml`. Merge these fields
-into its existing `global` mapping, preserving the rest of the enrollment
-configuration:
-
-```yaml
-global:
-  io:
-    degraded_max_concurrent_agents: 1
-  cpu:
-    degraded_max_concurrent_agents: 1
-```
-
-A Sprite's idle I/O pressure sits above Detent's default threshold. The
-default degraded capacity is `0`, so pressure can otherwise hold all dispatch
-even when no agents are running. Set both
-`global.io.degraded_max_concurrent_agents: 1` and
-`global.cpu.degraded_max_concurrent_agents: 1` so one worker can proceed under
-either signal. This is a host-wide floor; project, pool, provider, and other
-capacity limits still apply. See [host pressure configuration](config.md).
-
-## 9. Restart and take a checkpoint
+## 8. Restart and take a checkpoint
 
 After sign-in, checkout, and configuration changes, rerun the same pinned
 bootstrap **inside the Sprite** with empty input:
@@ -365,16 +353,17 @@ sprite-env checkpoints create --comment 'runner ready: agents and checkouts conf
 ```
 
 Empty input reuses the registered identity and restarts the existing Service;
-it does not redeem another enrollment token or overwrite `global.yaml`. The
-bootstrap also takes a checkpoint. Save the ready checkpoint ID so your
-baseline includes runner sign-ins and successful repository setup. Restoring with
+it does not redeem another enrollment token. The bootstrap preserves existing
+configuration values, fills missing pressure floors, and takes a checkpoint.
+Save the ready checkpoint ID so your baseline includes runner sign-ins and
+successful repository setup. Restoring with
 `sprite-env checkpoints restore CHECKPOINT_ID` rewinds the same Sprite's files,
 including credentials; it does not renew credentials that have since expired.
 
 Check **Settings > Runners** for its connection, provider, and project readiness.
 Resolve any remaining policy or authentication requirements before testing wake.
 
-## 10. Verify the wake loop with no console open
+## 9. Verify the wake loop with no console open
 
 1. Exit the Sprite console with `exit`. Close any remaining exec, console,
    or port-forwarding sessions. Leave the Sprite idle until it is **cold**;
@@ -397,7 +386,7 @@ not verify this loop. A connected runner alone is not proof that it can claim
 and land work. Fly explains Service and task behavior in
 [Keeping a Sprite running](https://docs.fly.io/sprites/keeping-sprites-running).
 
-## 11. Updating, costs, and troubleshooting
+## 10. Updating, costs, and troubleshooting
 
 ### Updating
 

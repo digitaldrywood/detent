@@ -59,6 +59,9 @@ elif name == "npm":
     for package, binary in packages.items():
         if package in args:
             shutil.copy(__file__, prefix / binary)
+    if "yaml@2.8.3" in args:
+        module = prefix.parent / "lib/node_modules/yaml"
+        shutil.copytree(os.environ["FIXTURE_YAML_MODULE"], module, dirs_exist_ok=True)
 elif name == "dpkg-query":
     installed = root / (args[-1] + ".version")
     if not installed.exists():
@@ -70,7 +73,9 @@ elif name == "apt-get":
             package, version = arg.split("=", 1)
             (root / (package + ".version")).write_text(version)
 elif name == "node":
-    sys.stdin.read()
+    script = sys.stdin.read()
+    if args[:1] == ["-p"] or (len(args) == 3 and args[1].endswith("/yaml")):
+        sys.exit(subprocess.run([os.environ["FIXTURE_NODE"], *args], input=script, text=True).returncode)
     if not (root / "chromium-ready").exists() or os.environ.get("BROWSER_FAIL"):
         sys.exit(1)
     pathlib.Path(args[-1]).write_bytes(b"PNG fixture")
@@ -97,7 +102,7 @@ elif name == "detent":
         config = pathlib.Path(args[args.index("--config") + 1])
         config.parent.mkdir(parents=True, exist_ok=True)
         if not config.exists():
-            config.write_text("original configuration\n")
+            config.write_text("client:\n  hub_url: https://hub.example\nglobal:\n  max_concurrent_agents: 2\n")
             (config.parent / "identity.json").write_text("original identity\n")
     else:
         (root / "detent-cwd").write_text(os.getcwd())
@@ -165,7 +170,12 @@ class SpriteBootstrapTests(unittest.TestCase):
             digest = hashlib.sha256((self.root / f"fd-v10.3.0-{target}.tar.gz").read_bytes()).hexdigest()
             script = script.replace(checksum, digest)
         self.script.write_text(script)
+        node = shutil.which("node")
+        module = subprocess.run([node, "-p", "require.resolve('yaml/package.json')"],
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(module.returncode, 0, "Install yaml@2.8.3 and expose it through NODE_PATH: " + module.stderr)
         self.env = dict(os.environ, HOME=str(self.home), FIXTURE_ROOT=str(self.root),
+                        FIXTURE_NODE=node, FIXTURE_YAML_MODULE=str(pathlib.Path(module.stdout.strip()).parent),
                         PATH=str(self.fake_bin) + os.pathsep + os.environ["PATH"],
                         TMPDIR=str(self.root))
         # The image's existing local Codex link cannot be npm's install prefix.
@@ -198,10 +208,11 @@ class SpriteBootstrapTests(unittest.TestCase):
         first = self.run_bootstrap(enrollment=enrollment)
         self.assertEqual(first.returncode, 0, first.stderr)
         identity = config.with_name("identity.json").read_bytes()
-        config.write_text("human edits\n")
+        human_config = "instance_name: human edits\nglobal:\n  io:\n    degraded_max_concurrent_agents: 0\n  cpu:\n    degraded_max_concurrent_agents: 3\n"
+        config.write_text(human_config)
         second = self.run_bootstrap(enrollment=enrollment)
         self.assertEqual(second.returncode, 0, second.stderr)
-        self.assertEqual(config.read_text(), "human edits\n")
+        self.assertEqual(config.read_text(), human_config)
         self.assertEqual(config.with_name("identity.json").read_bytes(), identity)
         self.assertFalse(list(self.root.rglob("SHOULD_NOT_EXIST")))
         registrations = self.registrations()
@@ -230,6 +241,51 @@ class SpriteBootstrapTests(unittest.TestCase):
         downloads = [args for command, args in self.calls() if command == "curl"]
         self.assertTrue(any("/v0.117.41/" in " ".join(args) for args in downloads))
         self.assertFalse(any(command == "go" and args[:1] == ["install"] for command, args in self.calls()))
+
+    def test_pressure_floor_config_merge(self):
+        cases = (
+            ("fresh", None, {"client": {"hub_url": "https://hub.example"}, "global": {"max_concurrent_agents": 2}}, 1, 1),
+            ("no global", "client: {hub_url: https://hub.example}\n", {"client": {"hub_url": "https://hub.example"}}, 1, 1),
+            ("missing keys", "# operator config\nclient: {capacity: 4}\nglobal:\n  max_concurrent_agents: 4\n  io:\n    pressure_full_avg10_threshold: 8\n  cpu:\n    pressure_some_avg10_threshold: 60\n",
+             {"client": {"capacity": 4}, "global": {"max_concurrent_agents": 4, "io": {"pressure_full_avg10_threshold": 8}, "cpu": {"pressure_some_avg10_threshold": 60}}}, 1, 1),
+            ("partial floor", "global: {io: {degraded_max_concurrent_agents: 0}}\n", {"global": {}}, 0, 1),
+            ("operator floors", "# keep these floors\nglobal:\n  io: {degraded_max_concurrent_agents: 0}\n  cpu: {degraded_max_concurrent_agents: 3}\nprojects: []\n", {"global": {}, "projects": []}, 0, 3),
+            ("null sections", "global:\n  io:\n  cpu:\n", {"global": {}}, 1, 1),
+        )
+        for name, original, preserved, io_floor, cpu_floor in cases:
+            with self.subTest(name=name):
+                config = self.home / name / "global.yaml"
+                config.parent.mkdir()
+                identity = config.with_name("identity.json")
+                if original is not None:
+                    config.write_text(original)
+                    config.chmod(0o640)
+                    identity.write_text("operator identity\n")
+                result = self.run_bootstrap(extra=("--config", str(config)), enrollment="" if original is not None else None)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                parsed = subprocess.run([self.env["FIXTURE_NODE"], "-e",
+                                         "const fs = require('node:fs'); const YAML = require(process.argv[1]); console.log(JSON.stringify(YAML.parse(fs.readFileSync(process.argv[2], 'utf8'))));",
+                                         self.env["FIXTURE_YAML_MODULE"], str(config)],
+                                        text=True, capture_output=True, timeout=10)
+                self.assertEqual(parsed.returncode, 0, parsed.stderr)
+                expected = json.loads(json.dumps(preserved))
+                pressure = expected.setdefault("global", {})
+                pressure.setdefault("io", {})["degraded_max_concurrent_agents"] = io_floor
+                pressure.setdefault("cpu", {})["degraded_max_concurrent_agents"] = cpu_floor
+                self.assertEqual(json.loads(parsed.stdout), expected)
+                self.assertIn(f"Sprite pressure capacity: io={io_floor}, cpu={cpu_floor}", result.stdout)
+                if original is not None:
+                    self.assertEqual(identity.read_text(), "operator identity\n")
+                    self.assertEqual(config.stat().st_mode & 0o777, 0o640)
+                    for line in original.splitlines():
+                        if line.startswith("#"):
+                            self.assertIn(line, config.read_text())
+                if name == "operator floors":
+                    self.assertEqual(config.read_text(), original)
+                merged = config.read_bytes()
+                rerun = self.run_bootstrap(extra=("--config", str(config)), enrollment="")
+                self.assertEqual(rerun.returncode, 0, rerun.stderr)
+                self.assertEqual(config.read_bytes(), merged)
 
     def test_empty_input_reuses_an_existing_registration_only(self):
         # Catches reruns that need a fresh token, and a fresh Sprite that
