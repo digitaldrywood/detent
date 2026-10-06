@@ -39,6 +39,7 @@ import {
 import { isApiError } from "../../contracts/index.ts";
 import { hubPath } from "../../runtime/basePath.ts";
 import { WorkAttachment } from "../../contracts/workAttachments.ts";
+import { DiagnosticsReport, HealthFindingsRead } from "../../contracts/diagnostics.ts";
 import { clearBoardCache } from "../work/lib/boardStore.ts";
 
 /** A decoded failure from the hosted API, or the network under it. */
@@ -463,6 +464,8 @@ export function makeAccountApi(options: AccountApiOptions) {
 
     // --- Fleet, plan and billing --------------------------------------------
     fleet: () => send(FleetResponse, "GET", `${base}/fleet`),
+    diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
+    healthFindings: () => send(HealthFindingsRead, "GET", `${base}/health/findings?state=open`),
     fleetNames: () => send(FleetNamesResponse, "GET", `${base}/fleet?include=names`),
     plan: () => send(PlanReport, "GET", `${base}/plan`),
     billing: () => send(BillingReport, "GET", `${base}/billing`),
