@@ -55,6 +55,7 @@ import {
   type RelatedEntry,
 } from "./components/IssueProperties.tsx";
 import { IssueResources, type ResourceRow } from "./components/IssueResources.tsx";
+import { IssueDiagnostics, IssueDetailTabs } from "./components/IssueDiagnostics.tsx";
 import { mergeActivity, runnerLabel, type ActivityRow } from "./lib/activity.ts";
 import { toChangeView, toWorkItemView, transitionsFrom } from "./lib/fromWire.ts";
 import { elapsedLabel, issueNumber } from "./lib/format.ts";
@@ -64,6 +65,8 @@ import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
 
 interface IssueData {
+  readonly attemptsAvailable?: boolean;
+  readonly historyAvailable?: boolean;
   readonly issue: NativeIssue;
   readonly project: NativeProject;
   readonly attempts: readonly NativeAttempt[];
@@ -165,8 +168,8 @@ export function useIssue(
           const projectId = issue.project_id;
           const [project, attempts, history, comments, changes] = await Promise.all([
             http.getProject(projectId),
-            allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)),
-            allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })),
+            allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)).catch(() => null),
+            allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })).catch(() => null),
             allIssueRecords((cursor) => http.listComments({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) }))
               .catch(() => []),
             http.listChanges(projectId, workItemId).catch(() => []),
@@ -180,7 +183,7 @@ export function useIssue(
           const selected = selectChangeId(changes, requestedChange);
           const change = details.find((entry) => entry.record.change_id === selected)?.detail ?? null;
           if (cancelled) return;
-          setData({ issue, project, attempts, history, comments, change, changes: details });
+          setData({ issue, project, attempts: attempts ?? [], history: history ?? [], attemptsAvailable: attempts !== null, historyAvailable: history !== null, comments, change, changes: details });
           setError(null);
         } catch (cause) {
           if (cancelled) return;
@@ -809,6 +812,7 @@ interface IssueBodyProps {
  * published inside `ChatWorkspace`.
  */
 function IssueBody(props: IssueBodyProps): React.ReactElement {
+  const now = useNow();
   const [editingBody, setEditingBody] = React.useState(false);
   const [bodyDraft, setBodyDraft] = React.useState("");
   const [bodyUploading, setBodyUploading] = React.useState(false);
@@ -1167,6 +1171,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
 
           <IssueResources rows={resources} />
 
+          <IssueDetailTabs native={data.project.profile === "native"} diagnostics={<IssueDiagnostics issue={data.issue} attempts={data.attempts} history={data.history} now={now} attemptsAvailable={data.attemptsAvailable} historyAvailable={data.historyAvailable} />}>
           <ActivityFeed
             projectId={data.project.project_id}
             highlightedId={highlightedId}
@@ -1188,6 +1193,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
               void navigate({ to: "/settings/$section", params: { section: "keybindings" } })
             }
           />
+          </IssueDetailTabs>
         </div>
       </div>
 

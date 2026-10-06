@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -92,6 +93,17 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		}
 	}
 	return validateNativeGitHubScope(r.GitHub)
+}
+
+func (s *Service) getNativeExplanation(c echo.Context) error {
+	if len(c.QueryParams()) != 0 {
+		return s.nativeAPIError(c, nativeInvalid("Unsupported explanation selector"))
+	}
+	evidence, err := s.readNativeRuntime(c.Request().Context(), nativeRequestScope(c), c.Param("item"), "")
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, explain.FromNativeEvidence(evidence))
 }
 
 func (s *Service) getNativeRuntime(c echo.Context) error {
