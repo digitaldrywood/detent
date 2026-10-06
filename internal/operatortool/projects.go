@@ -148,6 +148,11 @@ func ProjectCatalog() []Definition {
 func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 	schema := projectSchema(reflect.TypeFor[ProjectRequest[T]]())
 	schema["required"] = []string{"project_id", "request_id", "input"}
+	if name == "approve_project_policy" {
+		input := schemaObject(schemaObject(schema["properties"])["input"])
+		descriptor := schemaObject(schemaObject(input["properties"])["policy"])
+		descriptor["description"] = "The complete selected_policy object returned by local_project_configuration, unchanged. Preserve every returned field, including authored, profile, configuration, workflow and gates.human_review when present; policy_id covers the descriptor's identity inputs. Do not reconstruct a subset or recompute policy_id. Authorized approval executes directly."
+	}
 	if name == "import_sprite_usage" {
 		input := schemaObject(schemaObject(schema["properties"])["input"])
 		observations := schemaObject(schemaObject(input["properties"])["observations"])

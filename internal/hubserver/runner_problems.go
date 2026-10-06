@@ -23,7 +23,7 @@ func runnerHubProblems(r runnerauth.Runner, report isolation.Report, protocol in
 	return problems
 }
 
-func applyRunnerProblems(r *runnerauth.Runner, raw, isolationRaw string, protocol int, rejected bool) error {
+func applyRunnerProblems(r *runnerauth.Runner, raw, isolationRaw, configurationRaw string, protocol int, rejected bool) error {
 	var previous []runnerauth.Problem
 	var report isolation.Report
 	if err := json.Unmarshal([]byte(raw), &previous); err != nil {
@@ -32,9 +32,19 @@ func applyRunnerProblems(r *runnerauth.Runner, raw, isolationRaw string, protoco
 	if err := json.Unmarshal([]byte(isolationRaw), &report); err != nil {
 		return err
 	}
+	var configurations map[string]runnerauth.ProjectConfiguration
+	if err := json.Unmarshal([]byte(configurationRaw), &configurations); err != nil {
+		return err
+	}
 	current := slices.DeleteFunc(slices.Clone(previous), func(p runnerauth.Problem) bool {
-		return p.Code == "settings_rejected" || p.Code == "version_unsupported"
+		return p.Code == "settings_rejected" || p.Code == "version_unsupported" || p.Code == "policy_mismatch"
 	})
+	for projectID, configuration := range configurations {
+		if slices.Contains(r.ProjectIDs, tracker.ProjectID(projectID)) && configuration.SelectedPolicyDiffers() {
+			current = append(current, runnerauth.NewProblem("policy_mismatch"))
+			break
+		}
+	}
 	current = append(current, runnerHubProblems(*r, report, protocol, rejected)...)
 	r.Problems = runnerauth.MergeProblems(previous, current, r.LastHeartbeatAt)
 	if len(r.Problems) > 0 && r.Health != "revoked" && r.Health != "expired" {

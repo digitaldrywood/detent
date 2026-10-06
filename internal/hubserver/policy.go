@@ -106,17 +106,7 @@ func (s *Service) observeProjectPolicy(c echo.Context) error {
 	if reporter == "" {
 		reporter = credential.ID
 	}
-	encoded, err := json.Marshal(descriptor)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	source, err := json.Marshal(observation.Source)
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if _, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at, source_json) VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at, source_json = excluded.source_json`,
-		scope, descriptor.ID, string(encoded), reporter, formatHubTime(s.config.now()), string(source)); err != nil {
+	if err := storeObservedPolicy(c.Request().Context(), s.database.db, scope, reporter, observation, s.config.now()); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if credential.Runner.RunnerID != "" {
@@ -125,6 +115,21 @@ ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, desc
 		}
 	}
 	return c.NoContent(http.StatusNoContent)
+}
+
+func storeObservedPolicy(ctx context.Context, exec hostedExecer, scope, reporter string, observation policy.Observation, now time.Time) error {
+	encoded, err := json.Marshal(observation.Descriptor)
+	if err != nil {
+		return err
+	}
+	source, err := json.Marshal(observation.Source)
+	if err != nil {
+		return err
+	}
+	_, err = exec.ExecContext(ctx, `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at, source_json) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at,
+source_json = CASE WHEN excluded.source_json = 'null' AND project_observed_policies.policy_id = excluded.policy_id THEN project_observed_policies.source_json ELSE excluded.source_json END`, scope, observation.ID, string(encoded), reporter, formatHubTime(now), string(source))
+	return err
 }
 
 func readObservedPolicies(ctx context.Context, query nativeQueryer, scope string, approved policy.Descriptor, now time.Time) ([]policy.ObservedPolicy, error) {
