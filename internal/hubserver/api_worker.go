@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 var ErrNoClaimableWork = errors.New("no compatible work item is claimable")
@@ -593,72 +592,12 @@ const notAlreadyAnsweredClause = `(p.profile <> 'native' OR lower(trim(ws.detent
      AND COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 1) = 0
      AND COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 1) = 0
      AND COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = '')
-   AND answered.id NOT IN (SELECT value FROM json_each(%s))
    AND answered.work_item_revision >= i.revision
    AND answered.dispatch_generation >= i.dispatch_generation
    AND answered.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
      WHERE latest.organization_id = i.organization_id
        AND latest.project_id = i.project_id
        AND latest.work_item_id = i.native_id)))`
-
-func unpublishedNativeCompletionIDs(ctx context.Context, q nativeQueryer, candidates string, args []any) ([]string, error) {
-	rows, err := q.QueryContext(ctx, candidates+` SELECT a.id, i.project_id,
- json_type(a.data_json, '$.disposition') = 'object',
- CASE WHEN COALESCE(json_type(a.data_json, '$.disposition'), 'null') = 'null'
-   AND length(CAST(COALESCE(json_extract(a.data_json, '$.completion_body'), '') AS BLOB)) <= 65536
-   THEN COALESCE(json_extract(a.data_json, '$.completion_body'), '') ELSE '' END,
- json_extract(a.checkpoint_json, '$.head_sha'), json_extract(a.checkpoint_json, '$.workspace_digest')
-FROM candidates candidate JOIN issues i ON i.id = candidate.id
-JOIN native_attempts a ON a.organization_id = i.organization_id AND a.project_id = i.project_id AND a.work_item_id = i.native_id
-WHERE a.status = 'succeeded' AND a.work_item_revision >= i.revision AND a.dispatch_generation >= i.dispatch_generation
- AND a.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
-   WHERE latest.organization_id = a.organization_id AND latest.project_id = a.project_id AND latest.work_item_id = a.work_item_id)
- AND (COALESCE(json_type(a.data_json, '$.disposition'), 'null') = 'null'
-   OR (json_extract(a.data_json, '$.disposition.status') = 'complete'
-     AND json_extract(a.data_json, '$.disposition.blockers') = 0
-     AND json_extract(a.data_json, '$.disposition.human_action') = 0
-     AND COALESCE(json_extract(a.data_json, '$.disposition.reason_code'), '') = ''
-     AND COALESCE(json_array_length(a.data_json, '$.disposition.blocker_evidence'), 0) = 0))
- AND json_extract(a.checkpoint_json, '$.worktree_state') IN ('dirty', 'unpushed')
- AND json_extract(a.checkpoint_json, '$.resume') = 'resume_session'
- AND json_extract(a.checkpoint_json, '$.availability') = 'available'
- AND json_extract(a.checkpoint_json, '$.storage') = 'local_only'
- AND json_extract(a.checkpoint_json, '$.external_effect') = 'none'
- AND json_extract(a.checkpoint_json, '$.effect_state') = 'none'
- AND COALESCE(json_extract(a.checkpoint_json, '$.effect_id'), '') = ''
- AND json_extract(a.checkpoint_json, '$.head_sha') IS NOT NULL
- AND json_extract(a.checkpoint_json, '$.workspace_digest') IS NOT NULL
- AND NOT EXISTS (SELECT 1 FROM change_issue_links l JOIN change_versions v ON v.change_id = l.change_id
-   WHERE l.organization_id = a.organization_id AND l.project_id = a.project_id AND l.work_item_id = a.work_item_id
-   AND json_extract(v.record_json, '$.head_sha') = json_extract(a.checkpoint_json, '$.head_sha'))`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query unpublished native completions: %w", err)
-	}
-	defer rows.Close()
-	ids := []string{}
-	for rows.Next() {
-		var id, project, body, head, digest string
-		var typed sql.NullBool
-		if err := rows.Scan(&id, &project, &typed, &body, &head, &digest); err != nil {
-			return nil, err
-		}
-		if !validCommitID(head) || !validCommitID(digest) {
-			continue
-		}
-		if !typed.Bool {
-			if len(body) > 64<<10 {
-				continue
-			}
-			signal, reported := workpad.SignalFromComment(body, "", project)
-			if !reported || signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusComplete || len(signal.Blockers) != 0 ||
-				signal.HumanAction != "" || signal.ReasonCode != "" || signal.Fields["completion_kind"] == "operational" {
-				continue
-			}
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
 
 // claimWorkspaceExclusionArg binds the candidate query's workspace exclusion.
 // A workspace session's dispatch issue is not project work and never becomes
@@ -734,7 +673,7 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
   AND lower(trim(ws.detent_state)) <> 'cancelled'
   AND ws.dispatchable = 1
   AND (? = 1 OR `+notWorkspaceItemClause+`)
-  AND `+fmt.Sprintf(notAlreadyAnsweredClause, "'[]'")+`
+  AND `+notAlreadyAnsweredClause+`
   AND ((? = '' AND ? = 0) OR q.id IS NOT NULL)
   AND (p.require_dependencies = 0 OR NOT EXISTS (
     SELECT 1
