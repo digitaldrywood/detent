@@ -7,7 +7,7 @@
 
 import catalogFile from "../catalog.json";
 
-export type CatalogKind = "primitive" | "composition" | "surface";
+export type CatalogKind = "foundation" | "primitive" | "composition" | "surface";
 export type CatalogStatus = "available" | "proposed" | "exception";
 
 export interface CatalogEntry {
@@ -90,14 +90,54 @@ export function normalizeCatalog(raw: unknown): CatalogEntry[] {
   return entries;
 }
 
-const KIND_ORDER: readonly CatalogKind[] = ["primitive", "composition", "surface"];
+const KIND_ORDER: readonly CatalogKind[] = ["foundation", "primitive", "composition", "surface"];
 
-/** Case- and accent-insensitive match on id, name, group, source and exports. */
+/** Other names people search for, by catalog id. */
+export const SEARCH_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  dialog: ["modal"],
+  "alert-dialog": ["confirm", "confirmation", "modal"],
+  sheet: ["drawer", "side panel"],
+  popover: ["popup", "flyout"],
+  tooltip: ["hint", "title"],
+  toast: ["notification", "snackbar"],
+  select: ["dropdown", "picker"],
+  menu: ["dropdown", "context menu", "actions"],
+  combobox: ["typeahead", "multi select"],
+  autocomplete: ["typeahead", "suggestions"],
+  switch: ["toggle", "on off"],
+  checkbox: ["tick"],
+  badge: ["tag", "chip", "pill", "label"],
+  separator: ["divider", "rule"],
+  skeleton: ["placeholder", "loading"],
+  spinner: ["loader", "loading", "progress"],
+  empty: ["empty state", "zero state", "blank"],
+  kbd: ["shortcut", "keyboard", "hotkey"],
+  "scroll-area": ["scrollbar"],
+  collapsible: ["accordion", "disclosure", "expand"],
+  "toggle-group": ["segmented control", "tabs"],
+  "right-panel-tabs": ["tabs"],
+  "thread-status-indicators": ["status dot", "indicator"],
+  "brand-icons": ["logo", "icon"],
+};
+
+/** Case- and accent-insensitive match on the entry's name, id, group, source, exports, contract text and aliases. */
 export function matchesQuery(entry: CatalogEntry, query: string): boolean {
   const needle = fold(query);
   if (needle === "") return true;
   const haystack = fold(
-    [entry.id, entry.name, entry.group, entry.kind, entry.source ?? "", ...entry.exports].join(" "),
+    [
+      entry.id,
+      entry.name,
+      entry.group,
+      entry.kind,
+      entry.source ?? "",
+      ...entry.exports,
+      entry.use ?? "",
+      entry.avoid ?? "",
+      entry.keyboard ?? "",
+      ...entry.states,
+      ...(SEARCH_ALIASES[entry.id] ?? []),
+    ].join(" "),
   );
   return needle.split(" ").every((word) => haystack.includes(word));
 }
@@ -113,7 +153,7 @@ export interface NavGroup {
   readonly entries: readonly CatalogEntry[];
 }
 
-/** Primitives first, then compositions, then surfaces; groups and names alphabetical. */
+/** Foundations first, then primitives, compositions and surfaces; groups and names alphabetical. */
 export function groupEntries(entries: readonly CatalogEntry[], query = ""): NavGroup[] {
   const groups = new Map<string, NavGroup & { entries: CatalogEntry[] }>();
   for (const entry of entries) {

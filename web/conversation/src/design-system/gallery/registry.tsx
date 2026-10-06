@@ -1,7 +1,8 @@
-// Catalog id → specimens.
+// Catalog id → specimens, plus the foundation pages.
 //
-// The catalog (`src/design-system/catalog.json`) decides what exists; this map
-// only says how to render it. Every `available` catalog entry needs a key here,
+// The catalog (`src/design-system/catalog.json`) decides what components
+// exist; this map only says how to render them. The foundation pages
+// (`foundations-*`) are not components and have no catalog entry. Every `available` catalog entry needs a key here,
 // either specimens or an `excluded` reason — `tests/designSystemGallery.test.tsx`
 // enforces that.
 import { normalizeCatalog, rawCatalog, type CatalogEntry } from "./catalog";
@@ -9,16 +10,21 @@ import type { GalleryDoc } from "./specimen";
 import * as actions from "./specimens/actions";
 import * as chat from "./specimens/chat";
 import * as feedback from "./specimens/feedback";
+import { FOUNDATIONS } from "./specimens/foundations";
 import * as forms from "./specimens/forms";
 import * as layout from "./specimens/layout";
 import * as navigation from "./specimens/navigation";
 import * as overlays from "./specimens/overlays";
 import { COMPOSITIONS_A } from "./specimens/compositionsA";
+import { APP_ROUTES } from "./specimens/appRoutes";
 import { COMPOSITIONS_B } from "./specimens/compositionsB";
-import { PORTED } from "./specimens/ported";
+import { FIELDS_LAYOUT_ENTRY } from "./specimens/fieldsLayoutEntry";
+import { SHARED } from "./specimens/shared";
 import * as workspace from "./specimens/workspace";
 
 export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
+  // Foundations (not catalog entries: token, type, icon and value rules)
+  ...FOUNDATIONS,
   // Actions
   button: actions.button,
   toggle: actions.toggle,
@@ -59,7 +65,7 @@ export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
   // Navigation
   sidebar: navigation.sidebar,
   command: navigation.command,
-  ...PORTED,
+  ...FIELDS_LAYOUT_ENTRY,
   // Compositions
   "app-sidebar-layout": chat.appSidebar,
   composer: chat.composer,
@@ -75,6 +81,8 @@ export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
   "usage-page": workspace.usage,
   ...COMPOSITIONS_A,
   ...COMPOSITIONS_B,
+  ...APP_ROUTES,
+  ...SHARED,
 };
 
 /**

@@ -1,31 +1,34 @@
 # Detent design system
 
-This is the reference for Detent's Cloud UI (`web/conversation`) and the base that future UI work builds from. It documents and verifies what the client contains: the tokens in its two stylesheets, the primitives in `src/components/ui`, and the compositions built from them. Shared primitives and compositions own their appearance and behaviour; features compose them and connect them to data through adapters, and do not restyle them. A visual change is a scoped decision made in the owning stylesheet or component.
+This is the source of truth for Detent's Cloud UI (`web/conversation`) and the base that all UI work builds from. It states the rules, and verifies them against the code: the tokens in the client's two stylesheets, the primitives in `src/components/ui`, the shared components in `src/components`, and the compositions built from them. Shared primitives and compositions own their appearance and behaviour; features compose them and connect them to data through adapters, and do not restyle them. A visual change is a scoped decision made in the owning stylesheet or component.
 
 Consistent output comes from choosing the same component and composition for the same task. Select from this system before styling a screen. Product behaviour and the [repository invariants](../invariants.md) remain authoritative.
 
 ## Contents
 
-- [Foundations and token ownership](foundations.md): colour roles, type, spacing, radius, motion and elevation, generated from the stylesheets.
-- [Color review](color-review.md): measured contrast of the colour tokens.
+- [Foundations and token ownership](foundations.md): colour roles, categorical colours, type, icons, spacing and layout, breakpoints, radius, elevation, layers and motion, with token tables generated from the stylesheets.
+- [Color contrast](color-review.md): measured contrast of the colour tokens and which pairs are safe for text.
 - [Brand in product UI](brand.md): the mark, interface voice and the separate sign-in and Templ surfaces.
 - [Component contracts](components.md): import, variants, states, keyboard, use and avoid for every catalogued component, grouped by family. Generated.
 - [Element catalog](element-catalog.md): one table of every entry with its group, kind, status and source. Generated.
-- [Patterns](patterns.md): screen and composition recipes, control selection, feedback and interaction states.
+- [Patterns](patterns.md): the page template, screen and composition recipes, control selection, keyboard shortcuts, formatting of values, status indicators, feedback and interaction states.
 - [Accessibility](accessibility.md): contrast, target size, focus and review criteria.
 - [Contributing](contributing.md): how to add or change a component and keep the catalog current.
-- [Migration](migration.md): adoption gaps and known exceptions.
 - [Workpad](workpad.md): progress and validation record for the design-system build.
 
-The development gallery renders every catalogued component with synthetic data at `/design-system` in the Vite dev server (`npm run dev` in `web/conversation`). It reads the same catalog as the generated docs. [Contributing](contributing.md#run-the-gallery) shows how to run it against the mock hub.
+The development gallery renders the foundations and every catalogued component with synthetic data at `/design-system` in the Vite dev server: `npm run dev` in `web/conversation` serves it without a hub. A few compositions are shown as the real app route and need the mock hub (`npm run dev:mock`). `npm run build:gallery` writes a static copy to `web/conversation/dist-gallery/` for anyone without a dev setup. The gallery reads the same catalog and token data as the generated docs; [Contributing](contributing.md#run-the-gallery) has the details.
 
 ## Gallery
 
-Each specimen renders the real component in separate Light and Dark documents, at full width or 390px.
+Each specimen renders the real component in separate Light and Dark documents, at full width or 390px. The foundation pages render the token, type, icon, layout and value rules the same way, and the compositions that load their own data are shown as the real app route against the mock hub.
 
 | Overview, Light | Overview, Dark |
 | --- | --- |
-| ![Gallery overview in the Light view: the catalog navigation, the entries not yet specimened and the foundation swatches](images/gallery-overview-light.jpg) | ![Gallery overview in the Dark view](images/gallery-overview-dark.jpg) |
+| ![Gallery overview in the Light view: the navigation with Foundations first, the coverage line and the foundation pages](images/gallery-overview-light.jpg) | ![Gallery overview in the Dark view](images/gallery-overview-dark.jpg) |
+
+| Type foundation | Work board as the real app route |
+| --- | --- |
+| ![Type foundation page: the type roles table with classes and samples in the Light and Dark frames](images/foundations-type.jpg) | ![Work board entry showing the real /work route rendered against the mock hub](images/work-board.jpg) |
 
 | Button variants and states | Menu, open in both themes |
 | --- | --- |
@@ -56,7 +59,11 @@ When the inventory's historical styling examples differ from this system, use th
 
 `catalog.json` has one entry per primitive, composition and surface. Each entry records its group, status (`available`, `proposed` or `exception`), source file and exports, the variants its source defines, the states it owns, keyboard behaviour, when to use it and what to use instead.
 
-`npm run design:catalog` in `web/conversation` validates the catalog and regenerates [components.md](components.md) and [element-catalog.md](element-catalog.md). Validation fails when an id repeats, a source is missing, a listed export is not exported, a catalogued variant differs from the `cva` definition, or a file in `src/components/ui` has no entry. `npm run design:catalog:check` also fails when the generated docs are stale.
+`npm run design:catalog` in `web/conversation` validates the catalog and regenerates [components.md](components.md) and [element-catalog.md](element-catalog.md). Validation fails when an id repeats, a source is missing, a listed export is not exported, a catalogued variant differs from the `cva` definition, or a module anywhere under `src/components` is neither part of an entry nor listed under `internal` with the reason it is not a component a feature chooses. `npm run design:catalog:check` also fails when the generated docs are stale.
+
+## Checks
+
+`make check-app` (repository root) runs `npm run design:tokens:check` and `npm run design:catalog:check` after the type check, together with the client's tests and production build. A stale token file, catalog or generated doc therefore fails the client gate: run the generator and commit its output with the change.
 
 ## Design decisions
 
@@ -69,11 +76,11 @@ When the inventory's historical styling examples differ from this system, use th
 7. Keep useful labels and keyboard focus visible. A tooltip supplements an action; it cannot supply its only accessible name.
 8. Shared owners, not local copies. Primitives and compositions are the owners of their look and behaviour. A feature composes them through props and adapters; it never forks or restyles one. A genuinely missing component is added once to the shared library and catalogued.
 
-The system uses a Zinc-based neutral palette, Lucide icons, Base UI interaction primitives, `class-variance-authority` and Tailwind v4. Adopting these rules does not require regenerating components or upgrading dependencies.
+The system uses a Zinc-based neutral palette, Lucide icons, Base UI interaction primitives, `class-variance-authority` and Tailwind v4. Following these rules does not require regenerating components or upgrading dependencies.
 
 ## Accessibility baseline
 
-Ordinary text meets 4.5:1 contrast and qualifying large text 3:1 against the resolved surface; token values alone do not prove it, especially with opacity, glass or imported themes. Targets meet WCAG 2.2's 24 by 24 CSS pixel minimum or its spacing exceptions; touch controls aim for 44 by 44 effective pixels without overlapping hit areas. Preserve semantic controls, associated labels, visible focus, keyboard navigation, focus return from overlays, text or icon alternatives to colour, and non-hover access to essential actions. [Accessibility](accessibility.md) holds the full criteria.
+Ordinary text meets 4.5:1 contrast and qualifying large text 3:1 against the resolved surface; token values alone do not prove it, especially with opacity, glass or imported themes ([safe pairs](color-review.md#using-the-pairs)). Targets meet WCAG 2.2's 24 by 24 CSS pixel minimum or its spacing exceptions; touch controls aim for 44 by 44 effective pixels without overlapping hit areas. Preserve semantic controls, associated labels, visible focus, keyboard navigation, focus return from overlays, text or icon alternatives to colour, and non-hover access to essential actions. [Accessibility](accessibility.md) holds the full criteria.
 
 ## Agent instructions
 
@@ -94,16 +101,18 @@ controls in one size family. Use semantic text and surface utilities, system
 font tokens, existing icon mappings and shared header and sidebar geometry.
 
 Do not invent a new palette, tooltip, menu, composer, card layout or status
-mapping for one feature. A component the library lacks is added once to the
-shared library (src/components/ui or src/components) and to
-src/design-system/catalog.json; run npm run design:catalog.
-Existing specialized renderer contracts and Detent-specific data and
+mapping for one feature, and do not upgrade dependencies just to achieve
+consistency. A component the library lacks is added once to the shared library
+(src/components/ui or src/components) and to src/design-system/catalog.json;
+run npm run design:catalog, and npm run design:tokens after a stylesheet
+change. Existing specialized renderer contracts and Detent-specific data and
 interaction behaviour remain authoritative.
 
 Implement only the UI named by a human-authored issue where INV-15 requires it.
 Honor INV-13 card content and INV-16 publication ownership. File product work
 through the supported selected tracker unless manual implementation is
-explicitly authorized. Do not add enforcement mechanisms or validation gates.
+explicitly authorized. Do not add enforcement mechanisms or validation gates
+beyond the existing design checks, which make check-app already runs.
 
 Review both themes, narrow containers, long labels, keyboard focus, touch hit
 areas, and existing loading, empty, error and disabled states. Report the

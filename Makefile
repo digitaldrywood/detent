@@ -316,7 +316,7 @@ help:
 	@echo "  app          Build the conversation client into static/app/conversation"
 	@echo "  app-dev      Run the conversation client dev server"
 	@echo "  app-test     Typecheck and test the conversation client"
-	@echo "  check-app    Client typecheck, tests, build and attribution"
+	@echo "  check-app    Client typecheck, design token and catalog checks, tests, build and attribution"
 	@echo "  build        Build $(BINARY_NAME)"
 	@echo "  test         Run Go tests"
 	@echo "  test-race    Run Go tests with the race detector"

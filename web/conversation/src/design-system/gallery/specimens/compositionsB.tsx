@@ -53,6 +53,7 @@ import { SidebarProvider } from "../../../components/ui/sidebar.tsx";
 import { Button } from "../../../components/ui/button.tsx";
 import { UsageProviderChart } from "../../../app/usage/UsageProviderChart.tsx";
 import { providersWithUsage } from "../../../app/usage/usageProviders.ts";
+import type { DailyTotals, MergedUsage } from "../../../app/usage/adapter.ts";
 import { UsageLimitsSection } from "../../../app/usage/UsageLimits.tsx";
 import { LimitWindows } from "../../../components/usage/UsageLimits.tsx";
 import { WorkTopBar } from "../../../app/work/components/WorkTopBar.tsx";
@@ -91,21 +92,19 @@ function entry(name: string, kind: FileEntry["kind"] = "file", size = 1_024): Fi
 const LISTINGS: Record<string, readonly FileEntry[]> = {
   "": [entry("internal", "dir"), entry("web", "dir"), entry("README.md"), entry("go.mod")],
   internal: [entry("lock", "dir"), entry("orchestrator", "dir")],
-  "internal/lock": [entry("lease.go"), entry("lease_test.go")],
-  "internal/orchestrator": [entry("ranking.go")],
+  "internal/lock": [entry("lease.ts"), entry("lease.test.ts")],
+  "internal/orchestrator": [entry("ranking.ts")],
   web: [entry("conversation", "dir")],
   "web/conversation": [entry("package.json")],
 };
 
 const READS: Record<string, string> = {
   "README.md": "# Detent\n\nOrchestrates coding agents across runners.\n",
-  "internal/lock/lease.go": [
-    "package lock",
-    "",
+  "internal/lock/lease.ts": [
     "// renewLease renews at half the lease duration.",
-    "func (l *Lock) renewLease(ctx context.Context) error {",
-    "\tinterval := l.lease / 2",
-    "\treturn l.store.Renew(ctx, l.key, interval)",
+    "export async function renewLease(lock: Lock): Promise<void> {",
+    "  const interval = lock.leaseMs / 2;",
+    "  await lock.store.renew(lock.key, interval);",
     "}",
   ].join("\n"),
 };
@@ -133,10 +132,27 @@ function memoryFiles(): FilesClient {
   };
 }
 
+/**
+ * Opens a help control at mount by clicking its trigger, for components that
+ * own their open state and take no `defaultOpen`. `.click()` opens without
+ * moving focus to the trigger.
+ */
+function OpenOnMount({ trigger, children }: { readonly trigger: string; readonly children: React.ReactNode }) {
+  const host = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    host.current?.querySelector<HTMLElement>(trigger)?.click();
+  }, [trigger]);
+  return (
+    <div ref={host} className="contents">
+      {children}
+    </div>
+  );
+}
+
 // --- Panels -----------------------------------------------------------------
 
-function SheetSpecimen() {
-  const [open, setOpen] = React.useState(false);
+function SheetSpecimen({ initialOpen = false }: { readonly initialOpen?: boolean }) {
+  const [open, setOpen] = React.useState(initialOpen);
   return (
     <>
       <Button variant="outline" onClick={() => setOpen(true)}>
@@ -236,7 +252,7 @@ function BreadcrumbsSpecimen() {
     <FileBreadcrumbs
       files={files}
       projectName="detent"
-      relativePath="internal/lock/lease.go"
+      relativePath="internal/lock/lease.ts"
       theme={theme}
       onOpenFile={noop}
     />
@@ -246,7 +262,15 @@ function BreadcrumbsSpecimen() {
 function BrowserPanelSpecimen() {
   const theme = useFrameTheme();
   const files = React.useMemo(memoryFiles, []);
-  const [selected, setSelected] = React.useState<string | null>("internal/lock/lease.go");
+  // The file opens after the tree's first listing, the way a breadcrumb or a
+  // chat chip opens one. Opening it at mount overlaps the reveal with the root
+  // listing, and under StrictMode's double effect both list `internal` and add
+  // its rows twice ("Path already exists").
+  const [selected, setSelected] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setSelected("internal/lock/lease.ts"), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
   return (
     <div className="flex h-full w-72 max-w-full min-h-0 flex-col border-r border-border">
       <FileBrowserPanel
@@ -306,24 +330,21 @@ function TerminalSpecimen({ state }: { readonly state: "live" | "empty" | "unava
 }
 
 const panels: Record<string, GalleryDoc> = {
-  "right-panel-workspace": {
-    meta: {
-      name: "Right panel workspace",
-      kind: "composition",
-      group: "Panels",
-      source: "src/app/components/RightPanel.tsx",
-    },
-    excluded:
-      "`useRightPanelWorkspace` reads the ConversationClient and opens the issue's workspace session against the hub on mount; its parts (Right panel tabs, the sheet and every surface) have their own specimens.",
-  },
   "right-panel-sheet": {
     meta: { name: "Right panel sheet", kind: "composition", group: "Panels", source: "src/components/RightPanelSheet.tsx" },
     specimens: [
       {
+        id: "open-default",
+        title: "Open: sheet holding a surface",
+        note: "Rendered open. Escape or the backdrop closes it; the button reopens it.",
+        minHeight: 480,
+        render: () => <SheetSpecimen initialOpen />,
+      },
+      {
         id: "open",
         title: "Sheet holding a surface",
         note: "The narrow-viewport home of the right panel. Escape or the backdrop closes it.",
-        minHeight: 480,
+        minHeight: 160,
         render: () => <SheetSpecimen />,
       },
     ],
@@ -358,7 +379,7 @@ const panels: Record<string, GalleryDoc> = {
             header={
               <span className="flex items-center gap-2 text-sm">
                 <FileTextIcon className="size-4 text-muted-foreground" />
-                internal/lock/lease.go
+                internal/lock/lease.ts
               </span>
             }
           >
@@ -400,8 +421,8 @@ const panels: Record<string, GalleryDoc> = {
     meta: { name: "Files surface", kind: "surface", group: "Panels", source: "src/app/components/surfaces/FilesSurface.tsx" },
     specimens: [
       { id: "tree", title: "Workspace tree", height: 420, render: () => <FilesSurfaceSpecimen unavailable={false} /> },
-      { id: "file", title: "One open file with breadcrumbs", height: 420, render: () => <FileSurfaceSpecimen path="internal/lock/lease.go" /> },
-      { id: "missing", title: "File the runner cannot find", height: 240, render: () => <FileSurfaceSpecimen path="internal/gone.go" /> },
+      { id: "file", title: "One open file with breadcrumbs", height: 420, render: () => <FileSurfaceSpecimen path="internal/lock/lease.ts" /> },
+      { id: "missing", title: "File the runner cannot find", height: 240, render: () => <FileSurfaceSpecimen path="internal/gone.ts" /> },
       { id: "unavailable", title: "Workspace failed: checkout failed", height: 240, render: () => <FilesSurfaceSpecimen unavailable /> },
     ],
   },
@@ -529,14 +550,25 @@ const settings: Record<string, GalleryDoc> = {
       },
     ],
   },
-  "settings-route": {
-    meta: { name: "Settings route", kind: "composition", group: "Settings", source: "src/app/settings/Settings.tsx" },
-    excluded:
-      "Every section reads the account API through the ConversationClient and loads its data from the hub on mount; the rows and sections it is built from are in Settings layout.",
-  },
   "settings-help": {
     meta: { name: "Settings help", kind: "composition", group: "Settings", source: "src/app/settings/SettingsHelp.tsx" },
     specimens: [
+      {
+        id: "open",
+        title: "Open: help popover beside a setting",
+        note: "Opened at mount by clicking the trigger (the component takes no `defaultOpen`). A click outside closes it.",
+        minHeight: 240,
+        render: () => (
+          <OpenOnMount trigger='[aria-label="About Spend limit"]'>
+            <div className="flex items-center gap-1 pt-24 text-sm">
+              Spend limit
+              <SettingsHelp label="Spend limit">
+                New runs pause once the organization reaches this amount in the billing window. Running attempts finish.
+              </SettingsHelp>
+            </div>
+          </OpenOnMount>
+        ),
+      },
       {
         id: "hover",
         title: "Help popover beside a setting",
@@ -556,6 +588,22 @@ const settings: Record<string, GalleryDoc> = {
   "context-help": {
     meta: { name: "Context help", kind: "composition", group: "Settings", source: "src/app/components/ContextHelp.tsx" },
     specimens: [
+      {
+        id: "open",
+        title: "Open: pinned help",
+        note: "Pinned at mount by clicking the trigger (the component takes no `defaultOpen`). A click outside or Escape unpins it.",
+        minHeight: 240,
+        render: () => (
+          <OpenOnMount trigger='[aria-label="Help for Runner token"]'>
+            <div className="flex items-center gap-1 pt-24 text-sm">
+              Runner token
+              <ContextHelp label="Runner token">
+                The token a runner uses to enroll. It is shown once; enroll a new runner to get another.
+              </ContextHelp>
+            </div>
+          </OpenOnMount>
+        ),
+      },
       {
         id: "inline",
         title: "Hover preview, click to pin",
@@ -625,8 +673,25 @@ const settings: Record<string, GalleryDoc> = {
 
 // --- Usage ------------------------------------------------------------------
 
+/**
+ * An empty report with one zero row per day of its window. Neither the chart
+ * nor the usage page has a no-data message of its own: with no rows the plot
+ * is bare, so the specimen shows the quiet window the way a report with
+ * zero-usage days draws it — dated axis, flat baseline, `0` scale.
+ */
+function quietWindow(): MergedUsage {
+  const empty = usageEmpty();
+  const start = Date.parse(empty.from);
+  const end = Date.parse(empty.to);
+  const daily: DailyTotals[] = [];
+  for (let time = start; time < end; time += 86_400_000) {
+    daily.push({ day: new Date(time).toISOString().slice(0, 10), costUsd: 0, totalTokens: 0, byProvider: new Map() });
+  }
+  return { ...empty, daily };
+}
+
 function ChartSpecimen({ metric, empty }: { readonly metric: "cost" | "tokens"; readonly empty?: boolean }) {
-  const merged = React.useMemo(() => (empty === true ? usageEmpty() : usageDaily()), [empty]);
+  const merged = React.useMemo(() => (empty === true ? quietWindow() : usageDaily()), [empty]);
   return (
     <UsageProviderChart
       providers={providersWithUsage(merged.providers)}
@@ -654,7 +719,12 @@ const usage: Record<string, GalleryDoc> = {
     specimens: [
       { id: "cost", title: "Daily cost by provider", note: "Hover the plot for the day's readout.", render: () => <ChartSpecimen metric="cost" /> },
       { id: "tokens", title: "Daily tokens", render: () => <ChartSpecimen metric="tokens" /> },
-      { id: "empty", title: "Empty window", render: () => <ChartSpecimen metric="cost" empty /> },
+      {
+        id: "empty",
+        title: "Quiet window: every day at zero",
+        note: "The chart has no no-data message; a window with no usage draws a flat baseline under its dates.",
+        render: () => <ChartSpecimen metric="cost" empty />,
+      },
     ],
   },
   "usage-limits": {
@@ -775,8 +845,8 @@ function PropertiesSpecimen({ canWrite }: { readonly canWrite: boolean }) {
   );
 }
 
-function PickerSpecimen() {
-  const [open, setOpen] = React.useState(false);
+function PickerSpecimen({ initialOpen = false }: { readonly initialOpen?: boolean }) {
+  const [open, setOpen] = React.useState(initialOpen);
   const [query, setQuery] = React.useState("");
   const [picked, setPicked] = React.useState("High");
   const rows = ["Urgent", "High", "Medium", "Low"]
@@ -817,11 +887,6 @@ const ACTIVITY_ROWS = mergeActivity({
 });
 
 const work: Record<string, GalleryDoc> = {
-  "work-board": {
-    meta: { name: "Work board", kind: "composition", group: "Work", source: "src/app/work/WorkBoard.tsx" },
-    excluded:
-      "The board reads the ConversationClient and subscribes to the project's work items through the hub; its lanes, cards, toolbar, top bar and list each have specimens.",
-  },
   "work-top-bar": {
     meta: { name: "Work top bar", kind: "composition", group: "Work", source: "src/app/work/components/WorkTopBar.tsx" },
     specimens: [
@@ -874,11 +939,6 @@ const work: Record<string, GalleryDoc> = {
       },
     ],
   },
-  "issue-page": {
-    meta: { name: "Issue page", kind: "composition", group: "Work", source: "src/app/work/IssuePage.tsx" },
-    excluded:
-      "The page loads the issue, its history, attempts, comments and change through the ConversationClient and opens the workspace panel; its properties, activity feed and composer have specimens.",
-  },
   "issue-properties": {
     meta: { name: "Issue properties", kind: "composition", group: "Work", source: "src/app/work/components/IssueProperties.tsx" },
     specimens: [
@@ -896,10 +956,17 @@ const work: Record<string, GalleryDoc> = {
     meta: { name: "Property picker", kind: "composition", group: "Work", source: "src/app/work/components/IssuePickers.tsx" },
     specimens: [
       {
+        id: "open",
+        title: "Open: searchable picker",
+        note: "Rendered open. The picker focuses its search field when it opens, so this frame takes focus on load. Type to filter or press a digit.",
+        minHeight: 320,
+        render: () => <PickerSpecimen initialOpen />,
+      },
+      {
         id: "priority",
         title: "Searchable picker with digit shortcuts",
         note: "Click the trigger, type to filter, or press a digit.",
-        minHeight: 320,
+        minHeight: 120,
         render: () => <PickerSpecimen />,
       },
     ],

@@ -150,6 +150,14 @@ export function CommandPalette({ children }: { children: ReactNode }) {
     [openNewThreadIn, rememberOpener, setOpen],
   );
 
+  // Development only: `?palette=open` opens the palette on load, so the
+  // design-system gallery can show it over a real route.
+  useEffect(() => {
+    if (import.meta.env.DEV && new URLSearchParams(globalThis.location?.search ?? "").get("palette") === "open") {
+      setOpen(true);
+    }
+  }, [setOpen]);
+
   return (
     <CommandDialog open={state.open} onOpenChange={(open) => setOpen(open)}>
       {/* Block background focus calls for the entire time the palette is open. */}
@@ -776,9 +784,6 @@ function OpenCommandPaletteDialog(props: {
       aria-label="Command palette"
       inputProps={{
         placeholder: inputPlaceholder,
-        wrapperClassName: isSubmenu
-          ? "[&_[data-slot=autocomplete-start-addon]]:pointer-events-auto"
-          : undefined,
         ...(isSubmenu
           ? {
               startAddon: (

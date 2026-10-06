@@ -1,17 +1,12 @@
 # Accessibility
 
-These are the requirements a Cloud UI change meets before review. They describe what the shared components already provide and what a feature must preserve. They are not a claim that the whole client has passed an accessibility audit.
+These are the accessibility rules for the Cloud UI: what the shared components provide and what a feature must preserve. They are review criteria applied to every UI change, checked in the gallery and on the real route; they are not additional automated gates beyond the design checks `make check-app` already runs.
 
 ## Contrast
 
 Ordinary text meets 4.5:1 against the surface it is painted on, and large text (24px, or 18.66px bold) meets 3:1 ([WCAG 1.4.3](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)). Icons, focus indicators and control boundaries that carry meaning meet 3:1 ([WCAG 1.4.11](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html)).
 
-The [color review](color-review.md) measures the token pairs statically. Every workspace text pair passes at the token level except one, and four findings limit how the tokens can be used:
-
-- `update-foreground` on `update-surface` is 3.89:1 in light mode. Do not use the `update` utilities for body text until the owner fixes it ([finding 1](color-review.md#findings)).
-- White on `--primary` is 4.64:1. Do not lighten a solid primary or destructive fill further, and do not put text on `bg-primary/90` or lighter tints ([finding 2](color-review.md#findings)).
-- `--sidebar-icon-color` is below 3:1 in both themes. A sidebar icon must sit beside a visible label; it cannot be the only cue ([finding 3](color-review.md#findings)).
-- `muted-foreground` has little headroom. `text-muted-foreground/70` and lower opacities fall below 4.5:1, so use them only for text a person can ignore without losing information ([finding 4](color-review.md#findings)).
+The [color contrast](color-review.md) page measures the token pairs and states [which are safe for text](color-review.md#using-the-pairs). In short: use the role foregrounds on their own surfaces; keep `muted-foreground` at full strength for anything a person must read; use the `update` role for icons and large text only; never put text on a tint of a solid action colour lighter than the button's own hover; and pair every sidebar icon with a visible label.
 
 Static values do not prove the painted result. Opacity modifiers, glass surfaces, grain and nested translucent fills change it. When a change composites colours, measure the rendered pixels in both themes.
 
@@ -19,7 +14,12 @@ Colour is never the only signal. Status, selection, errors and diff changes also
 
 ## Focus
 
-Every interactive element shows a visible focus indicator when reached by keyboard. Primitives use `focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background`; do not remove it with `outline-none` or override it in a feature. `--ring` is the primary colour, so it shares finding 2's margin.
+Every interactive element shows a visible focus indicator when reached by keyboard. The primitives own it, in two forms:
+
+- **Buttons, toggles, switches, checkboxes, radios, tabs and rows**: `focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background`.
+- **Fields** (`Input`, `Textarea`, `Select` trigger, and `NumberField`, `Combobox`, `Autocomplete` and `InputGroup`, which build on `Input`): the border turns `border-ring` and a soft 3px ring appears, `ring-[3px] ring-ring/24` (`has-focus-visible:` on the wrapper); an invalid field uses `border-destructive/64` and `ring-destructive/16`.
+
+Do not remove either with `outline-none` or override it in a feature. `--ring` is the primary colour.
 
 - Overlays (dialog, alert dialog, sheet, popover, menu) move focus inside when they open, trap it while modal, and return it to the trigger when they close. Base UI provides this; keep the trigger rendered while the overlay is open so focus has somewhere to return.
 - Focus order follows reading order. The app shell puts the sidebar before the main region.
@@ -31,7 +31,8 @@ Every action is reachable and operable from the keyboard. Each entry in [compone
 
 | Component | Keys |
 | --- | --- |
-| Button, toggle, checkbox, switch | Tab focuses; Space activates; Enter activates a button |
+| Button, toggle, checkbox | Tab focuses; Space activates; Enter activates a button |
+| Switch | Tab focuses; Space or Enter toggles |
 | Menu, select, combobox, autocomplete, command | Arrow keys move; Enter selects; Escape closes one level; typeahead where the primitive supports it |
 | Radio group, toggle group | Tab enters the group; arrow keys move between options |
 | Dialog, sheet, popover | Escape closes and returns focus |
@@ -42,7 +43,7 @@ A tooltip supplements a control that already has an accessible name. It never ho
 
 ## Target sizes
 
-Pointer targets meet WCAG 2.2's 24 by 24 CSS pixel minimum ([2.5.8](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html)), or its spacing exception. On coarse pointers, `Button` and `NumberField` steppers extend their hit area to 44 by 44 pixels with a `pointer-coarse:after` overlay, without changing the visible size. Keep that overlay: do not set `overflow-hidden` on a parent that would clip it, and do not place two such controls so close that their hit areas overlap.
+Pointer targets meet WCAG 2.2's 24 by 24 CSS pixel minimum ([2.5.8](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html)), or its spacing exception. A link inside a sentence is exempt: its size is set by the line of text, and enlarging it would break the prose. On coarse pointers, `Button` and `NumberField` steppers extend their hit area to 44 by 44 pixels with a `pointer-coarse:after` overlay, without changing the visible size. Keep that overlay: do not set `overflow-hidden` on a parent that would clip it, and do not place two such controls so close that their hit areas overlap.
 
 The compact sizes (`icon-micro` at 20px, `micro`) are for dense desktop chrome next to a larger alternative. Do not make one the only way to reach an action on a phone.
 
@@ -59,9 +60,13 @@ Light and dark are both supported, and the user can switch between them. Every c
 The client works at 390px and 320px wide.
 
 - Text and labels wrap; they are not clipped. Long single tokens such as file paths and branch names use `truncate` or `MiddleTruncate`, and the full value stays readable by assistive technology.
-- Overlays stay inside the viewport. Below the `md` breakpoint the sidebar becomes a sheet behind a toggle, and the right panel becomes a sheet.
+- Overlays stay inside the viewport. Below the `md` breakpoint (768px) the sidebar becomes a sheet behind a toggle. At 980px and below the right panel becomes a sheet (`RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY` in `src/rightPanelLayout.ts`).
 - Form fields use 16px text on narrow screens so mobile browsers do not zoom on focus.
 - Tables keep every column reachable through horizontal scroll inside their own container; the page itself never scrolls horizontally.
+
+## Zoom
+
+The interface works at 200% browser zoom and with the interface size preference at 20px: content reflows rather than overflowing, nothing is clipped, and no action becomes unreachable. Build dimensions in rem through the spacing scale so they scale with the root, and keep fixed pixel sizes to hairlines and hit-area minimums.
 
 ## Verifying in the gallery
 
@@ -70,7 +75,7 @@ The gallery at `/design-system` (see [Contributing](contributing.md#run-the-gall
 1. Open the component's page. Use **Light + Dark** to compare the themes side by side, or **Light** or **Dark** alone.
 2. Switch to **390px** to check the narrow layout. The frames render at that width, so responsive classes respond as they would on a phone.
 3. Click into a frame and use Tab, Shift+Tab, the arrow keys, Enter, Space and Escape. Confirm the focus ring is visible in both themes and that focus returns to the trigger when an overlay closes.
-4. Open the browser's rendering tools and emulate `prefers-reduced-motion: reduce` and forced colours to check motion and high-contrast behaviour.
+4. Open the browser's rendering tools and emulate `prefers-reduced-motion: reduce` and forced colours to check motion and high-contrast behaviour, and zoom to 200%.
 5. For contrast, sample the rendered colours in each frame rather than reading token values.
 
 The gallery proves a component's own states with synthetic data. It does not replace checking the real route with real data, permissions and loading behaviour for a product change.

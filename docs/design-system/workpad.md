@@ -4,66 +4,59 @@ Progress and validation record for the design-system build. Dated 2026-10-06.
 
 ## Goal
 
-Give the Cloud UI (`web/conversation`) one design reference that is generated from, and checked against, the code: tokens from the stylesheets, contracts from a validated catalog, and a development gallery that renders every catalogued component in both themes. Product adoption is a separate, issue-scoped step.
+Make the design system the source of truth for the Cloud UI (`web/conversation`): normative rules for every foundation and pattern, tokens generated from the stylesheets, contracts from a validated catalog that covers every shared component, and a gallery that renders all of it in both themes, with or without a hub.
 
-## Worktree
+## Worktree and committed state
 
-- Branch `feat/design-system`, in its own Detent worktree.
-- The gallery runs on the Vite dev server against the mock hub, on ephemeral ports. Port 4000 is not used.
-- Nothing has been committed, pushed or opened as a pull request from this record.
+- Branch `feat/design-system`, in its own Detent worktree, branched from `develop`.
+- First pass committed as `23ee16487` ("feat(ui): add the Detent design system"): docs, token and catalog generators, the catalog, the development gallery and twelve new primitives.
+- The second pass described below is uncommitted, alongside a concurrent primitive sync in `src/components/ui`, `src/app/global.css` and `src/lib/utils.ts`. Nothing has been pushed or opened as a pull request.
+- The gallery runs on the Vite dev server on ephemeral ports. Port 4000 is not used.
 
-## Done
+## Second pass
 
 ### Documentation
 
-- [README](README.md): scope, sources of truth, the catalog, design decisions, agent instructions and gallery screenshots.
-- [Foundations](foundations.md): colour roles, type, spacing, radius, motion and elevation, with tables generated from the stylesheets.
-- [Color review](color-review.md): static contrast for every key pair in both themes, and five findings.
-- [Brand](brand.md): the mark, the separate sign-in and Templ surfaces, interface voice and four recorded inconsistencies.
-- [Components](components.md) and [element catalog](element-catalog.md): generated from `catalog.json`.
-- [Patterns](patterns.md): control selection, screen recipes and interaction states.
-- [Accessibility](accessibility.md), [contributing](contributing.md) and [migration](migration.md).
+- Every hand-written document is normative: it states the rule, the token or component and how to use it. The adoption-gap document was removed, with the defect, inconsistency and open-decision lists that went with it.
+- [Foundations](foundations.md): restored the full colour-role table and Tailwind authoring rules; added categorical colours, type roles (the dense sizes `text-2xs` to `text-5xs` are tokens), size preferences, numbers and truncation, icons, layout dimensions, breakpoints, elevation, layers and motion.
+- [Patterns](patterns.md): added the page template, keyboard shortcuts, formatting of values and status indicators; corrected control heights; restored the device-tools, managed-account, cloud-connection and authentication recipes, native disabled and loading semantics, the settings-row container rule and the separation from marketing.
+- [Accessibility](accessibility.md): right panel at 980px, switch on Enter and Space, the two focus-ring forms, zoom, the inline-link target exception, and the review-criteria framing.
+- [Color contrast](color-review.md) states which pairs are safe for text; [brand](brand.md) states the mark, colour, size, clear space and accessible-name rules.
+- [README](README.md), [contributing](contributing.md), the client README, `AGENTS.md`, `CLAUDE.md` and the Makefile help say the design checks run in `make check-app`.
 
 ### Tooling
 
-- `scripts/design-tokens.ts` (`npm run design:tokens[:check]`) resolves the tokens in `global.css` and `index.css`, writes `src/design-system/tokens.generated.json`, and regenerates the tables in foundations and the color review.
-- `scripts/design-catalog.ts` (`npm run design:catalog[:check]`) validates `src/design-system/catalog.json` against the source (files, exports, `cva` variants, coverage of `src/components/ui`) and regenerates components and the element catalog.
-- `make check-app` now runs both `:check` scripts after the type check, so a stale generated file fails the client gate.
+- `design-tokens.ts`: the Dark column prints `same` only when both themes resolve to the same value (`themed` now means "differs in dark"); `light-dark()` resolves per theme; elevation, layer and breakpoint groups and their generated sections.
+- `design-catalog.ts`: coverage extends to every module under `src/components`; each is part of an entry (`source` or `files`) or listed under `internal` with a reason.
+- Tests: themed roles resolve per theme, `light-dark()`, the internal list and coverage counts; the twelve-primitive test file is split by family under `tests/components/ui/`.
 
 ### Gallery
 
-- Development-only route at `/design-system`, with per-entry pages and a frame route that renders one specimen in a Light or Dark document.
-- Controls for Light + Dark, Light, Dark, full width and 390px.
-- 102 of 107 available entries have specimens. Five compositions are excluded with a reason because they load from the hub client on mount ([migration](migration.md#compositions-the-gallery-cannot-render-in-isolation)).
-
-### Primitives
-
-Twelve primitives added to `src/components/ui`, each with a catalog entry, specimens and tests: calendar, color-picker, number-field, radio-group, input-group, draft-input, collapsible-section-header, middle-truncate, discovery-list, standalone-page, wizard and qr-code. None has a feature caller yet.
-
-### Gallery fix
-
-The composer specimen "Attachments (ready, uploading, failed)" showed the uploading image's filename clipped and overlapped by the remove button. Cause: the specimen gave the image `previewUrl: null`. The attachments adapter creates an object URL for every image file, so the real composer shows a thumbnail; the null path is a fallback for when `URL.createObjectURL` is unavailable. The specimen now supplies a synthetic SVG preview. The fallback's layout is recorded as a component defect in [migration](migration.md#component-defects-found-in-review); the component was not changed.
+- Foundation pages read from `tokens.generated.json` or render the real components and formatters: colour, categorical palette, type, icons, spacing and layout, radius, elevation, layers, motion, breakpoints, status indicators, keyboard shortcuts and formatting.
+- Specimens for every newly catalogued shared component, and a nested-overlay specimen (Select and Menu inside a Dialog).
+- The five compositions that load from the hub render as the real app route in a frame, themed from the gallery, when the mock hub runs.
+- `/design-system` skips the hub bootstrap, so `npm run dev` alone serves it. `npm run build:gallery` writes a static, hash-routed copy to `dist-gallery/` (gitignored).
 
 ## Validation
 
-Run in `web/conversation` on 2026-10-06:
+Run in `web/conversation` on 2026-10-06, after the primitive sync and regeneration:
 
 | Gate | Result |
 | --- | --- |
 | `npx tsc --noEmit` | Pass |
-| `npx vitest run` | 1865 of 1866 passed. `tests/reconnect.test.ts` "resumes after server_error without hiding or duplicating messages" hit its 15 s timeout while other projects' test suites were loading the machine; rerun alone it passed (3 of 3). |
-| `npx vite build` | Pass |
-| `npm run design:tokens:check` | Pass: tokens current |
-| `npm run design:catalog:check` | Pass: 107 entries verified (46 primitive, 55 composition, 6 surface; all available) |
-| `make check-app` (repository root) | First run: design checks passed, the suite hit the same reconnect timeout under load. Rerun: pass (type check, both design checks, 1866 of 1866 tests, build and licence checks). |
-| Relative links in `docs/design-system/*.md` | All resolve, including heading anchors |
-| Case-insensitive search for excluded source names in the design-system docs, sources, scripts and tests | No hits apart from a git-status fixture field |
+| `npx vitest run` | 2059 of 2060 passed; `tests/reconnect.test.ts` "resumes after server_error…" hit its 15 s timeout while a browser audit loaded the machine, and passed rerun alone (3 of 3) |
+| `npx vite build` | Pass; the bundle in `static/app/conversation` contains no gallery code (no gallery test ids, foundation ids or frame routes) |
+| `npm run build:gallery` | Pass; `dist-gallery/` with `index.html`, assets and fonts |
+| `npm run design:tokens:check` | Pass |
+| `npm run design:catalog:check` | Pass: 134 entries (51 primitive, 77 composition, 6 surface) |
+| `make check-app` (repository root) | Pass: type check, both design checks, 2060 of 2060 tests, build and licence checks |
+| Relative links and anchors in `docs/design-system` | 708 checked, 0 broken |
+| Search for provenance names in the design-system docs, sources, scripts and tests | No hits apart from one field name in a git-status fixture |
+| Browser click-through | Static gallery: all 262 specimens in Light and Dark at 1100px and 390px rendered without a render failure, an "unknown specimen" or horizontal overflow; the browser console, tracked for about 120 of them (specimens 189–262 in every variant, the first 45 in both themes), showed only the deliberate `RenderErrorBoundary` throw. Dev server: the five app routes render against the mock hub (one live route per page). Two freezes found and fixed: an inline virtualized `Command` specimen and two live app routes on one page. |
 
-Browser review on the mock hub: the screenshots in `images/` cover the overview in both themes, the button matrix, an open menu in both themes, the composer with attachments after the fix, the conversation timeline and the app sidebar sheet at 390px.
+Catalog coverage of `src/components`: 147 of 158 modules are part of an entry and 11 are listed as internal, each with a reason ([element catalog](element-catalog.md#internal-modules)).
 
 ## Remaining
 
-- Fix the contrast findings in the owning stylesheets, starting with `update-foreground` before the `update` role is adopted.
-- Resolve the brand inconsistencies through a human-authored issue.
-- Adopt the twelve new primitives where features need them, and work through the primitive gaps in [migration](migration.md#primitive-gaps).
-- Separate the five excluded compositions' data hooks from their views so the gallery can render them.
+- `RenderErrorBoundary`'s fallback specimen throws on purpose, so React logs the caught error to the console of that frame.
+- Console capture covered every specimen from the dev-tools side only partly: the browser console was tracked for about 120 specimens; the rest were checked for render failures and overflow, and every specimen renders in both themes in the jsdom suite.

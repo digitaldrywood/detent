@@ -5,9 +5,15 @@ of [`docs/conversation/decisions.md`](../../docs/conversation/decisions.md) and
 follows [`docs/conversation/design-inventory.md`](../../docs/conversation/design-inventory.md)
 for screen coverage. The [Detent design system](../../docs/design-system/README.md)
 defines shared visual rules, component selection, interaction states, and screen
-recipes. Its [component catalog](./src/design-system/catalog.json) records every
-primitive and composition; `npm run design:catalog` validates it
-and regenerates the [component contracts](../../docs/design-system/components.md).
+recipes and is the source of truth for them. Its
+[component catalog](./src/design-system/catalog.json) records every primitive
+and shared component; `npm run design:catalog` validates it and regenerates the
+[component contracts](../../docs/design-system/components.md), and
+`npm run design:tokens` regenerates the token data and tables from the
+stylesheets. `make check-app` runs both in `--check` mode, so a stale catalog,
+token file or generated doc fails the client gate. The development gallery is at
+`/design-system` under `npm run dev` (no hub needed); `npm run build:gallery`
+writes a static copy to `dist-gallery/`.
 
 Third-party attribution is in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md);
 the upstream MIT license is in [LICENSE.t3code](./LICENSE.t3code).

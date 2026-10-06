@@ -8,6 +8,7 @@ import {
   type Catalog,
   type CatalogEntry,
   CLIENT_ROOT,
+  coverage,
   loadCatalog,
   staleDocs,
   validateCatalog,
@@ -44,6 +45,9 @@ beforeAll(() => {
   client = join(root, "client");
   write(join(client, "src/components/ui/button.tsx"), BUTTON);
   write(join(client, "src/components/ui/label.tsx"), LABEL);
+  write(join(client, "src/components/chat/Banner.tsx"), LABEL);
+  write(join(client, "src/components/chat/banner.logic.ts"), "export const x = 1;\n");
+  write(join(client, "src/components/chat/Banner.test.tsx"), "");
 });
 
 afterAll(() => {
@@ -78,8 +82,19 @@ const LABEL_ENTRY = entry({
   variants: {},
 });
 
+const BANNER_ENTRY = entry({
+  id: "banner",
+  name: "Banner",
+  kind: "composition",
+  group: "Conversation",
+  source: "src/components/chat/Banner.tsx",
+  files: ["src/components/chat/banner.logic.ts"],
+  exports: ["Label"],
+  variants: {},
+});
+
 function catalog(...entries: CatalogEntry[]): Catalog {
-  return { schema: 1, entries };
+  return { schema: 1, entries: entries.some((item) => item.id === "banner") ? entries : [...entries, BANNER_ENTRY] };
 }
 
 describe("validateCatalog", () => {
@@ -117,7 +132,43 @@ describe("validateCatalog", () => {
     {
       name: "uncovered ui file",
       catalog: () => catalog(entry({})),
-      expected: ["catalog: src/components/ui/label.tsx is not covered by an entry"],
+      expected: ["catalog: src/components/ui/label.tsx is neither part of an entry nor listed as internal"],
+    },
+    {
+      name: "uncovered shared component and helper",
+      catalog: () => ({ schema: 1, entries: [entry({}), LABEL_ENTRY] }),
+      expected: [
+        "catalog: src/components/chat/Banner.tsx is neither part of an entry nor listed as internal",
+        "catalog: src/components/chat/banner.logic.ts is neither part of an entry nor listed as internal",
+      ],
+    },
+    {
+      name: "a shared component listed as internal with a reason",
+      catalog: () => ({
+        schema: 1,
+        entries: [entry({}), LABEL_ENTRY],
+        internal: [
+          { path: "src/components/chat/Banner.tsx", reason: "A private part of one composition." },
+          { path: "src/components/chat/banner.logic.ts", reason: "Pure logic." },
+        ],
+      }),
+      expected: [],
+    },
+    {
+      name: "an internal module without a reason, missing, or also catalogued",
+      catalog: () => ({
+        schema: 1,
+        entries: [entry({}), LABEL_ENTRY, BANNER_ENTRY],
+        internal: [
+          { path: "src/components/chat/Banner.tsx", reason: "" },
+          { path: "src/components/chat/Gone.tsx", reason: "Removed." },
+        ],
+      }),
+      expected: [
+        "internal src/components/chat/Banner.tsx: reason is required",
+        "internal src/components/chat/Banner.tsx: also part of a catalog entry",
+        "internal src/components/chat/Gone.tsx: does not exist",
+      ],
     },
     {
       name: "a proposed entry with a source",
@@ -139,6 +190,21 @@ describe("validateCatalog", () => {
     });
   }
 
+});
+
+describe("coverage", () => {
+  it("counts catalogued, internal and total modules under src/components", () => {
+    expect(
+      coverage(
+        {
+          schema: 1,
+          entries: [entry({}), BANNER_ENTRY],
+          internal: [{ path: "src/components/ui/label.tsx", reason: "Test." }],
+        },
+        client,
+      ),
+    ).toEqual({ catalogued: 3, internal: 1, total: 4 });
+  });
 });
 
 describe("the committed catalog", () => {

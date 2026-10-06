@@ -436,8 +436,11 @@ export function parseLength(input: string): number | null {
 // Token model
 
 const GROUP_RULES: [TokenGroup, RegExp][] = [
+  ["elevation", /^--(inset-)?shadow-/],
+  ["layer", /^--z-/],
+  ["breakpoint", /^--breakpoint-/],
   ["font", /^--(font|text)-/],
-  ["motion", /^--(animate|ease)-/],
+  ["motion", /^--(animate|ease|duration|panel-animation)-/],
   ["radius", /^--(radius|control-radius)/],
   ["layout", /-(inset|gap|height|width|top|left|right)$|^--workspace-|-control-size$|-size$/],
   ["sidebar", /^--(contrast-)?sidebar/],
@@ -466,6 +469,14 @@ function closing(s: string, open: number): number {
     if (s[i] === ")" && --depth === 0) return i;
   }
   return -1;
+}
+
+/** True when a token paints differently in the two themes, whether or not it declares a dark value itself. */
+export function differs(light: TokenValue | null, dark: TokenValue | null): boolean {
+  if (light === null || dark === null) return light !== dark;
+  if (light.hex !== null || dark.hex !== null) return light.hex !== dark.hex;
+  if (light.px !== null || dark.px !== null) return light.px !== dark.px;
+  return light.resolved !== dark.resolved;
 }
 
 export interface BuildInput {
@@ -519,6 +530,15 @@ export function buildTokens(input: BuildInput): TokenFile {
       out = out.slice(0, at) + replacement + out.slice(end + 1);
       at += replacement.length;
     }
+    // light-dark(a, b) picks one side by the theme's color-scheme.
+    for (let at = out.indexOf("light-dark("); at >= 0; at = out.indexOf("light-dark(", at)) {
+      const end = closing(out, at + 10);
+      if (end < 0) break;
+      const [light = "", dark = ""] = splitArgs(out.slice(at + 11, end));
+      const pick = theme === "dark" ? dark : light;
+      out = out.slice(0, at) + pick + out.slice(end + 1);
+      at += pick.length;
+    }
     // Tailwind's --alpha(color / n%) compiles to an oklab mix with transparent.
     for (let at = out.indexOf("--alpha("); at >= 0; at = out.indexOf("--alpha(")) {
       const end = closing(out, at + 7);
@@ -561,6 +581,8 @@ export function buildTokens(input: BuildInput): TokenFile {
       if (name.startsWith("--text-") && !name.includes("--line-height")) return { utility: name.slice(2) };
       if (name.startsWith("--color-")) return { utility: `*-${name.slice("--color-".length)}` };
       if (name.startsWith("--ease-")) return { utility: name.slice(2) };
+      if (name.startsWith("--shadow-")) return { utility: name.slice(2) };
+      if (name.startsWith("--inset-shadow-")) return { utility: name.slice(2) };
     }
     return utilities.get(name) ?? null;
   };
@@ -579,7 +601,7 @@ export function buildTokens(input: BuildInput): TokenFile {
       group: groupOf(name),
       utility: u?.utility ?? null,
       ...(u?.via ? { utilityVia: u.via } : {}),
-      themed: entry.dark !== undefined,
+      themed: differs(light, dark),
       light,
       dark,
     });
@@ -746,7 +768,7 @@ export function renderSections(file: TokenFile): Record<string, string> {
   const colorList = root.filter((t) => COLOR_GROUPS.includes(t.group) && (t.light?.hex || t.dark?.hex));
 
   const summary = table(
-    ["Scope", "Tokens", "With a dark value", "Colours"],
+    ["Scope", "Tokens", "Different in dark", "Colours"],
     (["root", "sidebar", "sign-in"] as TokenScope[]).map((scope) => {
       const list = file.tokens.filter((t) => t.scope === scope);
       const themed = list.filter((t) => t.themed).length;
@@ -780,6 +802,12 @@ export function renderSections(file: TokenFile): Record<string, string> {
   ].join("\n");
 
   const radius = table(head(), tokenRows(root.filter((t) => t.group === "radius")));
+  const groupTable = (group: TokenGroup) => {
+    const list = root.filter((t) => t.group === group);
+    return list.length ? table(head(), tokenRows(list)) : "None declared.";
+  };
+  const elevation = groupTable("elevation");
+  const layers = groupTable("layer");
   const layout = table(head(), tokenRows(root.filter((t) => t.group === "layout")));
   const motion = [
     table(head(), tokenRows(root.filter((t) => t.group === "motion"))),
@@ -829,6 +857,8 @@ export function renderSections(file: TokenFile): Record<string, string> {
     fonts,
     radius,
     layout,
+    elevation,
+    layers,
     motion,
     contrast,
     unresolved,

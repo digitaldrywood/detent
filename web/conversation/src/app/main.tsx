@@ -17,7 +17,7 @@ import {
 } from "./account/Support.tsx";
 import { ClientContext } from "./client.ts";
 import { ContentSecurity } from "./ContentSecurity.tsx";
-import { makeRouter } from "./router.tsx";
+import { isDesignSystemPath, makeRouter } from "./router.tsx";
 import { isLoginPath, LoginCard } from "./routes.account.tsx";
 import "./index.css";
 import { hubPath, withoutBasePath } from "../runtime/basePath.ts";
@@ -28,6 +28,16 @@ const container = document.getElementById("root");
 if (container === null)
   throw new Error("The conversation client has no mount point.");
 container.setAttribute("data-detent-conversation-root", "");
+
+// Development only: `?theme=light|dark` sets the theme before the first
+// render, so the design-system gallery can show a real route in either theme.
+if (import.meta.env.DEV) {
+  const theme = new URLSearchParams(globalThis.location?.search ?? "").get("theme");
+  if (theme === "light" || theme === "dark") {
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    document.documentElement.dataset.theme = theme;
+  }
+}
 
 const root = createRoot(container);
 
@@ -52,7 +62,18 @@ function Failure({ message }: { message: string }): React.ReactElement {
   );
 }
 
-if (isEntrySurface()) {
+if (
+  import.meta.env.DEV &&
+  isDesignSystemPath(withoutBasePath(globalThis.location?.pathname ?? ""))
+) {
+  // The design-system gallery needs no hub: it skips the bootstrap so that
+  // `npm run dev` alone serves it. The guard is a literal so the production
+  // build drops this branch and the gallery chunk with it.
+  void import("../design-system/gallery/standalone.tsx").then(({ applyFrameThemeFromLocation, GalleryApp }) => {
+    applyFrameThemeFromLocation();
+    mount(<GalleryApp />);
+  });
+} else if (isEntrySurface()) {
   mount(
     <React.StrictMode>
       <RouterProvider router={makeEntryRouter() as never} />

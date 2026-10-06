@@ -18,7 +18,9 @@
 //
 // It is a development and test double. Nothing here is a reference
 // implementation of the hub.
-import type { ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 
 interface MockState {
   readonly operator_only?: boolean;
@@ -123,6 +125,214 @@ function pad(index: number): string {
   return index.toString(16).padStart(32, "0");
 }
 
+// --- Workspace sessions (decisions.md §18.1–§18.4, §18.13) ------------------
+//
+// One open workspace per issue, already `ready`, claimed by the mock hub's
+// online runner. The relay behind it is a real WebSocket speaking §18.2's JSON
+// frames, so the Files, Terminal and header git surfaces have something live
+// to talk to. Nothing here is a runner: the worktree is a fixed table and the
+// shell is a line echo.
+
+/** The relayed capabilities (§18.1); diff and preview are never reported. */
+const RELAYED_CAPABILITIES = ["exec", "files", "git", "terminal"];
+
+/** The mock hub's online runner (`SEED_RUNNERS[0]` in `mock-hub.ts`). */
+const WORKSPACE_RUNNER = {
+  runner_id: "rnr_mock",
+  machine_id: "mac_mock01",
+  machine_hostname: "mock-macbook.local",
+};
+
+interface MockWorkspace {
+  id: string;
+  organization_id: string;
+  project_id: string;
+  work_item_id: string;
+  attempt_id: string | null;
+  ref: string;
+  head_sha: string;
+  runner_id: string;
+  machine_id: string;
+  machine_hostname: string;
+  worktree_path: string;
+  state: "requested" | "starting" | "ready" | "idle" | "unreachable" | "closing" | "closed" | "failed";
+  reason: string | null;
+  requires: string[];
+  capabilities: Record<string, boolean>;
+  isolation: "user";
+  worktree: "retained" | "fresh";
+  read_only: boolean;
+  idle_timeout_seconds: number;
+  expires_at: string;
+  opened_at: string;
+  last_activity_at: string;
+  created_by: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The worktree every mock workspace serves: path to contents. */
+const WORKTREE_FILES: Record<string, string> = {
+  "README.md":
+    "# alpha\n\nA mock worktree served over the workspace relay.\n\n" +
+    "- `cmd/alpha` is the entry point.\n- `internal/lease` holds the renewal path.\n",
+  "go.mod": "module example.test/alpha\n\ngo 1.26\n",
+  ".gitignore": "/bin\n/tmp\n",
+  "cmd/alpha/main.go":
+    'package main\n\nimport (\n\t"log/slog"\n\n\t"example.test/alpha/internal/lease"\n)\n\n' +
+    'func main() {\n\tslog.Info("starting", "lease", lease.DefaultTTL)\n}\n',
+  "internal/lease/renew.go":
+    "package lease\n\nimport \"time\"\n\n// DefaultTTL is how long a lease lasts without a renewal.\n" +
+    "const DefaultTTL = 30 * time.Second\n\n// Renew extends the lease once the handoff is acknowledged.\n" +
+    "func Renew(acknowledged <-chan struct{}, renew func() error) error {\n\t<-acknowledged\n\treturn renew()\n}\n",
+  "internal/lease/renew_test.go":
+    "package lease\n\nimport \"testing\"\n\nfunc TestRenewWaitsForHandoff(t *testing.T) {\n" +
+    "\tack := make(chan struct{})\n\tclose(ack)\n\tif err := Renew(ack, func() error { return nil }); err != nil {\n" +
+    "\t\tt.Fatal(err)\n\t}\n}\n",
+  "docs/leases.md": "# Leases\n\nA runner renews its lease only after the handoff is acknowledged.\n",
+};
+
+const WORKTREE_MODIFIED_AT = "2026-09-09T11:42:00Z";
+
+function worktreeEntries(directory: string): { name: string; kind: "file" | "dir"; size: number }[] | null {
+  const prefix = directory === "" ? "" : `${directory}/`;
+  const entries = new Map<string, { name: string; kind: "file" | "dir"; size: number }>();
+  let found = directory === "";
+  for (const [path, contents] of Object.entries(WORKTREE_FILES)) {
+    if (!path.startsWith(prefix)) continue;
+    found = true;
+    const rest = path.slice(prefix.length);
+    const [name, ...below] = rest.split("/");
+    if (name === undefined || name === "") continue;
+    entries.set(name, below.length === 0
+      ? { name, kind: "file", size: new TextEncoder().encode(contents).length }
+      : { name, kind: "dir", size: 0 });
+  }
+  if (!found) return null;
+  return [...entries.values()].toSorted((a, b) =>
+    a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "dir" ? -1 : 1);
+}
+
+function worktreeMime(path: string): string {
+  if (path.endsWith(".md")) return "text/markdown";
+  if (path.endsWith(".go")) return "text/x-go";
+  return "text/plain";
+}
+
+/** `./a/b/` and `/a/b` are both `a/b`; the root is the empty string. */
+function normalizeWorktreePath(value: unknown): string {
+  return String(value ?? "").replace(/^\.?\/+/, "").replace(/\/+$/, "").replace(/^\.$/, "");
+}
+
+// --- A WebSocket, by hand ---------------------------------------------------
+//
+// RFC 6455 is small enough for a test double that only ever exchanges short
+// text frames, and writing it out keeps the mock free of a dependency the
+// client does not otherwise need.
+
+const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+function encodeWebSocketFrame(opcode: number, payload: Buffer): Buffer {
+  const length = payload.length;
+  const header = length < 126 ? Buffer.alloc(2) : length < 65_536 ? Buffer.alloc(4) : Buffer.alloc(10);
+  header[0] = 0x80 | opcode;
+  if (length < 126) {
+    header[1] = length;
+  } else if (length < 65_536) {
+    header[1] = 126;
+    header.writeUInt16BE(length, 2);
+  } else {
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(length), 2);
+  }
+  return Buffer.concat([header, payload]);
+}
+
+/** Text frames in, text frames out. Fragmented messages are reassembled. */
+function acceptWebSocket(
+  request: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+  onText: (text: string, send: (text: string) => void) => void,
+): { send: (text: string) => void; close: () => void } {
+  const accept = createHash("sha1")
+    .update(`${String(request.headers["sec-websocket-key"] ?? "")}${WEBSOCKET_GUID}`)
+    .digest("base64");
+  socket.write(
+    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+      `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+  );
+  let closed = false;
+  const send = (text: string) => {
+    if (!closed) socket.write(encodeWebSocketFrame(0x1, Buffer.from(text, "utf8")));
+  };
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    socket.end(encodeWebSocketFrame(0x8, Buffer.from([0x03, 0xe8])));
+  };
+  let buffered = head.length > 0 ? Buffer.from(head) : Buffer.alloc(0);
+  let message: Buffer[] = [];
+  const drain = () => {
+    while (buffered.length >= 2) {
+      const first = buffered[0]!;
+      const second = buffered[1]!;
+      let length = second & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (buffered.length < 4) return;
+        length = buffered.readUInt16BE(2);
+        offset = 4;
+      } else if (length === 127) {
+        if (buffered.length < 10) return;
+        length = Number(buffered.readBigUInt64BE(2));
+        offset = 10;
+      }
+      const masked = (second & 0x80) !== 0;
+      const maskOffset = offset;
+      if (masked) offset += 4;
+      if (buffered.length < offset + length) return;
+      const payload = Buffer.from(buffered.subarray(offset, offset + length));
+      if (masked) {
+        for (let index = 0; index < payload.length; index += 1) {
+          payload[index]! ^= buffered[maskOffset + (index % 4)]!;
+        }
+      }
+      buffered = buffered.subarray(offset + length);
+      const opcode = first & 0x0f;
+      if (opcode === 0x8) {
+        close();
+        return;
+      }
+      if (opcode === 0x9) {
+        if (!closed) socket.write(encodeWebSocketFrame(0xa, payload));
+        continue;
+      }
+      if (opcode === 0x1 || opcode === 0x0) {
+        message.push(payload);
+        if ((first & 0x80) !== 0) {
+          const text = Buffer.concat(message).toString("utf8");
+          message = [];
+          onText(text, send);
+        }
+      }
+    }
+  };
+  socket.on("data", (chunk: Buffer) => {
+    buffered = Buffer.concat([buffered, chunk]);
+    drain();
+  });
+  socket.on("error", () => {
+    closed = true;
+  });
+  socket.on("close", () => {
+    closed = true;
+  });
+  drain();
+  return { send, close };
+}
+
 export interface WorkMock {
   addIssue: (issue: Pick<MockIssue, "work_item_id" | "project_id" | "number" | "title" | "body" | "state" | "labels"> & Pick<Partial<MockIssue>, "priority">) => void;
   /**
@@ -138,10 +348,16 @@ export interface WorkMock {
     method: string;
     readBody: () => Promise<Record<string, unknown>>;
   }) => Promise<boolean>;
+  /**
+   * The workspace relay socket (§18.2). Returns true when it took the
+   * upgrade, which it does only for `.../workspaces/:id/relay` with a ticket
+   * it minted; anything else is the caller's to refuse.
+   */
+  upgrade: (request: IncomingMessage, socket: Duplex, head: Buffer) => boolean;
   reset: () => void;
   /** The projects it serves, for the mock hub's bootstrap payload. */
   projects: readonly string[];
-  /** Closes every open activity stream. */
+  /** Closes every open activity stream and relay socket. */
   close: () => void;
 }
 
@@ -164,6 +380,80 @@ export function createWorkMock(options: {
   const reviews = new Map<string, Record<string, unknown>[]>();
   const discussion = new Map<string, Record<string, unknown>[]>();
   const streams = new Set<ServerResponse>();
+  // Workspace sessions: the rows, the create keys already answered, the
+  // single-use relay tickets, and the relay streams a reconnect may resume.
+  let workspaces: MockWorkspace[] = [];
+  const workspaceKeys = new Map<string, { payload: string; workspaceId: string }>();
+  const relayTickets = new Map<string, string>();
+  const relayStreams = new Map<string, { channel: string; seq: number; line: string }>();
+  const relaySockets = new Set<{ close: () => void }>();
+  let relayStreamCount = 0;
+
+  function openWorkspace(input: {
+    project_id: string;
+    work_item_id: string;
+    number: number;
+    attempt_id: string | null;
+    requires: readonly string[];
+    at: number;
+  }): MockWorkspace {
+    const at = new Date(input.at).toISOString();
+    const workspace: MockWorkspace = {
+      id: `ws_${pad(input.number * 7 + workspaces.length)}`,
+      organization_id: options.organizationId,
+      project_id: input.project_id,
+      work_item_id: input.work_item_id,
+      attempt_id: input.attempt_id,
+      ref: `detent/${input.number}`,
+      head_sha: `a41f0c2${pad(input.number).slice(0, 33)}`,
+      ...WORKSPACE_RUNNER,
+      worktree_path: `/Users/operator/.detent/worktrees/${input.project_id}/${input.number}`,
+      state: "ready",
+      reason: null,
+      requires: [...new Set(input.requires.filter((entry) => RELAYED_CAPABILITIES.includes(entry)))].toSorted(),
+      capabilities: { terminal: true, files: true, diff: false, preview: false, exec: true, git: true },
+      isolation: "user",
+      worktree: "retained",
+      read_only: false,
+      idle_timeout_seconds: 1800,
+      expires_at: new Date(input.at + 8 * 3_600_000).toISOString(),
+      opened_at: at,
+      last_activity_at: at,
+      created_by: "tok_mock",
+      revision: 3,
+      created_at: at,
+      updated_at: at,
+    };
+    workspaces.push(workspace);
+    return workspace;
+  }
+
+  /**
+   * One ready workspace on the first project's first issue, so an issue's
+   * right panel has a live session to show without creating one first.
+   */
+  function seedWorkspaces(): void {
+    workspaces = [];
+    workspaceKeys.clear();
+    relayTickets.clear();
+    relayStreams.clear();
+    const first = issues.find((issue) => issue.project_id === options.projects[0]?.id);
+    if (first === undefined) return;
+    openWorkspace({
+      project_id: first.project_id,
+      work_item_id: first.work_item_id,
+      number: first.number,
+      attempt_id: null,
+      requires: RELAYED_CAPABILITIES,
+      at: Date.now() - 25 * 60_000,
+    });
+  }
+
+  function emitWorkspace(workspace: MockWorkspace): void {
+    for (const stream of streams) {
+      stream.write(`event: workspace.${workspace.state}\ndata: ${JSON.stringify(workspace)}\n\n`);
+    }
+  }
 
   function build(): void {
     issues = [];
@@ -221,6 +511,7 @@ export function createWorkMock(options: {
         },
       ];
     }
+    seedWorkspaces();
   }
   build();
 
@@ -521,6 +812,203 @@ export function createWorkMock(options: {
 
   const base = `${options.apiBase}/projects`;
 
+  function workspaceProblem(response: ServerResponse, status: number, code: string, message: string, details?: Record<string, unknown>): void {
+    json(response, status, { code, message, ...(details === undefined ? {} : { details }) });
+  }
+
+  /**
+   * One relay frame from the person side (§18.2), answered the way a runner
+   * behind the hub would. The first frame on a stream carries no `stream`;
+   * the answer names the one allocated for it.
+   */
+  function relayFrame(workspace: MockWorkspace, text: string, send: (text: string) => void): void {
+    let frame: Record<string, unknown>;
+    try {
+      frame = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const channel = String(frame.channel ?? "");
+    const type = String(frame.type ?? "");
+    const payload = (typeof frame.payload === "object" && frame.payload !== null ? frame.payload : {}) as Record<string, unknown>;
+    const requestSeq = typeof frame.seq === "number" ? frame.seq : null;
+    if (type === "ack") return;
+
+    if (type === "resume") {
+      const id = String(payload.stream ?? "");
+      const known = relayStreams.get(id);
+      if (known === undefined) {
+        send(JSON.stringify({ channel, stream: id, type: "error", payload: { code: "resume_failed" } }));
+        return;
+      }
+      send(JSON.stringify({ channel, stream: id, type: "resumed", payload: { stream: id } }));
+      return;
+    }
+
+    let streamId = typeof frame.stream === "string" ? frame.stream : null;
+    if (streamId === null) {
+      relayStreamCount += 1;
+      streamId = `st_${relayStreamCount}`;
+      relayStreams.set(streamId, { channel, seq: 0, line: "" });
+    }
+    const stream = relayStreams.get(streamId) ?? { channel, seq: 0, line: "" };
+    relayStreams.set(streamId, stream);
+    const id = streamId;
+    const answer = (answerType: string, answerPayload: unknown) => {
+      stream.seq += 1;
+      send(JSON.stringify({ channel, stream: id, type: answerType, seq: stream.seq, payload: answerPayload }));
+    };
+    const refuse = (code: string, message?: string) =>
+      answer("error", { code, ...(message === undefined ? {} : { message }), ...(requestSeq === null ? {} : { seq: requestSeq }) });
+
+    if (type === "close") {
+      relayStreams.delete(id);
+      return;
+    }
+    workspace.last_activity_at = new Date().toISOString();
+
+    if (channel === "files") {
+      const path = normalizeWorktreePath(payload.path);
+      switch (type) {
+        case "list": {
+          const entries = worktreeEntries(path);
+          if (entries === null) {
+            refuse("not_found");
+            return;
+          }
+          answer("listed", {
+            path,
+            entries: entries.map((entry) => ({
+              ...entry,
+              modified_at: WORKTREE_MODIFIED_AT,
+              ignored: false,
+              denied: false,
+            })),
+            next_cursor: null,
+          });
+          return;
+        }
+        case "stat": {
+          const contents = WORKTREE_FILES[path];
+          const directory = contents === undefined ? worktreeEntries(path) : null;
+          if (contents === undefined && directory === null) {
+            refuse("not_found");
+            return;
+          }
+          answer("stat", {
+            path,
+            kind: contents === undefined ? "dir" : "file",
+            size: contents === undefined ? 0 : new TextEncoder().encode(contents).length,
+            modified_at: WORKTREE_MODIFIED_AT,
+            mime: contents === undefined ? "inode/directory" : worktreeMime(path),
+            ignored: false,
+            denied: false,
+          });
+          return;
+        }
+        case "read": {
+          const contents = WORKTREE_FILES[path];
+          if (contents === undefined) {
+            refuse("not_found");
+            return;
+          }
+          answer("content", {
+            path,
+            mime: worktreeMime(path),
+            size: new TextEncoder().encode(contents).length,
+            offset: 0,
+            data: contents,
+            truncated: false,
+          });
+          return;
+        }
+        case "watch":
+          // §18.4 names no acknowledgement for a watch, and a fixed worktree
+          // never changes, so there is nothing to send.
+          return;
+        default:
+          refuse("unknown_frame");
+          return;
+      }
+    }
+
+    if (channel === "git") {
+      switch (type) {
+        case "status":
+          answer("status", {
+            branch: workspace.ref,
+            detached: false,
+            remote: "origin",
+            upstream: true,
+            ahead: 1,
+            behind: 0,
+            dirty_file_count: 2,
+            head_sha: workspace.head_sha,
+          });
+          return;
+        case "commit":
+          answer("committed", { commit: workspace.head_sha, branch: workspace.ref, files: 2 });
+          return;
+        case "push":
+          answer("pushed", { branch: workspace.ref, remote: "origin", commit: workspace.head_sha });
+          return;
+        default:
+          refuse("unknown_frame");
+          return;
+      }
+    }
+
+    if (channel === "terminal") {
+      // A line echo with a prompt, not a shell: enough for the surface to draw
+      // output, take input and resize.
+      const prompt = `\x1b[32moperator@${workspace.machine_hostname}\x1b[0m:\x1b[34m${workspace.ref}\x1b[0m$ `;
+      const output = (data: string) =>
+        answer("output", { data: Buffer.from(data, "utf8").toString("base64"), encoding: "base64" });
+      switch (type) {
+        case "open":
+          answer("opened", { pid: 40_000 + relayStreamCount, isolation: workspace.isolation });
+          // The banner trails the `opened` a beat, the way a shell's first
+          // prompt does, so the surface has mounted its view to draw it in.
+          setTimeout(() => output(`Mock workspace shell in ${workspace.worktree_path}\r\n${prompt}`), 250);
+          return;
+        case "input": {
+          let echoed = "";
+          for (const character of String(payload.data ?? "")) {
+            if (character === "\r") {
+              const command = stream.line.trim();
+              stream.line = "";
+              let reply = "";
+              if (command === "pwd") reply = `${workspace.worktree_path}\r\n`;
+              else if (command === "ls") reply = `${(worktreeEntries("") ?? []).map((entry) => entry.name).join("  ")}\r\n`;
+              else if (command === "git status") reply = `On branch ${workspace.ref}\r\nnothing to commit, working tree clean\r\n`;
+              else if (command !== "") reply = `mock shell: ${command}: not available in the mock workspace\r\n`;
+              echoed += `\r\n${reply}${prompt}`;
+            } else if (character === "\x7f") {
+              if (stream.line.length > 0) {
+                stream.line = stream.line.slice(0, -1);
+                echoed += "\b \b";
+              }
+            } else if (character >= " ") {
+              stream.line += character;
+              echoed += character;
+            }
+          }
+          if (echoed.length > 0) output(echoed);
+          return;
+        }
+        case "resize":
+          return;
+        default:
+          refuse("unknown_frame");
+          return;
+      }
+    }
+
+    // `exec` (§18.12) and anything newer: the mock runner reports it can run
+    // project actions, but has none to run.
+    refuse("unsupported");
+  }
+
   return {
     projects: options.projects.map((entry) => entry.id),
     addIssue(issue) {
@@ -551,6 +1039,30 @@ export function createWorkMock(options: {
     close() {
       for (const stream of streams) stream.end();
       streams.clear();
+      for (const socket of relaySockets) socket.close();
+      relaySockets.clear();
+    },
+    upgrade(request, socket, head) {
+      const url = new URL(request.url ?? "/", "http://mock.local");
+      const match = url.pathname.match(new RegExp(`^${base}/([^/]+)/workspaces/([^/]+)/relay$`));
+      if (match === null) return false;
+      const projectId = decodeURIComponent(match[1]!);
+      const workspaceId = decodeURIComponent(match[2]!);
+      const ticket = url.searchParams.get("ticket") ?? "";
+      const workspace = workspaces.find(
+        (candidate) => candidate.id === workspaceId && candidate.project_id === projectId,
+      );
+      // Single use and bound to the workspace that minted it (§18.2).
+      if (workspace === undefined || relayTickets.get(ticket) !== workspaceId) {
+        socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return true;
+      }
+      relayTickets.delete(ticket);
+      const connection = acceptWebSocket(request, socket, head, (text, send) =>
+        relayFrame(workspace, text, send));
+      relaySockets.add(connection);
+      socket.on("close", () => relaySockets.delete(connection));
+      return true;
     },
     async handle({ response, url, method, readBody }) {
       const path = url.pathname;
@@ -678,6 +1190,121 @@ export function createWorkMock(options: {
           return true;
         }
         json(response, 200, attemptDiff(owner));
+        return true;
+      }
+
+      // Workspace sessions (§18.1, §18.2): list, create, read, close, and the
+      // relay ticket the socket above is opened with.
+      if (segments[1] === "workspaces") {
+        const scopedWorkspaces = workspaces.filter((workspace) => workspace.project_id === projectId);
+        if (segments.length === 2 && method === "GET") {
+          const problem = validateQuery(url, ["work_item", "state"]);
+          if (problem !== null) {
+            invalid(response, problem);
+            return true;
+          }
+          const workItem = url.searchParams.get("work_item");
+          const state = url.searchParams.get("state");
+          json(response, 200, {
+            workspaces: scopedWorkspaces.filter((workspace) =>
+              (workItem === null || workspace.work_item_id === workItem)
+              && (state === null || workspace.state === state)),
+          });
+          return true;
+        }
+        if (segments.length === 2 && method === "POST") {
+          const body = await readBody();
+          const key = String(body.idempotency_key ?? "");
+          if (key.length === 0 || key.length > 128) {
+            invalid(response, "An idempotency key of at most 128 bytes is required");
+            return true;
+          }
+          const payload = JSON.stringify(body);
+          const replay = workspaceKeys.get(`${projectId} ${key}`);
+          if (replay !== undefined) {
+            const stored = workspaces.find((workspace) => workspace.id === replay.workspaceId);
+            if (replay.payload !== payload || stored === undefined) {
+              workspaceProblem(response, 409, "idempotency_conflict", "That key was used with a different payload");
+              return true;
+            }
+            json(response, 201, stored);
+            return true;
+          }
+          const issue = issues.find((candidate) =>
+            candidate.project_id === projectId && candidate.work_item_id === String(body.work_item_id ?? ""));
+          if (issue === undefined) {
+            json(response, 404, { code: "not_found", message: "Resource was not found" });
+            return true;
+          }
+          const attemptId = typeof body.attempt_id === "string" ? body.attempt_id : null;
+          const open = scopedWorkspaces.find((workspace) =>
+            workspace.work_item_id === issue.work_item_id
+            && workspace.attempt_id === attemptId
+            && !["closing", "closed", "failed"].includes(workspace.state));
+          if (open !== undefined) {
+            workspaceProblem(response, 409, "workspace_exists", "A workspace is already open on this worktree", {
+              workspace_id: open.id,
+            });
+            return true;
+          }
+          const created = openWorkspace({
+            project_id: projectId,
+            work_item_id: issue.work_item_id,
+            number: issue.number,
+            attempt_id: attemptId,
+            requires: Array.isArray(body.requires) ? body.requires.map(String) : [],
+            at: Date.now(),
+          });
+          workspaceKeys.set(`${projectId} ${key}`, { payload, workspaceId: created.id });
+          emitWorkspace(created);
+          json(response, 201, created);
+          return true;
+        }
+        const workspace = scopedWorkspaces.find((candidate) => candidate.id === segments[2]);
+        if (workspace === undefined) {
+          json(response, 404, { code: "not_found", message: "Resource was not found" });
+          return true;
+        }
+        if (segments.length === 3 && method === "GET") {
+          json(response, 200, workspace);
+          return true;
+        }
+        if (segments.length === 3 && method === "DELETE") {
+          if (workspace.state !== "closed") {
+            workspace.state = "closed";
+            workspace.reason = "closed_by_actor";
+            workspace.revision += 1;
+            workspace.updated_at = new Date().toISOString();
+            emitWorkspace(workspace);
+          }
+          response.writeHead(204, { "Cache-Control": "no-store" });
+          response.end();
+          return true;
+        }
+        if (segments.length === 4 && segments[3] === "relay-tickets" && method === "POST") {
+          const body = await readBody();
+          const key = String(body.idempotency_key ?? "");
+          if (key.length === 0 || key.length > 128) {
+            invalid(response, "An idempotency key of at most 128 bytes is required");
+            return true;
+          }
+          if (["closing", "closed", "failed"].includes(workspace.state)) {
+            workspaceProblem(response, 409, "workspace_closed", "This workspace has closed");
+            return true;
+          }
+          const ticket = `rt_${randomSuffix()}${randomSuffix()}`;
+          relayTickets.set(ticket, workspace.id);
+          json(response, 201, { ticket, expires_in: 30 });
+          return true;
+        }
+        json(response, 404, { code: "not_found", message: "Resource was not found" });
+        return true;
+      }
+
+      // Project actions (§18.12): the header's action picker and the panel's
+      // Output surface read the list. The mock project has none configured.
+      if (segments[1] === "actions" && segments.length === 2 && method === "GET") {
+        json(response, 200, { items: [] });
         return true;
       }
 

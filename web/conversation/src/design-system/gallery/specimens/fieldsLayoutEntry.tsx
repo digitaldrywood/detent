@@ -1,4 +1,4 @@
-// Further primitives: radio group, number field, input group, draft input, colour controls,
+// Fields, layout and entry primitives: radio group, number field, input group, draft input, colour controls,
 // calendar, collapsible section header, middle truncate, discovery list,
 // standalone page, wizard, QR code.
 import {
@@ -608,7 +608,7 @@ const qrCode: GalleryDoc = {
   ],
 };
 
-export const PORTED: Readonly<Record<string, GalleryDoc>> = {
+export const FIELDS_LAYOUT_ENTRY: Readonly<Record<string, GalleryDoc>> = {
   "radio-group": radioGroup,
   "number-field": numberField,
   "input-group": inputGroup,

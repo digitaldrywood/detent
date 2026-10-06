@@ -7,7 +7,9 @@
 ## Implementation
 
 For Cloud UI work, use the [Detent design system](docs/design-system/README.md)
-and its [component contracts](docs/design-system/components.md).
+and its [component contracts](docs/design-system/components.md); it is the
+source of truth for tokens, components and patterns, and `make check-app` runs
+its token and catalog checks.
 Reuse existing primitives and screen compositions; select semantic tokens and
 component variants before introducing feature-specific styling. Proposed
 components and layout baselines do not expand the authorized UI scope.

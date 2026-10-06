@@ -16,8 +16,7 @@ import { cn } from "~/lib/utils";
 import { groupEntries, type CatalogEntry, type CatalogStatus } from "./catalog";
 import { FramePage, ThemeFrame, applyDocumentTheme, type FrameTheme } from "./frame";
 import { docFor, galleryEntries } from "./registry";
-import type { GalleryDoc } from "./specimen";
-import { galleryTokens, isPaintable, type TokenSwatch } from "./tokens";
+import type { GalleryDoc, Specimen } from "./specimen";
 
 export type ThemeView = "both" | "light" | "dark";
 export type FrameWidth = "full" | "narrow";
@@ -61,24 +60,35 @@ function Nav({
   entries,
   activeId,
   onNavigate,
+  onClose,
 }: {
   readonly entries: readonly CatalogEntry[];
   readonly activeId: string | null;
   readonly onNavigate: () => void;
+  /** Set while the navigation is open as a drawer below md. */
+  readonly onClose?: (() => void) | undefined;
 }) {
   const [query, setQuery] = React.useState("");
   const groups = groupEntries(entries, query);
   return (
     <nav aria-label="Design system" className="flex h-full min-h-0 flex-col">
       <div className="flex flex-col gap-3 border-b border-border p-3">
-        <Link
-          to="/design-system"
-          onClick={onNavigate}
-          className="font-semibold text-foreground text-sm"
-          data-testid="design-system-home"
-        >
-          Detent design system
-        </Link>
+        <div className="flex items-center justify-between gap-2">
+          <Link
+            to="/design-system"
+            onClick={onNavigate}
+            activeOptions={{ exact: true }}
+            className="font-semibold text-foreground text-sm"
+            data-testid="design-system-home"
+          >
+            Detent design system
+          </Link>
+          {onClose !== undefined ? (
+            <Button className="md:hidden" variant="ghost" size="icon-sm" aria-label="Close navigation" onClick={onClose}>
+              <XIcon aria-hidden />
+            </Button>
+          ) : null}
+        </div>
         <Input
           type="search"
           size="sm"
@@ -94,9 +104,11 @@ function Nav({
         ) : null}
         {groups.map((group) => (
           <section key={group.key} className="mb-3" aria-label={`${group.kind} ${group.group}`}>
-            <h2 className="px-2 pb-1 font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
+            <h2 className="px-2 pb-1 font-medium text-2xs text-muted-foreground uppercase tracking-wide">
               {group.group}
-              <span className="ms-1 font-normal normal-case tracking-normal">· {group.kind}</span>
+              {group.kind !== "foundation" ? (
+                <span className="ms-1 font-normal normal-case tracking-normal">· {group.kind}</span>
+              ) : null}
             </h2>
             <ul className="flex flex-col gap-px">
               {group.entries.map((entry) => (
@@ -167,8 +179,41 @@ function Controls({
 function Field({ label, children }: { readonly label: string; readonly children: React.ReactNode }) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
-      <dt className="text-[11px] text-muted-foreground uppercase tracking-wide">{label}</dt>
+      <dt className="text-2xs text-muted-foreground uppercase tracking-wide">{label}</dt>
       <dd className="m-0 min-w-0 text-foreground/90 text-sm">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * An app-route specimen shows one live route at a time, with its own theme
+ * switch. Two copies of the app in one page share its local storage and
+ * answer each other's writes without end, so they are never mounted together.
+ */
+function AppRouteThemes({
+  entryId,
+  specimen,
+  width,
+}: {
+  readonly entryId: string;
+  readonly specimen: Specimen;
+  readonly width: FrameWidth;
+}) {
+  const [theme, setTheme] = React.useState<FrameTheme>("dark");
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      <ToggleGroup
+        aria-label={`${specimen.title}: theme`}
+        value={[theme]}
+        onValueChange={(values) => {
+          const next = values[0] as FrameTheme | undefined;
+          if (next !== undefined) setTheme(next);
+        }}
+      >
+        <ToggleGroupItem value="light">Light</ToggleGroupItem>
+        <ToggleGroupItem value="dark">Dark</ToggleGroupItem>
+      </ToggleGroup>
+      <ThemeFrame key={`${entryId}/${specimen.id}/${theme}`} entryId={entryId} specimen={specimen} theme={theme} width={width} />
     </div>
   );
 }
@@ -227,7 +272,7 @@ function EntryPage({
         </p>
       ) : "excluded" in doc ? (
         <div className="rounded-lg border border-dashed border-border p-4 text-sm" data-testid="design-system-excluded">
-          <p className="font-medium">Not specimen-able yet</p>
+          <p className="font-medium">Cannot be rendered</p>
           <p className="mt-1 text-muted-foreground">{doc.excluded}</p>
         </div>
       ) : (
@@ -238,60 +283,30 @@ function EntryPage({
             <div
               className={cn(
                 "grid gap-4",
-                themes.length === 2 && (width === "narrow" ? "md:grid-cols-[repeat(2,max-content)]" : "2xl:grid-cols-2"),
+                themes.length === 2 &&
+                  (width === "narrow"
+                    ? "md:grid-cols-[repeat(2,max-content)]"
+                    : specimen.minWidth === undefined && "2xl:grid-cols-2"),
               )}
             >
-              {themes.map((theme) => (
-                <ThemeFrame key={theme} entryId={entry.id} specimen={specimen} theme={theme} width={width} />
-              ))}
+              {specimen.appRoute !== undefined && themes.length === 2 ? (
+                <AppRouteThemes entryId={entry.id} specimen={specimen} width={width} />
+              ) : (
+                themes.map((theme) => (
+                  <ThemeFrame
+                    key={`${entry.id}/${specimen.id}/${theme}`}
+                    entryId={entry.id}
+                    specimen={specimen}
+                    theme={theme}
+                    width={width}
+                  />
+                ))
+              )}
             </div>
           </section>
         ))
       )}
     </article>
-  );
-}
-
-function Swatch({ value, label }: { readonly value: string | null; readonly label: string }) {
-  return (
-    <span className="flex items-center gap-1.5" title={value ?? undefined}>
-      <span
-        aria-hidden
-        className="size-5 shrink-0 rounded border border-border"
-        style={isPaintable(value) ? { background: value } : undefined}
-      />
-      <span className="font-mono text-[11px] text-muted-foreground">{label}</span>
-    </span>
-  );
-}
-
-function Foundations({ tokens }: { readonly tokens: readonly TokenSwatch[] }) {
-  const groups = new Map<string, TokenSwatch[]>();
-  for (const token of tokens.filter((t) => isPaintable(t.light) || isPaintable(t.dark)))
-    groups.set(token.group, [...(groups.get(token.group) ?? []), token]);
-  return (
-    <section aria-label="Foundations" className="flex flex-col gap-4">
-      <h2 className="font-semibold text-lg">Foundations</h2>
-      {[...groups].map(([group, rows]) => (
-        <div key={group} className="flex flex-col gap-2">
-          <h3 className="font-medium text-muted-foreground text-sm">{group}</h3>
-          <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-            {rows.map((token) => (
-              <li key={`${token.scope ?? ""}${token.name}`} className="flex min-w-0 flex-col gap-1 rounded-lg border border-border p-2">
-                <code className="truncate font-mono text-xs">
-                  {token.name}
-                  {token.scope !== null && token.scope !== "root" ? ` · ${token.scope}` : ""}
-                </code>
-                <span className="flex gap-3">
-                  <Swatch value={token.light} label="light" />
-                  <Swatch value={token.dark} label="dark" />
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ))}
-    </section>
   );
 }
 
@@ -305,23 +320,49 @@ function Overview({ entries }: { readonly entries: readonly CatalogEntry[] }) {
     const doc = docFor(entry.id);
     return doc !== undefined && "excluded" in doc ? [{ entry, reason: doc.excluded }] : [];
   });
-  const tokens = galleryTokens();
+  const foundations = entries.filter((entry) => entry.kind === "foundation");
+  const components = available.filter((entry) => entry.kind !== "foundation");
+  const componentsWithSpecimens = withSpecimens.filter((entry) => entry.kind !== "foundation");
+  const appRoutes = components.filter((entry) => {
+    const doc = docFor(entry.id);
+    return doc !== undefined && "specimens" in doc && doc.specimens.some((specimen) => specimen.appRoute !== undefined);
+  });
   return (
     <article className="flex max-w-4xl flex-col gap-8" data-testid="design-system-overview">
       <header className="flex flex-col gap-2">
         <h1 className="font-semibold text-2xl">Detent design system</h1>
         <p className="text-muted-foreground text-sm">
-          Every specimen is the real component from <code className="font-mono text-xs">src/components/ui</code> or
-          the app, rendered with synthetic data in a Light and a Dark document. Nothing here is restyled.
+          The source of truth for Detent's Cloud UI. Every specimen is the real component from{" "}
+          <code className="font-mono text-xs">src/components</code> or the app, rendered with synthetic data in a Light
+          and a Dark document. Nothing here is restyled. The rules are in{" "}
+          <code className="font-mono text-xs">docs/design-system</code>.
         </p>
         <p className="text-sm">
-          {withSpecimens.length} of {available.length} available entries have specimens
-          {excluded.length > 0 ? `; ${excluded.length} not specimen-able yet` : ""}.
+          {componentsWithSpecimens.length} of {components.length} catalogued components have specimens
+          {appRoutes.length > 0 ? `, ${appRoutes.length} of them as the real app route (these need the mock hub)` : ""}
+          {excluded.length > 0 ? `; ${excluded.length} cannot be rendered` : ""}.
         </p>
       </header>
+      <section aria-label="Foundations" className="flex flex-col gap-2">
+        <h2 className="font-semibold text-lg">Foundations</h2>
+        <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {foundations.map((entry) => (
+            <li key={entry.id}>
+              <Link
+                to="/design-system/$entryId"
+                params={{ entryId: entry.id }}
+                className="flex flex-col gap-0.5 rounded-lg border border-border p-3 hover:bg-accent"
+              >
+                <span className="font-medium text-sm">{entry.name}</span>
+                <code className="truncate font-mono text-2xs text-muted-foreground">{entry.source}</code>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </section>
       {excluded.length > 0 ? (
-        <section aria-label="Not specimen-able yet" className="flex flex-col gap-2">
-          <h2 className="font-semibold text-lg">Not specimen-able yet</h2>
+        <section aria-label="Cannot be rendered" className="flex flex-col gap-2">
+          <h2 className="font-semibold text-lg">Cannot be rendered</h2>
           <ul className="flex flex-col gap-1 text-sm">
             {excluded.map(({ entry, reason }) => (
               <li key={entry.id}>
@@ -331,7 +372,6 @@ function Overview({ entries }: { readonly entries: readonly CatalogEntry[] }) {
           </ul>
         </section>
       ) : null}
-      {tokens.length > 0 ? <Foundations tokens={tokens} /> : null}
     </article>
   );
 }
@@ -353,15 +393,37 @@ export function Gallery({ entryId }: { readonly entryId: string | null }) {
 
   const entry = entryId === null ? null : (entries.find((candidate) => candidate.id === entryId) ?? null);
 
+  React.useEffect(() => {
+    if (!navOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNavOpen(false);
+    };
+    globalThis.addEventListener("keydown", onKey);
+    return () => globalThis.removeEventListener("keydown", onKey);
+  }, [navOpen]);
+
   return (
     <div className="flex h-full min-h-0 bg-background text-foreground" data-testid="design-system-gallery">
+      {navOpen ? (
+        <div
+          aria-hidden
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          data-testid="design-system-nav-backdrop"
+          onClick={() => setNavOpen(false)}
+        />
+      ) : null}
       <aside
         className={cn(
-          "w-72 shrink-0 border-r border-border bg-sidebar max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40",
+          "w-72 shrink-0 border-r border-border bg-sidebar max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:max-w-[calc(100vw-3rem)]",
           navOpen ? "max-md:block" : "max-md:hidden",
         )}
       >
-        <Nav entries={entries} activeId={entryId} onNavigate={() => setNavOpen(false)} />
+        <Nav
+          entries={entries}
+          activeId={entryId}
+          onNavigate={() => setNavOpen(false)}
+          onClose={navOpen ? () => setNavOpen(false) : undefined}
+        />
       </aside>
       <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
         <div className="sticky top-0 z-30 flex flex-wrap items-center gap-2 border-b border-border bg-background/90 px-4 py-2 backdrop-blur md:px-8">

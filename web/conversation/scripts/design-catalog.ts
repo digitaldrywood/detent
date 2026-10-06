@@ -5,9 +5,11 @@
  *   tsx scripts/design-catalog.ts --check    validate, fail if the docs are stale
  *
  * The catalog (`src/design-system/catalog.json`) records every primitive in
- * `src/components/ui` and the key compositions built from them. Validation
- * proves each claim against the source: the file exists, its exports and cva
- * variants are what the entry says, and every primitive file has an entry.
+ * `src/components/ui`, every shared component in `src/components` and the key
+ * compositions built from them. Validation proves each claim against the
+ * source: the file exists, its exports and cva variants are what the entry
+ * says, and every module under `src/components` is either part of an entry or
+ * listed under `internal` with the reason it is not a catalogued component.
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -37,22 +39,35 @@ export interface CatalogEntry {
   related: string[];
 }
 
+/** A module under `src/components` that is deliberately not a catalogued component. */
+export interface InternalModule {
+  /** Relative to the client root. */
+  path: string;
+  /** Why it is not a component a feature chooses (a hook, a store, a helper of one entry…). */
+  reason: string;
+}
+
 export interface Catalog {
   schema: 1;
   entries: CatalogEntry[];
+  /** Modules under `src/components` that are covered by no entry, each with its reason. */
+  internal?: InternalModule[];
 }
 
 export interface ValidationOptions {
   /** The client root that `source` paths resolve against. */
   clientRoot: string;
-  /** The primitive directory every file of which must be catalogued. */
-  uiDir?: string;
+  /**
+   * The shared component tree: every module in it, at any depth, must be part
+   * of an entry (`source` or `files`) or listed under `internal`.
+   */
+  componentsDir?: string;
 }
 
 const KINDS: readonly EntryKind[] = ["primitive", "composition", "surface"];
 const STATUSES: readonly EntryStatus[] = ["available", "proposed", "exception"];
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const UI_DIR = "src/components/ui";
+const COMPONENTS_DIR = "src/components";
 
 function parse(file: string): ts.SourceFile {
   const kind = file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
@@ -186,12 +201,17 @@ function checkModule(at: string, files: readonly string[], entry: CatalogEntry, 
       errors.push(`${at}: variant ${key} lists ${listed.join(", ")} but cva defines ${values.join(", ")}`);
     }
   }
-  // Prop-defined variants (string unions) are not cva; each value must at least appear in source.
+  // Prop-defined variants (string unions, or the keys of a class map typed
+  // `keyof typeof map`) are not cva; each value must at least appear in
+  // source, quoted or as an object key.
   const text = files.map((file) => readFileSync(file, "utf8")).join("\n");
   for (const [key, values] of Object.entries(declared)) {
     if (key in cva) continue;
     for (const value of values) {
-      if (!text.includes(`"${value}"`)) errors.push(`${at}: variant ${key}=${value} does not appear in ${label}`);
+      const asKey = new RegExp(`[\\s{,]${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:`);
+      if (!text.includes(`"${value}"`) && !asKey.test(text)) {
+        errors.push(`${at}: variant ${key}=${value} does not appear in ${label}`);
+      }
     }
   }
   return errors;
@@ -250,16 +270,60 @@ export function validateCatalog(catalog: Catalog, options: ValidationOptions): s
 
   }
 
-  const uiDir = join(clientRoot, options.uiDir ?? UI_DIR);
-  if (existsSync(uiDir)) {
-    const covered = new Set(catalog.entries.flatMap((entry) => entryFiles(entry)));
-    for (const name of readdirSync(uiDir).sort()) {
-      if (!/\.tsx?$/.test(name) || /\.test\.tsx?$/.test(name)) continue;
-      const file = relative(clientRoot, join(uiDir, name)).split("\\").join("/");
-      if (!covered.has(file)) errors.push(`catalog: ${file} is not covered by an entry`);
+  const componentsDir = join(clientRoot, options.componentsDir ?? COMPONENTS_DIR);
+  const covered = new Set(catalog.entries.flatMap((entry) => entryFiles(entry)));
+  const internal = new Map<string, string>();
+  for (const item of catalog.internal ?? []) {
+    const at = `internal ${String(item.path)}`;
+    if (!nonEmptyString(item.path)) {
+      errors.push("internal: path is required");
+      continue;
+    }
+    if (internal.has(item.path)) errors.push(`${at}: listed twice`);
+    if (!nonEmptyString(item.reason)) errors.push(`${at}: reason is required`);
+    if (covered.has(item.path)) errors.push(`${at}: also part of a catalog entry`);
+    if (!existsSync(join(clientRoot, item.path))) errors.push(`${at}: does not exist`);
+    internal.set(item.path, item.reason);
+  }
+  if (existsSync(componentsDir)) {
+    for (const file of moduleFiles(componentsDir)) {
+      const path = relative(clientRoot, file).split("\\").join("/");
+      if (!covered.has(path) && !internal.has(path)) {
+        errors.push(`catalog: ${path} is neither part of an entry nor listed as internal`);
+      }
     }
   }
   return errors;
+}
+
+/** Every non-test `.ts`/`.tsx` module below `dir`, sorted. */
+function moduleFiles(dir: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...moduleFiles(path));
+    else if (/\.tsx?$/.test(entry.name) && !/\.(test|spec)\.tsx?$/.test(entry.name) && !entry.name.endsWith(".d.ts")) {
+      found.push(path);
+    }
+  }
+  return found.sort();
+}
+
+/** How much of `src/components` the catalog covers: catalogued modules, internal ones and the total. */
+export function coverage(catalog: Catalog, clientRoot: string, componentsDir = COMPONENTS_DIR): {
+  catalogued: number;
+  internal: number;
+  total: number;
+} {
+  const root = join(clientRoot, componentsDir);
+  const files = existsSync(root) ? moduleFiles(root).map((file) => relative(clientRoot, file).split("\\").join("/")) : [];
+  const covered = new Set(catalog.entries.flatMap((entry) => entryFiles(entry)));
+  const internal = new Set((catalog.internal ?? []).map((item) => item.path));
+  return {
+    catalogued: files.filter((file) => covered.has(file)).length,
+    internal: files.filter((file) => internal.has(file)).length,
+    total: files.length,
+  };
 }
 
 // Documentation ----------------------------------------------------------------
@@ -368,7 +432,10 @@ export function anchor(heading: string): string {
     .replace(/ /g, "-");
 }
 
-export function renderElementCatalogDoc(catalog: Catalog): string {
+export function renderElementCatalogDoc(
+  catalog: Catalog,
+  covered?: { catalogued: number; internal: number; total: number },
+): string {
   const lines: string[] = [
     "# Element catalog",
     "",
@@ -388,6 +455,20 @@ export function renderElementCatalogDoc(catalog: Catalog): string {
       );
     }
   }
+  const internal = catalog.internal ?? [];
+  if (covered !== undefined || internal.length > 0) {
+    lines.push("", "## Internal modules", "");
+    if (covered !== undefined) {
+      lines.push(
+        `Every module under \`src/components\` is part of an entry or listed here: ${covered.catalogued} of ${covered.total} are catalogued (as an entry's source or one of its files) and ${covered.internal} are internal.`,
+        "",
+      );
+    }
+    if (internal.length > 0) {
+      lines.push("| Module | Why it is not a catalogued component |", "| --- | --- |");
+      for (const item of internal) lines.push(`| ${code(item.path)} | ${tableCell(item.reason)} |`);
+    }
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -405,7 +486,7 @@ export function loadCatalog(path = CATALOG_PATH): Catalog {
 export function renderDocs(catalog: Catalog): Map<string, string> {
   return new Map([
     ["components.md", renderComponentsDoc(catalog)],
-    ["element-catalog.md", renderElementCatalogDoc(catalog)],
+    ["element-catalog.md", renderElementCatalogDoc(catalog, coverage(catalog, CLIENT_ROOT))],
   ]);
 }
 

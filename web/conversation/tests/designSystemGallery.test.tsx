@@ -13,10 +13,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { designSystemRoutes, isDesignSystemPath, makeRouter } from "../src/app/router.tsx";
 import { groupEntries, matchesQuery, normalizeCatalog, rawCatalog, type CatalogEntry } from "../src/design-system/gallery/catalog.ts";
-import { applyDocumentTheme, SpecimenStage, type FrameTheme } from "../src/design-system/gallery/frame.tsx";
+import { applyDocumentTheme, SpecimenStage, withTheme, type FrameTheme } from "../src/design-system/gallery/frame.tsx";
+import { applyFrameThemeFromLocation } from "../src/design-system/gallery/standalone.tsx";
 import { docFor, galleryEntries, REGISTRY } from "../src/design-system/gallery/registry.tsx";
 import type { Specimen } from "../src/design-system/gallery/specimen.tsx";
-import { normalizeTokens } from "../src/design-system/gallery/tokens.ts";
+import { displayValue, rootTokens, valueIn } from "../src/design-system/gallery/tokens.ts";
 
 // jsdom has no Worker, canvas or constructable stylesheets. The diff and file
 // surfaces highlight in a worker pool, the file tree adopts a stylesheet and
@@ -155,6 +156,7 @@ describe("design-system gallery search", () => {
     ["buttonvariants", ["button"]],
     ["composition", ["composer"]],
     ["nothing matches this", []],
+    ["modal", ["alert-dialog", "dialog"]],
   ];
   it.each(queries)("query %j lists %j", (query, expected) => {
     const ids = groupEntries(entries, query).flatMap((group) => group.entries.map((entry) => entry.id));
@@ -207,15 +209,53 @@ describe("design-system route guard", () => {
 });
 
 describe("design-system foundations", () => {
-  it("reads tokens from either shape and ignores rows without a name", () => {
-    const rows = [
-      { name: "--background", group: "surface", scope: "root", light: { hex: "#fafafa" }, dark: { hex: "#0a0a0a" } },
-      { group: "surface" },
-    ];
-    expect(normalizeTokens({ tokens: rows })).toEqual([
-      { name: "--background", group: "surface", scope: "root", light: "#fafafa", dark: "#0a0a0a" },
-    ]);
-    expect(normalizeTokens(rows)).toHaveLength(1);
-    expect(normalizeTokens(undefined)).toEqual([]);
+  it("lists every foundation page before the components, as foundations", () => {
+    const groups = groupEntries(galleryEntries());
+    expect(groups[0]?.kind).toBe("foundation");
+    const ids = groups[0]?.entries.map((entry) => entry.id) ?? [];
+    for (const page of ["color", "categorical", "type", "icons", "spacing", "radius", "elevation", "layers", "motion", "breakpoints", "status", "shortcuts", "formatting"]) {
+      expect(ids).toContain(`foundations-${page}`);
+    }
+  });
+
+  it("reads colour tokens with a value per theme", () => {
+    const background = rootTokens("surface").find((token) => token.name === "--background");
+    expect(background).toBeDefined();
+    if (background === undefined) return;
+    expect(displayValue(valueIn(background, "light"))).toMatch(/^#/);
+    expect(displayValue(valueIn(background, "dark"))).not.toBe(displayValue(valueIn(background, "light")));
+    expect(displayValue(null)).toBe("—");
+  });
+});
+
+describe("app-route specimens", () => {
+  it("names a real app route for each composition that loads from the hub", () => {
+    for (const id of ["command-palette", "right-panel-workspace", "settings-route", "work-board", "issue-page"]) {
+      const doc = docFor(id);
+      expect(doc !== undefined && "specimens" in doc, id).toBe(true);
+      if (doc === undefined || !("specimens" in doc)) continue;
+      for (const specimen of doc.specimens) expect(specimen.appRoute?.path, id).toMatch(/^\//);
+    }
+  });
+});
+
+describe("frame theme before render", () => {
+  const cases: Array<[string, Partial<Location>, string | undefined]> = [
+    ["a light frame path", { pathname: "/design-system/frame/button/variants", search: "?theme=light", hash: "" }, "light"],
+    ["a dark frame path", { pathname: "/design-system/frame/button/variants", search: "?theme=dark", hash: "" }, "dark"],
+    ["a hash-routed static frame", { pathname: "/", search: "", hash: "#/design-system/frame/button/variants?theme=light" }, "light"],
+    ["the gallery page itself", { pathname: "/design-system/button", search: "?theme=light", hash: "" }, undefined],
+  ];
+  it.each(cases)("%s", (_name, location, expected) => {
+    delete document.documentElement.dataset.theme;
+    applyFrameThemeFromLocation(location as Location);
+    expect(document.documentElement.dataset.theme).toBe(expected);
+  });
+
+  it.each([
+    ["/work", "light", "/work?theme=light"],
+    ["/work?palette=open", "dark", "/work?palette=open&theme=dark"],
+  ] as const)("adds the theme flag to %s", (path, theme, expected) => {
+    expect(withTheme(path, theme)).toBe(expected);
   });
 });

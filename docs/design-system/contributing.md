@@ -31,7 +31,12 @@ Then run:
 npm run design:catalog
 ```
 
-This validates the catalog and regenerates [components.md](components.md) and [element-catalog.md](element-catalog.md). It fails when an id repeats, a source or export is missing, a catalogued variant differs from the `cva` definition, or a file in `src/components/ui` has no entry. Commit the regenerated docs with the change; never edit them by hand.
+This validates the catalog and regenerates [components.md](components.md) and [element-catalog.md](element-catalog.md). It fails when an id repeats, a source or export is missing, a catalogued variant differs from the `cva` definition, or a module under `src/components` (at any depth) is neither part of an entry nor listed as internal. Commit the regenerated docs with the change; never edit them by hand.
+
+A module that is not a component a feature chooses gets one of two treatments:
+
+- a helper of one entry (its `*.logic.ts`, a hook, a measurement or scroll controller) goes in that entry's `files`, so validation checks its exports and variants with the component's;
+- anything else (a compatibility shim, a provider, a module-level store) goes in the catalog's `internal` list as `{ "path": "src/components/…", "reason": "…" }`, with a one-line reason.
 
 ## 3. Add a gallery specimen
 
@@ -43,13 +48,13 @@ Every `available` entry has either specimens or an `excluded` reason in [`src/de
 4. Make the data realistic. Use plausible names and long labels, and give an image a preview, so the specimen exercises the same layout the product does.
 5. Register the doc under its catalog id in `registry.tsx`.
 
-A composition that cannot render without a live hub client gets an `excluded` string instead, naming what it needs and which specimens cover its parts. Prefer extracting a prop-driven part that can be specimened over excluding the whole composition.
+A composition that loads its own data through the hub client is shown as the real app route instead: give it an `appRoute` specimen, which embeds that route of the dev server in a frame, seeded by the mock hub (see `specimens/appRoutes.tsx`). Its prop-driven parts still get ordinary specimens. The gallery shows one live copy of an app route at a time, with its own Light and Dark switch: two copies of the app in one page would share its local storage and keep answering each other's writes. An `excluded` string, naming what the entry needs, is the last resort for an entry that can be rendered neither way.
 
 ## 4. Test it
 
 New or changed behaviour gets focused tests in `tests/`, using Vitest and Testing Library:
 
-- primitives in `tests/components/ui/<name>.test.tsx`;
+- primitives in `tests/components/ui/`: `<name>.test.tsx` for one primitive, or the family file it belongs to (`formsPrimitives.test.tsx`, `layoutPrimitives.test.tsx`, `entryPrimitives.test.tsx`);
 - compositions next to their existing tests under `tests/components/` or at the top of `tests/`;
 - the design-system checks in `tests/designCatalog.test.ts`, `tests/designTokens.test.ts` and `tests/designSystemGallery.test.tsx`, which already cover the catalog, tokens and registry; extend them only when you change the scripts or the gallery itself.
 
@@ -63,17 +68,34 @@ When you change `src/app/global.css` or `src/app/index.css`, run:
 npm run design:tokens
 ```
 
-This rewrites `src/design-system/tokens.generated.json` and the generated tables in [foundations.md](foundations.md) and [color-review.md](color-review.md). If a contrast ratio changes, read the new table and update the color review's findings in the same change. A new token belongs to a role in [foundations](foundations.md#token-ownership); do not add one for a single feature.
+This rewrites `src/design-system/tokens.generated.json` and the generated tables in [foundations.md](foundations.md) and [color-review.md](color-review.md). If a contrast ratio changes, read the new table and check that the [rules for using the pairs](color-review.md#using-the-pairs) still hold. A new token belongs to a role in [foundations](foundations.md#token-ownership); do not add one for a single feature.
 
 ## 6. Check it in the gallery
 
 ### Run the gallery
 
 ```sh
+npm run dev
+```
+
+Open `/design-system` on the Vite URL the command prints. The gallery needs no hub: its routes skip the bootstrap request. The entries shown as a real app route (command palette, right-panel workspace, settings, work board and issue page) need the mock hub, and say so until it runs:
+
+```sh
 MOCK_HUB_PORT=<port> DETENT_HUB_URL=http://127.0.0.1:<port> npm run dev:mock
 ```
 
-Choose a free port; do not use 4000. Open `/design-system` on the Vite URL the command prints. The gallery is development-only and is not in the production build.
+Choose a free port; do not use 4000.
+
+For a reviewer without a dev setup, build a static copy:
+
+```sh
+npm run build:gallery     # writes dist-gallery/ (gitignored)
+npm run preview:gallery   # or serve dist-gallery/ with any static file server
+```
+
+The static gallery routes on the URL hash, so every entry has a shareable link. Browsers do not run module scripts from `file://` URLs, so serve the directory rather than opening `index.html` from disk. App-route entries need the mock hub and are not available in the static copy.
+
+The gallery is in neither the production bundle nor `static/app/conversation`: the dev route is guarded by `import.meta.env.DEV`, and the static copy has its own entry (`gallery.html`, `vite.gallery.config.ts`).
 
 ### Review
 
@@ -93,8 +115,8 @@ npx tsc --noEmit
 npx vitest run
 ```
 
-From the repository root, `make check-app` runs the type check, both design checks, the test suite and the production build together. The `:check` scripts fail when a generated file is stale; rerun the generator and commit its output.
+From the repository root, `make check-app` runs the type check, both design checks, the test suite and the production build together; the design checks are part of the client gate, not an optional step. The `:check` scripts fail when a generated file is stale; rerun the generator and commit its output.
 
 ## Changing this documentation
 
-The hand-written documents are README, foundations prose, color review findings, brand, patterns, accessibility, contributing and migration. Keep them about Detent's own components and decisions. Record adoption gaps in [migration](migration.md); keep change-specific evidence in the issue or pull request, not here.
+The hand-written documents are README, foundations prose, the contrast rules, brand, patterns, accessibility and contributing. They are normative: state the rule, the token or component, and how to use it. Do not list where the app does not yet follow a rule; keep change-specific evidence in the issue or pull request, not here.

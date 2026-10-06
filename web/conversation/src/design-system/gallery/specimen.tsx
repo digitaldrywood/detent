@@ -7,6 +7,20 @@ import type React from "react";
 
 import type { CatalogEntry } from "./catalog";
 
+/**
+ * A real route of the app, shown in the frame instead of `render`. For a
+ * composition that loads its own data through the hub client: the dev server
+ * serves the route, the mock hub seeds it, and `setup` runs in the route's
+ * window once it has loaded (to open a palette or a panel, say).
+ */
+export interface AppRoute {
+  /** The route, absolute within the app (`/work/p/proj_alpha`). */
+  readonly path: string;
+  /** Milliseconds to wait after load before `setup`, for the route's data to arrive. */
+  readonly settle?: number;
+  readonly setup?: (win: Window) => void;
+}
+
 export interface Specimen {
   readonly id: string;
   readonly title: string;
@@ -23,6 +37,13 @@ export interface Specimen {
    * frame it measures itself against.
    */
   readonly height?: number;
+  /**
+   * The least width of a full-width frame, for a composition whose layout
+   * needs a desktop viewport (`md` and up). Its Light and Dark frames stack.
+   */
+  readonly minWidth?: number;
+  /** Set for an app-route specimen; `render` is then its placeholder outside a browser frame. */
+  readonly appRoute?: AppRoute;
   readonly render: () => React.ReactNode;
 }
 
@@ -47,7 +68,7 @@ export function Cell({
   return (
     <figure className={`m-0 flex min-w-0 flex-col items-start gap-1.5 ${className ?? ""}`}>
       <div className="flex min-h-8 max-w-full items-center">{children}</div>
-      <figcaption className="font-mono text-[11px] text-muted-foreground">{label}</figcaption>
+      <figcaption className="font-mono text-2xs text-muted-foreground">{label}</figcaption>
     </figure>
   );
 }
@@ -82,7 +103,7 @@ export function Matrix<R extends string, C extends string>({
             {columns.map((column) => (
               <th
                 key={column}
-                className="text-left font-mono text-[11px] font-normal text-muted-foreground"
+                className="text-left font-mono text-2xs font-normal text-muted-foreground"
                 scope="col"
               >
                 {column}
@@ -94,7 +115,7 @@ export function Matrix<R extends string, C extends string>({
           {rows.map((row) => (
             <tr key={row}>
               <th
-                className="pe-2 text-left align-middle font-mono text-[11px] font-normal text-muted-foreground"
+                className="pe-2 text-left align-middle font-mono text-2xs font-normal text-muted-foreground"
                 scope="row"
               >
                 {row}

@@ -49,6 +49,24 @@ const BADGE_VARIANTS = keysOf<BadgeVariant>({
   warning: true,
   error: true,
   destructive: true,
+  label: true,
+});
+
+const CODE_HOST_LABELS: readonly (readonly [string, string])[] = [
+  ["bug", "#d73a4a"],
+  ["enhancement", "#a2eeef"],
+  ["documentation", "#0075ca"],
+  ["good first issue", "#7057ff"],
+  ["ui", "#fbca04"],
+];
+
+type SpinnerProps = React.ComponentProps<typeof Spinner>;
+const SPINNER_SIZES = keysOf<NonNullable<SpinnerProps["size"]>>({ xs: true, sm: true, md: true, lg: true });
+const SPINNER_TONES = keysOf<NonNullable<SpinnerProps["tone"]>>({ current: true, muted: true });
+const EMPTY_SIZES = keysOf<NonNullable<React.ComponentProps<typeof Empty>["size"]>>({
+  compact: true,
+  default: true,
+  hero: true,
 });
 
 const BADGE_SIZES = keysOf<BadgeSize>({ sm: true, default: true, lg: true, control: true });
@@ -98,6 +116,43 @@ export const alert: GalleryDoc = {
         </div>
       ),
     },
+    {
+      id: "glass",
+      title: "Glass surface over content",
+      note: "`surface=\"glass\"` floats the alert over content; the tint follows `variant`.",
+      render: () => (
+        <div className="relative max-w-xl overflow-hidden rounded-xl border p-4">
+          <div aria-hidden className="flex flex-col gap-1.5 text-muted-foreground text-xs">
+            {Array.from({ length: 8 }, (_, index) => (
+              <span key={index}>
+                {index + 1}. The agent edited internal/lock/lease.go and ran the focused tests.
+              </span>
+            ))}
+          </div>
+          <div className="absolute inset-x-4 top-1/2 flex -translate-y-1/2 flex-col gap-2">
+            {(["default", "warning", "error"] as const).map((variant) => (
+              <Alert key={variant} surface="glass" variant={variant}>
+                {ALERT_ICONS[variant]}
+                <AlertTitle>glass · {variant}</AlertTitle>
+              </Alert>
+            ))}
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "sidebar",
+      title: "Sidebar variant",
+      note: "A compact notice on the sidebar's control surface, at the sidebar's type size.",
+      render: () => (
+        <div className="w-64 rounded-lg bg-sidebar p-2 text-sidebar-foreground">
+          <Alert variant="sidebar">
+            <AlertTitle>Runner offline</AlertTitle>
+            <AlertDescription>Reconnecting to the hub. Queued work resumes automatically.</AlertDescription>
+          </Alert>
+        </div>
+      ),
+    },
   ],
 };
 
@@ -112,7 +167,11 @@ export const badge: GalleryDoc = {
           rows={BADGE_VARIANTS}
           columns={BADGE_SIZES}
           render={(variant, size) => (
-            <Badge variant={variant} size={size}>
+            <Badge
+              variant={variant}
+              size={size}
+              style={variant === "label" ? ({ "--label": "#a855f7" } as React.CSSProperties) : undefined}
+            >
               {variant === "default" ? "3" : variant}
             </Badge>
           )}
@@ -140,6 +199,22 @@ export const badge: GalleryDoc = {
               Merged
             </Badge>
           </Cell>
+        </Row>
+      ),
+    },
+    {
+      id: "label",
+      title: "Label tinted from --label",
+      note: "The consumer sets the code host's label colour as `--label` in `style`; the badge mixes its tint and text from it.",
+      render: () => (
+        <Row>
+          {CODE_HOST_LABELS.map(([name, color]) => (
+            <Cell key={name} label={color}>
+              <Badge variant="label" style={{ "--label": color } as React.CSSProperties}>
+                {name}
+              </Badge>
+            </Cell>
+          ))}
         </Row>
       ),
     },
@@ -212,25 +287,31 @@ export const spinner: GalleryDoc = {
   specimens: [
     {
       id: "sizes",
-      title: "Sizes and colour",
+      title: "Sizes × tones",
+      note: "`size` outside a Button; inside one the button sizes the glyph. `current` inherits the text colour.",
+      render: () => (
+        <Matrix
+          rows={SPINNER_TONES}
+          columns={SPINNER_SIZES}
+          render={(tone, size) => <Spinner size={size} tone={tone} />}
+        />
+      ),
+    },
+    {
+      id: "button",
+      title: "In a button",
       render: () => (
         <Row>
-          <Cell label="size-3">
-            <Spinner className="size-3" />
-          </Cell>
-          <Cell label="size-4 (default)">
-            <Spinner className="size-4" />
-          </Cell>
-          <Cell label="size-6">
-            <Spinner className="size-6" />
-          </Cell>
-          <Cell label="text-muted-foreground">
-            <Spinner className="size-4 text-muted-foreground" />
-          </Cell>
-          <Cell label="in a button">
+          <Cell label="disabled, sm">
             <Button size="sm" disabled>
               <Spinner />
               Loading
+            </Button>
+          </Cell>
+          <Cell label="outline">
+            <Button size="sm" variant="outline" disabled>
+              <Spinner tone="muted" />
+              Fetching
             </Button>
           </Cell>
         </Row>
@@ -249,7 +330,7 @@ export const skeleton: GalleryDoc = {
         <div className="flex w-80 max-w-full flex-col gap-3">
           {[0, 1, 2].map((row) => (
             <div key={row} className="flex items-center gap-3">
-              <Skeleton className="size-8 rounded-full" />
+              <Skeleton shape="pill" className="size-8" />
               <div className="flex flex-1 flex-col gap-1.5">
                 <Skeleton className="h-3 w-3/4" />
                 <Skeleton className="h-3 w-1/2" />
@@ -257,6 +338,24 @@ export const skeleton: GalleryDoc = {
             </div>
           ))}
         </div>
+      ),
+    },
+    {
+      id: "shapes",
+      title: "Shapes",
+      note: "Size comes from className; the corner radius comes from `shape`.",
+      render: () => (
+        <Row>
+          <Cell label="block (default)">
+            <Skeleton shape="block" className="h-3 w-40" />
+          </Cell>
+          <Cell label="card">
+            <Skeleton shape="card" className="h-20 w-40" />
+          </Cell>
+          <Cell label="pill">
+            <Skeleton shape="pill" className="h-6 w-24" />
+          </Cell>
+        </Row>
       ),
     },
   ],
@@ -298,5 +397,29 @@ export const empty: GalleryDoc = {
         </Empty>
       ),
     },
+    ...EMPTY_SIZES.map((size) => ({
+      id: `size-${size}`,
+      title: `Size: ${size}`,
+      note:
+        size === "compact"
+          ? "A card-sized notice."
+          : size === "hero"
+            ? "Fills a whole route; the title reads larger."
+            : "The default room and title size.",
+      render: () => (
+        <Empty size={size} className="border border-dashed">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <InboxIcon />
+            </EmptyMedia>
+            <EmptyTitle>No threads yet</EmptyTitle>
+            <EmptyDescription>Start a conversation and it shows up here.</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button size="sm">New thread</Button>
+          </EmptyContent>
+        </Empty>
+      ),
+    })),
   ],
 };

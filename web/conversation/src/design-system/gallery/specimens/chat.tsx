@@ -158,8 +158,9 @@ export const appSidebar: GalleryDoc = {
     {
       id: "rows",
       title: "Projects and threads: running, needs you, unread, active, long title",
-      note: "The real AppSidebarLayout and Sidebar. At 390px it becomes the mobile sheet behind the toggle.",
+      note: "The real AppSidebarLayout and Sidebar, in a desktop-width frame (the sidebar is inline from md). At 390px it becomes the mobile sheet behind the toggle.",
       height: 640,
+      minWidth: 1024,
       render: () => <AppSidebarSpecimen />,
     },
   ],
@@ -483,6 +484,24 @@ export const commandPalette: GalleryDoc = {
     source: "src/components/CommandPaletteContent.tsx",
   },
   specimens: [
+    {
+      id: "open",
+      title: "Open",
+      note: "The palette as it opens: search, then actions, projects and threads in groups.",
+      minHeight: 560,
+      render: () => (
+        <CommandDialog defaultOpen>
+          <CommandDialogPopup
+            aria-label="Command palette"
+            className="overflow-hidden p-0"
+            data-command-palette="true"
+            initialFocus={false}
+          >
+            <PalettePanel />
+          </CommandDialogPopup>
+        </CommandDialog>
+      ),
+    },
     {
       id: "dialog",
       title: "In its dialog",

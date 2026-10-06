@@ -72,5 +72,5 @@
       "@pierre/diffs/types": ["node_modules/@pierre/diffs/dist/types.d.ts"]
     }
   },
-  "include": ["src", "tests", "dev", "vite.config.ts"]
+  "include": ["src", "tests", "dev", "vite.config.ts", "vite.gallery.config.ts"]
 }

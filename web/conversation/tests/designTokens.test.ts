@@ -10,6 +10,7 @@ import {
   parseColor,
   parseLength,
   parseStylesheet,
+  renderSections,
   replaceMarkers,
   toHex,
 } from "../scripts/design-tokens.ts";
@@ -41,6 +42,13 @@ describe("design token parser", () => {
       token: "--a",
       light: "#ff0000",
       dark: "#ff0000",
+    },
+    {
+      name: "picks a light-dark() side per theme",
+      css: [":root { --a: light-dark(var(--color-white), #000000); }"],
+      token: "--a",
+      light: "#ffffff",
+      dark: "#000000",
     },
     {
       name: "uses a var() fallback when the variable is undeclared",
@@ -218,6 +226,24 @@ describe("contrast", () => {
     const bg = parseColor(b);
     if (!fg || !bg) throw new Error("unparsed");
     expect(contrastRatio(fg, bg)).toBeCloseTo(ratio, 2);
+  });
+});
+
+describe("themed roles", () => {
+  const css = [
+    ":root {\n  --base: #ffffff;\n  --alias: var(--base);\n  --fixed: #123456;\n  --own: #eeeeee;\n  @variant dark {\n    --base: #111111;\n    --own: #eeeeee;\n  }\n}",
+  ];
+
+  it.each([
+    { name: "a token with its own dark declaration", token: "--base", themed: true, dark: "`#111111`" },
+    { name: "an alias of a themed token, without a dark declaration", token: "--alias", themed: true, dark: "`#111111`" },
+    { name: "a token that is the same in both themes", token: "--fixed", themed: false, dark: "same" },
+    { name: "a dark declaration that repeats the light value", token: "--own", themed: false, dark: "same" },
+  ])("$name resolves per theme", ({ token, themed, dark }) => {
+    const file = build(css);
+    expect(find(file.tokens, token).themed).toBe(themed);
+    const row = (renderSections(file).colors ?? "").split("\n").find((line) => line.startsWith(`| \`${token}\` |`));
+    expect(row?.split(" | ")[3]).toBe(dark);
   });
 });
 

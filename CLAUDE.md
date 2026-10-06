@@ -10,7 +10,7 @@
 - Use `log/slog` for logging.
 - Use Echo for HTTP, sqlc with goose migrations for persistence, and `modernc.org/sqlite` for SQLite.
 - Use Templ, HTMX, and Tailwind v4 for server-rendered UI.
-- For Cloud UI work, follow the [Detent design system](docs/design-system/README.md) and its [component contracts](docs/design-system/components.md). Reuse existing components and semantic tokens within the authorized UI scope.
+- For Cloud UI work, follow the [Detent design system](docs/design-system/README.md) and its [component contracts](docs/design-system/components.md); it is the source of truth for tokens, components and patterns. Reuse existing components and semantic tokens within the authorized UI scope. `make check-app` runs the design token and catalog checks.
 - Use Air for local hot reload and golangci-lint v2 for linting.
 - The live dashboard region (`#snapshot`) is updated by **morphing in place** (idiomorph, `hx-swap="morph:innerHTML"`), never a destructive `innerHTML` swap — otherwise hover popovers/tooltips inside it are torn down and rebuilt on every SSE tick and flicker. Any new element added inside the live region must tolerate in-place morph; render hover tooltips/popovers through a single body-level host (see `helpTooltipHost`) outside the swapped region, and re-assert open state on `htmx:afterSettle`. Do not reintroduce an `innerHTML` swap on `#snapshot`.
 

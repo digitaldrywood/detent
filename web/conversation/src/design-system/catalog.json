@@ -8,14 +8,15 @@
       "group": "Actions",
       "status": "available",
       "source": "src/components/ui/button.tsx",
-      "exports": ["Button", "buttonVariants"],
+      "exports": ["Button", "buttonVariants", "InlineButton", "ButtonSize", "ButtonVariant"],
       "variants": {
-        "variant": ["default", "destructive", "destructive-outline", "ghost", "ghost-muted", "glass", "link", "outline", "overlay", "secondary", "warning-outline"],
-        "size": ["compact", "default", "icon", "icon-lg", "icon-micro", "icon-sm", "icon-xl", "icon-xs", "lg", "micro", "sm", "xl", "xs"]
+        "variant": ["default", "secondary", "outline", "ghost", "ghost-muted", "ghost-destructive", "destructive", "destructive-outline", "warning-outline", "glass", "overlay", "link", "media-close", "media-navigation"],
+        "size": ["micro", "compact", "xs", "sm", "sm-multiline", "default", "lg", "xl", "icon-tiny", "icon-micro", "icon-xs", "icon-sm", "icon", "icon-lg", "icon-xl"],
+        "tone": ["default", "muted", "destructive", "picker"]
       },
       "states": ["hover", "focus-visible", "pressed", "disabled"],
       "keyboard": "Native button: Tab focuses, Enter and Space activate. With `render`, the rendered element must stay focusable and keep button semantics.",
-      "use": "Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size=\"compact\"` is the toolbar size family; `icon*` sizes need an accessible name.",
+      "use": "Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size=\"compact\"` is the toolbar size family; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu).",
       "avoid": "Restyling with arbitrary radius, fill or font classes, or calling `buttonVariants` from app code to dress a non-button. Use Badge for static status and a link for navigation that is not an action.",
       "related": ["toggle", "group", "panel-tab-close-button"]
     },
@@ -28,12 +29,12 @@
       "source": "src/components/ui/toggle.tsx",
       "exports": ["Toggle", "toggleVariants"],
       "variants": {
-        "variant": ["default", "ghost", "outline", "segmented"],
+        "variant": ["default", "ghost", "outline", "segmented", "pill"],
         "size": ["compact", "default", "lg", "segmented", "sm", "xs"]
       },
       "states": ["hover", "focus-visible", "pressed", "disabled"],
       "keyboard": "Tab focuses; Enter and Space flip the pressed state, exposed as aria-pressed.",
-      "use": "A two-state control whose state is visible on the control itself, such as a formatting or view toggle.",
+      "use": "A two-state control whose state is visible on the control itself, such as a formatting or view toggle. `variant=\"pill\"` is a rounded filter chip.",
       "avoid": "Settings that persist a preference (use Switch) or a choice among peers (use ToggleGroup).",
       "related": ["toggle-group", "switch", "button"]
     },
@@ -75,7 +76,9 @@
       "status": "available",
       "source": "src/components/ui/refresh-icon.tsx",
       "exports": ["RefreshIcon"],
-      "variants": {},
+      "variants": {
+        "size": ["xs", "sm", "md", "lg"]
+      },
       "states": ["refreshing"],
       "keyboard": "Not focusable; the enclosing Button owns keyboard access and the accessible name.",
       "use": "The glyph inside a refresh or retry Button; `refreshing` spins it while the request runs, honouring reduced motion.",
@@ -91,7 +94,8 @@
       "source": "src/components/ui/input.tsx",
       "exports": ["Input", "InputProps"],
       "variants": {
-        "size": ["sm", "compact", "default", "lg"]
+        "size": ["sm", "compact", "default", "lg"],
+        "font": ["default", "mono"]
       },
       "states": ["hover", "focus-visible", "disabled", "invalid", "read-only"],
       "keyboard": "Native text input editing and selection.",
@@ -157,8 +161,8 @@
       "variants": {
         "size": ["default", "sm"]
       },
-      "states": ["hover", "focus-visible", "checked", "disabled"],
-      "keyboard": "Tab focuses; Space toggles.",
+      "states": ["hover", "focus-visible", "checked", "disabled", "mixed"],
+      "keyboard": "Tab focuses; Space or Enter toggles.",
       "use": "A boolean setting that takes effect immediately, typically as the trailing control of a SettingsRow.",
       "avoid": "Selections submitted with a form (use Checkbox) and actions (use Button).",
       "related": ["checkbox", "settings-layout"]
@@ -300,7 +304,7 @@
       "group": "Choice and search",
       "status": "available",
       "source": "src/components/ui/autocomplete.tsx",
-      "exports": ["Autocomplete", "AutocompleteInput", "AutocompleteTrigger", "AutocompletePopup", "AutocompleteItem", "AutocompleteSeparator", "AutocompleteGroup", "AutocompleteGroupLabel", "AutocompleteEmpty", "AutocompleteValue", "AutocompleteList", "AutocompleteClear", "AutocompleteStatus", "AutocompleteRow", "AutocompleteCollection", "useAutocompleteFilter"],
+      "exports": ["Autocomplete", "AutocompleteInput", "AutocompleteTrigger", "AutocompletePopup", "AutocompleteItem", "AutocompleteSeparator", "AutocompleteGroup", "AutocompleteGroupLabel", "AutocompleteEmpty", "AutocompleteValue", "AutocompleteList", "AutocompleteClear", "AutocompleteStatus", "AutocompleteRow", "AutocompleteCollection", "useAutocompleteFilter", "AutocompleteListHeading", "AutocompleteListVirtualized"],
       "variants": {
         "size": ["sm", "default", "lg"]
       },
@@ -317,7 +321,7 @@
       "group": "Choice and search",
       "status": "available",
       "source": "src/components/ui/command.tsx",
-      "exports": ["CommandCreateHandle", "Command", "CommandCollection", "CommandDialog", "CommandDialogPopup", "CommandDialogTrigger", "CommandEmpty", "CommandFooter", "CommandFooterAction", "CommandGroup", "CommandGroupLabel", "CommandInput", "CommandItem", "CommandList", "CommandPanel", "CommandSeparator", "CommandShortcut"],
+      "exports": ["CommandCreateHandle", "Command", "CommandCollection", "CommandDialog", "CommandDialogPopup", "CommandDialogTrigger", "CommandEmpty", "CommandFooter", "CommandFooterAction", "CommandGroup", "CommandGroupLabel", "CommandInput", "CommandItem", "CommandList", "CommandPanel", "CommandSeparator", "CommandShortcut", "CommandListHeading", "CommandListVirtualized"],
       "variants": {},
       "states": ["open", "highlighted", "empty"],
       "keyboard": "Focus starts in the search input; arrow keys move between items; Enter runs the highlighted item; Escape closes the dialog and returns focus.",
@@ -333,13 +337,14 @@
       "status": "available",
       "source": "src/components/ui/dialog.tsx",
       "files": ["src/components/ui/dialog-styles.ts"],
-      "exports": ["DialogCreateHandle", "Dialog", "DialogTrigger", "DialogPortal", "DialogClose", "DialogBackdrop", "DialogOverlay", "DialogPopup", "DialogContent", "DialogHeader", "DialogFooter", "DialogTitle", "DialogDescription", "DialogPanel", "DialogViewport", "DIALOG_BACKDROP_CLASS", "DIALOG_POPUP_CLASS", "DIALOG_MOBILE_SHEET_CLASS"],
+      "exports": ["DialogCreateHandle", "Dialog", "DialogTrigger", "DialogPortal", "DialogClose", "DialogBackdrop", "DialogOverlay", "DialogPopup", "DialogContent", "DialogHeader", "DialogFooter", "DialogTitle", "DialogDescription", "DialogPanel", "DialogViewport", "DIALOG_BACKDROP_CLASS", "DIALOG_POPUP_CLASS", "DIALOG_MOBILE_SHEET_CLASS", "DIALOG_MEDIA_BACKDROP_CLASS", "DIALOG_MEDIA_POPUP_CLASS"],
       "variants": {
-        "footerVariant": ["default", "bare"]
+        "footerVariant": ["default", "bare"],
+        "variant": ["default", "media"]
       },
       "states": ["open", "nested", "focus-visible"],
       "keyboard": "Focus moves into the dialog and is contained; Escape closes; focus returns to the trigger.",
-      "use": "A focused task that interrupts the page: a short form, a confirmation with input, a detail that needs the whole attention.",
+      "use": "A focused task that interrupts the page: a short form, a confirmation with input, a detail that needs the whole attention. `variant=\"media\"` is the full-bleed image and video viewer.",
       "avoid": "Destructive confirmations (use AlertDialog), docked panels (use Sheet) and contextual pickers (use Popover).",
       "related": ["alert-dialog", "sheet", "popover"]
     },
@@ -387,10 +392,14 @@
       "status": "available",
       "source": "src/components/ui/popover.tsx",
       "exports": ["PopoverCreateHandle", "Popover", "PopoverTrigger", "PopoverPopup", "PopoverContent", "PopoverTitle", "PopoverDescription", "PopoverClose"],
-      "variants": {},
-      "states": ["open", "focus-visible"],
+      "variants": {
+        "variant": ["default", "panel"],
+        "width": ["auto", "sm", "md", "lg"],
+        "padding": ["default", "compact", "none"]
+      },
+      "states": ["open", "focus-visible", "kept mounted"],
       "keyboard": "The trigger opens it; focus moves into interactive content; Escape closes and returns focus.",
-      "use": "A small contextual interaction anchored to its trigger: a filter, a short form, pinned help.",
+      "use": "A small contextual interaction anchored to its trigger: a filter, a short form, pinned help. `width` sets sm 256px, md 320px or lg 384px; `padding` default, compact or none; `variant=\"panel\"` docks a details panel at the sheet layer, at the thread-details width; `keepMounted` keeps a heavy popup alive while closed.",
       "avoid": "Lists of actions (use Menu), hover-only supplementary text (use Tooltip) and long tasks (use Dialog).",
       "related": ["menu", "tooltip", "preview-card"]
     },
@@ -401,14 +410,15 @@
       "group": "Overlays",
       "status": "available",
       "source": "src/components/ui/menu.tsx",
-      "exports": ["MenuCreateHandle", "Menu", "MenuPortal", "MenuTrigger", "MenuPopup", "MenuGroup", "MenuItem", "MenuCheckboxItem", "MenuRadioGroup", "MenuRadioItem", "MenuRadioItemIndicator", "MenuGroupLabel", "MenuSeparator", "MenuShortcut", "MenuSub", "MenuSubTrigger", "MenuSubPopup", "DropdownMenu", "DropdownMenuTrigger", "DropdownMenuContent", "DropdownMenuItem"],
+      "exports": ["MenuCreateHandle", "Menu", "MenuPortal", "MenuTrigger", "MenuPopup", "MenuGroup", "MenuItem", "MenuCheckboxItem", "MenuRadioGroup", "MenuRadioItem", "MenuRadioItemIndicator", "MenuGroupLabel", "MenuSeparator", "MenuShortcut", "MenuSub", "MenuSubTrigger", "MenuSubPopup", "DropdownMenu", "DropdownMenuTrigger", "DropdownMenuContent", "DropdownMenuItem", "MenuItemLabel"],
       "variants": {
-        "itemVariant": ["default", "destructive"],
-        "checkboxItemVariant": ["default", "switch"]
+        "itemVariant": ["default", "destructive", "ghost"],
+        "checkboxItemVariant": ["default", "switch"],
+        "density": ["default", "touch"]
       },
-      "states": ["open", "highlighted", "checked", "disabled"],
+      "states": ["open", "highlighted", "checked", "disabled", "kept mounted"],
       "keyboard": "Enter, Space or arrow keys open from the trigger; arrow keys move; typeahead jumps; Enter activates; ArrowRight opens a submenu; Escape closes and returns focus.",
-      "use": "A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus.",
+      "use": "A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus. `density=\"touch\"` gives rows a 40px height for touch; a `ghost` item is a quiet action row; `MenuItemLabel` holds an item's text beside its icon.",
       "avoid": "Choosing a saved value (use Select) and searching (use Combobox or Command).",
       "related": ["select", "popover", "button"]
     },
@@ -419,13 +429,13 @@
       "group": "Overlays",
       "status": "available",
       "source": "src/components/ui/tooltip.tsx",
-      "exports": ["TooltipCreateHandle", "TooltipProvider", "Tooltip", "TooltipTrigger", "TooltipPopup"],
+      "exports": ["TooltipCreateHandle", "TooltipProvider", "Tooltip", "TooltipTrigger", "TooltipPopup", "TooltipScrollDismissArea"],
       "variants": {
-        "variant": ["default", "glass"]
+        "variant": ["default", "glass", "code"]
       },
       "states": ["open"],
       "keyboard": "Opens when its trigger receives keyboard focus; Escape closes. Content is not focusable.",
-      "use": "Brief supplementary text for a control that already has an accessible name, such as an icon button's label and shortcut.",
+      "use": "Brief supplementary text for a control that already has an accessible name, such as an icon button's label and shortcut. `variant=\"code\"` shows a path or command in monospace; wrap a scrolling region in `TooltipScrollDismissArea` so open tooltips close when it scrolls.",
       "avoid": "The only accessible name of a control, essential instructions, or interactive content (use Popover).",
       "related": ["popover", "preview-card", "kbd"]
     },
@@ -453,12 +463,13 @@
       "source": "src/components/ui/alert.tsx",
       "exports": ["Alert", "AlertTitle", "AlertDescription", "AlertAction"],
       "variants": {
-        "variant": ["default", "error", "info", "success", "warning"],
-        "controlAlignment": ["center", "first-line"]
+        "variant": ["default", "info", "success", "warning", "error", "sidebar"],
+        "controlAlignment": ["center", "first-line"],
+        "surface": ["default", "glass"]
       },
       "states": [],
       "keyboard": "Not interactive itself; AlertAction holds focusable actions.",
-      "use": "A persistent inline message in the place the user must act: a warning above a form, an unavailable state with a corrective action.",
+      "use": "A persistent inline message in the place the user must act: a warning above a form, an unavailable state with a corrective action. `surface=\"glass\"` sits over imagery; `variant=\"sidebar\"` is for notices inside the sidebar.",
       "avoid": "Transient confirmations (use a toast) and status labels (use Badge).",
       "related": ["toast", "badge", "empty"]
     },
@@ -471,12 +482,12 @@
       "source": "src/components/ui/badge.tsx",
       "exports": ["Badge", "badgeVariants"],
       "variants": {
-        "variant": ["default", "destructive", "error", "info", "outline", "secondary", "success", "warning"],
+        "variant": ["default", "secondary", "outline", "info", "success", "warning", "error", "destructive", "label"],
         "size": ["control", "default", "lg", "sm"]
       },
       "states": [],
       "keyboard": "Static by default; with `render` it can become a link or button and takes that element's keyboard behaviour.",
-      "use": "A short static status or count with semantic colour, paired with text so colour is not the only signal.",
+      "use": "A short static status or count with semantic colour, paired with text so colour is not the only signal. `variant=\"label\"` renders a code-host label, tinted from the `--label` colour set in `style`.",
       "avoid": "Actions (use Button) and context reference chips in the composer (use the file tag chip).",
       "related": ["alert", "thread-status-indicators"]
     },
@@ -506,10 +517,13 @@
       "status": "available",
       "source": "src/components/ui/spinner.tsx",
       "exports": ["Spinner"],
-      "variants": {},
+      "variants": {
+        "size": ["xs", "sm", "md", "lg"],
+        "tone": ["current", "muted"]
+      },
       "states": ["loading"],
       "keyboard": "Not focusable.",
-      "use": "Indeterminate progress inside a control or small region, keeping the surrounding layout and label stable.",
+      "use": "Indeterminate progress inside a control or small region, keeping the surrounding layout and label stable. `size` matches the icon sizes (xs 12px to lg 20px); `tone` is `current` (inherits the text colour) or `muted`.",
       "avoid": "Loading a whole region whose shape is known (use Skeleton).",
       "related": ["skeleton", "refresh-icon"]
     },
@@ -521,10 +535,12 @@
       "status": "available",
       "source": "src/components/ui/skeleton.tsx",
       "exports": ["Skeleton"],
-      "variants": {},
+      "variants": {
+        "shape": ["block", "card", "pill"]
+      },
       "states": ["loading"],
       "keyboard": "Not focusable.",
-      "use": "A placeholder with the shape of content that is loading, using the shared stepped animation.",
+      "use": "A placeholder with the shape of content that is loading, using the shared stepped animation. `shape` is `block` (the default rectangle), `card` or `pill`.",
       "avoid": "Inventing another shimmer, and showing skeletons for content that failed to load (show the error state).",
       "related": ["spinner", "empty"]
     },
@@ -537,11 +553,12 @@
       "source": "src/components/ui/empty.tsx",
       "exports": ["Empty", "EmptyHeader", "EmptyTitle", "EmptyDescription", "EmptyContent", "EmptyMedia"],
       "variants": {
-        "variant": ["default", "icon"]
+        "variant": ["default", "icon"],
+        "size": ["compact", "default", "hero"]
       },
       "states": [],
       "keyboard": "Not interactive itself; EmptyContent holds focusable actions.",
-      "use": "Explaining why a region has no content and offering the relevant next action.",
+      "use": "Explaining why a region has no content and offering the relevant next action. `size=\"compact\"` fits panels and popovers; `hero` is a first-run page.",
       "avoid": "Errors and unavailable capabilities that are not simply absence (use Alert).",
       "related": ["alert", "skeleton"]
     },
@@ -624,7 +641,7 @@
       "source": "src/components/ui/collapsible.tsx",
       "exports": ["Collapsible", "CollapsibleTrigger", "CollapsiblePanel", "CollapsibleContent"],
       "variants": {},
-      "states": ["expanded", "collapsed", "focus-visible"],
+      "states": ["expanded", "collapsed", "focus-visible", "animated"],
       "keyboard": "The trigger is a button with aria-expanded; Enter and Space toggle.",
       "use": "Showing and hiding a secondary section in place, such as tool details or a lane.",
       "avoid": "Hiding primary content or required form fields.",
@@ -659,6 +676,36 @@
       "use": "Branch names, paths, worktree names and shas whose meaning is at both ends.",
       "avoid": "Prose and titles, which truncate at the end.",
       "related": []
+    },
+    {
+      "id": "animated-height",
+      "name": "Animated height",
+      "kind": "primitive",
+      "group": "Structure",
+      "status": "available",
+      "source": "src/components/AnimatedHeight.tsx",
+      "exports": ["AnimatedHeight"],
+      "variants": {},
+      "states": ["resizing"],
+      "keyboard": "No behaviour of its own.",
+      "use": "Easing a container to its content's new height when the content changes, optionally holding the old height while a replacement loads.",
+      "avoid": "Open and close disclosures (use Collapsible) and layout that should not animate.",
+      "related": ["collapsible", "wizard"]
+    },
+    {
+      "id": "render-error-boundary",
+      "name": "Render error boundary",
+      "kind": "primitive",
+      "group": "Structure",
+      "status": "available",
+      "source": "src/components/RenderErrorBoundary.tsx",
+      "exports": ["RenderErrorBoundary"],
+      "variants": {},
+      "states": ["failed"],
+      "keyboard": "No behaviour of its own.",
+      "use": "Isolating a fragile renderer (highlighted code, diffs, files) so a render error shows a fallback and retries when resetKeys change.",
+      "avoid": "Handling expected errors such as failed requests; render those states directly.",
+      "related": ["diff-surface", "files-surface", "chat-markdown"]
     },
     {
       "id": "table",
@@ -757,6 +804,7 @@
       "group": "Workspace",
       "status": "available",
       "source": "src/components/AppSidebarLayout.tsx",
+      "files": ["src/components/threadSidebarWidth.ts"],
       "exports": ["AppSidebarLayout"],
       "variants": {},
       "states": ["collapsed", "resizing"],
@@ -772,6 +820,7 @@
       "group": "Workspace",
       "status": "available",
       "source": "src/components/Sidebar.tsx",
+      "files": ["src/components/Sidebar.logic.ts", "src/components/Sidebar.drag.ts", "src/components/Sidebar.motion.ts", "src/components/Sidebar.pointer.ts", "src/components/Sidebar.snooze.ts", "src/components/threadActionMenu.logic.ts", "src/components/BranchToolbar.logic.ts"],
       "exports": ["default"],
       "variants": {},
       "states": ["hover", "active", "selected", "dragging", "collapsed", "empty"],
@@ -787,6 +836,7 @@
       "group": "Workspace",
       "status": "available",
       "source": "src/components/sidebar/SidebarChrome.tsx",
+      "files": ["src/components/pullRequest/pullRequestListPreferences.ts"],
       "exports": ["SidebarChromeHeader", "SidebarUtilityMenu", "SidebarChromeFooter"],
       "variants": {},
       "states": ["hover", "focus-visible", "open"],
@@ -864,6 +914,7 @@
       "group": "Workspace",
       "status": "available",
       "source": "src/app/components/CommandPalette.tsx",
+      "files": ["src/components/CommandPalette.logic.ts"],
       "exports": ["CommandPalette"],
       "variants": {},
       "states": ["open", "highlighted", "empty", "loading"],
@@ -925,6 +976,7 @@
       "group": "Workspace",
       "status": "available",
       "source": "src/components/GitActionsControl.tsx",
+      "files": ["src/components/GitActionsControl.logic.ts"],
       "exports": ["default"],
       "variants": {},
       "states": ["disabled", "loading", "open"],
@@ -932,6 +984,72 @@
       "use": "The chat header's source-control actions.",
       "avoid": "Separate commit or push buttons elsewhere in the header.",
       "related": ["chat-header", "group", "menu"]
+    },
+    {
+      "id": "thread-command-subtitle",
+      "name": "Thread command subtitle",
+      "kind": "composition",
+      "group": "Workspace",
+      "status": "available",
+      "source": "src/components/ThreadCommandSubtitle.tsx",
+      "exports": ["ThreadCommandSubtitle", "ThreadCommandSubtitleVariant", "CommandPaletteMetaDot", "COMMAND_PALETTE_META_ICON_CLASS"],
+      "variants": {
+        "variant": ["favicon-workspace-harness", "favicon-workspace", "favicon-branch-harness"]
+      },
+      "states": [],
+      "keyboard": "Not interactive; it sits inside a focusable palette row.",
+      "use": "The second line of a thread result in the command palette: project favicon and name, branch or worktree, and whether it is the current thread.",
+      "avoid": "Thread metadata in the sidebar or headers, which use the row and ThreadStatusIndicators; do not add new fields here, keep the line to project, checkout and current.",
+      "related": ["command-palette", "command-palette-content", "project-favicon"]
+    },
+    {
+      "id": "open-in-picker",
+      "name": "Open in picker",
+      "kind": "composition",
+      "group": "Workspace",
+      "status": "available",
+      "source": "src/components/chat/OpenInPicker.tsx",
+      "exports": ["OpenInPicker"],
+      "variants": {},
+      "states": ["hover", "focus-visible", "open", "disabled"],
+      "keyboard": "A split button in a Group: the primary is a button, the chevron opens a Menu with arrow-key navigation; the favourite-editor shortcut opens the preferred editor.",
+      "use": "The chat header's Open control: open the worktree in the preferred editor, or the first destination (such as the linked issue) when no editor is reachable, with each disabled editor saying why.",
+      "avoid": "A plain link or button that opens an editor or the file manager elsewhere; add a destination through the header actions' open targets instead of a second control.",
+      "related": ["chat-header", "git-actions-control", "menu", "group"]
+    },
+    {
+      "id": "project-scripts-control",
+      "name": "Project scripts control",
+      "kind": "composition",
+      "group": "Workspace",
+      "status": "available",
+      "source": "src/components/ProjectScriptsControl.tsx",
+      "files": ["src/components/projectScriptEditor.tsx", "src/components/settings/KeybindingsSettings.logic.ts"],
+      "exports": ["default", "ProjectScriptEditorDialog", "ScriptIcon", "NewProjectScriptInput", "ProjectScriptActionResult"],
+      "variants": {},
+      "states": ["hover", "focus-visible", "open", "empty"],
+      "keyboard": "A split button: the primary runs the preferred script, the chevron opens a Menu of scripts whose edit buttons are reachable by focus; the editor dialog captures a keybinding from a key press.",
+      "use": "The chat header's project actions: run a project script, add or edit one in the action dialog, and reach the conversation actions from the same menu.",
+      "avoid": "A separate run button or script form; build on ProjectScriptEditorDialog when another surface needs to edit scripts.",
+      "related": ["chat-header", "open-in-picker", "dialog", "menu"]
+    },
+    {
+      "id": "sidebar-update-pill",
+      "name": "Sidebar update pill",
+      "kind": "composition",
+      "group": "Workspace",
+      "status": "available",
+      "source": "src/components/sidebar/SidebarUpdatePill.tsx",
+      "files": ["src/components/sidebar/SidebarProviderUpdatePill.tsx", "src/components/sidebar/DesktopUpdateStatusIcon.tsx"],
+      "exports": ["SidebarUpdatePill", "SidebarUpdateArchitectureWarning", "SidebarProviderUpdatePill", "DesktopUpdateStatusIcon", "DesktopUpdateStatusIconState"],
+      "variants": {
+        "status": ["idle", "checking", "available", "downloading", "downloaded"]
+      },
+      "states": ["hover", "focus-visible", "disabled", "checking"],
+      "keyboard": "A focusable button with the status as its accessible name; Enter or Space checks for updates or opens the runner settings.",
+      "use": "The runner update control in the sidebar footer, for readers who manage runners; DesktopUpdateStatusIcon draws its idle, checking, available, downloading and downloaded icons.",
+      "avoid": "Announcing other updates with it; SidebarProviderUpdatePill and SidebarUpdateArchitectureWarning render nothing here, so use a toast or a composer notice instead.",
+      "related": ["sidebar-chrome", "refresh-icon"]
     },
     {
       "id": "chat-header",
@@ -970,6 +1088,7 @@
       "group": "Conversation",
       "status": "available",
       "source": "src/components/chat/MessagesTimeline.tsx",
+      "files": ["src/components/chat/MessagesTimeline.logic.ts", "src/components/chat/timelineScrollAnchoring.ts", "src/components/chat/agentSpawnSummary.ts", "src/components/chat/userMessageTerminalContexts.ts", "src/components/chat/useAssistantCitationTarget.ts", "src/components/chat/AssistantCitationSource.tsx", "src/components/chat/AssistantSelectionToolbar.tsx"],
       "exports": ["MessagesTimeline"],
       "variants": {},
       "states": ["streaming", "working", "empty"],
@@ -985,6 +1104,7 @@
       "group": "Conversation",
       "status": "available",
       "source": "src/components/ChatMarkdown.tsx",
+      "files": ["src/components/chat/markdownImageGallery.ts", "src/components/preview/fileExplorerLabel.ts"],
       "exports": ["default", "MarkdownCodeBlock", "ChatMarkdownAssetImage"],
       "variants": {},
       "states": ["hover", "focus-visible"],
@@ -1000,6 +1120,7 @@
       "group": "Conversation",
       "status": "available",
       "source": "src/app/components/Composer.tsx",
+      "files": ["src/components/chat/composerPromptHistory.ts", "src/components/chat/composerScrollGesture.ts", "src/components/composerFooterLayout.ts", "src/components/chat/useComposerMenuState.ts"],
       "exports": ["Composer", "ComposerProps"],
       "variants": {},
       "states": ["focus-visible", "disabled", "sending", "queued", "dragging"],
@@ -1129,6 +1250,164 @@
       "related": ["messages-timeline", "chat-markdown"]
     },
     {
+      "id": "thread-error-banner",
+      "name": "Thread error banner",
+      "kind": "composition",
+      "group": "Conversation",
+      "status": "available",
+      "source": "src/components/chat/ThreadErrorBanner.tsx",
+      "exports": ["ThreadErrorBanner", "getThreadErrorBannerKey", "shouldShowThreadErrorBanner", "dismissThreadErrorBannerForSession", "isThreadErrorBannerDismissedForSession"],
+      "variants": {},
+      "states": ["dismissible", "truncated"],
+      "keyboard": "The dismiss button is focusable; the clamped error text has a tooltip with the full message.",
+      "use": "A thread-level error above the timeline, clamped to three lines, with a dismissal remembered for the session per thread and message.",
+      "avoid": "Errors that belong to one control or turn (show them in place) or provider health (use Provider status banner).",
+      "related": ["provider-status-banner", "alert", "composer-banner"]
+    },
+    {
+      "id": "provider-status-banner",
+      "name": "Provider status banner",
+      "kind": "composition",
+      "group": "Conversation",
+      "status": "available",
+      "source": "src/components/chat/ProviderStatusBanner.tsx",
+      "exports": ["ProviderStatusBanner", "getProviderStatusBannerKey", "shouldShowProviderStatusBanner", "getProviderStatusMessage", "hasProviderSetup"],
+      "variants": {},
+      "states": ["warning", "error", "unauthenticated", "dismissible"],
+      "keyboard": "Open provider setup and dismiss are buttons in reading order; the message has a tooltip with the full text.",
+      "use": "The selected provider's health above the composer: limited availability, unavailable, unauthenticated or not installed, with a way into provider setup.",
+      "avoid": "Thread errors (use Thread error banner) and usage limits (use Composer notices).",
+      "related": ["thread-error-banner", "composer-notices", "composer"]
+    },
+    {
+      "id": "composer-notices",
+      "name": "Composer notices",
+      "kind": "composition",
+      "group": "Conversation",
+      "status": "available",
+      "source": "src/components/chat/ComposerUsageLimits.tsx",
+      "files": ["src/components/chat/ComposerFeedback.tsx"],
+      "exports": ["usageLimitsBannerItem", "feedbackBannerItem"],
+      "variants": {},
+      "states": ["uploading", "sent", "failed", "dismissible"],
+      "keyboard": "As Composer banner stack; Copy ID and dismiss are buttons.",
+      "use": "Ready-made Composer banner stack items: the /usage-limits result with its limit windows, and the progress of a feedback submission.",
+      "avoid": "Hand-building the same notice; pass these items to ComposerBannerStack. For a new kind of notice, build a ComposerBannerStackItem.",
+      "related": ["composer-banner-stack", "usage-limits", "composer"]
+    },
+    {
+      "id": "diff-stat-label",
+      "name": "Diff stat label",
+      "kind": "composition",
+      "group": "Conversation",
+      "status": "available",
+      "source": "src/components/chat/DiffStatLabel.tsx",
+      "exports": ["DiffStatLabel", "hasNonZeroStat"],
+      "variants": {
+        "layout": ["aligned", "inline"]
+      },
+      "states": [],
+      "keyboard": "Not interactive; one accessible label reads both counts.",
+      "use": "Additions and deletions of a file, folder or turn, compacted (12.3k), in success and destructive ink.",
+      "avoid": "Other counts or deltas; use a Badge or plain text.",
+      "related": ["changed-files-card", "diff-surface"]
+    },
+    {
+      "id": "changed-files-card",
+      "name": "Changed files card",
+      "kind": "composition",
+      "group": "Conversation",
+      "status": "available",
+      "source": "src/components/chat/ChangedFilesTree.tsx",
+      "exports": ["ChangedFilesCard", "ChangedFilesTree"],
+      "variants": {},
+      "states": ["hover", "focus-visible", "expanded", "collapsed"],
+      "keyboard": "Folder rows are buttons with aria-expanded; file rows are buttons that open the diff; expand all and Open diff are buttons.",
+      "use": "A turn's changed files in the transcript or diff surface: a folder tree with per-file stats that opens the diff at a file.",
+      "avoid": "Browsing the whole workspace (use File browser panel) or showing the diff itself (use Diff surface).",
+      "related": ["diff-stat-label", "file-entry-icon", "messages-timeline", "diff-surface"]
+    },
+    {
+      "id": "message-copy-button",
+      "name": "Message copy button",
+      "kind": "composition",
+      "group": "Conversation",
+      "status": "available",
+      "source": "src/components/chat/MessageCopyButton.tsx",
+      "exports": ["MessageCopyButton"],
+      "variants": {
+        "size": ["xs", "icon-xs"],
+        "variant": ["outline", "ghost"]
+      },
+      "states": ["hover", "focus-visible", "copied"],
+      "keyboard": "A button; Enter or Space copies, then it is disabled while the check shows.",
+      "use": "Copying a message or snippet with the anchored copy toast and a check confirmation.",
+      "avoid": "Copy actions that need a label or menu; use a Button with showAnchoredCopySuccessToast.",
+      "related": ["button", "toast", "messages-timeline"]
+    },
+    {
+      "id": "skill-inline-text",
+      "name": "Skill inline text",
+      "kind": "composition",
+      "group": "Conversation",
+      "status": "available",
+      "source": "src/components/chat/SkillInlineText.tsx",
+      "exports": ["SkillInlineText", "renderSkillInlineMarkdownChildren"],
+      "variants": {},
+      "states": [],
+      "keyboard": "Not interactive; chips read as their skill name.",
+      "use": "Text that may name provider skills as $tokens, turning each known skill into a chip; renderSkillInlineMarkdownChildren does the same inside markdown.",
+      "avoid": "Mentions of files (use File tag chip) or arbitrary highlighting.",
+      "related": ["file-tag-chip", "terminal-context-chip", "chat-markdown"]
+    },
+    {
+      "id": "terminal-context-chip",
+      "name": "Terminal context chip",
+      "kind": "composition",
+      "group": "Conversation",
+      "status": "available",
+      "source": "src/components/chat/TerminalContextInlineChip.tsx",
+      "exports": ["TerminalContextInlineChip"],
+      "variants": {},
+      "states": ["expired"],
+      "keyboard": "Not focusable; the captured lines are in the hover tooltip.",
+      "use": "Terminal output attached to a sent message, shown inline with its line range.",
+      "avoid": "File references (use File tag chip) and quoted assistant text (use Assistant citation chip).",
+      "related": ["file-tag-chip", "skill-inline-text", "assistant-citation-chip"]
+    },
+    {
+      "id": "assistant-citation-chip",
+      "name": "Assistant citation chip",
+      "kind": "composition",
+      "group": "Conversation",
+      "status": "available",
+      "source": "src/components/chat/AssistantCitationChip.tsx",
+      "files": ["src/components/chat/AssistantCitationCommentEditor.tsx"],
+      "exports": ["AssistantCitationChip", "AssistantCitationCommentEditor"],
+      "variants": {},
+      "states": ["hover", "focus-visible", "editing"],
+      "keyboard": "The quote is a link to its source; the comment and remove controls are buttons; in the comment editor Enter saves, Command or Ctrl+Enter saves and sends, Escape cancels.",
+      "use": "A quote of assistant text in the composer or a sent message, with an optional comment, linking back to where it was said.",
+      "avoid": "Quoting files or terminal output (use their chips) or block quotes in prose (use markdown).",
+      "related": ["file-tag-chip", "terminal-context-chip", "composer", "messages-timeline"]
+    },
+    {
+      "id": "pull-request-link-preview",
+      "name": "Pull request link preview",
+      "kind": "composition",
+      "group": "Conversation",
+      "status": "available",
+      "source": "src/components/pullRequest/PullRequestLinkPreview.tsx",
+      "files": ["src/components/pullRequest/pullRequestPresentation.tsx"],
+      "exports": ["PullRequestLinkPreview", "PullRequestActorAvatar", "resolvePullRequestState"],
+      "variants": {},
+      "states": ["hover", "open", "loading"],
+      "keyboard": "The link keeps its own focus and activation; the card opens on hover after a delay.",
+      "use": "A pull request link in markdown with a hover card; resolvePullRequestState and PullRequestActorAvatar give every pull request the same state ink and author mark.",
+      "avoid": "Linking other hosts or issues (use a plain link) or drawing pull request state by hand.",
+      "related": ["chat-markdown", "preview-card", "pull-request-surface", "thread-status-indicators"]
+    },
+    {
       "id": "right-panel-workspace",
       "name": "Right panel workspace",
       "kind": "composition",
@@ -1150,6 +1429,7 @@
       "group": "Panels",
       "status": "available",
       "source": "src/components/RightPanelTabs.tsx",
+      "files": ["src/components/preview/previewBridge.ts"],
       "exports": ["RightPanelTabs"],
       "variants": {},
       "states": ["selected", "hover", "focus-visible"],
@@ -1339,6 +1619,21 @@
       "related": ["terminal-surface", "files-surface"]
     },
     {
+      "id": "panel-layout-controls",
+      "name": "Panel layout controls",
+      "kind": "composition",
+      "group": "Panels",
+      "status": "available",
+      "source": "src/components/chat/PanelLayoutControls.tsx",
+      "exports": ["PanelLayoutControls", "RightPanelMaximizeControl"],
+      "variants": {},
+      "states": ["pressed", "disabled", "hover", "focus-visible"],
+      "keyboard": "Toggles: Tab focuses, Enter and Space flip them; tooltips name the shortcut; the right panel toggle's name includes the working-agent count.",
+      "use": "The header toggles for the terminal drawer and the right panel, and the maximize toggle inside the panel.",
+      "avoid": "Opening a specific surface (use Right panel tabs) or new layout toggles beside these.",
+      "related": ["right-panel-workspace", "right-panel-tabs", "toggle"]
+    },
+    {
       "id": "settings-layout",
       "name": "Settings layout",
       "kind": "composition",
@@ -1360,6 +1655,7 @@
       "group": "Settings",
       "status": "available",
       "source": "src/components/settings/SettingsSidebarNav.tsx",
+      "files": ["src/components/settings/settingsSearch.ts", "src/components/settings/useAvailableSettingsSearchItems.ts", "src/components/settings/settingsLayout.ts"],
       "exports": ["SettingsSidebarNav"],
       "variants": {},
       "states": ["active", "hover", "focus-visible"],
@@ -1667,6 +1963,177 @@
       "use": "The issue page's composer: the shared Composer with issue-specific slash commands.",
       "avoid": "A separate editor for issue comments.",
       "related": ["composer", "issue-page"]
+    },
+    {
+      "id": "expanded-image-dialog",
+      "name": "Expanded image dialog",
+      "kind": "composition",
+      "group": "Media",
+      "status": "available",
+      "source": "src/components/chat/ExpandedImageDialog.tsx",
+      "files": ["src/components/chat/ExpandedImagePreview.tsx"],
+      "exports": ["ExpandedImageDialog", "ExpandedImageItem", "ExpandedImagePreview", "buildExpandedImagePreview"],
+      "variants": {},
+      "states": ["open", "unavailable", "video"],
+      "keyboard": "Escape closes and returns focus to the opener; Left and Right arrows page between items; close, previous and next are buttons.",
+      "use": "Full-screen preview of images and videos from messages, markdown and attachments, paged as one set, with media actions and capture details.",
+      "avoid": "Inline thumbnails (render the image) or document previews (use the Files surface).",
+      "related": ["media-actions", "media-video-player", "snapshot-attachment-details", "dialog"]
+    },
+    {
+      "id": "snapshot-attachment-details",
+      "name": "Snapshot attachment details",
+      "kind": "composition",
+      "group": "Media",
+      "status": "available",
+      "source": "src/components/chat/SnapShotAttachmentDetails.tsx",
+      "exports": ["SnapShotAttachmentDetails", "SnapShotContentsButton", "SnapShotAccessibilityData", "SNAP_SHOT_ATTACHMENT_FRAME_CLASS", "snapShotAccessibilityDetails"],
+      "variants": {},
+      "states": ["hover", "open"],
+      "keyboard": "The accessibility data button is focusable and opens a Popover; the data is a focusable, scrollable block.",
+      "use": "The caption over a window capture attachment: app icon, app and window name, and its captured accessibility data.",
+      "avoid": "Captions for ordinary images; show the file name instead.",
+      "related": ["expanded-image-dialog", "popover"]
+    },
+    {
+      "id": "media-video-player",
+      "name": "Media video player",
+      "kind": "composition",
+      "group": "Media",
+      "status": "available",
+      "source": "src/components/media/MediaVideoPlayer.tsx",
+      "files": ["src/components/media/OpenMediaLink.tsx"],
+      "exports": ["MediaVideoPlayer", "OpenMediaLink"],
+      "variants": {},
+      "states": ["loading", "failed", "retrying"],
+      "keyboard": "Native video controls; Retry video and the open link are a button and a link.",
+      "use": "Playing a video from a message, markdown or file preview with loading and failure states in the same 16:9 slot; OpenMediaLink opens or downloads the original.",
+      "avoid": "A bare video element, which loses the retry, failure and range-streaming behaviour.",
+      "related": ["expanded-image-dialog", "media-actions"]
+    },
+    {
+      "id": "media-actions",
+      "name": "Media actions",
+      "kind": "composition",
+      "group": "Media",
+      "status": "available",
+      "source": "src/components/media/MediaActions.tsx",
+      "exports": ["MediaActions", "MediaActionSource"],
+      "variants": {},
+      "states": ["hover", "focus-visible"],
+      "keyboard": "The wrapped element becomes focusable; the context menu key or Shift+F10 opens the media menu; the source path is in the tooltip.",
+      "use": "Adding copy path, copy URL, open, save and copy image to an image or video without changing its layout.",
+      "avoid": "Actions on non-media elements (use Menu) or visible media toolbars.",
+      "related": ["expanded-image-dialog", "media-video-player", "chat-markdown"]
+    },
+    {
+      "id": "brand-icons",
+      "name": "Brand icons",
+      "kind": "primitive",
+      "group": "Icons",
+      "status": "available",
+      "source": "src/components/Icons.tsx",
+      "exports": ["Icon", "LinuxIcon", "GitHubIcon", "GitIcon", "JujutsuIcon", "GitLabIcon", "AzureDevOpsIcon", "BitbucketIcon", "CursorIcon", "GrokIcon", "TraeIcon", "KiroIcon", "VisualStudioCode", "VisualStudioCodeInsiders", "VSCodium", "Zed", "OpenAI", "ClaudeAI", "Gemini", "AntigravityIcon", "OpenCodeIcon", "GithubCopilotIcon", "ACPRegistryIcon", "PiAgentIcon"],
+      "variants": {},
+      "states": [],
+      "keyboard": "Not focusable; pass aria-hidden beside a text label, or an accessible name when the icon stands alone.",
+      "use": "Third-party marks: source control hosts, editors and agent providers, sized with the same size classes as Lucide icons.",
+      "avoid": "Generic symbols (use Lucide) and drawing a new brand mark inline in a feature; add it here.",
+      "related": ["provider-instance-icon", "open-in-picker", "environment-machine-icon"]
+    },
+    {
+      "id": "morph-icon",
+      "name": "Morph icon",
+      "kind": "primitive",
+      "group": "Icons",
+      "status": "available",
+      "source": "src/components/MorphIcon.tsx",
+      "exports": ["MorphIcon"],
+      "variants": {},
+      "states": [],
+      "keyboard": "Not focusable; the control around it carries the name and state.",
+      "use": "An icon that morphs between two Lucide shapes when its control's state flips, such as copy to check or open to close.",
+      "avoid": "Static icons (use Lucide directly) and loading spinners (use Spinner).",
+      "related": ["sidebar", "toast", "spinner"]
+    },
+    {
+      "id": "environment-machine-icon",
+      "name": "Environment machine icon",
+      "kind": "composition",
+      "group": "Icons",
+      "status": "available",
+      "source": "src/components/EnvironmentMachineIcon.tsx",
+      "exports": ["EnvironmentMachineIcon", "environmentMachineIcon", "ENVIRONMENT_MACHINE_KIND_LABELS"],
+      "variants": {},
+      "states": [],
+      "keyboard": "Not focusable; pair it with ENVIRONMENT_MACHINE_KIND_LABELS or the machine name.",
+      "use": "The mark for the kind of machine a runner or environment runs on, with its label.",
+      "avoid": "Providers or repositories (use Provider instance icon or Brand icons).",
+      "related": ["thread-status-indicators", "thread-sidebar", "brand-icons"]
+    },
+    {
+      "id": "file-entry-icon",
+      "name": "File entry icon",
+      "kind": "composition",
+      "group": "Icons",
+      "status": "available",
+      "source": "src/components/chat/PierreEntryIcon.tsx",
+      "exports": ["PierreEntryIcon"],
+      "variants": {
+        "kind": ["file", "directory"],
+        "theme": ["light", "dark"]
+      },
+      "states": [],
+      "keyboard": "Not focusable.",
+      "use": "The file-type or folder icon beside a path in chips, trees, tabs and breadcrumbs, coloured for the current theme.",
+      "avoid": "Icons for things that are not paths; use Lucide.",
+      "related": ["file-tag-chip", "changed-files-card", "file-breadcrumbs", "right-panel-tabs"]
+    },
+    {
+      "id": "provider-instance-icon",
+      "name": "Provider instance icon",
+      "kind": "composition",
+      "group": "Icons",
+      "status": "available",
+      "source": "src/components/chat/ProviderInstanceIcon.tsx",
+      "files": ["src/components/chat/providerIconUtils.ts"],
+      "exports": ["ProviderInstanceIcon", "providerInstanceInitials", "PROVIDER_ICON_BY_PROVIDER"],
+      "variants": {
+        "badgeContent": ["initials", "none"]
+      },
+      "states": [],
+      "keyboard": "Not focusable; the row or control around it names the provider.",
+      "use": "A provider instance's mark: the driver's brand icon or initials, an optional instance badge and accent, and an optional status dot.",
+      "avoid": "Model names or provider labels as text; render the name beside the icon.",
+      "related": ["brand-icons", "thread-sidebar", "composer-control"]
+    },
+    {
+      "id": "favicon-image",
+      "name": "Favicon image",
+      "kind": "primitive",
+      "group": "Icons",
+      "status": "available",
+      "source": "src/components/preview/PreviewFaviconIcon.tsx",
+      "exports": ["FaviconImage"],
+      "variants": {},
+      "states": ["error"],
+      "keyboard": "Not focusable; decorative.",
+      "use": "A small site icon that tries each source in turn and falls back to a given node when none loads.",
+      "avoid": "Project marks (use Project favicon) and avatars (use PullRequestActorAvatar).",
+      "related": ["project-favicon", "right-panel-tabs"]
     }
+  ],
+  "internal": [
+    { "path": "src/components/DiffWorkerPoolProvider.tsx", "reason": "Context provider that owns the diff highlighting worker pool; the diff and file surfaces mount it, features never choose it." },
+    { "path": "src/components/LegacySidebar.tsx", "reason": "Re-export of the thread sidebar under its old module name for AppSidebarLayout; the component is catalogued as thread-sidebar." },
+    { "path": "src/components/SidebarStageBackdrop.tsx", "reason": "Stage identification stubs: every component renders nothing and the hooks return no stage, so there is nothing to choose or show." },
+    { "path": "src/components/chat/composerEventScope.ts", "reason": "Data attributes and predicates that mark composer floating layers so focus and scroll handlers can ignore them; not rendered." },
+    { "path": "src/components/chat/externalLinkContextMenu.ts", "reason": "Context-menu actions and host checks for external links in markdown and media; not rendered." },
+    { "path": "src/components/chat/pageScrollController.ts", "reason": "Page Up and Page Down scroll arithmetic for the timeline; not rendered and not imported by any module." },
+    { "path": "src/components/chat/restingComposerControlsMeasurement.ts", "reason": "Measures the resting composer's controls for the footer layout; not rendered and not imported by any module." },
+    { "path": "src/components/chat/workspaceFileDrop.ts", "reason": "Drag-and-drop handlers for dropping workspace files onto the chat and sidebar; not rendered." },
+    { "path": "src/components/composerInlineChip.ts", "reason": "Shared class names for the inline chips (file tag, skill, terminal context, citation); each chip is catalogued, this module renders nothing." },
+    { "path": "src/components/media/mediaContent.ts", "reason": "Media URL resolution, download and PNG conversion helpers shared by the media components; not rendered." },
+    { "path": "src/components/settings/providerDriverMeta.ts", "reason": "Provider driver labels and options looked up by driver kind; not rendered." }
   ]
 }

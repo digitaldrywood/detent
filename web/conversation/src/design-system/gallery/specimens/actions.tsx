@@ -5,6 +5,7 @@ import {
   AlignLeftIcon,
   AlignRightIcon,
   BoldIcon,
+  ChevronDownIcon,
   FileTextIcon,
   ItalicIcon,
   PlusIcon,
@@ -12,7 +13,7 @@ import {
 } from "lucide-react";
 import React from "react";
 
-import { Button, type buttonVariants } from "~/components/ui/button";
+import { Button, InlineButton, type buttonVariants } from "~/components/ui/button";
 import { PanelTabCloseButton } from "~/components/ui/panel-tab-close-button";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { Spinner } from "~/components/ui/spinner";
@@ -25,6 +26,13 @@ type ButtonVariant = NonNullable<VariantProps<typeof buttonVariants>["variant"]>
 type ButtonSize = NonNullable<VariantProps<typeof buttonVariants>["size"]>;
 type ToggleVariant = NonNullable<VariantProps<typeof toggleVariants>["variant"]>;
 type ToggleSize = NonNullable<VariantProps<typeof toggleVariants>["size"]>;
+type InlineTone = NonNullable<React.ComponentProps<typeof InlineButton>["tone"]>;
+
+type RefreshSize = NonNullable<React.ComponentProps<typeof RefreshIcon>["size"]>;
+
+const REFRESH_SIZES = keysOf<RefreshSize>({ xs: true, sm: true, md: true, lg: true });
+
+const INLINE_TONES = keysOf<InlineTone>({ default: true, muted: true, destructive: true, picker: true });
 
 const BUTTON_VARIANTS = keysOf<ButtonVariant>({
   default: true,
@@ -32,25 +40,37 @@ const BUTTON_VARIANTS = keysOf<ButtonVariant>({
   outline: true,
   ghost: true,
   "ghost-muted": true,
+  "ghost-destructive": true,
   glass: true,
   link: true,
   destructive: true,
   "destructive-outline": true,
   "warning-outline": true,
   overlay: true,
+  "media-close": true,
+  "media-navigation": true,
 });
+
+/** Variants that sit on media: the gallery gives them a backdrop to sit on. */
+const MEDIA_VARIANTS: ReadonlySet<ButtonVariant> = new Set<ButtonVariant>([
+  "overlay",
+  "media-close",
+  "media-navigation",
+]);
 
 const BUTTON_TEXT_SIZES = keysOf<Exclude<ButtonSize, `icon${string}`>>({
   micro: true,
   compact: true,
   xs: true,
   sm: true,
+  "sm-multiline": true,
   default: true,
   lg: true,
   xl: true,
 });
 
 const BUTTON_ICON_SIZES = keysOf<Extract<ButtonSize, `icon${string}`>>({
+  "icon-tiny": true,
   "icon-micro": true,
   "icon-xs": true,
   "icon-sm": true,
@@ -64,6 +84,7 @@ const TOGGLE_VARIANTS = keysOf<ToggleVariant>({
   outline: true,
   ghost: true,
   segmented: true,
+  pill: true,
 });
 
 const TOGGLE_SIZES = keysOf<ToggleSize>({
@@ -76,9 +97,12 @@ const TOGGLE_SIZES = keysOf<ToggleSize>({
 });
 
 function OverlayBackdrop({ children }: { readonly children: React.ReactNode }) {
-  // `overlay` buttons sit on media; give them something to sit on.
+  // Media buttons sit on images; give them something to sit on. The backdrop is
+  // `relative` so `media-navigation`, which positions itself, stays inside it.
   return (
-    <div className="rounded-md bg-[linear-gradient(135deg,#64748b,#0f172a)] p-2">{children}</div>
+    <div className="relative min-h-12 min-w-36 rounded-md bg-[linear-gradient(135deg,#64748b,#0f172a)] p-2">
+      {children}
+    </div>
   );
 }
 
@@ -120,7 +144,7 @@ export const button: GalleryDoc = {
                   New issue
                 </Button>
               );
-            return variant === "overlay" ? <OverlayBackdrop>{node}</OverlayBackdrop> : node;
+            return MEDIA_VARIANTS.has(variant) ? <OverlayBackdrop>{node}</OverlayBackdrop> : node;
           }}
         />
       ),
@@ -134,10 +158,19 @@ export const button: GalleryDoc = {
           <Row>
             {BUTTON_TEXT_SIZES.map((size) => (
               <Cell key={size} label={size}>
-                <Button size={size} variant="outline">
-                  <PlusIcon />
-                  Button
-                </Button>
+                {size === "sm-multiline" ? (
+                  <div className="w-36">
+                    <Button size={size} variant="outline">
+                      <PlusIcon />
+                      A label that wraps onto two lines
+                    </Button>
+                  </div>
+                ) : (
+                  <Button size={size} variant="outline">
+                    <PlusIcon />
+                    Button
+                  </Button>
+                )}
               </Cell>
             ))}
           </Row>
@@ -172,6 +205,26 @@ export const button: GalleryDoc = {
             </Button>
           </Cell>
         </Row>
+      ),
+    },
+    {
+      id: "inline",
+      title: "InlineButton tones in a sentence",
+      note: "A text action inside running prose. `picker` opens a menu; its dotted underline marks it as a choice.",
+      render: () => (
+        <div className="flex max-w-xl flex-col gap-2 text-sm">
+          {INLINE_TONES.map((tone) => (
+            <p key={tone} className="m-0 text-muted-foreground">
+              <span className="me-2 font-mono text-2xs">{tone}</span>
+              The run finished with two warnings.{" "}
+              <InlineButton tone={tone}>
+                {tone === "destructive" ? "Discard changes" : tone === "picker" ? "Codex" : "View log"}
+                {tone === "picker" ? <ChevronDownIcon className="size-3.5" /> : null}
+              </InlineButton>{" "}
+              to continue.
+            </p>
+          ))}
+        </div>
       ),
     },
   ],
@@ -336,6 +389,20 @@ export const refreshIcon: GalleryDoc = {
               Syncing
             </Button>
           </Cell>
+        </Row>
+      ),
+    },
+    {
+      id: "sizes",
+      title: "Sizes",
+      note: "`size` for a glyph outside a Button; inside one the button sizes it.",
+      render: () => (
+        <Row>
+          {REFRESH_SIZES.map((size) => (
+            <Cell key={size} label={size}>
+              <RefreshIcon size={size} />
+            </Cell>
+          ))}
         </Row>
       ),
     },

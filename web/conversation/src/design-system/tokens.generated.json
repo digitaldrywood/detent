@@ -20,7 +20,7 @@
         "hex": "#f4f4f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:615"
+        "owner": "src/app/global.css:704"
       },
       "dark": {
         "value": "--alpha(var(--color-white) / 4%)",
@@ -28,7 +28,7 @@
         "hex": "#ffffff0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:670"
+        "owner": "src/app/global.css:759"
       }
     },
     {
@@ -44,7 +44,7 @@
         "hex": "#18181b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:616"
+        "owner": "src/app/global.css:705"
       },
       "dark": {
         "value": "var(--color-neutral-100)",
@@ -52,7 +52,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:671"
+        "owner": "src/app/global.css:760"
       }
     },
     {
@@ -67,7 +67,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:131"
+        "owner": "src/app/global.css:214"
       },
       "dark": {
         "value": "skeleton 2.4s infinite",
@@ -75,7 +75,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:131"
+        "owner": "src/app/global.css:214"
       }
     },
     {
@@ -90,7 +90,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:135"
+        "owner": "src/app/global.css:218"
       },
       "dark": {
         "value": "status-ping 2s infinite",
@@ -98,7 +98,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:135"
+        "owner": "src/app/global.css:218"
       }
     },
     {
@@ -113,7 +113,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:134"
+        "owner": "src/app/global.css:217"
       },
       "dark": {
         "value": "status-pulse 2s infinite",
@@ -121,7 +121,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:134"
+        "owner": "src/app/global.css:217"
       }
     },
     {
@@ -129,14 +129,14 @@
       "scope": "root",
       "group": "surface",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--background)",
         "resolved": "oklch(99.2% 0 0)",
         "hex": "#fcfcfc",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:588"
+        "owner": "src/app/global.css:677"
       },
       "dark": {
         "value": "var(--background)",
@@ -144,7 +144,7 @@
         "hex": "#0a0a0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:588"
+        "owner": "src/app/global.css:677"
       }
     },
     {
@@ -159,7 +159,7 @@
         "hex": "#d9d9d9",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:83"
+        "owner": "src/app/global.css:94"
       },
       "dark": {
         "value": "rgb(255 255 255 / 8%)",
@@ -167,7 +167,7 @@
         "hex": "#ffffff14",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:116"
+        "owner": "src/app/global.css:143"
       }
     },
     {
@@ -182,7 +182,7 @@
         "hex": "#bfbfbf",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:84"
+        "owner": "src/app/global.css:95"
       },
       "dark": {
         "value": "rgb(255 255 255 / 12%)",
@@ -190,7 +190,7 @@
         "hex": "#ffffff1f",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:117"
+        "owner": "src/app/global.css:144"
       }
     },
     {
@@ -205,7 +205,7 @@
         "hex": null,
         "inGamut": null,
         "px": 6,
-        "owner": "src/app/global.css:78"
+        "owner": "src/app/global.css:89"
       },
       "dark": {
         "value": "6px",
@@ -213,7 +213,7 @@
         "hex": null,
         "inGamut": null,
         "px": 6,
-        "owner": "src/app/global.css:78"
+        "owner": "src/app/global.css:89"
       }
     },
     {
@@ -228,7 +228,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:79"
+        "owner": "src/app/global.css:90"
       },
       "dark": {
         "value": "100%",
@@ -236,7 +236,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:79"
+        "owner": "src/app/global.css:90"
       }
     },
     {
@@ -251,7 +251,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:80"
+        "owner": "src/app/global.css:91"
       },
       "dark": {
         "value": "0%",
@@ -259,7 +259,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:80"
+        "owner": "src/app/global.css:91"
       }
     },
     {
@@ -274,7 +274,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:81"
+        "owner": "src/app/global.css:92"
       },
       "dark": {
         "value": "0%",
@@ -282,7 +282,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:81"
+        "owner": "src/app/global.css:92"
       }
     },
     {
@@ -297,7 +297,7 @@
         "hex": "#000000",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:82"
+        "owner": "src/app/global.css:93"
       },
       "dark": {
         "value": "white",
@@ -305,7 +305,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:115"
+        "owner": "src/app/global.css:142"
       }
     },
     {
@@ -320,7 +320,7 @@
         "hex": "#fcfcfc",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:587"
+        "owner": "src/app/global.css:676"
       },
       "dark": {
         "value": "var(--color-neutral-950)",
@@ -328,7 +328,53 @@
         "hex": "#0a0a0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:658"
+        "owner": "src/app/global.css:747"
+      }
+    },
+    {
+      "name": "--background-image-composer-seam-above",
+      "scope": "root",
+      "group": "surface",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "linear-gradient(var(--chat-composer-attached-tint), var(--chat-composer-attached-tint)), linear-gradient( to top, transparent 0 var(--chat-composer-attachment-overlap), rgb(0 0 0 / 18%) var(--chat-composer-attachment-overlap), transparent calc(var(--chat-composer-attachment-overlap) + 10px) )",
+        "resolved": "linear-gradient(var(--chat-composer-attached-tint), var(--chat-composer-attached-tint)), linear-gradient( to top, transparent 0 var(--chat-composer-attachment-overlap), rgb(0 0 0 / 18%) var(--chat-composer-attachment-overlap), transparent calc(var(--chat-composer-attachment-overlap) + 10px) )",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:205"
+      },
+      "dark": {
+        "value": "linear-gradient(var(--chat-composer-attached-tint), var(--chat-composer-attached-tint)), linear-gradient( to top, transparent 0 var(--chat-composer-attachment-overlap), rgb(0 0 0 / 18%) var(--chat-composer-attachment-overlap), transparent calc(var(--chat-composer-attachment-overlap) + 10px) )",
+        "resolved": "linear-gradient(var(--chat-composer-attached-tint), var(--chat-composer-attached-tint)), linear-gradient( to top, transparent 0 var(--chat-composer-attachment-overlap), rgb(0 0 0 / 18%) var(--chat-composer-attachment-overlap), transparent calc(var(--chat-composer-attachment-overlap) + 10px) )",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:205"
+      }
+    },
+    {
+      "name": "--background-image-composer-seam-below",
+      "scope": "root",
+      "group": "surface",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "linear-gradient( to bottom, transparent 0 1rem, rgb(0 0 0 / 18%) 1rem, transparent calc(1rem + 10px) ), linear-gradient(rgb(255 255 255 / 1%), rgb(255 255 255 / 1%))",
+        "resolved": "linear-gradient( to bottom, transparent 0 1rem, rgb(0 0 0 / 18%) 1rem, transparent calc(1rem + 10px) ), linear-gradient(rgb(255 255 255 / 1%), rgb(255 255 255 / 1%))",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:197"
+      },
+      "dark": {
+        "value": "linear-gradient( to bottom, transparent 0 1rem, rgb(0 0 0 / 18%) 1rem, transparent calc(1rem + 10px) ), linear-gradient(rgb(255 255 255 / 1%), rgb(255 255 255 / 1%))",
+        "resolved": "linear-gradient( to bottom, transparent 0 1rem, rgb(0 0 0 / 18%) 1rem, transparent calc(1rem + 10px) ), linear-gradient(rgb(255 255 255 / 1%), rgb(255 255 255 / 1%))",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:197"
       }
     },
     {
@@ -344,7 +390,7 @@
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:622"
+        "owner": "src/app/global.css:711"
       },
       "dark": {
         "value": "--alpha(var(--color-white) / 6%)",
@@ -352,7 +398,7 @@
         "hex": "#ffffff0f",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:676"
+        "owner": "src/app/global.css:765"
       }
     },
     {
@@ -367,7 +413,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:597"
+        "owner": "src/app/global.css:686"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--background) 97%, var(--color-white))",
@@ -375,7 +421,7 @@
         "hex": "#111111",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:661"
+        "owner": "src/app/global.css:750"
       }
     },
     {
@@ -391,7 +437,7 @@
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:598"
+        "owner": "src/app/global.css:687"
       },
       "dark": {
         "value": "var(--color-neutral-100)",
@@ -399,22 +445,45 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:662"
+        "owner": "src/app/global.css:751"
+      }
+    },
+    {
+      "name": "--chat-content-max-width",
+      "scope": "root",
+      "group": "layout",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "46rem",
+        "resolved": "46rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 736,
+        "owner": "src/app/global.css:127"
+      },
+      "dark": {
+        "value": "46rem",
+        "resolved": "46rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 736,
+        "owner": "src/app/global.css:127"
       }
     },
     {
       "name": "--code-background",
       "scope": "root",
       "group": "code",
-      "utility": null,
-      "themed": false,
+      "utility": "*-code",
+      "themed": true,
       "light": {
         "value": "color-mix(in srgb, var(--card) 90%, var(--background))",
         "resolved": "color-mix(in srgb, #fff 90%, oklch(99.2% 0 0))",
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:647"
+        "owner": "src/app/global.css:736"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--card) 90%, var(--background))",
@@ -422,22 +491,22 @@
         "hex": "#111111",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:647"
+        "owner": "src/app/global.css:736"
       }
     },
     {
       "name": "--code-foreground",
       "scope": "root",
       "group": "code",
-      "utility": null,
-      "themed": false,
+      "utility": "*-code-foreground",
+      "themed": true,
       "light": {
         "value": "var(--foreground)",
         "resolved": "oklch(27.4% 0.006 286.033)",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:648"
+        "owner": "src/app/global.css:737"
       },
       "dark": {
         "value": "var(--foreground)",
@@ -445,7 +514,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:648"
+        "owner": "src/app/global.css:737"
       }
     },
     {
@@ -460,7 +529,7 @@
         "hex": "#fcfcfc",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:130"
+        "owner": "src/app/global.css:213"
       },
       "dark": {
         "value": "oklch(99.2% 0 0)",
@@ -468,7 +537,7 @@
         "hex": "#fcfcfc",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:130"
+        "owner": "src/app/global.css:213"
       }
     },
     {
@@ -483,7 +552,7 @@
         "hex": null,
         "inGamut": null,
         "px": 16,
-        "owner": "src/app/global.css:99"
+        "owner": "src/app/global.css:110"
       },
       "dark": {
         "value": "1rem",
@@ -491,7 +560,7 @@
         "hex": null,
         "inGamut": null,
         "px": 16,
-        "owner": "src/app/global.css:99"
+        "owner": "src/app/global.css:110"
       }
     },
     {
@@ -506,7 +575,7 @@
         "hex": null,
         "inGamut": null,
         "px": 8,
-        "owner": "src/app/global.css:98"
+        "owner": "src/app/global.css:109"
       },
       "dark": {
         "value": "0.5rem",
@@ -514,7 +583,7 @@
         "hex": null,
         "inGamut": null,
         "px": 8,
-        "owner": "src/app/global.css:98"
+        "owner": "src/app/global.css:109"
       }
     },
     {
@@ -522,14 +591,14 @@
       "scope": "root",
       "group": "text",
       "utility": "*-accent-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--accent-foreground) var(--appearance-contrast-base), var(--accent)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(21% 0.006 285.885) 100%, oklch(96.7% 0.001 286.375)), black 0% )",
         "hex": "#18181b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:821"
+        "owner": "src/app/global.css:910"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--accent-foreground) var(--appearance-contrast-base), var(--accent)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -537,7 +606,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:821"
+        "owner": "src/app/global.css:910"
       }
     },
     {
@@ -545,14 +614,14 @@
       "scope": "root",
       "group": "border",
       "utility": "*-border",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--border) var(--appearance-contrast-base), transparent), var(--foreground) var(--appearance-contrast-border-boost) )",
         "resolved": "color-mix( in srgb, color-mix(in srgb, oklch(92% 0.004 286.32) 100%, transparent), oklch(27.4% 0.006 286.033) 0% )",
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:781"
+        "owner": "src/app/global.css:870"
       },
       "dark": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--border) var(--appearance-contrast-base), transparent), var(--foreground) var(--appearance-contrast-border-boost) )",
@@ -560,7 +629,7 @@
         "hex": "#ffffff0f",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:781"
+        "owner": "src/app/global.css:870"
       }
     },
     {
@@ -568,14 +637,14 @@
       "scope": "root",
       "group": "text",
       "utility": "*-card-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--card-foreground) var(--appearance-contrast-base), var(--card)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(27.4% 0.006 286.033) 100%, #fff), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:811"
+        "owner": "src/app/global.css:900"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--card-foreground) var(--appearance-contrast-base), var(--card)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -583,7 +652,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:811"
+        "owner": "src/app/global.css:900"
       }
     },
     {
@@ -591,14 +660,14 @@
       "scope": "root",
       "group": "text",
       "utility": "*-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--foreground) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(27.4% 0.006 286.033) 100%, oklch(99.2% 0 0)), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:786"
+        "owner": "src/app/global.css:875"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--foreground) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -606,7 +675,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:786"
+        "owner": "src/app/global.css:875"
       }
     },
     {
@@ -614,14 +683,14 @@
       "scope": "root",
       "group": "text",
       "utility": "*-icon-muted",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--icon-muted) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(99.2% 0 0)), black 0% )",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:806"
+        "owner": "src/app/global.css:895"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--icon-muted) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -629,7 +698,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:806"
+        "owner": "src/app/global.css:895"
       }
     },
     {
@@ -637,14 +706,14 @@
       "scope": "root",
       "group": "border",
       "utility": "*-input",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--input) var(--appearance-contrast-base), transparent), var(--foreground) var(--appearance-contrast-border-boost) )",
         "resolved": "color-mix( in srgb, color-mix(in srgb, oklch(87.1% 0.006 286.286) 100%, transparent), oklch(27.4% 0.006 286.033) 0% )",
         "hex": "#d4d4d8",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:776"
+        "owner": "src/app/global.css:865"
       },
       "dark": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--input) var(--appearance-contrast-base), transparent), var(--foreground) var(--appearance-contrast-border-boost) )",
@@ -652,7 +721,7 @@
         "hex": "#ffffff14",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:776"
+        "owner": "src/app/global.css:865"
       }
     },
     {
@@ -660,14 +729,14 @@
       "scope": "root",
       "group": "message",
       "utility": "*-message-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--message-foreground) var(--appearance-contrast-base), var(--message-surface) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix( in oklab, oklch(27.4% 0.006 286.033) 100%, oklch(96.7% 0.001 286.375) ), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:835"
+        "owner": "src/app/global.css:924"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--message-foreground) var(--appearance-contrast-base), var(--message-surface) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -675,7 +744,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:835"
+        "owner": "src/app/global.css:924"
       }
     },
     {
@@ -683,14 +752,14 @@
       "scope": "root",
       "group": "text",
       "utility": "*-muted-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--muted-foreground) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(99.2% 0 0)), black 0% )",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:791"
+        "owner": "src/app/global.css:880"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--muted-foreground) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -698,7 +767,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:791"
+        "owner": "src/app/global.css:880"
       }
     },
     {
@@ -706,14 +775,14 @@
       "scope": "root",
       "group": "text",
       "utility": "*-placeholder",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--placeholder) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(99.2% 0 0)), black 0% )",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:796"
+        "owner": "src/app/global.css:885"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--placeholder) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -721,7 +790,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:796"
+        "owner": "src/app/global.css:885"
       }
     },
     {
@@ -729,14 +798,14 @@
       "scope": "root",
       "group": "text",
       "utility": "*-popover-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--popover-foreground) var(--appearance-contrast-base), var(--popover)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(27.4% 0.006 286.033) 100%, #fff), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:816"
+        "owner": "src/app/global.css:905"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--popover-foreground) var(--appearance-contrast-base), var(--popover)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -744,7 +813,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:816"
+        "owner": "src/app/global.css:905"
       }
     },
     {
@@ -752,14 +821,14 @@
       "scope": "root",
       "group": "text",
       "utility": "*-secondary-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--secondary-foreground) var(--appearance-contrast-base), var(--secondary) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix( in oklab, oklch(27.4% 0.006 286.033) 100%, oklch(98.5% 0 none) ), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:826"
+        "owner": "src/app/global.css:915"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--secondary-foreground) var(--appearance-contrast-base), var(--secondary) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -767,7 +836,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:826"
+        "owner": "src/app/global.css:915"
       }
     },
     {
@@ -775,14 +844,14 @@
       "scope": "root",
       "group": "text",
       "utility": "*-secondary-label",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--secondary-label) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(99.2% 0 0)), black 0% )",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:801"
+        "owner": "src/app/global.css:890"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--secondary-label) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -790,7 +859,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:801"
+        "owner": "src/app/global.css:890"
       }
     },
     {
@@ -798,14 +867,14 @@
       "scope": "root",
       "group": "sidebar",
       "utility": "*-sidebar-border",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--sidebar-border) var(--appearance-contrast-base), transparent), var(--sidebar-foreground) var(--appearance-contrast-border-boost) )",
         "resolved": "color-mix( in srgb, color-mix(in srgb, oklch(92% 0.004 286.32) 100%, transparent), oklch(27.4% 0.006 286.033) 0% )",
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:858"
+        "owner": "src/app/global.css:947"
       },
       "dark": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--sidebar-border) var(--appearance-contrast-base), transparent), var(--sidebar-foreground) var(--appearance-contrast-border-boost) )",
@@ -813,7 +882,7 @@
         "hex": "#ffffff0f",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:858"
+        "owner": "src/app/global.css:947"
       }
     },
     {
@@ -821,14 +890,14 @@
       "scope": "root",
       "group": "sidebar",
       "utility": "*-sidebar-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--sidebar-foreground) var(--appearance-contrast-base), var(--sidebar)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(27.4% 0.006 286.033) 100%, oklch(98.5% 0 none)), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:844"
+        "owner": "src/app/global.css:933"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--sidebar-foreground) var(--appearance-contrast-base), var(--sidebar)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -836,7 +905,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:844"
+        "owner": "src/app/global.css:933"
       }
     },
     {
@@ -844,14 +913,14 @@
       "scope": "root",
       "group": "sidebar",
       "utility": "*-sidebar-muted-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--sidebar-muted-foreground) var(--appearance-contrast-base), var(--sidebar) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix( in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(98.5% 0 none) ), black 0% )",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:849"
+        "owner": "src/app/global.css:938"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--sidebar-muted-foreground) var(--appearance-contrast-base), var(--sidebar) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -859,7 +928,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:849"
+        "owner": "src/app/global.css:938"
       }
     },
     {
@@ -867,14 +936,14 @@
       "scope": "root",
       "group": "border",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--toolbar-border) var(--appearance-contrast-base), transparent), var(--toolbar-foreground) var(--appearance-contrast-border-boost) )",
         "resolved": "color-mix( in srgb, color-mix(in srgb, oklch(92% 0.004 286.32) 100%, transparent), oklch(27.4% 0.006 286.033) 0% )",
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:762"
+        "owner": "src/app/global.css:851"
       },
       "dark": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--toolbar-border) var(--appearance-contrast-base), transparent), var(--toolbar-foreground) var(--appearance-contrast-border-boost) )",
@@ -882,7 +951,7 @@
         "hex": "#ffffff0f",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:762"
+        "owner": "src/app/global.css:851"
       }
     },
     {
@@ -890,14 +959,14 @@
       "scope": "root",
       "group": "text",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--toolbar-control-foreground) var(--appearance-contrast-base), var(--toolbar-control) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix( in oklab, oklch(27.4% 0.006 286.033) 100%, #fff ), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:767"
+        "owner": "src/app/global.css:856"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--toolbar-control-foreground) var(--appearance-contrast-base), var(--toolbar-control) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -905,7 +974,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:767"
+        "owner": "src/app/global.css:856"
       }
     },
     {
@@ -913,14 +982,14 @@
       "scope": "root",
       "group": "text",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--toolbar-foreground) var(--appearance-contrast-base), var(--toolbar-background) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix( in oklab, oklch(27.4% 0.006 286.033) 100%, oklch(99.2% 0 0) ), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:753"
+        "owner": "src/app/global.css:842"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--toolbar-foreground) var(--appearance-contrast-base), var(--toolbar-background) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -928,7 +997,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:753"
+        "owner": "src/app/global.css:842"
       }
     },
     {
@@ -943,7 +1012,7 @@
         "hex": null,
         "inGamut": null,
         "px": 8,
-        "owner": "src/app/global.css:89"
+        "owner": "src/app/global.css:100"
       },
       "dark": {
         "value": "0.5rem",
@@ -951,7 +1020,7 @@
         "hex": null,
         "inGamut": null,
         "px": 8,
-        "owner": "src/app/global.css:89"
+        "owner": "src/app/global.css:100"
       }
     },
     {
@@ -966,7 +1035,7 @@
         "hex": null,
         "inGamut": null,
         "px": 0,
-        "owner": "src/app/global.css:104"
+        "owner": "src/app/global.css:118"
       },
       "dark": {
         "value": "0px",
@@ -974,7 +1043,7 @@
         "hex": null,
         "inGamut": null,
         "px": 0,
-        "owner": "src/app/global.css:104"
+        "owner": "src/app/global.css:118"
       }
     },
     {
@@ -982,14 +1051,14 @@
       "scope": "root",
       "group": "feedback",
       "utility": "*-destructive",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--error)",
         "resolved": "oklch(63.7% 0.237 25.331)",
         "hex": "#fb2c36",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:621"
+        "owner": "src/app/global.css:710"
       },
       "dark": {
         "value": "var(--error)",
@@ -997,7 +1066,7 @@
         "hex": "#fb414a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:621"
+        "owner": "src/app/global.css:710"
       }
     },
     {
@@ -1005,14 +1074,14 @@
       "scope": "root",
       "group": "feedback",
       "utility": "*-destructive-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--error-foreground)",
         "resolved": "oklch(50.5% 0.213 27.518)",
         "hex": "#c10007",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:625"
+        "owner": "src/app/global.css:714"
       },
       "dark": {
         "value": "var(--error-foreground)",
@@ -1020,7 +1089,122 @@
         "hex": "#ff6467",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:625"
+        "owner": "src/app/global.css:714"
+      }
+    },
+    {
+      "name": "--diff-addition",
+      "scope": "root",
+      "group": "surface",
+      "utility": "*-diff-addition",
+      "themed": false,
+      "light": {
+        "value": "var(--success)",
+        "resolved": "oklch(69.6% 0.17 162.48)",
+        "hex": "#00bc7d",
+        "inGamut": false,
+        "px": null,
+        "owner": "src/app/global.css:1319"
+      },
+      "dark": {
+        "value": "var(--success)",
+        "resolved": "oklch(69.6% 0.17 162.48)",
+        "hex": "#00bc7d",
+        "inGamut": false,
+        "px": null,
+        "owner": "src/app/global.css:1319"
+      }
+    },
+    {
+      "name": "--diff-addition-foreground",
+      "scope": "root",
+      "group": "text",
+      "utility": "*-diff-addition-foreground",
+      "themed": true,
+      "light": {
+        "value": "light-dark(var(--color-emerald-600), var(--color-emerald-400))",
+        "resolved": "oklch(59.6% 0.145 163.225)",
+        "hex": "#009966",
+        "inGamut": false,
+        "px": null,
+        "owner": "src/app/global.css:1321"
+      },
+      "dark": {
+        "value": "light-dark(var(--color-emerald-600), var(--color-emerald-400))",
+        "resolved": "oklch(76.5% 0.177 163.223)",
+        "hex": "#00d492",
+        "inGamut": false,
+        "px": null,
+        "owner": "src/app/global.css:1321"
+      }
+    },
+    {
+      "name": "--diff-deletion",
+      "scope": "root",
+      "group": "surface",
+      "utility": "*-diff-deletion",
+      "themed": true,
+      "light": {
+        "value": "var(--destructive)",
+        "resolved": "oklch(63.7% 0.237 25.331)",
+        "hex": "#fb2c36",
+        "inGamut": true,
+        "px": null,
+        "owner": "src/app/global.css:1320"
+      },
+      "dark": {
+        "value": "var(--destructive)",
+        "resolved": "color-mix(in srgb, oklch(63.7% 0.237 25.331) 90%, #fff)",
+        "hex": "#fb414a",
+        "inGamut": true,
+        "px": null,
+        "owner": "src/app/global.css:1320"
+      }
+    },
+    {
+      "name": "--diff-deletion-foreground",
+      "scope": "root",
+      "group": "text",
+      "utility": "*-diff-deletion-foreground",
+      "themed": true,
+      "light": {
+        "value": "light-dark(var(--color-red-600), var(--color-red-400))",
+        "resolved": "oklch(57.7% 0.245 27.325)",
+        "hex": "#e7000b",
+        "inGamut": false,
+        "px": null,
+        "owner": "src/app/global.css:1322"
+      },
+      "dark": {
+        "value": "light-dark(var(--color-red-600), var(--color-red-400))",
+        "resolved": "oklch(70.4% 0.191 22.216)",
+        "hex": "#ff6467",
+        "inGamut": false,
+        "px": null,
+        "owner": "src/app/global.css:1322"
+      }
+    },
+    {
+      "name": "--ease-drawer",
+      "scope": "root",
+      "group": "motion",
+      "utility": "ease-drawer",
+      "themed": false,
+      "light": {
+        "value": "cubic-bezier(0.32, 0.72, 0, 1)",
+        "resolved": "cubic-bezier(0.32, 0.72, 0, 1)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:188"
+      },
+      "dark": {
+        "value": "cubic-bezier(0.32, 0.72, 0, 1)",
+        "resolved": "cubic-bezier(0.32, 0.72, 0, 1)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:188"
       }
     },
     {
@@ -1035,7 +1219,7 @@
         "hex": "#fb2c36",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:617"
+        "owner": "src/app/global.css:706"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--color-red-500) 90%, var(--color-white))",
@@ -1043,7 +1227,7 @@
         "hex": "#fb414a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:672"
+        "owner": "src/app/global.css:761"
       }
     },
     {
@@ -1058,7 +1242,7 @@
         "hex": "#c10007",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:618"
+        "owner": "src/app/global.css:707"
       },
       "dark": {
         "value": "var(--color-red-400)",
@@ -1066,7 +1250,7 @@
         "hex": "#ff6467",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:673"
+        "owner": "src/app/global.css:762"
       }
     },
     {
@@ -1081,7 +1265,7 @@
         "hex": "#fb2c3614",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:620"
+        "owner": "src/app/global.css:709"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--error) 16%, transparent)",
@@ -1089,7 +1273,7 @@
         "hex": "#fb414a29",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:675"
+        "owner": "src/app/global.css:764"
       }
     },
     {
@@ -1104,7 +1288,7 @@
         "hex": null,
         "inGamut": null,
         "px": 12,
-        "owner": "src/app/global.css:100"
+        "owner": "src/app/global.css:111"
       },
       "dark": {
         "value": "0.75rem",
@@ -1112,7 +1296,7 @@
         "hex": null,
         "inGamut": null,
         "px": 12,
-        "owner": "src/app/global.css:100"
+        "owner": "src/app/global.css:111"
       }
     },
     {
@@ -1162,6 +1346,29 @@
       }
     },
     {
+      "name": "--font-size-prompt-touch",
+      "scope": "root",
+      "group": "font",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "max(var(--font-size-prompt, 1rem), 16px)",
+        "resolved": "max(1rem, 16px)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:130"
+      },
+      "dark": {
+        "value": "max(var(--font-size-prompt, 1rem), 16px)",
+        "resolved": "max(1rem, 16px)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:130"
+      }
+    },
+    {
       "name": "--foreground",
       "scope": "root",
       "group": "text",
@@ -1174,7 +1381,7 @@
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:596"
+        "owner": "src/app/global.css:685"
       },
       "dark": {
         "value": "var(--color-neutral-100)",
@@ -1182,7 +1389,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:660"
+        "owner": "src/app/global.css:749"
       }
     },
     {
@@ -1197,7 +1404,7 @@
         "hex": null,
         "inGamut": null,
         "px": 12,
-        "owner": "src/app/global.css:101"
+        "owner": "src/app/global.css:115"
       },
       "dark": {
         "value": "16px",
@@ -1205,7 +1412,7 @@
         "hex": null,
         "inGamut": null,
         "px": 16,
-        "owner": "src/app/global.css:118"
+        "owner": "src/app/global.css:145"
       }
     },
     {
@@ -1220,7 +1427,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:102"
+        "owner": "src/app/global.css:116"
       },
       "dark": {
         "value": "80%",
@@ -1228,7 +1435,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:102"
+        "owner": "src/app/global.css:116"
       }
     },
     {
@@ -1243,7 +1450,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:103"
+        "owner": "src/app/global.css:117"
       },
       "dark": {
         "value": "1.08",
@@ -1251,7 +1458,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:119"
+        "owner": "src/app/global.css:146"
       }
     },
     {
@@ -1260,14 +1467,14 @@
       "group": "text",
       "utility": "*-icon-muted",
       "utilityVia": "--contrast-icon-muted",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--muted-foreground)",
         "resolved": "oklch(55.2% 0.016 285.938)",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:609"
+        "owner": "src/app/global.css:698"
       },
       "dark": {
         "value": "var(--muted-foreground)",
@@ -1275,7 +1482,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:609"
+        "owner": "src/app/global.css:698"
       }
     },
     {
@@ -1290,7 +1497,7 @@
         "hex": "#2b7fff",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:626"
+        "owner": "src/app/global.css:715"
       },
       "dark": {
         "value": "var(--color-blue-500)",
@@ -1298,7 +1505,7 @@
         "hex": "#2b7fff",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:626"
+        "owner": "src/app/global.css:715"
       }
     },
     {
@@ -1313,7 +1520,7 @@
         "hex": "#1447e6",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:627"
+        "owner": "src/app/global.css:716"
       },
       "dark": {
         "value": "var(--color-blue-400)",
@@ -1321,7 +1528,7 @@
         "hex": "#51a2ff",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:678"
+        "owner": "src/app/global.css:767"
       }
     },
     {
@@ -1337,7 +1544,7 @@
         "hex": "#d4d4d8",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:623"
+        "owner": "src/app/global.css:712"
       },
       "dark": {
         "value": "--alpha(var(--color-white) / 8%)",
@@ -1345,7 +1552,53 @@
         "hex": "#ffffff14",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:677"
+        "owner": "src/app/global.css:766"
+      }
+    },
+    {
+      "name": "--inset-shadow-control-highlight",
+      "scope": "root",
+      "group": "elevation",
+      "utility": "inset-shadow-control-highlight",
+      "themed": false,
+      "light": {
+        "value": "0 1px rgb(255 255 255 / 16%)",
+        "resolved": "0 1px rgb(255 255 255 / 16%)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:186"
+      },
+      "dark": {
+        "value": "0 1px rgb(255 255 255 / 16%)",
+        "resolved": "0 1px rgb(255 255 255 / 16%)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:186"
+      }
+    },
+    {
+      "name": "--inset-shadow-control-pressed",
+      "scope": "root",
+      "group": "elevation",
+      "utility": "inset-shadow-control-pressed",
+      "themed": false,
+      "light": {
+        "value": "0 1px rgb(0 0 0 / 8%)",
+        "resolved": "0 1px rgb(0 0 0 / 8%)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:187"
+      },
+      "dark": {
+        "value": "0 1px rgb(0 0 0 / 8%)",
+        "resolved": "0 1px rgb(0 0 0 / 8%)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:187"
       }
     },
     {
@@ -1360,7 +1613,7 @@
         "hex": "#346bf1",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:612"
+        "owner": "src/app/global.css:701"
       },
       "dark": {
         "value": "var(--primary)",
@@ -1368,7 +1621,7 @@
         "hex": "#346bf1",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:612"
+        "owner": "src/app/global.css:701"
       }
     },
     {
@@ -1383,7 +1636,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:613"
+        "owner": "src/app/global.css:702"
       },
       "dark": {
         "value": "var(--primary-foreground)",
@@ -1391,7 +1644,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:613"
+        "owner": "src/app/global.css:702"
       }
     },
     {
@@ -1399,14 +1652,14 @@
       "scope": "root",
       "group": "message",
       "utility": "*-message-action-hover",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix(in srgb, var(--primary) 90%, var(--background))",
         "resolved": "color-mix(in srgb, oklch(0.571 0.21 264) 90%, oklch(99.2% 0 0))",
         "hex": "#487af2",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:614"
+        "owner": "src/app/global.css:703"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--primary) 90%, var(--background))",
@@ -1414,7 +1667,7 @@
         "hex": "#3061da",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:614"
+        "owner": "src/app/global.css:703"
       }
     },
     {
@@ -1423,14 +1676,14 @@
       "group": "message",
       "utility": "*-message-foreground",
       "utilityVia": "--contrast-message-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--foreground)",
         "resolved": "oklch(27.4% 0.006 286.033)",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:611"
+        "owner": "src/app/global.css:700"
       },
       "dark": {
         "value": "var(--foreground)",
@@ -1438,7 +1691,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:611"
+        "owner": "src/app/global.css:700"
       }
     },
     {
@@ -1446,14 +1699,14 @@
       "scope": "root",
       "group": "message",
       "utility": "*-message",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--accent)",
         "resolved": "oklch(96.7% 0.001 286.375)",
         "hex": "#f4f4f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:610"
+        "owner": "src/app/global.css:699"
       },
       "dark": {
         "value": "var(--accent)",
@@ -1461,7 +1714,7 @@
         "hex": "#ffffff0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:610"
+        "owner": "src/app/global.css:699"
       }
     },
     {
@@ -1476,7 +1729,7 @@
         "hex": "#fafafa",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:605"
+        "owner": "src/app/global.css:694"
       },
       "dark": {
         "value": "--alpha(var(--color-white) / 3%)",
@@ -1484,7 +1737,7 @@
         "hex": "#ffffff08",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:668"
+        "owner": "src/app/global.css:757"
       }
     },
     {
@@ -1500,7 +1753,7 @@
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:606"
+        "owner": "src/app/global.css:695"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white))",
@@ -1508,7 +1761,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:669"
+        "owner": "src/app/global.css:758"
       }
     },
     {
@@ -1517,14 +1770,14 @@
       "group": "text",
       "utility": "*-placeholder",
       "utilityVia": "--contrast-placeholder",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--muted-foreground)",
         "resolved": "oklch(55.2% 0.016 285.938)",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:607"
+        "owner": "src/app/global.css:696"
       },
       "dark": {
         "value": "var(--muted-foreground)",
@@ -1532,7 +1785,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:607"
+        "owner": "src/app/global.css:696"
       }
     },
     {
@@ -1547,7 +1800,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:599"
+        "owner": "src/app/global.css:688"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--background) 97%, var(--color-white))",
@@ -1555,7 +1808,7 @@
         "hex": "#111111",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:663"
+        "owner": "src/app/global.css:752"
       }
     },
     {
@@ -1571,7 +1824,7 @@
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:600"
+        "owner": "src/app/global.css:689"
       },
       "dark": {
         "value": "var(--color-neutral-100)",
@@ -1579,7 +1832,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:664"
+        "owner": "src/app/global.css:753"
       }
     },
     {
@@ -1587,7 +1840,7 @@
       "scope": "root",
       "group": "color-role",
       "utility": "*-primary",
-      "themed": true,
+      "themed": false,
       "light": {
         "value": "oklch(0.571 0.21 264)",
         "resolved": "oklch(0.571 0.21 264)",
@@ -1602,7 +1855,7 @@
         "hex": "#346bf1",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:665"
+        "owner": "src/app/global.css:754"
       }
     },
     {
@@ -1617,7 +1870,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:602"
+        "owner": "src/app/global.css:691"
       },
       "dark": {
         "value": "var(--color-white)",
@@ -1625,7 +1878,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:602"
+        "owner": "src/app/global.css:691"
       }
     },
     {
@@ -1640,7 +1893,7 @@
         "hex": null,
         "inGamut": null,
         "px": 10,
-        "owner": "src/app/global.css:586"
+        "owner": "src/app/global.css:675"
       },
       "dark": {
         "value": "0.625rem",
@@ -1648,7 +1901,7 @@
         "hex": null,
         "inGamut": null,
         "px": 10,
-        "owner": "src/app/global.css:586"
+        "owner": "src/app/global.css:675"
       }
     },
     {
@@ -1663,7 +1916,7 @@
         "hex": null,
         "inGamut": null,
         "px": 18,
-        "owner": "src/app/global.css:190"
+        "owner": "src/app/global.css:279"
       },
       "dark": {
         "value": "calc(var(--radius) + 8px)",
@@ -1671,7 +1924,7 @@
         "hex": null,
         "inGamut": null,
         "px": 18,
-        "owner": "src/app/global.css:190"
+        "owner": "src/app/global.css:279"
       }
     },
     {
@@ -1686,7 +1939,7 @@
         "hex": null,
         "inGamut": null,
         "px": 22,
-        "owner": "src/app/global.css:191"
+        "owner": "src/app/global.css:280"
       },
       "dark": {
         "value": "calc(var(--radius) + 12px)",
@@ -1694,7 +1947,7 @@
         "hex": null,
         "inGamut": null,
         "px": 22,
-        "owner": "src/app/global.css:191"
+        "owner": "src/app/global.css:280"
       }
     },
     {
@@ -1709,7 +1962,7 @@
         "hex": null,
         "inGamut": null,
         "px": 10,
-        "owner": "src/app/global.css:188"
+        "owner": "src/app/global.css:277"
       },
       "dark": {
         "value": "var(--radius)",
@@ -1717,7 +1970,7 @@
         "hex": null,
         "inGamut": null,
         "px": 10,
-        "owner": "src/app/global.css:188"
+        "owner": "src/app/global.css:277"
       }
     },
     {
@@ -1732,7 +1985,7 @@
         "hex": null,
         "inGamut": null,
         "px": 8,
-        "owner": "src/app/global.css:187"
+        "owner": "src/app/global.css:276"
       },
       "dark": {
         "value": "calc(var(--radius) - 2px)",
@@ -1740,7 +1993,7 @@
         "hex": null,
         "inGamut": null,
         "px": 8,
-        "owner": "src/app/global.css:187"
+        "owner": "src/app/global.css:276"
       }
     },
     {
@@ -1755,7 +2008,7 @@
         "hex": null,
         "inGamut": null,
         "px": 6,
-        "owner": "src/app/global.css:186"
+        "owner": "src/app/global.css:275"
       },
       "dark": {
         "value": "calc(var(--radius) - 4px)",
@@ -1763,7 +2016,7 @@
         "hex": null,
         "inGamut": null,
         "px": 6,
-        "owner": "src/app/global.css:186"
+        "owner": "src/app/global.css:275"
       }
     },
     {
@@ -1778,7 +2031,7 @@
         "hex": null,
         "inGamut": null,
         "px": 14,
-        "owner": "src/app/global.css:189"
+        "owner": "src/app/global.css:278"
       },
       "dark": {
         "value": "calc(var(--radius) + 4px)",
@@ -1786,7 +2039,7 @@
         "hex": null,
         "inGamut": null,
         "px": 14,
-        "owner": "src/app/global.css:189"
+        "owner": "src/app/global.css:278"
       }
     },
     {
@@ -1801,7 +2054,7 @@
         "hex": "#346bf1",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:624"
+        "owner": "src/app/global.css:713"
       },
       "dark": {
         "value": "var(--primary)",
@@ -1809,7 +2062,7 @@
         "hex": "#346bf1",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:624"
+        "owner": "src/app/global.css:713"
       }
     },
     {
@@ -1824,7 +2077,7 @@
         "hex": "#fafafa",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:603"
+        "owner": "src/app/global.css:692"
       },
       "dark": {
         "value": "--alpha(var(--color-white) / 3%)",
@@ -1832,7 +2085,7 @@
         "hex": "#ffffff08",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:666"
+        "owner": "src/app/global.css:755"
       }
     },
     {
@@ -1848,7 +2101,7 @@
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:604"
+        "owner": "src/app/global.css:693"
       },
       "dark": {
         "value": "var(--color-neutral-100)",
@@ -1856,7 +2109,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:667"
+        "owner": "src/app/global.css:756"
       }
     },
     {
@@ -1865,14 +2118,14 @@
       "group": "text",
       "utility": "*-secondary-label",
       "utilityVia": "--contrast-secondary-label",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--muted-foreground)",
         "resolved": "oklch(55.2% 0.016 285.938)",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:608"
+        "owner": "src/app/global.css:697"
       },
       "dark": {
         "value": "var(--muted-foreground)",
@@ -1880,7 +2133,53 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:608"
+        "owner": "src/app/global.css:697"
+      }
+    },
+    {
+      "name": "--shadow-composer",
+      "scope": "root",
+      "group": "elevation",
+      "utility": "shadow-composer",
+      "themed": false,
+      "light": {
+        "value": "0 12px 28px -18px rgb(0 0 0 / 40%)",
+        "resolved": "0 12px 28px -18px rgb(0 0 0 / 40%)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:191"
+      },
+      "dark": {
+        "value": "0 12px 28px -18px rgb(0 0 0 / 40%)",
+        "resolved": "0 12px 28px -18px rgb(0 0 0 / 40%)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:191"
+      }
+    },
+    {
+      "name": "--shadow-composer-dark",
+      "scope": "root",
+      "group": "elevation",
+      "utility": "shadow-composer-dark",
+      "themed": false,
+      "light": {
+        "value": "0 14px 32px -18px rgb(0 0 0 / 75%)",
+        "resolved": "0 14px 32px -18px rgb(0 0 0 / 75%)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:192"
+      },
+      "dark": {
+        "value": "0 14px 32px -18px rgb(0 0 0 / 75%)",
+        "resolved": "0 14px 32px -18px rgb(0 0 0 / 75%)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:192"
       }
     },
     {
@@ -1895,7 +2194,7 @@
         "hex": "#fafafa",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:638"
+        "owner": "src/app/global.css:727"
       },
       "dark": {
         "value": "var(--card)",
@@ -1903,7 +2202,7 @@
         "hex": "#111111",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:684"
+        "owner": "src/app/global.css:773"
       }
     },
     {
@@ -1912,14 +2211,14 @@
       "group": "sidebar",
       "utility": "*-sidebar-border",
       "utilityVia": "--contrast-sidebar-border",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--border)",
         "resolved": "oklch(92% 0.004 286.32)",
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:645"
+        "owner": "src/app/global.css:734"
       },
       "dark": {
         "value": "var(--border)",
@@ -1927,7 +2226,7 @@
         "hex": "#ffffff0f",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:645"
+        "owner": "src/app/global.css:734"
       }
     },
     {
@@ -1942,7 +2241,7 @@
         "hex": null,
         "inGamut": null,
         "px": 8,
-        "owner": "src/app/global.css:90"
+        "owner": "src/app/global.css:101"
       },
       "dark": {
         "value": "0.5rem",
@@ -1950,7 +2249,7 @@
         "hex": null,
         "inGamut": null,
         "px": 8,
-        "owner": "src/app/global.css:90"
+        "owner": "src/app/global.css:101"
       }
     },
     {
@@ -1965,7 +2264,7 @@
         "hex": null,
         "inGamut": null,
         "px": 8,
-        "owner": "src/app/global.css:91"
+        "owner": "src/app/global.css:102"
       },
       "dark": {
         "value": "0.5rem",
@@ -1973,7 +2272,7 @@
         "hex": null,
         "inGamut": null,
         "px": 8,
-        "owner": "src/app/global.css:91"
+        "owner": "src/app/global.css:102"
       }
     },
     {
@@ -1988,7 +2287,7 @@
         "hex": "#f4f4f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:641"
+        "owner": "src/app/global.css:730"
       },
       "dark": {
         "value": "var(--muted)",
@@ -1996,7 +2295,7 @@
         "hex": "#ffffff08",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:685"
+        "owner": "src/app/global.css:774"
       }
     },
     {
@@ -2005,14 +2304,14 @@
       "group": "sidebar",
       "utility": "*-sidebar-foreground",
       "utilityVia": "--contrast-sidebar-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--foreground)",
         "resolved": "oklch(27.4% 0.006 286.033)",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:639"
+        "owner": "src/app/global.css:728"
       },
       "dark": {
         "value": "var(--foreground)",
@@ -2020,7 +2319,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:639"
+        "owner": "src/app/global.css:728"
       }
     },
     {
@@ -2028,14 +2327,14 @@
       "scope": "root",
       "group": "sidebar",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in srgb, var(--contrast-sidebar-muted-foreground) 60%, var(--sidebar) )",
         "resolved": "color-mix( in srgb, color-mix( in oklab, color-mix( in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(98.5% 0 none) ), black 0% ) 60%, oklch(98.5% 0 none) )",
         "hex": "#a8a8ae",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:92"
+        "owner": "src/app/global.css:103"
       },
       "dark": {
         "value": "color-mix( in srgb, var(--contrast-sidebar-muted-foreground) 60%, var(--sidebar) )",
@@ -2043,7 +2342,7 @@
         "hex": "#545454",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:92"
+        "owner": "src/app/global.css:103"
       }
     },
     {
@@ -2052,14 +2351,14 @@
       "group": "sidebar",
       "utility": "*-sidebar-muted-foreground",
       "utilityVia": "--contrast-sidebar-muted-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--muted-foreground)",
         "resolved": "oklch(55.2% 0.016 285.938)",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:640"
+        "owner": "src/app/global.css:729"
       },
       "dark": {
         "value": "var(--muted-foreground)",
@@ -2067,7 +2366,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:640"
+        "owner": "src/app/global.css:729"
       }
     },
     {
@@ -2082,7 +2381,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:643"
+        "owner": "src/app/global.css:732"
       },
       "dark": {
         "value": "var(--accent)",
@@ -2090,7 +2389,7 @@
         "hex": "#ffffff0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:687"
+        "owner": "src/app/global.css:776"
       }
     },
     {
@@ -2105,7 +2404,7 @@
         "hex": null,
         "inGamut": null,
         "px": 10,
-        "owner": "src/app/global.css:97"
+        "owner": "src/app/global.css:108"
       },
       "dark": {
         "value": "0.625rem",
@@ -2113,7 +2412,7 @@
         "hex": null,
         "inGamut": null,
         "px": 10,
-        "owner": "src/app/global.css:97"
+        "owner": "src/app/global.css:108"
       }
     },
     {
@@ -2128,7 +2427,7 @@
         "hex": "#fcfcfc",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:642"
+        "owner": "src/app/global.css:731"
       },
       "dark": {
         "value": "var(--accent)",
@@ -2136,7 +2435,7 @@
         "hex": "#ffffff0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:686"
+        "owner": "src/app/global.css:775"
       }
     },
     {
@@ -2151,7 +2450,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:644"
+        "owner": "src/app/global.css:733"
       },
       "dark": {
         "value": "var(--muted)",
@@ -2159,7 +2458,7 @@
         "hex": "#ffffff08",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:688"
+        "owner": "src/app/global.css:777"
       }
     },
     {
@@ -2174,7 +2473,7 @@
         "hex": "#fafafa",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:646"
+        "owner": "src/app/global.css:735"
       },
       "dark": {
         "value": "var(--card)",
@@ -2182,7 +2481,7 @@
         "hex": "#111111",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:689"
+        "owner": "src/app/global.css:778"
       }
     },
     {
@@ -2197,7 +2496,7 @@
         "hex": "#00bc7d",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:628"
+        "owner": "src/app/global.css:717"
       },
       "dark": {
         "value": "var(--color-emerald-500)",
@@ -2205,7 +2504,7 @@
         "hex": "#00bc7d",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:628"
+        "owner": "src/app/global.css:717"
       }
     },
     {
@@ -2220,7 +2519,7 @@
         "hex": "#007a55",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:629"
+        "owner": "src/app/global.css:718"
       },
       "dark": {
         "value": "var(--color-emerald-400)",
@@ -2228,7 +2527,7 @@
         "hex": "#00d492",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:679"
+        "owner": "src/app/global.css:768"
       }
     },
     {
@@ -2243,7 +2542,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:897"
+        "owner": "src/app/global.css:986"
       },
       "dark": {
         "value": "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E\")",
@@ -2251,7 +2550,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:897"
+        "owner": "src/app/global.css:986"
       }
     },
     {
@@ -2266,7 +2565,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:898"
+        "owner": "src/app/global.css:987"
       },
       "dark": {
         "value": "256px 256px",
@@ -2274,7 +2573,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:898"
+        "owner": "src/app/global.css:987"
       }
     },
     {
@@ -2289,7 +2588,7 @@
         "hex": "#ffffff33",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:595"
+        "owner": "src/app/global.css:684"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--background) 97%, var(--color-white))",
@@ -2297,7 +2596,7 @@
         "hex": "#111111",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:659"
+        "owner": "src/app/global.css:748"
       }
     },
     {
@@ -2305,14 +2604,14 @@
       "scope": "root",
       "group": "terminal",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--background)",
         "resolved": "oklch(99.2% 0 0)",
         "hex": "#fcfcfc",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:649"
+        "owner": "src/app/global.css:738"
       },
       "dark": {
         "value": "var(--background)",
@@ -2320,7 +2619,7 @@
         "hex": "#0a0a0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:649"
+        "owner": "src/app/global.css:738"
       }
     },
     {
@@ -2335,7 +2634,7 @@
         "hex": "#26384e",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:651"
+        "owner": "src/app/global.css:740"
       },
       "dark": {
         "value": "rgb(180 203 255)",
@@ -2343,7 +2642,7 @@
         "hex": "#b4cbff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:690"
+        "owner": "src/app/global.css:779"
       }
     },
     {
@@ -2351,14 +2650,14 @@
       "scope": "root",
       "group": "terminal",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--foreground)",
         "resolved": "oklch(27.4% 0.006 286.033)",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:650"
+        "owner": "src/app/global.css:739"
       },
       "dark": {
         "value": "var(--foreground)",
@@ -2366,7 +2665,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:650"
+        "owner": "src/app/global.css:739"
       }
     },
     {
@@ -2381,7 +2680,7 @@
         "hex": "#253f6333",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:652"
+        "owner": "src/app/global.css:741"
       },
       "dark": {
         "value": "rgb(180 203 255 / 25%)",
@@ -2389,7 +2688,53 @@
         "hex": "#b4cbff40",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:691"
+        "owner": "src/app/global.css:780"
+      }
+    },
+    {
+      "name": "--text-2xs",
+      "scope": "root",
+      "group": "font",
+      "utility": "text-2xs",
+      "themed": false,
+      "light": {
+        "value": "0.6875rem",
+        "resolved": "0.6875rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 11,
+        "owner": "src/app/global.css:176"
+      },
+      "dark": {
+        "value": "0.6875rem",
+        "resolved": "0.6875rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 11,
+        "owner": "src/app/global.css:176"
+      }
+    },
+    {
+      "name": "--text-2xs--line-height",
+      "scope": "root",
+      "group": "font",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "calc(1 / 0.6875)",
+        "resolved": "calc(1 / 0.6875)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:177"
+      },
+      "dark": {
+        "value": "calc(1 / 0.6875)",
+        "resolved": "calc(1 / 0.6875)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:177"
       }
     },
     {
@@ -2404,7 +2749,7 @@
         "hex": null,
         "inGamut": null,
         "px": 10,
-        "owner": "src/app/global.css:1233"
+        "owner": "src/app/global.css:178"
       },
       "dark": {
         "value": "0.625rem",
@@ -2412,7 +2757,7 @@
         "hex": null,
         "inGamut": null,
         "px": 10,
-        "owner": "src/app/global.css:1233"
+        "owner": "src/app/global.css:178"
       }
     },
     {
@@ -2427,7 +2772,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:1234"
+        "owner": "src/app/global.css:179"
       },
       "dark": {
         "value": "calc(0.875 / 0.625)",
@@ -2435,7 +2780,122 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:1234"
+        "owner": "src/app/global.css:179"
+      }
+    },
+    {
+      "name": "--text-4xs",
+      "scope": "root",
+      "group": "font",
+      "utility": "text-4xs",
+      "themed": false,
+      "light": {
+        "value": "0.5rem",
+        "resolved": "0.5rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 8,
+        "owner": "src/app/global.css:180"
+      },
+      "dark": {
+        "value": "0.5rem",
+        "resolved": "0.5rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 8,
+        "owner": "src/app/global.css:180"
+      }
+    },
+    {
+      "name": "--text-4xs--line-height",
+      "scope": "root",
+      "group": "font",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "1",
+        "resolved": "1",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:181"
+      },
+      "dark": {
+        "value": "1",
+        "resolved": "1",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:181"
+      }
+    },
+    {
+      "name": "--text-5xs",
+      "scope": "root",
+      "group": "font",
+      "utility": "text-5xs",
+      "themed": false,
+      "light": {
+        "value": "0.4375rem",
+        "resolved": "0.4375rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 7,
+        "owner": "src/app/global.css:182"
+      },
+      "dark": {
+        "value": "0.4375rem",
+        "resolved": "0.4375rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 7,
+        "owner": "src/app/global.css:182"
+      }
+    },
+    {
+      "name": "--text-5xs--line-height",
+      "scope": "root",
+      "group": "font",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "1",
+        "resolved": "1",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:183"
+      },
+      "dark": {
+        "value": "1",
+        "resolved": "1",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:183"
+      }
+    },
+    {
+      "name": "--thread-details-panel-width",
+      "scope": "root",
+      "group": "layout",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "17.5rem",
+        "resolved": "17.5rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 280,
+        "owner": "src/app/global.css:128"
+      },
+      "dark": {
+        "value": "17.5rem",
+        "resolved": "17.5rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 280,
+        "owner": "src/app/global.css:128"
       }
     },
     {
@@ -2450,7 +2910,7 @@
         "hex": "#fb2c36",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:619"
+        "owner": "src/app/global.css:708"
       },
       "dark": {
         "value": "#fca5a5",
@@ -2458,7 +2918,7 @@
         "hex": "#fca5a5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:674"
+        "owner": "src/app/global.css:763"
       }
     },
     {
@@ -2466,14 +2926,14 @@
       "scope": "root",
       "group": "surface",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--app-chrome-background)",
         "resolved": "oklch(99.2% 0 0)",
         "hex": "#fcfcfc",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:589"
+        "owner": "src/app/global.css:678"
       },
       "dark": {
         "value": "var(--app-chrome-background)",
@@ -2481,7 +2941,7 @@
         "hex": "#0a0a0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:589"
+        "owner": "src/app/global.css:678"
       }
     },
     {
@@ -2489,14 +2949,14 @@
       "scope": "root",
       "group": "border",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--border)",
         "resolved": "oklch(92% 0.004 286.32)",
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:591"
+        "owner": "src/app/global.css:680"
       },
       "dark": {
         "value": "var(--border)",
@@ -2504,7 +2964,7 @@
         "hex": "#ffffff0f",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:591"
+        "owner": "src/app/global.css:680"
       }
     },
     {
@@ -2512,14 +2972,14 @@
       "scope": "root",
       "group": "surface",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--popover)",
         "resolved": "#fff",
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:592"
+        "owner": "src/app/global.css:681"
       },
       "dark": {
         "value": "var(--popover)",
@@ -2527,7 +2987,7 @@
         "hex": "#111111",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:592"
+        "owner": "src/app/global.css:681"
       }
     },
     {
@@ -2535,14 +2995,14 @@
       "scope": "root",
       "group": "text",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--foreground)",
         "resolved": "oklch(27.4% 0.006 286.033)",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:593"
+        "owner": "src/app/global.css:682"
       },
       "dark": {
         "value": "var(--foreground)",
@@ -2550,7 +3010,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:593"
+        "owner": "src/app/global.css:682"
       }
     },
     {
@@ -2558,14 +3018,14 @@
       "scope": "root",
       "group": "surface",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--accent)",
         "resolved": "oklch(96.7% 0.001 286.375)",
         "hex": "#f4f4f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:594"
+        "owner": "src/app/global.css:683"
       },
       "dark": {
         "value": "var(--accent)",
@@ -2573,7 +3033,7 @@
         "hex": "#ffffff0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:594"
+        "owner": "src/app/global.css:683"
       }
     },
     {
@@ -2581,14 +3041,14 @@
       "scope": "root",
       "group": "text",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--foreground)",
         "resolved": "oklch(27.4% 0.006 286.033)",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:590"
+        "owner": "src/app/global.css:679"
       },
       "dark": {
         "value": "var(--foreground)",
@@ -2596,7 +3056,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:590"
+        "owner": "src/app/global.css:679"
       }
     },
     {
@@ -2611,7 +3071,7 @@
         "hex": "#346bf1",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:633"
+        "owner": "src/app/global.css:722"
       },
       "dark": {
         "value": "var(--primary)",
@@ -2619,7 +3079,7 @@
         "hex": "#346bf1",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:633"
+        "owner": "src/app/global.css:722"
       }
     },
     {
@@ -2634,7 +3094,7 @@
         "hex": "#346bf1",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:634"
+        "owner": "src/app/global.css:723"
       },
       "dark": {
         "value": "var(--color-blue-400)",
@@ -2642,7 +3102,7 @@
         "hex": "#51a2ff",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:682"
+        "owner": "src/app/global.css:771"
       }
     },
     {
@@ -2657,7 +3117,7 @@
         "hex": "#346bf11f",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:635"
+        "owner": "src/app/global.css:724"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--update) 18%, transparent)",
@@ -2665,7 +3125,7 @@
         "hex": "#346bf12e",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:683"
+        "owner": "src/app/global.css:772"
       }
     },
     {
@@ -2680,7 +3140,7 @@
         "hex": "#fe9a00",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:630"
+        "owner": "src/app/global.css:719"
       },
       "dark": {
         "value": "var(--color-amber-500)",
@@ -2688,7 +3148,7 @@
         "hex": "#fe9a00",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:630"
+        "owner": "src/app/global.css:719"
       }
     },
     {
@@ -2703,7 +3163,7 @@
         "hex": "#bb4d00",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:631"
+        "owner": "src/app/global.css:720"
       },
       "dark": {
         "value": "var(--color-amber-400)",
@@ -2711,7 +3171,7 @@
         "hex": "#ffb900",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:680"
+        "owner": "src/app/global.css:769"
       }
     },
     {
@@ -2726,7 +3186,7 @@
         "hex": "#fe9a0014",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:632"
+        "owner": "src/app/global.css:721"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--warning) 16%, transparent)",
@@ -2734,7 +3194,7 @@
         "hex": "#fe9a0029",
         "inGamut": false,
         "px": null,
-        "owner": "src/app/global.css:681"
+        "owner": "src/app/global.css:770"
       }
     },
     {
@@ -2749,7 +3209,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:107"
+        "owner": "src/app/global.css:121"
       },
       "dark": {
         "value": "calc(env(safe-area-inset-left) + 0.75rem)",
@@ -2757,7 +3217,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:107"
+        "owner": "src/app/global.css:121"
       }
     },
     {
@@ -2772,7 +3232,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:108"
+        "owner": "src/app/global.css:122"
       },
       "dark": {
         "value": "calc(env(safe-area-inset-right) + 0.75rem)",
@@ -2780,7 +3240,7 @@
         "hex": null,
         "inGamut": null,
         "px": null,
-        "owner": "src/app/global.css:108"
+        "owner": "src/app/global.css:122"
       }
     },
     {
@@ -2795,7 +3255,7 @@
         "hex": null,
         "inGamut": null,
         "px": 0,
-        "owner": "src/app/global.css:106"
+        "owner": "src/app/global.css:120"
       },
       "dark": {
         "value": "0px",
@@ -2803,7 +3263,76 @@
         "hex": null,
         "inGamut": null,
         "px": 0,
-        "owner": "src/app/global.css:106"
+        "owner": "src/app/global.css:120"
+      }
+    },
+    {
+      "name": "--workspace-gutter",
+      "scope": "root",
+      "group": "layout",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "0.75rem",
+        "resolved": "0.75rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 12,
+        "owner": "src/app/global.css:133"
+      },
+      "dark": {
+        "value": "0.75rem",
+        "resolved": "0.75rem",
+        "hex": null,
+        "inGamut": null,
+        "px": 12,
+        "owner": "src/app/global.css:133"
+      }
+    },
+    {
+      "name": "--workspace-gutter-end",
+      "scope": "root",
+      "group": "layout",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "calc(env(safe-area-inset-right) + var(--workspace-gutter))",
+        "resolved": "calc(env(safe-area-inset-right) + 0.75rem)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:135"
+      },
+      "dark": {
+        "value": "calc(env(safe-area-inset-right) + var(--workspace-gutter))",
+        "resolved": "calc(env(safe-area-inset-right) + 0.75rem)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:135"
+      }
+    },
+    {
+      "name": "--workspace-gutter-start",
+      "scope": "root",
+      "group": "layout",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "calc(env(safe-area-inset-left) + var(--workspace-gutter))",
+        "resolved": "calc(env(safe-area-inset-left) + 0.75rem)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:134"
+      },
+      "dark": {
+        "value": "calc(env(safe-area-inset-left) + var(--workspace-gutter))",
+        "resolved": "calc(env(safe-area-inset-left) + 0.75rem)",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:134"
       }
     },
     {
@@ -2818,7 +3347,7 @@
         "hex": null,
         "inGamut": null,
         "px": 0,
-        "owner": "src/app/global.css:109"
+        "owner": "src/app/global.css:123"
       },
       "dark": {
         "value": "0px",
@@ -2826,7 +3355,7 @@
         "hex": null,
         "inGamut": null,
         "px": 0,
-        "owner": "src/app/global.css:109"
+        "owner": "src/app/global.css:123"
       }
     },
     {
@@ -2841,7 +3370,7 @@
         "hex": null,
         "inGamut": null,
         "px": 12,
-        "owner": "src/app/global.css:111"
+        "owner": "src/app/global.css:125"
       },
       "dark": {
         "value": "0.75rem",
@@ -2849,7 +3378,7 @@
         "hex": null,
         "inGamut": null,
         "px": 12,
-        "owner": "src/app/global.css:111"
+        "owner": "src/app/global.css:125"
       }
     },
     {
@@ -2864,7 +3393,7 @@
         "hex": null,
         "inGamut": null,
         "px": 28,
-        "owner": "src/app/global.css:110"
+        "owner": "src/app/global.css:124"
       },
       "dark": {
         "value": "1.75rem",
@@ -2872,7 +3401,7 @@
         "hex": null,
         "inGamut": null,
         "px": 28,
-        "owner": "src/app/global.css:110"
+        "owner": "src/app/global.css:124"
       }
     },
     {
@@ -2887,7 +3416,7 @@
         "hex": null,
         "inGamut": null,
         "px": 24,
-        "owner": "src/app/global.css:112"
+        "owner": "src/app/global.css:126"
       },
       "dark": {
         "value": "1.5rem",
@@ -2895,7 +3424,7 @@
         "hex": null,
         "inGamut": null,
         "px": 24,
-        "owner": "src/app/global.css:112"
+        "owner": "src/app/global.css:126"
       }
     },
     {
@@ -2910,7 +3439,7 @@
         "hex": null,
         "inGamut": null,
         "px": 52,
-        "owner": "src/app/global.css:105"
+        "owner": "src/app/global.css:119"
       },
       "dark": {
         "value": "52px",
@@ -2918,7 +3447,30 @@
         "hex": null,
         "inGamut": null,
         "px": 52,
-        "owner": "src/app/global.css:105"
+        "owner": "src/app/global.css:119"
+      }
+    },
+    {
+      "name": "--z-sheet",
+      "scope": "root",
+      "group": "layer",
+      "utility": null,
+      "themed": false,
+      "light": {
+        "value": "46",
+        "resolved": "46",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:114"
+      },
+      "dark": {
+        "value": "46",
+        "resolved": "46",
+        "hex": null,
+        "inGamut": null,
+        "px": null,
+        "owner": "src/app/global.css:114"
       }
     },
     {
@@ -2933,7 +3485,7 @@
         "hex": "#f4f4f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:703"
+        "owner": "src/app/global.css:792"
       },
       "dark": {
         "value": "#191a1d",
@@ -2941,7 +3493,7 @@
         "hex": "#191a1d",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:724"
+        "owner": "src/app/global.css:813"
       }
     },
     {
@@ -2957,7 +3509,7 @@
         "hex": "#18181b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:704"
+        "owner": "src/app/global.css:793"
       },
       "dark": {
         "value": "#f7f9ff",
@@ -2965,7 +3517,7 @@
         "hex": "#f7f9ff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:725"
+        "owner": "src/app/global.css:814"
       }
     },
     {
@@ -2980,7 +3532,7 @@
         "hex": "#fcfcfc",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:699"
+        "owner": "src/app/global.css:788"
       },
       "dark": {
         "value": "#000",
@@ -2988,7 +3540,7 @@
         "hex": "#000000",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:720"
+        "owner": "src/app/global.css:809"
       }
     },
     {
@@ -3004,7 +3556,7 @@
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:707"
+        "owner": "src/app/global.css:796"
       },
       "dark": {
         "value": "rgb(255 255 255 / 8%)",
@@ -3012,7 +3564,7 @@
         "hex": "#ffffff14",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:728"
+        "owner": "src/app/global.css:817"
       }
     },
     {
@@ -3027,7 +3579,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:701"
+        "owner": "src/app/global.css:790"
       },
       "dark": {
         "value": "#000",
@@ -3035,7 +3587,7 @@
         "hex": "#000000",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:722"
+        "owner": "src/app/global.css:811"
       }
     },
     {
@@ -3051,7 +3603,7 @@
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:702"
+        "owner": "src/app/global.css:791"
       },
       "dark": {
         "value": "var(--foreground)",
@@ -3059,7 +3611,7 @@
         "hex": "#f1f3f7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:723"
+        "owner": "src/app/global.css:812"
       }
     },
     {
@@ -3067,14 +3619,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": "*-accent-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--accent-foreground) var(--appearance-contrast-base), var(--accent)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(21% 0.006 285.885) 100%, oklch(96.7% 0.001 286.375)), black 0% )",
         "hex": "#18181b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:821"
+        "owner": "src/app/global.css:910"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--accent-foreground) var(--appearance-contrast-base), var(--accent)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3082,7 +3634,7 @@
         "hex": "#f7f9ff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:821"
+        "owner": "src/app/global.css:910"
       }
     },
     {
@@ -3090,14 +3642,14 @@
       "scope": "sidebar",
       "group": "border",
       "utility": "*-border",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--border) var(--appearance-contrast-base), transparent), var(--foreground) var(--appearance-contrast-border-boost) )",
         "resolved": "color-mix( in srgb, color-mix(in srgb, oklch(92% 0.004 286.32) 100%, transparent), oklch(27.4% 0.006 286.033) 0% )",
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:781"
+        "owner": "src/app/global.css:870"
       },
       "dark": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--border) var(--appearance-contrast-base), transparent), var(--foreground) var(--appearance-contrast-border-boost) )",
@@ -3105,7 +3657,7 @@
         "hex": "#ffffff14",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:781"
+        "owner": "src/app/global.css:870"
       }
     },
     {
@@ -3113,14 +3665,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": "*-card-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--card-foreground) var(--appearance-contrast-base), var(--card)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(27.4% 0.006 286.033) 100%, #fff), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:811"
+        "owner": "src/app/global.css:900"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--card-foreground) var(--appearance-contrast-base), var(--card)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3128,7 +3680,7 @@
         "hex": "#f1f3f7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:811"
+        "owner": "src/app/global.css:900"
       }
     },
     {
@@ -3136,14 +3688,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": "*-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--foreground) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(27.4% 0.006 286.033) 100%, oklch(99.2% 0 0)), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:786"
+        "owner": "src/app/global.css:875"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--foreground) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3151,7 +3703,7 @@
         "hex": "#f1f3f7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:786"
+        "owner": "src/app/global.css:875"
       }
     },
     {
@@ -3159,14 +3711,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": "*-icon-muted",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--icon-muted) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(99.2% 0 0)), black 0% )",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:806"
+        "owner": "src/app/global.css:895"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--icon-muted) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3174,7 +3726,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:806"
+        "owner": "src/app/global.css:895"
       }
     },
     {
@@ -3182,14 +3734,14 @@
       "scope": "sidebar",
       "group": "border",
       "utility": "*-input",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--input) var(--appearance-contrast-base), transparent), var(--foreground) var(--appearance-contrast-border-boost) )",
         "resolved": "color-mix( in srgb, color-mix(in srgb, oklch(87.1% 0.006 286.286) 100%, transparent), oklch(27.4% 0.006 286.033) 0% )",
         "hex": "#d4d4d8",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:776"
+        "owner": "src/app/global.css:865"
       },
       "dark": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--input) var(--appearance-contrast-base), transparent), var(--foreground) var(--appearance-contrast-border-boost) )",
@@ -3197,7 +3749,7 @@
         "hex": "#ffffff2e",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:776"
+        "owner": "src/app/global.css:865"
       }
     },
     {
@@ -3205,14 +3757,14 @@
       "scope": "sidebar",
       "group": "message",
       "utility": "*-message-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--message-foreground) var(--appearance-contrast-base), var(--message-surface) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix( in oklab, oklch(27.4% 0.006 286.033) 100%, oklch(96.7% 0.001 286.375) ), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:835"
+        "owner": "src/app/global.css:924"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--message-foreground) var(--appearance-contrast-base), var(--message-surface) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3220,7 +3772,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:835"
+        "owner": "src/app/global.css:924"
       }
     },
     {
@@ -3228,14 +3780,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": "*-muted-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--muted-foreground) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(99.2% 0 0)), black 0% )",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:791"
+        "owner": "src/app/global.css:880"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--muted-foreground) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3243,7 +3795,7 @@
         "hex": "#a3a3a3",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:791"
+        "owner": "src/app/global.css:880"
       }
     },
     {
@@ -3251,14 +3803,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": "*-placeholder",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--placeholder) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(99.2% 0 0)), black 0% )",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:796"
+        "owner": "src/app/global.css:885"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--placeholder) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3266,7 +3818,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:796"
+        "owner": "src/app/global.css:885"
       }
     },
     {
@@ -3274,14 +3826,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": "*-popover-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--popover-foreground) var(--appearance-contrast-base), var(--popover)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(27.4% 0.006 286.033) 100%, #fff), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:816"
+        "owner": "src/app/global.css:905"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--popover-foreground) var(--appearance-contrast-base), var(--popover)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3289,7 +3841,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:816"
+        "owner": "src/app/global.css:905"
       }
     },
     {
@@ -3297,14 +3849,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": "*-secondary-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--secondary-foreground) var(--appearance-contrast-base), var(--secondary) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix( in oklab, oklch(27.4% 0.006 286.033) 100%, oklch(98.5% 0 none) ), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:826"
+        "owner": "src/app/global.css:915"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--secondary-foreground) var(--appearance-contrast-base), var(--secondary) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3312,7 +3864,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:826"
+        "owner": "src/app/global.css:915"
       }
     },
     {
@@ -3320,14 +3872,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": "*-secondary-label",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--secondary-label) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(99.2% 0 0)), black 0% )",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:801"
+        "owner": "src/app/global.css:890"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--secondary-label) var(--appearance-contrast-base), var(--background)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3335,7 +3887,7 @@
         "hex": "#818181",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:801"
+        "owner": "src/app/global.css:890"
       }
     },
     {
@@ -3343,14 +3895,14 @@
       "scope": "sidebar",
       "group": "sidebar",
       "utility": "*-sidebar-border",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--sidebar-border) var(--appearance-contrast-base), transparent), var(--sidebar-foreground) var(--appearance-contrast-border-boost) )",
         "resolved": "color-mix( in srgb, color-mix(in srgb, oklch(92% 0.004 286.32) 100%, transparent), oklch(27.4% 0.006 286.033) 0% )",
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:858"
+        "owner": "src/app/global.css:947"
       },
       "dark": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--sidebar-border) var(--appearance-contrast-base), transparent), var(--sidebar-foreground) var(--appearance-contrast-border-boost) )",
@@ -3358,7 +3910,7 @@
         "hex": "#ffffff14",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:858"
+        "owner": "src/app/global.css:947"
       }
     },
     {
@@ -3366,14 +3918,14 @@
       "scope": "sidebar",
       "group": "sidebar",
       "utility": "*-sidebar-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--sidebar-foreground) var(--appearance-contrast-base), var(--sidebar)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix(in oklab, oklch(27.4% 0.006 286.033) 100%, oklch(98.5% 0 none)), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:844"
+        "owner": "src/app/global.css:933"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix(in oklab, var(--sidebar-foreground) var(--appearance-contrast-base), var(--sidebar)), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3381,7 +3933,7 @@
         "hex": "#f1f3f7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:844"
+        "owner": "src/app/global.css:933"
       }
     },
     {
@@ -3389,14 +3941,14 @@
       "scope": "sidebar",
       "group": "sidebar",
       "utility": "*-sidebar-muted-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--sidebar-muted-foreground) var(--appearance-contrast-base), var(--sidebar) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix( in oklab, oklch(55.2% 0.016 285.938) 100%, oklch(98.5% 0 none) ), black 0% )",
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:849"
+        "owner": "src/app/global.css:938"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--sidebar-muted-foreground) var(--appearance-contrast-base), var(--sidebar) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3404,7 +3956,7 @@
         "hex": "#a3a3a3",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:849"
+        "owner": "src/app/global.css:938"
       }
     },
     {
@@ -3412,14 +3964,14 @@
       "scope": "sidebar",
       "group": "border",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--toolbar-border) var(--appearance-contrast-base), transparent), var(--toolbar-foreground) var(--appearance-contrast-border-boost) )",
         "resolved": "color-mix( in srgb, color-mix(in srgb, oklch(92% 0.004 286.32) 100%, transparent), oklch(27.4% 0.006 286.033) 0% )",
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:762"
+        "owner": "src/app/global.css:851"
       },
       "dark": {
         "value": "color-mix( in srgb, color-mix(in srgb, var(--toolbar-border) var(--appearance-contrast-base), transparent), var(--toolbar-foreground) var(--appearance-contrast-border-boost) )",
@@ -3427,7 +3979,7 @@
         "hex": "#ffffff0f",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:762"
+        "owner": "src/app/global.css:851"
       }
     },
     {
@@ -3435,14 +3987,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--toolbar-control-foreground) var(--appearance-contrast-base), var(--toolbar-control) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix( in oklab, oklch(27.4% 0.006 286.033) 100%, #fff ), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:767"
+        "owner": "src/app/global.css:856"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--toolbar-control-foreground) var(--appearance-contrast-base), var(--toolbar-control) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3450,7 +4002,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:767"
+        "owner": "src/app/global.css:856"
       }
     },
     {
@@ -3458,14 +4010,14 @@
       "scope": "sidebar",
       "group": "text",
       "utility": null,
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--toolbar-foreground) var(--appearance-contrast-base), var(--toolbar-background) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
         "resolved": "color-mix( in oklab, color-mix( in oklab, oklch(27.4% 0.006 286.033) 100%, oklch(99.2% 0 0) ), black 0% )",
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:753"
+        "owner": "src/app/global.css:842"
       },
       "dark": {
         "value": "color-mix( in oklab, color-mix( in oklab, var(--toolbar-foreground) var(--appearance-contrast-base), var(--toolbar-background) ), var(--appearance-contrast-target) var(--appearance-contrast-boost) )",
@@ -3473,7 +4025,7 @@
         "hex": "#f5f5f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:753"
+        "owner": "src/app/global.css:842"
       }
     },
     {
@@ -3489,7 +4041,7 @@
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:700"
+        "owner": "src/app/global.css:789"
       },
       "dark": {
         "value": "#f1f3f7",
@@ -3497,7 +4049,7 @@
         "hex": "#f1f3f7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:721"
+        "owner": "src/app/global.css:810"
       }
     },
     {
@@ -3513,7 +4065,7 @@
         "hex": "#d4d4d8",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:708"
+        "owner": "src/app/global.css:797"
       },
       "dark": {
         "value": "rgb(255 255 255 / 18%)",
@@ -3521,7 +4073,7 @@
         "hex": "#ffffff2e",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:729"
+        "owner": "src/app/global.css:818"
       }
     },
     {
@@ -3536,7 +4088,7 @@
         "hex": "#fafafa",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:705"
+        "owner": "src/app/global.css:794"
       },
       "dark": {
         "value": "#0a0a0a",
@@ -3544,7 +4096,7 @@
         "hex": "#0a0a0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:726"
+        "owner": "src/app/global.css:815"
       }
     },
     {
@@ -3560,7 +4112,7 @@
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:706"
+        "owner": "src/app/global.css:795"
       },
       "dark": {
         "value": "#a3a3a3",
@@ -3568,7 +4120,7 @@
         "hex": "#a3a3a3",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:727"
+        "owner": "src/app/global.css:816"
       }
     },
     {
@@ -3583,7 +4135,7 @@
         "hex": "#fafafa",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:709"
+        "owner": "src/app/global.css:798"
       },
       "dark": {
         "value": "var(--card)",
@@ -3591,7 +4143,7 @@
         "hex": "#000000",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:730"
+        "owner": "src/app/global.css:819"
       }
     },
     {
@@ -3607,7 +4159,7 @@
         "hex": "#e4e4e7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:716"
+        "owner": "src/app/global.css:805"
       },
       "dark": {
         "value": "var(--border)",
@@ -3615,7 +4167,7 @@
         "hex": "#ffffff14",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:737"
+        "owner": "src/app/global.css:826"
       }
     },
     {
@@ -3630,7 +4182,7 @@
         "hex": "#f4f4f5",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:712"
+        "owner": "src/app/global.css:801"
       },
       "dark": {
         "value": "var(--muted)",
@@ -3638,7 +4190,7 @@
         "hex": "#0a0a0a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:733"
+        "owner": "src/app/global.css:822"
       }
     },
     {
@@ -3654,7 +4206,7 @@
         "hex": "#27272a",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:710"
+        "owner": "src/app/global.css:799"
       },
       "dark": {
         "value": "var(--foreground)",
@@ -3662,7 +4214,7 @@
         "hex": "#f1f3f7",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:731"
+        "owner": "src/app/global.css:820"
       }
     },
     {
@@ -3678,7 +4230,7 @@
         "hex": "#71717b",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:711"
+        "owner": "src/app/global.css:800"
       },
       "dark": {
         "value": "var(--muted-foreground)",
@@ -3686,7 +4238,7 @@
         "hex": "#a3a3a3",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:732"
+        "owner": "src/app/global.css:821"
       }
     },
     {
@@ -3701,7 +4253,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:714"
+        "owner": "src/app/global.css:803"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--contrast-foreground) 11%, transparent)",
@@ -3709,7 +4261,7 @@
         "hex": "#f1f3f71c",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:735"
+        "owner": "src/app/global.css:824"
       }
     },
     {
@@ -3724,7 +4276,7 @@
         "hex": "#fcfcfc",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:713"
+        "owner": "src/app/global.css:802"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--contrast-foreground) 8%, transparent)",
@@ -3732,7 +4284,7 @@
         "hex": "#f1f3f714",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:734"
+        "owner": "src/app/global.css:823"
       }
     },
     {
@@ -3747,7 +4299,7 @@
         "hex": "#ffffff",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:715"
+        "owner": "src/app/global.css:804"
       },
       "dark": {
         "value": "color-mix(in srgb, var(--contrast-foreground) 7%, transparent)",
@@ -3755,7 +4307,7 @@
         "hex": "#f1f3f712",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:736"
+        "owner": "src/app/global.css:825"
       }
     },
     {
@@ -3770,7 +4322,7 @@
         "hex": "#fafafa",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:717"
+        "owner": "src/app/global.css:806"
       },
       "dark": {
         "value": "var(--card)",
@@ -3778,7 +4330,7 @@
         "hex": "#000000",
         "inGamut": true,
         "px": null,
-        "owner": "src/app/global.css:738"
+        "owner": "src/app/global.css:827"
       }
     },
     {
@@ -3927,7 +4479,7 @@
       "scope": "sign-in",
       "group": "border",
       "utility": "*-border",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--border)",
         "resolved": "#e4e7ec",
@@ -3950,7 +4502,7 @@
       "scope": "sign-in",
       "group": "text",
       "utility": "*-card-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--card-foreground)",
         "resolved": "#1a1f27",
@@ -3973,7 +4525,7 @@
       "scope": "sign-in",
       "group": "text",
       "utility": "*-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--foreground)",
         "resolved": "#1a1f27",
@@ -3996,7 +4548,7 @@
       "scope": "sign-in",
       "group": "text",
       "utility": "*-muted-foreground",
-      "themed": false,
+      "themed": true,
       "light": {
         "value": "var(--muted-foreground)",
         "resolved": "#5d6b80",
@@ -4112,39 +4664,39 @@
   "keyframes": [
     {
       "name": "mobile-composer-old",
-      "owner": "src/app/global.css:35"
-    },
-    {
-      "name": "mobile-composer-new",
       "owner": "src/app/global.css:46"
     },
     {
+      "name": "mobile-composer-new",
+      "owner": "src/app/global.css:57"
+    },
+    {
       "name": "mobile-draft-headline-exit",
-      "owner": "src/app/global.css:66"
+      "owner": "src/app/global.css:77"
     },
     {
       "name": "skeleton",
-      "owner": "src/app/global.css:192"
+      "owner": "src/app/global.css:281"
     },
     {
       "name": "status-pulse",
-      "owner": "src/app/global.css:211"
+      "owner": "src/app/global.css:300"
     },
     {
       "name": "status-ping",
-      "owner": "src/app/global.css:226"
+      "owner": "src/app/global.css:315"
     },
     {
       "name": "live-tool-shine",
-      "owner": "src/app/global.css:389"
+      "owner": "src/app/global.css:478"
     },
     {
       "name": "live-activity-focus",
-      "owner": "src/app/global.css:424"
+      "owner": "src/app/global.css:513"
     },
     {
       "name": "live-activity-focus-counter",
-      "owner": "src/app/global.css:433"
+      "owner": "src/app/global.css:522"
     },
     {
       "name": "dc-caret",
@@ -4156,109 +4708,109 @@
       "selector": "html[data-mobile-composer-route-transition=\"true\"]::view-transition-old(root), html[dat…",
       "property": "animation",
       "value": "none",
-      "owner": "src/app/global.css:10"
+      "owner": "src/app/global.css:21"
     },
     {
       "selector": "html[data-mobile-composer-route-transition=\"true\"]::view-transition-group(mobile-composer)",
       "property": "animation-duration",
       "value": "180ms",
-      "owner": "src/app/global.css:14"
+      "owner": "src/app/global.css:25"
     },
     {
       "selector": "html[data-mobile-composer-route-transition=\"true\"]::view-transition-group(mobile-composer)",
       "property": "animation-timing-function",
       "value": "cubic-bezier(0.4, 0, 0.2, 1)",
-      "owner": "src/app/global.css:15"
+      "owner": "src/app/global.css:26"
     },
     {
       "selector": "html[data-mobile-composer-route-transition=\"true\"]::view-transition-old(mobile-composer)",
       "property": "animation",
       "value": "mobile-composer-old 180ms linear both",
-      "owner": "src/app/global.css:23"
+      "owner": "src/app/global.css:34"
     },
     {
       "selector": "html[data-mobile-composer-route-transition=\"true\"]::view-transition-new(mobile-composer)",
       "property": "animation",
       "value": "mobile-composer-new 180ms linear both",
-      "owner": "src/app/global.css:28"
+      "owner": "src/app/global.css:39"
     },
     {
       "selector": "html[data-mobile-composer-route-transition=\"true\"]::view-transition-group(mobile-draft-…",
       "property": "animation-duration",
       "value": "130ms",
-      "owner": "src/app/global.css:58"
+      "owner": "src/app/global.css:69"
     },
     {
       "selector": "html[data-mobile-composer-route-transition=\"true\"]::view-transition-old(mobile-draft-he…",
       "property": "animation",
       "value": "mobile-draft-headline-exit 130ms cubic-bezier(0.4, 0, 1, 1) both",
-      "owner": "src/app/global.css:62"
+      "owner": "src/app/global.css:73"
     },
     {
       "selector": "@utility live-tool-shine › @media (prefers-reduced-motion: no-preference) and (forced-colors: none)",
       "property": "animation",
       "value": "live-tool-shine 2.2s steps(30) infinite",
-      "owner": "src/app/global.css:413"
+      "owner": "src/app/global.css:502"
     },
     {
       "selector": "@utility visible-animate-spin",
       "property": "animation",
       "value": "var(--animate-spin)",
-      "owner": "src/app/global.css:419"
+      "owner": "src/app/global.css:508"
     },
     {
       "selector": "@utility live-activity-focus",
       "property": "animation",
       "value": "live-activity-focus 2.2s linear infinite",
-      "owner": "src/app/global.css:472"
+      "owner": "src/app/global.css:561"
     },
     {
       "selector": "@utility live-activity-focus › @media (prefers-reduced-motion: reduce), (forced-colors: active)",
       "property": "animation",
       "value": "none",
-      "owner": "src/app/global.css:477"
+      "owner": "src/app/global.css:566"
     },
     {
       "selector": "@utility live-activity-focus-counter",
       "property": "animation",
       "value": "live-activity-focus-counter 2.2s linear infinite",
-      "owner": "src/app/global.css:485"
+      "owner": "src/app/global.css:574"
     },
     {
       "selector": "@utility live-activity-focus-counter › @media (prefers-reduced-motion: reduce), (forced-colors: active)",
       "property": "animation",
       "value": "none",
-      "owner": "src/app/global.css:490"
+      "owner": "src/app/global.css:579"
     },
     {
       "selector": "[data-slot=\"animated-height\"] [data-slot=\"collapsible-panel\"]",
       "property": "transition",
       "value": "none !important",
-      "owner": "src/app/global.css:543"
+      "owner": "src/app/global.css:632"
     },
     {
       "selector": ".no-transitions, .no-transitions *, .no-transitions *::before, .no-transitions *::after",
       "property": "transition-duration",
       "value": "0s !important",
-      "owner": "src/app/global.css:580"
+      "owner": "src/app/global.css:669"
     },
     {
       "selector": ".no-transitions, .no-transitions *, .no-transitions *::before, .no-transitions *::after",
       "property": "animation-duration",
       "value": "0s !important",
-      "owner": "src/app/global.css:581"
+      "owner": "src/app/global.css:670"
     },
     {
       "selector": "@media (prefers-reduced-motion: reduce) › .preview-loading-progress, .preview-loading-progress[data-loading=\"true\"]",
       "property": "transition",
       "value": "none",
-      "owner": "src/app/global.css:1217"
+      "owner": "src/app/global.css:1306"
     },
     {
       "selector": "@media (prefers-reduced-motion: reduce) › .preview-loading-progress, .preview-loading-progress[data-loading=\"true\"]",
       "property": "animation",
       "value": "none",
-      "owner": "src/app/global.css:1218"
+      "owner": "src/app/global.css:1307"
     },
     {
       "selector": "@media (prefers-reduced-motion: no-preference) › .dc-caret",
@@ -4270,22 +4822,22 @@
   "reducedMotion": [
     {
       "query": "(prefers-reduced-motion: no-preference) and (forced-colors: none)",
-      "owner": "src/app/global.css:403",
+      "owner": "src/app/global.css:492",
       "within": "@utility live-tool-shine"
     },
     {
       "query": "(prefers-reduced-motion: reduce), (forced-colors: active)",
-      "owner": "src/app/global.css:476",
+      "owner": "src/app/global.css:565",
       "within": "@utility live-activity-focus"
     },
     {
       "query": "(prefers-reduced-motion: reduce), (forced-colors: active)",
-      "owner": "src/app/global.css:489",
+      "owner": "src/app/global.css:578",
       "within": "@utility live-activity-focus-counter"
     },
     {
       "query": "(prefers-reduced-motion: reduce)",
-      "owner": "src/app/global.css:1214",
+      "owner": "src/app/global.css:1303",
       "within": null
     },
     {
@@ -5123,7 +5675,10 @@
     }
   ],
   "unresolved": [
+    "--background-image-composer-seam-above (root): linear-gradient(var(--chat-composer-attached-tint), var(--chat-composer-attached-tint)), linear-gradient( to top, transparent 0 var(--chat-composer-attachment-overlap), rgb(0 0 0 / 18%) var(--chat-composer-attachment-overlap), transparent calc(var(--chat-composer-attachment-overlap) + 10px) )",
     "--workspace-controls-left (root): calc(env(safe-area-inset-left) + 0.75rem)",
-    "--workspace-controls-right (root): calc(env(safe-area-inset-right) + 0.75rem)"
+    "--workspace-controls-right (root): calc(env(safe-area-inset-right) + 0.75rem)",
+    "--workspace-gutter-end (root): calc(env(safe-area-inset-right) + 0.75rem)",
+    "--workspace-gutter-start (root): calc(env(safe-area-inset-left) + 0.75rem)"
   ]
 }

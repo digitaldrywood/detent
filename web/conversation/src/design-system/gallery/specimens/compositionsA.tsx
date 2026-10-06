@@ -250,7 +250,7 @@ const threadSidebar: GalleryDoc = {
       id: "rows",
       title: "Threads: running, needs you, unread, active, long title",
       note: "The thread list on its own, inside a non-collapsible sidebar; App sidebar layout shows it in the offcanvas shell.",
-      height: 620,
+      height: 780,
       render: () => <ThreadSidebarSpecimen conversations={CONVERSATIONS} />,
     },
     {
@@ -401,17 +401,6 @@ const workspacePageContainer: GalleryDoc = {
   ],
 };
 
-const commandPalette: GalleryDoc = {
-  meta: {
-    name: "Command palette",
-    kind: "composition",
-    group: "Workspace",
-    source: "src/app/components/CommandPalette.tsx",
-  },
-  excluded:
-    "The app's CommandPalette owns the open state, reads the shell's palette context, the new-project and new-issue providers, and issue search through useWorkIssueItems → useWorkHttp → useClient, which needs a live hub client. Its rendered parts are shown under Command palette content (CommandPaletteContent + CommandPaletteResults in their dialog).",
-};
-
 const FAVICON_PROJECTS = {
   "default (no icon)": toEnvironmentProject(PROJECTS[0] as never),
   "emoji override": { ...toEnvironmentProject(PROJECTS[0] as never), projectIcon: { kind: "emoji" as const, emoji: "🚀" } },
@@ -465,7 +454,7 @@ function statusThread(overrides: Record<string, unknown>): StatusThread {
   } as unknown as StatusThread;
 }
 
-const STATUS_THREADS: Record<string, StatusThread> = {
+export const STATUS_THREADS: Record<string, StatusThread> = {
   working: statusThread({ session: { status: "running" } }),
   connecting: statusThread({ session: { status: "starting" } }),
   "awaiting input": statusThread({ hasPendingUserInput: true }),
@@ -626,13 +615,13 @@ const chatHeader: GalleryDoc = {
       id: "linked",
       title: "Linked conversation: git group and open-in",
       note: "Double-click the title to rename. The project actions menu lists the conversation's actions.",
-      minHeight: 420,
+      minHeight: 220,
       render: () => <ChatHeaderSpecimen linked title="Lock renewal waits on a healthy handoff" />,
     },
     {
       id: "unlinked",
       title: "Unlinked chat with a long title",
-      minHeight: 360,
+      minHeight: 160,
       render: () => <ChatHeaderSpecimen linked={false} title={LONG_LABEL} />,
     },
   ],
@@ -1112,8 +1101,8 @@ const PLAN = [
   "3. Add an integration test for a 30s and a 2m lease.",
   "4. Update the changelog.",
   "",
-  "```go",
-  "interval := l.lease / 2",
+  "```ts",
+  "const interval = lock.leaseMs / 2;",
   "```",
   "",
   "Risks: a very short lease renews often; cap the minimum at 5s.",
@@ -1153,7 +1142,6 @@ export const COMPOSITIONS_A: Readonly<Record<string, GalleryDoc>> = {
   "workspace-page-header": workspacePageHeader,
   "workspace-page-container": workspacePageContainer,
   "workspace-breadcrumb": workspaceBreadcrumb,
-  "command-palette": commandPalette,
   "project-favicon": projectFavicon,
   "thread-status-indicators": threadStatusIndicators,
   "git-actions-control": gitActionsControl,

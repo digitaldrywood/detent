@@ -164,6 +164,30 @@ export const collapsible: GalleryDoc = {
         </div>
       ),
     },
+    {
+      id: "animate",
+      title: "Panel animate: on and off",
+      note: "Click each trigger. `animate` (the default) travels the panel's height; `animate={false}` snaps open and closed, for panels whose content resizes on its own.",
+      render: () => (
+        <div className="flex w-80 max-w-full flex-col gap-3">
+          {[true, false].map((animate) => (
+            <Collapsible key={String(animate)} className="rounded-lg border p-2">
+              <CollapsibleTrigger className="group flex w-full items-center gap-1.5 text-sm">
+                <ChevronRightIcon className="size-4 transition-transform group-data-[panel-open]:rotate-90" />
+                <span className="font-mono text-2xs text-muted-foreground">animate={String(animate)}</span>
+              </CollapsibleTrigger>
+              <CollapsiblePanel animate={animate}>
+                <ul className="mt-2 flex flex-col gap-1 ps-6 text-muted-foreground text-xs">
+                  <li>Read 4 files</li>
+                  <li>Ran npm test</li>
+                  <li>Edited src/app/router.tsx</li>
+                </ul>
+              </CollapsiblePanel>
+            </Collapsible>
+          ))}
+        </div>
+      ),
+    },
   ],
 };
 

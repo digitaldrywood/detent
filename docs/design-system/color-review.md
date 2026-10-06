@@ -1,6 +1,6 @@
-# Color review
+# Color contrast
 
-This review records how Detent's colour tokens perform. It reports findings; it does not change any value. A fix to a finding is a scoped visual decision in the owning stylesheet (see [Foundations](foundations.md#token-ownership)).
+This page records the measured contrast of Detent's colour tokens and states which pairs are safe for text. The ratios are properties of the tokens, generated from the stylesheets; a value changes only in its owning stylesheet (see [Foundations](foundations.md#token-ownership)), and the tables follow on the next `npm run design:tokens`.
 
 ## Method
 
@@ -68,21 +68,27 @@ Public sign-in exception (`.detent-sign-in`):
 | primary-foreground on primary | 4.5:1 | `#ffffff` on `#0f766e` | 5.47 pass | `#0b0d10` on `#2dd4bf` | 10.45 pass |
 <!-- tokens:contrast:end -->
 
-## Findings
+## Using the pairs
 
-Every workspace text pair meets 4.5:1 at the token level, with the one exception in finding 1. The findings are listed in order of consequence.
+These rules follow from the measured ratios above. They apply to the default appearance settings; a runtime contrast setting only raises the ratios.
 
-1. **`update-foreground` on `update-surface` is 3.89:1 in light mode, so it fails as normal text.** In light mode both colours derive from `--primary` (`oklch(0.571 0.21 264)`, about `#346bf1`). `--update-foreground` is the primary itself, and `--update-surface` is the primary at 12% over the canvas. No component currently uses the `update` utilities, so the failure is latent. Fix it in the owner before adopting the update role.
-2. **Solid actions have little margin.** White on `--primary` measures 4.64:1 in both themes. `--message-action` and `--ring` share the colour. The pair passes, but a hover or pressed fill that lightens it, or a translucent variant such as `bg-primary/90`, can fall below 4.5:1.
-3. **`--sidebar-icon-color` is below 3:1 for icons.** It measures 2.27:1 light and 2.50:1 dark on the portaled sidebar, and 2.27:1 light and 2.79:1 dark in the app sidebar. Sidebar menu-button icons (`components/ui/sidebar.tsx`) and the update pill use it. Both are paired with a visible text label, which limits the impact. Because the variable is declared only on `:root`, the app sidebar inherits the root-computed colour rather than mixing against its own surface.
-4. **Supporting text has little headroom.** `muted-foreground` measures 4.62:1 on `muted` in light mode and 4.84:1 on `card` in dark mode. Components often lower it further with an opacity modifier. The 2026-10-06 snapshot counts 46 uses of `text-muted-foreground/70` and 21 at other opacities. At 70% the pair on `background` falls to 2.71:1 in light and 3.02:1 in dark, so this treatment suits only non-essential text.
-5. **Out-of-gamut colours.** The Tailwind v4 emerald, amber and blue steps used by `success`, `warning`, `info` and the dark `update-foreground` lie outside sRGB. Their hex values are clipped, and wide-gamut displays render them more saturated. The ratios above use the clipped sRGB values.
+- **Body and label text.** `foreground`, `card-foreground`, `popover-foreground`, `secondary-foreground`, `accent-foreground` and `message-foreground` on their own surfaces pass 4.5:1 in both themes. Use them for any text a person must read.
+- **Supporting text.** `muted-foreground` passes 4.5:1 on `background`, `card`, `popover` and `muted` with little headroom (about 4.6:1 at its lowest). Use it at full strength for metadata and descriptions. An opacity modifier below 100% (`text-muted-foreground/70` and lower) drops it below 4.5:1, so reduced-opacity text is for content a person can ignore without losing information, never for a value, a status or an instruction.
+- **Placeholders.** `placeholder` is for placeholder text only; it is not a supporting-text colour.
+- **Outcome text.** `error-foreground`, `warning-foreground`, `success-foreground` and `info-foreground` pass on `background` and on their own `-surface` in both themes. `update-foreground` on `update-surface` is large-text only in light mode: use the `update` role for icons and for text of 18.66px bold or 24px and larger, not for body or badge text.
+- **Solid fills.** `primary-foreground` on `primary` (and `destructive-foreground` on `destructive`) pass at about 4.6:1, with little headroom. `Button` owns the hover and pressed fills (`bg-primary/90`); text never sits on a lighter tint of a solid action colour.
+- **Sidebar icons.** `--sidebar-icon-color` measures below 3:1 against the sidebar. A sidebar icon always sits beside a visible text label and is never the only cue.
+- **Wide-gamut colours.** The emerald, amber and blue steps behind `success`, `warning`, `info` and the dark `update-foreground` lie outside sRGB. The ratios use their clipped sRGB values; wide-gamut displays show them more saturated.
+- **Sign-in surface.** All three of its measured pairs pass.
 
-The public sign-in exception passes on all three of its pairs.
+Static ratios do not prove the painted result. When a component composites colours (opacity, glass, grain, nested translucent fills), measure the rendered pixels in both themes.
 
 ## Values that are not statically resolvable
 
 <!-- tokens:unresolved:start -->
+- `--background-image-composer-seam-above (root): linear-gradient(var(--chat-composer-attached-tint), var(--chat-composer-attached-tint)), linear-gradient( to top, transparent 0 var(--chat-composer-attachment-overlap), rgb(0 0 0 / 18%) var(--chat-composer-attachment-overlap), transparent calc(var(--chat-composer-attachment-overlap) + 10px) )`
 - `--workspace-controls-left (root): calc(env(safe-area-inset-left) + 0.75rem)`
 - `--workspace-controls-right (root): calc(env(safe-area-inset-right) + 0.75rem)`
+- `--workspace-gutter-end (root): calc(env(safe-area-inset-right) + 0.75rem)`
+- `--workspace-gutter-start (root): calc(env(safe-area-inset-left) + 0.75rem)`
 <!-- tokens:unresolved:end -->

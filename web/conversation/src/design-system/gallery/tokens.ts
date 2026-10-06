@@ -1,65 +1,55 @@
-// Design tokens for the Foundations section, when the generated file exists.
+// Design tokens for the Foundations pages.
 //
 // `src/design-system/tokens.generated.json` is produced by
-// `scripts/design-tokens.ts`. The gallery only reads it, and tolerates both its
-// absence and any of the shapes it may take while it settles: an array of
-// tokens, or an object holding one under `tokens` or `entries`.
+// `scripts/design-tokens.ts`; `../tokens.ts` types it. The gallery only reads
+// it: a value changes in its owning stylesheet, never here.
+import React from "react";
 
-export interface TokenSwatch {
-  readonly name: string;
-  readonly group: string;
-  readonly scope: string | null;
-  readonly light: string | null;
-  readonly dark: string | null;
+import { tokenFile, type Theme, type Token, type TokenGroup, type TokenValue } from "../tokens";
+
+export { tokenFile };
+export type { Theme, Token, TokenGroup, TokenValue };
+
+/** The `:root` tokens of the given groups, in the generated order. */
+export function rootTokens(...groups: readonly TokenGroup[]): Token[] {
+  return tokenFile.tokens.filter((token) => token.scope === "root" && groups.includes(token.group));
 }
 
-const files = import.meta.glob<unknown>("../tokens.generated.json", { eager: true, import: "default" });
-
-function str(value: unknown): string | null {
-  return typeof value === "string" && value !== "" ? value : null;
+/** The `:root` tokens whose name starts with one of the prefixes. */
+export function rootTokensNamed(...prefixes: readonly string[]): Token[] {
+  return tokenFile.tokens.filter(
+    (token) => token.scope === "root" && prefixes.some((prefix) => token.name.startsWith(prefix)),
+  );
 }
 
-/** A colour from a token value: a string, or an object carrying `hex`/`value`. */
-function colour(value: unknown): string | null {
-  if (typeof value === "string") return value;
-  if (value !== null && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return str(record.hex) ?? str(record.value) ?? str(record.resolved);
-  }
-  return null;
+/** The value a token takes in a theme. */
+export function valueIn(token: Token, theme: Theme): TokenValue | null {
+  return theme === "dark" ? (token.dark ?? token.light) : (token.light ?? token.dark);
 }
 
-export function normalizeTokens(raw: unknown): TokenSwatch[] {
-  const rows = Array.isArray(raw)
-    ? raw
-    : raw !== null && typeof raw === "object"
-      ? ((raw as Record<string, unknown>).tokens ?? (raw as Record<string, unknown>).entries)
-      : null;
-  if (!Array.isArray(rows)) return [];
-  const tokens: TokenSwatch[] = [];
-  for (const row of rows) {
-    if (row === null || typeof row !== "object") continue;
-    const item = row as Record<string, unknown>;
-    const name = str(item.name);
-    if (name === null) continue;
-    const hex = item.hex;
-    tokens.push({
-      name,
-      group: str(item.group) ?? "other",
-      scope: str(item.scope),
-      light: colour(item.light) ?? colour(hex !== null && typeof hex === "object" ? (hex as Record<string, unknown>).light : hex),
-      dark: colour(item.dark) ?? colour(hex !== null && typeof hex === "object" ? (hex as Record<string, unknown>).dark : null),
-    });
-  }
-  return tokens;
+/** The theme of the frame a specimen renders in, when a frame provides one. */
+export const FrameThemeContext = React.createContext<Theme | null>(null);
+
+/** The theme the current document renders in (a frame sets it on `<html>`). */
+export function documentTheme(): Theme {
+  return globalThis.document?.documentElement.dataset.theme === "light" ? "light" : "dark";
 }
 
-export function galleryTokens(): TokenSwatch[] {
-  return normalizeTokens(Object.values(files)[0]);
+/** The frame's theme, read from its context so it is right on the first render. */
+export function useFrameTheme(): Theme {
+  return React.useContext(FrameThemeContext) ?? documentTheme();
 }
 
 /** Only values a browser paints as a colour are shown as swatches. */
-export function isPaintable(value: string | null): value is string {
-  if (value === null) return false;
+export function isPaintable(value: string | null | undefined): value is string {
+  if (value === null || value === undefined) return false;
   return /^(#|rgb|hsl|oklch|oklab|lab|lch|color\()/i.test(value.trim());
+}
+
+/** A value for display: the hex for colours, px for lengths, else the declaration. */
+export function displayValue(value: TokenValue | null): string {
+  if (value === null) return "—";
+  if (value.hex !== null) return value.hex;
+  if (value.px !== null) return `${value.px}px`;
+  return value.resolved;
 }

@@ -4,18 +4,18 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 107 entries; by kind: 46 primitive, 55 composition, 6 surface; by status: 107 available, 0 proposed, 0 exception.
+Catalog totals: 134 entries; by kind: 51 primitive, 77 composition, 6 surface; by status: 134 available, 0 proposed, 0 exception.
 
 ## Actions
 
 ### Button
 
-Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size="compact"` is the toolbar size family; `icon*` sizes need an accessible name.
+Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size="compact"` is the toolbar size family; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu).
 
 - Kind: Primitive; status: available; id: `button`.
-- Import: `import { Button, buttonVariants } from "~/components/ui/button";`
+- Import: `import { Button, buttonVariants, InlineButton, ButtonSize, ButtonVariant } from "~/components/ui/button";`
 - Source: [src/components/ui/button.tsx](../../web/conversation/src/components/ui/button.tsx).
-- Variants: `variant`: `default`, `destructive`, `destructive-outline`, `ghost`, `ghost-muted`, `glass`, `link`, `outline`, `overlay`, `secondary`, `warning-outline`; `size`: `compact`, `default`, `icon`, `icon-lg`, `icon-micro`, `icon-sm`, `icon-xl`, `icon-xs`, `lg`, `micro`, `sm`, `xl`, `xs`.
+- Variants: `variant`: `default`, `secondary`, `outline`, `ghost`, `ghost-muted`, `ghost-destructive`, `destructive`, `destructive-outline`, `warning-outline`, `glass`, `overlay`, `link`, `media-close`, `media-navigation`; `size`: `micro`, `compact`, `xs`, `sm`, `sm-multiline`, `default`, `lg`, `xl`, `icon-tiny`, `icon-micro`, `icon-xs`, `icon-sm`, `icon`, `icon-lg`, `icon-xl`; `tone`: `default`, `muted`, `destructive`, `picker`.
 - States: hover, focus-visible, pressed, disabled.
 - Keyboard: Native button: Tab focuses, Enter and Space activate. With `render`, the rendered element must stay focusable and keep button semantics.
 - Avoid: Restyling with arbitrary radius, fill or font classes, or calling `buttonVariants` from app code to dress a non-button. Use Badge for static status and a link for navigation that is not an action.
@@ -23,12 +23,12 @@ Every clickable action: form submission, toolbar and composer actions, icon-only
 
 ### Toggle
 
-A two-state control whose state is visible on the control itself, such as a formatting or view toggle.
+A two-state control whose state is visible on the control itself, such as a formatting or view toggle. `variant="pill"` is a rounded filter chip.
 
 - Kind: Primitive; status: available; id: `toggle`.
 - Import: `import { Toggle, toggleVariants } from "~/components/ui/toggle";`
 - Source: [src/components/ui/toggle.tsx](../../web/conversation/src/components/ui/toggle.tsx).
-- Variants: `variant`: `default`, `ghost`, `outline`, `segmented`; `size`: `compact`, `default`, `lg`, `segmented`, `sm`, `xs`.
+- Variants: `variant`: `default`, `ghost`, `outline`, `segmented`, `pill`; `size`: `compact`, `default`, `lg`, `segmented`, `sm`, `xs`.
 - States: hover, focus-visible, pressed, disabled.
 - Keyboard: Tab focuses; Enter and Space flip the pressed state, exposed as aria-pressed.
 - Avoid: Settings that persist a preference (use Switch) or a choice among peers (use ToggleGroup).
@@ -67,7 +67,7 @@ The glyph inside a refresh or retry Button; `refreshing` spins it while the requ
 - Kind: Primitive; status: available; id: `refresh-icon`.
 - Import: `import { RefreshIcon } from "~/components/ui/refresh-icon";`
 - Source: [src/components/ui/refresh-icon.tsx](../../web/conversation/src/components/ui/refresh-icon.tsx).
-- Variants: none.
+- Variants: `size`: `xs`, `sm`, `md`, `lg`.
 - States: refreshing.
 - Keyboard: Not focusable; the enclosing Button owns keyboard access and the accessible name.
 - Avoid: A standalone loading indicator (use Spinner) or a decorative animation.
@@ -82,7 +82,7 @@ Single-line text entry with an associated Label; `size="compact"` in toolbars an
 - Kind: Primitive; status: available; id: `input`.
 - Import: `import { Input, InputProps } from "~/components/ui/input";`
 - Source: [src/components/ui/input.tsx](../../web/conversation/src/components/ui/input.tsx).
-- Variants: `size`: `sm`, `compact`, `default`, `lg`.
+- Variants: `size`: `sm`, `compact`, `default`, `lg`; `font`: `default`, `mono`.
 - States: hover, focus-visible, disabled, invalid, read-only.
 - Keyboard: Native text input editing and selection.
 - Avoid: Multi-line text (use Textarea), choices from a known list (use Select or Combobox) and search inside a popup (the Command and Combobox inputs own that).
@@ -135,8 +135,8 @@ A boolean setting that takes effect immediately, typically as the trailing contr
 - Import: `import { Switch } from "~/components/ui/switch";`
 - Source: [src/components/ui/switch.tsx](../../web/conversation/src/components/ui/switch.tsx).
 - Variants: `size`: `default`, `sm`.
-- States: hover, focus-visible, checked, disabled.
-- Keyboard: Tab focuses; Space toggles.
+- States: hover, focus-visible, checked, disabled, mixed.
+- Keyboard: Tab focuses; Space or Enter toggles.
 - Avoid: Selections submitted with a form (use Checkbox) and actions (use Button).
 - Related: [Checkbox](#checkbox), [Settings layout](#settings-layout).
 
@@ -250,7 +250,7 @@ Choosing one or more values from a long or searchable list, such as projects, mo
 Free text with suggestions, and the input layer the Command primitive builds on.
 
 - Kind: Primitive; status: available; id: `autocomplete`.
-- Import: `import { Autocomplete, AutocompleteInput, AutocompleteTrigger, AutocompletePopup, AutocompleteItem, AutocompleteSeparator, AutocompleteGroup, AutocompleteGroupLabel, AutocompleteEmpty, AutocompleteValue, AutocompleteList, AutocompleteClear, AutocompleteStatus, AutocompleteRow, AutocompleteCollection, useAutocompleteFilter } from "~/components/ui/autocomplete";`
+- Import: `import { Autocomplete, AutocompleteInput, AutocompleteTrigger, AutocompletePopup, AutocompleteItem, AutocompleteSeparator, AutocompleteGroup, AutocompleteGroupLabel, AutocompleteEmpty, AutocompleteValue, AutocompleteList, AutocompleteClear, AutocompleteStatus, AutocompleteRow, AutocompleteCollection, useAutocompleteFilter, AutocompleteListHeading, AutocompleteListVirtualized } from "~/components/ui/autocomplete";`
 - Source: [src/components/ui/autocomplete.tsx](../../web/conversation/src/components/ui/autocomplete.tsx).
 - Variants: `size`: `sm`, `default`, `lg`.
 - States: focus-visible, open, highlighted, empty, disabled.
@@ -263,7 +263,7 @@ Free text with suggestions, and the input layer the Command primitive builds on.
 The searchable command surface behind the command palette and similar quick-pick dialogs.
 
 - Kind: Primitive; status: available; id: `command`.
-- Import: `import { CommandCreateHandle, Command, CommandCollection, CommandDialog, CommandDialogPopup, CommandDialogTrigger, CommandEmpty, CommandFooter, CommandFooterAction, CommandGroup, CommandGroupLabel, CommandInput, CommandItem, CommandList, CommandPanel, CommandSeparator, CommandShortcut } from "~/components/ui/command";`
+- Import: `import { CommandCreateHandle, Command, CommandCollection, CommandDialog, CommandDialogPopup, CommandDialogTrigger, CommandEmpty, CommandFooter, CommandFooterAction, CommandGroup, CommandGroupLabel, CommandInput, CommandItem, CommandList, CommandPanel, CommandSeparator, CommandShortcut, CommandListHeading, CommandListVirtualized } from "~/components/ui/command";`
 - Source: [src/components/ui/command.tsx](../../web/conversation/src/components/ui/command.tsx).
 - Variants: none.
 - States: open, highlighted, empty.
@@ -275,12 +275,12 @@ The searchable command surface behind the command palette and similar quick-pick
 
 ### Dialog
 
-A focused task that interrupts the page: a short form, a confirmation with input, a detail that needs the whole attention.
+A focused task that interrupts the page: a short form, a confirmation with input, a detail that needs the whole attention. `variant="media"` is the full-bleed image and video viewer.
 
 - Kind: Primitive; status: available; id: `dialog`.
-- Import: `import { DialogCreateHandle, Dialog, DialogTrigger, DialogPortal, DialogClose, DialogBackdrop, DialogOverlay, DialogPopup, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogPanel, DialogViewport, DIALOG_BACKDROP_CLASS, DIALOG_POPUP_CLASS, DIALOG_MOBILE_SHEET_CLASS } from "~/components/ui/dialog";`
+- Import: `import { DialogCreateHandle, Dialog, DialogTrigger, DialogPortal, DialogClose, DialogBackdrop, DialogOverlay, DialogPopup, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogPanel, DialogViewport, DIALOG_BACKDROP_CLASS, DIALOG_POPUP_CLASS, DIALOG_MOBILE_SHEET_CLASS, DIALOG_MEDIA_BACKDROP_CLASS, DIALOG_MEDIA_POPUP_CLASS } from "~/components/ui/dialog";`
 - Source: [src/components/ui/dialog.tsx](../../web/conversation/src/components/ui/dialog.tsx), with [src/components/ui/dialog-styles.ts](../../web/conversation/src/components/ui/dialog-styles.ts).
-- Variants: `footerVariant`: `default`, `bare`.
+- Variants: `footerVariant`: `default`, `bare`; `variant`: `default`, `media`.
 - States: open, nested, focus-visible.
 - Keyboard: Focus moves into the dialog and is contained; Escape closes; focus returns to the trigger.
 - Avoid: Destructive confirmations (use AlertDialog), docked panels (use Sheet) and contextual pickers (use Popover).
@@ -314,38 +314,38 @@ A panel docked to a viewport edge, chiefly to present the sidebar and right pane
 
 ### Popover
 
-A small contextual interaction anchored to its trigger: a filter, a short form, pinned help.
+A small contextual interaction anchored to its trigger: a filter, a short form, pinned help. `width` sets sm 256px, md 320px or lg 384px; `padding` default, compact or none; `variant="panel"` docks a details panel at the sheet layer, at the thread-details width; `keepMounted` keeps a heavy popup alive while closed.
 
 - Kind: Primitive; status: available; id: `popover`.
 - Import: `import { PopoverCreateHandle, Popover, PopoverTrigger, PopoverPopup, PopoverContent, PopoverTitle, PopoverDescription, PopoverClose } from "~/components/ui/popover";`
 - Source: [src/components/ui/popover.tsx](../../web/conversation/src/components/ui/popover.tsx).
-- Variants: none.
-- States: open, focus-visible.
+- Variants: `variant`: `default`, `panel`; `width`: `auto`, `sm`, `md`, `lg`; `padding`: `default`, `compact`, `none`.
+- States: open, focus-visible, kept mounted.
 - Keyboard: The trigger opens it; focus moves into interactive content; Escape closes and returns focus.
 - Avoid: Lists of actions (use Menu), hover-only supplementary text (use Tooltip) and long tasks (use Dialog).
 - Related: [Menu](#menu), [Tooltip](#tooltip), [Preview card](#preview-card).
 
 ### Menu
 
-A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus.
+A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus. `density="touch"` gives rows a 40px height for touch; a `ghost` item is a quiet action row; `MenuItemLabel` holds an item's text beside its icon.
 
 - Kind: Primitive; status: available; id: `menu`.
-- Import: `import { MenuCreateHandle, Menu, MenuPortal, MenuTrigger, MenuPopup, MenuGroup, MenuItem, MenuCheckboxItem, MenuRadioGroup, MenuRadioItem, MenuRadioItemIndicator, MenuGroupLabel, MenuSeparator, MenuShortcut, MenuSub, MenuSubTrigger, MenuSubPopup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "~/components/ui/menu";`
+- Import: `import { MenuCreateHandle, Menu, MenuPortal, MenuTrigger, MenuPopup, MenuGroup, MenuItem, MenuCheckboxItem, MenuRadioGroup, MenuRadioItem, MenuRadioItemIndicator, MenuGroupLabel, MenuSeparator, MenuShortcut, MenuSub, MenuSubTrigger, MenuSubPopup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, MenuItemLabel } from "~/components/ui/menu";`
 - Source: [src/components/ui/menu.tsx](../../web/conversation/src/components/ui/menu.tsx).
-- Variants: `itemVariant`: `default`, `destructive`; `checkboxItemVariant`: `default`, `switch`.
-- States: open, highlighted, checked, disabled.
+- Variants: `itemVariant`: `default`, `destructive`, `ghost`; `checkboxItemVariant`: `default`, `switch`; `density`: `default`, `touch`.
+- States: open, highlighted, checked, disabled, kept mounted.
 - Keyboard: Enter, Space or arrow keys open from the trigger; arrow keys move; typeahead jumps; Enter activates; ArrowRight opens a submenu; Escape closes and returns focus.
 - Avoid: Choosing a saved value (use Select) and searching (use Combobox or Command).
 - Related: [Select](#select), [Popover](#popover), [Button](#button).
 
 ### Tooltip
 
-Brief supplementary text for a control that already has an accessible name, such as an icon button's label and shortcut.
+Brief supplementary text for a control that already has an accessible name, such as an icon button's label and shortcut. `variant="code"` shows a path or command in monospace; wrap a scrolling region in `TooltipScrollDismissArea` so open tooltips close when it scrolls.
 
 - Kind: Primitive; status: available; id: `tooltip`.
-- Import: `import { TooltipCreateHandle, TooltipProvider, Tooltip, TooltipTrigger, TooltipPopup } from "~/components/ui/tooltip";`
+- Import: `import { TooltipCreateHandle, TooltipProvider, Tooltip, TooltipTrigger, TooltipPopup, TooltipScrollDismissArea } from "~/components/ui/tooltip";`
 - Source: [src/components/ui/tooltip.tsx](../../web/conversation/src/components/ui/tooltip.tsx).
-- Variants: `variant`: `default`, `glass`.
+- Variants: `variant`: `default`, `glass`, `code`.
 - States: open.
 - Keyboard: Opens when its trigger receives keyboard focus; Escape closes. Content is not focusable.
 - Avoid: The only accessible name of a control, essential instructions, or interactive content (use Popover).
@@ -368,12 +368,12 @@ A rich preview of a linked entity, such as a pull request link preview.
 
 ### Alert
 
-A persistent inline message in the place the user must act: a warning above a form, an unavailable state with a corrective action.
+A persistent inline message in the place the user must act: a warning above a form, an unavailable state with a corrective action. `surface="glass"` sits over imagery; `variant="sidebar"` is for notices inside the sidebar.
 
 - Kind: Primitive; status: available; id: `alert`.
 - Import: `import { Alert, AlertTitle, AlertDescription, AlertAction } from "~/components/ui/alert";`
 - Source: [src/components/ui/alert.tsx](../../web/conversation/src/components/ui/alert.tsx).
-- Variants: `variant`: `default`, `error`, `info`, `success`, `warning`; `controlAlignment`: `center`, `first-line`.
+- Variants: `variant`: `default`, `info`, `success`, `warning`, `error`, `sidebar`; `controlAlignment`: `center`, `first-line`; `surface`: `default`, `glass`.
 - States: none of its own.
 - Keyboard: Not interactive itself; AlertAction holds focusable actions.
 - Avoid: Transient confirmations (use a toast) and status labels (use Badge).
@@ -381,12 +381,12 @@ A persistent inline message in the place the user must act: a warning above a fo
 
 ### Badge
 
-A short static status or count with semantic colour, paired with text so colour is not the only signal.
+A short static status or count with semantic colour, paired with text so colour is not the only signal. `variant="label"` renders a code-host label, tinted from the `--label` colour set in `style`.
 
 - Kind: Primitive; status: available; id: `badge`.
 - Import: `import { Badge, badgeVariants } from "~/components/ui/badge";`
 - Source: [src/components/ui/badge.tsx](../../web/conversation/src/components/ui/badge.tsx).
-- Variants: `variant`: `default`, `destructive`, `error`, `info`, `outline`, `secondary`, `success`, `warning`; `size`: `control`, `default`, `lg`, `sm`.
+- Variants: `variant`: `default`, `secondary`, `outline`, `info`, `success`, `warning`, `error`, `destructive`, `label`; `size`: `control`, `default`, `lg`, `sm`.
 - States: none of its own.
 - Keyboard: Static by default; with `render` it can become a link or button and takes that element's keyboard behaviour.
 - Avoid: Actions (use Button) and context reference chips in the composer (use the file tag chip).
@@ -407,12 +407,12 @@ Transient feedback about an action's outcome, scoped to a thread where relevant;
 
 ### Spinner
 
-Indeterminate progress inside a control or small region, keeping the surrounding layout and label stable.
+Indeterminate progress inside a control or small region, keeping the surrounding layout and label stable. `size` matches the icon sizes (xs 12px to lg 20px); `tone` is `current` (inherits the text colour) or `muted`.
 
 - Kind: Primitive; status: available; id: `spinner`.
 - Import: `import { Spinner } from "~/components/ui/spinner";`
 - Source: [src/components/ui/spinner.tsx](../../web/conversation/src/components/ui/spinner.tsx).
-- Variants: none.
+- Variants: `size`: `xs`, `sm`, `md`, `lg`; `tone`: `current`, `muted`.
 - States: loading.
 - Keyboard: Not focusable.
 - Avoid: Loading a whole region whose shape is known (use Skeleton).
@@ -420,12 +420,12 @@ Indeterminate progress inside a control or small region, keeping the surrounding
 
 ### Skeleton
 
-A placeholder with the shape of content that is loading, using the shared stepped animation.
+A placeholder with the shape of content that is loading, using the shared stepped animation. `shape` is `block` (the default rectangle), `card` or `pill`.
 
 - Kind: Primitive; status: available; id: `skeleton`.
 - Import: `import { Skeleton } from "~/components/ui/skeleton";`
 - Source: [src/components/ui/skeleton.tsx](../../web/conversation/src/components/ui/skeleton.tsx).
-- Variants: none.
+- Variants: `shape`: `block`, `card`, `pill`.
 - States: loading.
 - Keyboard: Not focusable.
 - Avoid: Inventing another shimmer, and showing skeletons for content that failed to load (show the error state).
@@ -433,12 +433,12 @@ A placeholder with the shape of content that is loading, using the shared steppe
 
 ### Empty state
 
-Explaining why a region has no content and offering the relevant next action.
+Explaining why a region has no content and offering the relevant next action. `size="compact"` fits panels and popovers; `hero` is a first-run page.
 
 - Kind: Primitive; status: available; id: `empty`.
 - Import: `import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyContent, EmptyMedia } from "~/components/ui/empty";`
 - Source: [src/components/ui/empty.tsx](../../web/conversation/src/components/ui/empty.tsx).
-- Variants: `variant`: `default`, `icon`.
+- Variants: `variant`: `default`, `icon`; `size`: `compact`, `default`, `hero`.
 - States: none of its own.
 - Keyboard: Not interactive itself; EmptyContent holds focusable actions.
 - Avoid: Errors and unavailable capabilities that are not simply absence (use Alert).
@@ -508,7 +508,7 @@ Showing and hiding a secondary section in place, such as tool details or a lane.
 - Import: `import { Collapsible, CollapsibleTrigger, CollapsiblePanel, CollapsibleContent } from "~/components/ui/collapsible";`
 - Source: [src/components/ui/collapsible.tsx](../../web/conversation/src/components/ui/collapsible.tsx).
 - Variants: none.
-- States: expanded, collapsed, focus-visible.
+- States: expanded, collapsed, focus-visible, animated.
 - Keyboard: The trigger is a button with aria-expanded; Enter and Space toggle.
 - Avoid: Hiding primary content or required form fields.
 - Related: [Collapsible section header](#collapsible-section-header).
@@ -537,6 +537,32 @@ Branch names, paths, worktree names and shas whose meaning is at both ends.
 - States: none of its own.
 - Keyboard: Not interactive; the full string remains selectable and readable by assistive technology.
 - Avoid: Prose and titles, which truncate at the end.
+
+### Animated height
+
+Easing a container to its content's new height when the content changes, optionally holding the old height while a replacement loads.
+
+- Kind: Primitive; status: available; id: `animated-height`.
+- Import: `import { AnimatedHeight } from "~/components/AnimatedHeight";`
+- Source: [src/components/AnimatedHeight.tsx](../../web/conversation/src/components/AnimatedHeight.tsx).
+- Variants: none.
+- States: resizing.
+- Keyboard: No behaviour of its own.
+- Avoid: Open and close disclosures (use Collapsible) and layout that should not animate.
+- Related: [Collapsible](#collapsible), [Wizard](#wizard).
+
+### Render error boundary
+
+Isolating a fragile renderer (highlighted code, diffs, files) so a render error shows a fallback and retries when resetKeys change.
+
+- Kind: Primitive; status: available; id: `render-error-boundary`.
+- Import: `import { RenderErrorBoundary } from "~/components/RenderErrorBoundary";`
+- Source: [src/components/RenderErrorBoundary.tsx](../../web/conversation/src/components/RenderErrorBoundary.tsx).
+- Variants: none.
+- States: failed.
+- Keyboard: No behaviour of its own.
+- Avoid: Handling expected errors such as failed requests; render those states directly.
+- Related: [Diff surface](#diff-surface), [Files surface](#files-surface), [Chat markdown](#chat-markdown).
 
 ## Data display
 
@@ -627,7 +653,7 @@ The shell around every workspace route: sidebar provider, resizable thread sideb
 
 - Kind: Composition; status: available; id: `app-sidebar-layout`.
 - Import: `import { AppSidebarLayout } from "~/components/AppSidebarLayout";`
-- Source: [src/components/AppSidebarLayout.tsx](../../web/conversation/src/components/AppSidebarLayout.tsx).
+- Source: [src/components/AppSidebarLayout.tsx](../../web/conversation/src/components/AppSidebarLayout.tsx), with [src/components/threadSidebarWidth.ts](../../web/conversation/src/components/threadSidebarWidth.ts).
 - Variants: none.
 - States: collapsed, resizing.
 - Keyboard: Hosts the sidebar control; focus order runs sidebar first, then the main region.
@@ -640,7 +666,7 @@ The app's navigation list: project sections, thread rows (SidebarThreadRow), dra
 
 - Kind: Composition; status: available; id: `thread-sidebar`.
 - Import: `import Sidebar from "~/components/Sidebar";`
-- Source: [src/components/Sidebar.tsx](../../web/conversation/src/components/Sidebar.tsx).
+- Source: [src/components/Sidebar.tsx](../../web/conversation/src/components/Sidebar.tsx), with [src/components/Sidebar.logic.ts](../../web/conversation/src/components/Sidebar.logic.ts), [src/components/Sidebar.drag.ts](../../web/conversation/src/components/Sidebar.drag.ts), [src/components/Sidebar.motion.ts](../../web/conversation/src/components/Sidebar.motion.ts), [src/components/Sidebar.pointer.ts](../../web/conversation/src/components/Sidebar.pointer.ts), [src/components/Sidebar.snooze.ts](../../web/conversation/src/components/Sidebar.snooze.ts), [src/components/threadActionMenu.logic.ts](../../web/conversation/src/components/threadActionMenu.logic.ts), [src/components/BranchToolbar.logic.ts](../../web/conversation/src/components/BranchToolbar.logic.ts).
 - Variants: none.
 - States: hover, active, selected, dragging, collapsed, empty.
 - Keyboard: Thread, draft and search-result rows are links or buttons in document order; row menus open with Enter or Space; drag reordering has a menu alternative.
@@ -653,7 +679,7 @@ The sidebar's header (brand, primary actions) and footer (utility menu, update p
 
 - Kind: Composition; status: available; id: `sidebar-chrome`.
 - Import: `import { SidebarChromeHeader, SidebarUtilityMenu, SidebarChromeFooter } from "~/components/sidebar/SidebarChrome";`
-- Source: [src/components/sidebar/SidebarChrome.tsx](../../web/conversation/src/components/sidebar/SidebarChrome.tsx).
+- Source: [src/components/sidebar/SidebarChrome.tsx](../../web/conversation/src/components/sidebar/SidebarChrome.tsx), with [src/components/pullRequest/pullRequestListPreferences.ts](../../web/conversation/src/components/pullRequest/pullRequestListPreferences.ts).
 - Variants: none.
 - States: hover, focus-visible, open.
 - Keyboard: Header and footer items are buttons or links; the utility menu is a Menu.
@@ -718,7 +744,7 @@ Global search and command dispatch across conversations, projects and destinatio
 
 - Kind: Composition; status: available; id: `command-palette`.
 - Import: `import { CommandPalette } from "~/app/components/CommandPalette";`
-- Source: [src/app/components/CommandPalette.tsx](../../web/conversation/src/app/components/CommandPalette.tsx).
+- Source: [src/app/components/CommandPalette.tsx](../../web/conversation/src/app/components/CommandPalette.tsx), with [src/components/CommandPalette.logic.ts](../../web/conversation/src/components/CommandPalette.logic.ts).
 - Variants: none.
 - States: open, highlighted, empty, loading.
 - Keyboard: Opened by the command-palette keybinding; arrow keys move; Enter runs; Escape closes and returns focus.
@@ -770,12 +796,64 @@ The chat header's source-control actions.
 
 - Kind: Composition; status: available; id: `git-actions-control`.
 - Import: `import GitActionsControl from "~/components/GitActionsControl";`
-- Source: [src/components/GitActionsControl.tsx](../../web/conversation/src/components/GitActionsControl.tsx).
+- Source: [src/components/GitActionsControl.tsx](../../web/conversation/src/components/GitActionsControl.tsx), with [src/components/GitActionsControl.logic.ts](../../web/conversation/src/components/GitActionsControl.logic.ts).
 - Variants: none.
 - States: disabled, loading, open.
 - Keyboard: A Group of a Button and a Menu trigger; menu keyboard behaviour as Menu.
 - Avoid: Separate commit or push buttons elsewhere in the header.
 - Related: [Chat header](#chat-header), [Group](#group), [Menu](#menu).
+
+### Thread command subtitle
+
+The second line of a thread result in the command palette: project favicon and name, branch or worktree, and whether it is the current thread.
+
+- Kind: Composition; status: available; id: `thread-command-subtitle`.
+- Import: `import { ThreadCommandSubtitle, ThreadCommandSubtitleVariant, CommandPaletteMetaDot, COMMAND_PALETTE_META_ICON_CLASS } from "~/components/ThreadCommandSubtitle";`
+- Source: [src/components/ThreadCommandSubtitle.tsx](../../web/conversation/src/components/ThreadCommandSubtitle.tsx).
+- Variants: `variant`: `favicon-workspace-harness`, `favicon-workspace`, `favicon-branch-harness`.
+- States: none of its own.
+- Keyboard: Not interactive; it sits inside a focusable palette row.
+- Avoid: Thread metadata in the sidebar or headers, which use the row and ThreadStatusIndicators; do not add new fields here, keep the line to project, checkout and current.
+- Related: [Command palette](#command-palette), [Command palette content](#command-palette-content), [Project favicon](#project-favicon).
+
+### Open in picker
+
+The chat header's Open control: open the worktree in the preferred editor, or the first destination (such as the linked issue) when no editor is reachable, with each disabled editor saying why.
+
+- Kind: Composition; status: available; id: `open-in-picker`.
+- Import: `import { OpenInPicker } from "~/components/chat/OpenInPicker";`
+- Source: [src/components/chat/OpenInPicker.tsx](../../web/conversation/src/components/chat/OpenInPicker.tsx).
+- Variants: none.
+- States: hover, focus-visible, open, disabled.
+- Keyboard: A split button in a Group: the primary is a button, the chevron opens a Menu with arrow-key navigation; the favourite-editor shortcut opens the preferred editor.
+- Avoid: A plain link or button that opens an editor or the file manager elsewhere; add a destination through the header actions' open targets instead of a second control.
+- Related: [Chat header](#chat-header), [Git actions control](#git-actions-control), [Menu](#menu), [Group](#group).
+
+### Project scripts control
+
+The chat header's project actions: run a project script, add or edit one in the action dialog, and reach the conversation actions from the same menu.
+
+- Kind: Composition; status: available; id: `project-scripts-control`.
+- Import: `import ProjectScriptsControl, { ProjectScriptEditorDialog, ScriptIcon, NewProjectScriptInput, ProjectScriptActionResult } from "~/components/ProjectScriptsControl";`
+- Source: [src/components/ProjectScriptsControl.tsx](../../web/conversation/src/components/ProjectScriptsControl.tsx), with [src/components/projectScriptEditor.tsx](../../web/conversation/src/components/projectScriptEditor.tsx), [src/components/settings/KeybindingsSettings.logic.ts](../../web/conversation/src/components/settings/KeybindingsSettings.logic.ts).
+- Variants: none.
+- States: hover, focus-visible, open, empty.
+- Keyboard: A split button: the primary runs the preferred script, the chevron opens a Menu of scripts whose edit buttons are reachable by focus; the editor dialog captures a keybinding from a key press.
+- Avoid: A separate run button or script form; build on ProjectScriptEditorDialog when another surface needs to edit scripts.
+- Related: [Chat header](#chat-header), [Open in picker](#open-in-picker), [Dialog](#dialog), [Menu](#menu).
+
+### Sidebar update pill
+
+The runner update control in the sidebar footer, for readers who manage runners; DesktopUpdateStatusIcon draws its idle, checking, available, downloading and downloaded icons.
+
+- Kind: Composition; status: available; id: `sidebar-update-pill`.
+- Import: `import { SidebarUpdatePill, SidebarUpdateArchitectureWarning, SidebarProviderUpdatePill, DesktopUpdateStatusIcon, DesktopUpdateStatusIconState } from "~/components/sidebar/SidebarUpdatePill";`
+- Source: [src/components/sidebar/SidebarUpdatePill.tsx](../../web/conversation/src/components/sidebar/SidebarUpdatePill.tsx), with [src/components/sidebar/SidebarProviderUpdatePill.tsx](../../web/conversation/src/components/sidebar/SidebarProviderUpdatePill.tsx), [src/components/sidebar/DesktopUpdateStatusIcon.tsx](../../web/conversation/src/components/sidebar/DesktopUpdateStatusIcon.tsx).
+- Variants: `status`: `idle`, `checking`, `available`, `downloading`, `downloaded`.
+- States: hover, focus-visible, disabled, checking.
+- Keyboard: A focusable button with the status as its accessible name; Enter or Space checks for updates or opens the runner settings.
+- Avoid: Announcing other updates with it; SidebarProviderUpdatePill and SidebarUpdateArchitectureWarning render nothing here, so use a toast or a composer notice instead.
+- Related: [Sidebar chrome](#sidebar-chrome), [Refresh icon](#refresh-icon).
 
 ## Conversation
 
@@ -811,7 +889,7 @@ The transcript: user messages on the message surface, assistant content in the r
 
 - Kind: Composition; status: available; id: `messages-timeline`.
 - Import: `import { MessagesTimeline } from "~/components/chat/MessagesTimeline";`
-- Source: [src/components/chat/MessagesTimeline.tsx](../../web/conversation/src/components/chat/MessagesTimeline.tsx).
+- Source: [src/components/chat/MessagesTimeline.tsx](../../web/conversation/src/components/chat/MessagesTimeline.tsx), with [src/components/chat/MessagesTimeline.logic.ts](../../web/conversation/src/components/chat/MessagesTimeline.logic.ts), [src/components/chat/timelineScrollAnchoring.ts](../../web/conversation/src/components/chat/timelineScrollAnchoring.ts), [src/components/chat/agentSpawnSummary.ts](../../web/conversation/src/components/chat/agentSpawnSummary.ts), [src/components/chat/userMessageTerminalContexts.ts](../../web/conversation/src/components/chat/userMessageTerminalContexts.ts), [src/components/chat/useAssistantCitationTarget.ts](../../web/conversation/src/components/chat/useAssistantCitationTarget.ts), [src/components/chat/AssistantCitationSource.tsx](../../web/conversation/src/components/chat/AssistantCitationSource.tsx), [src/components/chat/AssistantSelectionToolbar.tsx](../../web/conversation/src/components/chat/AssistantSelectionToolbar.tsx).
 - Variants: none.
 - States: streaming, working, empty.
 - Keyboard: A virtualized list in reading order; message actions (copy, expand) are buttons revealed on hover and focus.
@@ -824,7 +902,7 @@ Every markdown body: assistant messages, plans, issue descriptions and comments 
 
 - Kind: Composition; status: available; id: `chat-markdown`.
 - Import: `import ChatMarkdown, { MarkdownCodeBlock, ChatMarkdownAssetImage } from "~/components/ChatMarkdown";`
-- Source: [src/components/ChatMarkdown.tsx](../../web/conversation/src/components/ChatMarkdown.tsx).
+- Source: [src/components/ChatMarkdown.tsx](../../web/conversation/src/components/ChatMarkdown.tsx), with [src/components/chat/markdownImageGallery.ts](../../web/conversation/src/components/chat/markdownImageGallery.ts), [src/components/preview/fileExplorerLabel.ts](../../web/conversation/src/components/preview/fileExplorerLabel.ts).
 - Variants: none.
 - States: hover, focus-visible.
 - Keyboard: Links, code-block copy buttons and file actions are focusable in reading order.
@@ -837,7 +915,7 @@ The one prompt surface for conversations and issues: editor, attachments, contex
 
 - Kind: Composition; status: available; id: `composer`.
 - Import: `import { Composer, ComposerProps } from "~/app/components/Composer";`
-- Source: [src/app/components/Composer.tsx](../../web/conversation/src/app/components/Composer.tsx).
+- Source: [src/app/components/Composer.tsx](../../web/conversation/src/app/components/Composer.tsx), with [src/components/chat/composerPromptHistory.ts](../../web/conversation/src/components/chat/composerPromptHistory.ts), [src/components/chat/composerScrollGesture.ts](../../web/conversation/src/components/chat/composerScrollGesture.ts), [src/components/composerFooterLayout.ts](../../web/conversation/src/components/composerFooterLayout.ts), [src/components/chat/useComposerMenuState.ts](../../web/conversation/src/components/chat/useComposerMenuState.ts).
 - Variants: none.
 - States: focus-visible, disabled, sending, queued, dragging.
 - Keyboard: The prompt editor takes focus; Enter sends and Shift+Enter inserts a newline; slash and mention menus open from typed triggers with arrow-key navigation.
@@ -948,6 +1026,136 @@ A plan the agent proposes, rendered as a card in the timeline.
 - Avoid: Using the card for ordinary assistant messages.
 - Related: [Messages timeline](#messages-timeline), [Chat markdown](#chat-markdown).
 
+### Thread error banner
+
+A thread-level error above the timeline, clamped to three lines, with a dismissal remembered for the session per thread and message.
+
+- Kind: Composition; status: available; id: `thread-error-banner`.
+- Import: `import { ThreadErrorBanner, getThreadErrorBannerKey, shouldShowThreadErrorBanner, dismissThreadErrorBannerForSession, isThreadErrorBannerDismissedForSession } from "~/components/chat/ThreadErrorBanner";`
+- Source: [src/components/chat/ThreadErrorBanner.tsx](../../web/conversation/src/components/chat/ThreadErrorBanner.tsx).
+- Variants: none.
+- States: dismissible, truncated.
+- Keyboard: The dismiss button is focusable; the clamped error text has a tooltip with the full message.
+- Avoid: Errors that belong to one control or turn (show them in place) or provider health (use Provider status banner).
+- Related: [Provider status banner](#provider-status-banner), [Alert](#alert), [Composer banner](#composer-banner).
+
+### Provider status banner
+
+The selected provider's health above the composer: limited availability, unavailable, unauthenticated or not installed, with a way into provider setup.
+
+- Kind: Composition; status: available; id: `provider-status-banner`.
+- Import: `import { ProviderStatusBanner, getProviderStatusBannerKey, shouldShowProviderStatusBanner, getProviderStatusMessage, hasProviderSetup } from "~/components/chat/ProviderStatusBanner";`
+- Source: [src/components/chat/ProviderStatusBanner.tsx](../../web/conversation/src/components/chat/ProviderStatusBanner.tsx).
+- Variants: none.
+- States: warning, error, unauthenticated, dismissible.
+- Keyboard: Open provider setup and dismiss are buttons in reading order; the message has a tooltip with the full text.
+- Avoid: Thread errors (use Thread error banner) and usage limits (use Composer notices).
+- Related: [Thread error banner](#thread-error-banner), [Composer notices](#composer-notices), [Composer](#composer).
+
+### Composer notices
+
+Ready-made Composer banner stack items: the /usage-limits result with its limit windows, and the progress of a feedback submission.
+
+- Kind: Composition; status: available; id: `composer-notices`.
+- Import: `import { usageLimitsBannerItem, feedbackBannerItem } from "~/components/chat/ComposerUsageLimits";`
+- Source: [src/components/chat/ComposerUsageLimits.tsx](../../web/conversation/src/components/chat/ComposerUsageLimits.tsx), with [src/components/chat/ComposerFeedback.tsx](../../web/conversation/src/components/chat/ComposerFeedback.tsx).
+- Variants: none.
+- States: uploading, sent, failed, dismissible.
+- Keyboard: As Composer banner stack; Copy ID and dismiss are buttons.
+- Avoid: Hand-building the same notice; pass these items to ComposerBannerStack. For a new kind of notice, build a ComposerBannerStackItem.
+- Related: [Composer banner stack](#composer-banner-stack), [Usage limits](#usage-limits), [Composer](#composer).
+
+### Diff stat label
+
+Additions and deletions of a file, folder or turn, compacted (12.3k), in success and destructive ink.
+
+- Kind: Composition; status: available; id: `diff-stat-label`.
+- Import: `import { DiffStatLabel, hasNonZeroStat } from "~/components/chat/DiffStatLabel";`
+- Source: [src/components/chat/DiffStatLabel.tsx](../../web/conversation/src/components/chat/DiffStatLabel.tsx).
+- Variants: `layout`: `aligned`, `inline`.
+- States: none of its own.
+- Keyboard: Not interactive; one accessible label reads both counts.
+- Avoid: Other counts or deltas; use a Badge or plain text.
+- Related: [Changed files card](#changed-files-card), [Diff surface](#diff-surface).
+
+### Changed files card
+
+A turn's changed files in the transcript or diff surface: a folder tree with per-file stats that opens the diff at a file.
+
+- Kind: Composition; status: available; id: `changed-files-card`.
+- Import: `import { ChangedFilesCard, ChangedFilesTree } from "~/components/chat/ChangedFilesTree";`
+- Source: [src/components/chat/ChangedFilesTree.tsx](../../web/conversation/src/components/chat/ChangedFilesTree.tsx).
+- Variants: none.
+- States: hover, focus-visible, expanded, collapsed.
+- Keyboard: Folder rows are buttons with aria-expanded; file rows are buttons that open the diff; expand all and Open diff are buttons.
+- Avoid: Browsing the whole workspace (use File browser panel) or showing the diff itself (use Diff surface).
+- Related: [Diff stat label](#diff-stat-label), [File entry icon](#file-entry-icon), [Messages timeline](#messages-timeline), [Diff surface](#diff-surface).
+
+### Message copy button
+
+Copying a message or snippet with the anchored copy toast and a check confirmation.
+
+- Kind: Composition; status: available; id: `message-copy-button`.
+- Import: `import { MessageCopyButton } from "~/components/chat/MessageCopyButton";`
+- Source: [src/components/chat/MessageCopyButton.tsx](../../web/conversation/src/components/chat/MessageCopyButton.tsx).
+- Variants: `size`: `xs`, `icon-xs`; `variant`: `outline`, `ghost`.
+- States: hover, focus-visible, copied.
+- Keyboard: A button; Enter or Space copies, then it is disabled while the check shows.
+- Avoid: Copy actions that need a label or menu; use a Button with showAnchoredCopySuccessToast.
+- Related: [Button](#button), [Toast](#toast), [Messages timeline](#messages-timeline).
+
+### Skill inline text
+
+Text that may name provider skills as $tokens, turning each known skill into a chip; renderSkillInlineMarkdownChildren does the same inside markdown.
+
+- Kind: Composition; status: available; id: `skill-inline-text`.
+- Import: `import { SkillInlineText, renderSkillInlineMarkdownChildren } from "~/components/chat/SkillInlineText";`
+- Source: [src/components/chat/SkillInlineText.tsx](../../web/conversation/src/components/chat/SkillInlineText.tsx).
+- Variants: none.
+- States: none of its own.
+- Keyboard: Not interactive; chips read as their skill name.
+- Avoid: Mentions of files (use File tag chip) or arbitrary highlighting.
+- Related: [File tag chip](#file-tag-chip), [Terminal context chip](#terminal-context-chip), [Chat markdown](#chat-markdown).
+
+### Terminal context chip
+
+Terminal output attached to a sent message, shown inline with its line range.
+
+- Kind: Composition; status: available; id: `terminal-context-chip`.
+- Import: `import { TerminalContextInlineChip } from "~/components/chat/TerminalContextInlineChip";`
+- Source: [src/components/chat/TerminalContextInlineChip.tsx](../../web/conversation/src/components/chat/TerminalContextInlineChip.tsx).
+- Variants: none.
+- States: expired.
+- Keyboard: Not focusable; the captured lines are in the hover tooltip.
+- Avoid: File references (use File tag chip) and quoted assistant text (use Assistant citation chip).
+- Related: [File tag chip](#file-tag-chip), [Skill inline text](#skill-inline-text), [Assistant citation chip](#assistant-citation-chip).
+
+### Assistant citation chip
+
+A quote of assistant text in the composer or a sent message, with an optional comment, linking back to where it was said.
+
+- Kind: Composition; status: available; id: `assistant-citation-chip`.
+- Import: `import { AssistantCitationChip, AssistantCitationCommentEditor } from "~/components/chat/AssistantCitationChip";`
+- Source: [src/components/chat/AssistantCitationChip.tsx](../../web/conversation/src/components/chat/AssistantCitationChip.tsx), with [src/components/chat/AssistantCitationCommentEditor.tsx](../../web/conversation/src/components/chat/AssistantCitationCommentEditor.tsx).
+- Variants: none.
+- States: hover, focus-visible, editing.
+- Keyboard: The quote is a link to its source; the comment and remove controls are buttons; in the comment editor Enter saves, Command or Ctrl+Enter saves and sends, Escape cancels.
+- Avoid: Quoting files or terminal output (use their chips) or block quotes in prose (use markdown).
+- Related: [File tag chip](#file-tag-chip), [Terminal context chip](#terminal-context-chip), [Composer](#composer), [Messages timeline](#messages-timeline).
+
+### Pull request link preview
+
+A pull request link in markdown with a hover card; resolvePullRequestState and PullRequestActorAvatar give every pull request the same state ink and author mark.
+
+- Kind: Composition; status: available; id: `pull-request-link-preview`.
+- Import: `import { PullRequestLinkPreview, PullRequestActorAvatar, resolvePullRequestState } from "~/components/pullRequest/PullRequestLinkPreview";`
+- Source: [src/components/pullRequest/PullRequestLinkPreview.tsx](../../web/conversation/src/components/pullRequest/PullRequestLinkPreview.tsx), with [src/components/pullRequest/pullRequestPresentation.tsx](../../web/conversation/src/components/pullRequest/pullRequestPresentation.tsx).
+- Variants: none.
+- States: hover, open, loading.
+- Keyboard: The link keeps its own focus and activation; the card opens on hover after a delay.
+- Avoid: Linking other hosts or issues (use a plain link) or drawing pull request state by hand.
+- Related: [Chat markdown](#chat-markdown), [Preview card](#preview-card), [Pull request surface](#pull-request-surface), [Thread status indicators](#thread-status-indicators).
+
 ## Panels
 
 ### Right panel workspace
@@ -969,7 +1177,7 @@ The tab strip that switches right-panel surfaces (Diff, Files, Terminal, Output,
 
 - Kind: Composition; status: available; id: `right-panel-tabs`.
 - Import: `import { RightPanelTabs } from "~/components/RightPanelTabs";`
-- Source: [src/components/RightPanelTabs.tsx](../../web/conversation/src/components/RightPanelTabs.tsx).
+- Source: [src/components/RightPanelTabs.tsx](../../web/conversation/src/components/RightPanelTabs.tsx), with [src/components/preview/previewBridge.ts](../../web/conversation/src/components/preview/previewBridge.ts).
 - Variants: none.
 - States: selected, hover, focus-visible.
 - Keyboard: Tabs are focusable; surface shortcuts switch tabs; each tab's close button is separately focusable.
@@ -1132,6 +1340,19 @@ The shared waiting and unavailable state of a surface while a workspace is claim
 - Avoid: Per-surface waiting spinners.
 - Related: [Terminal surface](#terminal-surface), [Files surface](#files-surface).
 
+### Panel layout controls
+
+The header toggles for the terminal drawer and the right panel, and the maximize toggle inside the panel.
+
+- Kind: Composition; status: available; id: `panel-layout-controls`.
+- Import: `import { PanelLayoutControls, RightPanelMaximizeControl } from "~/components/chat/PanelLayoutControls";`
+- Source: [src/components/chat/PanelLayoutControls.tsx](../../web/conversation/src/components/chat/PanelLayoutControls.tsx).
+- Variants: none.
+- States: pressed, disabled, hover, focus-visible.
+- Keyboard: Toggles: Tab focuses, Enter and Space flip them; tooltips name the shortcut; the right panel toggle's name includes the working-agent count.
+- Avoid: Opening a specific surface (use Right panel tabs) or new layout toggles beside these.
+- Related: [Right panel workspace](#right-panel-workspace), [Right panel tabs](#right-panel-tabs), [Toggle](#toggle).
+
 ## Settings
 
 ### Settings layout
@@ -1153,7 +1374,7 @@ Navigation between settings sections, built on the Sidebar primitive.
 
 - Kind: Composition; status: available; id: `settings-sidebar-nav`.
 - Import: `import { SettingsSidebarNav } from "~/components/settings/SettingsSidebarNav";`
-- Source: [src/components/settings/SettingsSidebarNav.tsx](../../web/conversation/src/components/settings/SettingsSidebarNav.tsx).
+- Source: [src/components/settings/SettingsSidebarNav.tsx](../../web/conversation/src/components/settings/SettingsSidebarNav.tsx), with [src/components/settings/settingsSearch.ts](../../web/conversation/src/components/settings/settingsSearch.ts), [src/components/settings/useAvailableSettingsSearchItems.ts](../../web/conversation/src/components/settings/useAvailableSettingsSearchItems.ts), [src/components/settings/settingsLayout.ts](../../web/conversation/src/components/settings/settingsLayout.ts).
 - Variants: none.
 - States: active, hover, focus-visible.
 - Keyboard: Section links in document order.
@@ -1423,3 +1644,137 @@ The issue page's composer: the shared Composer with issue-specific slash command
 - Keyboard: As Composer, with the issue page's slash commands.
 - Avoid: A separate editor for issue comments.
 - Related: [Composer](#composer), [Issue page](#issue-page).
+
+## Media
+
+### Expanded image dialog
+
+Full-screen preview of images and videos from messages, markdown and attachments, paged as one set, with media actions and capture details.
+
+- Kind: Composition; status: available; id: `expanded-image-dialog`.
+- Import: `import { ExpandedImageDialog, ExpandedImageItem, ExpandedImagePreview, buildExpandedImagePreview } from "~/components/chat/ExpandedImageDialog";`
+- Source: [src/components/chat/ExpandedImageDialog.tsx](../../web/conversation/src/components/chat/ExpandedImageDialog.tsx), with [src/components/chat/ExpandedImagePreview.tsx](../../web/conversation/src/components/chat/ExpandedImagePreview.tsx).
+- Variants: none.
+- States: open, unavailable, video.
+- Keyboard: Escape closes and returns focus to the opener; Left and Right arrows page between items; close, previous and next are buttons.
+- Avoid: Inline thumbnails (render the image) or document previews (use the Files surface).
+- Related: [Media actions](#media-actions), [Media video player](#media-video-player), [Snapshot attachment details](#snapshot-attachment-details), [Dialog](#dialog).
+
+### Snapshot attachment details
+
+The caption over a window capture attachment: app icon, app and window name, and its captured accessibility data.
+
+- Kind: Composition; status: available; id: `snapshot-attachment-details`.
+- Import: `import { SnapShotAttachmentDetails, SnapShotContentsButton, SnapShotAccessibilityData, SNAP_SHOT_ATTACHMENT_FRAME_CLASS, snapShotAccessibilityDetails } from "~/components/chat/SnapShotAttachmentDetails";`
+- Source: [src/components/chat/SnapShotAttachmentDetails.tsx](../../web/conversation/src/components/chat/SnapShotAttachmentDetails.tsx).
+- Variants: none.
+- States: hover, open.
+- Keyboard: The accessibility data button is focusable and opens a Popover; the data is a focusable, scrollable block.
+- Avoid: Captions for ordinary images; show the file name instead.
+- Related: [Expanded image dialog](#expanded-image-dialog), [Popover](#popover).
+
+### Media video player
+
+Playing a video from a message, markdown or file preview with loading and failure states in the same 16:9 slot; OpenMediaLink opens or downloads the original.
+
+- Kind: Composition; status: available; id: `media-video-player`.
+- Import: `import { MediaVideoPlayer, OpenMediaLink } from "~/components/media/MediaVideoPlayer";`
+- Source: [src/components/media/MediaVideoPlayer.tsx](../../web/conversation/src/components/media/MediaVideoPlayer.tsx), with [src/components/media/OpenMediaLink.tsx](../../web/conversation/src/components/media/OpenMediaLink.tsx).
+- Variants: none.
+- States: loading, failed, retrying.
+- Keyboard: Native video controls; Retry video and the open link are a button and a link.
+- Avoid: A bare video element, which loses the retry, failure and range-streaming behaviour.
+- Related: [Expanded image dialog](#expanded-image-dialog), [Media actions](#media-actions).
+
+### Media actions
+
+Adding copy path, copy URL, open, save and copy image to an image or video without changing its layout.
+
+- Kind: Composition; status: available; id: `media-actions`.
+- Import: `import { MediaActions, MediaActionSource } from "~/components/media/MediaActions";`
+- Source: [src/components/media/MediaActions.tsx](../../web/conversation/src/components/media/MediaActions.tsx).
+- Variants: none.
+- States: hover, focus-visible.
+- Keyboard: The wrapped element becomes focusable; the context menu key or Shift+F10 opens the media menu; the source path is in the tooltip.
+- Avoid: Actions on non-media elements (use Menu) or visible media toolbars.
+- Related: [Expanded image dialog](#expanded-image-dialog), [Media video player](#media-video-player), [Chat markdown](#chat-markdown).
+
+## Icons
+
+### Brand icons
+
+Third-party marks: source control hosts, editors and agent providers, sized with the same size classes as Lucide icons.
+
+- Kind: Primitive; status: available; id: `brand-icons`.
+- Import: `import { Icon, LinuxIcon, GitHubIcon, GitIcon, JujutsuIcon, GitLabIcon, AzureDevOpsIcon, BitbucketIcon, CursorIcon, GrokIcon, TraeIcon, KiroIcon, VisualStudioCode, VisualStudioCodeInsiders, VSCodium, Zed, OpenAI, ClaudeAI, Gemini, AntigravityIcon, OpenCodeIcon, GithubCopilotIcon, ACPRegistryIcon, PiAgentIcon } from "~/components/Icons";`
+- Source: [src/components/Icons.tsx](../../web/conversation/src/components/Icons.tsx).
+- Variants: none.
+- States: none of its own.
+- Keyboard: Not focusable; pass aria-hidden beside a text label, or an accessible name when the icon stands alone.
+- Avoid: Generic symbols (use Lucide) and drawing a new brand mark inline in a feature; add it here.
+- Related: [Provider instance icon](#provider-instance-icon), [Open in picker](#open-in-picker), [Environment machine icon](#environment-machine-icon).
+
+### Morph icon
+
+An icon that morphs between two Lucide shapes when its control's state flips, such as copy to check or open to close.
+
+- Kind: Primitive; status: available; id: `morph-icon`.
+- Import: `import { MorphIcon } from "~/components/MorphIcon";`
+- Source: [src/components/MorphIcon.tsx](../../web/conversation/src/components/MorphIcon.tsx).
+- Variants: none.
+- States: none of its own.
+- Keyboard: Not focusable; the control around it carries the name and state.
+- Avoid: Static icons (use Lucide directly) and loading spinners (use Spinner).
+- Related: [Sidebar primitive](#sidebar-primitive), [Toast](#toast), [Spinner](#spinner).
+
+### Environment machine icon
+
+The mark for the kind of machine a runner or environment runs on, with its label.
+
+- Kind: Composition; status: available; id: `environment-machine-icon`.
+- Import: `import { EnvironmentMachineIcon, environmentMachineIcon, ENVIRONMENT_MACHINE_KIND_LABELS } from "~/components/EnvironmentMachineIcon";`
+- Source: [src/components/EnvironmentMachineIcon.tsx](../../web/conversation/src/components/EnvironmentMachineIcon.tsx).
+- Variants: none.
+- States: none of its own.
+- Keyboard: Not focusable; pair it with ENVIRONMENT_MACHINE_KIND_LABELS or the machine name.
+- Avoid: Providers or repositories (use Provider instance icon or Brand icons).
+- Related: [Thread status indicators](#thread-status-indicators), [Thread sidebar](#thread-sidebar), [Brand icons](#brand-icons).
+
+### File entry icon
+
+The file-type or folder icon beside a path in chips, trees, tabs and breadcrumbs, coloured for the current theme.
+
+- Kind: Composition; status: available; id: `file-entry-icon`.
+- Import: `import { PierreEntryIcon } from "~/components/chat/PierreEntryIcon";`
+- Source: [src/components/chat/PierreEntryIcon.tsx](../../web/conversation/src/components/chat/PierreEntryIcon.tsx).
+- Variants: `kind`: `file`, `directory`; `theme`: `light`, `dark`.
+- States: none of its own.
+- Keyboard: Not focusable.
+- Avoid: Icons for things that are not paths; use Lucide.
+- Related: [File tag chip](#file-tag-chip), [Changed files card](#changed-files-card), [File breadcrumbs](#file-breadcrumbs), [Right panel tabs](#right-panel-tabs).
+
+### Provider instance icon
+
+A provider instance's mark: the driver's brand icon or initials, an optional instance badge and accent, and an optional status dot.
+
+- Kind: Composition; status: available; id: `provider-instance-icon`.
+- Import: `import { ProviderInstanceIcon, providerInstanceInitials, PROVIDER_ICON_BY_PROVIDER } from "~/components/chat/ProviderInstanceIcon";`
+- Source: [src/components/chat/ProviderInstanceIcon.tsx](../../web/conversation/src/components/chat/ProviderInstanceIcon.tsx), with [src/components/chat/providerIconUtils.ts](../../web/conversation/src/components/chat/providerIconUtils.ts).
+- Variants: `badgeContent`: `initials`, `none`.
+- States: none of its own.
+- Keyboard: Not focusable; the row or control around it names the provider.
+- Avoid: Model names or provider labels as text; render the name beside the icon.
+- Related: [Brand icons](#brand-icons), [Thread sidebar](#thread-sidebar), [Composer control](#composer-control).
+
+### Favicon image
+
+A small site icon that tries each source in turn and falls back to a given node when none loads.
+
+- Kind: Primitive; status: available; id: `favicon-image`.
+- Import: `import { FaviconImage } from "~/components/preview/PreviewFaviconIcon";`
+- Source: [src/components/preview/PreviewFaviconIcon.tsx](../../web/conversation/src/components/preview/PreviewFaviconIcon.tsx).
+- Variants: none.
+- States: error.
+- Keyboard: Not focusable; decorative.
+- Avoid: Project marks (use Project favicon) and avatars (use PullRequestActorAvatar).
+- Related: [Project favicon](#project-favicon), [Right panel tabs](#right-panel-tabs).

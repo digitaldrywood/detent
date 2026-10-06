@@ -26,6 +26,9 @@ export type TokenGroup =
   | "radius"
   | "layout"
   | "motion"
+  | "elevation"
+  | "layer"
+  | "breakpoint"
   | "font";
 
 export interface TokenValue {
@@ -51,7 +54,10 @@ export interface Token {
   utility: string | null;
   /** Set when the utility reads the `--contrast-*` variant of this token. */
   utilityVia?: string;
-  /** True when the token has its own dark declaration. */
+  /**
+   * True when the token resolves to a different value in dark mode, either
+   * through its own dark declaration or through a themed token it references.
+   */
   themed: boolean;
   light: TokenValue | null;
   dark: TokenValue | null;
