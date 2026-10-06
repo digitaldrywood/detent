@@ -551,6 +551,12 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		{"forged landing", func(r *tracker.NativeRuntimeObservation) {
 			r.Landing = &tracker.NativeLandingReceipt{ChangeID: "change_" + strings.Repeat("a", 32), VersionID: "version_" + strings.Repeat("b", 32), HeadSHA: strings.Repeat("c", 40), Landed: true, MergeSHA: strings.Repeat("d", 40), BaseRef: "develop", Method: "squash", ObservedAt: at}
 		}, http.StatusNotFound},
+		{"landing CI for another head", func(r *tracker.NativeRuntimeObservation) {
+			r.Landing = &tracker.NativeLandingReceipt{HeadSHA: strings.Repeat("c", 40), CI: &tracker.NativeLandingCIReceipt{HeadSHA: strings.Repeat("d", 40), PullRequest: 7, State: "pending"}, ObservedAt: at}
+		}, http.StatusUnprocessableEntity},
+		{"landed pending CI", func(r *tracker.NativeRuntimeObservation) {
+			r.Landing = &tracker.NativeLandingReceipt{ChangeID: "change_" + strings.Repeat("a", 32), VersionID: "version_" + strings.Repeat("b", 32), HeadSHA: strings.Repeat("c", 40), Landed: true, MergeSHA: strings.Repeat("d", 40), BaseRef: "develop", Method: "squash", CI: &tracker.NativeLandingCIReceipt{HeadSHA: strings.Repeat("c", 40), PullRequest: 7, State: "pending"}, ObservedAt: at}
+		}, http.StatusUnprocessableEntity},
 		{"private credential", func(r *tracker.NativeRuntimeObservation) {
 			r.REST = &tracker.NativeRESTEvidence{Windows: []tracker.NativeRESTWindow{{CredentialIdentity: "secret-token", EndpointFamily: "other"}}}
 		}, http.StatusUnprocessableEntity},

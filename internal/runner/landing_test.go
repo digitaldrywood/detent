@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -384,6 +386,7 @@ func TestLandNativeChange(t *testing.T) {
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: "Land " + head + "\n\nChange Request change_1, round 0, head " + head + "."},
 		{name: "quota retains reviewed identity and actual metrics", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{githubRequest: true}, wantErr: "github rate limited", quota: true},
 		{name: "gate command failure retains output and reviewed identity", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{Gate: failedGate}, err: &workspace.ValidationError{Output: "lint-error-sentinel", Err: errors.New("exit status 1")}}, wantOutput: RunOutputNativeLandingRefused, gateFailure: true},
+		{name: "CI waiting retains reviewed identity without recording a merge", stub: landingStub{target: githubTarget}, backend: landingBackend{result: workspace.LandResult{CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, PullRequest: 7, State: "pending", TriggerLabel: "run-full-ci", Triggered: true}}}, wantOutput: RunOutputNativeLandingRefused, wantGitHub: true},
 		{name: "a refusal is reported, not recorded", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "the base branch main refused the push"}},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalProtected},
 		{name: "a GitHub conflict retains reviewed identity without a landing receipt", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalConflict, Reason: "Pull Request is not mergeable (HTTP 405)"}},
@@ -411,7 +414,7 @@ func TestLandNativeChange(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			r := &Runner{}
+			r := &Runner{workflow: config.Workflow{Config: config.Config{Gate: gate.Config{RequiredStatusChecks: []string{"Full CI"}, CITriggerLabel: "run-full-ci"}}}}
 			stub, backend := test.stub, test.backend
 			reset := time.Now().Add(time.Hour).Truncate(time.Second)
 			policy := workerGitHubPolicy{Token: test.name, HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
@@ -469,6 +472,9 @@ func TestLandNativeChange(t *testing.T) {
 			if result.NativeLanding.Rebased != backend.result.Rebased {
 				t.Fatalf("landing lost retry evidence: %#v", result.NativeLanding)
 			}
+			if !reflect.DeepEqual(result.NativeLanding.CI, backend.result.CI) || backend.githubCalled && (!slices.Equal(backend.received.RequiredStatusChecks, []string{"Full CI"}) || backend.received.CITriggerLabel != "run-full-ci" || backend.received.CITriggerLabelStagger != 15*time.Second) {
+				t.Fatalf("native CI policy or receipt was lost: options=%+v landing=%+v", backend.received, result.NativeLanding)
+			}
 			for _, recorded := range stub.recorded {
 				if recorded.Rebased != backend.result.Rebased {
 					t.Fatalf("recorded landing lost retry evidence: %#v", recorded)
@@ -477,7 +483,7 @@ func TestLandNativeChange(t *testing.T) {
 			if result.ForgeWriteCompleted != (test.wantGitHub && test.wantRecorded == 1) {
 				t.Fatalf("forge landing completion evidence = %t", result.ForgeWriteCompleted)
 			}
-			if result.NativeLanding.RefusalKind != test.wantRefusal || result.NativeLanding.Landed != (test.wantRefusal == "" && !test.gateFailure) {
+			if result.NativeLanding.RefusalKind != test.wantRefusal || result.NativeLanding.Landed != (test.wantRefusal == "" && !test.gateFailure && backend.result.CI == nil) {
 				t.Fatalf("landing = %#v", result.NativeLanding)
 			}
 			if result.NativeLanding.ChangeID != target.ChangeID || result.NativeLanding.VersionID != target.VersionID || result.NativeLanding.HeadSHA != head || test.wantRefusal != "" && result.NativeLanding.MergeSHA != "" {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -68,10 +69,14 @@ type GitHubRESTClient interface {
 }
 
 type LandOptions struct {
-	ValidationCommand string
-	SourceIssues      []tracker.ExternalReference
-	GitHubClient      GitHubRESTClient
-	External          *tracker.ChangeExternalReference
+	ValidationCommand     string
+	RequiredStatusChecks  []string
+	CITriggerLabel        string
+	CITriggerLabelStagger time.Duration
+	PreviousCI            *tracker.NativeLandingCIReceipt
+	SourceIssues          []tracker.ExternalReference
+	GitHubClient          GitHubRESTClient
+	External              *tracker.ChangeExternalReference
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
 	// a branch that moved past its review is not landed.
 	HeadSHA string
@@ -90,8 +95,9 @@ type LandOptions struct {
 }
 
 type LandResult struct {
-	Gate                gate.CommandResult `json:"gate,omitzero"`
-	Rebased             bool               `json:"rebased,omitempty"`
+	CI                  *tracker.NativeLandingCIReceipt `json:"ci,omitempty"`
+	Gate                gate.CommandResult              `json:"gate,omitzero"`
+	Rebased             bool                            `json:"rebased,omitempty"`
 	MergeSHA            string
 	BaseRef             string
 	BaseBefore          string
