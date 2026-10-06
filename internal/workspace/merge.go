@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
@@ -397,36 +398,50 @@ func (l *LocalGit) resolvedMergeHeads(ctx context.Context, info Info, issue Issu
 	return strings.TrimSpace(head), strings.TrimSpace(base), remoteHead, nil
 }
 
-func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue Issue, command string) (err error) {
+func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue Issue, command string) error {
 	if strings.TrimSpace(command) == "" {
 		return nil
 	}
-	scratch, err := PrepareWorkerScratch(ctx, info.Path)
+	result, err := l.runValidationCommand(ctx, info, issue, command)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		err = errors.Join(err, CleanupWorkerScratch(info.Path, scratch))
-	}()
+	if result.ExitCode != 0 {
+		return &ValidationError{Output: result.Output, Err: fmt.Errorf("exit status %d", result.ExitCode)}
+	}
+	return nil
+}
+
+func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
+	result.Command = command
+	result.ExitCode = -1
+	scratch, err := PrepareWorkerScratch(ctx, info.Path)
+	if err != nil {
+		return result, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, CleanupWorkerScratch(info.Path, scratch)) }()
 	cmd := commandshell.Command(ctx, command, l.hooks.Shell)
 	cmd.Dir = info.Path
 	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)
-	l.logger.Info("validating merge resolution", "workspace_path", info.Path, "command", command)
+	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
 	output, err := cmd.CombinedOutput()
+	result.Output = string(output)
+	if ctx.Err() != nil {
+		return result, ctx.Err()
+	}
 	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
 		var exited *exec.ExitError
 		if errors.As(err, &exited) && exited.Exited() {
-			return &ValidationError{Output: string(output), Err: err}
+			result.ExitCode = exited.ExitCode()
+			return result, nil
 		}
-		return fmt.Errorf("merge resolution gate failed: %w: %s", err, output)
+		return result, fmt.Errorf("validation command failed: %w: %s", err, output)
 	}
-	return nil
+	result.ExitCode = 0
+	return result, nil
 }
 
 // mergeRemoteAncestor applies the checkpoint path's no-dropped-commits rule.

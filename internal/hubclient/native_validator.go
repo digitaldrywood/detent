@@ -73,6 +73,10 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	}
 	var body strings.Builder
 	body.WriteString(result.Summary)
+	if len(result.Commands) > 0 {
+		fmt.Fprintf(&body, "\n\nHost-observed validation command evidence: %d receipts in this review's structured validator.commands field, including command, head/tree, exit status and captured output.", len(result.Commands))
+	}
+
 	for _, finding := range result.Findings {
 		fmt.Fprintf(&body, "\n\n%s %s: %s", finding.Severity, finding.Path, finding.Body)
 	}

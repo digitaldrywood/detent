@@ -159,6 +159,36 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 	if err := backend.VerifyReviewTree(t.Context(), info, issue); err != nil {
 		t.Fatalf("clean review tree: %v", err)
 	}
+	head, err := backend.Head(t.Context(), info, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.PullRequestHeadSHA = strings.TrimSpace(head)
+	for _, test := range []struct {
+		name, command, head string
+		exit                int
+		wantErr             bool
+	}{
+		{name: "passing observed output", command: "printf verified"},
+		{name: "failed command", command: "printf failed; exit 7", exit: 7},
+		{name: "wrong immutable head", command: "printf must-not-run", head: strings.Repeat("f", 40), wantErr: true},
+		{name: "missing command", wantErr: true},
+		{name: "dirty result", command: "printf changed > untracked.txt", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := issue
+			if test.head != "" {
+				request.PullRequestHeadSHA = test.head
+			}
+			receipt, err := backend.RunReviewCommand(t.Context(), info, request, test.command)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("receipt=%+v error=%v", receipt, err)
+			}
+			if !test.wantErr && (receipt.Command != test.command || receipt.HeadSHA != issue.PullRequestHeadSHA || receipt.TreeSHA == "" || receipt.ExitCode != test.exit || receipt.Output == "") {
+				t.Fatalf("missing command evidence: %+v", receipt)
+			}
+		})
+	}
 	if err := os.WriteFile(filepath.Join(info.Path, "untracked.txt"), []byte("hook change"), 0o600); err != nil {
 		t.Fatal(err)
 	}
