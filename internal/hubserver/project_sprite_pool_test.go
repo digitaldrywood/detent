@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
@@ -44,6 +46,50 @@ func TestSpriteScaleDecision(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if got := decideSpriteScale(test.input); got != test.want {
 				t.Fatalf("decision = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestSpritePoolPlacement(t *testing.T) {
+	for _, test := range []struct {
+		name, mode                   string
+		depth, overflow, wantCreated int
+		localFree                    bool
+	}{
+		{"local-first below threshold", "local_first", 2, 1, 0, false},
+		{"local-first at threshold", "local_first", 3, 1, 1, false},
+		{"local-first large queue has bounded overflow", "local_first", 15, 2, 2, false},
+		{"local-first free local capacity", "local_first", 3, 1, 0, true},
+		{"Sprites-only ignores free local", "sprites_only", 2, 0, 2, true},
+		{"blended subtracts local slots", "blended", 3, 0, 2, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, "")
+			keys := f.service.config.SecretKeys
+			hosted := f.service.config.Hosted
+			f.service.config.SecretKeys = nil
+			f.service.config.Hosted = nil
+			local := placementFixtureRunner(t, f, "local-runner", "local", false, 1, "gpt-6.1-sol", "test-model")
+			if !test.localFree {
+				busy := f.create(t, "already running")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", local.redemption.Credential, providerClaim(local, busy, "busy")), http.StatusOK)
+			}
+			for i := 2; i < test.depth; i++ {
+				f.create(t, fmt.Sprintf("extra %d", i))
+			}
+			placement := policy.Placement{Mode: test.mode, OverflowSlots: test.overflow}
+			if test.mode == "local_first" {
+				placement.TodoThreshold = 3
+			}
+			setPlacementFixture(t, f, placement, 2)
+			f.service.config.SecretKeys = keys
+			f.service.config.Hosted = hosted
+			if err := f.service.scaleSpritePool(t.Context(), scope, true); err != nil {
+				t.Fatal(err)
+			}
+			if len(provider.created) != test.wantCreated {
+				t.Fatalf("created=%d want=%d", len(provider.created), test.wantCreated)
 			}
 		})
 	}
@@ -200,6 +246,7 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 		return response, nil
 	})}
 	f, scope, _ := newSpriteWakeFixture(t, client, true, 0)
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	f.create(t, "first")
 	f.create(t, "second")
 	f.service.spriteWakeWork.Wait()
@@ -368,6 +415,7 @@ func TestSpritePoolCapacity(t *testing.T) {
 				r.enroll(t)
 				if test.reports {
 					report := capacityReport(f.service.config.now())
+					report.Models = []string{"gpt-6.1-sol"}
 					if test.separate {
 						report.SharedAccountAlias = string(rune('a' + i))
 					}

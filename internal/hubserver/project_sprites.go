@@ -7,10 +7,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -255,16 +257,31 @@ func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, stat
 		if err != nil || !dispatchable {
 			return woken, err
 		}
+		var configured bool
+		if err := s.database.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM project_sprite_pools WHERE organization_id=? AND project_id=?)`, scope.organization, scope.project).Scan(&configured); err != nil {
+			return woken, err
+		}
+		var placement placementSnapshot
+		if configured {
+			placement, err = readPlacementSnapshot(ctx, s.database.db, scope, s.config.now(), nil)
+			if err != nil {
+				return woken, err
+			}
+			if placement.Provisionable == 0 {
+				return woken, nil
+			}
+		}
 		var name string
+		var runnerID string
 		var envelope hubsecrets.Envelope
 		cutoff := formatHubTime(s.config.now().Add(-spriteRunnerIdle))
-		err = s.database.db.QueryRowContext(ctx, `SELECT m.hostname, ps.ciphertext, ps.nonce, ps.wrapped_data_key, ps.master_key_version FROM runner_identities r
+		err = s.database.db.QueryRowContext(ctx, `SELECT r.id, m.hostname, ps.ciphertext, ps.nonce, ps.wrapped_data_key, ps.master_key_version FROM runner_identities r
 JOIN machines m ON m.id = r.machine_id
 JOIN api_tokens t ON t.id = r.token_id AND t.revoked_at IS NULL
 JOIN token_grants g ON g.token_id = r.token_id AND g.organization_id = r.organization_id AND g.project_id = ?
 JOIN project_secrets ps ON ps.organization_id = r.organization_id AND ps.project_id = g.project_id AND ps.kind = ?
 WHERE r.organization_id = ? AND r.state = 'active' AND r.last_heartbeat_at < ? AND m.hostname > ?
-ORDER BY m.hostname LIMIT 1`, scope.project, flySpritesToken, scope.organization, cutoff, last).Scan(&name, &envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
+ORDER BY m.hostname LIMIT 1`, scope.project, flySpritesToken, scope.organization, cutoff, last).Scan(&runnerID, &name, &envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
 		if errors.Is(err, sql.ErrNoRows) {
 			return woken, nil
 		}
@@ -274,6 +291,27 @@ ORDER BY m.hostname LIMIT 1`, scope.project, flySpritesToken, scope.organization
 		last = name
 		if !validSpritesSlug(name) {
 			continue
+		}
+		if configured {
+			compatible := false
+			for _, r := range placement.Runners {
+				if r.RunnerID != runnerID || !r.Sprite || r.Pending || !placementRunnerCompatible(r, scope.project, placement.Requirements, s.config.now(), true) {
+					continue
+				}
+				for id, requirement := range placement.Items {
+					if placement.Policy.Mode == "local_first" && placement.Local[id] > 0 {
+						continue
+					}
+					if slices.ContainsFunc(r.ProviderCapacity, func(view providercapacity.View) bool {
+						return view.State != "exhausted" && view.Used < view.MaxConcurrent && view.Supports(requirement)
+					}) {
+						compatible = true
+					}
+				}
+			}
+			if !compatible {
+				continue
+			}
 		}
 		started, err := s.wakeSpriteRunner(ctx, scope, &client, name, envelope)
 		if err != nil {

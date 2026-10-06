@@ -408,6 +408,9 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		return tracker.Lease{}, err
 	}
 	if restricted && selectedID == 0 {
+		if err := tx.Commit(); err != nil {
+			return tracker.Lease{}, err
+		}
 		return tracker.Lease{}, ErrNoClaimableWork
 	}
 	if restricted {
@@ -462,6 +465,18 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		}
 		if !ready {
 			continue
+		}
+		if query.NativeScope != nil && !query.WorkspaceLane {
+			allowed, reason, err := placementClaimAllowed(ctx, tx, *query.NativeScope, request.MachineID, id, now, query.ProviderCandidates)
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			if !allowed {
+				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_runner_routing", Outcome: "skipped", Reason: reason}, now); err != nil {
+					return tracker.Lease{}, err
+				}
+				continue
+			}
 		}
 		// A workspace claim reserves one slot of the runner's capacity and
 		// nothing else (decisions section 18.1): the session serves files
