@@ -57,6 +57,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{Name: "Blocked", Transitions: []string{"Todo"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}
+	noBlocked := append(append([]connector.WorkflowState(nil), workflow[:6]...), workflow[7:]...)
 	head := strings.Repeat("c", 40)
 	landed := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Landed: true, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}
 	refused := &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: "base_protected", Refusal: "the base branch main refused the push: GH006. Allow the runner to push to main, or enable GitHub pull request mode for this project."}
@@ -76,6 +77,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		updateErr          error
 		plain              bool
 		noHumanReview      bool
+		optout             bool
 		reworkState        string
 		wantState          string
 		wantMoves          int
@@ -107,7 +109,12 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "a conflict uses the workflow coding lane", landing: conflict, hubState: "Merging", states: fallback, wantState: "Working", wantComment: "was not landed", wantMoves: 1},
 		{name: "a refusal uses the workflow review lane", landing: refused, hubState: "Merging", states: fallback, wantState: "Awaiting Review", wantComment: "was not landed", wantMoves: 1},
 		{name: "a refusal uses the workflow review lane without human review", landing: refused, hubState: "Merging", states: fallback, noHumanReview: true, wantState: "Awaiting Review", wantComment: "was not landed", wantMoves: 1},
-		{name: "a protected refusal prefers configured review without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
+		{name: "a protected refusal prefers Blocked without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "was not landed", wantMoves: 1},
+		{name: "a moved head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalHeadMoved, Refusal: "Head branch was modified"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "Head branch was modified", wantMoves: 1},
+		{name: "a missing head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalMissingHead, Refusal: "the reviewed head is missing"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "the reviewed head is missing", wantMoves: 1},
+		{name: "an already landed head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the base branch already contains everything"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "already contains everything", wantMoves: 1},
+		{name: "a refusal falls back to Human Review without Blocked", landing: refused, hubState: "Merging", states: noBlocked, noHumanReview: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
+		{name: "an opted out refusal prefers Human Review over Blocked", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, optout: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
 		{name: "unproven conflict retains landing retry without coding rework", landing: &waiting, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "stale base projection with current conflict enters configured rework", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
 		{name: "current base projection with clean source retains landing wait", currentBase: true, mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
@@ -120,7 +127,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "conflicted landing rebases cleanly without a rework session", mergeMessage: "Pull Request has merge conflicts", hubState: "Done", states: hosted, noHumanReview: true, wantState: "Done", wantComment: "Landed", wantRecovered: true},
 		{name: "genuine server outage retains native version and host backoff", mergeMessage: "Service Unavailable", mergeStatus: http.StatusServiceUnavailable, landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
 		{name: "strict head protection returns to review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
-		{name: "strict head protection blocks without human review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
+		{name: "strict head protection blocks without human review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Blocked", wantComment: "Head branch is out of date", wantMoves: 1},
 		{name: "a conflict with absent configured rework uses reachable rework", landing: conflict, hubState: "Merging", states: workflow, reworkState: "Missing", wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "a conflict with neither coding lane is handed off", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}, wantDeferred: true, wantError: "native workflow allows no move from Merging to the landing refusal lane Rework"},
 		{name: "a conflict with disallowed rework is handed off", landing: conflict, hubState: "Merging", states: []connector.WorkflowState{{Name: "Merging", Dispatchable: true, Transitions: []string{"Human Review", "Done"}}, {Name: "Human Review"}, {Name: "Rework", Dispatchable: true}, {Name: "Done", Terminal: true}}, wantDeferred: true},
@@ -138,6 +145,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			issue := completionTransitionIssue("Merging", "")
+			if test.optout {
+				issue.Labels = append(issue.Labels, "requires-human-review")
+			}
 			var journey *nativeLandingJourney
 			var result runpkg.RunResult
 			runErr := test.err
