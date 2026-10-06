@@ -616,6 +616,17 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				if change.VersionError != "" && change.VersionCode != test.versionCode && (!test.repolicy || change.VersionCode != "policy_mismatch") {
 					t.Fatalf("native result lost publication code: %#v", change)
 				}
+				if execution.(*nativeExecution).settled {
+					before := *change
+					for range 3 {
+						if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, test.finalMessage); err != nil {
+							t.Fatal(err)
+						}
+						if got := execution.(runner.ChangeExecution).NativeChange(); !reflect.DeepEqual(got, &before) {
+							t.Fatalf("settled publication changed refusal evidence: got %+v, want %+v", got, before)
+						}
+					}
+				}
 				h.failChanges.failDetails.Store(false)
 				recovery, err := h.admin.Recovery(t.Context(), item)
 				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "running" {

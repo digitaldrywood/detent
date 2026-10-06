@@ -58,23 +58,22 @@ func (o *Orchestrator) completeNativeChangeRun(
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	humanReview := cfg.humanReviewEnabled() || autoPromoteOptoutLabel(issue, cfg)
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
-		if !humanReview {
-			if o.handlePreTurnFailure(ctx, state, event, running) {
-				return true
+		if !humanReview && o.handlePreTurnFailure(ctx, state, event, running) {
+			return true
+		}
+		if humanReview {
+			states, err := reader.WorkflowStates(ctx)
+			if err != nil {
+				return handoff(fmt.Errorf("read native workflow states: %w", err))
 			}
-			return handoff(fmt.Errorf("native worker did not complete: %s", firstNonBlank(errorString(event.Err), finalState)))
-		}
-		states, err := reader.WorkflowStates(ctx)
-		if err != nil {
-			return handoff(fmt.Errorf("read native workflow states: %w", err))
-		}
-		review := normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState()
-		target, allowed := connector.LandingRefusalLane(states, issue.State, review, false)
-		if !allowed {
-			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", issue.State, review))
-		}
-		if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason); err != nil {
-			return handoff(fmt.Errorf("move failed native item to %s: %w", target, err))
+			review := cfg.reviewTargetState()
+			target, allowed := connector.LandingRefusalLane(states, issue.State, review, false)
+			if !allowed {
+				return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", issue.State, review))
+			}
+			if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason); err != nil {
+				return handoff(fmt.Errorf("move failed native item to %s: %w", target, err))
+			}
 		}
 		if err := o.abandonClaim(ctx, issueID); err != nil {
 			return handoff(err)
@@ -83,12 +82,13 @@ func (o *Orchestrator) completeNativeChangeRun(
 		class := runnerWorkAttemptErrorClass(event.Err)
 		message := errorString(event.Err)
 		o.recordProjectAttemptOutcome(state, issueID, event.CompletedAt, terminal, event.Err, class, message)
-		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminal, class, message, "failed", "native worker failed; source preserved for review")
+		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, message, "failed", "native worker failed; source preserved", nativeChangeMetadata(change))
 		o.recordCompletionUsage(ctx, state, event, issue)
 		o.releaseClaim(state, issueID)
 		return true
 	}
 	report, reported := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
+	humanReview = humanReview || reported && report != nil && report.Invalid == nil && report.HumanAction != ""
 	blocked := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusBlocked
 	if blocked {
 		blocked = len(report.Blockers) > 0 && report.HumanAction == "" && report.ReasonCode == ""
@@ -127,7 +127,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	target, ok := connector.CompletionLane(states, issue.State, review, changed || needsReview)
 	if changed || needsReview {
-		if humanReview || report != nil && report.Invalid == nil && report.HumanAction != "" {
+		if humanReview {
 			target, ok = connector.LandingRefusalLane(states, issue.State, review, false)
 		} else {
 			target, ok = "", false
@@ -145,8 +145,14 @@ func (o *Orchestrator) completeNativeChangeRun(
 			target, ok = rework, true
 		}
 	}
-	if change != nil && change.VersionError != "" && !blocked && !unfinished {
-		return handoff(errors.New(change.VersionError))
+	if !humanReview && !blocked && (change != nil && change.VersionError != "" || !ok && (needsReview || changed && !change.Reviewed)) {
+		if err := o.abandonClaim(ctx, issueID); err != nil {
+			return handoff(err)
+		}
+		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "provider completed; issue acceptance is not recorded", nativeChangeMetadata(change))
+		o.recordCompletionUsage(ctx, state, event, issue)
+		o.releaseClaim(state, issueID)
+		return true
 	}
 	if changed && change.Reviewed && !needsReview && !unfinished && !autoPromoteOptoutLabel(issue, cfg) {
 		if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); direct && dispatchableState(states, landing) {
