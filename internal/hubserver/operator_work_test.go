@@ -109,10 +109,13 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id,source_name,detent_state,dispatchable,terminal,created_at,updated_at) SELECT project_id,'Backlog','Backlog',0,0,created_at,updated_at FROM workflow_states WHERE project_id=? AND detent_state='Todo'", f.project.ID); err != nil {
 			t.Fatal(err)
 		}
+		snapshot := linkedSnapshot()
+		snapshot.URL = "https://github.com/acme/orders/issues/13"
+		f.service.config.ImportBackend = linkedTestImporter{snapshot: snapshot}
 		args := map[string]any{"github_issue_url": "github.com/Acme/Orders/issues/13", "state": "Backlog"}
 		raw, failed = call("file_issue", "checkout-link", args)
 		var item tracker.NativeIssue
-		if err := json.Unmarshal(raw, &item); err != nil || failed || item.State != "Backlog" || item.LinkedSource == nil || item.LinkedSource.Status != "pending" {
+		if err := json.Unmarshal(raw, &item); err != nil || failed || item.State != "Triage" || item.LinkedSource == nil || item.LinkedSource.Status != "complete" {
 			t.Fatalf("checkout link=%s failed=%t err=%v", raw, failed, err)
 		}
 		for _, key := range []string{"checkout-link", "checkout-duplicate"} {

@@ -253,12 +253,20 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		if err := validateWorkflowPolicy(t.Context(), f.service.database.db, string(created.OrganizationID)+"/"+string(created.ID), approved.Policy); err != nil {
 			t.Fatalf("current Cloud workflow approval = %v", err)
 		}
-		workflow.Definition.Layout = workflowconfig.ProjectDefinitionLegacy
-		workflow.Definition.Revision = strings.Repeat("b", 40)
-		descriptor, err := workflowconfig.ResolvePolicy(workflow)
-		if err != nil {
-			t.Fatal(err)
+		repositoryPolicy := func(markdown, revision string) policy.Descriptor {
+			t.Helper()
+			definition, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "WORKFLOW.md", Workflow: []byte(markdown)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			definition.Definition.Revision = revision
+			descriptor, err := workflowconfig.ResolvePolicy(definition)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return descriptor
 		}
+		descriptor := repositoryPolicy(markdown+"Use the repository workflow.\n", strings.Repeat("b", 40))
 		api(t, "member", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: descriptor}, http.StatusNotFound)
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: descriptor}, http.StatusOK)
 		integration = ProjectIntegration{}
@@ -284,26 +292,12 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		var movable tracker.NativeIssue
 		browserHostedDecode(t, api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "repository-task"}, Title: "Repository-defined transitions", State: "Todo"}, http.StatusOK), &movable)
 		api(t, "member", http.MethodPost, base+"/work-items/"+string(movable.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "authorized-move"}, ExpectedRevision: movable.Revision, State: "In Progress", Reason: "user_requested"}, http.StatusOK)
-		removedWorkflow := workflow
-		removedWorkflow.Config.Tracker.Lanes = nil
-		removedWorkflow.Config.Tracker.ActiveStates = []string{"Backlog"}
-		removedWorkflow.Config.Tracker.ObservedStates = []string{"Blocked", "Human Review", "Plan Review"}
-		removedWorkflow.Config.Tracker.TerminalStates = []string{"Done"}
-		removedWorkflow.Definition.Revision = strings.Repeat("c", 40)
-		removed, err := workflowconfig.ResolvePolicy(removedWorkflow)
-		if err != nil {
-			t.Fatal(err)
-		}
+		removed := repositoryPolicy("---\ntracker:\n  kind: hub_native\n  active_states: [Backlog]\n  observed_states: [Blocked, Human Review, Plan Review]\n  terminal_states: [Done]\nplan:\n  enabled: true\n---\nComplete the issue.\n", strings.Repeat("c", 40))
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: removed}, http.StatusUnprocessableEntity)
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: hubTestPolicy()}, http.StatusConflict)
-		workflow.Config.Tracker.Lanes = nil
-		workflow.Config.Tracker.ObservedStates = append(workflow.Config.Tracker.ObservedStates, "Customer QA")
-		workflow.Config.Server.Kanban.AllowedTransitions = map[string][]string{"Customer QA": {"Todo"}}
-		workflow.Definition.Revision = strings.Repeat("d", 40)
-		updated, err := workflowconfig.ResolvePolicy(workflow)
-		if err != nil {
-			t.Fatal(err)
-		}
+		updatedMarkdown := strings.Replace(markdown, "{name: Done, role: terminal}", "{name: Customer QA, role: holding}, {name: Done, role: terminal}", 1)
+		updatedMarkdown = strings.Replace(updatedMarkdown, "plan:\n", "server:\n  kanban:\n    allowed_transitions:\n      Customer QA: [Todo]\nplan:\n", 1)
+		updated := repositoryPolicy(updatedMarkdown, strings.Repeat("d", 40))
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: updated}, http.StatusConflict)
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: updated}, http.StatusOK)
 		states = updated.Workflow.States
