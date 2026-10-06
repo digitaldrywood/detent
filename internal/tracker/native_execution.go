@@ -205,16 +205,21 @@ type NativeAdmissionObservation struct {
 }
 
 type NativeAdmissionContext struct {
-	ObservedAt     time.Time `json:"observed_at"`
-	PolicyID       string    `json:"policy_id"`
-	WorkflowStates []string  `json:"workflow_states,omitempty"`
-	Authors        []string  `json:"authors,omitempty"`
-	Assignees      []string  `json:"assignees,omitempty"`
-	LabelInclude   []string  `json:"label_include,omitempty"`
-	LabelExclude   []string  `json:"label_exclude,omitempty"`
+	LastRefreshAt   time.Time     `json:"last_refresh_at,omitzero"`
+	RefreshDuration time.Duration `json:"refresh_duration,omitempty"`
+	ObservedAt      time.Time     `json:"observed_at"`
+	PolicyID        string        `json:"policy_id"`
+	WorkflowStates  []string      `json:"workflow_states,omitempty"`
+	Authors         []string      `json:"authors,omitempty"`
+	Assignees       []string      `json:"assignees,omitempty"`
+	LabelInclude    []string      `json:"label_include,omitempty"`
+	LabelExclude    []string      `json:"label_exclude,omitempty"`
 }
 
 func (c NativeAdmissionContext) Validate() error {
+	if c.RefreshDuration < 0 {
+		return errors.New("refresh duration must not be negative")
+	}
 	if c.ObservedAt.IsZero() || c.PolicyID == "" || len(c.PolicyID) > 128 {
 		return errors.New("admission context requires a bounded policy identity")
 	}

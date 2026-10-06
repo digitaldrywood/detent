@@ -113,6 +113,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	s.registerIntegrationRoutes(e)
 	s.registerChangeRoutes(e)
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
+	e.GET(nativeBase+"/health/findings", s.getHealthFindings, read)
 	write := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	admin := s.requireInstanceAdmin()
 	worker := s.requireNativeScope(apiScopeWorker)

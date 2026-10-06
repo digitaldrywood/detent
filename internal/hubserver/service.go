@@ -35,6 +35,7 @@ type Service struct {
 	operatorChat            *chat.Service
 	administration          *operatoradmin.Executor
 	billing                 *hostedBillingWorker
+	healthDetector          *healthDetector
 	hostedMutationMu        sync.Mutex
 	hostedAuthLogger        *slog.Logger
 	hostedSessions          *auth.Service
@@ -188,6 +189,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		service.outbox.start(ctx)
 	}
 	service.startHostedBilling()
+	service.startHealthDetector()
 	return service, nil
 }
 
@@ -365,6 +367,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	s.stopSpriteRunners()
 	s.stopHostedBilling()
+	s.stopHealthDetector()
 	return errors.Join(mcpErr, httpErr, s.stopGitHubWebhookMaintenance(), s.stopGitHubReconciliation())
 }
 
@@ -398,6 +401,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		webhookErr := s.stopGitHubWebhookMaintenance()
 		reconcileErr := s.stopGitHubReconciliation()
 		s.stopHostedBilling()
+		s.stopHealthDetector()
 		if s.outbox != nil {
 			s.outbox.stop()
 		}

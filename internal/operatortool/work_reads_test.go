@@ -14,6 +14,12 @@ func TestWorkReadArguments(t *testing.T) {
 		name, tool, raw string
 		valid           bool
 	}{
+		{"health defaults", HealthFindings, `{"project_id":"project"}`, true},
+		{"health filters", HealthFindings, `{"project_id":"project","state":"resolved","since":"2026-10-06T18:00:00Z","limit":100}`, true},
+		{"invalid health state", HealthFindings, `{"project_id":"project","state":"all"}`, false},
+		{"invalid health since", HealthFindings, `{"project_id":"project","since":"yesterday"}`, false},
+		{"oversized health page", HealthFindings, `{"project_id":"project","limit":101}`, false},
+		{"health requires project", HealthFindings, `{}`, false},
 		{"list default", WorkList, `{"project_id":"project"}`, true},
 		{"open fingerprint search", WorkList, `{"project_id":"project","fingerprint":"canonical","open":true,"limit":2}`, true},
 		{"nonboolean open", WorkList, `{"project_id":"project","open":"true"}`, false},

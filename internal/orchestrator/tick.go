@@ -799,6 +799,7 @@ func (o *Orchestrator) snapshotNativeAdmission(state *State) {
 		now = o.now()
 	}
 	state.nativeAdmission = &tracker.NativeAdmissionContext{
+		LastRefreshAt: state.LastRefreshAt, RefreshDuration: state.LastRefreshDuration,
 		ObservedAt: now.UTC(), PolicyID: o.cfg.Policy.ID, WorkflowStates: o.candidateFetchStatesForTick(state),
 		Authors: filter.Authors, Assignees: filter.Assignees,
 		LabelInclude: filter.LabelInclude, LabelExclude: filter.LabelExclude,

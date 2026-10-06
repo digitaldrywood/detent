@@ -766,6 +766,34 @@ fail. A run outcome records a worker report, not a verified check or merge grant
 The policy ID is `policy_` followed by its 64-character lowercase SHA-256 digest
 and must equal the approved descriptor pinned to the lease.
 
+### Health findings
+
+`GET /api/v2/organizations/{organization}/projects/{project}/health/findings`
+and the `health_findings` MCP read require the current project's read grant.
+They accept `state=open|resolved` (default `open`), an RFC3339 `since`, and
+`cursor`/`limit` paging (at most 100 findings). `since` includes findings seen
+or resolved at or after that time. The response includes `items`, an optional
+`next_cursor`, and the tenant detector's `last_tick_at` (null before its first
+successful evaluation).
+
+The Hub evaluates static health rules every minute using current state and
+at most 24 hours of recorded events. It writes only findings and its successful
+tick, without claiming work, changing lanes, making model calls, or creating
+issues. A finding preserves its ID and opening time while active and when
+reopened within 60 minutes of resolution. A later recurrence opens a new
+record with the same signal/subject fingerprint. Evidence lists are bounded
+to 20 IDs. Evaluations read at most 100 projects, 1,000 enrolled runners,
+10,000 current nonterminal items per tenant, and 10,000 recent events; an exceeded read
+bound or failed evaluation retains previous findings and the previous tick.
+
+Runner admission contexts also report `last_refresh_at` and `refresh_duration`
+(nanoseconds) from the project refresh owner. Existing runners can omit these
+fields; the detector uses enrollment time until refresh timing is reported.
+Human findings use current completion authority and active conversation
+questions, without reviving legacy worker question receipts. Recorded scheduler
+cycles are preferred for refusals, with reported capacity and approved policy
+as the fallback when cycle observations are absent.
+
 ### Native runtime evidence
 
 With `native_runtime_evidence`, `GET /work-items/{item}/runtime` selects the

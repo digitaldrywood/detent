@@ -20,6 +20,7 @@ const (
 	WorkList            = "work_list"
 	WorkItem            = "work_item"
 	WorkConfig          = "work_config"
+	HealthFindings      = "health_findings"
 	WorkComments        = "work_comments"
 	WorkPRComments      = "work_pr_comments"
 	WorkHistory         = "work_history"
@@ -61,6 +62,7 @@ const WorkListPageBytes = MaxResultBytes / 4
 // always come from the connection. Each operation permits only its own fields.
 type WorkReadRequest struct {
 	ProjectID       string   `json:"project_id"`
+	Since           string   `json:"since,omitempty"`
 	Reference       string   `json:"reference,omitempty"`
 	Query           string   `json:"query,omitempty"`
 	Fingerprint     string   `json:"fingerprint,omitempty"`
@@ -109,6 +111,7 @@ func WorkReadCatalog() []Definition {
 	var definitions []Definition
 	for _, spec := range []struct{ name, description, fields string }{
 		{WorkList, "List or search work items in one authorized project. Native projects support archived selection, OR selections within each filter, and workspace/work projections. GitHub snapshots refuse unsupported native selectors.", "query fingerprint open state label states labels assignee assignees priority priorities archived include cursor offset limit"},
+		{HealthFindings, "Read project-scoped health findings and the detector last tick, with bounded pagination.", "state since cursor limit"},
 		{WorkConfig, "Read configured project lanes, priorities and available labels.", ""},
 		{WorkItem, "Read a work item's detail and source freshness.", "reference"},
 		{WorkComments, "Read a bounded page of work-item comments with edit revisions.", "reference cursor offset limit"},
@@ -163,6 +166,10 @@ func WorkReadCatalog() []Definition {
 					property["minLength"] = 1
 				}
 			}
+		}
+		if spec.name == HealthFindings {
+			properties["state"] = map[string]any{"type": "string", "enum": []string{"open", "resolved"}}
+			properties["limit"] = map[string]any{"type": "integer", "minimum": 1, "maximum": 100}
 		}
 		shape := map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
 		if spec.name == WorkAttemptReceipt {
@@ -258,6 +265,11 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 	}
 	if request.Priority != nil && len(request.Priorities) == 32 || slices.Contains(request.Include, "work") && slices.Contains(request.Include, "summary") {
 		return request, ErrInvalidArguments
+	}
+	if name == HealthFindings && request.Since != "" {
+		if _, err := time.Parse(time.RFC3339Nano, request.Since); err != nil {
+			return request, ErrInvalidArguments
+		}
 	}
 	request.Limit = itemLimit(request.Limit)
 	if name == GitHubScopeTimings && (request.NativeAttemptID == "" || request.RunnerID == "") {
