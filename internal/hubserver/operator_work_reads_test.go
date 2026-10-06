@@ -741,7 +741,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		code, maxChars, actualChars := -32602, int64(1048576), int64(2927066)
 		finished := started
 		finished.Type, finished.IdempotencyKey, finished.Data.Sequence, finished.Data.Outcome = "run.finished", "provider-finished", 2, "failed"
-		finished.Data.TerminalFailure = &tracker.NativeTerminalFailure{ObservedAt: at, Provider: "codex", Operation: "turn/start", RPCCode: &code, ProviderCode: "input_too_large", MaxChars: &maxChars, ActualChars: &actualChars, Source: "/private/source", Summary: "private-prompt token=private-secret", Coverage: "private-rpc-data", Unavailable: []string{"private-prompt"}}
+		finished.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "count 116 attempts failed /private/error token=private-secret\nprivate-prompt", ErrorClass: "protocol", ObservedAt: at, Provider: "codex", Operation: "turn/start", RPCCode: &code, ProviderCode: "input_too_large", MaxChars: &maxChars, ActualChars: &actualChars, Source: "/private/source", Summary: "private-prompt token=private-secret", Coverage: "private-rpc-data", Unavailable: []string{"private-prompt"}}
 		for _, test := range []struct {
 			name   string
 			change func(*tracker.NativeRunEvent)
@@ -790,6 +790,9 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 					attempt = runtime.Data.Attempt
 				case operatortool.ExplainItem:
 					err = json.Unmarshal(result.Content, &explanation)
+					if explanation.FailureSignature == nil || explanation.FailureSignature.Signature != "count <n> attempts failed [redacted] [redacted]" || explanation.FailureSignature.Count != 1 || explanation.FailureSignature.Partial {
+						t.Fatalf("MCP lost failure signature: %s", result.Content)
+					}
 					if explanation.NativeRuntime != nil {
 						attempt = explanation.NativeRuntime.Attempt
 					}
@@ -801,7 +804,7 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 				if failure == nil || failure.Provider != "codex" || failure.Operation != "turn/start" || failure.ProviderCode != "input_too_large" || failure.RPCCode == nil || *failure.RPCCode != code || failure.MaxChars == nil || *failure.MaxChars != maxChars || failure.ActualChars == nil || *failure.ActualChars != actualChars || !failure.ObservedAt.Equal(at) || failure.Source != "host_runner_completion" {
 					t.Fatalf("MCP lost recorded provider diagnostics: %s", result.Content)
 				}
-				for _, private := range []string{"/private/source", "private-prompt", "private-secret", "private-rpc-data"} {
+				for _, private := range []string{"/private/source", "/private/error", "private-prompt", "private-secret", "private-rpc-data"} {
 					if strings.Contains(string(result.Content), private) {
 						t.Fatalf("MCP exposed %q", private)
 					}

@@ -92,7 +92,7 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				if grant == "both" {
 					want = 2
 				}
-				if len(report.Projects) != want || report.ObservedAt.IsZero() || report.OrganizationID != "org_security" {
+				if !strings.Contains(string(raw), `"failure_signatures":`) || len(report.Projects) != want || report.ObservedAt.IsZero() || report.OrganizationID != "org_security" {
 					t.Fatalf("population %s", raw)
 				}
 				if grant == "native" && strings.Contains(string(raw), "prj_other") || grant == "github" && strings.Contains(string(raw), string(f.project)) {

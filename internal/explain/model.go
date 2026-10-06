@@ -71,6 +71,7 @@ type Query struct {
 }
 
 type IssueExplanation struct {
+	FailureSignature *FailureSignature              `json:"failure_signature,omitempty"`
 	NativeRuntime    *tracker.NativeRuntimeEvidence `json:"native_runtime,omitempty"`
 	Schema           int                            `json:"schema"`
 	Found            bool                           `json:"found"`
@@ -89,6 +90,12 @@ type IssueExplanation struct {
 	Reasons          []Reason                       `json:"reasons"`
 	Sources          []SourceStatus                 `json:"sources"`
 	Evidence         []EvidenceReference            `json:"evidence"`
+}
+
+type FailureSignature struct {
+	Signature string `json:"signature"`
+	Count     int    `json:"count"`
+	Partial   bool   `json:"partial"`
 }
 
 type Reason struct {

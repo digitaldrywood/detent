@@ -229,5 +229,11 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
-	return explain.FromNativeEvidence(evidence), nil
+	failures, partial, err := readNativeFailures(ctx, r.service.database.db, scope, string(issue.WorkItemID), nil)
+	if err != nil {
+		return explain.IssueExplanation{}, safeWorkReadError(err)
+	}
+	out := explain.FromNativeEvidence(evidence)
+	out.FailureSignature = latestNativeFailureSignature(failures, partial)
+	return out, nil
 }
