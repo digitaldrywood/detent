@@ -772,7 +772,7 @@ func spendProgressComment(issue connector.Issue, decision spendProgressDecision)
 		b.WriteString("\n- configured_base_limit_usd: ")
 		b.WriteString(budget.FormatUSD(decision.ConfiguredLimitUSD))
 	}
-	b.WriteString(fmt.Sprintf("\n- sessions: %d", decision.Spend.Sessions))
+	fmt.Fprintf(&b, "\n- sessions: %d", decision.Spend.Sessions)
 	if decision.PRFingerprint != nil {
 		b.WriteString("\n- pr_number: ")
 		b.WriteString(strconv.FormatInt(decision.PRFingerprint.Number, 10))

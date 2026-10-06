@@ -1687,7 +1687,7 @@ func (m *Manager) commentProposal(
 func (m *Manager) admitProposal(
 	ctx context.Context,
 	settings Settings,
-	issue connector.Issue,
+	_ connector.Issue,
 	proposal admissionmodel.Proposal,
 	decision admissionmodel.Decision,
 ) error {
@@ -1721,7 +1721,7 @@ func (m *Manager) admitProposal(
 		}
 		return nil
 	}
-	issue = current
+	issue := current
 	if settings.IntakeEnabled != nil && !settings.IntakeEnabled() {
 		return nil
 	}

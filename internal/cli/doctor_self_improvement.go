@@ -612,7 +612,7 @@ func doctorWorkflowProposalIssueBody(proposal doctorWorkflowImprovementProposal)
 			builder.WriteString("\n- ")
 			builder.WriteString(key)
 			builder.WriteString(": ")
-			builder.WriteString(fmt.Sprint(proposal.Evidence[key]))
+			fmt.Fprint(&builder, proposal.Evidence[key])
 		}
 	}
 	builder.WriteString("\n\n## Target\n\n")

@@ -78,7 +78,7 @@ func attachmentDataBlock(attachments []AgentAttachment) string {
 	block.WriteString("\n")
 	for _, attachment := range text {
 		content, truncated := boundAttachmentContent(string(attachment.Content), budget)
-		block.WriteString(fmt.Sprintf("<file name=%q mime=%q bytes=%d", escapeAttachmentData(attachment.Name), escapeAttachmentData(attachment.MIME), len(attachment.Content)))
+		fmt.Fprintf(&block, "<file name=%q mime=%q bytes=%d", escapeAttachmentData(attachment.Name), escapeAttachmentData(attachment.MIME), len(attachment.Content))
 		if truncated {
 			block.WriteString(" truncated=\"true\"")
 		}

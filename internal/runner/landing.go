@@ -66,9 +66,6 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	defer func() {
 		if runResult.NativeLanding != nil {
 			runResult.NativeLanding.Rebased = result.Rebased
-			if runResult.NativeLanding.BaseSHA == "" {
-				runResult.NativeLanding.BaseSHA = result.BaseBefore
-			}
 			if result.Gate.Command != "" {
 				runResult.NativeLanding.Gate = &result.Gate
 			}

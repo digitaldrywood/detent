@@ -700,7 +700,7 @@ func reworkBreakerAutoUnparkComment(issue connector.Issue, park reworkBreakerPar
 	b.WriteString(" after the original merge-path condition cleared.")
 	b.WriteString("\n\nPark reason: ")
 	b.WriteString(string(park.Reason))
-	b.WriteString(fmt.Sprintf("\nLinked PR: #%d", park.PRNumber))
+	fmt.Fprintf(&b, "\nLinked PR: #%d", park.PRNumber)
 	if issue.PullRequest != nil && strings.TrimSpace(issue.PullRequest.URL) != "" {
 		b.WriteString(" ")
 		b.WriteString(strings.TrimSpace(issue.PullRequest.URL))
@@ -819,7 +819,7 @@ func blockedRecoveryComment(issue connector.Issue, targetState string, decision 
 		b.WriteString(")")
 	}
 	if pr := issue.PullRequest; pr != nil && pr.Number > 0 {
-		b.WriteString(fmt.Sprintf("\nLinked PR: #%d", pr.Number))
+		fmt.Fprintf(&b, "\nLinked PR: #%d", pr.Number)
 		if url := strings.TrimSpace(pr.URL); url != "" {
 			b.WriteString(" ")
 			b.WriteString(url)
@@ -851,7 +851,7 @@ func blockedRecoveryExhaustedComment(
 	b.WriteString("\nMatched recovery event: ")
 	b.WriteString(workflowTimelineEventLabel(match.Event))
 	if pr := issue.PullRequest; pr != nil && pr.Number > 0 {
-		b.WriteString(fmt.Sprintf("\nLinked PR: #%d", pr.Number))
+		fmt.Fprintf(&b, "\nLinked PR: #%d", pr.Number)
 		if url := strings.TrimSpace(pr.URL); url != "" {
 			b.WriteString(" ")
 			b.WriteString(url)

@@ -178,6 +178,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 				}
 			}
 			write(filepath.Join(root, "Makefile"), readNormalizedFile(t, "Makefile"))
+			write(filepath.Join(root, "scripts", "runner-setup.sh"), readNormalizedFile(t, "scripts/runner-setup.sh"))
 			write(filepath.Join(root, ".golangci-version"), "v2.9.0\n")
 			write(filepath.Join(root, "go.mod"), "module example.com/test\n\ngo 1.26\n\ntoolchain go1.26.6\n")
 			bin := filepath.Join(root, "bin")
@@ -185,7 +186,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			linter := "#!/bin/sh\nprintf 'pinned:%s:%s\\n' \"$GOTOOLCHAIN\" \"$*\"\n"
 			fixture := filepath.Join(root, "pinned-linter")
 			write(fixture, linter)
-			write(filepath.Join(bin, "go"), "#!/bin/sh\nset -eu\n[ \"$GOTOOLCHAIN\" = go1.26.6 ]\n[ \"$*\" = 'install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0' ]\ncp pinned-linter \"$GOBIN/golangci-lint\"\n")
+			write(filepath.Join(bin, "go"), "#!/bin/sh\nset -eu\n[ \"$GOTOOLCHAIN\" = go1.26.6 ]\ncase \"$*\" in 'install -p '*' github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0') ;; *) exit 1 ;; esac\ncp pinned-linter \"$GOBIN/golangci-lint\"\n")
 			if cached {
 				cachedPath := filepath.Join(root, "tmp/tools/golangci-lint/v2.9.0/go1.26.6/golangci-lint")
 				write(cachedPath, linter)
@@ -204,7 +205,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			if !strings.Contains(string(output), "pinned:go1.26.6:run --allow-parallel-runners ") || !strings.Contains(string(output), "--timeout=15m") {
 				t.Fatalf("make lint did not invoke the pinned toolchain: %s", output)
 			}
-			if installed := strings.Contains(string(output), "go install"); installed == cached {
+			if installed := strings.Contains(string(output), "Installing github.com/golangci/golangci-lint"); installed == cached {
 				t.Fatalf("make lint installed = %v, cached = %v: %s", installed, cached, output)
 			}
 		})
