@@ -87,7 +87,7 @@ func TestRunnerProjectConfigurationOwner(t *testing.T) {
 				}
 			})
 			state := newGlobalConfigState(cfg)
-			owner := runnerProjectConfigurationOwner(cfg, state.get, project.NewConfigurationOwner(cfg, state.get, manager, attempts, nil))
+			owner := runnerProjectConfigurationOwner(cfg, state.get, project.NewConfigurationOwner(t.Context(), cfg, state.get, manager, attempts, nil))
 			id := "prj_test"
 			switch scenario {
 			case "foreign project":

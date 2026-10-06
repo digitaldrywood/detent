@@ -29,7 +29,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, scenario := range []string{"detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
+	for _, scenario := range []string{"detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := initWorkflowSourceRepo(t)
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
@@ -85,6 +85,16 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Error(err)
 				}
 			})
+			if scenario == "database detach" {
+				cfg.Projects[0].Priority = 10
+				if _, err := attempts.InitializeLocalConfiguration(t.Context(), cfg, nil); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err = attempts.LocalConfiguration(t.Context(), cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			native := strings.HasPrefix(scenario, "binding native")
 			if native {
 				if err := os.WriteFile(workflowPath, []byte("Shared native instructions\n"), 0600); err != nil {
@@ -127,7 +137,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				}
 			})
 			verified := 0
-			owner := NewConfigurationOwner(cfg, func() globalconfig.Config { return cfg }, manager, attempts, func(_ context.Context, observed globalconfig.Config, id, _, checkpoint string) error {
+			owner := NewConfigurationOwner(t.Context(), cfg, func() globalconfig.Config { return cfg }, manager, attempts, func(_ context.Context, observed globalconfig.Config, id, _, checkpoint string) error {
 				verified++
 				if id != "selected" || checkpoint != strings.Repeat("c", 64) || observed.APIToken != cfg.APIToken {
 					t.Fatal("handoff selected a different authority")
@@ -333,11 +343,14 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				return
 			}
 			switch scenario {
-			case "detach":
+			case "detach", "database detach":
 				if !result.Saved || result.Applied || result.Registered || !result.RuntimeRegistered || verified != 1 {
 					t.Fatalf("detach=%+v verified=%d", result, verified)
 				}
 				updated, err := globalconfig.Read(cfg.Path, globalconfig.WithProjectPathLiterals())
+				if scenario == "database detach" {
+					updated, err = attempts.LocalConfiguration(t.Context(), updated)
+				}
 				if err != nil {
 					t.Fatal(err)
 				}

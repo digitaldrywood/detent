@@ -1,14 +1,27 @@
 # Configuration
 
-Detent has two configuration layers:
+Detent separates machine settings, instance settings and project workflows:
 
-- `global.yaml` selects projects and controls host-wide runtime settings.
+- `global.yaml` controls host-wide runtime settings.
+- Cloud stores project membership, allowed projects, project rank and organization/project
+  model selection in its database. Without a Hub, the local SQLite store owns the same settings.
 - Each project has a checked-in `detent.yaml` machine contract, with optional
   machine-local overrides in `detent.local.yaml`. The project contract can also
   live in legacy `WORKFLOW.md` YAML frontmatter.
 
-This page is the single reference for both configuration layers. Project
-configuration is documented below after the host-wide settings.
+This page is the reference for machine and project configuration. Local settings
+use the same organization/project model-selection and project-rank API/MCP
+operations as Cloud. Local runner routing uses runner ID `local`; only its
+`project_ids` are editable through routing updates.
+
+The first local start after upgrade imports legacy `projects`, weight/priority
+and `global.agents.model_selection` from `global.yaml` atomically. Higher legacy
+priority sorts first; ties retain list order. Weights do not reserve capacity.
+Import is recorded in SQLite and never repeated, including after an empty first
+start. Later YAML edits cannot override database settings. Legacy keys warn for
+this release and will be rejected in the next release; remove them after import.
+CLI project edits save to SQLite and write machine settings to `global.yaml`.
+Each project's workflow continues to come from its repository.
 
 `agent.no_progress_timeout_ms` remains readable for older project files but is
 ignored. Worker sessions use their absolute duration bound, and local validation
@@ -17,7 +30,7 @@ waits use the gate lock deadline.
 For instance backend/route inheritance and the opt-in `sol_first` model-selection
 preset, see [Instance agent defaults](multi-project.md#instance-agent-defaults-and-sol-first-selection).
 
-Priority settings order ready work (INV-10). Project priority and
+Priority settings order ready work (INV-10). Stored project rank and
 `dispatch_priority_by_state`, `dispatch_priority_by_label`, and
 `prioritize_unblockers` choose the next eligible request. They never reserve
 idle slots or cancel running workers. `max_concurrent_agents` and

@@ -48,6 +48,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/pause"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
@@ -13326,6 +13327,13 @@ type storeProbe struct {
 	budgetCostEvents  func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
 	runtimeEvidence   func(context.Context, store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error)
 	validatorVerdicts func(context.Context, store.ValidatorVerdictQuery) ([]store.ValidatorVerdict, error)
+}
+
+func (p storeProbe) LocalProjectRank(ctx context.Context, change *projectsettings.RankChange) (projectsettings.Rank, error) {
+	if p.Store != nil {
+		return p.Store.LocalProjectRank(ctx, change)
+	}
+	return projectsettings.Rank{}, sql.ErrNoRows
 }
 
 type healthNotificationFailureReader struct {

@@ -3,22 +3,18 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/projectsettings"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type cloudModelSelection struct {
-	Revision  tracker.Revision       `json:"revision,string"`
-	Selection *config.ModelSelection `json:"selection"`
-	Effective config.ModelSelection  `json:"effective"`
-}
+type cloudModelSelection = projectsettings.ModelSelection
 
 type cloudModelSelectionRequest struct {
 	tracker.Mutation
@@ -27,32 +23,7 @@ type cloudModelSelectionRequest struct {
 }
 
 func readCloudModelSelection(ctx context.Context, query nativeQueryer, scope nativeScope) (cloudModelSelection, error) {
-	var result cloudModelSelection
-	var organization string
-	var org config.ModelSelection
-	if err := query.QueryRowContext(ctx, "SELECT model_selection_json, model_selection_revision FROM organizations WHERE id=?", scope.organization).Scan(&organization, &result.Revision); err != nil {
-		return result, err
-	}
-	if err := json.Unmarshal([]byte(organization), &org); err != nil {
-		return result, err
-	}
-	result.Selection = &org
-	var override config.ModelSelection
-	if scope.project != "" {
-		var raw sql.NullString
-		if err := query.QueryRowContext(ctx, "SELECT model_selection_json, model_selection_revision FROM projects WHERE organization_id=? AND id=?", scope.organization, scope.project).Scan(&raw, &result.Revision); err != nil {
-			return result, err
-		}
-		result.Selection = nil
-		if raw.Valid {
-			if err := json.Unmarshal([]byte(raw.String), &override); err != nil {
-				return result, err
-			}
-			result.Selection = &override
-		}
-	}
-	result.Effective = config.ResolveCloudModelSelection(org, override)
-	return result, nil
+	return projectsettings.ReadModelSelection(ctx, query, scope.organization, scope.project)
 }
 
 func (s *Service) getCloudModelSelection(c echo.Context) error {
@@ -99,39 +70,13 @@ func (s *Service) updateCloudModelSelection(c echo.Context) error {
 
 func updateCloudModelSelectionOperation(request cloudModelSelectionRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
 	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
-		current, err := readCloudModelSelection(ctx, tx, scope)
-		if err != nil {
-			return nil, err
+		value, err := projectsettings.UpdateModelSelection(ctx, tx, scope.organization, scope.project, projectsettings.ModelSelectionChange{ExpectedRevision: request.ExpectedRevision, Selection: request.Selection})
+		if errors.Is(err, projectsettings.ErrConflict) {
+			return nil, nativeConflict(value.Revision)
 		}
-		if current.Revision != request.ExpectedRevision {
-			return nil, nativeConflict(current.Revision)
+		if errors.Is(err, projectsettings.ErrInvalid) {
+			return nil, &nativeError{Code: "invalid_request", Message: err.Error(), status: http.StatusUnprocessableEntity, publicMessage: true}
 		}
-		if scope.project == "" && request.Selection == nil {
-			return nil, nativeInvalid("Organization model selection is required")
-		}
-		var raw any
-		if request.Selection != nil {
-			encoded, err := json.Marshal(request.Selection)
-			if err != nil {
-				return nil, err
-			}
-			raw = string(encoded)
-		}
-		if scope.project == "" {
-			_, err = tx.ExecContext(ctx, "UPDATE organizations SET model_selection_json=?, model_selection_revision=model_selection_revision+1 WHERE id=?", raw, scope.organization)
-		} else {
-			_, err = tx.ExecContext(ctx, "UPDATE projects SET model_selection_json=?, model_selection_revision=model_selection_revision+1 WHERE organization_id=? AND id=?", raw, scope.organization, scope.project)
-		}
-		if err != nil {
-			return nil, err
-		}
-		saved, err := readCloudModelSelection(ctx, tx, scope)
-		if err != nil {
-			return nil, err
-		}
-		if problems := saved.Effective.Validate(); len(problems) > 0 {
-			return nil, &nativeError{Code: "invalid_request", Message: strings.Join(problems, "; "), status: http.StatusUnprocessableEntity, publicMessage: true}
-		}
-		return saved, nil
+		return value, err
 	}
 }

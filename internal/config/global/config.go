@@ -99,7 +99,7 @@ type Config struct {
 	Auth                  Auth             `yaml:"auth,omitempty"`
 	Profiling             profiling.Config `yaml:"profiling,omitempty"`
 	Global                Settings         `yaml:"global"`
-	Projects              []Project        `yaml:"projects"`
+	Projects              []Project        `yaml:"projects,omitempty"`
 }
 
 type DashboardAccess struct {
@@ -230,6 +230,7 @@ type AgentPool struct {
 }
 
 type Project struct {
+	ModelSelection           *workflowconfig.ModelSelection     `yaml:"-"`
 	LocalIntakeEnabled       *bool                              `yaml:"local_intake_enabled,omitempty"`
 	GlobalLocalIntakeEnabled *bool                              `yaml:"-"`
 	GlobalWorker             workflowconfig.WorkerDefaults      `yaml:"-"`
@@ -308,6 +309,7 @@ type options struct {
 	projectPathLiterals       bool
 	allowMissingWorkflowFiles bool
 	allowMissingProjectPaths  bool
+	machineOnlyProjects       bool
 }
 
 type pathOptions struct {
@@ -686,6 +688,10 @@ func ReadOrDefault(path string, opts ...Option) (Config, error) {
 	return Config{}, err
 }
 
+func WithoutProjectConfiguration() Option {
+	return func(o *options) { o.machineOnlyProjects = true }
+}
+
 func Parse(raw []byte, path string, opts ...Option) (Config, error) {
 	readOptions := defaultOptions()
 	for _, opt := range opts {
@@ -697,6 +703,10 @@ func Parse(raw []byte, path string, opts ...Option) (Config, error) {
 		return Config{}, err
 	}
 
+	_, projectsConfigured := root["projects"]
+	if readOptions.machineOnlyProjects || !projectsConfigured {
+		root["projects"] = []any{}
+	}
 	return parseConfigRoot(root, path, readOptions, opts...)
 }
 
