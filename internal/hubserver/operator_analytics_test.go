@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -271,6 +273,120 @@ func nativeAnalyticsStdioCall(t *testing.T, ctx context.Context, executor mcp.Ex
 		t.Fatalf("stdio frame=%s", frame)
 	}
 	return envelope.Result.Data
+}
+
+func TestNativeAnalyticsCostPerOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		usageRows          int
+		landings           int
+		sharedAttempt      bool
+		usageAtWindowEnd   bool
+		partialHour        bool
+		clipped            bool
+		populationObserved int
+		costPerShipped     float64
+		tokensPerShipped   float64
+	}{
+		{name: "complete aligned population", usageRows: 2, landings: 2, populationObserved: 2, costPerShipped: 4, tokensPerShipped: 120},
+		{name: "multiple rows from one attempt", usageRows: 2, landings: 2, sharedAttempt: true, populationObserved: 1, costPerShipped: 4, tokensPerShipped: 120},
+		{name: "partial hour attribution", usageRows: 2, landings: 2, partialHour: true, populationObserved: 2, costPerShipped: 4, tokensPerShipped: 120},
+		{name: "clipped usage population", usageRows: maxAnalyticsPopulation + 1, landings: 2, clipped: true, populationObserved: maxAnalyticsPopulation, costPerShipped: 2000, tokensPerShipped: 60000},
+		{name: "clipped partial hour population", usageRows: maxAnalyticsPopulation + 1, landings: 2, partialHour: true, clipped: true, populationObserved: maxAnalyticsPopulation, costPerShipped: 2000, tokensPerShipped: 60000},
+		{name: "exclusive end does not clip population", usageRows: maxAnalyticsPopulation + 1, landings: 2, usageAtWindowEnd: true, populationObserved: maxAnalyticsPopulation, costPerShipped: 2000, tokensPerShipped: 60000},
+		{name: "clipped landing population", usageRows: 2, landings: maxAnalyticsPopulation + 1, clipped: true, populationObserved: 2, costPerShipped: 0.008, tokensPerShipped: 0.24},
+		{name: "missing recorded usage", landings: 2},
+		{name: "no shipped outcomes", usageRows: 2, populationObserved: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 6, 14, 0, 0, 0, time.UTC)
+			f := newHostedSecurityFixture(t, func(cfg *Config) { cfg.now = func() time.Time { return now } })
+			user := f.user(t, "analytics", "member", "analytics@example.test", "read", "")
+			issue := f.seedIssue(t, 1)
+			w := operatortool.AnalyticsWindow{From: now.Add(-2 * time.Hour), To: now, Bucket: time.Hour}
+			if test.partialHour {
+				w.From = w.From.Add(15 * time.Minute)
+				w.To = w.To.Add(15 * time.Minute)
+			}
+			stamp := now.Add(-time.Hour)
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			for i := range test.usageRows {
+				period := stamp
+				if test.usageAtWindowEnd && i == test.usageRows-1 {
+					period = w.To
+				}
+				attemptID := fmt.Sprintf("attempt-%04d", i)
+				if test.sharedAttempt {
+					attemptID = "shared-attempt"
+				}
+				_, err := tx.ExecContext(t.Context(), `INSERT INTO attempt_usage
+(attempt_id,organization_id,project_id,period,provider,model,input,output,cost_estimate,updated_at)
+VALUES (?,'org_security',?,?,'openai',?,100,20,4,?)`, attemptID, f.project, usagePeriod(period), fmt.Sprintf("model-%04d", i), formatHubTime(stamp))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := range test.landings {
+				changeID, versionID := fmt.Sprintf("change-%04d", i), fmt.Sprintf("version-%04d", i)
+				headSHA := strings.Repeat("b", 40)
+				_, err := tx.ExecContext(t.Context(), `INSERT INTO change_requests (id,organization_id,project_id,work_item_id,record_json)
+VALUES (?,'org_security',?,?,json_object('landed',json_object('version_id',?,'head_sha',?,'merge_sha',?,'landed_at',?)))`, changeID, f.project, issue, versionID, headSHA, strings.Repeat("e", 40), formatHubTime(stamp))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_versions (id,change_id,number,record_json) VALUES (?,?,1,json_object('head_sha',?))`, versionID, changeID, headSHA); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			identity := operatortool.Identity{PrincipalID: user.identity.Subject, OrganizationID: "org_security", CredentialID: "test"}
+			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
+				return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
+			}})
+			report, err := f.service.readAnalyticsReport(ctx, apiCredential{Hosted: user.identity.Hosted}, operatortool.AnalyticsRequest{ProjectID: string(f.project), Limit: 1}, w)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Projects) != 1 {
+				t.Fatalf("projects = %#v", report.Projects)
+			}
+			project := report.Projects[0]
+			outcome := project.CostPerOutcome
+			if outcome.Shipped != min(test.landings, maxAnalyticsPopulation) || outcome.PopulationObserved != test.populationObserved || outcome.Clipped != test.clipped {
+				t.Fatalf("outcome coverage = %#v", outcome)
+			}
+			if test.clipped {
+				if outcome.PopulationTotal != nil {
+					t.Fatalf("clipped population total = %d", *outcome.PopulationTotal)
+				}
+			} else if outcome.PopulationTotal == nil || *outcome.PopulationTotal != test.populationObserved {
+				t.Fatalf("complete population total = %#v", outcome.PopulationTotal)
+			}
+			if test.usageRows > 0 && test.landings > 0 {
+				if outcome.CostPerShipped == nil || *outcome.CostPerShipped != test.costPerShipped || outcome.TokensPerShipped == nil || *outcome.TokensPerShipped != test.tokensPerShipped {
+					t.Fatalf("outcome ratios = %#v", outcome)
+				}
+			} else if outcome.CostPerShipped != nil || outcome.TokensPerShipped != nil {
+				t.Fatalf("ratio without usage or outcomes = %#v", outcome)
+			}
+			if slices.Contains(project.Unavailable, "cost_per_outcome_complete_population") != test.clipped || slices.Contains(project.Unavailable, "usage_partial_hour_attribution") != test.partialHour || slices.Contains(project.Unavailable, "recorded_usage") != (test.usageRows == 0) {
+				t.Fatalf("unavailable = %v", project.Unavailable)
+			}
+			raw, err := json.Marshal(outcome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), fmt.Sprintf(`"population_observed":%d`, test.populationObserved)) || !strings.Contains(string(raw), fmt.Sprintf(`"clipped":%t`, test.clipped)) || strings.Contains(string(raw), `"population_total"`) == test.clipped {
+				t.Fatalf("serialized coverage = %s", raw)
+			}
+		})
+	}
 }
 
 func TestNativeAnalyticsRuntimePopulation(t *testing.T) {

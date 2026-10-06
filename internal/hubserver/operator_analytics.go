@@ -55,9 +55,12 @@ type nativeAnalyticsSkip struct {
 	Count  int    `json:"count"`
 }
 type nativeAnalyticsOutcome struct {
-	Shipped          int      `json:"shipped"`
-	CostPerShipped   *float64 `json:"cost_per_shipped_usd,omitempty"`
-	TokensPerShipped *float64 `json:"tokens_per_shipped,omitempty"`
+	Shipped            int      `json:"shipped"`
+	CostPerShipped     *float64 `json:"cost_per_shipped_usd,omitempty"`
+	TokensPerShipped   *float64 `json:"tokens_per_shipped,omitempty"`
+	PopulationObserved int      `json:"population_observed"`
+	PopulationTotal    *int     `json:"population_total,omitempty"`
+	Clipped            bool     `json:"clipped"`
 }
 type nativeAnalyticsProject struct {
 	LaneResidence        operatortool.AnalyticsResidence               `json:"lane_residence"`
@@ -145,8 +148,10 @@ func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredent
 		if err != nil {
 			return report, err
 		}
+		rows = slices.DeleteFunc(rows, func(row usageRow) bool { return !row.Period.Before(w.To) })
 		if len(rows) > maxAnalyticsPopulation {
 			value.Partial = true
+			value.CostPerOutcome.Clipped = true
 			rows = rows[:maxAnalyticsPopulation]
 		}
 		value.UsageRowsObserved = len(rows)
@@ -154,9 +159,6 @@ func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredent
 		var tokens int64
 		sessions := map[string]bool{}
 		for _, row := range rows {
-			if !row.Period.Before(w.To) {
-				continue
-			}
 			cost += row.Cost
 			tokens += row.tokens()
 			sessions[row.AttemptID] = true
@@ -170,7 +172,12 @@ func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredent
 		}
 
 		partialHour := !w.From.Equal(w.From.Truncate(time.Hour)) || !w.To.Equal(w.To.Truncate(time.Hour))
-		if value.CostPerOutcome.Shipped > 0 && !value.Partial && !partialHour && len(sessions) > 0 {
+		value.CostPerOutcome.PopulationObserved = len(sessions)
+		if !value.CostPerOutcome.Clipped {
+			total := len(sessions)
+			value.CostPerOutcome.PopulationTotal = &total
+		}
+		if value.CostPerOutcome.Shipped > 0 && len(sessions) > 0 {
 			c := cost / float64(value.CostPerOutcome.Shipped)
 			t := float64(tokens) / float64(value.CostPerOutcome.Shipped)
 			value.CostPerOutcome.CostPerShipped = &c
@@ -215,6 +222,7 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 	}
 	if len(landings) > maxAnalyticsPopulation {
 		out.Partial = true
+		out.CostPerOutcome.Clipped = true
 		landings = landings[:maxAnalyticsPopulation]
 	}
 	out.CostPerOutcome.Shipped = len(landings)
@@ -244,6 +252,7 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(star
 		}
 		if len(attempts) == maxAnalyticsPopulation {
 			out.Partial = true
+			out.CostPerOutcome.Clipped = true
 			out.Activity.Partial = true
 			for i := range out.Digest {
 				out.Digest[i].Activity.Partial = true
