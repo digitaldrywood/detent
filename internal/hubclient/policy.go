@@ -97,8 +97,11 @@ func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, r
 			return fmt.Errorf("check approved repository policy: %w", &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()})
 		}
 		err = descriptor.Match(approval.Policy)
-		if err == nil {
+		if err == nil && (descriptor.ID == approval.Policy.ID || descriptor.Authored != nil && approval.Policy.Authored != nil && descriptor.Authored.Version < approval.Policy.Authored.Version) {
 			return s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance})
+		}
+		if err == nil {
+			err = errors.New("policy_mismatch: canonical policy revision has not been applied")
 		}
 		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()})
 	case errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch":
@@ -109,9 +112,9 @@ func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, r
 	if reportErr := s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance}); reportErr != nil {
 		return errors.Join(err, reportErr)
 	}
-	if provenance != nil && provenance.DefaultBranchReachable {
+	if descriptor.Authored != nil || provenance != nil && provenance.DefaultBranchReachable {
 		applied, readErr := source.client.ProjectPolicy(ctx)
-		if readErr == nil && descriptor.Match(applied.Policy) == nil {
+		if readErr == nil && descriptor.ID == applied.Policy.ID && descriptor.Match(applied.Policy) == nil {
 			return nil
 		}
 		return errors.Join(err, readErr)

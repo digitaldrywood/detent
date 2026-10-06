@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -245,7 +246,7 @@ func TestProjectPolicyReloadAndGateIsolation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			cfg := globalconfig.Project{ID: test.name, Workflow: filepath.Join(root, "WORKFLOW.md"), Workdir: root}
-			raw := "---\ntracker:\n  kind: github\n  github_status_source: label\n  repository: acme/" + test.name + "\n  api_key: test-token\n---\nPrivate instructions.\n"
+			raw := fmt.Sprintf("---\ntracker:\n  kind: github\n  github_status_source: label\n  repository: acme/%s\n  api_key: test-token\ngate:\n  kind: %s\n  automated_review: off\nagent:\n  auto_promote:\n    enabled: %t\n---\nPrivate instructions.\n", test.name, test.kind, test.automatic)
 			if err := os.WriteFile(cfg.Workflow, []byte(raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -323,22 +324,29 @@ func TestProjectPolicyReloadAndGateIsolation(t *testing.T) {
 			}
 			for _, change := range []string{"invalid", "review relaxation", "privileged runner", "model selection", "source instructions", "newly approved revision"} {
 				t.Run(change, func(t *testing.T) {
-					proposal := workflow
-					update := configwatcher.Update{Path: cfg.Workflow, Workflow: proposal}
+					proposalRaw := raw
 					switch change {
-					case "invalid":
-						update.Err = errors.New("invalid YAML")
 					case "review relaxation":
-						update.Workflow.Config.Gate.Kind = gate.KindArtifact
+						proposalRaw = strings.Replace(raw, "kind: "+test.kind, "kind: artifact", 1)
 					case "privileged runner":
-						update.Workflow.Config.Runners = workflowconfig.Runners{Profile: "privileged", Profiles: map[string]policy.Requirements{"privileged": {RequiredTags: []string{"production"}}}}
+						proposalRaw = strings.Replace(raw, "---\nPrivate", "runners:\n  profile: privileged\n  profiles:\n    privileged:\n      required_tags: [production]\n---\nPrivate", 1)
 					case "model selection":
-						update.Workflow.Config.Agents.ModelSelection.NormalModel = new("gpt-6-sol")
-					case "source instructions":
-						update.Workflow.SourceHash = policy.Digest([]byte("changed instructions"))
-					case "newly approved revision":
-						update.Workflow.Definition.Revision = strings.Repeat("b", 40)
-						approved, err := ResolvePolicy(cfg, update.Workflow)
+						proposalRaw = strings.Replace(raw, "---\nPrivate", "agents:\n  model_selection:\n    normal_model: gpt-6-sol\n---\nPrivate", 1)
+					case "source instructions", "newly approved revision":
+						proposalRaw += "Changed instructions.\n"
+					}
+					proposal, err := workflowconfig.ParseWorkflow([]byte(proposalRaw))
+					if err != nil {
+						t.Fatal(err)
+					}
+					proposal.Definition.Layout = workflowconfig.ProjectDefinitionLegacy
+					proposal.Definition.Revision = proposal.SourceHash
+					update := configwatcher.Update{Path: cfg.Workflow, Workflow: proposal}
+					if change == "invalid" {
+						update.Err = errors.New("invalid YAML")
+					}
+					if change == "newly approved revision" {
+						approved, err := ResolvePolicy(cfg, proposal)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -438,6 +446,7 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	workflow.Authored.Version = 1
 	approved, err := ResolvePolicy(cfg, workflow)
 	if err != nil {
 		t.Fatal(err)
@@ -464,8 +473,37 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 	if err := p.start(t.Context(), startOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	changed := workflow
-	changed.Config.Plan.Enabled, changed.Config.Gate.Validator.Enabled, changed.Config.Agent.AutoPromote.Enabled = true, true, true
+	started := time.Now()
+	attemptID, err := attempts.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: cfg.ID, IssueID: "canonical-upgrade", WorkerType: "agent", StartedAt: started, LeaseExpiresAt: started.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgraded := workflow
+	authored := *workflow.Authored
+	authored.Version = workflowconfig.PolicyCanonicalizationVersion
+	upgraded.Authored = &authored
+	upgradedPolicy, err := ResolvePolicy(cfg, upgraded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduling.mu.Lock()
+	scheduling.approved = upgradedPolicy
+	scheduling.mu.Unlock()
+	if err := p.reconcileWorkflow(t.Context()); err != nil {
+		t.Fatalf("canonical upgrade stopped project with active attempt: %v", err)
+	}
+	active, err := attempts.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{ProjectID: cfg.ID})
+	if err != nil || len(active) != 1 || active[0].ID != attemptID || p.Workflow().Config.Policy.ID != upgradedPolicy.ID || !p.Running() {
+		t.Fatalf("canonical upgrade changed active work: %+v %v", active, err)
+	}
+	if err := attempts.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := workflowconfig.ParseWorkflowOverlay(raw, []byte("---\nplan:\n  enabled: true\ngate:\n  validator:\n    enabled: true\nagent:\n  auto_promote:\n    enabled: true\n---\n"), "operator-approved.local.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed.Definition = workflow.Definition
 	replacement, err := ResolvePolicy(cfg, changed)
 	if err != nil {
 		t.Fatal(err)

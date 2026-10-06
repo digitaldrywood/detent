@@ -136,13 +136,15 @@ const (
 )
 
 type Workflow struct {
-	Config       Config
-	Prompt       string
-	SharedPrompt string
-	AgentsPrompt string
-	SourceHash   string
-	Overlay      WorkflowOverlay
-	Definition   ProjectDefinition
+	Authored          *policy.Authored
+	DefinitionSources *ProjectDefinitionSources
+	Config            Config
+	Prompt            string
+	SharedPrompt      string
+	AgentsPrompt      string
+	SourceHash        string
+	Overlay           WorkflowOverlay
+	Definition        ProjectDefinition
 }
 
 type WorkflowOverlay struct {
@@ -1299,10 +1301,12 @@ func ParseWorkflow(raw []byte) (Workflow, error) {
 
 	sum := sha256.Sum256(raw)
 	return Workflow{
-		Config:       cfg,
-		Prompt:       string(prompt),
-		SharedPrompt: string(prompt),
-		SourceHash:   hex.EncodeToString(sum[:]),
+		Authored:          &policy.Authored{Version: PolicyCanonicalizationVersion},
+		DefinitionSources: &ProjectDefinitionSources{Workflow: raw},
+		Config:            cfg,
+		Prompt:            string(prompt),
+		SharedPrompt:      string(prompt),
+		SourceHash:        hex.EncodeToString(sum[:]),
 	}, nil
 }
 
@@ -1342,10 +1346,12 @@ func ParseWorkflowOverlay(sharedRaw []byte, localRaw []byte, localPath string) (
 	combined = append(combined, localRaw...)
 	sum := sha256.Sum256(combined)
 	return Workflow{
-		Config:       cfg,
-		Prompt:       mergeWorkflowPrompts(sharedPrompt, localPrompt),
-		SharedPrompt: string(sharedPrompt),
-		SourceHash:   hex.EncodeToString(sum[:]),
+		Authored:          &policy.Authored{Version: PolicyCanonicalizationVersion},
+		DefinitionSources: &ProjectDefinitionSources{Workflow: sharedRaw, LocalWorkflow: localRaw, HasLocalWorkflow: true},
+		Config:            cfg,
+		Prompt:            mergeWorkflowPrompts(sharedPrompt, localPrompt),
+		SharedPrompt:      string(sharedPrompt),
+		SourceHash:        hex.EncodeToString(sum[:]),
 		Overlay: WorkflowOverlay{
 			Path:           strings.TrimSpace(localPath),
 			OverriddenKeys: overridden,
@@ -3381,7 +3387,7 @@ func configuredFieldPaths(root *yaml.Node) map[string]struct{} {
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
-	if node.Kind != yaml.MappingNode {
+	if node == nil || node.Kind != yaml.MappingNode {
 		return nil
 	}
 

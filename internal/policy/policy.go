@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -37,6 +38,7 @@ type Gates struct {
 }
 
 type Descriptor struct {
+	Authored       *Authored      `json:"authored,omitempty"`
 	Schema         int            `json:"schema"`
 	ID             string         `json:"policy_id"`
 	SourceRevision string         `json:"source_revision"`
@@ -47,6 +49,12 @@ type Descriptor struct {
 	Gates          Gates          `json:"gates"`
 	Configuration  *Configuration `json:"configuration,omitempty"`
 	Workflow       *Workflow      `json:"workflow,omitempty"`
+}
+
+type Authored struct {
+	Version int               `json:"version"`
+	Digest  string            `json:"digest"`
+	Files   map[string]string `json:"files,omitempty"`
 }
 
 type Configuration struct {
@@ -203,6 +211,17 @@ func (r Requirements) Match(runnerID, machineID string, authorizedTags []string)
 func (d Descriptor) WithID() Descriptor {
 	d.Schema = Schema
 	d.ID = ""
+	if d.Authored != nil {
+		raw, err := json.Marshal(struct {
+			Version int    `json:"version"`
+			Digest  string `json:"digest"`
+		}{d.Authored.Version, d.Authored.Digest})
+		if err != nil {
+			return Descriptor{}
+		}
+		d.ID = "policy_" + Digest(raw)
+		return d
+	}
 	raw, err := json.Marshal(d)
 	if err != nil {
 		return Descriptor{}
@@ -214,6 +233,19 @@ func (d Descriptor) WithID() Descriptor {
 func (d Descriptor) Validate() error {
 	if d.Schema != Schema || d.ID != d.WithID().ID {
 		return errors.New("policy_mismatch: invalid policy schema or identity digest")
+	}
+	if d.Authored != nil && (d.Authored.Version < 1 || !validHash(d.Authored.Digest, 64) || d.SourceDigest != d.Authored.Digest || d.ConfigDigest != d.Authored.Digest || d.SourceRevision != d.Authored.Digest) {
+		return errors.New("policy_mismatch: invalid authored policy inputs")
+	}
+	if d.Authored != nil && len(d.Authored.Files) > 0 {
+		if _, present := d.Authored.Files["WORKFLOW.md"]; !present {
+			return errors.New("policy_mismatch: authored workflow file is required")
+		}
+		for name := range d.Authored.Files {
+			if !slices.Contains([]string{"WORKFLOW.md", "detent.yaml", "WORKFLOW.local.md", "detent.local.yaml", "AGENTS.md"}, name) {
+				return errors.New("policy_mismatch: unknown authored definition file")
+			}
+		}
 	}
 	if !validHash(d.SourceDigest, 64) || !validHash(d.ConfigDigest, 64) || (!validHash(d.SourceRevision, 40) && !validHash(d.SourceRevision, 64)) {
 		return errors.New("policy_mismatch: source revision and configuration digests are required")
@@ -257,10 +289,23 @@ func (d Descriptor) Match(expected Descriptor) error {
 	if err := expected.Validate(); err != nil {
 		return err
 	}
-	if d.ID != expected.ID {
+	if d.ID != expected.ID && !d.SameAuthoredInputs(expected) || d.ID == expected.ID && d.Authored != nil && expected.Authored != nil && len(d.Authored.Files) > 0 && len(expected.Authored.Files) > 0 && !sameAuthoredFiles(d, expected) {
 		return fmt.Errorf("policy_mismatch: runner policy %s at revision %s differs from approved policy %s at revision %s; load the approved definition and permitted local overrides or request administrator approval", d.ID, d.SourceRevision, expected.ID, expected.SourceRevision)
 	}
 	return nil
+}
+
+func (d Descriptor) SameAuthoredInputs(expected Descriptor) bool {
+	if d.Authored == nil || expected.Authored == nil || len(d.Authored.Files) == 0 || len(expected.Authored.Files) == 0 {
+		return false
+	}
+	if (d.Workflow == nil) != (expected.Workflow == nil) {
+		return false
+	}
+	if d.Workflow != nil && d.Workflow.Source != expected.Workflow.Source {
+		return false
+	}
+	return sameAuthoredFiles(d, expected)
 }
 
 func validHash(value string, length int) bool {
@@ -269,4 +314,8 @@ func validHash(value string, length int) bool {
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil
+}
+
+func sameAuthoredFiles(d, expected Descriptor) bool {
+	return reflect.DeepEqual(d.Authored.Files, expected.Authored.Files)
 }
