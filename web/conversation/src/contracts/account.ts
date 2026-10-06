@@ -68,6 +68,7 @@ export const AccountActor = Schema.Struct({
   role: Schema.String,
   can_manage: Schema.Boolean,
   can_manage_runners: Schema.Boolean,
+  platform_role: Schema.optional(Schema.String),
 });
 export type AccountActor = typeof AccountActor.Type;
 

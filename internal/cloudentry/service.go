@@ -242,6 +242,7 @@ func (s *Service) routes() {
 	e.POST("/logout", s.logout)
 	e.POST("/organizations/:organization/logout", s.logout)
 	e.GET(platformPath, s.platformPage)
+	e.GET(platformPath+"/*", s.platformPage)
 	e.GET("/api/cloud/platform/organizations", s.platformOrganizationsJSON)
 	e.GET("/api/cloud/platform/allowlist", s.platformAllowlistJSON)
 	e.GET("/api/cloud/platform/health", s.platformHealthJSON)

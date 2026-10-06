@@ -29,7 +29,7 @@ import {
 import { Textarea } from "../../components/ui/textarea.tsx";
 import { ControlError } from "../account/controls.tsx";
 import { newKey } from "../account/idempotency.ts";
-import { useResource } from "../account/useResource.ts";
+import { redirectPlatformSignIn, usePlatformResource } from "./usePlatformResource.ts";
 import { AccountError } from "../account/api.ts";
 import type {
   EntitlementChange,
@@ -85,6 +85,7 @@ function useChange(
         await onChanged();
         return "done";
       } catch (cause) {
+        redirectPlatformSignIn(cause);
         setError(failureMessage(cause));
         if (cause instanceof AccountError && cause.status === 409) {
           await onChanged();
@@ -355,7 +356,7 @@ export function OrganizationPlan({
   readonly csrf: string;
 }): React.ReactElement {
   const api = useEntryApi();
-  const entitlements = useResource<OrganizationEntitlements>(
+  const entitlements = usePlatformResource<OrganizationEntitlements>(
     () => api.platformEntitlements(organization.id),
     [api, organization.id],
   );

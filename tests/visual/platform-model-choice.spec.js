@@ -13,6 +13,10 @@ async function openPlatform(page, canGrant = true) {
   let revision = 1;
   const changes = [];
   await page.route(origin + "/**", (route) => route.fulfill({ contentType: "text/html", body: html }));
+  await page.route("**/api/cloud/session", (route) => route.fulfill({ json: {
+    ...fixture.account, platform_role: canGrant ? "admin" : "support",
+  } }));
+  await page.route("**/api/cloud/organizations", (route) => route.fulfill({ json: fixture.account }));
   await page.route("**/api/cloud/platform/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/entitlements")) {
@@ -33,7 +37,7 @@ async function openPlatform(page, canGrant = true) {
     if (path.endsWith("/allowlist")) return route.fulfill({ json: fixture.allowlist });
     return route.fulfill({ json: fixture.health });
   });
-  await page.goto(origin + "/platform");
+  await page.goto(origin + "/platform/tenants");
   await expect(page.getByRole("table", { name: "Organizations", exact: true })).toBeVisible();
   return changes;
 }

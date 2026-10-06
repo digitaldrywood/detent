@@ -8,6 +8,7 @@ import React from "react";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Input } from "../../components/ui/input.tsx";
+import { Separator } from "../../components/ui/separator.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { DetentCloudLogo, LoginCard, locationError } from "../account/Login.tsx";
 import { AccountError } from "../account/api.ts";
@@ -44,14 +45,6 @@ function signInAgain(error: AccountError | null): boolean {
   if (error?.status !== 401) return false;
   assign(SIGN_IN_ORGANIZATIONS);
   return true;
-}
-
-/** Staff never create or join customer organizations; their home is the platform console. */
-function useStaffRedirect(staff: boolean | undefined, onNavigate: Navigate): boolean {
-  React.useEffect(() => {
-    if (staff === true) onNavigate(PLATFORM);
-  }, [staff, onNavigate]);
-  return staff === true;
 }
 
 function EntryCard({
@@ -126,7 +119,7 @@ export function autoEnterTarget(
   listing: EntryOrganizations | undefined,
   search: string = globalThis.location?.search ?? "",
 ): EntryOrganization | null {
-  if (listing === undefined || listing.staff === true) return null;
+  if (listing === undefined) return null;
   if (new URLSearchParams(search).has("switch")) return null;
   if (listing.organizations.length !== 1 || (listing.pending ?? []).length > 0) return null;
   return listing.organizations[0] ?? null;
@@ -135,13 +128,11 @@ export function autoEnterTarget(
 export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navigate }): React.ReactElement {
   const api = useEntryApi();
   const listing = useResource<EntryOrganizations>(() => api.organizations(), [api]);
-  const staff = useStaffRedirect(listing.value?.staff, onNavigate);
   const enter = autoEnterTarget(listing.value);
   React.useEffect(() => {
     if (enter !== null) globalThis.location?.replace(enter.url);
   }, [enter]);
   if (signInAgain(listing.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
-  if (staff) return <EntryCard title="Opening the platform console…">{null}</EntryCard>;
   if (enter !== null) return <EntryCard title={`Opening ${enter.name}…`}>{null}</EntryCard>;
   const value = listing.value;
   return (
@@ -204,6 +195,22 @@ export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navig
               </ul>
             </div>
           )}
+          {value.platform_role ? (
+            <>
+              <Separator />
+              <div className="flex items-center gap-3">
+                <Badge variant="info">Platform</Badge>
+                <span className="flex-1 text-sm font-medium">Platform console</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  render={<a href={PLATFORM} aria-label="Open Platform console" />}
+                >
+                  Open
+                </Button>
+              </div>
+            </>
+          ) : null}
           <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
             {value.can_create === true ? (
               <Button onClick={() => onNavigate("/organizations/new")}>Create organization</Button>
@@ -224,7 +231,6 @@ export function CreateOrganization({ onNavigate }: { readonly onNavigate: Naviga
   // One key for this form: a retried submit after an uncertain response
   // returns the same organization instead of creating a second one.
   const key = React.useMemo(() => newKey(), []);
-  const staff = useStaffRedirect(listing.value?.staff, onNavigate);
   const create = useMutation(async (organizationName: string) => {
     const csrf = listing.value?.csrf ?? "";
     const result = await api.createOrganization({ name: organizationName, key, csrf });
@@ -232,7 +238,6 @@ export function CreateOrganization({ onNavigate }: { readonly onNavigate: Naviga
     return result;
   });
   if (signInAgain(listing.error ?? create.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
-  if (staff) return <EntryCard title="Opening the platform console…">{null}</EntryCard>;
   const trimmed = name.trim();
   return (
     <EntryCard

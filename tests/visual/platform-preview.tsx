@@ -1,9 +1,12 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { EntryApiContext } from "../../web/conversation/src/app/entry/EntryScreens.tsx";
-import { PlatformConsole } from "../../web/conversation/src/app/entry/PlatformConsole.tsx";
+import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
+import { makeEntryRouter } from "../../web/conversation/src/app/entry/router.tsx";
 import { makeEntryApi } from "../../web/conversation/src/app/entry/api.ts";
 import fixture from "./platform-preview-data.json";
+
+const params = new URLSearchParams(location.search);
 
 if (location.protocol === "file:") {
   let features: string[] = [];
@@ -26,6 +29,11 @@ if (location.protocol === "file:") {
       } else {
         value = { ...fixture.entitlements, revision, features, grants };
       }
+    } else if (path === "/api/cloud/session" || path === "/api/cloud/organizations") {
+      value = {
+        ...fixture.account, platform_role: params.get("role") ?? "admin",
+        organizations: params.has("no-organizations") ? [] : fixture.account.organizations,
+      };
     } else if (path.endsWith("/organizations")) {
       value = { ...fixture.organizations, can_grant: !location.search.includes("staff") };
     } else if (path.endsWith("/allowlist")) {
@@ -38,5 +46,9 @@ if (location.protocol === "file:") {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <EntryApiContext.Provider value={makeEntryApi()}><PlatformConsole /></EntryApiContext.Provider>,
+  <EntryApiContext.Provider value={makeEntryApi()}>
+    <RouterProvider router={makeEntryRouter(location.protocol === "file:" ? createMemoryHistory({
+      initialEntries: [params.get("path") ?? "/platform/tenants"],
+    }) : undefined)} />
+  </EntryApiContext.Provider>,
 );

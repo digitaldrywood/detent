@@ -33,7 +33,7 @@ import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 import type { FleetResponse } from "../../src/contracts/account.ts";
 import { AccountBootstrap } from "../../src/contracts/account.ts";
 import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
-import { SettingsRoute } from "../../src/app/settings/Settings.tsx";
+import { GeneralSettings, SettingsRoute } from "../../src/app/settings/Settings.tsx";
 import { organizationMCPEndpoint } from "../../src/app/settings/MCPSettings.tsx";
 import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
 
@@ -99,6 +99,24 @@ describe("which sections an actor gets", () => {
       "Archive",
     ]);
     for (const item of disabled) expect(item.reason).toBeTruthy();
+  });
+
+  it.each(["admin", "support", "billing", "viewer", "", undefined])("shows the platform account link only with a platform role (%s)", async (platform_role) => {
+    applyHubPaths({ base_path: "/organizations/org_test" });
+    renderSidebarNav("/settings/general", {
+      http: { origin: "", apiBase: "/api", csrfToken: "c" },
+      account: {
+        actor: { email: "member@example.test", role: "member", platform_role, can_manage: false },
+        organization: { name: "Alpha" }, support: null, plan: null,
+      },
+    }, <GeneralSettings />);
+    await screen.findByRole("button", { name: "Sign out" });
+    const link = screen.queryByRole("link", { name: "Platform console" });
+    if (platform_role) {
+      expect(link?.getAttribute("href")).toBe("/platform/tenants");
+    } else {
+      expect(link).toBeNull();
+    }
   });
 
   it("names every section it can route to", () => {

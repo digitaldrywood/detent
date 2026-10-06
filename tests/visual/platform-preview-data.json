@@ -1,4 +1,8 @@
 {
+  "account": {
+    "email": "admin@example.test", "csrf": "preview-csrf", "platform_role": "admin", "can_create": false,
+    "organizations": [{ "id": "org_preview", "name": "Model Choice Labs", "url": "/organizations/org_preview/organization", "role": "owner" }]
+  },
   "organizations": {
     "email": "admin@example.test", "csrf": "preview-csrf", "can_support": false, "can_grant": true, "unavailable": [],
     "organizations": [{
