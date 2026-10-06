@@ -948,6 +948,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		staged         bool
 		signingFail    bool
 		lateConflict   bool
+		advanceTarget  bool
 		baseMoved      bool
 		dirty          bool
 		wantNone       bool
@@ -976,6 +977,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "Rework receives current Change discussion", rework: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "Rework receives formal requested changes", rework: true, formal: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "host commits staged Rework", rework: true, formal: true, staged: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
+		{name: "clean Rework excludes target advancement", rework: true, formal: true, advanceTarget: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
+		{name: "staged Rework excludes target advancement", rework: true, formal: true, staged: true, advanceTarget: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
+		{name: "committed Rework excludes target advancement", rework: true, formal: true, commit: true, advanceTarget: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "late host conflict continues to resolved publication and landing", rework: true, formal: true, staged: true, lateConflict: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "host signing unavailable preserves requested changes", rework: true, formal: true, staged: true, signingFail: true},
 		{name: "Rework lands the clean preserved reviewed head without source changes", rework: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
@@ -1200,6 +1204,22 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
 			}
 			provider := &committingAgent{commit: test.commit, dirty: test.dirty, staged: test.staged, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed, hold: test.hold}
+			var targetHead string
+			if test.advanceTarget {
+				provider.duringTurn = func() {
+					if err := os.WriteFile(filepath.Join(source, "UPSTREAM.md"), []byte("unrelated work\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					nativeChangeGit(t, source, "add", "UPSTREAM.md")
+					nativeChangeGit(t, source, "commit", "-m", "unrelated target work")
+					nativeChangeGit(t, source, "push", "origin", "main")
+					head, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", "HEAD").Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					targetHead = strings.TrimSpace(string(head))
+				}
+			}
 			var runtimeStore store.Store
 			if test.validator != "" {
 				runtimeStore, err = store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
@@ -1402,6 +1422,35 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 			}
 			change := result.NativeChange
+			if test.advanceTarget {
+				attempt := executionID("attempt", string(execution.Recovery().Lease.ID))
+				var stored tracker.AttemptDiff
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/attempts/"+attempt+"/diff", nil, &stored); err != nil {
+					t.Fatal(err)
+				}
+				owner := execution.(*nativeExecution).data
+				if targetHead == "" || stored.BaseSHA != targetHead || stored.HeadSHA != execution.(*nativeExecution).worktreeHead || stored.AttemptID != owner.AttemptID || stored.Producer.FencingToken != execution.Recovery().Lease.FencingToken {
+					t.Fatalf("final diff lost prepared source or fenced attempt identity: %+v, target=%s", stored, targetHead)
+				}
+				if test.staged || test.commit {
+					if stored.HeadSHA == stored.BaseSHA || len(stored.Files) != 1 || stored.Files[0].Path != "CHANGE.md" {
+						t.Fatalf("final diff did not preserve only the owned issue delta: %+v", stored)
+					}
+				} else {
+					if stored.HeadSHA != stored.BaseSHA || len(stored.Files) != 0 {
+						t.Fatalf("clean Rework attributed upstream work to the issue: %+v", stored)
+					}
+					detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+					if err != nil || !reflect.DeepEqual(detail, *expected) || change == nil || change.VersionID != "" || change.Landing != nil || change.VersionError == "" {
+						t.Fatalf("clean Rework changed historical provenance or waived refusal: change=%+v detail=%+v error=%v", change, detail, err)
+					}
+					h.complete(t, issue.ID, change)
+					if h.state(t, issue.ID) != test.wantState || len(h.changes(t, issue.ID)) != test.wantChanges {
+						t.Fatal("clean Rework published upstream work or lost review handoff")
+					}
+					return
+				}
+			}
 			if test.validator != "" {
 				verdict := test.validator
 				if test.wantVerdict != "" {
@@ -1657,17 +1706,18 @@ func nativeDiffHas(files []tracker.AttemptDiffFile, path string) bool {
 // committingAgent is a fake provider: it completes one turn, committing a
 // file in the worktree first when commit is set.
 type committingAgent struct {
-	complete  bool
-	hold      bool
-	lowScore  bool
-	validator string
-	commit    bool
-	dirty     bool
-	staged    bool
-	prompt    string
-	workspace string
-	calls     int
-	bound     bool
+	complete   bool
+	hold       bool
+	lowScore   bool
+	validator  string
+	commit     bool
+	dirty      bool
+	staged     bool
+	prompt     string
+	workspace  string
+	calls      int
+	bound      bool
+	duringTurn func()
 }
 
 func (*committingAgent) SupportsLiveControl() bool { return true }
@@ -1692,6 +1742,9 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 	a.bound = request.ConversationControl != nil
 	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-native", TurnID: "turn-1"}); err != nil {
 		return runner.AgentTurnResult{}, err
+	}
+	if a.duringTurn != nil {
+		a.duringTurn()
 	}
 	if a.dirty {
 		if err := os.WriteFile(filepath.Join(request.Workspace, "SCRATCH.md"), []byte("draft\n"), 0o600); err != nil {

@@ -1913,7 +1913,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				return RunResult{}, ErrNativeRecoveryRequired
 			}
 			if diffs, ok := req.Execution.(DiffExecution); ok {
-				diffs.SetDiffSource(r.attemptDiffSource(ctx, info, workspaceIssue))
+				diffIssue := workspaceIssue
+				if precheck.BaseSHA != "" {
+					diffIssue.BaseRef = precheck.BaseSHA
+				}
+				diffs.SetDiffSource(r.attemptDiffSource(ctx, info, diffIssue))
 			}
 			evidenceIssue := workspaceIssue
 			evidenceIssue.BaseRef = recoveryState.HeadSHA
