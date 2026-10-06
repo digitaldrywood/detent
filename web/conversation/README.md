@@ -3,7 +3,10 @@
 The React application the hub serves at `/chat`. It implements the client half
 of [`docs/conversation/decisions.md`](../../docs/conversation/decisions.md) and
 follows [`docs/conversation/design-inventory.md`](../../docs/conversation/design-inventory.md)
-for its visual system.
+for screen coverage. The [Detent design system](../../docs/conversation/design-system.md)
+defines shared visual rules, component selection, interaction states, and screen
+recipes. Its [grouped component catalog](../../docs/conversation/component-catalog.json)
+distinguishes available primitives from proposed patterns.
 
 Third-party attribution is in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md);
 the upstream MIT license is in [LICENSE.t3code](./LICENSE.t3code).
