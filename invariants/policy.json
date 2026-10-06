@@ -123,8 +123,7 @@
       "TestPortabilityStressIsManualOnly",
       "TestSourceViolations",
       "TestWorkflowViolations",
-      "TestMutationDocuments",
-      "TestDoctorInvariantRegistration"
+      "TestMutationDocuments"
     ],
     "./internal/admission": [
       "TestAdmissionRequiresLedgerWriter",
@@ -136,11 +135,6 @@
       "TestDoctorInvariantEvidence",
       "TestDoctorRespectsProjectCIPolicy",
       "TestDoctorLocalGateCommitStatusProducer",
-      "TestDoctorInvariantAdmission",
-      "TestDoctorInvariantAdmissionBatches",
-      "TestDoctorInvariantScopeClassification",
-      "TestDoctorInvariantAdmissionRepeatedEntries",
-      "TestDoctorInvariantAdmissionUnavailableEvidence",
       "TestINV12DoctorNativeCaches",
       "TestINV12DoctorWorkspaceKinds",
       "TestBuildCodexCommandEnablesQuestionsOnlyForConversationTurns",

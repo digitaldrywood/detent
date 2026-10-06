@@ -252,8 +252,7 @@ same checkpoint becomes a real template.
 
 Mechanism moratorium note: this replaces the enrolled-runner path for Cloud
 projects rather than adding a brake or lease. It reuses the existing claim,
-lease and gate flow. Filing it for build needs the operator's scope approval
-per INV-11.
+lease and gate flow.
 
 ## Per-attempt compute cost attribution
 

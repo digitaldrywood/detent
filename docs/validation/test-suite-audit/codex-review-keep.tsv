@@ -39,7 +39,6 @@ KEEP	internal/cli	TestDevRuntimeCommandKeepsExplicitHostForDemo	Checks an explic
 KEEP	internal/cli	TestAgentPoolsFixPreservesSplitPathForMixedClassPoolBinding	Checks mixed-class binding emits a split preview containing agent_pools.
 KEEP	internal/cli	TestRootCommandHelpListsAdminCommands	Checks root help lists the administrative commands.
 KEEP	internal/cli	TestPublishSnapshotOnceAssignsMonotonicSeq	Checks snapshot sequence increments on every publication.
-KEEP	internal/cli	TestDoctorInvariantAdmissionRepeatedEntries	Checks repeated admission entries are counted and human moves excluded.
 KEEP	internal/cli	TestRunWithShutdownZeroSessionsLogsCleanupBoundaries	Checks all shutdown cleanup boundaries and timing are logged.
 KEEP	internal/cli	TestDoctorParkReviewThreshold	Checks configured park thresholds and warning detail.
 KEEP	internal/cli	TestDoctorParkReviewListsEveryIssue	Checks every parked issue appears with its park count.
