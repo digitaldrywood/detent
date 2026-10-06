@@ -1,0 +1,345 @@
+{
+  "status": "Detent component catalog: available primitives and proposed patterns. Proposed entries do not authorize implementation.",
+  "groups": {
+    "actions": [
+      "button",
+      "toggle",
+      "toggle-group",
+      "panel-tab-close-button",
+      "refresh-icon"
+    ],
+    "forms": [
+      "input",
+      "textarea",
+      "label",
+      "checkbox",
+      "switch",
+      "select",
+      "combobox",
+      "autocomplete",
+      "radio-group",
+      "number-field",
+      "color-picker",
+      "input-group",
+      "draft-input",
+      "calendar"
+    ],
+    "overlays": [
+      "dialog",
+      "alert-dialog",
+      "sheet",
+      "popover",
+      "menu",
+      "tooltip",
+      "preview-card"
+    ],
+    "feedback": [
+      "alert",
+      "badge",
+      "toast",
+      "spinner",
+      "skeleton",
+      "empty"
+    ],
+    "layout": [
+      "scroll-area",
+      "separator",
+      "group",
+      "collapsible",
+      "collapsible-section-header",
+      "middle-truncate"
+    ],
+    "data-display": [
+      "table",
+      "kbd",
+      "discovery-list"
+    ],
+    "entry": [
+      "standalone-page",
+      "wizard",
+      "qr-code"
+    ],
+    "navigation": [
+      "sidebar",
+      "command"
+    ]
+  },
+  "components": [
+    {
+      "name": "alert-dialog",
+      "group": "overlays",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/alert-dialog.tsx"
+    },
+    {
+      "name": "alert",
+      "group": "feedback",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/alert.tsx"
+    },
+    {
+      "name": "autocomplete",
+      "group": "forms",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/autocomplete.tsx"
+    },
+    {
+      "name": "badge",
+      "group": "feedback",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/badge.tsx"
+    },
+    {
+      "name": "button",
+      "group": "actions",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/button.tsx"
+    },
+    {
+      "name": "calendar",
+      "group": "forms",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "checkbox",
+      "group": "forms",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/checkbox.tsx"
+    },
+    {
+      "name": "collapsible-section-header",
+      "group": "layout",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "collapsible",
+      "group": "layout",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/collapsible.tsx"
+    },
+    {
+      "name": "color-picker",
+      "group": "forms",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "combobox",
+      "group": "forms",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/combobox.tsx"
+    },
+    {
+      "name": "command",
+      "group": "navigation",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/command.tsx"
+    },
+    {
+      "name": "dialog",
+      "group": "overlays",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/dialog.tsx"
+    },
+    {
+      "name": "discovery-list",
+      "group": "data-display",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "draft-input",
+      "group": "forms",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "empty",
+      "group": "feedback",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/empty.tsx"
+    },
+    {
+      "name": "group",
+      "group": "layout",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/group.tsx"
+    },
+    {
+      "name": "input-group",
+      "group": "forms",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "input",
+      "group": "forms",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/input.tsx"
+    },
+    {
+      "name": "kbd",
+      "group": "data-display",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/kbd.tsx"
+    },
+    {
+      "name": "label",
+      "group": "forms",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/label.tsx"
+    },
+    {
+      "name": "menu",
+      "group": "overlays",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/menu.tsx"
+    },
+    {
+      "name": "middle-truncate",
+      "group": "layout",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "number-field",
+      "group": "forms",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "panel-tab-close-button",
+      "group": "actions",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/panel-tab-close-button.tsx"
+    },
+    {
+      "name": "popover",
+      "group": "overlays",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/popover.tsx"
+    },
+    {
+      "name": "preview-card",
+      "group": "overlays",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/preview-card.tsx"
+    },
+    {
+      "name": "qr-code",
+      "group": "entry",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "radio-group",
+      "group": "forms",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "refresh-icon",
+      "group": "actions",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/refresh-icon.tsx"
+    },
+    {
+      "name": "scroll-area",
+      "group": "layout",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/scroll-area.tsx"
+    },
+    {
+      "name": "select",
+      "group": "forms",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/select.tsx"
+    },
+    {
+      "name": "separator",
+      "group": "layout",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/separator.tsx"
+    },
+    {
+      "name": "sheet",
+      "group": "overlays",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/sheet.tsx"
+    },
+    {
+      "name": "sidebar",
+      "group": "navigation",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/sidebar.tsx"
+    },
+    {
+      "name": "skeleton",
+      "group": "feedback",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/skeleton.tsx"
+    },
+    {
+      "name": "spinner",
+      "group": "feedback",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/spinner.tsx"
+    },
+    {
+      "name": "standalone-page",
+      "group": "entry",
+      "availability": "proposed",
+      "implementation_path": null
+    },
+    {
+      "name": "switch",
+      "group": "forms",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/switch.tsx"
+    },
+    {
+      "name": "table",
+      "group": "data-display",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/table.tsx"
+    },
+    {
+      "name": "textarea",
+      "group": "forms",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/textarea.tsx"
+    },
+    {
+      "name": "toast",
+      "group": "feedback",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/toast.tsx"
+    },
+    {
+      "name": "toggle-group",
+      "group": "actions",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/toggle-group.tsx"
+    },
+    {
+      "name": "toggle",
+      "group": "actions",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/toggle.tsx"
+    },
+    {
+      "name": "tooltip",
+      "group": "overlays",
+      "availability": "available",
+      "implementation_path": "web/conversation/src/components/ui/tooltip.tsx"
+    },
+    {
+      "name": "wizard",
+      "group": "entry",
+      "availability": "proposed",
+      "implementation_path": null
+    }
+  ]
+}

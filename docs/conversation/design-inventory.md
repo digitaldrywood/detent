@@ -1,5 +1,9 @@
 # Conversation product design inventory (D01 and D03)
 
+Use the [Detent design system](design-system.md) for shared visual rules and
+component selection. This inventory retains screen coverage and product
+contracts; its historical styling examples do not override the design system.
+
 ## Status on main
 
 - The Cloud client described here lives in `web/conversation` (React 19, Vite, TanStack Router, Tailwind v4). It builds into `static/app/conversation` (`make app`) and is served by `internal/hubserver` (`appShell` in `internal/hubserver/app_ui.go`), under the tenant base path passed to the client through the `detent-base-path` meta tag, and by the shared entry for its own screens (`clientShell` in `internal/cloudentry/client.go`). It is not mounted inside the local Templ shell.

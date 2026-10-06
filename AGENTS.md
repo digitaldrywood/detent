@@ -6,6 +6,12 @@
 
 ## Implementation
 
+For Cloud UI work, use the [Detent design system](docs/conversation/design-system.md)
+and its [grouped component catalog](docs/conversation/component-catalog.json).
+Reuse existing primitives and screen compositions; select semantic tokens and
+component variants before introducing feature-specific styling. Proposed
+components and layout baselines do not expand the authorized UI scope.
+
 Follow [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue):
 add visible UI only when a human-authored issue names that UI change. This covers
 the Cloud app (`web/conversation`), Hub server-rendered pages, and the local Templ
