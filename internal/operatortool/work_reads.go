@@ -126,7 +126,7 @@ func WorkReadCatalog() []Definition {
 		{BoardReceipt, "Read a work item's recorded receipt and runtime evidence; efficiency requires its application owner.", "reference"},
 		{BoardSession, "Read the current or latest work-item session.", "reference"},
 		{BoardSessionHistory, "Read a bounded page of the work item's persisted session rollout or native instruction activity, including coverage limits.", "reference attempt_id native_attempt_id offset limit"},
-		{WorkAttemptReceipt, "Read an attempt receipt owned by this work item; select a local attempt_id or a native_attempt_id.", "reference attempt_id native_attempt_id"},
+		{WorkAttemptReceipt, "Read an attempt receipt and bounded local/scheduled check comparisons owned by this work item; select a local attempt_id or a native_attempt_id.", "reference attempt_id native_attempt_id"},
 		{GitHubScopeTimings, "Read bounded recorded GitHub HTTP and inclusive token timings for one native runner attempt. Reads make no upstream requests; HTTP sums may exceed wall and token time can contain installation HTTP. Unknown boundaries remain unavailable.", "reference native_attempt_id runner_id"},
 	} {
 		properties := map[string]any{"project_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}}
@@ -425,6 +425,7 @@ func WorkItemURL(projectID, reference string) string {
 }
 
 type NativeItem struct {
+	ValidationAudit *tracker.ValidationAudit `json:"validation_audit,omitempty"`
 	tracker.NativeIssue
 	Identifier string `json:"identifier"`
 	URL        string `json:"url"`

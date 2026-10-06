@@ -63,7 +63,7 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		}
 		l.Refusal = l.RefusalKind
 		if g := l.Gate; g != nil {
-			if strings.TrimSpace(g.Command) == "" || len(g.Command) > 4096 || len(g.Output) > 64*1024 || g.DurationNS < 0 || g.ExitCode < -1 || !validCommitID(g.HeadSHA) || !validCommitID(g.TreeSHA) || l.Landed && g.ExitCode != 0 || l.GateFailed && g.ExitCode == 0 {
+			if strings.TrimSpace(g.Command) == "" || len(g.Command) > 4096 || len(g.Output) > 64*1024 || g.DurationNS < 0 || g.ExitCode < -1 || !validCommitID(g.HeadSHA) || !validCommitID(g.TreeSHA) || !g.Evidence.Valid() || l.Landed && g.ExitCode != 0 || l.GateFailed && g.ExitCode == 0 {
 				return nativeInvalid("Invalid landing gate evidence")
 			}
 		}

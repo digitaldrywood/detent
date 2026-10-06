@@ -12,14 +12,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
 type job struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	Conclusion string `json:"conclusion"`
-	URL        string `json:"html_url"`
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at"`
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Conclusion  string    `json:"conclusion"`
+	URL         string    `json:"html_url"`
 }
 
 type openIssue struct {
@@ -178,6 +181,17 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 				}
 			}
 			body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: runURL, Fingerprint: fingerprint})
+			if _, native := destination.(*cloudDestination); native {
+				checks := gate.CheckObservations(string(log))
+				selected := checks[:0]
+				for _, check := range checks {
+					if check.HeadSHA == getenv("CI_DEVELOP_SHA") {
+						selected = append(selected, check)
+					}
+				}
+				evidence := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: occurrenceKey(getenv, j, fingerprint), RunID: getenv("GITHUB_RUN_ID"), RunAttempt: getenv("GITHUB_RUN_ATTEMPT"), JobID: strconv.FormatInt(j.ID, 10), JobName: j.Name, RunURL: runURL, JobURL: j.URL, HeadSHA: getenv("CI_DEVELOP_SHA"), Conclusion: j.Conclusion, StartedAt: j.StartedAt, FinishedAt: j.CompletedAt, Checks: selected}
+				body += evidence.Stamp()
+			}
 			if err := destination.file(ctx, fingerprint, p.Summary, body, occurrenceKey(getenv, j, fingerprint), labels, sourceFailure); err != nil {
 				err = fmt.Errorf("report %s (%s): %w", j.Name, p.Key, err)
 				if _, native := destination.(*cloudDestination); !native {

@@ -1,4 +1,5 @@
 set -euo pipefail
+source scripts/check-evidence.sh
 
 base=${1:?base ref required}
 app=${2:?conversation directory required}
@@ -13,19 +14,19 @@ if ! git diff --quiet "$base" -- "$app" || [ -n "$(git ls-files --others --exclu
 fi
 
 if [ "$app_changed" = true ]; then
-    make check-app
+    check_with_evidence app make check-app
 elif [ ! -f static/app/conversation/app.js ]; then
     make app
 fi
 
-make lint
-make vet
-make nilaway-changed
-go build -p "$procs" ./...
-make test-fast
-make check-invariants
-make check-migrations
-make check-generated
+check_with_evidence lint make lint
+check_with_evidence vet make vet
+check_with_evidence nilaway-changed make nilaway-changed
+check_with_evidence build go build -p "$procs" ./...
+check_with_evidence unit-short make test-fast
+check_with_evidence invariants make check-invariants
+check_with_evidence migrations make check-migrations
+check_with_evidence generated make check-generated
 if [ "$app_changed" = false ]; then
     printf 'Conversation sources unchanged; skipping check-app.\n'
 fi

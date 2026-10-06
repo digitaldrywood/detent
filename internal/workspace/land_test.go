@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -595,7 +596,7 @@ func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a kept landing was not reported: %v", err)
 	}
-	if again.Gate != first.Gate || again.Gate.Command != "true" || again.MergeSHA != first.MergeSHA || again.BaseRef != first.BaseRef || f.remoteMain(t) != first.MergeSHA {
+	if !reflect.DeepEqual(again.Gate, first.Gate) || again.Gate.Command != "true" || again.MergeSHA != first.MergeSHA || again.BaseRef != first.BaseRef || f.remoteMain(t) != first.MergeSHA {
 		t.Fatalf("kept landing = %#v, first = %#v, remote = %s", again, first, f.remoteMain(t))
 	}
 	if err := ForgetLanding(context.Background(), f.info); err != nil {

@@ -314,6 +314,33 @@ or `work_export` for complete authorized detail under their existing byte bounds
 Queries still search full authorized original bodies. A single summary whose
 metadata exceeds the page budget returns the existing safe unavailable error.
 
+## Native validation evidence
+
+Native `work_item`, `work_attempt_receipt` and `get_change` include a bounded
+`validation_audit` projection of recorded local commands and scheduled failure
+occurrences. Scheduled failures retain their existing issue/comment owner;
+comparisons name those source records, their authors, and the run, job, attempt, Change and
+version identities. The projection reads the selected project's database only
+and makes no forge requests. `partial` identifies truncated records or candidate
+comparisons; missing historical receipts, scope or environment remain unknown.
+
+Command receipts retain the tested head/tree, result and duration. Commands
+that emit `detent-check-evidence` records also supply their declared check scope,
+command, Go host OS/architecture/toolchain and per-check result. Check durations
+emitted by the shell recorder identify their one-second resolution. Dirty source
+observations cannot establish the tested tree. The scheduled reporter retains
+these records under the existing occurrence identity rather than substituting
+the finalizer's environment for a failed job's environment.
+
+A local-pass/scheduled-failure comparison requires identical recorded trees,
+matching scope and command, matching observed environment, and a local pass
+recorded before the failed check. Environment equality covers the recorded
+fields only. Integrated commit equality is reported separately: an earlier
+Change is only a candidate, and inclusion or causality is never inferred from
+ancestry. Local output is omitted from the comparison projection and private
+command text is redacted. Correlation grants no workflow authority, introduces
+no merge requirement and does not change any project's check policy.
+
 ## Hosted application context reads
 
 Hosted dedicated and shared connections expose `app_bootstrap_payload`,
