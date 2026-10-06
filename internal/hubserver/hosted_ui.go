@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -237,6 +238,7 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var workspaceRevision int64
+	var healthTick string
 	for s.ready.Load() {
 		credential, _, err := s.hostedCredential(c.Request().Context(), c)
 		if err != nil {
@@ -259,6 +261,19 @@ func (s *Service) hostedEvents(c echo.Context) error {
 				return nil
 			}
 			workspaceRevision = record.Revision
+		}
+		if workspaceID == "" && workItemID == "" {
+			var tick string
+			err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT last_tick_at FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			if tick != healthTick {
+				if _, err := fmt.Fprintf(c.Response(), "event: health.findings\ndata: %s\n\n", tick); err != nil {
+					return nil
+				}
+				healthTick = tick
+			}
 		}
 		c.Response().Flush()
 		select {
