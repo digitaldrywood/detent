@@ -1180,19 +1180,7 @@ func (r *Runner) runAgentTurn(
 	turnRequest = conversation.prepareTurn(turnRequest)
 	providerResume := turnRequest.Resume
 	usage := newSessionTokenUsage(!agentResumeEmpty(providerResume))
-	profileWorkflow, _, _, _ := r.runtimeSnapshot()
-	profileStage := "implementation"
-	if runRole(runRequest.Mode, runRequest.Issue) == RoleRework {
-		profileStage = "rework"
-	}
-	if runRequest.Mode == RunModePlan {
-		profileStage = "planning"
-	}
-	if runRequest.Mode == RunModeMerge {
-		profileStage = "merging"
-	}
-	activityProfile := r.startActivityProfile(ctx, runRequest, detentSessionID, info.Path, profileWorkflow, profileStage)
-	defer activityProfile.finish()
+	activityProfile := runRequest.activityProfile
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
@@ -2018,6 +2006,19 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if err != nil {
 		return RunResult{}, err
 	}
+	profileStage := "implementation"
+	switch role {
+	case RoleRework:
+		profileStage = "rework"
+	case RolePlan:
+		profileStage = "planning"
+	case RoleMerge:
+		profileStage = "merging"
+	}
+	profileRequest := req
+	profileRequest.StartedAt = startedAt
+	req.activityProfile = r.startActivityProfile(ctx, profileRequest, sessionID, info.Path, workflow, profileStage)
+	defer req.activityProfile.finish()
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
 	sessionCtx, cancelSession := r.sessionLimit(
 		ctx,
@@ -3374,6 +3375,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
+	runReq.StartedAt = startedAt
+	activityProfile := r.startActivityProfile(ctx, runReq, sessionID, info.Path, workflow, "validation")
+	defer activityProfile.finish()
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
 	sessionCtx, cancelSession := r.sessionLimit(
 		ctx,
@@ -3421,8 +3425,6 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if resolvedSelection.Effort != "" {
 		effort = resolvedSelection.Effort
 	}
-	activityProfile := r.startActivityProfile(sessionCtx, runReq, sessionID, info.Path, workflow, "validation")
-	defer activityProfile.finish()
 	stopCompute := r.meterCompute(runReq.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		ReadOnly:            req.NativeVersion != nil,

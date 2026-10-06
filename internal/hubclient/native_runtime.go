@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -97,7 +98,9 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 		return err
 	}
 	if observation.Activity != nil {
-		profile := workflowmetrics.PublicActivityProfile(*observation.Activity)
+		profile := *observation.Activity
+		profile.StartEarlier(e.usageStartedAt)
+		profile = workflowmetrics.PublicActivityProfile(profile)
 		observation.Activity = &profile
 	}
 	if err := ctx.Err(); err != nil {
@@ -132,6 +135,11 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 			observation.LocalAttemptID = previous.LocalAttemptID
 			observation.Generation = previous.Generation
 		}
+		if previous.LocalAttemptID == 0 && observation.LocalAttemptID > 0 && observation.Activity != nil && observation.Activity.SessionID == 0 {
+			profile := *observation.Activity
+			profile.AttemptID, profile.Generation = observation.LocalAttemptID, observation.Generation
+			observation.Activity = &profile
+		}
 		if observation.HeartbeatAt.Before(previous.HeartbeatAt) {
 			observation.HeartbeatAt = previous.HeartbeatAt
 		}
@@ -139,7 +147,7 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 			observation.Phases[len(observation.Phases)-1].FinishedAt = observation.HeartbeatAt
 		}
 	}
-	if previous == nil || observation.Phase != previous.Phase {
+	if previous == nil || len(observation.Phases) == 0 || observation.Phase != previous.Phase {
 		if len(observation.Phases) < 128 {
 			observation.Phases = append(observation.Phases, tracker.NativePhase{Name: observation.Phase, StartedAt: observation.HeartbeatAt})
 		} else {
@@ -151,7 +159,7 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	if previous != nil {
 		before = runtimeEvidence(*previous)
 	}
-	publish := previous == nil || current.Phase != before.Phase || !reflect.DeepEqual(current.Identity, before.Identity) || !reflect.DeepEqual(current.Landing, before.Landing)
+	publish := previous == nil || len(before.Phases) == 0 && len(current.Phases) > 0 || current.Phase != before.Phase || !reflect.DeepEqual(current.Identity, before.Identity) || !reflect.DeepEqual(current.Landing, before.Landing)
 	changed := previous == nil || !reflect.DeepEqual(current, before)
 	if !changed {
 		return nil
@@ -164,6 +172,69 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	return e.append(ctx, "run.observed", "", nil)
 }
 
+func (e *nativeExecution) activityBoundary(at time.Time, outcome string) {
+	observation := tracker.NativeRuntimeObservation{}
+	if e.data.Runtime != nil {
+		observation = *e.data.Runtime
+	}
+	stage := observation.Phase
+	if stage == "" || stage == "completed" {
+		switch e.role {
+		case runner.RoleMerge:
+			stage = "merging"
+		case runner.RoleRework:
+			stage = "rework"
+		case runner.RolePlan:
+			stage = "planning"
+		case runner.RoleValidator:
+			stage = "validation"
+		default:
+			stage = "implementation"
+		}
+	}
+	if observation.Phase == "" {
+		observation.Phase = stage
+	}
+	profile := workflowmetrics.ActivityProfile{
+		Schema: 1, AttemptID: observation.LocalAttemptID, Generation: observation.Generation,
+		Stage: stage, StartedAt: e.usageStartedAt, AsOf: at, Status: "running", Coverage: "partial",
+	}
+	if observation.Activity != nil {
+		profile = *observation.Activity
+		profile.StartEarlier(e.usageStartedAt)
+	}
+	if outcome != "" {
+		if at.Before(profile.AsOf) {
+			at = profile.AsOf
+		}
+		profile.AsOf, profile.FinishedAt = at, at
+		if profile.Status == "running" || profile.Status == "ended_without_terminal_event" {
+			switch outcome {
+			case "succeeded":
+				profile.Status = "completed"
+			case "interrupted", "cancelled":
+				profile.Status = "cancelled"
+			default:
+				profile.Status = "failed"
+			}
+		}
+		if e.role == runner.RoleMerge && observation.Identity.BackendKind == "git" && profile.SessionID == 0 {
+			started := e.usageStartedAt
+			for _, phase := range observation.Phases {
+				if phase.Name == "merging" && phase.StartedAt.After(started) {
+					started = phase.StartedAt
+				}
+			}
+			profile.Spans = slices.Clone(profile.Spans)
+			profile.Spans = append(profile.Spans, workflowmetrics.ActivitySpan{ID: "native_landing", Kind: "merge", Evidence: "git_merge", Attribution: "observed", StartedAt: started, FinishedAt: at, Outcome: profile.Status})
+		}
+	}
+	profile = workflowmetrics.PublicActivityProfile(profile)
+	observation.Activity = &profile
+	observation.HeartbeatAt = at
+	e.data.Runtime = &observation
+}
+
 func runtimeEvidence(observation tracker.NativeRuntimeObservation) tracker.NativeRuntimeObservation {
 	observation.HeartbeatAt = time.Time{}
 	if observation.Activity != nil {
@@ -171,6 +242,23 @@ func runtimeEvidence(observation tracker.NativeRuntimeObservation) tracker.Nativ
 		profile.AsOf = time.Time{}
 		if profile.Summary != nil {
 			summary := *profile.Summary
+			summary.Hourly = slices.Clone(summary.Hourly)
+			for i := range summary.Hourly {
+				hour := &summary.Hourly[i]
+				hour.To = time.Time{}
+				hour.Breakdown.ElapsedSeconds = 0
+				hour.Breakdown.UnknownSeconds = 0
+				hour.Breakdown.ByKind = maps.Clone(hour.Breakdown.ByKind)
+				if _, exists := hour.Breakdown.ByKind["unobserved"]; exists {
+					hour.Breakdown.ByKind["unobserved"] = 0
+				}
+			}
+			for len(summary.Hourly) > 0 && summary.Hourly[len(summary.Hourly)-1].Breakdown.ObservedSeconds == 0 {
+				summary.Hourly = summary.Hourly[:len(summary.Hourly)-1]
+			}
+			if len(summary.Hourly) == 0 {
+				summary.Hourly = nil
+			}
 			summary.Through = time.Time{}
 			if len(profile.Spans) == 0 {
 				summary.DetailFrom = time.Time{}
@@ -208,7 +296,7 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 		identity = *e.data.Identity
 	}
 	e.mu.Unlock()
-	if err := e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: time.Now().UTC(), Identity: agentidentity.Identity{Role: "merge", BackendKind: "git"}}); err != nil {
+	if err := e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: e.scheduler.now().UTC(), Identity: agentidentity.Identity{Role: "merge", BackendKind: "git"}}); err != nil {
 		return err
 	}
 	if err := e.Start(ctx, identity); err != nil {

@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -36,6 +37,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -1565,10 +1567,13 @@ func TestRunnerDeliverableRecoveryCountsTurnsAcrossSessionBrake(t *testing.T) {
 		},
 		{{Type: AgentUpdateTurnStarted, ThreadID: "thread-1", TurnID: "turn-2"}},
 	}}
+	probe := &activityCheckpointProbe{SessionStore: &fakeSessionStore{sessionID: 7}, started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 8)}
+	close(probe.release)
 	runner, err := NewRunner(Dependencies{
 		Workflow:     config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: 1}}, Prompt: "Work"},
 		Workspace:    &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: branch}},
 		AgentBackend: backend,
+		Store:        probe,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -1587,6 +1592,15 @@ func TestRunnerDeliverableRecoveryCountsTurnsAcrossSessionBrake(t *testing.T) {
 	}
 	if len(backend.requests) != 2 {
 		t.Fatalf("RunTurn requests = %d, want initial and interrupted recovery", len(backend.requests))
+	}
+	var receipt workflowmetrics.ActivityProfile
+	for len(probe.profiles) > 0 {
+		if err := json.Unmarshal([]byte((<-probe.profiles).MetadataJSON), &receipt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(receipt.Spans) != 2 || receipt.Summary == nil || receipt.FinishedAt.IsZero() {
+		t.Fatalf("recovery replaced earlier activity: %+v", receipt)
 	}
 }
 
@@ -7119,14 +7133,16 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 			}
 			codexClient := &fakeCodexClient{err: test.err, updates: test.updates}
 			sessionStore := &fakeSessionStore{sessionID: 7}
-			now := newFakeClock(time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC))
+			probe := &activityCheckpointProbe{SessionStore: sessionStore, started: make(chan struct{}), release: make(chan struct{}), profiles: make(chan store.WorkflowPhaseEvent, 4)}
+			close(probe.release)
+			at := time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC)
 
 			runner, err := NewRunner(Dependencies{
 				Workflow:     config.Workflow{Config: config.Config{}},
 				Workspace:    workspaceBackend,
 				AgentBackend: codexClient,
-				Store:        sessionStore,
-				Now:          now.Now,
+				Store:        probe,
+				Now:          func() time.Time { return at },
 			})
 			if err != nil {
 				t.Fatalf("NewRunner() error = %v", err)
@@ -7156,6 +7172,15 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 			}
 			if result.TurnStartRefused != test.refused || sessionStore.finished.TurnStartRefused != test.refused {
 				t.Fatalf("refusal accounting: result=%v stored=%v want=%v", result.TurnStartRefused, sessionStore.finished.TurnStartRefused, test.refused)
+			}
+			var receipt workflowmetrics.ActivityProfile
+			for len(probe.profiles) > 0 {
+				if err := json.Unmarshal([]byte((<-probe.profiles).MetadataJSON), &receipt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if receipt.SessionID != sessionStore.sessionID || receipt.Summary == nil || !receipt.StartedAt.Equal(sessionStore.started.StartedAt) || receipt.FinishedAt.IsZero() {
+				t.Fatalf("failed session receipt missing: %+v", receipt)
 			}
 		})
 	}

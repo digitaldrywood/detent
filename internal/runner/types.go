@@ -650,6 +650,7 @@ type RunRequest struct {
 	MergeRefreshHeadSHA       string
 	ForgeRetry                *ForgeRetry
 	sessionBrake              *sessionBrakeController
+	activityProfile           *activityRecorder
 	workerGitHubActor         connector.IssueActor
 	deliverableRecoveryBranch string
 	sessionTurnOffset         int

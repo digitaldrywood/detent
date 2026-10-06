@@ -303,6 +303,9 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	if receipt == nil || len(receipt.Spans) != 0 || receipt.Summary == nil || len(receipt.Sources) != 1 || receipt.Sources[0].Hash != strings.Repeat("a", 64) || !strings.Contains(strings.Join(report.Unavailable, ","), "private_instruction_causality") {
 		t.Fatalf("bounded activity receipt %#v", receipt)
 	}
+	if len(receipt.Summary.Hourly) != 2 {
+		t.Fatalf("hourly receipt missing: %+v", receipt.Summary)
+	}
 	for _, test := range []struct {
 		name                                       string
 		profile                                    *workflowmetrics.ActivityProfile
@@ -310,7 +313,9 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 		observed, unknown, concurrent, unallocated float64
 		unavailable                                int
 		malformedPhases                            bool
+		bucket                                     time.Duration
 	}{
+		{name: "hourly totals survive omitted spans", profile: receipt, from: w.From, to: w.To, observed: 240, unknown: 60, concurrent: 60, bucket: time.Hour},
 		{name: "clipped detailed intervals", profile: start.Data.Runtime.Activity, from: now.Add(-9*time.Minute - 30*time.Second), to: now.Add(-6*time.Minute - 30*time.Second), observed: 180, concurrent: 60},
 		{name: "malformed phases preserve activity", profile: start.Data.Runtime.Activity, from: w.From, to: w.To, observed: 240, unknown: 60, concurrent: 60, malformedPhases: true},
 		{name: "missing receipt", from: w.From, to: w.To, unavailable: 1},
@@ -341,6 +346,14 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 			p.Summary = &workflowmetrics.ActivitySummary{Through: p.AsOf, DetailFrom: p.StartedAt}
 			return &p
 		}(), from: w.From, to: w.To, unavailable: 1},
+		{name: "malformed hourly summary", profile: func() *workflowmetrics.ActivityProfile {
+			p := *receipt
+			summary := *p.Summary
+			summary.Hourly = append([]workflowmetrics.ActivityHour(nil), summary.Hourly...)
+			summary.Hourly[0].Breakdown.ElapsedSeconds++
+			p.Summary = &summary
+			return &p
+		}(), from: w.From, to: w.To, unavailable: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runtime := *start.Data.Runtime
@@ -357,7 +370,11 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			window := operatortool.AnalyticsWindow{From: test.from, To: test.to, Bucket: time.Minute}
+			bucket := test.bucket
+			if bucket == 0 {
+				bucket = time.Minute
+			}
+			window := operatortool.AnalyticsWindow{From: test.from, To: test.to, Bucket: bucket}
 			got, err := readNativeAnalytics(t.Context(), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
 			if err != nil {
 				t.Fatal(err)
@@ -368,6 +385,9 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 			activity := got.Activity
 			if activity.Timing.ObservedSeconds != test.observed || activity.Timing.UnknownSeconds != test.unknown || activity.Timing.ConcurrentSeconds != test.concurrent || activity.UnallocatedSeconds != test.unallocated || activity.ProfilesUnavailable != test.unavailable {
 				t.Fatalf("window activity %#v", activity)
+			}
+			if test.bucket == time.Hour && (got.Digest[0].Activity.ProfilesObserved != 1 || got.Digest[1].Activity.ProfilesObserved != 1 || got.Digest[0].Activity.Timing.ObservedSeconds != 180 || got.Digest[1].Activity.Timing.ObservedSeconds != 60 || got.Digest[1].Activity.Timing.UnknownSeconds != 60) {
+				t.Fatalf("receipt not attributed to both hours: %+v", got.Digest)
 			}
 			var observed, unknown, concurrent, unallocated float64
 			for _, b := range got.Digest {
@@ -381,7 +401,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 					t.Fatalf("compacted hour allocation: observed=%v unallocated=%v", observed, unallocated)
 				}
 			} else if observed != test.observed || unknown != test.unknown || concurrent != test.concurrent || unallocated != test.unallocated {
-				t.Fatalf("bucket allocation: %v %v %v %v", observed, unknown, concurrent, unallocated)
+				t.Fatalf("bucket allocation: %v %v %v %v; receipt=%+v", observed, unknown, concurrent, unallocated, test.profile.Summary)
 			}
 		})
 	}

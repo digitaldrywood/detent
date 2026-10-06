@@ -92,6 +92,15 @@ type ActivitySummary struct {
 	Through    time.Time         `json:"through"`
 	DetailFrom time.Time         `json:"detail_from"`
 	Breakdown  ActivityBreakdown `json:"breakdown"`
+	Hourly     []ActivityHour    `json:"hourly,omitempty"`
+}
+
+const ActivityHourLimit = 168
+
+type ActivityHour struct {
+	From      time.Time         `json:"from"`
+	To        time.Time         `json:"to"`
+	Breakdown ActivityBreakdown `json:"breakdown"`
 }
 
 type ActivityBreakdown struct {
@@ -228,7 +237,128 @@ func (p *ActivityProfile) SummarizeThrough(through time.Time) {
 	}
 	prefix := *p
 	prefix.AsOf, prefix.FinishedAt = through, time.Time{}
-	p.Summary = &ActivitySummary{Through: through, DetailFrom: through, Breakdown: prefix.Breakdown()}
+	start := p.StartedAt
+	var hourly []ActivityHour
+	if p.Summary != nil {
+		start = p.Summary.Through
+		hourly = append(hourly, p.Summary.Hourly...)
+	}
+	oldest := through.UTC().Truncate(time.Hour).Add(-time.Duration(ActivityHourLimit-1) * time.Hour)
+	if start.Before(oldest) {
+		start = oldest
+	}
+	for start.Before(through) {
+		end := start.UTC().Truncate(time.Hour).Add(time.Hour)
+		if end.After(through) {
+			end = through
+		}
+		part := *p
+		part.StartedAt, part.AsOf, part.FinishedAt, part.Summary = start, end, time.Time{}, nil
+		b := part.Breakdown()
+		hourly = appendActivityHour(hourly, ActivityHour{From: start, To: end, Breakdown: b})
+		start = end
+	}
+	if len(hourly) > ActivityHourLimit {
+		hourly = hourly[len(hourly)-ActivityHourLimit:]
+	}
+	p.Summary = &ActivitySummary{Through: through, DetailFrom: through, Breakdown: prefix.Breakdown(), Hourly: hourly}
+}
+
+func appendActivityHour(hours []ActivityHour, hour ActivityHour) []ActivityHour {
+	if len(hours) > 0 && hours[len(hours)-1].To.Equal(hour.From) && hours[len(hours)-1].From.UTC().Truncate(time.Hour).Equal(hour.From.UTC().Truncate(time.Hour)) {
+		last := &hours[len(hours)-1]
+		last.To = hour.To
+		last.Breakdown = addActivityBreakdowns(last.Breakdown, hour.Breakdown)
+		return hours
+	}
+	return append(hours, hour)
+}
+
+func (p *ActivityProfile) StartEarlier(start time.Time) {
+	if start.IsZero() || !start.Before(p.StartedAt) {
+		return
+	}
+	if p.Summary != nil {
+		prefix := ActivityProfile{StartedAt: start, AsOf: p.StartedAt}
+		prefix.SummarizeThrough(p.StartedAt)
+		summary := *p.Summary
+		summary.Breakdown = addActivityBreakdowns(prefix.Summary.Breakdown, summary.Breakdown)
+		hours := prefix.Summary.Hourly
+		for _, hour := range summary.Hourly {
+			hours = appendActivityHour(hours, hour)
+		}
+		if len(hours) > ActivityHourLimit {
+			hours = hours[len(hours)-ActivityHourLimit:]
+		}
+		summary.Hourly = hours
+		p.Summary = &summary
+	}
+	p.StartedAt = start
+}
+
+func addActivityBreakdowns(a, b ActivityBreakdown) ActivityBreakdown {
+	out := ActivityBreakdown{
+		ElapsedSeconds: a.ElapsedSeconds + b.ElapsedSeconds, ObservedSeconds: a.ObservedSeconds + b.ObservedSeconds,
+		UnknownSeconds: a.UnknownSeconds + b.UnknownSeconds, ConcurrentSeconds: a.ConcurrentSeconds + b.ConcurrentSeconds,
+		ByKind: make(map[string]float64, len(a.ByKind)+len(b.ByKind)),
+	}
+	for kind, seconds := range a.ByKind {
+		out.ByKind[kind] = seconds
+	}
+	for kind, seconds := range b.ByKind {
+		out.ByKind[kind] += seconds
+	}
+	return out
+}
+
+func (p ActivityProfile) BreakdownBetween(from, to time.Time) (ActivityBreakdown, float64) {
+	end := p.AsOf
+	if !p.FinishedAt.IsZero() {
+		end = p.FinishedAt
+	}
+	if from.Before(p.StartedAt) {
+		from = p.StartedAt
+	}
+	if to.After(end) {
+		to = end
+	}
+	if !to.After(from) {
+		return ActivityBreakdown{}, 0
+	}
+	if !from.After(p.StartedAt) && !to.Before(end) {
+		return p.Breakdown(), 0
+	}
+	var b ActivityBreakdown
+	var unallocated float64
+	detail := func(start, finish time.Time) {
+		if !finish.After(start) {
+			return
+		}
+		if p.Summary != nil && start.Before(p.Summary.DetailFrom) {
+			through := p.Summary.DetailFrom
+			if through.After(finish) {
+				through = finish
+			}
+			unallocated += through.Sub(start).Seconds()
+			start = through
+		}
+		part := p
+		part.StartedAt, part.AsOf, part.FinishedAt, part.Summary = start, finish, time.Time{}, nil
+		b = addActivityBreakdowns(b, part.Breakdown())
+	}
+	cursor := from
+	if p.Summary != nil {
+		for _, hour := range p.Summary.Hourly {
+			if hour.From.Before(cursor) || hour.To.After(to) {
+				continue
+			}
+			detail(cursor, hour.From)
+			b = addActivityBreakdowns(b, hour.Breakdown)
+			cursor = hour.To
+		}
+	}
+	detail(cursor, to)
+	return b, unallocated
 }
 
 // Gaps gives the complement of confirmed tool intervals. Pending tools do not

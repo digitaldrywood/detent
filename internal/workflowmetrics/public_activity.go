@@ -14,6 +14,13 @@ func PublicActivityProfile(p ActivityProfile) ActivityProfile {
 		summary := *p.Summary
 		detailFrom = summary.DetailFrom
 		summary.Breakdown.ByKind = publicActivityKinds(summary.Breakdown.ByKind)
+		summary.Hourly = slices.Clone(summary.Hourly)
+		if len(summary.Hourly) > ActivityHourLimit {
+			summary.Hourly = summary.Hourly[len(summary.Hourly)-ActivityHourLimit:]
+		}
+		for i := range summary.Hourly {
+			summary.Hourly[i].Breakdown.ByKind = publicActivityKinds(summary.Hourly[i].Breakdown.ByKind)
+		}
 		p.Summary = &summary
 	}
 	unfinishedSummary := slices.Contains(p.CoverageNotes, "summarized_intervals_exclude_unfinished_spans")
@@ -66,10 +73,21 @@ func PublicActivityProfile(p ActivityProfile) ActivityProfile {
 		end = p.FinishedAt
 	}
 	p.SummarizeThrough(end)
+	p.CoverageNotes = append(p.CoverageNotes, "hourly_timing_limited_to_latest_168_buckets_and_projection_size")
 	if p.Summary != nil {
 		p.Summary.DetailFrom = detailFrom
 	}
 	spans, omitted := p.Spans, p.ProjectionOmitted
+	p.Spans = nil
+	p.ProjectionOmitted = omitted + uint64(len(spans))
+	publicActivityDetailFrom(&p, detailFrom)
+	for p.Summary != nil && len(p.Summary.Hourly) > 0 {
+		raw, err := json.Marshal(p)
+		if err == nil && len(raw) <= 128*1024 {
+			break
+		}
+		p.Summary.Hourly = p.Summary.Hourly[1:]
+	}
 	low, high := 0, len(spans)+1
 	for low+1 < high {
 		keep := low + (high-low)/2
