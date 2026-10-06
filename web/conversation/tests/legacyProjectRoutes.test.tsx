@@ -105,7 +105,7 @@ describe("the Change Request route", () => {
 
 
 describe("issue live status", () => {
-  function fixture() {
+  async function fixture() {
     const issue = itemFixture as unknown as NativeIssue;
     const project = projectFixture as unknown as NativeProject;
     const initialAttempt = (attemptsFixture as { items: unknown[] }).items[0] as NativeAttempt;
@@ -142,6 +142,7 @@ describe("issue live status", () => {
       return <><div data-testid="issue-live-state">{value.data?.attempts[0]?.status}:{value.data?.history.at(-1)?.aggregate_sequence}:{value.data?.issue.state}</div><div data-testid="issue-live-error">{value.error}</div><input aria-label="draft" value={draft} onChange={(event) => setDraft(event.target.value)} /></>;
     }
     render(<Probe />);
+    await waitFor(() => expect(sources).toHaveLength(1));
     return {
       getWorkItemById, eventsUrl, issue, project,
       renders: () => renders,
@@ -153,7 +154,7 @@ describe("issue live status", () => {
   }
 
   it("updates native completion without remounting drafts or reacting to unchanged issue activity", async () => {
-    const f = fixture();
+    const f = await fixture();
     await waitFor(() => expect(screen.getByTestId("issue-live-state").textContent).toBe("running:1:In Progress"));
     expect(f.eventsUrl).toHaveBeenCalledWith(f.project.project_id, undefined, f.issue.work_item_id);
     const draft = screen.getByRole("textbox", { name: "draft" });
@@ -176,7 +177,7 @@ describe("issue live status", () => {
   });
 
   it("refreshes when the first stream frame is newer than the initial detail read", async () => {
-    const f = fixture();
+    const f = await fixture();
     await waitFor(() => expect(screen.getByTestId("issue-live-state").textContent).toBe("running:1:In Progress"));
     f.set("2", "succeeded");
     act(() => f.activity("2"));
@@ -185,7 +186,7 @@ describe("issue live status", () => {
   });
 
   it.each([401, 403, 404])("retains data during a temporary read failure and clears it after access loss %s", async (status) => {
-    const f = fixture();
+    const f = await fixture();
     await waitFor(() => expect(screen.getByTestId("issue-live-state").textContent).toBe("running:1:In Progress"));
     act(() => f.activity("1"));
     f.fail(new WorkApiError({ status: 503, code: "unavailable", message: "Temporarily unavailable" }));
@@ -200,7 +201,7 @@ describe("issue live status", () => {
   });
 
   it("finishes an in-flight read before one coalesced refresh", async () => {
-    const f = fixture();
+    const f = await fixture();
     await waitFor(() => expect(screen.getByTestId("issue-live-state").textContent).toBe("running:1:In Progress"));
     let release!: () => void;
     f.hold(new Promise<void>((resolve) => { release = resolve; }));
