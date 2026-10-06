@@ -25,7 +25,6 @@ export function StatsRow({
     { key: "open", value: totals?.open ?? stats.open, label: "open" },
     { key: "completed", value: totals?.completed ?? stats.completed, label: "closed inventory" },
   ];
-  const remaining = totals === null ? null : Math.max(0, totals.total - loadedCount);
   return (
     <div
       data-testid="work-stats"
@@ -55,7 +54,7 @@ export function StatsRow({
       </div>
       {hasMore ? (
         <Button size="xs" variant="outline" className="shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs" disabled={loading} onClick={onLoadMore}>
-          {totals === null ? "Load more" : `Load ${remaining} more · ${loadedCount} of ${totals.total}`}
+          {totals === null ? "Load more" : `Load more · ${loadedCount} of ${totals.total}`}
         </Button>
       ) : null}
     </div>
