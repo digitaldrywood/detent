@@ -24,7 +24,13 @@ Shape each child issue:
 - Each child lands on `develop` by itself with green checks and leaves the product working. Never file a child that only makes sense once a sibling merges unless the sibling is its declared blocker.
 - Keep each child to one reviewable PR, ideally one package or one surface.
 - Give each child a conventional-commit title, a short problem statement, the files it is expected to touch, and concrete acceptance criteria. New or changed Go behavior needs focused table-driven standard-library tests. A UI child also needs new Playwright coverage with unchanged desktop baselines.
-- Carry over the parent's priority. Add a `detent-agent` block with `effort: high` and never a `model`.
+- Carry over the parent's priority. Copy this exact `detent-agent` block into each child; never add a `model`:
+
+  ```detent-agent
+  schema: 1
+  effort: high
+  ```
+
 - Put all shared context in the child bodies or tracker comments. Never pass knowledge through repository files (INV-16).
 
 Draw the dependency graph:
