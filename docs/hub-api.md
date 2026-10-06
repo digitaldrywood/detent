@@ -894,6 +894,32 @@ bound and return unavailable on overflow. Native efficiency aggregates and
 unrecorded runtime data remain explicitly unavailable. Hub schema 59 preserves
 prior event history and refuses rollback when new event types would be lost.
 
+Native `analytics_dashboard`, `time_series` and `reports` return a paged
+`failure_signatures` read model per project. It groups recorded terminal errors
+and landing refusals (`conflict`, `base_protected`) within the half-open report
+window by a normalized first line. Signatures retain at most 256 UTF-8 bytes;
+examples retain at most 512 bytes of the recorded first line. IDs, hashes,
+path digits, timestamps and counts collapse to placeholders. Each group reports
+count, first and last seen, total failed-attempt usage cost and tokens, occupied
+slot-minutes, and at most 20 sorted work-item IDs with the distinct count and
+an omission flag. Usage and occupied time cover the whole selected attempt,
+even when it started before the failure window. The newest 1,000 failure records
+are selected; omitted records set the project partial flag and
+`failure_signatures_complete_population` unavailable marker. Group pages use
+`row_offset` and `limit` and preserve continuation under the MCP byte bound.
+
+Five matching failures on one work item within an inclusive 60-minute span
+classify as `retry storm`. Otherwise backend startup, protocol and workspace-hook
+failures classify as `infrastructure`, landing refusals as `merge`, and remaining
+failures as `attempt`. These read-time classes do not alter instance attribution,
+retry allowance or lane state. `explain_item.failure_signature` reports the latest
+failure signature and its count on that issue across the newest 1,000 failure
+records, with `partial` identifying an incomplete count. It is absent without
+failures. New terminal records retain a bounded, redacted first-line error and
+infrastructure class; provider response bodies and continuation lines remain
+omitted. Historical discarded error text cannot be recovered; stored provider
+metadata and finalizer errors remain readable fallbacks.
+
 ### Ordered attempts and recovery
 
 The `fenced_run_history` capability extends schema 1 with a positive decimal-string

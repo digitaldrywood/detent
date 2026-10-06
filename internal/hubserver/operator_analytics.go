@@ -63,6 +63,7 @@ type nativeAnalyticsOutcome struct {
 	Clipped            bool     `json:"clipped"`
 }
 type nativeAnalyticsProject struct {
+	FailureSignatures    operatortool.ReadPage[nativeFailureSignature] `json:"failure_signatures"`
 	LaneResidence        operatortool.AnalyticsResidence               `json:"lane_residence"`
 	ProviderCapacityWait nativeAnalyticsCapacityWait                   `json:"provider_capacity_wait"`
 	ProjectID            string                                        `json:"project_id"`
@@ -209,6 +210,20 @@ func nativeAnalyticsBucketIndex(at time.Time, w operatortool.AnalyticsWindow) in
 
 func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
 	out := nativeAnalyticsProject{ProjectID: string(scope.project), Source: "native_change_landing_and_recorded_runtime", Window: w, PopulationLimit: maxAnalyticsPopulation, Unavailable: []string{"private_instruction_causality", "receipt_efficiency_quantiles"}, Digest: []nativeAnalyticsBucket{}, Efficiency: []nativeAnalyticsPhase{}, SkipReasons: []nativeAnalyticsSkip{}}
+	failures, partial, err := readNativeFailures(ctx, q, scope, "", &w)
+	if err != nil {
+		return out, err
+	}
+	out.FailureSignatures = nativeFailureSignaturePage(groupNativeFailures(failures), r.RowOffset, r.Limit)
+	out.Partial = partial
+	if partial {
+		out.Unavailable = append(out.Unavailable, "failure_signatures_complete_population")
+	}
+	for _, failure := range failures {
+		if failure.at.After(out.SourceAt) {
+			out.SourceAt = failure.at
+		}
+	}
 	for from := w.From; from.Before(w.To); from = from.Add(w.Bucket) {
 		to := from.Add(w.Bucket)
 		if to.After(w.To) {
