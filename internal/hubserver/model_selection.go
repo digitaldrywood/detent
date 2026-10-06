@@ -94,7 +94,11 @@ func (s *Service) updateCloudModelSelection(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	scope.requireHostedAdmin = true
 	c.Set("native_scope", scope)
-	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
+	return s.nativeMutation(c, request.Mutation, request, updateCloudModelSelectionOperation(request))
+}
+
+func updateCloudModelSelectionOperation(request cloudModelSelectionRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
+	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
 		current, err := readCloudModelSelection(ctx, tx, scope)
 		if err != nil {
 			return nil, err
@@ -129,5 +133,5 @@ func (s *Service) updateCloudModelSelection(c echo.Context) error {
 			return nil, &nativeError{Code: "invalid_request", Message: strings.Join(problems, "; "), status: http.StatusUnprocessableEntity, publicMessage: true}
 		}
 		return saved, nil
-	})
+	}
 }

@@ -135,7 +135,7 @@ func ProjectCatalog() []Definition {
 		projectWrite[struct{}]("remove_project_secret", true, false),
 		projectWrite[SpriteUsageInput]("import_sprite_usage", false, false),
 	)
-	return out
+	return append(out, ModelSelectionCatalog()...)
 }
 func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 	schema := projectSchema(reflect.TypeFor[ProjectRequest[T]]())

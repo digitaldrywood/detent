@@ -14,6 +14,9 @@ import (
 )
 
 func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	if operatortool.IsModelSelection(call.Name) {
+		return e.readModelSelection(ctx, call)
+	}
 	var r operatortool.ProjectReadRequest
 	if operatortool.DecodeProjectArguments(call.Arguments, &r) != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
