@@ -56,6 +56,7 @@ type nativeExecution struct {
 	preparedOutcome          string
 	preparedMessage          string
 	preparedDisposition      *tracker.NativeDisposition
+	preparedFailure          *tracker.NativeTerminalFailure
 	runtimeDirty             bool
 	runtimeSupported         *bool
 	// repository is the https URL of the checkout's origin, which a published
@@ -316,9 +317,13 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	return nil
 }
 
-func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string) error {
+func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if failure != nil {
+		public := failure.Public()
+		e.preparedFailure = &public
+	}
 	e.preparedOutcome = outcome
 	e.preparedMessage = finalMessage
 	if len(e.preparedMessage) > 64<<10 {
@@ -403,6 +408,7 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 		return preparationErr
 	}
 	e.data.Disposition = e.preparedDisposition
+	e.data.TerminalFailure = e.preparedFailure
 	if change := e.change; change != nil {
 		finalization := (tracker.NativeFinalization{
 			ObservedAt: e.scheduler.now().UTC(), Settled: e.settled,

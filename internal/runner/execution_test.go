@@ -55,17 +55,19 @@ func (e *testExecution) Recovery() tracker.NativeRecovery { return e.recovery }
 
 type readToolTestExecution struct {
 	testExecution
-	reads          int
-	evidenceSource func(context.Context, string) (ValidationEvidence, error)
-	completionBody string
+	reads             int
+	evidenceSource    func(context.Context, string) (ValidationEvidence, error)
+	completionBody    string
+	completionFailure *tracker.NativeTerminalFailure
 }
 
 func (e *readToolTestExecution) SetEvidenceSource(source func(context.Context, string) (ValidationEvidence, error)) {
 	e.evidenceSource = source
 }
 
-func (e *readToolTestExecution) PrepareFinish(_ context.Context, _, body string) error {
+func (e *readToolTestExecution) PrepareFinish(_ context.Context, _, body string, failure *tracker.NativeTerminalFailure) error {
 	e.completionBody = body
+	e.completionFailure = failure
 	return nil
 }
 

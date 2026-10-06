@@ -60,7 +60,7 @@ type LandingRuntimeExecution interface {
 // for the orchestrator's publication and lane decision. Claim release records
 // the terminal event only after those effects have completed.
 type CompletionExecution interface {
-	PrepareFinish(context.Context, string, string) error
+	PrepareFinish(context.Context, string, string, *tracker.NativeTerminalFailure) error
 }
 
 type AvailabilityExecution interface {
@@ -231,7 +231,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	if prepared, ok := req.Execution.(CompletionExecution); ok {
-		if err := prepared.PrepareFinish(finishCtx, outcome, result.FinalMessage); err != nil {
+		if err := prepared.PrepareFinish(finishCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now())); err != nil {
 			runErr = errors.Join(runErr, err)
 			outcome = "failed"
 		} else if outcome == "succeeded" {

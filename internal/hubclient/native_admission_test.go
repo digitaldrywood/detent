@@ -292,7 +292,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			if test.dirty {
 				report = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '%s'\n    reason: prerequisite must finish\nhuman_action: null\n```", reference)
 			}
-			if err := execution.(runner.CompletionExecution).PrepareFinish(t.Context(), "succeeded", report); err != nil {
+			if err := execution.(runner.CompletionExecution).PrepareFinish(t.Context(), "succeeded", report, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := execution.Finish(t.Context(), "succeeded"); err != nil {
