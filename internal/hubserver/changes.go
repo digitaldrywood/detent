@@ -237,6 +237,10 @@ func (s *Service) getChange(c echo.Context) error {
 }
 
 func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.ChangeDetail, error) {
+	return readChangeDetailView(ctx, query, scope, item, id, now, false)
+}
+
+func readChangeDetailView(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, now time.Time, current bool) (tracker.ChangeDetail, error) {
 	var result tracker.ChangeDetail
 	var err error
 	result.Change, err = readChange(ctx, query, scope, item, id)
@@ -247,23 +251,41 @@ func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScop
 	if err != nil {
 		return result, err
 	}
-	result.Versions, err = changeRows[tracker.ChangeVersion](ctx, query, "SELECT record_json FROM change_versions WHERE change_id = ? ORDER BY number", id)
+	versionFilter, evidenceFilter := "", ""
+	args := []any{id}
+	if current {
+		versionFilter = " AND id = ?"
+		evidenceFilter = " AND version_id = ?"
+		args = append(args, result.Change.CurrentVersion)
+	}
+	result.Versions, err = changeRows[tracker.ChangeVersion](ctx, query, "SELECT record_json FROM change_versions WHERE change_id = ?"+versionFilter+" ORDER BY number", args...)
 	if err != nil {
 		return result, err
 	}
-	result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'review' ORDER BY sequence", id)
+	result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'review'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
 		return result, err
 	}
-	result.Checks, err = changeRows[tracker.ChangeCheck](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'check' ORDER BY sequence", id)
+	result.Checks, err = changeRows[tracker.ChangeCheck](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'check'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
 		return result, err
 	}
-	result.Discussion, err = changeRows[tracker.ChangeDiscussion](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'discussion' ORDER BY sequence", id)
+	if current {
+		evidenceFilter = " AND (version_id = ? OR version_id IS NULL OR version_id = '')"
+	}
+	result.Discussion, err = changeRows[tracker.ChangeDiscussion](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'discussion'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
 		return result, err
 	}
-	result.Summary, err = readChangeSummary(ctx, query, scope, result, now, false)
+	var staleApproval bool
+	if current {
+		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
+AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND version_id != ?)`, id, result.Change.CurrentVersion).Scan(&staleApproval)
+		if err != nil {
+			return result, err
+		}
+	}
+	result.Summary, err = readChangeSummary(ctx, query, scope, result, now, staleApproval)
 	if err != nil {
 		return result, err
 	}

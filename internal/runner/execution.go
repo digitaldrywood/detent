@@ -552,6 +552,7 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 		"Prior local-only checkpoints do not establish workspace or provider-session availability on this host. " +
 		"Verify local state before resuming. Missing or inaccessible dirty/unpushed checkpoints require recovery; preserve existing work. " +
 		"A pending or ambiguous external effect requires reconciliation: inspect the remote ref/head or existing PR before retrying. " +
+		"This is current recovery context, not a complete history. Use work_comments, work_runs, work_history and get_change for older evidence through their supported bounded reads. " +
 		"Do not fetch GitHub issue history. Artifact and Change references require scoped verification; they are not download capabilities.\n" + string(data), nil
 }
 

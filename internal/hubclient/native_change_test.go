@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -63,7 +64,7 @@ type changeFailingTransport struct {
 }
 
 func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	if t.failDetails.Load() && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/changes/") {
+	if t.failDetails.Load() && request.Method == http.MethodGet && (strings.Contains(request.URL.Path, "/changes/") || request.URL.Query().Get("view") == "recovery") {
 		return nil, errors.New("change detail unavailable")
 	}
 	if request.Method == http.MethodPost {
@@ -1020,7 +1021,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "committed Rework excludes target advancement", rework: true, formal: true, commit: true, advanceTarget: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "late host conflict continues to resolved publication and landing", rework: true, formal: true, staged: true, lateConflict: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "host signing unavailable preserves requested changes", rework: true, formal: true, staged: true, signingFail: true},
-		{name: "repeated stale base refusals converge through owned publication and landing", rework: true, staleBase: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "growing multi-page machine history keeps fresh conflict recovery compact", rework: true, staleBase: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "Rework lands the clean preserved reviewed head without source changes", rework: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "Rework forwards a refused version to review", rework: true, commit: true, failVersion: true, wantState: "Human Review"},
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
@@ -1132,6 +1133,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					nativeChangeGit(t, reviewedPath, "commit", "-m", "preserved reviewed source")
 				}
 				item := tracker.NativeWorkItemID(issue.ID)
+				if test.staleBase {
+					if _, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Human hold: preserve the original checkpoint and staged source"}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
 				if err != nil {
 					t.Fatal(err)
@@ -1197,15 +1203,25 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					}
 					checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: local.HeadSHA, WorkspaceDigest: local.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}
 					var fencing tracker.FencingToken
-					for i := range 5 {
+					for i := range 105 {
 						candidates := h.candidatesIn(t, "Merging")
 						if len(candidates) != 1 {
-							t.Fatalf("reviewed unlanded version lost its claim: %+v", candidates)
+							t.Fatalf("reviewed unlanded version lost its claim at retry %d: %+v", i, candidates)
 						}
 						if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
 							t.Fatal(err)
 						}
 						landing := h.scheduler.RunExecution(issue.ID)
+						compact, err := json.Marshal(landing.Recovery())
+						if err != nil || len(compact) > 100000 || len(landing.Recovery().Attempts) > 4 || len(landing.Recovery().History) != 0 || !strings.Contains(string(compact), "Human hold: preserve the original checkpoint") {
+							t.Fatalf("historic retries inflated a fresh claim or lost human context: bytes=%d, error=%v", len(compact), err)
+						}
+						if i == 104 {
+							t.Logf("fresh recovery after 104 historical attempts: %d bytes, %d attempts, %d comments, %d history events", len(compact), len(landing.Recovery().Attempts), len(landing.Recovery().Discussion), len(landing.Recovery().History))
+						}
+						if _, err := h.native.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: strings.Repeat("Historical worker output\n", 900)}); err != nil {
+							t.Fatal(err)
+						}
 						guarded, stop, err := landing.Guard(t.Context())
 						if err != nil {
 							t.Fatal(err)
@@ -1233,7 +1249,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						if err := landing.Finish(guarded, "succeeded"); err != nil {
 							t.Fatal(err)
 						}
-						if i == 4 {
+						if i == 104 {
 							if err := h.connector.UpdateIssueState(guarded, issue.ID, "Rework"); err != nil {
 								t.Fatal(err)
 							}
@@ -1259,7 +1275,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if test.failDetail {
 					next := h.native.client.httpClient.Transport
 					h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-						if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/changes/"+change.ID) {
+						if request.Method == http.MethodGet && (strings.HasSuffix(request.URL.Path, "/changes/"+change.ID) || request.URL.Query().Get("view") == "recovery") {
 							response := httptest.NewRecorder()
 							response.WriteHeader(http.StatusForbidden)
 							return response.Result(), nil
@@ -1505,7 +1521,20 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err := json.NewDecoder(strings.NewReader(data)).Decode(&recovery); err != nil {
 					t.Fatal(err)
 				}
-				if recovery.Change == nil || recovery.Change.VersionID != expected.Change.CurrentVersion || !reflect.DeepEqual(recovery.ChangeDetail, expected) {
+				currentFeedback := *expected
+				currentFeedback.Versions = slices.DeleteFunc(slices.Clone(expected.Versions), func(v tracker.ChangeVersion) bool { return v.ID != expected.Change.CurrentVersion })
+				currentFeedback.Reviews = slices.DeleteFunc(slices.Clone(expected.Reviews), func(r tracker.ChangeReview) bool { return r.VersionID != expected.Change.CurrentVersion })
+				currentFeedback.Checks = slices.DeleteFunc(slices.Clone(expected.Checks), func(c tracker.ChangeCheck) bool { return c.VersionID != expected.Change.CurrentVersion })
+				currentFeedback.Discussion = slices.DeleteFunc(slices.Clone(expected.Discussion), func(d tracker.ChangeDiscussion) bool {
+					return d.VersionID != "" && d.VersionID != expected.Change.CurrentVersion
+				})
+				if test.staleBase {
+					t.Logf("fresh conflict provider request: %d bytes", len(provider.prompt))
+				}
+				if test.staleBase && (len(provider.prompt) >= 1048576 || len(recovery.Attempts) > 4 || len(recovery.History) != 0 || !strings.Contains(provider.prompt, "Human hold: preserve the original checkpoint")) {
+					t.Fatalf("fresh provider request replayed historic recovery: bytes=%d", len(provider.prompt))
+				}
+				if recovery.Change == nil || recovery.Change.VersionID != expected.Change.CurrentVersion || !reflect.DeepEqual(recovery.ChangeDetail, &currentFeedback) {
 					t.Fatalf("provider prompt lost exact Change feedback: change=%+v, detail=%+v", recovery.Change, recovery.ChangeDetail)
 				}
 				if !strings.Contains(provider.prompt, "Discussion is not formal approval") || !strings.Contains(provider.prompt, "historical context, not current approval or rejection") {
@@ -1820,11 +1849,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					if err != nil || strings.TrimSpace(string(head)) != result.NativeLanding.MergeSHA {
 						t.Fatalf("landing receipt did not identify the actual merge: %s, %v, receipt=%+v", head, err, result.NativeLanding)
 					}
-					recovery, err := h.native.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-					if err != nil || len(recovery.Attempts) != 3 {
-						t.Fatalf("completed conflict journey lost authentic attempts: %+v, %v", recovery.Attempts, err)
+					attempts, err := h.native.AttemptsPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 10)
+					if err != nil || len(attempts.Items) != 3 {
+						t.Fatalf("completed conflict journey lost authentic attempts: %+v, %v", attempts.Items, err)
 					}
-					for _, attempt := range recovery.Attempts {
+					for _, attempt := range attempts.Items {
 						if attempt.Status != "succeeded" || attempt.PolicyID != h.descriptor.ID {
 							t.Fatalf("host conflict became a failed or repinned attempt: %+v", attempt)
 						}

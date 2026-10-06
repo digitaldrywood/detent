@@ -229,6 +229,14 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].FencingToken != replacement.FencingToken || page.Items[0].Status != "running" {
 		t.Fatalf("successor page = %#v", page)
 	}
+	var recovery tracker.NativeRecovery
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"?view=recovery", other, nil), &recovery)
+	if len(recovery.Attempts) != 2 || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.EffectState != "ambiguous" || recovery.Attempts[0].MachineID != "first-machine" || recovery.Attempts[1].AttemptID != next.Data.AttemptID || recovery.Attempts[1].Checkpoint != nil {
+		t.Fatalf("fresh startup lost the previous owned checkpoint: %+v", recovery.Attempts)
+	}
+	if len(recovery.Discussion) != 2 || recovery.Discussion[1].Body != "operator collaboration" || len(recovery.History) != 0 {
+		t.Fatalf("compact recovery lost current human context: %+v", recovery)
+	}
 }
 
 func TestNativeConcurrentOrderedEvents(t *testing.T) {
