@@ -160,8 +160,10 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				}
 				input := operatortool.GitHubBatchInput{Revision: f.batch.Revision, Action: "apply", Numbers: []int{12, 13, 14}, Destination: "Backlog"}
 				input.Destination = "Todo"
-				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "dispatch-preview", input)); !errors.Is(err, errProjectServiceUnavailable) {
-					t.Fatalf("unconfirmed dispatch=%v", err)
+				_, dispatchErr := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "dispatch-preview", input))
+				var refusal *nativeError
+				if !errors.As(dispatchErr, &refusal) || refusal.Code != "invalid_request" || refusal.status != http.StatusUnprocessableEntity || refusal.Message != "Select a destination and explicitly confirm any dispatchable lane" {
+					t.Fatalf("unconfirmed dispatch=%v", dispatchErr)
 				}
 				input.Destination = "Backlog"
 				call := projectCall(t, "command_git_hub_batch", string(f.project.ID), "batch-apply", input)
