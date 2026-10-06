@@ -81,6 +81,7 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 		}
 	}
 	definitions = append(definitions, e.server.dashboardProjectTools(ctx)...)
+	definitions = append(definitions, e.server.localSettingsTools(ctx)...)
 	for _, d := range operatortool.LocalProjectCatalog() {
 		scope := apikey.ScopeAdmin
 		if d.Annotations.ReadOnly {
@@ -95,7 +96,7 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 		return nil, err
 	}
 	for _, d := range admin {
-		if operatortool.IsAdministration(d.Name) {
+		if operatortool.IsAdministration(d.Name) && !e.server.usesLocalSettingsTool(ctx, d.Name) {
 			definitions = append(definitions, d)
 		}
 	}
@@ -104,6 +105,9 @@ func (e dashboardOperatorExecutor) ListTools(ctx context.Context) ([]operatortoo
 
 func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.server
+	if s.usesLocalSettingsTool(ctx, call.Name) {
+		return s.localSettingsExecute(ctx, call)
+	}
 	if operatortool.IsLocalProjectTool(call.Name) {
 		return s.localProjectTool(ctx, call)
 	}
@@ -154,7 +158,7 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 			ActionID string `json:"action_id"`
 		}
 		if operatortool.DecodeArguments(call.Arguments, &request) == nil {
-			if action, ok := s.chat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID); ok && operatortool.IsAdministration(string(action.Kind)) {
+			if action, ok := s.chat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID); ok && operatortool.IsAdministration(string(action.Kind)) && !s.usesLocalSettingsTool(ctx, string(action.Kind)) {
 				return s.credentialExecutor().Execute(ctx, call)
 			}
 		}
@@ -218,7 +222,7 @@ func (e dashboardOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		if !ok {
 			return operatortool.Result{}, errOperatorCommandUnavailable
 		}
-		if _, err := operatortool.AuthorizeCurrent(ctx, s.fleetMutationRequirement(string(action.Kind), action.ProjectID)); err != nil {
+		if _, err := operatortool.AuthorizeCurrent(ctx, s.fleetMutationRequirement(ctx, string(action.Kind), action.ProjectID)); err != nil {
 			return operatortool.Result{}, err
 		}
 		return s.operatorActionResult(action)
@@ -244,7 +248,7 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 	m := mutation.Metadata{PrincipalID: identity.PrincipalID, OrganizationID: identity.OrganizationID, Action: call.Name, Source: "mcp", Confirmation: "none", CorrelationID: correlation}
 	outcome := "failed"
 	defer func() { s.auditMutation(ctx, m, outcome) }()
-	requestID, arguments, projectID, err := operatorActionArguments(call.Arguments, dashboardFleetTool(call.Name))
+	requestID, arguments, projectID, err := operatorActionArguments(call.Arguments, dashboardFleetTool(call.Name) || s.usesLocalSettingsTool(ctx, call.Name))
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -265,7 +269,7 @@ func (s *Server) executeOperatorMutation(ctx context.Context, call operatortool.
 	if err != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}
-	ctx, err = operatortool.AuthorizeCurrent(ctx, s.fleetMutationRequirement(call.Name, projectID))
+	ctx, err = operatortool.AuthorizeCurrent(ctx, s.fleetMutationRequirement(ctx, call.Name, projectID))
 	if err != nil {
 		outcome = "denied"
 		return operatortool.Result{}, err
@@ -383,6 +387,9 @@ func operatorActionArguments(raw json.RawMessage, allowGlobal bool) (string, jso
 }
 
 func (s *Server) operatorActionProposal(ctx context.Context, name string, arguments json.RawMessage) (chatpkg.Action, error) {
+	if s.usesLocalSettingsTool(ctx, name) {
+		return s.localSettingsAction(name, arguments)
+	}
 	if operatortool.IsLocalProjectTool(name) {
 		return localProjectAction(name, arguments)
 	}
@@ -477,7 +484,7 @@ func (s *Server) operatorMutationReplay(ctx context.Context, m mutation.Metadata
 	if receipt.Outcome != "succeeded" && receipt.Outcome != "rejected" {
 		return operatortool.Result{}, true, mutation.ErrUncertain
 	}
-	if operatortool.IsLocalProjectTool(m.Action) {
+	if localSettingsReceipt(m.Action) {
 		result, err := operatorResult(struct {
 			Status      string          `json:"status"`
 			Receipt     json.RawMessage `json:"configuration_receipt"`

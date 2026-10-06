@@ -2,7 +2,7 @@ package hubclient
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,7 +20,7 @@ func (c *NativeClient) Recovery(ctx context.Context, id tracker.NativeWorkItemID
 	}
 	err = c.client.request(ctx, http.MethodGet, c.base()+path+"?view=recovery", nil, &result)
 	if err == nil && (result.Issue.OrganizationID != c.organization || result.Issue.ProjectID != c.project || result.Issue.WorkItemID != id) {
-		return result, fmt.Errorf("read recovery: scoped work item is missing")
+		return result, errors.New("read recovery: scoped work item is missing")
 	}
 	return result, err
 }

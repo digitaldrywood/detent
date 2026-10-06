@@ -68,17 +68,16 @@ ORDER BY a.fencing_token LIMIT 4`, scope.organization, scope.project, item, sour
 	if err != nil {
 		return result, err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		attempt, err := scanNativeAttempt(rows, s.config.now())
 		if err != nil {
-			rows.Close()
 			return result, err
 		}
 		attempt.Runtime = attempt.Runtime.WithoutActivitySpans()
 		result.Attempts = append(result.Attempts, attempt)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return result, err
 	}
 	if err := rows.Close(); err != nil {

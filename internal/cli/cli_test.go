@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestRootCommandHelpListsAdminCommands(t *testing.T) {
@@ -832,7 +834,7 @@ func TestProjectCommandsWriteJSONResults(t *testing.T) {
 				"--reason", "maintenance",
 				"--credential-ref", "github-default",
 			},
-			want: fmt.Sprintf(`{"id":"detent","workflow":%q,"workdir":%q,"weight":5,"priority":50,"paused":true,"paused_reason":"maintenance","credential_ref":"github-default"}`, paths.workflowPath, paths.workdirPath),
+			want: fmt.Sprintf(`{"id":"detent","workflow":%q,"workdir":%q,"weight":1,"priority":0,"paused":true,"paused_reason":"maintenance","credential_ref":"github-default"}`, paths.workflowPath, paths.workdirPath),
 		},
 		{
 			name: "pause",
@@ -847,7 +849,7 @@ func TestProjectCommandsWriteJSONResults(t *testing.T) {
 		{
 			name: "promote",
 			args: []string{"promote", "detent", "--priority", "1"},
-			want: `{"status":"ok","project":"detent","priority":1}`,
+			want: `{"status":"ok","project":"detent","priority":0}`,
 		},
 		{
 			name: "remove-project",
@@ -1065,7 +1067,7 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 
-	cfg, err := globalconfig.Read(configPath)
+	cfg, err := readStoredCLIConfiguration(t, configPath)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -1074,17 +1076,18 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 	}
 	got := cfg.Projects[0]
 	want := globalconfig.Project{
-		GlobalCache:   cfg.Global.Cache.Normalized(),
-		ID:            "detent",
-		Workflow:      paths.workflowPath,
-		WorkflowRef:   "origin/main",
-		Workdir:       paths.workdirPath,
-		Weight:        5,
-		Priority:      50,
-		Paused:        true,
-		PausedReason:  "release hold",
-		PausedAt:      got.PausedAt,
-		CredentialRef: "github-default",
+		GlobalCache:    cfg.Global.Cache.Normalized(),
+		ModelSelection: got.ModelSelection,
+		ID:             "detent",
+		Workflow:       paths.workflowPath,
+		WorkflowRef:    "origin/main",
+		Workdir:        paths.workdirPath,
+		Weight:         1,
+		Priority:       0,
+		Paused:         true,
+		PausedReason:   "release hold",
+		PausedAt:       got.PausedAt,
+		CredentialRef:  "github-default",
 	}
 	if _, err := time.Parse(time.RFC3339, got.PausedAt); err != nil {
 		t.Fatalf("PausedAt = %q, want RFC 3339 timestamp", got.PausedAt)
@@ -1141,8 +1144,8 @@ func TestAddProjectCommandEmitsJSONResult(t *testing.T) {
 	if got.WorkflowRef != "origin/main" {
 		t.Fatalf("workflow_ref = %q, want origin/main", got.WorkflowRef)
 	}
-	if got.Weight != 5 || !got.Paused {
-		t.Fatalf("project weight/paused = %d/%v, want 5/true", got.Weight, got.Paused)
+	if got.Weight != 1 || !got.Paused {
+		t.Fatalf("project weight/paused = %d/%v, want 1/true", got.Weight, got.Paused)
 	}
 }
 
@@ -1382,6 +1385,7 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 			Weight:   2,
 			Priority: 4,
 		},
+		{ID: "docs", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
 	})
 
 	signals := make(chan cli.Signal, 5)
@@ -1441,21 +1445,26 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 	})
 	assertSignal(t, signals, cli.OperationResumeProject, "detent")
 
-	runCommand("promote", "detent", "--priority", "1")
-	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
-		if project.Priority != 1 {
-			t.Fatalf("Priority = %d, want 1", project.Priority)
+	runCommand("promote", "docs", "--priority", "1")
+	assertProject(t, configPath, "docs", func(project globalconfig.Project) {
+		if project.Priority != 0 {
+			t.Fatalf("Priority = %d, want 0", project.Priority)
 		}
 	})
-	assertSignal(t, signals, cli.OperationPromoteProject, "detent")
+	assertSignal(t, signals, cli.OperationPromoteProject, "docs")
+	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
+		if project.Priority != 1 {
+			t.Fatalf("detent rank = %d, want 1", project.Priority)
+		}
+	})
 
 	runCommand("remove-project", "detent")
-	cfg, err := globalconfig.Read(configPath)
+	cfg, err := readStoredCLIConfiguration(t, configPath)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
-	if len(cfg.Projects) != 0 {
-		t.Fatalf("Projects = %#v, want empty", cfg.Projects)
+	if len(cfg.Projects) != 1 || cfg.Projects[0].ID != "docs" {
+		t.Fatalf("Projects = %#v, want docs", cfg.Projects)
 	}
 	assertSignal(t, signals, cli.OperationRemoveProject, "detent")
 }
@@ -1503,34 +1512,29 @@ projects:
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 
-	var written struct {
-		Projects []struct {
-			ID       string `yaml:"id"`
-			Workflow string `yaml:"workflow"`
-			Workdir  string `yaml:"workdir"`
-			Paused   bool   `yaml:"paused"`
-		} `yaml:"projects"`
+	var machine map[string]any
+	if err := yaml.Unmarshal(raw, &machine); err != nil {
+		t.Fatal(err)
 	}
-	if err := yaml.Unmarshal(raw, &written); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
+	if _, exists := machine["projects"]; exists {
+		t.Fatal("global.yaml still contains project registrations")
 	}
-	if len(written.Projects) != 2 {
-		t.Fatalf("Projects length = %d, want 2", len(written.Projects))
+	cfg, err := readStoredCLIConfiguration(t, configPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, project := range written.Projects {
-		if project.Workflow != workflowPath {
-			t.Fatalf("project %s workflow = %q, want %q", project.ID, project.Workflow, workflowPath)
+	if len(cfg.Projects) != 2 {
+		t.Fatalf("projects = %#v", cfg.Projects)
+	}
+	for _, project := range cfg.Projects {
+		if project.Workflow != workflowPath || project.Workdir != "." {
+			t.Fatalf("project paths changed: %#v", project)
 		}
-		if project.Workdir != "." {
-			t.Fatalf("project %s workdir = %q, want .", project.ID, project.Workdir)
+		if project.Paused != (project.ID == "detent") {
+			t.Fatalf("project pause changed: %#v", project)
 		}
 	}
-	if !written.Projects[0].Paused {
-		t.Fatal("detent Paused = false, want true")
-	}
-	if written.Projects[1].Paused {
-		t.Fatal("docs Paused = true, want false")
-	}
+
 }
 
 func TestPauseCommandExitConditionFlags(t *testing.T) {
@@ -1946,7 +1950,7 @@ func runCLITestGit(t *testing.T, dir string, args ...string) string {
 func assertProject(t *testing.T, configPath string, id string, assert func(globalconfig.Project)) {
 	t.Helper()
 
-	cfg, err := globalconfig.Read(configPath)
+	cfg, err := readStoredCLIConfiguration(t, configPath)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
 	}
@@ -2024,4 +2028,26 @@ func (p *projectManagerProbe) Pause(context.Context, project.ID) error {
 
 func (p *projectManagerProbe) Unpause(context.Context, project.ID) error {
 	return nil
+}
+
+func readStoredCLIConfiguration(t *testing.T, path string) (globalconfig.Config, error) {
+	t.Helper()
+	cfg, err := globalconfig.Read(path, globalconfig.WithoutProjectConfiguration(), globalconfig.WithProjectPathLiterals())
+	if err != nil {
+		return cfg, err
+	}
+	dbPath := filepath.Join(filepath.Dir(path), "detent.db")
+	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+		return globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+	}
+	db, err := store.Open(context.Background(), store.Config{Path: dbPath})
+	if err != nil {
+		return cfg, err
+	}
+	defer db.Close()
+	cfg, err = db.LocalConfiguration(context.Background(), cfg)
+	if errors.Is(err, sql.ErrNoRows) {
+		return globalconfig.Read(path, globalconfig.WithProjectPathLiterals())
+	}
+	return cfg, err
 }

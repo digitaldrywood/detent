@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -125,12 +126,12 @@ func MigrateTrackerLanes(raw []byte, laneOrder ...string) ([]byte, bool, error) 
 	return out, true, nil
 }
 
-func MigrateTrackerLanesFile(path string) (bool, error) {
+func MigrateTrackerLanesFile(path string) (changed bool, resultErr error) {
 	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
 		return false, err
 	}
-	defer root.Close()
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
 	name := filepath.Base(path)
 	raw, err := root.ReadFile(name)
 	if err != nil {

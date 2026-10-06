@@ -2,13 +2,15 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/policy"
 	"gopkg.in/yaml.v3"
+
+	"github.com/digitaldrywood/detent/internal/policy"
 )
 
 const PolicyCanonicalizationVersion = 2
@@ -74,7 +76,7 @@ func expandAuthoredAliases(node *yaml.Node, ancestors map[*yaml.Node]bool) (*yam
 		node = node.Alias
 	}
 	if node == nil || ancestors[node] {
-		return nil, fmt.Errorf("recursive authored YAML alias")
+		return nil, errors.New("recursive authored YAML alias")
 	}
 	ancestors[node] = true
 	defer delete(ancestors, node)
@@ -255,7 +257,7 @@ func canonicalAuthoredNode(node *yaml.Node) (result any, resultErr error) {
 	}()
 	switch node.Kind {
 	case 0:
-		return nil, nil
+		return json.RawMessage("null"), nil
 	case yaml.DocumentNode:
 		return canonicalAuthoredNode(node.Content[0])
 	case yaml.MappingNode:

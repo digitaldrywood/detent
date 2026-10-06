@@ -212,7 +212,11 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 	if result.ResourceID == "" {
 		return errors.New("scheduled Cloud creation returned no native identity")
 	}
-	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, State: state, Priority: &priority, Labels: labels}, bodies: []string{args["description"].(string)}})
+	description, ok := args["description"].(string)
+	if !ok {
+		return errors.New("scheduled Cloud creation returned no description")
+	}
+	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, State: state, Priority: &priority, Labels: labels}, bodies: []string{description}})
 	return nil
 }
 
@@ -325,9 +329,10 @@ func boundCloudEvidence(args map[string]any) error {
 		for size > 0 && size < len(evidence) && !utf8.RuneStart(evidence[size]) {
 			size--
 		}
-		args[field] = prefix + "\n\n```text\n" + evidence[:size] + notice + suffix
-		encoded, _ := json.Marshal(args)
-		return len(encoded) <= operatortool.MaxArgumentBytes && len(args[field].(string)) <= bodyLimit
+		excerpt := prefix + "\n\n```text\n" + evidence[:size] + notice + suffix
+		args[field] = excerpt
+		encoded, err := json.Marshal(args)
+		return err == nil && len(encoded) <= operatortool.MaxArgumentBytes && len(excerpt) <= bodyLimit
 	}
 	if !setExcerpt(0) {
 		return errors.New("scheduled Cloud metadata exceeds the MCP argument byte limit")
@@ -351,7 +356,11 @@ func (c *cloudDestination) comment(ctx context.Context, issue *cloudIssue, body,
 	if err := c.publish(ctx, "add_comment", args, &result); err != nil {
 		return err
 	}
-	issue.bodies = append(issue.bodies, args["body"].(string))
+	publishedBody, ok := args["body"].(string)
+	if !ok {
+		return errors.New("scheduled Cloud comment returned no body")
+	}
+	issue.bodies = append(issue.bodies, publishedBody)
 	return nil
 }
 

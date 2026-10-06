@@ -61,7 +61,7 @@ func LoadWorkflowContext(ctx context.Context, cfg globalconfig.Project) (workflo
 			}
 		}
 		if err == nil {
-			workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget).WithWorkerDefaults(cfg.GlobalWorker)
+			workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg)
 		}
 	}()
 	if strings.TrimSpace(cfg.WorkflowRef) == "" {
@@ -106,7 +106,7 @@ func loadWorkflowForScheduling(ctx context.Context, cfg globalconfig.Project, sc
 		return workflowconfig.Workflow{}, err
 	}
 	workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
-	workflow.Config = workflow.Config.WithAgentDefaults(cfg.GlobalAgents, cfg.GlobalBudget).WithWorkerDefaults(cfg.GlobalWorker)
+	workflow.Config = applyProjectAgentDefaults(workflow.Config, cfg)
 	return workflow, nil
 }
 

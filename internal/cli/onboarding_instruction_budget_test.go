@@ -293,10 +293,12 @@ func TestRefreshConfiguredLaneMigration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			configured := "tracker:\n  active_states: [" + strings.Join(states, ", ") + "]\n"
 			if test.lanes {
-				configured = "tracker:\n  lanes:\n    - name: staging\n      role: holding\n    - name: Done\n      role: terminal\n"
+				var lanes strings.Builder
+				lanes.WriteString("tracker:\n  lanes:\n    - name: staging\n      role: holding\n    - name: Done\n      role: terminal\n")
 				for _, state := range states {
-					configured += "    - name: " + state + "\n      role: active\n"
+					lanes.WriteString("    - name: " + state + "\n      role: active\n")
 				}
+				configured = lanes.String()
 			}
 			root, err := parseProjectRefreshYAML([]byte(configured), "test")
 			if err != nil {

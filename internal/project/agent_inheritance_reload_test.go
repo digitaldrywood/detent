@@ -43,7 +43,7 @@ func TestManagerReloadsInheritedAgentSelection(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		invalid bool
-	}{{name: "valid reload"}, {name: "invalid reference", invalid: true}, {name: "future registration"}} {
+	}{{name: "valid reload"}, {name: "invalid reference", invalid: true}, {name: "future registration"}, {name: "database selection"}} {
 		t.Run(tt.name, func(t *testing.T) {
 			next := global
 			next.Global.Agents.ModelSelection.NormalModel = new("host-normal")
@@ -52,6 +52,19 @@ func TestManagerReloadsInheritedAgentSelection(t *testing.T) {
 			}
 			if tt.name == "future registration" {
 				next.Projects = append(append([]globalconfig.Project(nil), global.Projects...), globalconfig.Project{ID: "future", Weight: 1})
+			}
+			wantNormal := "host-normal"
+			if tt.name == "database selection" {
+				wantNormal = "db-normal"
+				next.Projects = append([]globalconfig.Project(nil), global.Projects...)
+				for i := range next.Projects {
+					override := workflowconfig.ModelSelection{}
+					if next.Projects[i].ID == "beta" {
+						override.ComplexModel = new("beta-complex")
+					}
+					next.Projects[i].ModelSelection = new(workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{Preset: new("sol_first"), NormalModel: new(wantNormal)}, override))
+					next.Projects[i].Priority = i
+				}
 			}
 			_, err := manager.Reconcile(ctx, project.ManagerConfigFromGlobal(next))
 			if tt.invalid {
@@ -65,12 +78,15 @@ func TestManagerReloadsInheritedAgentSelection(t *testing.T) {
 			if before != after {
 				t.Fatal("host policy reload restarted project")
 			}
-			if model := after.Workflow().Config.EffectiveModelSelection().Model("normal"); model != "host-normal" {
+			if model := after.Workflow().Config.EffectiveModelSelection().Model("normal"); model != wantNormal {
 				t.Fatalf("normal = %s", model)
 			}
 			beta, _ := manager.Registry().Get("beta")
 			if model := beta.Workflow().Config.EffectiveModelSelection().Model("complex"); model != "beta-complex" {
 				t.Fatalf("complex = %s", model)
+			}
+			if tt.name == "database selection" && after.DispatchCandidate().Rank != 0 {
+				t.Fatalf("rank=%d", after.DispatchCandidate().Rank)
 			}
 			if tt.name == "future registration" {
 				future, ok := manager.Registry().Get("future")
