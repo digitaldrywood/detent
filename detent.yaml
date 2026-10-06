@@ -1,0 +1,326 @@
+schema: 1
+tracker:
+  kind: hub_native
+  repository: digitaldrywood/detent
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Rework
+      role: active
+    - name: Merging
+      role: active
+    - name: Blocked
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Done
+      role: terminal
+    - name: Cancelled
+      role: terminal
+  state_map: {}
+  priority_map:
+    High: 2
+    Low: 4
+    Medium: 3
+    No priority: null
+    Urgent: 1
+  dependency_auto_unblock:
+    enabled: false
+    source_states:
+      - blocked
+    target_state: Todo
+    readiness: terminal_or_merged
+  blocked_recovery:
+    enabled: false
+    source_states:
+      - blocked
+    target_state: Rework
+    reason_codes:
+      - merge_conflict
+      - stale_base
+      - missing_current_head_ci
+    breaker_cooldown_seconds: 86400
+  blocker_auto_promote:
+    enabled: false
+    source_states: []
+    blocker_states:
+      - backlog
+      - blocked
+      - human review
+    target_state: Todo
+review:
+  human: false
+workpad:
+  structured_only: false
+deliverable:
+  kind: pull_request
+  merge_method: squash
+  github_pull_request: true
+dependencies:
+  source: merged
+recovery:
+  terminal_attempt_retry_limit: 3
+worker:
+  allow_local_binding: true
+agent:
+  max_turns: 20
+  max_turn_duration_ms: 14400000
+  max_session_duration_ms: 18000000
+  no_progress_timeout_ms: 5400000
+  checkpoint_interval_ms: 0
+  merge_worker_startup_timeout_ms: 240000
+  merge_worker_max_duration_ms: 21600000
+  max_retry_backoff_ms: 300000
+  overload_retry_delay_ms: 45000
+  no_progress_token_limit: 0
+  no_progress_spend_limit_usd: 0
+  lifetime_session_limit: 60
+  lifetime_token_limit: 500000000
+  lifetime_limit_override_label: allow-lifetime-limit
+  failure_breaker:
+    same_class_limit: 5
+    window_seconds: 3600
+    cooldown_seconds: 3600
+  max_session_tokens: 50000000
+  max_session_context_multiplier: 0
+  max_session_token_override_label: allow-large-session
+  max_session_token_override_field: ""
+  experimental_thread_resume: true
+  resume_orphaned_sessions: true
+  effort:
+    code: ""
+    rework: ""
+    merge: ""
+  stop_run:
+    target_state: Blocked
+  dispatch_priority_by_state:
+    - merging
+    - rework
+    - in progress
+    - todo
+  dispatch_priority_by_label:
+    - hotfix
+    - priority
+    - bug
+  prioritize_unblockers: true
+  merge_fast_path:
+    enabled: true
+    fairness_age_seconds: 7200
+  auto_promote:
+    enabled: false
+    quiet_seconds: 600
+    optout_label: requires-human-review
+    allowed_issue_labels: []
+    gate_wait_state: source
+    gate_wait_timeout_seconds: 3600
+    gate_wait_timeout_action: merge
+    source_state: Human Review
+    pass_state: Merging
+    rework_state: Rework
+  output_truncation:
+    max_bytes: 0
+  budget:
+    enabled: false
+    refusal_cooldown_seconds: 3600
+    override_max_duration_seconds: 172800
+    override_max_multiplier: 3
+  lessons:
+    enabled: false
+    max_entries: 50
+    recall_n: 10
+    postmortem_max_tokens: 1024
+  skills:
+    enabled: true
+    max_skills_in_prompt: 100
+    creation:
+      enabled: true
+      max_drafts_per_run: 1
+  followups:
+    enabled: true
+agents:
+  model_selection: {}
+gate:
+  kind: command
+  run: "true"
+  approval_label: human-approved
+  automated_review: "off"
+  require_automated_review: false
+  required_status_checks: []
+  ci_trigger_label: ""
+  ci_trigger_label_stagger_seconds: null
+  ci_failure_action: rework
+  transient_ci_retry_limit: 2
+  validator:
+    enabled: false
+    model: ""
+    min_score: 0.8
+    block_on:
+      - p1
+    max_attempts: 3
+    turn_timeout_ms: 0
+    max_inline_diff_bytes: 65536
+  security_audit:
+    enabled: false
+    model: ""
+    block_on:
+      - p1
+      - p2
+    max_attempts: 3
+    turn_timeout_ms: 1200000
+    max_diff_bytes: 262144
+  artifact:
+    status_field: validation_status
+    pass_statuses:
+      - approved
+      - complete
+      - completed
+      - pass
+      - passed
+      - valid
+    wait_statuses:
+      - pending
+      - review
+      - reviewing
+      - waiting
+    rework_statuses:
+      - changes_requested
+      - failed
+      - invalid
+      - rework
+plan:
+  enabled: false
+  review: human
+  approval_label: plan-approved
+  stop: Plan Review
+budget:
+  enabled: false
+  per_day_max_usd: 400
+  per_issue_max_usd: 25
+  refusal_cooldown_seconds: 3600
+  override_max_duration_seconds: 172800
+  override_max_multiplier: 3
+release:
+  enabled: false
+  min_merged_issues: 5
+  max_age_hours: 24
+  require_green_ci: true
+  version_bump: auto
+retro:
+  enabled: false
+operator:
+  actions:
+    - return_retired_parks
+    - clear_closed_dependencies
+    - restore_stuck_merging
+  merge_wedge_seconds: 7200
+backlog_admission:
+  enabled: false
+  schedule: '*/15 * * * *'
+  sources:
+    states:
+      - backlog
+  target_state: Todo
+  criteria_section: Admission Criteria
+  require_effort: true
+  effort_file: WORKFLOW.md
+  effort_section: Issue effort selection
+  authors:
+    allow:
+      - corylanou
+      - loganlanou
+      - michaelhvisser
+      - jarvislanou
+  max_candidates_per_run: 50
+  max_proposals_per_run: 3
+  max_open_proposals: 10
+  proposal_expiry_days: 7
+  auto_admit: true
+  auto_admit_min_confidence: 0.85
+server:
+  kanban:
+    allowed_transitions:
+      Backlog:
+        - Blocked
+        - Human Review
+        - Todo
+        - In Progress
+        - Rework
+        - Merging
+        - Done
+        - Cancelled
+      Blocked:
+        - Backlog
+        - Human Review
+        - Todo
+        - In Progress
+        - Rework
+        - Merging
+        - Done
+        - Cancelled
+      Cancelled:
+        - Backlog
+        - Blocked
+        - Human Review
+        - Todo
+        - In Progress
+        - Rework
+        - Merging
+        - Done
+      Done:
+        - Backlog
+        - Blocked
+        - Human Review
+        - Todo
+        - In Progress
+        - Rework
+        - Merging
+        - Cancelled
+      Human Review:
+        - Backlog
+        - Blocked
+        - Todo
+        - In Progress
+        - Rework
+        - Merging
+        - Done
+        - Cancelled
+      In Progress:
+        - Backlog
+        - Blocked
+        - Human Review
+        - Todo
+        - Rework
+        - Merging
+        - Done
+        - Cancelled
+      Merging:
+        - Backlog
+        - Blocked
+        - Human Review
+        - Todo
+        - In Progress
+        - Rework
+        - Done
+        - Cancelled
+      Rework:
+        - Backlog
+        - Blocked
+        - Human Review
+        - Todo
+        - In Progress
+        - Merging
+        - Done
+        - Cancelled
+      Todo:
+        - Backlog
+        - Blocked
+        - Human Review
+        - In Progress
+        - Rework
+        - Merging
+        - Done
+        - Cancelled

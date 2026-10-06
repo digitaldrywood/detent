@@ -596,6 +596,12 @@ GitHub token redacted.
 
 ## Choose a starting point
 
+The root `detent.yaml` and `WORKFLOW.md` configure the Detent project itself.
+They are not templates for other projects. Use the documentation samples below
+when configuring another repository.
+
+- [`docs/templates`](templates) contains paired `detent.*.yaml` and
+  `WORKFLOW.*.md` presets for supported tracker and deliverable setups.
 - [`config.example.yaml`](../config.example.yaml) is the smallest working
   project config.
 - [`config.annotated.yaml`](../config.annotated.yaml) is a realistic GitHub
