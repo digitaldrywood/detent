@@ -572,7 +572,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 			case "missing":
 				statement = "UPDATE api_tokens SET expires_at = NULL WHERE id = ?"
 			case "revoked":
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, otherRunner.identityPath(), testHubAdminToken, nil), http.StatusNoContent)
+				statement = "UPDATE api_tokens SET revoked_at = ? WHERE id = ?"
 			case "draining":
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET state = 'draining' WHERE id = ?", otherRunner.binding.RunnerID); err != nil {
 					t.Fatal(err)
@@ -581,7 +581,7 @@ func TestProviderPoolIsolation(t *testing.T) {
 			if statement != "" {
 				args := []any{otherRunner.binding.RunnerID}
 				switch test.authority {
-				case "expired":
+				case "expired", "revoked":
 					args = []any{formatHubTime(now), otherRunner.binding.RunnerID}
 				case "future":
 					args = []any{formatHubTime(now.Add(time.Second)), otherRunner.binding.RunnerID}
