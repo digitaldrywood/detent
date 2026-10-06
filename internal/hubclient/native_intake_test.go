@@ -228,6 +228,55 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("worker discovers and reuses held fingerprint", func(t *testing.T) {
+		args, err := json.Marshal(map[string]any{"project_id": h.project, "query": "pool-live-acceptance", "states": []string{"Backlog", "Blocked"}, "limit": 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := readHandler(ctx, runner.AgentToolCall{Name: operatortool.WorkList, Arguments: args})
+		var page operatortool.WorkReadResult[operatortool.NativeWorkPage]
+		if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &page) != nil || len(page.Data.Items) != 1 || page.Data.Items[0].WorkItemID != current.WorkItemID || page.Data.NextCursor != "" {
+			t.Fatalf("existing fingerprint search = %s, %v", result.Content, err)
+		}
+		args, err = json.Marshal(map[string]any{"project_id": h.project, "reference": page.Data.Items[0].WorkItemID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err = readHandler(ctx, runner.AgentToolCall{Name: operatortool.WorkItem, Arguments: args})
+		var detail operatortool.WorkReadResult[operatortool.NativeItem]
+		if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &detail) != nil {
+			t.Fatalf("existing fingerprint detail = %s, %v", result.Content, err)
+		}
+		origin, ok := issueorigin.Parse(detail.Data.Body)
+		if !ok || origin.Fingerprint == "" {
+			t.Fatalf("existing origin missing: %s", result.Content)
+		}
+		beforeComments, err := native.Comments(ctx, current.WorkItemID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		args, err = json.Marshal(map[string]any{"title": "Another observation of the existing problem", "body": "Discovered existing held owner before filing", "fingerprint": origin.Fingerprint, "priority": 4})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err = workerRequest.AgentToolHandler(ctx, runner.AgentToolCall{Name: "file_machine_issue", Arguments: args})
+		if err != nil || !result.Success || !strings.Contains(result.Content, created.Identifier) {
+			t.Fatalf("discovered fingerprint intake = %+v, %v", result, err)
+		}
+		after, err := native.Issue(ctx, current.WorkItemID)
+		if err != nil || after.State != current.State || after.Revision != current.Revision || after.Priority == nil || *after.Priority != *current.Priority || after.Body != current.Body || after.Title != current.Title || !slices.Equal(after.Labels, current.Labels) || !slices.Equal(after.Assignees, current.Assignees) || after.Archived != current.Archived {
+			t.Fatalf("discovered fingerprint intake changed held owner: %#v, %v", after, err)
+		}
+		afterComments, err := native.Comments(ctx, current.WorkItemID, "")
+		if err != nil || len(afterComments.Items) != len(beforeComments.Items)+1 {
+			t.Fatalf("discovered fingerprint occurrence = %#v, %v", afterComments, err)
+		}
+		if !slices.ContainsFunc(afterComments.Items, func(comment tracker.NativeComment) bool {
+			return strings.Contains(comment.Body, "## New machine occurrence") && strings.Contains(comment.Body, "Discovered existing held owner before filing")
+		}) {
+			t.Fatalf("discovered occurrence evidence missing: %#v", afterComments)
+		}
+	})
 	reuseCases := []struct {
 		name     string
 		existing *int
@@ -375,8 +424,8 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if _, err := store.CreateIntakeIssue(ctx, draft); err == nil {
 		t.Fatal("released source claim reused machine intake")
 	}
-	comments, err = native.Comments(t.Context(), tracker.NativeWorkItemID(created.ID), "")
-	if err != nil || len(comments.Items) != 2+len(reuseCases) {
+	comments, err = native.CommentsPage(t.Context(), tracker.NativeWorkItemID(created.ID), "", 200)
+	if err != nil || len(comments.Items) != 3+len(reuseCases) {
 		t.Fatalf("refused intake wrote occurrence: %#v, %v", comments, err)
 	}
 	origin.Fingerprint = "released-new-follow-up"

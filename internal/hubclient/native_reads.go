@@ -100,6 +100,9 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 	definitions = append(definitions, operatortool.AttachmentCatalog()...)
 	for _, definition := range definitions {
 		switch definition.Name {
+		case operatortool.WorkList:
+			definition.Description += " Use cursor, not offset, for paging."
+			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
 		case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkRuns, operatortool.BoardActivity, operatortool.WorkAttemptReceipt:
 			switch definition.Name {
 			case operatortool.WorkRuns:
@@ -135,6 +138,24 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 	var value any
 	var err error
 	switch call.Name {
+	case operatortool.WorkList:
+		request, decodeErr := operatortool.DecodeWorkRead(call.Name, call.Arguments)
+		if decodeErr != nil {
+			return operatortool.Result{}, decodeErr
+		}
+		if request.ProjectID != string(c.project) {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		if request.Offset != 0 {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		var page tracker.NativeIssuePage
+		page, err = c.IssuesPage(ctx, request.NativeWorkQuery())
+		var refusal *APIError
+		if errors.As(err, &refusal) && (refusal.Status == http.StatusBadRequest || refusal.Status == http.StatusUnprocessableEntity) {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
+		value = operatortool.WorkReadResult[operatortool.NativeWorkPage]{ProjectID: request.ProjectID, GeneratedAt: now, Freshness: explain.SourceAvailable, Data: operatortool.NativeWorkPageView(request.ProjectID, page)}
 	case operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment:
 		request, decodeErr := operatortool.DecodeAttachmentOperation(call.Name, call.Arguments)
 		if decodeErr != nil {
