@@ -128,13 +128,16 @@ command. Closing the dialog clears its displayed command.
 
 ## Repository project setup
 
-Declare project tools once in the project's `detent.yaml`:
+Declare project tools once in the project's `detent.yaml`. Detent uses this
+configuration with `scripts/runner-setup.sh` to run `make setup`, install its
+pinned Go tools into `$(go env GOPATH)/bin`, and prepare the root and Cloud app
+Node dependencies from their committed lockfiles with `npm ci`:
 
 ```yaml
 hooks:
   runner_setup: scripts/runner-setup.sh
   shell: bash
-  timeout_ms: 300000
+  timeout_ms: 900000
 ```
 
 Commit the script alongside the configuration. Make it idempotent,
@@ -151,6 +154,8 @@ that Sprite's local store, and runs again only when the script or configured
 shell changes. Later attempts and runner restarts reuse that hash. Each Sprite
 has its own record, so every member installs the tools automatically. Keep the
 runner store when restoring a checkpoint to preserve successful setup evidence.
+When changing Makefile tool pins or dependency lockfiles, also change the setup
+script so existing runners invalidate their successful setup hash.
 
 A failure prevents that project's claims and dispatch on that Sprite until
 setup succeeds. The runner reports an instance failure in its logs and the

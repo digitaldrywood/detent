@@ -14,7 +14,9 @@ COVERAGE_THRESHOLD := 70.0
 PACKAGE_COVERAGE_FLOOR := 50
 PACKAGE_COVERAGE_EXCEPTIONS := scripts/coverage-exceptions.txt
 MODERNIZE_FIX_FLAGS ?= -newexpr=false
-TEMPL ?= go run github.com/a-h/templ/cmd/templ@v0.3.1001
+AIR_VERSION := v1.64.0
+TEMPL_VERSION := v0.3.1001
+TEMPL ?= go run github.com/a-h/templ/cmd/templ@$(TEMPL_VERSION)
 TAILWIND_INPUT ?= static/css/input.css
 TAILWIND_OUTPUT ?= static/css/output.css
 SQLC_VERSION := v1.31.1
@@ -24,6 +26,7 @@ CHECK_LAND_BASE ?= origin/develop
 SQLC_CONFIG ?= sqlc/sqlc.yaml
 MIGRATIONS_DIR ?= internal/store/migrations
 GOOSE_DRIVER ?= sqlite3
+GOOSE_VERSION := v3.26.0
 DATABASE_URL ?= tmp/detent.db
 NILAWAY_VERSION ?= v0.0.0-20260612163715-2d8907f431ca
 NILAWAY ?= go run go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
@@ -240,8 +243,7 @@ lint: $(GOLANGCI_LINT)
 	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m
 
 $(GOLANGCI_LINT):
-	@mkdir -p "$(GOLANGCI_LINT_DIR)"
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" GOBIN="$(GOLANGCI_LINT_DIR)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@bash scripts/runner-setup.sh go-tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint $(GOLANGCI_LINT_VERSION) "$(GOLANGCI_LINT)" "$(GOLANGCI_LINT_TOOLCHAIN)"
 
 vet:
 	go vet -p $(TEST_PROCS) ./...
@@ -305,13 +307,14 @@ db-migrate:
 		echo "No migrations directory at $(MIGRATIONS_DIR); skipping database migration."; \
 	fi
 
-setup: $(GOLANGCI_LINT)
-	go install github.com/air-verse/air@latest
-	go install github.com/a-h/templ/cmd/templ@v0.3.1001
-	go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
-	go install github.com/pressly/goose/v3/cmd/goose@latest
-	@if [ -f package.json ]; then npm install; fi
-	@if [ -f "$(APP_DIR)/package.json" ]; then (cd "$(APP_DIR)" && npm ci); fi
+setup:
+	@bash scripts/runner-setup.sh go-tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint $(GOLANGCI_LINT_VERSION) "$(GOLANGCI_LINT)" "$(GOLANGCI_LINT_TOOLCHAIN)"
+	@bash scripts/runner-setup.sh go-tool github.com/air-verse/air $(AIR_VERSION) air
+	@bash scripts/runner-setup.sh go-tool github.com/a-h/templ/cmd/templ $(TEMPL_VERSION) templ
+	@bash scripts/runner-setup.sh go-tool github.com/sqlc-dev/sqlc/cmd/sqlc $(SQLC_VERSION) sqlc
+	@bash scripts/runner-setup.sh go-tool github.com/pressly/goose/v3/cmd/goose $(GOOSE_VERSION) goose
+	@bash scripts/runner-setup.sh node-deps .
+	@bash scripts/runner-setup.sh node-deps "$(APP_DIR)"
 
 clean:
 	rm -rf tmp

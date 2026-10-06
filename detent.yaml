@@ -1,4 +1,8 @@
 schema: 1
+hooks:
+  runner_setup: scripts/runner-setup.sh
+  shell: bash
+  timeout_ms: 900000
 tracker:
   kind: hub_native
   repository: digitaldrywood/detent
