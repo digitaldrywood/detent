@@ -132,6 +132,9 @@ func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
 	for index := range projects {
 		projects[index].GlobalLocalIntakeEnabled = cfg.Global.LocalIntakeEnabled
 		projects[index].GlobalAgents = cfg.Global.Agents
+		if projects[index].ModelSelection != nil {
+			projects[index].GlobalAgents.ModelSelection = *projects[index].ModelSelection
+		}
 		projects[index].GlobalBudget = cfg.Global.Budget
 		projects[index].GlobalWorker = cfg.Global.Worker
 		projects[index].GlobalKnowledge = cfg.Global.Knowledge
@@ -1404,6 +1407,8 @@ func sameProjectConfigExceptLiveFields(left globalconfig.Project, right globalco
 	left.GlobalIO = right.GlobalIO
 	left.GlobalCPU = right.GlobalCPU
 	left.GlobalAgents = right.GlobalAgents
+	left.ModelSelection = right.ModelSelection
+	left.Priority = right.Priority
 	left.GlobalBudget = right.GlobalBudget
 	return reflect.DeepEqual(left, right)
 }

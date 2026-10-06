@@ -47,6 +47,21 @@ defaults to false and includes connections to other localhost services as well
 as temporary test servers; the sandbox tier and host-service grants retain
 their existing owners.
 
+Without a Hub, a local instance uses its SQLite configuration owner for
+`organization_project_rank`, `organization_project_rank_update`,
+`get_organization_model_selection`, `update_organization_model_selection`,
+`get_project_model_selection` and `update_project_model_selection`. The commands
+are available through `/api/v1/operator-tools/:tool_name` and MCP with the same
+arguments and revision semantics as Cloud. Reads of model selection require read
+scope; mutations and project-rank operations require admin scope. Organization
+settings require an unrestricted credential; project settings respect project
+grants. Updates use the existing operator mutation receipts for retries.
+`get_runner_routing` and `update_runner_routing` use runner ID `local` for the
+allowed-projects list. Preserve the returned machine fields and change only
+`project_ids`; disabling runner access retains the project and its rank/model
+settings. The existing configuration watcher applies database edits to the
+runtime without restarting projects for rank or model-selection changes.
+
 Sign in to the intended Cloud organization and open **Settings → API & MCP**.
 Existing `/settings/mcp` bookmarks open this same page. Create a named key,
 choose Read, Write or Admin, and choose an expiry (7, 30 or 90 days, or Never). The creation API accepts 1–90

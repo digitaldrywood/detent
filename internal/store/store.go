@@ -49,6 +49,7 @@ type Config struct {
 }
 
 type Store interface {
+	LocalConfigurationStore
 	ProjectRunnerSetupStore
 	ProtectedCodexThreadIDs(context.Context) ([]string, error)
 	auth.Store

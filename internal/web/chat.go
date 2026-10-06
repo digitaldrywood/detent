@@ -396,7 +396,7 @@ func (s *Server) chatFileIssueProposal(ctx context.Context, raw json.RawMessage)
 }
 
 func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (execution chatpkg.ActionExecution, executionErr error) {
-	if action.ConnectionID != "" && operatortool.IsAdministration(string(action.Kind)) {
+	if action.ConnectionID != "" && operatortool.IsAdministration(string(action.Kind)) && !s.usesLocalSettingsTool(ctx, string(action.Kind)) {
 		return s.executeCredentialAction(ctx, action)
 	}
 	if action.ConnectionID != "" {
@@ -404,7 +404,7 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			return chatpkg.ActionExecution{}, err
 		}
 		var err error
-		ctx, err = operatortool.AuthorizeCurrent(ctx, s.fleetMutationRequirement(string(action.Kind), action.ProjectID))
+		ctx, err = operatortool.AuthorizeCurrent(ctx, s.fleetMutationRequirement(ctx, string(action.Kind), action.ProjectID))
 		if err != nil {
 			return chatpkg.ActionExecution{}, err
 		}
@@ -432,7 +432,7 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			if receipt.Outcome != "succeeded" {
 				return execution, mutation.ErrUncertain
 			}
-			if operatortool.IsLocalProjectTool(string(action.Kind)) {
+			if localSettingsReceipt(string(action.Kind)) {
 				return chatpkg.ActionExecution{Message: string(receipt.ConfigurationJSON), Data: receipt.ConfigurationJSON, ResourceID: receipt.ResourceID}, nil
 			}
 			return chatpkg.ActionExecution{Message: "Action completed.", ResourceID: receipt.ResourceID, Identifier: receipt.Identifier, URL: receipt.URL, Revision: receipt.Revision, CommentID: receipt.CommentID}, nil
@@ -446,7 +446,7 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 			defer cancel()
 			receipt := store.OperatorReceipt{Metadata: m, Outcome: "succeeded", Identifier: execution.Identifier, URL: execution.URL, Revision: execution.Revision, CommentID: execution.CommentID}
-			if operatortool.IsLocalProjectTool(string(action.Kind)) {
+			if localSettingsReceipt(string(action.Kind)) {
 				receipt.ConfigurationJSON = execution.Data
 			}
 			if err := records.CompleteOperatorMutation(persistCtx, receipt); err != nil {
@@ -457,6 +457,9 @@ func (s *Server) ExecuteAction(ctx context.Context, action chatpkg.Action) (exec
 	}
 	if action.ScenarioID != "" {
 		return chatpkg.ActionExecution{Message: demoChatAction(action)}, nil
+	}
+	if s.usesLocalSettingsTool(ctx, string(action.Kind)) {
+		return s.executeLocalSettingsAction(ctx, action)
 	}
 	if operatortool.IsLocalProjectTool(string(action.Kind)) {
 		return s.executeLocalProjectAction(ctx, action)

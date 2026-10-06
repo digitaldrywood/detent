@@ -89,6 +89,9 @@ func (s *Server) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 				Identity: identity,
 				Changes:  dashboardChangeApplication{server: s, token: token},
 				Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+					if requirement.ResourceKind == "runners" && s.hasLocalSettings(ctx) {
+						requirement.ResourceKind = "instance"
+					}
 					if requirement.OrganizationWide && len(current.ProjectIDs) != 0 || !apikey.HasScope(current.Scopes, requirement.Scope) || !apikey.AllowsProject(current.ProjectIDs, requirement.ProjectID) || requirement.ResourceID != "" || requirement.ResourceKind != "" && requirement.ResourceKind != "instance" && requirement.ResourceKind != "credentials" || requirement.ResourceKind == "instance" && len(current.ProjectIDs) != 0 {
 						return operatortool.ErrAccessDenied
 					}

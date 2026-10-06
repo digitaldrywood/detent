@@ -283,6 +283,13 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}
 	}()
 
+	if !cfg.Global.Client.Configured() {
+		cfg.Global, err = initializeLocalConfiguration(runCtx, runtimeStore, cfg.Global, logger)
+		if err != nil {
+			return fmt.Errorf("initialize local configuration: %w", err)
+		}
+	}
+
 	events := hub.New[project.Event]()
 	activityBroker := activity.NewBroker()
 	globalDispatchGate, err := buildGlobalDispatchPools(cfg.Global)
@@ -450,7 +457,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			Clock: isolatedDemoClock(cfg),
 		},
 	}, web.Dependencies{
-		ProjectConfigOwner: project.NewConfigurationOwner(cfg.Global, globalConfigState.get, manager, runtimeStore, func(ctx context.Context, selected globalconfig.Config, id, repository, checkpoint string) error {
+		ProjectConfigOwner: project.NewConfigurationOwner(runCtx, cfg.Global, globalConfigState.get, manager, runtimeStore, func(ctx context.Context, selected globalconfig.Config, id, repository, checkpoint string) error {
 			if selected.Client.OrganizationID != cfg.Global.Client.OrganizationID || selected.Client.URL != cfg.Global.Client.URL || selected.Client.IdentityFile != cfg.Global.Client.IdentityFile || selected.Client.TokenEnvironment != cfg.Global.Client.TokenEnvironment {
 				return errors.New("selected cutover connection changed")
 			}
@@ -553,7 +560,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		if reporter, ok := hubScheduling.(interface {
 			SetProjectConfigurationOwner(func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration)
 		}); ok {
-			owner := project.NewConfigurationOwner(cfg.Global, globalConfigState.get, manager, runtimeStore, nil)
+			owner := project.NewConfigurationOwner(runCtx, cfg.Global, globalConfigState.get, manager, runtimeStore, nil)
 			reporter.SetProjectConfigurationOwner(runnerProjectConfigurationOwner(cfg.Global, globalConfigState.get, owner))
 		}
 		logger.Info("runner setup observations completed", "duration", time.Since(observationsStarted))
@@ -634,7 +641,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return err
 		}
 		resourceWorkers.Go(func() { updateScheduler.Run(ctx) })
-		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, applyRuntimeConfig, onGlobalReload)
+		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, applyRuntimeConfig, onGlobalReload, runtimeStore)
 		credentialWatcherDone := startBackendCredentialWatchers(ctx, manager.Registry(), events, logger)
 		resourceWorkers.Go(func() {
 			<-credentialWatcherDone
@@ -647,10 +654,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			registry := manager.Registry()
 			runPauseMonitor(ctx, pauseMonitorDeps{
 				read: func() (globalconfig.Config, error) {
-					return globalconfig.Read(cfg.Global.Path, globalconfig.WithProjectPathLiterals())
+					return readRuntimeConfiguration(ctx, runtimeStore, cfg.Global.Path)
 				},
 				write: func(updated globalconfig.Config) error {
-					return globalconfig.Write(cfg.Global.Path, updated, globalconfig.WithProjectPathLiterals())
+					return writeRuntimeConfiguration(ctx, runtimeStore, updated)
 				},
 				unpause: func(ctx context.Context, projectID string) error {
 					return manager.Unpause(ctx, project.ID(projectID))
@@ -891,6 +898,7 @@ func globalProjectCandidatesWithDefault(projects []globalconfig.Project, default
 		overrideUntil := activehours.ParsePersistedOverride(projectConfig.ActiveHoursOverrideUntil)
 		candidates = append(candidates, scheduler.ProjectCandidate{
 			ID:                       projectConfig.ID,
+			Rank:                     projectConfig.Priority,
 			Pool:                     projectConfig.Pool,
 			Paused:                   projectConfig.Paused,
 			ActiveHours:              activeHours,
