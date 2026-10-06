@@ -120,14 +120,14 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			t.Fatal(err)
 		}
 		issue = issueFromNative(created)
+		for _, state := range []string{"Todo", "In Progress"} {
+			if err := h.connector.UpdateIssueState(t.Context(), issue.ID, state); err != nil {
+				t.Fatal(err)
+			}
+		}
 		h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
 			sourceCalls++
-			if sourceCalls > 1 {
-				return tracker.GitHubIssueSnapshot{}, errors.New("GitHub source access removed after intake")
-			}
-			snapshot := intakeSnapshot()
-			snapshot.Title = "Land me"
-			return snapshot, nil
+			return tracker.GitHubIssueSnapshot{}, errors.New("GitHub source access removed after intake")
 		}
 	}
 	item := tracker.NativeWorkItemID(issue.ID)
@@ -316,11 +316,15 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != head || target.Method != "squash" || target.Number != 1 || target.Title != "Land me" || target.Repository != nativeChangeRepository || target.GitHubPullRequest != github {
+	wantTitle := "Land me"
+	if linked {
+		wantTitle = "Imported execution task"
+	}
+	if target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != head || target.Method != "squash" || target.Number != 1 || target.Title != wantTitle || target.Repository != nativeChangeRepository || target.GitHubPullRequest != github {
 		t.Fatalf("landing target = %#v", target)
 	}
 	if linked {
-		if len(target.SourceIssues) != 1 || target.SourceIssues[0].Repository != "acme/orders" || target.SourceIssues[0].Number != 12 || sourceCalls != 1 {
+		if len(target.SourceIssues) != 1 || target.SourceIssues[0].Repository != "acme/orders" || target.SourceIssues[0].Number != 12 || sourceCalls != 0 {
 			t.Fatalf("landing lost durable source identity or polled GitHub: sources=%+v calls=%d", target.SourceIssues, sourceCalls)
 		}
 	} else if len(target.SourceIssues) != 0 {
@@ -420,8 +424,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if _, err := execution.LandingTarget(guarded); !errors.Is(err, runner.ErrLandingNotReviewed) {
 		t.Fatalf("landing target after landing = %v, want %v", err, runner.ErrLandingNotReviewed)
 	}
-	if linked && sourceCalls != 1 {
-		t.Fatalf("source calls across implementation and native landing = %d, want 1", sourceCalls)
+	if linked && sourceCalls != 0 {
+		t.Fatalf("source calls across implementation and native landing = %d, want 0", sourceCalls)
 	}
 }
 

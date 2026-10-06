@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,7 @@ const nativeChangeAdminToken = "native-change-admin"
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
+	seedDatabase func(*testing.T, func(*sql.DB) error)
 	review       string
 	organization tracker.OrganizationID
 	project      tracker.ProjectID
@@ -118,6 +120,7 @@ func newNativeChangeHubDependencies(t *testing.T, review string, states []tracke
 	config := hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}
 	if len(repositoryBackend) > 0 {
 		config.ReconcileBackend = repositoryBackend[0]
+		config.ImportBackend, _ = repositoryBackend[0].(hubserver.ImportBackend)
 	}
 	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
@@ -138,7 +141,9 @@ func newNativeChangeHubDependencies(t *testing.T, review string, states []tracke
 			return recorder.Result(), nil
 		})}
 	} else {
-		server := httptest.NewServer(service.Handler())
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			service.Handler().ServeHTTP(w, r)
+		}))
 		t.Cleanup(server.Close)
 		serverURL, httpClient = server.URL, server.Client()
 	}
@@ -153,6 +158,24 @@ func newNativeChangeHubDependencies(t *testing.T, review string, states []tracke
 		t.Fatal(err)
 	}
 	h := &nativeChangeHub{review: review, organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
+	h.seedDatabase = func(t *testing.T, seed func(*sql.DB) error) {
+		t.Helper()
+		if err := service.Close(); err != nil {
+			t.Fatal(err)
+		}
+		db, err := sql.Open("sqlite", config.DatabasePath+"?_pragma=foreign_keys(1)")
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedErr := seed(db)
+		if err := errors.Join(seedErr, db.Close()); err != nil {
+			t.Fatal(err)
+		}
+		service, err = hubserver.Open(t.Context(), config)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	var project tracker.NativeProject
 	body := map[string]any{"name": "native-change", "idempotency_key": "project-native-change", "states": states, "require_dependencies": requireDependencies}
 	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/projects", body, &project); err != nil {

@@ -63,7 +63,10 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 			if name == "linked source" {
 				var linked tracker.NativeIssue
 				h, linked = newLinkedChangeHub(t)
-				h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) { return intakeSnapshot(), nil }
+				h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
+					t.Error("completed linked source requested GitHub intake")
+					return tracker.GitHubIssueSnapshot{}, http.ErrUseLastResponse
+				}
 				issue = issueFromNative(linked)
 			} else {
 				h = newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates())
