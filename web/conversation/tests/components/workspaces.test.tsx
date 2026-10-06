@@ -25,6 +25,11 @@ afterEach(cleanup);
 
 const CLIENT = {
   http: { origin: "", apiBase: "/api/v2/organizations/acme", csrfToken: "csrf" },
+  bootstrap: {
+    organization: { id: "acme" },
+    actor: { principal_id: "person_1" },
+    projects: [{ id: "proj_1", can_write: true }],
+  },
 } as unknown as ConversationClient;
 
 function workspace(overrides: Partial<Workspace> = {}): Workspace {
