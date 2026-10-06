@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -85,6 +86,15 @@ func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 
 func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantRework bool) {
 	t.Helper()
+	sourceCalls := 0
+	backend := intakeRepositoryBackend{snapshot: func(request hubserver.GitHubImportRequest) tracker.GitHubIssueSnapshot {
+		if request.Stage == "issue" {
+			sourceCalls++
+		}
+		snapshot := intakeSnapshot()
+		snapshot.Title = "Land me"
+		return snapshot
+	}}
 	h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
@@ -92,7 +102,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "Rework"}},
 		{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-	}, true, intakeRepositoryBackend{})
+	}, true, backend)
 	if batch {
 		h.scheduler.machine.Capacity = 6
 	}
@@ -109,25 +119,24 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if !linked {
 		issue = h.createInProgress(t, "Land me")
 	}
-	sourceCalls := 0
 	if linked {
 		// Reuse the exact landing journey, with a historical GitHub source.
 		if err := h.admin.client.request(t.Context(), http.MethodPost, h.admin.base()+"/onboarding/repository", map[string]any{"idempotency_key": "attach", "expected_revision": "1", "repository": "acme/orders"}, nil); err != nil {
 			t.Fatal(err)
 		}
-		created, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), GitHubIssueURL: "https://github.com/acme/orders/issues/12", State: "In Progress"})
+		created, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), GitHubIssueURL: "https://github.com/acme/orders/issues/12"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		issue = issueFromNative(created)
+		for _, state := range []string{"Todo", "In Progress"} {
+			if err := h.connector.UpdateIssueState(t.Context(), issue.ID, state); err != nil {
+				t.Fatal(err)
+			}
+		}
 		h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
 			sourceCalls++
-			if sourceCalls > 1 {
-				return tracker.GitHubIssueSnapshot{}, errors.New("GitHub source access removed after intake")
-			}
-			snapshot := intakeSnapshot()
-			snapshot.Title = "Land me"
-			return snapshot, nil
+			return tracker.GitHubIssueSnapshot{}, errors.New("GitHub source access removed after intake")
 		}
 	}
 	item := tracker.NativeWorkItemID(issue.ID)

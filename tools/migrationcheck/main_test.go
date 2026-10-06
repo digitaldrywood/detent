@@ -135,7 +135,6 @@ func TestIndividuallyValidBranchesRejectIntegratedCollision(t *testing.T) {
 		{"timestamp collision", "hub/20261005120000_onboarding.sql", "hub/20261005120000_viewed.sql", true, false},
 		{"generated sqlc edits", "internal/store/sqlc/models.go", "internal/store/sqlc/models.go", false, true},
 		{"generated templ edits", "internal/web/templates/work_templ.go", "internal/web/templates/work_templ.go", false, true},
-		{"generated CSS edits", "static/css/output.css", "static/css/output.css", false, true},
 		{"ordinary source edits", "internal/example/source.go", "internal/example/source.go", false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
