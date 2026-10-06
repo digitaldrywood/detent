@@ -569,6 +569,9 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		t.Fatalf("runtime=%s %v", result.Content, err)
 	}
 	attempt := runtimeResult.Data.Attempt
+	if attempt.Finalization != nil || attempt.FinalizationAvailability != "unavailable" || !slices.Contains(runtimeResult.Data.Unavailable, "host_finalization") || !slices.Contains(runtimeResult.Data.Unavailable, "host_issue_acceptance") || attempt.ClaimReleasedAt != nil {
+		t.Fatalf("missing historical host evidence was fabricated: %s", result.Content)
+	}
 	if attempt == nil || attempt.AttemptID != started.Data.AttemptID || attempt.Runtime.LocalAttemptID != 168 || attempt.Runtime.Generation != 27 || !attempt.Current || attempt.RuntimeFreshness != "available" || attempt.Runtime.Phase != "implementation" || attempt.Runtime.Activity.Dropped != 3 || attempt.Runtime.Activity.Unpaired != 2 {
 		t.Fatalf("runtime attempt=%#v", attempt)
 	}
@@ -668,14 +671,55 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	finished := observed
 	finished.Type, finished.IdempotencyKey, finished.Data.Sequence, finished.Data.Outcome = "run.finished", "runtime-finished", 3, "succeeded"
 	finishedRuntime := runtime
+	finishedRuntime.Phase = "completed"
+	finishedRuntime.Completion = &tracker.NativeCompletionObservation{AcceptanceRecorded: false, ObservedAt: at}
 	finishedRuntime.Landing = &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", ObservedAt: at}
 	finished.Data.Runtime = &finishedRuntime
+	finished.Data.Disposition = &tracker.NativeDisposition{Status: "complete"}
+	finished.Data.Finalization = &tracker.NativeFinalization{ObservedAt: at, Settled: true, BaseSHA: strings.Repeat("b", 40), HeadSHA: strings.Repeat("c", 40), VersionCode: "invalid_request", VersionError: "the final attempt diff does not identify the current Change Request head: /private/source/main.go token=private-secret\nprivate source content"}
+	for _, test := range []struct {
+		name   string
+		change func(*tracker.NativeFinalization)
+	}{
+		{"oversized refusal", func(f *tracker.NativeFinalization) {
+			f.VersionError = strings.Repeat("é", tracker.NativeFinalizationTextLimit)
+		}},
+		{"invalid head", func(f *tracker.NativeFinalization) { f.HeadSHA = "/private/source" }},
+		{"private refusal code", func(f *tracker.NativeFinalization) { f.VersionCode = "private/source" }},
+		{"unowned source version", func(f *tracker.NativeFinalization) {
+			f.SourceVersion = &tracker.NativeChangeReference{ChangeID: newNativeID("change"), VersionID: newNativeID("version"), HeadSHA: strings.Repeat("c", 40)}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := finished
+			invalid.IdempotencyKey = test.name
+			finalization := *finished.Data.Finalization
+			test.change(&finalization)
+			invalid.Data.Finalization = &finalization
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, invalid), http.StatusUnprocessableEntity)
+		})
+	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/events", worker, finished), http.StatusOK)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, runtimePath+"/workflow", worker, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "runner-done", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedRevision: second.Revision, State: "Done", Reason: "worker_progress"})
 	requireNativeStatus(t, response, http.StatusOK)
 	result, err = call(operatortool.ExplainItem, selectArgs)
 	if err != nil || json.Unmarshal(result.Content, &explanation) != nil || explanation.LatestTransition == nil || explanation.LatestTransition.Actor.Kind != "runner" || explanation.LatestTransition.Reason != "worker_progress" || explanation.Attempt.NativeID != started.Data.AttemptID || explanation.NativeRuntime.Attempt.Runtime.Landing.Landed || explanation.NativeRuntime.Attempt.Runtime.Landing.RefusalKind != "nothing_to_land" {
 		t.Fatalf("native explanation=%s %v", result.Content, err)
+	}
+	projected := explanation.NativeRuntime.Attempt
+	if projected.FinalizationAvailability != "available" || projected.Finalization.VersionCode != "invalid_request" || !projected.Finalization.Settled || !projected.Finalization.ObservedAt.Equal(at) || !projected.Finalization.TextRedacted || projected.Runtime.Completion.AcceptanceRecorded || projected.Disposition.Status != "complete" || slices.Contains(explanation.NativeRuntime.Unavailable, "host_finalization") || slices.Contains(explanation.NativeRuntime.Unavailable, "host_issue_acceptance") {
+		t.Fatalf("host result was confused with provider completion: %s", result.Content)
+	}
+	for _, secret := range []string{"/private/source", "private-secret", "private source content"} {
+		if strings.Contains(string(result.Content), secret) {
+			t.Fatalf("finalizer read leaked %q", secret)
+		}
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+	runResult, err := call(operatortool.GetNativeRun, map[string]any{"project_id": string(f.project.ID), "work_item_id": string(second.WorkItemID), "attempt_id": started.Data.AttemptID})
+	var run operatortool.ChangeResult
+	if err != nil || json.Unmarshal(runResult.Content, &run) != nil || run.Attempt == nil || run.Attempt.ClaimReleasedAt == nil || run.Attempt.Current || !reflect.DeepEqual(run.Attempt.Finalization, projected.Finalization) || !reflect.DeepEqual(run.Attempt.Runtime.Completion, projected.Runtime.Completion) {
+		t.Fatalf("run projection lost host result or release evidence: %s %v", runResult.Content, err)
 	}
 	var decisionID string
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision' ORDER BY sequence DESC LIMIT 1", f.project.OrganizationID, f.project.ID, second.WorkItemID).Scan(&decisionID); err != nil {

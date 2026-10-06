@@ -838,6 +838,18 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				t.Fatalf("repeated finish error = %v", again)
 			}
 			checkChange(test.wantChanges, test.wantVersions)
+			evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+			if err != nil || evidence.Attempt == nil {
+				t.Fatalf("finalizer projection unavailable: %+v, %v", evidence, err)
+			}
+			if change := changes.NativeChange(); change != nil {
+				f := evidence.Attempt.Finalization
+				if f == nil || f.ChangeID != change.ChangeID || f.VersionID != change.VersionID || f.HeadSHA != change.HeadSHA || f.BaseSHA != change.BaseSHA || f.Changed != change.Changed || f.Files != change.Files || f.Reviewed != change.Reviewed || f.ObservedAt.IsZero() || !f.Settled {
+					t.Fatalf("finalizer omitted recorded source outcome: %+v, change=%+v", f, change)
+				}
+			} else if evidence.Attempt.Finalization != nil || evidence.Attempt.FinalizationAvailability != "unavailable" {
+				t.Fatalf("finalizer fabricated a missing source result: %+v", evidence.Attempt.Finalization)
+			}
 			if test.finalMessage != "" {
 				recovery, err := h.admin.Recovery(t.Context(), item)
 				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "succeeded" {
@@ -1384,6 +1396,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatalf("human rejection was waived: %+v", change)
 					}
 					h.complete(t, issue.ID, change)
+					evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), attempt)
+					if err != nil || evidence.Attempt == nil || evidence.Attempt.Finalization == nil || evidence.Attempt.Finalization.SourceVersion == nil || evidence.Attempt.Finalization.SourceVersion.VersionID != expected.Change.CurrentVersion || evidence.Attempt.Finalization.VersionError != change.VersionError || evidence.Attempt.ClaimReleasedAt == nil {
+						t.Fatalf("refusal projection lost existing source provenance: %+v, %v", evidence.Attempt, err)
+					}
 				} else {
 					if change.Landing == nil || !change.Landing.Landed || detail.Change.Landed == nil || detail.Change.Landed.VersionID != expected.Change.CurrentVersion || detail.Change.Landed.MergeSHA != stored.BaseSHA || change.VersionError != "" {
 						t.Fatalf("absorbed source lacks authentic landing: change=%+v detail=%+v", change, detail)
@@ -1584,6 +1600,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatalf("runner lost refused publication result: %+v", change)
 				}
 				h.complete(t, issue.ID, change)
+				evidence, readErr := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+				if readErr != nil || evidence.Attempt == nil || evidence.Attempt.Finalization == nil || evidence.Attempt.Finalization.VersionError != change.VersionError || evidence.Attempt.Finalization.VersionCode != change.VersionCode || evidence.Attempt.ClaimReleasedAt == nil {
+					t.Fatalf("publication refusal was omitted from the terminal receipt: %+v, %v", evidence.Attempt, readErr)
+				}
 				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
 				if err != nil || !reflect.DeepEqual(detail.Versions, expected.Versions) || detail.Change.CurrentVersion != expected.Change.CurrentVersion {
 					t.Fatalf("refused publication replaced an immutable version: %+v, %v", detail, err)

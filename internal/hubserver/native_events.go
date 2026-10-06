@@ -94,6 +94,32 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		if err := requireLeaseRunner(ctx, tx, request.Data.LeaseID, scope); err != nil {
 			return nil, err
 		}
+		if f := request.Data.Finalization; f != nil && f.ChangeID != "" {
+			if _, err := readChange(ctx, tx, scope, string(issue.WorkItemID), f.ChangeID); err != nil {
+				return nil, err
+			}
+			if f.VersionID != "" {
+				version, err := readChangeVersion(ctx, tx, f.ChangeID, f.VersionID)
+				if err != nil {
+					return nil, err
+				}
+				if version.HeadSHA != f.HeadSHA {
+					return nil, nativeInvalid("Finalizer version must name its recorded head")
+				}
+			}
+			if source := f.SourceVersion; source != nil {
+				if source.ChangeID != f.ChangeID {
+					return nil, nativeInvalid("Finalizer source must belong to the reported Change")
+				}
+				version, err := readChangeVersion(ctx, tx, source.ChangeID, source.VersionID)
+				if err != nil {
+					return nil, err
+				}
+				if version.HeadSHA != source.HeadSHA || version.AttemptID != f.SourceAttemptID {
+					return nil, nativeInvalid("Finalizer source must match its recorded version and attempt")
+				}
+			}
+		}
 		if runtime := request.Data.Runtime; runtime != nil && runtime.Landing != nil && runtime.Landing.ChangeID != "" {
 			l := runtime.Landing
 			change, err := readChange(ctx, tx, scope, string(issue.WorkItemID), l.ChangeID)

@@ -26,6 +26,13 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 	if r == nil {
 		return nil
 	}
+	if r.Completion != nil && (r.Completion.ObservedAt.IsZero() || r.Phase != "completed") {
+		return nativeInvalid("Host completion observations require a completed phase and observation time")
+	}
+	if r.Completion != nil {
+		r.Completion.Source = "host_native_completion"
+		r.Completion.Coverage = "recorded_host_completion_branch_only; independent_of_provider_disposition_and_claim_release"
+	}
 	if !slices.Contains([]string{"implementation", "rework", "planning", "merging", "validation", "completed"}, r.Phase) || r.LocalAttemptID < 0 || len(r.Phases) > 128 || r.PhasesDropped < 0 {
 		return nativeInvalid("Runtime observations require bounded phase and attempt identity")
 	}
@@ -214,6 +221,12 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 	}
 	if e.Attempt == nil || e.Attempt.Runtime == nil || e.Attempt.Runtime.Landing == nil {
 		e.Unavailable = append(e.Unavailable, "attempt_landing_receipt")
+	}
+	if e.Attempt == nil || e.Attempt.Finalization == nil {
+		e.Unavailable = append(e.Unavailable, "host_finalization")
+	}
+	if e.Attempt == nil || e.Attempt.Runtime == nil || e.Attempt.Runtime.Completion == nil {
+		e.Unavailable = append(e.Unavailable, "host_issue_acceptance")
 	}
 	for _, kind := range []string{"workflow.transitioned", "scheduler.decision"} {
 		event, err := latestNativeRuntimeEvent(ctx, query, scope, item, kind)

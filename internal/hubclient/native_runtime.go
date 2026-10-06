@@ -119,6 +119,9 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 		if observation.Landing == nil {
 			observation.Landing = previous.Landing
 		}
+		if observation.Completion == nil {
+			observation.Completion = previous.Completion
+		}
 		if observation.REST == nil {
 			observation.REST = previous.REST
 		}

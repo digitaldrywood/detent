@@ -451,6 +451,7 @@ type NativeDisposition struct {
 }
 
 type NativeRunData struct {
+	Finalization   *NativeFinalization       `json:"finalization,omitempty"`
 	Evidence       []NativeEvidence          `json:"evidence,omitempty"`
 	CompletionBody string                    `json:"completion_body,omitempty"`
 	Disposition    *NativeDisposition        `json:"disposition,omitempty"`

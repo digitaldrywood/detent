@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -156,10 +158,20 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 	if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
 		t.Fatal(err)
 	}
+	execution.change = &runner.NativeChange{Error: "recorded refusal: /private/source/main.go token=private-secret " + strings.Repeat("é", 4096) + "\nprivate source content"}
 	if err := execution.Finish(t.Context(), "failed"); err != nil {
 		t.Fatal(err)
 	}
 	evidence = assertProgress(36, 3)
+	finalization := evidence.Attempt.Finalization
+	if finalization == nil || evidence.Attempt.FinalizationAvailability != "available" || finalization.Settled || !finalization.TextTruncated || !finalization.TextRedacted || len(finalization.Error) > tracker.NativeFinalizationTextLimit || !utf8.ValidString(finalization.Error) || !strings.HasPrefix(finalization.Error, "recorded refusal:") || finalization.ObservedAt.IsZero() || !strings.Contains(finalization.Coverage, "not_issue_acceptance") {
+		t.Fatalf("bounded finalizer result=%+v", finalization)
+	}
+	for _, secret := range []string{"/private/source", "private-secret", "private source content"} {
+		if strings.Contains(finalization.Error, secret) {
+			t.Fatalf("finalizer result leaked %q", secret)
+		}
+	}
 	if evidence.Attempt.Status != "failed" || evidence.Attempt.Runtime.Activity.Status != "completed" || evidence.Attempt.Runtime.Activity.Spans[0].Outcome != "completed" {
 		t.Fatalf("final activity=%+v", evidence.Attempt)
 	}
