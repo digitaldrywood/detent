@@ -47,7 +47,10 @@ func readLinkedNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 }
 
 func linkedSourceNumber(source string) int {
-	_, _, number, _ := tracker.ParseGitHubIssueURL(source)
+	_, _, number, err := tracker.ParseGitHubIssueURL(source)
+	if err != nil {
+		return 0
+	}
 	return number
 }
 
@@ -63,8 +66,8 @@ func enqueueLinkedSourceSummary(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if issue.LinkedSource == nil {
 		return nil
 	}
-	base, _ := ctx.Value(linkedSourceURLKey{}).(string)
-	if base == "" {
+	base, ok := ctx.Value(linkedSourceURLKey{}).(string)
+	if !ok || base == "" {
 		return nil
 	}
 	target := base + "/work/i/" + url.PathEscape(string(issue.WorkItemID))
@@ -141,7 +144,7 @@ func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope nativeScope, so
 	return &snapshot, nil
 }
 
-func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWebhook, payload githubWebhookPayload, now time.Time) (webhookProcessResult, bool, error) {
+func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWebhook, payload githubWebhookPayload, now time.Time) (result webhookProcessResult, handled bool, resultErr error) {
 	if delivery.EventType != "issues" && delivery.EventType != "issue_comment" {
 		return webhookProcessResult{}, false, nil
 	}
@@ -151,13 +154,14 @@ func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWeb
 	if err != nil {
 		return webhookProcessResult{}, false, err
 	}
+	defer func() { resultErr = errors.Join(resultErr, rows.Close()) }()
 	var scopes []nativeScope
 	for rows.Next() {
 		var scope nativeScope
 		scope.credential.Scope = apiScopeWorker
 		scope.sourceActor = &tracker.Actor{Kind: "integration", PrincipalID: "github"}
 		if err := rows.Scan(&scope.organization, &scope.project); err != nil {
-			return webhookProcessResult{}, false, errors.Join(err, rows.Close())
+			return webhookProcessResult{}, false, err
 		}
 		scopes = append(scopes, scope)
 	}
@@ -167,17 +171,17 @@ func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWeb
 	if len(scopes) == 0 {
 		return webhookProcessResult{}, false, nil
 	}
-	result := webhookProcessResult{Outcome: webhookOutcomeIgnored}
+	result = webhookProcessResult{Outcome: webhookOutcomeIgnored}
 	if payload.Issue == nil || len(payload.Issue.PullRequest) != 0 && string(payload.Issue.PullRequest) != "null" {
 		return result, true, nil
 	}
 	source, _, complete := normalizeWebhookIssue(payload.Issue)
 	if !complete {
-		return result, true, errors.New("Native GitHub issue webhook is incomplete")
+		return result, true, errors.New("native GitHub issue webhook is incomplete")
 	}
 	canonical, repository, number, err := tracker.ParseGitHubIssueURL(source.URL)
 	if err != nil || !strings.EqualFold(repository, fullName) || number != source.Number {
-		return result, true, errors.New("Native GitHub issue webhook source does not match its repository")
+		return result, true, errors.New("native GitHub issue webhook source does not match its repository")
 	}
 	repositoryID, err := ensureWebhookSourceRepository(ctx, tx, payload.Repository, now)
 	if err != nil {

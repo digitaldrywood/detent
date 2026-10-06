@@ -249,6 +249,7 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 		{"argument validation", nativeMoveArgumentError(), `{"code":"invalid_request","message":"expected_revision: is required"}`},
 		{"request", &operatortool.RequestError{Code: "invalid_request", Message: "Read get_project_integration"}, `{"code":"invalid_request","message":"Read get_project_integration"}`},
 		{"revision", &operatortool.ConflictError{Code: "revision_conflict", CurrentRevision: 4}, `{"code":"revision_conflict","current_revision":"4"}`},
+		{"policy mismatch", &operatortool.ConflictError{Code: "policy_mismatch", Message: "Approved policy changed; inspect the current policy and supply its expected_policy_id"}, `{"code":"policy_mismatch","message":"Approved policy changed; inspect the current policy and supply its expected_policy_id"}`},
 		{"stale", &operatortool.ConflictError{Code: "stale_execution", Details: &operatortool.ConflictDetails{}}, `{"code":"stale_execution","details":{"expected_attempt_id":null,"current_attempt_id":null}}`},
 	} {
 		for _, version := range []string{"2024-11-05", "2025-11-25"} {
@@ -296,7 +297,9 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 				} else if logs.Len() != 0 {
 					t.Fatalf("expected tool error logged as a fault: %s", logs.Bytes())
 				}
-				if test.name != "argument validation" && test.name != "request" && test.name != "revision" && test.name != "stale" || version == "2024-11-05" {
+				var conflict *operatortool.ConflictError
+				var request *operatortool.RequestError
+				if !errors.As(test.err, &conflict) && !errors.As(test.err, &request) || version == "2024-11-05" {
 					if len(result.StructuredContent) != 0 {
 						t.Fatalf("unexpected structured error=%s", result.StructuredContent)
 					}

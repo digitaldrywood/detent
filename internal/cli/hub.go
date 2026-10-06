@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -31,7 +32,7 @@ func newHubCommand(opts options) *cobra.Command {
 			transport = hubgithub.NewAppTransport(connectorgithub.InstallationTokenConfig{AppID: appID, PrivateKey: privateKey, LookupEnv: opts.lookupEnv})
 		} else {
 			if cfg.Hosted != nil {
-				return fmt.Errorf("hosted GitHub intake requires the product GitHub App credentials")
+				return errors.New("hosted GitHub intake requires the product GitHub App credentials")
 			}
 			token, err := opts.ghAuthToken(ctx)
 			if err != nil {
