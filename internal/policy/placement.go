@@ -24,7 +24,7 @@ func (p Placement) Validate() error {
 	switch p.Mode {
 	case "blended", "sprites_only":
 		if p.TodoThreshold != 0 || p.OverflowSlots != 0 {
-			return errors.New("Todo threshold and overflow slots apply only to local_first placement")
+			return errors.New("todo threshold and overflow slots apply only to local_first placement")
 		}
 	case "local_first":
 		if p.TodoThreshold < 1 || p.OverflowSlots < 1 || p.OverflowSlots > 100 {

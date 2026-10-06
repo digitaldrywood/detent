@@ -27,7 +27,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			}
 			return s.nativeIssueJSON(replay)
 		}
-		canonical, _, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
+		canonical, repository, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
 		if err != nil {
 			return nil, nativeInvalid(err.Error())
 		}
@@ -40,7 +40,6 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			if err != nil {
 				return nil, err
 			}
-			_, repository, _, _ := tracker.ParseGitHubIssueURL(canonical)
 			if _, found, err := resolveWebhookRepositoryID(ctx, s.database.db, repository); err != nil {
 				return nil, err
 			} else if !found {

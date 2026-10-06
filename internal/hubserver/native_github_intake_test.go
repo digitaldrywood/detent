@@ -3,9 +3,9 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -208,7 +208,7 @@ func TestNativeGitHubSourceUpdates(t *testing.T) {
 func TestNativeTriageWorkflowProjection(t *testing.T) {
 	t.Parallel()
 	for _, bound := range []bool{false, true} {
-		t.Run(fmt.Sprint(bound), func(t *testing.T) {
+		t.Run(strconv.FormatBool(bound), func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "triage")
 			if bound {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'acme/orders' WHERE id = ?", f.project.ID); err != nil {
