@@ -84,7 +84,7 @@ func readRuntimeConfiguration(ctx context.Context, settings store.LocalConfigura
 		return cfg, err
 	}
 	if cfg.Client.Configured() {
-		return readRunnerRuntimeConfig(path, globalconfig.WithProjectPathLiterals())
+		return readRunnerRuntimeConfig(ctx, path, globalconfig.WithProjectPathLiterals())
 	}
 	cfg, err = settings.LocalConfiguration(ctx, cfg)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -105,7 +105,7 @@ func readLocalConfigurationFile(path string, opts ...globalconfig.Option) (globa
 	if found || err != nil {
 		return cfg, err
 	}
-	return readRunnerRuntimeConfig(path, opts...)
+	return readRunnerRuntimeConfig(context.Background(), path, opts...)
 }
 
 func readLocalConfigurationProjectFile(path, id string, opts ...globalconfig.Option) (globalconfig.Config, []string, error) {
@@ -233,10 +233,10 @@ func writeLocalConfigurationRank(ctx context.Context, path string, cfg globalcon
 	return globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals())
 }
 
-func readRunnerRuntimeConfig(path string, opts ...globalconfig.Option) (globalconfig.Config, error) {
+func readRunnerRuntimeConfig(ctx context.Context, path string, opts ...globalconfig.Option) (globalconfig.Config, error) {
 	cfg, err := globalconfig.Read(path, opts...)
 	if err == nil {
-		return cfg, nil
+		return resolveRunnerProjects(ctx, cfg)
 	}
 	runnerOpts := append(slices.Clone(opts), globalconfig.WithMissingProjectPaths())
 	runner, runnerErr := globalconfig.Read(path, runnerOpts...)

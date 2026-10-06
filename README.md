@@ -27,7 +27,7 @@ Then inspect this repository (language, build and test commands, CI workflows, e
 - detent.yaml: tracker.kind hub_native, the lanes I want, and a gate whose command is this repository's real check command.
 - WORKFLOW.md: the agent instructions for working in this repository. Do not include GitHub pull request or comment steps; native projects land through Detent.
 
-After I approve the files, walk me through: creating the project in the Hub, enrolling the runner (Settings > Providers & runners > Enroll a runner, then the detent hub runner register command it shows), cloning the repository into the directory register prints, signing in to Codex or Claude Code on the runner, and approving the repository policy the runner reports. Finish by filing one small issue in Todo and watching it land.
+After I approve the files, walk me through: creating the project in the Hub, enrolling the runner (Settings > Providers & runners > Enroll a runner, then the detent hub runner register command it shows), letting the runner clone the linked repository under its workspace_root, signing in to Codex or Claude Code on the runner, and approving the repository policy the runner reports. Finish by filing one small issue in Todo and watching it land.
 
 If I give you a Detent API key (Settings > API & MCP), connect to the Hub's MCP endpoint and use its tools to read state. Ask before every change to the Hub, the repository, or the runner.
 ```
@@ -38,6 +38,10 @@ Detent has two parts, both in the same `detent` binary.
 
 1. **The Hub** holds the board, the issues, the conversation history, the review decisions, and the policy each project is allowed to run under. Use Detent Cloud, or run your own Hub.
 2. **Runners** are machines you enroll: a laptop, a build server, a VM, or a Fly Sprite. A runner keeps your repository checkout, your agent sign-ins, and your toolchain. Nothing that touches your code runs on the Hub.
+
+Cloud assigns each runner its allowed projects and model selection. The runner's
+`global.yaml` holds machine settings only. It clones missing linked repositories
+and reads each repository's current default-branch project definition.
 
 A project's behavior lives in two files that you commit to the repository:
 

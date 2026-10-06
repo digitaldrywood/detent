@@ -60,7 +60,7 @@ func TestHubRunnerIdentityConfiguration(t *testing.T) {
 		{"artifact budget only", func(c *HubClient) { c.ArtifactBytes = 4 << 20 }, false},
 		{"relative path", func(c *HubClient) { c.IdentityFile = "identity.json" }, false},
 		{"ambiguous token source", func(c *HubClient) { c.TokenEnvironment = "LEGACY_TOKEN" }, false},
-		{"no projects", func(c *HubClient) { c.NativeProjects = nil }, false},
+		{"projects from Cloud", func(c *HubClient) { c.NativeProjects = nil }, true},
 		{"provider reports", func(c *HubClient) { c.ProviderCapacityFile = filepath.Join(t.TempDir(), "reports.json") }, true},
 		{"relative provider reports", func(c *HubClient) { c.ProviderCapacityFile = "reports.json" }, false},
 		{"unenrolled provider reports", func(c *HubClient) {

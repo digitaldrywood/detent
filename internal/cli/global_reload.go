@@ -63,7 +63,7 @@ func startGlobalConfigWatcher(
 		return nil
 	}
 
-	watcher, err := configwatcher.NewFile(path, readGlobalConfig, configwatcher.WithFileLogger(logger))
+	watcher, err := configwatcher.NewFile(path, func(path string) (globalconfig.Config, error) { return readRunnerRuntimeConfig(ctx, path) }, configwatcher.WithFileLogger(logger))
 	if err != nil {
 		logger.Warn("create global config watcher failed", "path", path, "error", err)
 		return nil
@@ -112,7 +112,7 @@ func syncLatestGlobalConfig(ctx context.Context, path string, reloader *globalCo
 	if reloader == nil {
 		return
 	}
-	latest, err := readGlobalConfig(path)
+	latest, err := readRunnerRuntimeConfig(ctx, path)
 	if reloader.settings != nil {
 		latest, err = readRuntimeConfiguration(ctx, reloader.settings, path)
 	}
@@ -128,10 +128,6 @@ func syncLatestGlobalConfig(ctx context.Context, path string, reloader *globalCo
 	reloader.handle(ctx, update)
 }
 
-func readGlobalConfig(path string) (globalconfig.Config, error) {
-	return readRunnerRuntimeConfig(path)
-}
-
 func waitGlobalConfigWatcher(done <-chan struct{}) {
 	if done != nil {
 		<-done
@@ -145,7 +141,7 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 	}
 
 	previous := r.current
-	update = latestGlobalConfigUpdate(update)
+	update = latestGlobalConfigUpdate(ctx, update)
 	logger.Info("global config reconciliation started",
 		"path", update.Path,
 		"configured_projects", globalProjectIDs(update.Value.Projects),
@@ -166,7 +162,7 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 		applied = true
 		drainedSessions = appendUniqueReconcileSessions(drainedSessions, result.DrainedSessions)
 
-		latest := latestGlobalConfigUpdate(configwatcher.FileUpdate[globalconfig.Config]{
+		latest := latestGlobalConfigUpdate(ctx, configwatcher.FileUpdate[globalconfig.Config]{
 			Path:  update.Path,
 			Value: r.current,
 			At:    time.Now(),
@@ -224,11 +220,11 @@ func appendUniqueReconcileSessions(current []project.ReconcileSession, additions
 	return current
 }
 
-func latestGlobalConfigUpdate(update configwatcher.FileUpdate[globalconfig.Config]) configwatcher.FileUpdate[globalconfig.Config] {
+func latestGlobalConfigUpdate(ctx context.Context, update configwatcher.FileUpdate[globalconfig.Config]) configwatcher.FileUpdate[globalconfig.Config] {
 	if update.WatcherErr || strings.TrimSpace(update.Path) == "" {
 		return update
 	}
-	latest, err := readGlobalConfig(update.Path)
+	latest, err := readRunnerRuntimeConfig(ctx, update.Path)
 	if err != nil {
 		return update
 	}

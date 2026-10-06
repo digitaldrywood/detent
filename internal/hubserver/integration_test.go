@@ -207,8 +207,8 @@ func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 	projectResponse := performHubAPIRequest(t, f.service, http.MethodGet, f.base, testHubAdminToken, nil)
 	requireNativeStatus(t, projectResponse, http.StatusOK)
 	var definition tracker.NativeProject
-	if err := json.Unmarshal(projectResponse.Body.Bytes(), &definition); err != nil || definition.CloneURL != "https://github.com/digitaldrywood/detent.git" {
-		t.Fatalf("bound repository clone URL: %+v, %v", definition, err)
+	if err := json.Unmarshal(projectResponse.Body.Bytes(), &definition); err != nil || definition.CloneURL != "https://github.com/digitaldrywood/detent.git" || definition.Repository != "digitaldrywood/detent" {
+		t.Fatalf("bound repository metadata: %+v, %v", definition, err)
 	}
 	// A replay must consult its receipt before current-revision/provider checks.
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/integration/repository", testHubAdminToken, map[string]any{"idempotency_key": "bind", "expected_revision": "1", "repository": "digitaldrywood/detent"}), http.StatusOK)

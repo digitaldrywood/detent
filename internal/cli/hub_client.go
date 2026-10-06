@@ -54,7 +54,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		if err != nil {
 			return nil, err
 		}
-		if clientConfig.TokenEnvironment != "" || len(clientConfig.NativeProjects) == 0 || string(file.Identity.OrganizationID) != clientConfig.OrganizationID || clientConfig.MachineID != "" && clientConfig.MachineID != string(file.Identity.MachineID) {
+		if clientConfig.TokenEnvironment != "" || string(file.Identity.OrganizationID) != clientConfig.OrganizationID || clientConfig.MachineID != "" && clientConfig.MachineID != string(file.Identity.MachineID) {
 			return nil, errors.New("hub runner configuration does not match the enrolled identity")
 		}
 		for _, id := range clientConfig.NativeProjects {
@@ -116,7 +116,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		return nil, err
 	}
 	for name, checks := range localChecks {
-		checks.Setup = setupResults[name]
+		checks.Setup = firstNonBlankString(setupResults[name], "failed")
 		localChecks[name] = checks
 		projects.checks[name] = checks
 	}
@@ -146,7 +146,11 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		GitHubDiscovery:       github.DiscoverIssues,
 		Problems:              reportProblems,
 		IsolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
-			return probeRunnerIsolation(ctx, cfg)
+			current := cfg
+			if setupOptions.runtimeConfig != nil {
+				current = setupOptions.runtimeConfig()
+			}
+			return probeRunnerIsolation(ctx, current)
 		},
 		ProviderReports: providerReports,
 		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
@@ -213,4 +217,12 @@ func firstNonBlankString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func nativeProjectsFromConfig(projects map[string]string) map[string]tracker.ProjectID {
+	ids := make(map[string]tracker.ProjectID, len(projects))
+	for name, id := range projects {
+		ids[name] = tracker.ProjectID(id)
+	}
+	return ids
 }
