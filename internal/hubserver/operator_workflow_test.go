@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -97,24 +99,22 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			if err := json.Unmarshal(listed.Body.Bytes(), &catalog); err != nil {
 				t.Fatal(err)
 			}
-			advertised := false
+			var approvalSchema map[string]any
 			for _, definition := range catalog.Result.Tools {
 				if definition.Name == "approve_project_policy" {
-					current, _ := operatortool.Lookup(definition.Name)
-					if !reflect.DeepEqual(definition.InputSchema, current.InputSchema) {
-						t.Fatal("tools/list advertised a stale policy approval schema")
+					if err := json.Unmarshal(definition.InputSchema, &approvalSchema); err != nil {
+						t.Fatal(err)
 					}
-					advertised = true
 				}
 			}
-			if !advertised {
+			if approvalSchema == nil {
 				t.Fatal("policy approval missing from tools/list")
 			}
 			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 				ConfigPath: "detent.yaml", HasConfig: true,
 				Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: true\n  required_status_checks: []\n"),
-				WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", 100)),
-				AgentsPath: "AGENTS.md", HasAgents: true, Agents: []byte("Preserve policy authority.\n"),
+				WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", 500)),
+				AgentsPath: "AGENTS.md", HasAgents: true, Agents: []byte(strings.Repeat("Preserve policy authority.\n", 50)),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -137,14 +137,48 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			for _, test := range []struct {
 				name, expected, want string
 				policy               policy.Descriptor
+				field                string
 			}{
-				{"identity", "", "identity digest", invalid},
-				{"configuration", "", "configuration", invalidConfiguration},
-				{"stale", "policy_stale", "expected_policy_id", descriptor},
-				{"approve", previous.ID, "", descriptor},
+				{"unknown argument", "", "is not an allowed field", descriptor, "argument"},
+				{"missing retry key", "", "request_id:", descriptor, "request_id"},
+				{"missing input", "", "input:", descriptor, "input"},
+				{"missing project", "", "project_id:", descriptor, "project_id"},
+				{"unknown authored field", "", "is not an allowed field", descriptor, "unknown_field"},
+				{"authored version type", "", "must have type int", descriptor, "version"},
+				{"authored file type", "", "must have type string", descriptor, "files"},
+				{"identity", "", "identity digest", invalid, ""},
+				{"configuration", "", "configuration", invalidConfiguration, ""},
+				{"stale", "policy_stale", "expected_policy_id", descriptor, ""},
+				{"approve", previous.ID, "", descriptor, ""},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					call := projectCall(t, "approve_project_policy", string(f.project), test.name, operatortool.PolicyApprovalInput{ExpectedID: test.expected, Policy: test.policy, RepositoryPolicy: true})
+					var arguments map[string]any
+					if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
+						t.Fatal(err)
+					}
+					if test.field == "" {
+						assertPolicyInputSchema(t, approvalSchema, arguments, "arguments")
+					} else {
+						authored := arguments["input"].(map[string]any)["policy"].(map[string]any)["authored"].(map[string]any)
+						switch test.field {
+						case "argument":
+							arguments["unknown_field"] = "unapproved-private-prompt"
+						case "request_id", "project_id":
+							arguments[test.field] = ""
+						case "input":
+							delete(arguments, "input")
+						case "files":
+							authored["files"] = map[string]any{"WORKFLOW.md": 42}
+						default:
+							authored[test.field] = "unapproved-private-prompt"
+						}
+						var err error
+						call.Arguments, err = json.Marshal(arguments)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
 					response := send(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": call.Name, "arguments": call.Arguments}})
 					requireNativeStatus(t, response, http.StatusOK)
 					var reply struct {
@@ -160,6 +194,9 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 					}
 					if reply.Result.IsError != (test.want != "") || !strings.Contains(reply.Result.Content[0].Text, test.want) || strings.Contains(reply.Result.Content[0].Text, "Operator tool is unavailable") || strings.Contains(reply.Result.Content[0].Text, "unapproved-private-prompt") {
 						t.Fatalf("response=%s", response.Body)
+					}
+					if test.field != "" && !strings.Contains(reply.Result.Content[0].Text, "invalid_request") {
+						t.Fatalf("decoder refusal must be structured: %s", response.Body)
 					}
 				})
 			}
@@ -186,6 +223,88 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 				t.Fatalf("revoked key refusal=%s", denied.Body)
 			}
 		})
+	}
+}
+
+func assertPolicyInputSchema(t *testing.T, schema map[string]any, value any, path string) {
+	t.Helper()
+	if len(schema) == 0 {
+		return
+	}
+	switch schema["type"] {
+	case "object":
+		object, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("%s does not match the advertised object schema", path)
+		}
+		if maximum, ok := schema["maxProperties"].(float64); ok && len(object) > int(maximum) {
+			t.Fatalf("%s exceeds advertised property limit", path)
+		}
+		if required, ok := schema["required"].([]any); ok {
+			for _, field := range required {
+				if _, found := object[field.(string)]; !found {
+					t.Fatalf("%s is missing advertised required field %s", path, field)
+				}
+			}
+		}
+		properties, _ := schema["properties"].(map[string]any)
+		for field, child := range object {
+			if names, ok := schema["propertyNames"].(map[string]any); ok {
+				if maximum, ok := names["maxLength"].(float64); ok && utf8.RuneCountInString(field) > int(maximum) {
+					t.Fatalf("%s exceeds advertised property-name limit", path)
+				}
+			}
+			childSchema, found := properties[field]
+			if !found {
+				childSchema = schema["additionalProperties"]
+			}
+			if childSchema == true || childSchema == nil {
+				continue
+			}
+			if childSchema == false {
+				t.Fatalf("%s.%s is forbidden by the advertised schema", path, field)
+			}
+			assertPolicyInputSchema(t, childSchema.(map[string]any), child, path+"."+field)
+		}
+	case "array":
+		array, ok := value.([]any)
+		if !ok {
+			t.Fatalf("%s does not match the advertised array schema", path)
+		}
+		if maximum, ok := schema["maxItems"].(float64); ok && len(array) > int(maximum) {
+			t.Fatalf("%s exceeds advertised item limit", path)
+		}
+		for index, child := range array {
+			assertPolicyInputSchema(t, schema["items"].(map[string]any), child, fmt.Sprintf("%s[%d]", path, index))
+		}
+	case "string":
+		text, ok := value.(string)
+		if !ok {
+			t.Fatalf("%s does not match the advertised string schema", path)
+		}
+		if maximum, ok := schema["maxLength"].(float64); ok && utf8.RuneCountInString(text) > int(maximum) {
+			t.Fatalf("%s exceeds advertised string limit", path)
+		}
+		if pattern, ok := schema["pattern"].(string); ok && !regexp.MustCompile(pattern).MatchString(text) {
+			t.Fatalf("%s does not match the advertised pattern", path)
+		}
+	case "integer":
+		number, ok := value.(float64)
+		if !ok || number != float64(int64(number)) {
+			t.Fatalf("%s does not match the advertised integer schema", path)
+		}
+		if minimum, ok := schema["minimum"].(float64); ok && number < minimum {
+			t.Fatalf("%s falls below the advertised minimum", path)
+		}
+		if maximum, ok := schema["maximum"].(float64); ok && number > maximum {
+			t.Fatalf("%s exceeds the advertised maximum", path)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			t.Fatalf("%s does not match the advertised boolean schema", path)
+		}
+	default:
+		t.Fatalf("%s has an unsupported schema type %v", path, schema["type"])
 	}
 }
 

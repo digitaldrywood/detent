@@ -129,14 +129,20 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		RequestID string          `json:"request_id"`
 		Input     json.RawMessage `json:"input"`
 	}
-	if operatortool.DecodeProjectArguments(call.Arguments, &selector) != nil || strings.TrimSpace(selector.RequestID) == "" || len(selector.Input) == 0 || selector.Input[0] != '{' {
-		return result, operatortool.ErrInvalidArguments
+	if err := operatortool.DecodeProjectArguments(call.Arguments, &selector); err != nil {
+		return result, err
+	}
+	if strings.TrimSpace(selector.RequestID) == "" {
+		return result, &operatortool.RequestError{Code: "invalid_request", Message: "request_id: a nonempty business retry key is required"}
+	}
+	if len(selector.Input) == 0 || selector.Input[0] != '{' {
+		return result, &operatortool.RequestError{Code: "invalid_request", Message: "input: must be an object"}
 	}
 	if strings.TrimSpace(selector.ProjectID) == "" && call.Name != "create_native_project" && call.Name != "create_hosted_project" && !operatortool.IsOrganizationModelSelection(call.Name) {
-		return result, operatortool.ErrInvalidArguments
+		return result, &operatortool.RequestError{Code: "invalid_request", Message: "project_id: is required"}
 	}
 	if (call.Name == "create_native_project" || call.Name == "create_hosted_project") && selector.ProjectID != "" {
-		return result, operatortool.ErrInvalidArguments
+		return result, &operatortool.RequestError{Code: "invalid_request", Message: "project_id: must be omitted when creating a project"}
 	}
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(call.Name, false), ProjectID: selector.ProjectID})
 	if err != nil {
