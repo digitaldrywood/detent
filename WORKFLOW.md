@@ -207,17 +207,14 @@ justify changing the effort. Preserve intentional operator exceptions and leave
 `model` unset: a per-issue model overrides every stage, including Astra planning
 and validation.
 
-## Mechanism moratorium
+## Mechanism budget
 
-Effective 2026-09-10 until the operator lifts it. Detent has grown a large set
-of interacting self-protection mechanisms (brakes, breakers, leases, parks,
-recovery sweeps, revocations, reconcilers). Their interactions are now the main
-source of incidents.
+Detent carries a large set of interacting self-protection mechanisms (brakes,
+breakers, leases, parks, recovery sweeps, revocations, reconcilers). Their
+interactions are the main source of incidents, so the set may not grow.
 
-- Do not add a new brake, breaker, lease, park, recovery path, revocation,
-  reason code, or reconciliation loop.
-- A fix for a misbehaving mechanism must remove or consolidate a mechanism, or
-  state in the PR why it cannot. "Add a guard for the new case" is not a fix.
+- INV-3: a change that adds or expands a mechanism removes or consolidates an
+  existing one in the same change. "Add a guard for the new case" is not a fix.
 - Infrastructure failures (backend startup, protocol errors, workspace hooks)
   are attributed to the instance, never to the issue.
 - The orchestrator is the only writer of tracker lane state; workers report

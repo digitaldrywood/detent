@@ -7,6 +7,13 @@ the Change/PR description; put per-change rationale, evidence and verification
 there or in issue comments, as required by INV-16. A passing check does not
 authorize weakening a rule.
 
+An invariant is a rule, not a specification. Each section states its rule in
+a few short paragraphs and then names its enforcing checks. Implementation
+detail that changes with ordinary feature work (how a path verifies, retries,
+routes or formats) belongs in the named tests and in package documentation,
+never here. A change that edits this document without changing a rule or an
+enforcing check fails review.
+
 **Checks:** `make check-invariants` runs the exact behavioral tests in
 [policy.json](../invariants/policy.json) through
 [tools/invariantcheck](../tools/invariantcheck/main.go); missing, skipped or
@@ -50,75 +57,20 @@ and `TestHostedProjectTools` in `internal/hubserver`.
 Infrastructure failures attach to the instance, never to the issue, whether
 they happen before the first agent turn or during a turn. Backend startup,
 protocol, credential, network and workspace-hook failures do not consume the
-issue's failure allowance or authorize source repair. Issue retry accounting
-must distinguish genuine code failures from instance interruptions.
+issue's failure allowance or authorize source repair. Retry accounting
+distinguishes genuine code failures from instance interruptions, and unknown
+infrastructure diagnostics remain instance intake. A workspace error is forge
+unavailability only when a matching forge host and Git read operation fail;
+an unrelated hook failure cannot inherit that classification.
 
-Scheduled full-suite job reporting follows INV-5: the reporter files every
-failing job into Todo at least High, including infrastructure failures labelled
-and attributed to the CI instance. This reporting policy preserves worker
-failure allowance and source-repair attribution.
-
-Valid native final reports use the existing instance blocker completion and
-evidence owner after execution and source publication fencing. Instance-only
-reports preserve successful provider accounting and typed evidence without
-recording issue acceptance or moving the issue to Blocked. The native claim
-owner treats that completed blocked disposition as answered at the current
-revision and dispatch generation, including dirty checkpoints. Genuinely
-unfinished `in_progress` dispositions without blockers or human action remain
-eligible for continuation. A newer item revision or dispatch generation from
-the existing context and continuation owners permits resumption; actual
-instance eligibility, leases, authorization and human or external holds still
-govern dispatch.
-Invalid reports and explicit acceptance requirements retain their existing owners.
-
-Workspace preparation retains the actual failure attribution. A matching
-forge host and Git read operation are required to classify a workspace error
-as forge unavailability; an unrelated hook failure cannot inherit that
-classification. Unknown infrastructure diagnostics remain instance intake.
-
-Native Rework verifies preserved source head, digest, machine, policy and
-provider-session availability before host preparation changes the worktree.
-Existing assigned worktrees retain their branch and source; creation cannot
-repair foreign ownership. The fenced execution owner captures the verified
-source and the host preparation result before the worker continues, including
-an owned paused rebase. For an already-paused assigned rebase, the existing
-Rework owner verifies the original unpushed source checkpoint and reproduces
-the preparation in isolated scratch. Its source replay plan, index entries,
-detached head and conflict content must match the preserved worktree before
-the same fenced checkpoint owner records the actual transition and resumes
-the session. Commit metadata alone cannot establish that transition. Unknown
-changes and unavailable authority remain refusals, never checkpoint rewrites
-or relaxed comparisons.
-
-Permanent pre-provider native recovery refusals use the existing completion
-and admission owners to retain a non-dispatchable review handoff before claim
-release. They preserve genuine run and checkpoint receipts, create no provider
-attempt, and consume no issue failure allowance. Human and permission holds
-retain their existing authority.
-
-Native landing conflicts are source refusals, not infrastructure failures or
-shipped work. A GitHub HTTP 405 mergeability refusal requires current source
-conflict verification before selecting a conflict destination. Clean or
-unproven source retains the existing item-local landing continuation.
-
-A terminal successful merge wait does not answer an unlanded current Change
-version. Merging claim eligibility belongs to the existing Change landing
-readiness owner, which requires a reviewed current version without a Landed
-receipt. Successful unchanged Code and Rework answers remain suppressed.
-
-The same landing readiness owner limits a reviewed version to its source
-machine and registered runner only when its exact source attempt checkpoint
-names that head as local-only and unpushed. External pull requests, published
-heads, clean checkpoints and missing checkpoints do not impose that restriction.
-Workspace-session retained-worktree affinity governs separate workspace items;
-its retention interval does not establish availability of an unpublished
-project issue commit.
-
-Landing refusal destinations belong to the workflow owner. Conflicts and command gate failures prefer
-configured Rework, then the first allowed dispatchable non-terminal lane.
-Other refusals prefer the configured review lane, then the first allowed
-non-dispatchable non-terminal lane. Terminal, operator-only and self-transitions
-remain excluded; unreachable destinations retain the existing error handoff.
+Native landing conflicts and failed landing commands are source refusals, not
+infrastructure failures or shipped work. Landing refusal destinations belong
+to the workflow owner: conflicts and command gate failures prefer configured
+Rework, other refusals prefer the configured review lane, and terminal,
+operator-only and self-transitions are excluded. Recovery and Rework resume
+only from a verified preserved source checkpoint; unknown changes and
+unavailable authority are refusals, never checkpoint rewrites or relaxed
+comparisons. Human and permission holds retain their authority.
 
 **Enforcement:** `TestPreTurnFailuresDrainInstance`,
 `TestObservedLanePreTurnFailureRemainsInstanceOwned`,
@@ -140,12 +92,13 @@ in `internal/store`; `TestNativeInterruptedCodeRecoversPersistedSession` in
 `internal/runner`; `TestNativePlannerAutomaticHandoff` in `internal/hubclient`.
 Review preserves instance attribution outside those cases.
 
-## INV-3 — Mechanism moratorium
+## INV-3 — Net-zero mechanisms
 
-No new brake, breaker, lease, park, recovery path, revocation, reason code or
-reconciliation loop is allowed; any change to one must remove or consolidate
-an existing one, and the remedy is never a guard. Do not add configuration keys,
-CLI subcommands or dashboard surfaces to work around a mechanism. Fix the mechanism.
+A change that adds or expands a brake, breaker, lease, park, recovery path,
+revocation, reason code or reconciliation loop must remove or consolidate an
+existing one in the same change, and the remedy for a misbehaving mechanism is
+never a guard. Do not add configuration keys, CLI subcommands or dashboard
+surfaces to work around a mechanism. Fix the mechanism.
 
 Constant lane-transition reasons must use the
 [existing vocabulary](../internal/invariants/source_policy.json). Dynamic
@@ -163,23 +116,16 @@ Merges go through the repository's merge queue when one exists. Without a
 queue, Detent uses its serialized merge worker. Other repositories retain
 their chosen settings.
 
-Queue ownership belongs to the current PR head. Missing, running, cancelled
-or failed checks do not qualify for queue admission. Completed success,
-skipped and neutral checks may enter the queue, subject to provider-required
+Queue ownership belongs to the current PR head. Only completed success, skipped
+and neutral checks qualify for queue admission, subject to provider-required
 contexts; skipped checks are not passed-test evidence. Unresolved review
-threads require queue withdrawal before the configured Rework handoff.
-Withdrawal failures must not prevent a lane write to Done.
-
-Queue removal is accounted once per distinct removal and PR head. The first
-removal permits normal readmission; a second on the same head routes to Rework
-under the existing budget. Restart preserves that accounting, and a repaired
-head starts a fresh count.
-
-After verifying a native landing merge on its base branch, the existing
-landing owner comments on and closes earlier open landing pull requests for
-that item and repository. Ownership requires the actual pull head to match
-the immutable SHA encoded in its landing branch. A different or missing
-head does not establish ownership and the pull request remains open.
+threads require queue withdrawal before the configured Rework handoff, and a
+withdrawal failure never prevents a lane write to Done. Queue removal is
+counted once per distinct removal and PR head: the first permits readmission,
+the second on the same head routes to Rework, the count survives restart, and
+a repaired head starts fresh. After a verified native landing merge, the
+landing owner closes earlier open landing pull requests for the same item only
+when the pull head matches the SHA encoded in its landing branch.
 
 **Enforcement:** `TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch`,
 `TestDelegateNativeMergeQueueIssuesCachesQueueEntries`,
@@ -198,73 +144,32 @@ is present; live queue settings require operator inspection.
 This repository starts no validation workflow from `pull_request`,
 `pull_request_target` or `merge_group`, and requires no branch status check.
 The sole event exception is `.github/workflows/cla.yml`: its single job runs
-only `contributor-assistant/github-action` on `pull_request_target` and
-`issue_comment`, without checking out or executing PR code. The action owns
-signature records on the dedicated, unprotected `cla-signatures` branch.
+only `contributor-assistant/github-action` without checking out or executing
+PR code, and owns signature records on the unprotected `cla-signatures` branch.
 
 Source completion and landing run `make check-land` and fix failures before
-submission. A failed landing command returns to configured Rework with the
-failing output. Full integration tests, race, coverage and fuzz validation
-remain in the scheduled suite. The project publishes no local status and sets
-`gate.required_status_checks: []`; ordinary merge does not wait for an additional
-CI producer or scheduled validation.
-Reported failed CI and native base-branch requirements remain authoritative.
-`gate.automated_review: "off"` removes pending-review waits; reported P1
-findings still require Rework. Other projects retain their configured policies.
+submission; a failed landing command returns to configured Rework with the
+failing output. The project publishes no local status and sets
+`gate.required_status_checks: []` and `gate.automated_review: "off"`; ordinary
+merge waits for no additional CI producer or scheduled validation, while
+reported failed CI, native base-branch requirements and reported P1 findings
+remain authoritative. Diagnostics support concurrent worktrees without a shared
+validation lock. Other projects retain their configured policies.
 
-Optional diagnostics preserve failures and support concurrent worktrees without
-a shared validation lock. Tool invocations share the host through
-`TEST_PROCS`; lint allows parallel runners and client tests retain file
-isolation with at most two workers per command.
-
-Scheduled and manual full validation pin the current `develop` SHA and run
-every full-suite job on that commit, regardless of existing release tags.
-Only the successful full-suite finalizer publishes `scheduled-full-ci`,
-creates an annotated validated patch tag with exact status evidence and
-dispatches release. It does not merge to `main` or deploy production.
-Only a newly validated release triggers deployment. Release publishes signed
-artifacts, deploys staging and runs its smoke, then deploys production and runs
-its smoke. A failed smoke stops promotion and reports at least High through the
-selected native owner. An already validated commit receives no new tag or deploy.
-Production release artifacts use validated tags only.
-
-Scheduled Detent failures use the selected native reporting owner and stable
-job fingerprints, preserving commit, run, attempt, job, imported history and
-holds. Under the human-approved Detent scheduled reporting policy, every
-failing job creates or updates one issue at least High priority. Source, test,
-unclassified and infrastructure failures all enter Todo, with infrastructure
-and unclassified reports labelled as infrastructure and attributed to the CI
-instance. The selected workflow must provide dispatchable, nonterminal Todo
-and nondispatchable, nonterminal Backlog, neither operator-only. Matching open
-job issues receive comments with the run URL, findings and pinned develop SHA
-instead of duplicates. The existing expected-revision edit owner preserves
-High and Urgent and adds the infrastructure label without replacing existing
-labels; the native workflow owner promotes matching scheduled Backlog intake
-to Todo. Human questions, operator holds, active/review lanes and terminal
-history remain intact. Other unknown instance diagnostics remain Backlog intake.
-Infrastructure reporting does not authorize source repair without reproducible
-source evidence or consume an issue failure allowance. Repair workers verify
-reported failures on their current base; green results append tracker evidence
-without closing work or changing lanes. Every suite job must succeed before a
-validated release is tagged. Failed Cloud publication must not fall back to
-GitHub issue writes.
-
-Conversation bundles are ignored feature output, prepared from the selected
-source and lockfiles by the build owner with Node 24 and `make assets`. Prepared
-release source archives include client/CSS embed inputs, generated documentation
-and build identity. Configuration references are ignored output; the scheduled
-`make check-generated` generates them from authored inputs and retains the sqlc
-Go drift check. sqlc and Templ Go stay committed because
-plain Go compilation needs their declarations. Plain checkouts compile and test
-without ignored assets; build owners prepare assets before deployment. The
-scheduled suite retains safety-critical coverage floors and boundary fuzz seeds.
-The NilAway audit selects all Go packages, including unchanged importers;
-baseline matches require both location and source-line hash.
-The pinned analyzer uses Go's vettool protocol to carry dependency facts between
-serial package processes. Its default Go soft memory limit is 1 GiB, not a
-hard RSS bound. Installation, package loading and analyzer failures cannot be
-accepted as reviewed findings. Grouped-finding explanation lines remain part
-of their reviewed finding; unrelated tool errors still fail the audit.
+Full integration, race, coverage, fuzz, NilAway and generated-output validation
+run in the scheduled suite, which pins the current `develop` SHA and runs every
+job on it regardless of existing tags. Only the successful full-suite finalizer
+publishes `scheduled-full-ci`, creates an annotated validated patch tag and
+dispatches release; release deploys staging, runs its smoke, then deploys
+production and runs its smoke, and a failed smoke stops promotion. An already
+validated commit receives no new tag or deploy, and production artifacts use
+validated tags only. Every failing scheduled job is reported through the
+selected native owner at least High into Todo under a stable job fingerprint,
+following [deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting);
+infrastructure reports carry the infrastructure label and CI-instance
+attribution, and failed Cloud publication never falls back to GitHub issue
+writes. Plain checkouts compile and test without ignored assets; build owners
+prepare conversation bundles and configuration references before deployment.
 
 **Enforcement:** `TestRepositoryWorkflow`,
 `TestRepositoryHasNoPullRequestActions`, and `TestWorkflowViolations` in
@@ -292,34 +197,22 @@ threads, their resume sources and descendants of retained parents.
 
 ## INV-7 — Machine issue identity
 
-Machine-filed issues carry an origin stamp and a stable problem fingerprint.
-The fingerprint identifies the problem, excluding timestamps, attempt IDs and
-wording variations. Use the selected tracker's supported filing owner; preserve
-imported provenance and match open work before filing. Matching open issues
-receive occurrences or comments instead of duplicate issues.
+Machine-filed issues carry an origin stamp and a stable problem fingerprint
+that identifies the problem, excluding timestamps, attempt IDs and wording
+variations. Filing uses the selected tracker's supported owner, preserves
+imported provenance and matches open work before filing: a matching open issue
+receives an occurrence or comment, never a duplicate, and when every match is
+closed the newest one is already handled and nothing is created or changed.
+Occurrence evidence identifies runs, attempts, commits and jobs without
+changing problem identity.
 
-Intake findings prefer an open issue among durable-marker matches. If all
-matches are closed, the newest issue (highest repository issue number for
-GitHub intake) is already handled: create no issue, comment, content update or
-state change. Occurrence evidence identifies runs, attempts, commits and jobs
-without changing problem identity.
-
-The worker's existing `file_machine_issue` tool accepts optional integer
-`priority` creation ranks: 1=Urgent, 2=High, 3=Normal, 4=Low. Native intake maps
-these to priorities 0–3; omission leaves new work unset, and body prose never
-supplies priority. Fingerprint reuse may raise unset or weaker priority through
-the existing mutation owner, with the observed revision and a priority-only
-edit. It never lowers stronger priority, replaces origin or content, removes
-operator holds, changes lanes or authorizes admission.
-
-The scheduled reporting owner follows the job-level policy in INV-5, including
-Backlog-to-Todo promotion through the native workflow owner. Worker intake does
-not inherit that scheduled reporting authority.
-
-Host-owned native worker intake requires the current registered runner's scoped
-source lease and fencing token. Its existing creation transaction creates
-Backlog work or records an occurrence on matching open work. Filing priority
-grants no general operator mutation or worker lane-writing authority.
+The worker's `file_machine_issue` tool accepts integer priority ranks 1–4
+(Urgent to Low); omission leaves priority unset and body prose never supplies
+it. A fingerprint match may raise unset or weaker priority through the existing
+mutation owner; it never lowers stronger priority, replaces origin or content,
+removes operator holds, changes lanes or authorizes admission. Host-owned
+worker intake requires the current runner's scoped lease and creates Backlog
+work; it does not inherit the scheduled reporting authority in INV-5.
 
 **Enforcement:** `TestMachineIssueTool` in `internal/orchestrator`;
 `TestMachineIssueDuplicate`, `TestMachineIssueSeparateConnectors`,
@@ -496,11 +389,13 @@ approval declines retain their authority.
 ## INV-15 — Visible UI changes require a human-authored issue
 
 Every user-facing surface is covered: the Cloud app (`web/conversation`),
-Hub server-rendered pages and the local Templ dashboard. A change may add a
-visible element or content (row, line, banner, badge, chip, column, panel,
-page, tooltip text or status copy) only when a human-authored issue names that
-UI change. Machine-filed issues, agent-expanded scope and "while I was here"
-additions never qualify.
+Hub server-rendered pages and the local Templ dashboard. A change may add
+visible elements or content only when a human-authored issue names the surface
+or feature they belong to. A human-authored feature issue authorizes the whole
+surface it describes, including the rows, controls, states, empty and error
+copy and responsive layout that surface needs; it does not have to enumerate
+each element. Machine-filed issues, agent-expanded scope and "while I was
+here" additions never qualify.
 
 Removing UI or fixing an existing element in place without adding visible
 content does not need that approval. Agent diagnostics, coverage, provenance
@@ -530,7 +425,10 @@ contract; do not accumulate per-change narratives. Historical evidence remains
 recoverable through git history.
 
 Only a change to an invariant's rule or its enforcing check edits
-`docs/invariants.md`. Following an unchanged invariant requires no edit.
+`docs/invariants.md`. Following an unchanged invariant requires no edit, and
+a change that edits the document without changing a rule or check fails
+review. Implementation detail that moves with ordinary feature work belongs
+in the enforcing tests and package documentation, not in an invariant.
 The current completion contract owns tracker publication; this rule grants
 workers no additional write authority.
 

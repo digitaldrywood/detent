@@ -22,7 +22,7 @@
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.
 - Before implementation, confirm dependencies listed in the issue are merged into `origin/develop`.
 - Keep changes scoped to the active issue.
-- Follow [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue): add visible elements or content on any user-facing surface (Cloud app, Hub server-rendered pages, or local Templ dashboard) only when a human-authored issue names that UI change. Machine-filed issues, agent-expanded scope, and "while I was here" additions never qualify. Removing UI or fixing an existing element in place without adding visible content does not need that approval.
+- Follow [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue): add visible elements or content on any user-facing surface (Cloud app, Hub server-rendered pages, or local Templ dashboard) only when a human-authored issue names the surface or feature it belongs to; a feature issue authorizes the whole surface it describes. Machine-filed issues, agent-expanded scope, and "while I was here" additions never qualify. Removing UI or fixing an existing element in place without adding visible content does not need that approval.
 - Keep agent diagnostics, coverage, provenance, and debugging data in existing API and MCP reads and logs; never add them to UI, including the Diagnostics page, toggles, or debug flags. Describe a proposed UI addition in the outcome or file a Backlog issue for a human to author or rewrite; do not build it.
 - Publish Workpad status through the project's existing tracker owner. For comment-based Workpads, update the authoritative `## Codex Workpad` comment, or post a new canonical comment when editing is unavailable. An issue-body or final-answer status does not supersede an existing canonical comment. Preserve native/local event ownership.
 - Run `make generate` before committing when templates, sqlc queries, or CSS inputs change.
@@ -54,17 +54,14 @@ Escalation is an operator action: applying the `complexity:very-complex` label
 routes the issue to Astra at `medium`. Agents never apply complexity labels and
 never assign `xhigh` or `max`.
 
-## Mechanism moratorium
+## Mechanism budget
 
-Effective 2026-09-10 until the operator lifts it. Detent has grown a large set
-of interacting self-protection mechanisms (brakes, breakers, leases, parks,
-recovery sweeps, revocations, reconcilers). Their interactions are now the main
-source of incidents.
+Detent carries a large set of interacting self-protection mechanisms (brakes,
+breakers, leases, parks, recovery sweeps, revocations, reconcilers). Their
+interactions are the main source of incidents, so the set may not grow.
 
-- Do not add a new brake, breaker, lease, park, recovery path, revocation,
-  reason code, or reconciliation loop.
-- A fix for a misbehaving mechanism must remove or consolidate a mechanism, or
-  state in the PR why it cannot. "Add a guard for the new case" is not a fix.
+- INV-3: a change that adds or expands a mechanism removes or consolidates an
+  existing one in the same change. "Add a guard for the new case" is not a fix.
 - Infrastructure failures (backend startup, protocol errors, workspace hooks)
   are attributed to the instance, never to the issue.
 - The orchestrator is the only writer of tracker lane state; workers report
