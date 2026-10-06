@@ -5,8 +5,9 @@ import (
 	"encoding/hex"
 	"net/http"
 
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 const operatorConnectionHeader = "X-Detent-Connection-ID"

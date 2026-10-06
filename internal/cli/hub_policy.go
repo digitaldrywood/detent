@@ -127,7 +127,7 @@ func nativeCompletionWorkflowWarnings(cfg workflowconfig.Config, descriptor poli
 			warnings = append(warnings, fmt.Sprintf("native workflow has no landing path from %s to a terminal lane", lane.Name))
 		}
 		if _, ok := connector.LandingRefusalLane(states, lane.Name, cfg.Agent.AutoPromote.SourceState, false); !ok {
-			warnings = append(warnings, fmt.Sprintf("native workflow has no park lane reachable from %s", lane.Name))
+			warnings = append(warnings, "native workflow has no park lane reachable from "+lane.Name)
 		}
 	}
 	return warnings

@@ -327,9 +327,12 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err != nil {
 				return nil, err
 			}
-			snapshot.ProjectConfigurationRequest, err = s.runnerProjectConfiguration(ctx, tx, scope, request.ProjectConfiguration, now)
+			configurationRequest, err := s.runnerProjectConfiguration(ctx, tx, scope, request.ProjectConfiguration, now)
 			if err != nil {
 				return nil, err
+			}
+			if configurationRequest.RequestID != "" {
+				snapshot.ProjectConfigurationRequest = &configurationRequest
 			}
 			snapshot.GitHubIntake, err = readGitHubBatchTask(ctx, tx, scope)
 			return snapshot, err

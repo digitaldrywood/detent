@@ -2,18 +2,19 @@ package codex
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"reflect"
 )
 
-func threadToolsMatch(path, threadID string, tools []DynamicTool) (bool, error) {
+func threadToolsMatch(path, threadID string, tools []DynamicTool) (matches bool, err error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return false, err
 	}
-	defer file.Close()
+	defer func() { err = errors.Join(err, file.Close()) }()
 	var metadata struct {
 		Type    string `json:"type"`
 		Payload struct {
@@ -25,7 +26,7 @@ func threadToolsMatch(path, threadID string, tools []DynamicTool) (bool, error) 
 		return false, err
 	}
 	if metadata.Type != "session_meta" || metadata.Payload.ID != threadID {
-		return false, fmt.Errorf("Codex rollout metadata does not identify thread %q", threadID)
+		return false, fmt.Errorf("codex rollout metadata does not identify thread %q", threadID)
 	}
 	if len(metadata.Payload.DynamicTools) != len(tools) {
 		return false, nil

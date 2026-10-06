@@ -1494,13 +1494,6 @@ func nullableNonNegativeFloat(value *float64) sql.NullFloat64 {
 	return sql.NullFloat64{Float64: nonNegativeFloat(*value), Valid: true}
 }
 
-func positiveWeight(value int) int {
-	if value <= 0 {
-		return 1
-	}
-	return value
-}
-
 func requireAffected(rows int64, name string, id int64) error {
 	if rows == 0 {
 		return fmt.Errorf("%w: %s %d", ErrNotFound, name, id)

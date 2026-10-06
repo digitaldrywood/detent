@@ -305,7 +305,7 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 	result.workerAlive, result.workerChecked, result.livenessError = heartbeatWorkerLiveness(target.workerProcess)
 	result.workspaceModifiedAt, result.workspaceAdvanced = heartbeatWorkspaceActivity(target.workspacePath, target.workspaceModifiedAt)
 	now := m.now().UTC()
-	result.heartbeat, result.workAttemptError = m.persistHeartbeat(operationCtx, target, settings, now)
+	result.heartbeat, result.workAttemptError = m.persistHeartbeat(operationCtx, target, settings)
 	result.workAttemptRenewed = result.workAttemptError == nil && settings.workAttempts != nil && result.heartbeat.AttemptID > 0
 	if settings.scheduling != nil {
 		result.claim, result.claimError = settings.scheduling.RenewClaim(operationCtx, target.issueID, now)
@@ -322,7 +322,7 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 	m.finish(target, result)
 }
 
-func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbeatTarget, settings heartbeatSettings, now time.Time) (store.WorkAttemptHeartbeat, error) {
+func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbeatTarget, settings heartbeatSettings) (store.WorkAttemptHeartbeat, error) {
 	if target.progress != nil {
 		target.progress.mu.Lock()
 		defer target.progress.mu.Unlock()
@@ -335,7 +335,7 @@ func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbea
 		target.workAttemptHeartbeat = current.workAttemptHeartbeat
 	}
 	m.mu.Unlock()
-	now = m.now().UTC()
+	now := m.now().UTC()
 	heartbeat := target.workAttemptHeartbeat
 	heartbeat.HeartbeatAt = now
 	heartbeat.LeaseExpiresAt = now.Add(settings.leaseTTL)

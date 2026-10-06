@@ -76,7 +76,7 @@ func MigrateTrackerLanes(raw []byte, laneOrder ...string) ([]byte, bool, error) 
 			delete(byName, key)
 		}
 		if len(byName) > 0 {
-			return nil, false, fmt.Errorf("Markdown has %d lanes missing from stored workflow", len(byName))
+			return nil, false, fmt.Errorf("markdown has %d lanes missing from stored workflow", len(byName))
 		}
 		lanes = ordered
 	}

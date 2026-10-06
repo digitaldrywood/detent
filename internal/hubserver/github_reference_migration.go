@@ -47,7 +47,7 @@ func githubMigrationSourceURL(body string) string {
 	return candidate
 }
 
-func migrateGitHubIssueReferences(ctx context.Context, tx *sql.Tx, logger *slog.Logger) error {
+func migrateGitHubIssueReferences(ctx context.Context, tx *sql.Tx, logger *slog.Logger) (err error) {
 	rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.project_id, i.body, i.url,
 COALESCE(i.github_number, 0), COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''),
 COALESCE(json_extract(i.provenance_json, '$.external_id'), i.github_node_id, ''), COALESCE(l.source_url, '')
@@ -58,6 +58,7 @@ ORDER BY i.project_id, i.native_id`)
 	if err != nil {
 		return err
 	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	type item struct {
 		id, project, body, url, owner, repository, nodeID, linkedURL string
 		number                                                       int
@@ -66,7 +67,7 @@ ORDER BY i.project_id, i.native_id`)
 	for rows.Next() {
 		var value item
 		if err := rows.Scan(&value.id, &value.project, &value.body, &value.url, &value.number, &value.owner, &value.repository, &value.nodeID, &value.linkedURL); err != nil {
-			return errors.Join(err, rows.Close())
+			return err
 		}
 		refs := nativeSourceReferences(value.nodeID, value.owner, value.repository, value.number, value.linkedURL, value.url, &tracker.Provenance{Provider: "github", ExternalID: value.nodeID})
 		if refs[len(refs)-1].Number == 0 {
@@ -114,7 +115,7 @@ ORDER BY i.project_id, i.native_id`)
 	return nil
 }
 
-func importedGitHubIssueURLs(ctx context.Context, tx *sql.Tx, project, item, nodeID string) ([]string, error) {
+func importedGitHubIssueURLs(ctx context.Context, tx *sql.Tx, project, item, nodeID string) (urls []string, err error) {
 	rows, err := tx.QueryContext(ctx, `SELECT r.record_json FROM github_import_records r
 JOIN github_imports g ON g.id = r.import_id
 WHERE g.project_id = ? AND g.work_item_id = ? AND r.kind = 'issue'
@@ -123,11 +124,11 @@ WHERE project_id = ? AND work_item_id = ? AND record_id = ?`, project, item, pro
 	if err != nil {
 		return nil, err
 	}
-	var urls []string
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
-			return nil, errors.Join(err, rows.Close())
+			return nil, err
 		}
 		var record struct {
 			Body       string             `json:"body"`
@@ -139,7 +140,7 @@ WHERE project_id = ? AND work_item_id = ? AND record_id = ?`, project, item, pro
 			} `json:"data"`
 		}
 		if err := json.Unmarshal([]byte(raw), &record); err != nil {
-			return nil, errors.Join(err, rows.Close())
+			return nil, err
 		}
 		if record.Provenance.ExternalID != "" && record.Provenance.ExternalID != nodeID || record.Data.NodeID != "" && record.Data.NodeID != nodeID {
 			continue

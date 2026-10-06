@@ -2771,7 +2771,9 @@ func TestDispatchReadyIssuesLogsMergeSlotDecisionAndStopsAfterGlobalWait(t *test
 	}
 	state := newState(cfg)
 	first := dispatchTestIssueWithPullRequest("issue-merge-first", "Merging", "OPEN")
+	first.Priority = new(1)
 	second := dispatchTestIssueWithPullRequest("issue-merge-second", "Merging", "OPEN")
+	second.Priority = new(1)
 
 	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{first, second}, now.Add(time.Second))
 

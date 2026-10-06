@@ -40,7 +40,7 @@ func (s *Service) readIssuePageItems(ctx context.Context, query string, args []a
 		if _, err = tx.ExecContext(ctx, "INSERT INTO native_issue_pages(id, scope, expires) VALUES (?, ?, ?)", position.Snapshot, cursor.Scope, cursor.Expires); err != nil {
 			return nil, err
 		}
-		projection := `SELECT ?, i.native_id,
+		const projection = `INSERT INTO native_issue_page_items(page_id, native_id, lane_rank, state_name, priority_rank, activity_missing, activity_at, identifier) SELECT ?, i.native_id,
 COALESCE((SELECT CAST(lane.key AS INTEGER) FROM projects p, json_each(p.states_json) lane
  WHERE p.id = i.project_id AND json_extract(lane.value, '$.name') = ws.detent_state), 2147483647),
 COALESCE(ws.detent_state, ''),
@@ -49,7 +49,7 @@ CASE WHEN ws.terminal = 1 THEN 0 ELSE COALESCE((SELECT CASE WHEN q.priority_over
 CASE WHEN i.last_activity_at IN ('', '0001-01-01T00:00:00Z') THEN 1 ELSE 0 END,
 CASE WHEN i.last_activity_at = '0001-01-01T00:00:00Z' THEN '' ELSE rtrim(i.last_activity_at, 'Z') END,
 i.project_id || '#' || i.number`
-		statement := "INSERT INTO native_issue_page_items(page_id, native_id, lane_rank, state_name, priority_rank, activity_missing, activity_at, identifier) " + strings.Replace(query, "SELECT i.native_id", projection, 1)
+		statement := strings.Replace(query, "SELECT i.native_id", projection, 1)
 		if _, err = tx.ExecContext(ctx, statement, append([]any{position.Snapshot}, args...)...); err != nil {
 			return nil, err
 		}

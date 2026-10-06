@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -79,7 +80,7 @@ func addCostAmount(target **int64, value int64) error {
 	}
 	previous := **target
 	if value > 0 && previous > math.MaxInt64-value || value < 0 && previous < math.MinInt64-value {
-		return fmt.Errorf("monthly cost total exceeds integer precision")
+		return errors.New("monthly cost total exceeds integer precision")
 	}
 	**target += value
 	return nil

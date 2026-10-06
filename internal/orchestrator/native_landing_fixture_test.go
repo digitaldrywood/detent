@@ -184,6 +184,7 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	})}
 	t.Cleanup(func() { http.DefaultClient = previous })
 	cfg := config.Config{}
+	cfg.Gate.Run = "true"
 	cfg.Worker.GitHubToken = "native-landing-test-token"
 	cfg.Tracker.Kind = config.TrackerGitHub
 	cfg.Tracker.Endpoint = "https://native-landing.test/graphql"

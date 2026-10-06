@@ -82,7 +82,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		}
 		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 		destination := cfg.reviewTargetState()
-		rework := landing.RefusalKind == workspace.LandRefusalConflict
+		rework := landing.GateFailed || landing.RefusalKind == workspace.LandRefusalConflict
 		if rework {
 			destination = cfg.ReworkState
 		}
@@ -133,6 +133,9 @@ func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
 		return nil
 	}
 	metadata := map[string]any{"native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
+	if landing.GateFailed {
+		metadata["native_gate_failed"] = true
+	}
 	if landing.MergeSHA != "" {
 		metadata["native_merge_sha"] = landing.MergeSHA
 		metadata["native_base_ref"] = landing.BaseRef

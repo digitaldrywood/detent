@@ -608,6 +608,9 @@ func (o *Orchestrator) restoreDeferredExecution(ctx context.Context, record defe
 }
 
 func (o *Orchestrator) captureDeferredExecution(record *deferredCompletion) bool {
+	if record == nil {
+		return false
+	}
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
 		if execution, ok := source.RunExecution(record.Running.Issue.ID).(interface{ CompletionState() json.RawMessage }); ok {
 			record.Execution = execution.CompletionState()

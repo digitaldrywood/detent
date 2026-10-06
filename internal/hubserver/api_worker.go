@@ -638,7 +638,7 @@ func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuer
 	assigneeFilter := stringSet(assignees)
 	labelIncludeFilter := stringSet(labelInclude)
 	labelExcludeFilter := stringSet(labelExclude)
-	rows, err := tx.QueryContext(ctx, `
+	const statement = `
 SELECT i.id, COALESCE(r.id, 0), COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), lower(trim(ws.detent_state)),
        lower(trim(i.author_login)), i.labels_json, i.assignees_json,
        q.priority_override, COALESCE(q.rank, ''), COALESCE(i.native_created_at, i.created_at), i.project_id, i.number,
@@ -667,8 +667,8 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
   AND i.archived = 0
   AND lower(trim(ws.detent_state)) <> 'cancelled'
   AND ws.dispatchable = 1
-  AND (? = 1 OR `+notWorkspaceItemClause+`)
-  AND `+notAlreadyAnsweredClause+`
+  AND (? = 1 OR ` + notWorkspaceItemClause + `)
+  AND ` + notAlreadyAnsweredClause + `
   AND (? = '' OR q.id IS NOT NULL)
   AND (p.require_dependencies = 0 OR NOT EXISTS (
     SELECT 1
@@ -681,7 +681,8 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
 ORDER BY
   CASE q.priority_override WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 3 THEN 3 ELSE 4 END,
   CASE WHEN q.rank IS NULL OR trim(q.rank) = '' THEN 1 ELSE 0 END,
-  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, query.PrioritizeUnblockers, scope, scope, scope, organization, organization, project, claimWorkspaceExclusionArg(query), scope)
+  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`
+	rows, err := tx.QueryContext(ctx, statement, query.PrioritizeUnblockers, scope, scope, scope, organization, organization, project, claimWorkspaceExclusionArg(query), scope)
 	if err != nil {
 		return nil, fmt.Errorf("query hub claim candidates: %w", err)
 	}

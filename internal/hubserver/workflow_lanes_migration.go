@@ -17,6 +17,7 @@ func migrateCloudWorkflowLanes(ctx context.Context, tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	type rewrite struct {
 		id           string
 		organization string
@@ -27,11 +28,11 @@ func migrateCloudWorkflowLanes(ctx context.Context, tx *sql.Tx) error {
 	for rows.Next() {
 		var id, organization, markdown, statesJSON string
 		if err := rows.Scan(&id, &organization, &markdown, &statesJSON); err != nil {
-			return errors.Join(err, rows.Close())
+			return err
 		}
 		var states []tracker.NativeState
 		if err := json.Unmarshal([]byte(statesJSON), &states); err != nil {
-			return errors.Join(fmt.Errorf("project %s workflow states: %w", id, err), rows.Close())
+			return fmt.Errorf("project %s workflow states: %w", id, err)
 		}
 		order := make([]string, 0, len(states))
 		for _, state := range states {
@@ -39,14 +40,14 @@ func migrateCloudWorkflowLanes(ctx context.Context, tx *sql.Tx) error {
 		}
 		out, changed, err := workflowconfig.MigrateTrackerLanes([]byte(markdown), order...)
 		if err != nil {
-			return errors.Join(fmt.Errorf("project %s workflow lanes: %w", id, err), rows.Close())
+			return fmt.Errorf("project %s workflow lanes: %w", id, err)
 		}
 		if changed {
 			rewrites = append(rewrites, rewrite{id: id, organization: organization, before: []byte(markdown), markdown: out})
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return errors.Join(err, rows.Close())
+		return err
 	}
 	if err := rows.Close(); err != nil {
 		return err

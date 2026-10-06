@@ -1294,10 +1294,6 @@ func (o *Orchestrator) dispatchPoolSnapshot() scheduler.PoolSnapshot {
 	return fallback
 }
 
-func (o *Orchestrator) dispatchStatePriority(state string) int {
-	return dispatchpriority.New(o.cfg.DispatchPriorityByState, nil).State(state)
-}
-
 func (o *Orchestrator) projectStateSlotStats(issue connector.Issue, state *State) projectStateSlotStats {
 	limit := o.cfg.MaxConcurrentAgents
 	normalized := normalizeState(issue.State)

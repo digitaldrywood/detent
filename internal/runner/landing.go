@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -52,7 +53,8 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	if target.GitHubPullRequest {
 		message = tracker.AppendGitHubIssueClosingReferences(message, target.SourceIssues)
 	}
-	options := workspace.LandOptions{HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
+	workflow, _, _, _ := r.runtimeSnapshot()
+	options := workspace.LandOptions{ValidationCommand: gate.Effective(workflow.Config.Gate).Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
 	var result workspace.LandResult
 	if target.GitHubPullRequest {
 		scope := connector.RESTScopeFromContext(ctx)
@@ -88,6 +90,10 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	if IsCapacityError(err) || errors.Is(err, github.ErrRateLimited) || errors.Is(err, forgeavailability.ErrUnavailable) {
 		return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
+	}
+	var validation *workspace.ValidationError
+	if errors.As(err, &validation) {
+		return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLandingRefused, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, GateFailed: true, Refusal: validation.Error()}}, nil
 	}
 	var refusal *workspace.LandRefusal
 	if errors.As(err, &refusal) {

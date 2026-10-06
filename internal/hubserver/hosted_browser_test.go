@@ -301,7 +301,7 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 			fixture.server.CloseClientConnections()
 			fixture.server.Close()
 		}
-		if err := fixture.service.Close(); err != nil {
+		if err := fixture.service.CloseContext(context.WithoutCancel(t.Context())); err != nil {
 			t.Error(err)
 		}
 	})
@@ -1001,7 +1001,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 			}
 			f.server.CloseClientConnections()
 			f.server.Close()
-			if err := f.service.Close(); err != nil {
+			if err := f.service.CloseContext(ctx); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -1080,16 +1080,15 @@ func TestHostedBrowserPreview(t *testing.T) {
 
 func TestHostedBrowserPreviewStopClosesStreams(t *testing.T) {
 	t.Parallel()
-	ctx := t.Context()
 	parent := t
 	transport := &http.Transport{}
 	t.Cleanup(transport.CloseIdleConnections)
 	client := &http.Client{Transport: transport}
-	var streams []*http.Response
+	var streams []io.ReadCloser
 	if !t.Run("stop with active streams", func(t *testing.T) {
 		f := newBrowserHostedFixture(t, true)
 		for range 2 {
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, f.server.URL+"/projects/"+f.project+"/events", nil)
+			request, err := http.NewRequestWithContext(parent.Context(), http.MethodGet, f.server.URL+"/projects/"+f.project+"/events", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1098,17 +1097,17 @@ func TestHostedBrowserPreviewStopClosesStreams(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			streams = append(streams, response)
 			parent.Cleanup(func() {
 				if err := response.Body.Close(); err != nil {
 					parent.Error(err)
 				}
 			})
+			streams = append(streams, response.Body)
 			if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
 				t.Fatalf("stream response = %d %s", response.StatusCode, response.Header.Get("Content-Type"))
 			}
 		}
-		request, err := http.NewRequestWithContext(ctx, http.MethodPost, f.server.URL+"/__preview/stop", nil)
+		request, err := http.NewRequestWithContext(parent.Context(), http.MethodPost, f.server.URL+"/__preview/stop", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1127,7 +1126,7 @@ func TestHostedBrowserPreviewStopClosesStreams(t *testing.T) {
 		return
 	}
 	for i, response := range streams {
-		if _, err := io.Copy(io.Discard, response.Body); err == nil {
+		if _, err := io.Copy(io.Discard, response); err == nil {
 			t.Errorf("stream %d ended without the fixture closing its connection", i)
 		}
 	}

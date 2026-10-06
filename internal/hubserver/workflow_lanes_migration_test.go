@@ -3,10 +3,11 @@ package hubserver
 import (
 	"database/sql"
 	"encoding/json"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/policy"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )

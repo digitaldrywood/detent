@@ -20,6 +20,7 @@ TAILWIND_OUTPUT ?= static/css/output.css
 SQLC_VERSION := v1.31.1
 SQLC := go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 APP_DIR ?= web/conversation
+CHECK_LAND_BASE ?= origin/develop
 SQLC_CONFIG ?= sqlc/sqlc.yaml
 MIGRATIONS_DIR ?= internal/store/migrations
 GOOSE_DRIVER ?= sqlite3
@@ -64,7 +65,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-hub-portability test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-hub-portability test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast check-land modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -165,7 +166,7 @@ test: generate-docs
 	$(GO_TEST) ./internal/web
 
 test-fast: generate-docs
-	$(GO_TEST) -short ./internal/config/... ./internal/gate/... ./internal/invariants/... ./internal/issueorigin/... ./internal/release/... ./internal/releaseprovenance/... ./tools/...
+	$(GO_TEST) -short -timeout=60s ./...
 
 test-race: test-race-hub test-race-orchestrator
 	bash scripts/test-workspace.sh -race -output tmp/workspace-race-evidence
@@ -243,7 +244,7 @@ $(GOLANGCI_LINT):
 	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" GOBIN="$(GOLANGCI_LINT_DIR)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 vet:
-	go vet ./...
+	go vet -p $(TEST_PROCS) ./...
 
 gosec-build:
 	./scripts/build-gosec.sh "$(GOSEC_VERSION)" "$(GOSEC_PATCH)" "$(GOSEC_BINARY)"
@@ -263,6 +264,9 @@ nilaway-changed:
 
 check: check-invariants check-migrations check-generated check-app build lint vet nilaway-audit test-race-cover
 	@echo "All checks passed."
+
+check-land:
+	bash scripts/check-land.sh "$(CHECK_LAND_BASE)" "$(APP_DIR)" "$(TEST_PROCS)"
 
 check-fast: check-invariants check-migrations check-generated check-app lint vet test-fast
 	go build ./...
@@ -340,7 +344,9 @@ help:
 	@echo "  lint         Run golangci-lint"
 	@echo "  security-gosec-determinism  Verify deterministic G705 caller traversal"
 	@echo "  security     Run govulncheck and gosec security scans"
-	@echo "  check        Run the local validation gate, including NilAway"
+	@echo "  check-land   Run the pre-landing lint, vet, build and short-test gate"
+	@echo "  test-fast    Run the whole-repository short unit suite"
+	@echo "  check        Run optional full diagnostics, including NilAway"
 	@echo "  modernize-check  Run the Go modernizer diff check"
 	@echo "  nilaway-audit  Run the local NilAway audit"
 	@echo "  release-snapshot  Build local GoReleaser snapshot archives"

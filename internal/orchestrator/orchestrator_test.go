@@ -1363,7 +1363,7 @@ func TestUpdateRuntimeClearsAuthHealthWhenConnectorHasNoReport(t *testing.T) {
 	}
 }
 
-func TestRunDispatchesByStateRankBeforePriorityAndAge(t *testing.T) {
+func TestRunDispatchesByPriorityBeforeStateRank(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
@@ -1390,8 +1390,8 @@ func TestRunDispatchesByStateRankBeforePriorityAndAge(t *testing.T) {
 	defer stop()
 
 	request := receiveRunRequest(t, runner.started)
-	if request.Issue.ID != merging.ID {
-		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, merging.ID)
+	if request.Issue.ID != todo.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, todo.ID)
 	}
 
 	close(runner.release)

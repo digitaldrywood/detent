@@ -267,13 +267,14 @@ func TestModelSelectionToolAuthority(t *testing.T) {
 
 func TestNativeModelSelectionTools(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
-	var ctx context.Context
+	contexts := make(chan context.Context, 1)
 	f.service.echo.GET("/api/v2/organizations/:organization/model-tool-test", func(c echo.Context) error {
-		ctx = operatortool.BindConnection(c.Request().Context(), "native-model-tools", "test")
+		contexts <- operatortool.BindConnection(c.Request().Context(), "native-model-tools", "test")
 		return c.NoContent(http.StatusOK)
 	}, f.service.operatorAuthority)
 	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/model-tool-test"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), http.StatusOK)
+	ctx := <-contexts
 	executor := hostedOperatorExecutor{f.service}
 	if err := executor.OpenConnection(ctx); err != nil {
 		t.Fatal(err)

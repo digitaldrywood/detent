@@ -228,8 +228,6 @@ func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Ac
 func (e hubProjectExecutor) AuditAction(ctx context.Context, action chatpkg.Action, outcome string) {
 	m := action.Mutation
 	m.RetryIdentity, m.InputHash = "", ""
-	if action.Status == chatpkg.ActionSucceeded {
-	}
 	if outcome == "approved" || outcome == "rejected" {
 		m.Confirmation = outcome
 	}

@@ -548,7 +548,7 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 			LoadedAt:   time.Now().UTC(),
 		},
 	}
-	project.watcher = resolveWorkflowWatcherFactory(deps, watcherProject, deps.GitHubToken, logger, project.Config)
+	project.watcher = resolveWorkflowWatcherFactory(ctx, deps, watcherProject, deps.GitHubToken, logger, project.Config)
 	retainScheduleOwner = true
 	return project, nil
 }
@@ -2499,6 +2499,7 @@ func trackerPriorityMap(value workflowconfig.StringOrMap) map[string]*int {
 }
 
 func resolveWorkflowWatcherFactory(
+	ctx context.Context,
 	deps Dependencies,
 	project globalconfig.Project,
 	githubToken string,
@@ -2525,7 +2526,7 @@ func resolveWorkflowWatcherFactory(
 		return configwatcher.New(path,
 			configwatcher.WithLoader(func(path string) (workflowconfig.Workflow, error) {
 				project := currentProject()
-				workflow, err := loadWorkflowForScheduling(context.Background(), project, deps.Scheduling)
+				workflow, err := loadWorkflowForScheduling(context.WithoutCancel(ctx), project, deps.Scheduling)
 				if err != nil {
 					return workflow, err
 				}

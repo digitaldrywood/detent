@@ -179,7 +179,10 @@ func canonicalPolicyValue(value, defaults any) (any, bool) {
 		return value, true
 	}
 	if fields, ok := value.(map[string]any); ok {
-		defaultFields, _ := defaults.(map[string]any)
+		defaultFields, ok := defaults.(map[string]any)
+		if !ok {
+			defaultFields = nil
+		}
 		canonical := make(map[string]any)
 		for name, field := range fields {
 			defaultField, exists := defaultFields[name]
