@@ -87,6 +87,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		mergeMessage       string
 		mergeStatus        int
 		sourceConflict     bool
+		currentBase        bool
 		wantLandingWait    bool
 		priorOutage        string
 	}{
@@ -107,13 +108,14 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "a protected refusal prefers configured review without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
 		{name: "unproven conflict retains landing retry without coding rework", landing: &waiting, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "stale base projection with current conflict enters configured rework", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
-		{name: "stale base projection with current clean source retains landing wait", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
-		{name: "responsive clean projection clears only old synthetic outage", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: "projection"},
+		{name: "current base projection with clean source retains landing wait", currentBase: true, mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
+		{name: "responsive clean projection clears only old synthetic outage", currentBase: true, mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: "projection"},
 		{name: "proven conflict clears only old synthetic outage", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "was not landed", wantMoves: 1, priorOutage: "projection"},
-		{name: "responsive clean projection preserves genuine server outage", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: forgeavailability.ClassServer},
-		{name: "responsive clean projection preserves genuine transport outage", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: forgeavailability.ClassTransport},
-		{name: "base race retains reviewed landing without human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
-		{name: "base race retains reviewed landing with human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, wantLandingWait: true},
+		{name: "responsive clean projection preserves genuine server outage", currentBase: true, mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: forgeavailability.ClassServer},
+		{name: "responsive clean projection preserves genuine transport outage", currentBase: true, mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: forgeavailability.ClassTransport},
+		{name: "stale base refreshes without human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
+		{name: "stale base refreshes with human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
+		{name: "clean stale projection enters hosted source refresh", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: hosted, noHumanReview: true, wantState: "In Progress", wantComment: "requires refresh", wantMoves: 1},
 		{name: "genuine server outage retains native version and host backoff", mergeMessage: "Service Unavailable", mergeStatus: http.StatusServiceUnavailable, landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
 		{name: "strict head protection returns to review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
 		{name: "strict head protection blocks without human review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
@@ -141,7 +143,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			landingHead := head
 			landed := *landed
 			if test.mergeMessage != "" {
-				journey = newNativeLandingJourney(t, issue, test.mergeMessage, test.mergeStatus, test.sourceConflict)
+				journey = newNativeLandingJourney(t, issue, test.mergeMessage, test.mergeStatus, test.sourceConflict, test.currentBase)
 				result, runErr = journey.run(t)
 				branch, landingHead = result.WorkspaceBranch, journey.target.HeadSHA
 				landed.HeadSHA = landingHead
@@ -166,14 +168,10 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 					}
 				} else {
 					wantRefusal := workspace.LandRefusalProtected
-					if test.wantLandingWait {
+					if test.wantLandingWait || !test.sourceConflict && (test.wantState == "Rework" || test.wantState == "In Progress") {
 						wantRefusal = workspace.LandRefusalBaseMoved
 						base := nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main")
-						recordedBase := base
-						if strings.HasPrefix(test.mergeMessage, "Base branch was modified") {
-							recordedBase = journey.base
-						}
-						if base == journey.base || !strings.Contains(result.NativeLanding.Refusal, recordedBase) || !strings.Contains(result.NativeLanding.Refusal, landingHead) {
+						if (!test.currentBase && base == journey.base) || (result.NativeLanding.BaseSHA != "") == test.wantLandingWait || !test.wantLandingWait && result.NativeLanding.BaseSHA != base || !strings.Contains(result.NativeLanding.Refusal, base) || !strings.Contains(result.NativeLanding.Refusal, landingHead) {
 							t.Fatalf("landing wait lost source and refusal evidence: %#v", result.NativeLanding)
 						}
 					}

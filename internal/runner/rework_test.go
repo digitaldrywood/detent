@@ -169,11 +169,13 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		lateConflict     bool
 		followOnConflict bool
 		refusal          string
+		baseRefresh      bool
 		historical       bool
 		laterRefusal     string
 		resume           bool
 	}{
 		{name: "resolved source"},
+		{name: "stale base refusal in code lane refreshes owned source", normal: true, staged: true, refusal: workspace.LandRefusalBaseMoved, baseRefresh: true, resume: true},
 		{name: "conflict refusal in code lane", normal: true, refusal: workspace.LandRefusalConflict},
 		{name: "conflict refusal clean replay resumes", normal: true, staged: true, refusal: workspace.LandRefusalConflict, resume: true},
 		{name: "conflict refusal conflicting replay restarts", normal: true, refusal: workspace.LandRefusalConflict, resume: true},
@@ -275,7 +277,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			agent := &resolvingReworkAgent{unresolved: test.unresolved, staged: test.staged, signer: signer, t: t}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
 			request := RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution}
-			prepareConflict := test.refusal == workspace.LandRefusalConflict && !test.historical && test.laterRefusal == ""
+			prepareConflict := (test.refusal == workspace.LandRefusalConflict || test.baseRefresh) && !test.historical && test.laterRefusal == ""
 			if test.refusal != "" {
 				local, err := backend.(workspace.RecoveryStateProvider).RecoveryState(t.Context(), info, workspaceIssue("default", issue))
 				if err != nil {
@@ -286,6 +288,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				execution.recovery.Change = change
 				execution.recovery.Lease.MachineID = "host"
 				landing := &tracker.NativeLandingReceipt{ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: original, RefusalKind: test.refusal}
+				if test.baseRefresh {
+					landing.BaseSHA = target
+				}
 				if test.historical {
 					landing.VersionID = "previous_version"
 				}

@@ -1557,8 +1557,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
 	workspaceIssue.FreshCheckout = freshCheckout
-	conflictRework := req.Execution != nil && mode == RunModeImplement && nativeConflictRework(req.Execution.Recovery())
-	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || conflictRework)
+	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
+	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
 	var landingTarget NativeLandingTarget
 	if nativeLanding {
 		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
@@ -1905,7 +1905,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			if err != nil {
 				return RunResult{}, nativeGitError("prepare native rework", err)
 			}
-			if conflictRework && precheck.Status == workspace.MergePrepareStatusConflict {
+			if landingRework && precheck.Status == workspace.MergePrepareStatusConflict {
 				resumeState = store.AgentResumeState{}
 				req.ResumeState = store.AgentResumeState{}
 				req.RetryMode = RetryModeFresh

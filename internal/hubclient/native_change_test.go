@@ -975,6 +975,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		lateConflict   bool
 		advanceTarget  bool
 		baseMoved      bool
+		staleBase      bool
 		dirty          bool
 		wantNone       bool
 		wantChanged    bool
@@ -1007,6 +1008,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "committed Rework excludes target advancement", rework: true, formal: true, commit: true, advanceTarget: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "late host conflict continues to resolved publication and landing", rework: true, formal: true, staged: true, lateConflict: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "host signing unavailable preserves requested changes", rework: true, formal: true, staged: true, signingFail: true},
+		{name: "repeated stale base refusals converge through owned publication and landing", rework: true, staleBase: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "Rework lands the clean preserved reviewed head without source changes", rework: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "Rework forwards a refused version to review", rework: true, commit: true, failVersion: true, wantState: "Human Review"},
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
@@ -1040,6 +1042,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				states[state].Transitions = append(states[state].Transitions, "Merging")
 				transitions := []string{"Done", review}
 				if test.rework {
+					states[2].Transitions = append(states[2].Transitions, "Merging")
 					transitions = append(transitions, "Rework")
 				}
 				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: transitions})
@@ -1154,10 +1157,86 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				for _, state := range []string{"Human Review", "Rework"} {
-					currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
+				if test.staleBase {
+					for _, lane := range []string{"Human Review", "Merging"} {
+						currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: lane, Reason: "user_requested"})
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := os.WriteFile(filepath.Join(source, "UPSTREAM.md"), []byte("unrelated work\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					nativeChangeGit(t, source, "add", "UPSTREAM.md")
+					nativeChangeGit(t, source, "commit", "-m", "parallel landing")
+					nativeChangeGit(t, source, "push", "origin", "main")
+					freshOutput, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", "HEAD").Output()
 					if err != nil {
 						t.Fatal(err)
+					}
+					freshBase := strings.TrimSpace(string(freshOutput))
+					info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
+					if err != nil {
+						t.Fatal(err)
+					}
+					local, err := backend.(workspace.RecoveryStateProvider).RecoveryState(t.Context(), info, workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
+					if err != nil {
+						t.Fatal(err)
+					}
+					checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: local.HeadSHA, WorkspaceDigest: local.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}
+					var fencing tracker.FencingToken
+					for i := range 5 {
+						candidates := h.candidatesIn(t, "Merging")
+						if len(candidates) != 1 {
+							t.Fatalf("reviewed unlanded version lost its claim: %+v", candidates)
+						}
+						if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+							t.Fatal(err)
+						}
+						landing := h.scheduler.RunExecution(issue.ID)
+						guarded, stop, err := landing.Guard(t.Context())
+						if err != nil {
+							t.Fatal(err)
+						}
+						if landing.Recovery().Lease.FencingToken <= fencing {
+							t.Fatal("repeated landing reused released authority")
+						}
+						if i > 0 {
+							previous := landing.Recovery().Attempts[len(landing.Recovery().Attempts)-1]
+							if previous.Runtime == nil || previous.Runtime.Landing == nil || previous.Runtime.Landing.BaseSHA != freshBase || previous.Runtime.Landing.VersionID != current.ID || previous.Runtime.Landing.HeadSHA != current.HeadSHA || previous.Checkpoint == nil || previous.Checkpoint.HeadSHA != checkpoint.HeadSHA || previous.Checkpoint.WorkspaceDigest != checkpoint.WorkspaceDigest {
+								t.Fatalf("landing continuation lost owned source receipt: %+v", previous)
+							}
+						}
+						fencing = landing.Recovery().Lease.FencingToken
+						if err := landing.(runner.LandingRuntimeExecution).StartLanding(guarded, int64(655+i), 0); err != nil {
+							t.Fatal(err)
+						}
+						refusal := runner.NativeLanding{ChangeID: change.ID, VersionID: current.ID, HeadSHA: current.HeadSHA, BaseSHA: freshBase, RefusalKind: workspace.LandRefusalBaseMoved}
+						if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, refusal); err != nil {
+							t.Fatal(err)
+						}
+						if err := landing.Checkpoint(guarded, checkpoint); err != nil {
+							t.Fatal(err)
+						}
+						if err := landing.Finish(guarded, "succeeded"); err != nil {
+							t.Fatal(err)
+						}
+						if i == 4 {
+							if err := h.connector.UpdateIssueState(guarded, issue.ID, "Rework"); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if err := h.scheduler.ReleaseClaim(guarded, issue.ID, "completed"); err != nil {
+							t.Fatal(err)
+						}
+						stop()
+					}
+				} else {
+					for _, state := range []string{"Human Review", "Rework"} {
+						currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
+						if err != nil {
+							t.Fatal(err)
+						}
 					}
 				}
 				detail, err := h.admin.Change(t.Context(), item, change.ID)
@@ -1256,7 +1335,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			agent, err := runner.NewRunner(runner.Dependencies{
 				Store:        runtimeStore,
 				ProjectID:    "local",
-				Workflow:     config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: test.validator != ""}}}, Prompt: "Complete the issue"},
+				Workflow:     config.Workflow{Config: config.Config{Gate: gate.Config{Run: "true", Validator: gate.ValidatorConfig{Enabled: test.validator != ""}}}, Prompt: "Complete the issue"},
 				Workspace:    backend,
 				AgentBackend: provider,
 			})
@@ -1550,7 +1629,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err != nil || strings.TrimSpace(string(head)) != stored.HeadSHA {
 					t.Fatalf("published head is not finalized Git HEAD: %s, %v", head, err)
 				}
-				if !test.rework || !test.land || test.lateConflict {
+				if !test.rework || !test.land || test.lateConflict || test.staleBase {
 					detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
 					if err != nil {
 						t.Fatal(err)
@@ -1566,18 +1645,23 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if test.land && !test.lateConflict {
+					if test.land && !test.lateConflict && !test.staleBase {
 						if len(detail.Versions) != len(expected.Versions) || change.VersionID != expected.Change.CurrentVersion || change.HeadSHA != expected.Versions[len(expected.Versions)-1].HeadSHA {
 							t.Fatalf("unchanged Rework replaced the immutable version: change=%+v, detail=%+v", change, detail)
 						}
 					} else if len(detail.Versions) != len(expected.Versions)+1 {
 						t.Fatalf("rework did not publish one new version: %+v", detail)
 					}
+					if test.staleBase {
+						if change.HeadSHA == expected.Versions[len(expected.Versions)-1].HeadSHA || !reflect.DeepEqual(detail.Versions[:len(expected.Versions)], expected.Versions) || stored.HeadSHA == stored.BaseSHA || len(stored.Files) != 1 || stored.Files[0].Path != "PRESERVED.md" || !change.Reviewed {
+							t.Fatalf("base refresh lost immutable history, exact-head review or issue-owned delta: change=%+v diff=%+v versions=%+v", change, stored, detail.Versions)
+						}
+					}
 					if !reflect.DeepEqual(detail.Reviews, expected.Reviews) || !reflect.DeepEqual(detail.Discussion, expected.Discussion) {
 						t.Fatal("new version changed historical feedback or fabricated review")
 					}
 					current := detail.Versions[len(detail.Versions)-1]
-					if change.VersionID == "" || (!test.land || test.lateConflict) && change.VersionID == expected.Change.CurrentVersion || detail.Change.CurrentVersion != change.VersionID || current.ID != change.VersionID || current.HeadSHA != stored.HeadSHA || current.PolicyID != h.descriptor.ID || current.Repository != nativeChangeRepository || current.Code.URI != nativeChangeRepository+"/commit/"+stored.HeadSHA {
+					if change.VersionID == "" || (!test.land || test.lateConflict || test.staleBase) && change.VersionID == expected.Change.CurrentVersion || detail.Change.CurrentVersion != change.VersionID || current.ID != change.VersionID || current.HeadSHA != stored.HeadSHA || current.PolicyID != h.descriptor.ID || current.Repository != nativeChangeRepository || current.Code.URI != nativeChangeRepository+"/commit/"+stored.HeadSHA {
 						t.Fatalf("rework version lost final head or artifact authority: change=%+v, detail=%+v", change, detail)
 					}
 				}
@@ -1614,7 +1698,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						response.Header().Set("X-RateLimit-Remaining", "4991")
 						switch request.Method {
 						case http.MethodGet:
-							response.WriteString("[]")
+							if strings.HasSuffix(request.URL.Path, "/pulls/7") {
+								fmt.Fprintf(response, `{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/native-change"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/native-change"}}}`, target.HeadSHA, info.Branch, change.BaseSHA)
+							} else {
+								response.WriteString("[]")
+							}
 						case http.MethodPost:
 							fmt.Fprintf(response, `{"number":7,"state":"open","head":{"sha":%q,"ref":%q},"base":{"ref":"main"}}`, target.HeadSHA, info.Branch)
 						case http.MethodPut:

@@ -46,7 +46,7 @@ func nativeLandingGit(t *testing.T, ctx context.Context, dir string, args ...str
 	return strings.TrimSpace(string(output))
 }
 
-func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, mergeStatus int, sourceConflict bool) *nativeLandingJourney {
+func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage string, mergeStatus int, sourceConflict, currentBase bool) *nativeLandingJourney {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("real git and native landing integration")
@@ -115,6 +115,9 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	nativeLandingGit(t, t.Context(), source, "add", ".")
 	nativeLandingGit(t, t.Context(), source, "commit", "-m", "parallel landing")
 	freshBase := nativeLandingGit(t, t.Context(), source, "rev-parse", "HEAD")
+	if currentBase {
+		freshBase = base
+	}
 	var merge string
 	if sourceConflict {
 		cmd := exec.CommandContext(t.Context(), "git", "-C", source, "merge-tree", "--write-tree", "--name-only", freshBase, head)

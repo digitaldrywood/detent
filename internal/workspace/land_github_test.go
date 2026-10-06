@@ -233,6 +233,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		advanceOnMerge bool
 		projection     string
 		wantDeferred   bool
+		wantRefresh    bool
 		refreshQuota   bool
 		refreshStatus  int
 		wantOutage     bool
@@ -292,7 +293,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "base advancing at refusal is inspected afresh", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, advanceOnMerge: true, wantRefusal: LandRefusalConflict},
 		{name: "earlier head projection cannot prove a conflict", method: "squash", reworked: true, pullState: "stale", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "head", wantDeferred: true},
 		{name: "stale base projection uses current conflicting base", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "base", wantRefusal: LandRefusalConflict},
-		{name: "stale base projection with current clean base defers", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", wantDeferred: true},
+		{name: "stale base projection with current clean base refreshes", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", wantDeferred: true, wantRefresh: true},
 		{name: "moved published head cannot prove reviewed conflict", method: "squash", reworked: true, pullState: "stale", moved: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, wantDeferred: true},
 		{name: "different PR branch cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "branch", wantDeferred: true},
 		{name: "missing base evidence cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "missing", wantDeferred: true},
@@ -579,7 +580,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if test.wantDeferred {
 				var status *github.StatusError
 				var refusal *LandRefusal
-				if errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.message) || !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || result.MergeSHA != "" || fixture.remoteMain(t) != base {
+				if errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.message) || !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || (refusal.BaseSHA != "") != test.wantRefresh || test.wantRefresh && refusal.BaseSHA != base || result.MergeSHA != "" || fixture.remoteMain(t) != base {
 					t.Fatalf("unproven conflict = %#v, %v; base = %s", result, err, fixture.remoteMain(t))
 				}
 				if strings.Join(methods, ",") != "GET,PUT,GET" && strings.Join(methods, ",") != "GET,POST,PUT,GET" {

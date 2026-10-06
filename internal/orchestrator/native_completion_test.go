@@ -293,7 +293,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			var journey *nativeLandingJourney
 			landingGate := &countingProjectDispatchGate{}
 			if test.wantDirect {
-				journey = newNativeLandingJourney(t, issue, "", 200, false)
+				journey = newNativeLandingJourney(t, issue, "", 200, false, false)
 				var err error
 				orch.supervisor, err = runpkg.NewSupervisor(journey.runner, runpkg.SupervisorConfig{})
 				if err != nil {

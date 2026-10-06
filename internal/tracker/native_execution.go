@@ -102,6 +102,7 @@ type NativeLandingReceipt struct {
 	Landed      bool      `json:"landed"`
 	MergeSHA    string    `json:"merge_sha,omitempty"`
 	BaseRef     string    `json:"base_ref,omitempty"`
+	BaseSHA     string    `json:"base_sha,omitempty"`
 	Method      string    `json:"method,omitempty"`
 	RefusalKind string    `json:"refusal_kind,omitempty"`
 	ObservedAt  time.Time `json:"observed_at"`
