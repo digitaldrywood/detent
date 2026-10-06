@@ -471,6 +471,69 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	}
 }
 
+func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		selected bool
+	}{{"default project", false}, {"selected project", true}} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newNativeFixture(t, nil, "", "default project")
+			target := f
+			if test.selected {
+				target = newNativeFixture(t, f.service, f.project.OrganizationID, "selected project")
+			}
+			runner := prepareRunner(t, target, runnerauth.Read, runnerauth.Heartbeat)
+			runner.enroll(t)
+			client, err := hubclient.New(hubclient.Config{URL: "https://pending-policy.example.test", TokenSource: func() string { return runner.redemption.Credential }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+				OrganizationID: f.project.OrganizationID, NativeProjects: map[string]tracker.ProjectID{"selected": target.project.ID},
+				Machine: hubclient.Machine{ID: runner.binding.MachineID, Hostname: "policy-host", Capacity: 2, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := resolvedWorkflowPolicy(t, nativeFixtureStates(), strings.Repeat("a", 40), false)
+			candidate := resolvedWorkflowPolicy(t, append(nativeFixtureStates(), policy.State{Name: "Merging", Dispatchable: true}, policy.State{Name: "Blocked"}), strings.Repeat("b", 40), false)
+			approveHubTestPolicy(t, f.service, target.base+"/policy", original)
+			if err := scheduler.CheckProjectPolicy(t.Context(), "selected", "", candidate); err == nil {
+				t.Fatal("runner loaded an unapproved policy")
+			}
+			read := func(base, token string) onboarding.Project {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodGet, base+"/onboarding", token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var setup onboarding.Project
+				decodeHubResponse(t, response, &setup)
+				return setup
+			}
+			setup := read(target.base, target.token)
+			if setup.Policy == nil || setup.Policy.Policy.ID != original.ID || len(setup.ObservedPolicies) != 1 {
+				t.Fatalf("pending policy not offered alongside its approval: %+v", setup)
+			}
+			pending := setup.ObservedPolicies[0]
+			if pending.Conflict || pending.PreviouslyApproved || pending.RunnerID != runner.binding.RunnerID || !reflect.DeepEqual(pending.Policy, candidate) {
+				t.Fatalf("runner candidate cannot be approved exactly: %+v", pending)
+			}
+			if test.selected && len(read(f.base, f.token).ObservedPolicies) != 0 {
+				t.Fatal("selected project's candidate leaked into the default project")
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, target.base+"/onboarding/policy", testHubAdminToken, policy.Change{ExpectedID: setup.Policy.Policy.ID, Policy: pending.Policy}), http.StatusOK)
+			if err := scheduler.CheckProjectPolicy(t.Context(), "selected", "", candidate); err != nil {
+				t.Fatalf("same runner cannot load the approved candidate: %v", err)
+			}
+			applied := read(target.base, target.token)
+			if applied.Policy == nil || !reflect.DeepEqual(applied.Policy.Policy, candidate) || len(applied.ObservedPolicies) != 0 {
+				t.Fatalf("approval did not apply the reported descriptor: %+v", applied)
+			}
+		})
+	}
+}
+
 func TestOnboardingRunnerLocalChecks(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "runner checks")
