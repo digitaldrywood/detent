@@ -894,6 +894,9 @@ func TestHostedBrowserPreview(t *testing.T) {
 		})}
 	}
 	f.seedPreview(t)
+	if os.Getenv("DETENT_HOSTED_BROWSER_BOARD_DEFAULTS") != "" {
+		f.seedBoardDefaults(t)
+	}
 	if os.Getenv("DETENT_HOSTED_BROWSER_GITHUB_TRIAGE") != "" {
 		f.seedGitHubTriage(t)
 	}
@@ -1223,4 +1226,53 @@ func (p *browserHostedProvider) HasUser(_ context.Context, email string) (bool, 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.emails[email], nil
+}
+
+func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
+	t.Helper()
+	now := f.service.config.now()
+	states := []tracker.NativeState{
+		{Name: "Backlog", Transitions: []string{"Todo"}},
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+		{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress"}},
+		{Name: "Merging", Transitions: []string{"Done"}},
+		{Name: "Blocked", Transitions: []string{"Todo"}},
+		{Name: "Human Review", Transitions: []string{"Todo"}},
+		{Name: "Triage", Transitions: []string{"Todo"}},
+		{Name: "Done", Terminal: true},
+		{Name: "Cancelled", Terminal: true},
+	}
+	for _, project := range []string{f.project, f.privateProject} {
+		scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: tracker.ProjectID(project)}
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := applyNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		seedArchiveIssues(t, f.service, scope, 130, "Backlog")
+		for _, seed := range []struct {
+			state string
+			age   time.Duration
+		}{
+			{"Done", time.Hour}, {"Done", 60 * time.Hour}, {"Done", 15 * 24 * time.Hour}, {"Cancelled", time.Hour},
+		} {
+			issue := seedArchiveIssues(t, f.service, scope, 1, seed.state)[0]
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: seed.state}, now.Add(-seed.age)); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 }

@@ -1,3 +1,5 @@
+import type { Lane } from "./model.ts";
+
 // The board's view state, and where it lives.
 //
 // The URL is the source of truth: a filtered board is a thing people paste to
@@ -25,7 +27,11 @@ export const SORT_LABELS: Readonly<Record<WorkSort, string>> = {
   title: "Title",
 };
 
+export const COMPLETED_WINDOWS = ["48h", "7d", "14d", "all"] as const;
+export type CompletedWindow = (typeof COMPLETED_WINDOWS)[number];
+
 export interface WorkViewState {
+  readonly completedWindow: CompletedWindow;
   readonly view: WorkViewMode;
   readonly archived?: boolean;
   readonly q: string;
@@ -34,13 +40,6 @@ export interface WorkViewState {
   readonly assignee: readonly string[];
   readonly priority: readonly string[];
   readonly sort: WorkSort;
-  /**
-   * The lanes the reader chose to show. `null` means "every lane", which is
-   * not the same as an empty list ("none") and is why this is nullable rather
-   * than defaulted to the full set: the full set is not known until the
-   * project's workflow has loaded, and a default written before then would
-   * freeze whatever lanes happened to exist that day.
-   */
   readonly lanes: readonly string[] | null;
 }
 
@@ -53,6 +52,7 @@ export const DEFAULT_VIEW_STATE: WorkViewState = {
   priority: [],
   sort: "default",
   lanes: null,
+  completedWindow: "48h",
 };
 
 /** The multi-valued filters, in the order the Filters menu renders them. */
@@ -95,9 +95,8 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
     assignee: readList(params.get("assignee")),
     priority: readList(params.get("priority")),
     sort: WORK_SORTS.find((candidate) => candidate === sort) ?? DEFAULT_VIEW_STATE.sort,
-    // `lanes=` with an empty value is "no lanes", which is a legitimate (if
-    // odd) thing to link to; a missing `lanes` is "every lane".
     lanes: lanes === null ? null : readList(lanes),
+    completedWindow: COMPLETED_WINDOWS.find((window) => window === params.get("completed")) ?? "48h",
   };
 }
 
@@ -116,6 +115,7 @@ export function serializeViewState(state: WorkViewState): string {
   }
   if (state.sort !== DEFAULT_VIEW_STATE.sort) params.set("sort", state.sort);
   if (state.lanes !== null) params.set("lanes", writeList(state.lanes));
+  if (state.completedWindow !== "48h") params.set("completed", state.completedWindow);
   return params.toString();
 }
 
@@ -142,25 +142,20 @@ export function toggleFilter(
   return { ...state, [key]: next };
 }
 
-/** Shows or hides one lane. `null` (every lane) expands first, then removes. */
-export function toggleLane(
-  state: WorkViewState,
-  lane: string,
-  allLanes: readonly string[],
-): WorkViewState {
-  const current = state.lanes ?? allLanes;
-  const next = current.includes(lane)
-    ? current.filter((candidate) => candidate !== lane)
-    : [...current, lane];
-  // Back to every lane is expressed as `null`, not as the full list: the full
-  // list would pin today's workflow into tomorrow's URL.
-  const ordered = allLanes.filter((candidate) => next.includes(candidate));
-  return { ...state, lanes: ordered.length === allLanes.length ? null : ordered };
+export function defaultLaneNames(lanes: readonly Lane[]): readonly string[] {
+  return lanes.filter((lane) => !lane.terminal && lane.name.toLowerCase() !== "backlog").map((lane) => lane.name);
 }
 
-/** Whether a lane is visible under this view. */
-export function laneVisible(state: WorkViewState, lane: string): boolean {
-  return state.lanes === null || state.lanes.includes(lane);
+export function toggleLane(state: WorkViewState, lane: string, lanes: readonly Lane[]): WorkViewState {
+  const defaults = defaultLaneNames(lanes);
+  const current = state.lanes ?? defaults;
+  const next = current.includes(lane) ? current.filter((candidate) => candidate !== lane) : [...current, lane];
+  const ordered = lanes.map((candidate) => candidate.name).filter((name) => next.includes(name));
+  return { ...state, lanes: ordered.length === defaults.length && defaults.every((name) => ordered.includes(name)) ? null : ordered };
+}
+
+export function laneVisible(state: WorkViewState, lane: Lane): boolean {
+  return state.lanes === null ? !lane.terminal && lane.name.toLowerCase() !== "backlog" : state.lanes.includes(lane.name);
 }
 
 const STORAGE_PREFIX = "detent.work.view:";

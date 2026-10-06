@@ -18,6 +18,8 @@ import { cn } from "../../../lib/utils.ts";
 import type { Lane } from "../lib/model.ts";
 import {
   activeFilterCount,
+  COMPLETED_WINDOWS,
+  type CompletedWindow,
   DEFAULT_VIEW_STATE,
   FILTER_KEYS,
   FILTER_LABELS,
@@ -48,6 +50,7 @@ export interface WorkToolbarProps {
   readonly onChange: (next: WorkViewState) => void;
   readonly lanes: readonly Lane[];
   readonly facets: ToolbarFacets;
+  readonly totals?: Readonly<Record<string, number>>;
   readonly searchRef?: React.Ref<HTMLInputElement>;
 }
 
@@ -56,11 +59,12 @@ export function WorkToolbar({
   onChange,
   lanes,
   facets,
+  totals,
   searchRef,
 }: WorkToolbarProps): React.ReactElement {
   const filters = activeFilterCount(view);
   const laneNames = React.useMemo(() => lanes.map((lane) => lane.name), [lanes]);
-  const visibleLanes = laneNames.filter((lane) => laneVisible(view, lane)).length;
+  const visibleLanes = lanes.filter((lane) => laneVisible(view, lane)).length;
 
   const values = (key: FilterKey): readonly string[] => [...new Set([...facets[key], ...view[key]])].toSorted();
 
@@ -226,17 +230,27 @@ export function WorkToolbar({
         <MenuPopup align="end" className="w-52">
           <MenuGroup>
             <MenuGroupLabel>Show lanes</MenuGroupLabel>
-            {laneNames.map((lane) => (
+            {lanes.map((lane) => (
               <MenuCheckboxItem
-                key={lane}
+                key={lane.name}
                 checked={laneVisible(view, lane)}
-                data-testid={`lane-toggle-${lane}`}
-                onCheckedChange={() => onChange(toggleLane(view, lane, laneNames))}
+                data-testid={`lane-toggle-${lane.name}`}
+                onCheckedChange={() => onChange(toggleLane(view, lane.name, lanes))}
               >
-                {lane}
+                {lane.name}
+                {totals === undefined ? null : <span className="ml-auto text-muted-foreground tabular-nums">{totals[lane.name] ?? 0}</span>}
               </MenuCheckboxItem>
             ))}
           </MenuGroup>
+        </MenuPopup>
+      </Menu>
+      <Menu>
+        <MenuTrigger className={TRIGGER} data-testid="completed-window-trigger">Completed · {view.completedWindow}</MenuTrigger>
+        <MenuPopup align="end" className="w-44">
+          <MenuRadioGroup value={view.completedWindow} onValueChange={(value) => onChange({ ...view, completedWindow: value as CompletedWindow })}>
+            <MenuGroupLabel>Completed window</MenuGroupLabel>
+            {COMPLETED_WINDOWS.map((window) => <MenuRadioItem key={window} value={window}>{window === "all" ? "All time" : window}</MenuRadioItem>)}
+          </MenuRadioGroup>
         </MenuPopup>
       </Menu>
     </div>

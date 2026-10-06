@@ -21,7 +21,7 @@ import { useClient } from "../client.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { boardScopeMeta } from "./lib/format.ts";
 import { transitionsFrom } from "./lib/fromWire.ts";
-import { boardStats, sortItems, type Lane, type WorkItemView } from "./lib/model.ts";
+import { boardStats, sortItems, type WorkItemView } from "./lib/model.ts";
 import { moveItem, useBoard, useWorkHttp } from "./lib/useWork.ts";
 import { useViewState } from "./lib/useViewState.ts";
 import { laneVisible, type WorkViewState } from "./lib/viewState.ts";
@@ -47,7 +47,7 @@ function applyFilters(
   view: WorkViewState,
 ): readonly WorkItemView[] {
   return items.filter((item) => {
-    if (!laneVisible(view, item.state)) return false;
+    if (view.lanes !== null && !view.lanes.includes(item.state)) return false;
     if (view.state.length > 0 && !view.state.includes(item.state)) return false;
     if (view.priority.length > 0 && (item.priority === null || !view.priority.includes(item.priority)))
       return false;
@@ -103,43 +103,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const [moved, setMoved] = React.useState<ReadonlyMap<string, string>>(new Map());
   const [moving, setMoving] = React.useState<ReadonlySet<string>>(new Set());
   const [dragging, setDragging] = React.useState<WorkItemView | null>(null);
-
-  // Collapsed lanes are a local reading preference, not a filter: a collapsed
-  // lane still counts, still accepts a drop, and is still in the URL's lane
-  // set. Terminal lanes start collapsed, which is the artifact's dimmed
-  // `Merging` treatment, and the reader can open any of them.
-  const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(new Set());
-  const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(new Set());
-  const laneCollapsed = React.useCallback(
-    (lane: Lane) =>
-      collapsed.has(lane.name) || (lane.terminal && !expanded.has(lane.name)),
-    [collapsed, expanded],
-  );
-  const toggleCollapsed = React.useCallback(
-    (lane: Lane) => {
-      if (lane.terminal) {
-        setExpanded((current) => {
-          const next = new Set(current);
-          if (next.has(lane.name)) next.delete(lane.name);
-          else next.add(lane.name);
-          return next;
-        });
-        setCollapsed((current) => {
-          const next = new Set(current);
-          next.delete(lane.name);
-          return next;
-        });
-        return;
-      }
-      setCollapsed((current) => {
-        const next = new Set(current);
-        if (next.has(lane.name)) next.delete(lane.name);
-        else next.add(lane.name);
-        return next;
-      });
-    },
-    [],
-  );
 
   // An optimistic move stays on the card until the hub's own copy agrees
   // with it; a reload that still carries the old state (the activity tick can
@@ -279,7 +242,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       ? "All projects"
       : (board.project?.name ?? projects.get(projectId) ?? projectId);
   const laneNames = board.lanes.map((lane) => lane.name);
-  const visible = board.lanes.filter((lane) => laneVisible(view, lane.name));
+  const visible = board.lanes.filter((lane) => laneVisible(view, lane));
   const noProjects = client.bootstrap.projects.length === 0;
   // A project board creates into its own project only; the all-projects board
   // into any project the reader can write to.
@@ -338,6 +301,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         view={view}
         onChange={setView}
         lanes={board.lanes}
+        totals={board.totals?.lanes}
         facets={{
           state: laneNames,
           label: board.labels,
@@ -349,6 +313,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
 
       {board.resolved ? <StatsRow
         stats={stats}
+        completedWindow={view.completedWindow}
         totals={board.totals}
         hasMore={board.hasMore}
         loadedCount={board.items.length}
@@ -408,8 +373,6 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                         }
                       : null
                   }
-                  collapsed={laneCollapsed(lane)}
-                  onToggleCollapsed={() => toggleCollapsed(lane)}
                   onCreate={
                     newIssue.canCreate &&
                     !lane.terminal &&

@@ -153,6 +153,7 @@ export function createWorkMock(options: {
 }): WorkMock {
   const now = new Date("2026-09-09T12:00:00Z").getTime();
   let issues: MockIssue[] = [];
+  const terminalEntries = new Map<string, string>();
   let pagination = false;
   let revoked = false;
   let expired = false;
@@ -166,6 +167,7 @@ export function createWorkMock(options: {
 
   function build(): void {
     issues = [];
+    terminalEntries.clear();
     let number = 3300;
     for (const project of options.projects) {
       const count = pagination ? (project.id === options.projects[0]?.id ? 137 : 4) : project.id === options.projects[0]?.id ? 32 : 8;
@@ -204,6 +206,7 @@ export function createWorkMock(options: {
         });
       }
     }
+    for (const issue of issues) if (issue.terminal) terminalEntries.set(issue.work_item_id, issue.updated_at);
     // One real blocker, so the Blocked treatment has something behind it.
     const blocked = issues.find((issue) => issue.state === "Blocked");
     const blocker = issues.find((issue) => issue.state === "Todo");
@@ -683,9 +686,15 @@ export function createWorkMock(options: {
       const scoped = issues.filter((issue) => issue.project_id === projectId);
 
       if (segments.length === 2 && method === "GET") {
-        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived", "q"], ["state", "label", "assignee", "priority"]);
+        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived", "q", "completed_window"], ["state", "label", "assignee", "priority"]);
         if (problem !== null) {
           invalid(response, problem);
+          return true;
+        }
+        const completedWindow = url.searchParams.get("completed_window") ?? "48h";
+        const hours: Record<string, number> = { "48h": 48, "7d": 7 * 24, "14d": 14 * 24 };
+        if (completedWindow !== "all" && hours[completedWindow] === undefined) {
+          invalid(response, "completed_window supports 48h,7d,14d,all");
           return true;
         }
         const state = url.searchParams.getAll("state");
@@ -694,7 +703,7 @@ export function createWorkMock(options: {
         const priority = url.searchParams.getAll("priority");
         const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), 200);
         const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
-        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, q, url.searchParams.get("archived")]);
+        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, q, url.searchParams.get("archived"), completedWindow]);
         let after = Number(url.searchParams.get("cursor") ?? "0");
         if (pagination && url.searchParams.has("cursor")) {
           try {
@@ -729,6 +738,8 @@ export function createWorkMock(options: {
         json(response, 200, {
           items: workIncluded ? page.map((issue) => ({ ...issue, body: "" })) : page,
           ...(workIncluded ? { work: {
+            completed: filtered.filter((issue) => issue.terminal && (completedWindow === "all"
+              || Date.parse(terminalEntries.get(issue.work_item_id) ?? "") >= now - hours[completedWindow]! * 3_600_000)).length,
             items: open.slice(0, limit).map((issue) => ({ ...issue, body: "" })),
             lanes: [...new Set(filtered.map((issue) => issue.state))].map((state) => ({
               state, total: filtered.filter((issue) => issue.state === state).length,
@@ -882,6 +893,7 @@ export function createWorkMock(options: {
           });
           return true;
         }
+        if (!issue.terminal && STATES.find((state) => state.name === target)?.terminal) terminalEntries.set(issue.work_item_id, new Date(now).toISOString());
         issue.state = target;
         issue.terminal = STATES.find((candidate) => candidate.name === target)?.terminal ?? false;
         issue.revision = String(Number(issue.revision) + 1);

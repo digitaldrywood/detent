@@ -146,6 +146,7 @@ export interface ListWorkItemsInput {
   /** Coordinator work items are excluded unless this is on. */
   readonly includeCoordinator?: boolean;
   readonly includeWork?: boolean;
+  readonly completedWindow?: string;
   readonly archived?: boolean;
 }
 
@@ -557,6 +558,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
           priority: input.priority,
           cursor: input.cursor,
           limit: input.limit,
+          completed_window: input.completedWindow,
           include: input.includeWork === true ? "work" : input.includeCoordinator === true ? "coordinator" : undefined,
         }),
         undefined,

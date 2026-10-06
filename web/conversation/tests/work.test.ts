@@ -123,7 +123,7 @@ describe("the derived board", () => {
     expect(stats.total).toBe(items.length);
     expect(stats.open + stats.completed).toBe(items.length);
     expect(stats.open).toBe(28);
-    expect(stats.queued).toBe(5);
+    expect(stats.queued).toBe(10);
   });
 
   it.each(["default", "priority", "updated", "created", "title"] as const)("gives the board and the list the same %s order", async (sort) => {

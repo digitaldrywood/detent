@@ -2,10 +2,12 @@ import React from "react";
 
 import { Button } from "../../../components/ui/button.tsx";
 import { cn } from "../../../lib/utils.ts";
+import type { CompletedWindow } from "../lib/viewState.ts";
 import type { BoardStats, ScopedWorkStats } from "../lib/model.ts";
 
 export function StatsRow({
   stats,
+  completedWindow = "48h",
   hasMore,
   loadedCount,
   loading,
@@ -13,6 +15,7 @@ export function StatsRow({
   totals = null,
 }: {
   stats: BoardStats;
+  completedWindow?: CompletedWindow;
   hasMore: boolean;
   loadedCount: number;
   loading: boolean;
@@ -23,7 +26,7 @@ export function StatsRow({
     { key: "running", value: totals?.running ?? stats.running, label: "running" },
     { key: "queued", value: totals?.queued ?? stats.queued, label: "queued inventory" },
     { key: "open", value: totals?.open ?? stats.open, label: "open" },
-    { key: "completed", value: totals?.completed ?? stats.completed, label: "closed inventory" },
+    { key: "completed", value: totals?.completed ?? (completedWindow === "all" ? stats.completed : "—"), label: `completed · ${completedWindow}` },
   ];
   return (
     <div
@@ -38,9 +41,9 @@ export function StatsRow({
             <span
               data-testid={`stat-${counter.key}`}
               title={counter.key === "completed"
-                ? `${totals === null ? "Loaded items" : "All items"} in terminal states in the current filter scope, including cancelled and custom terminal states. Inventory, not shipping throughput. Imported terminal history: ${stats.importedClosed} of ${stats.completed} loaded closed items.`
+                ? `${completedWindow === "all" ? "All items in terminal states" : `Items that entered terminal states in the last ${completedWindow}`} in the current filter scope, including cancelled and custom terminal states. Inventory, not shipping throughput. Imported terminal history: ${stats.importedClosed} of ${stats.completed} loaded closed items.`
                 : counter.key === "queued"
-                  ? "Items in dispatchable lanes without a live worker in the current filter scope. Human ownership, dependencies and other dispatch conditions may hold them."
+                  ? "Items in Backlog or dispatchable lanes without a live worker in the current filter scope. Human ownership, dependencies and other dispatch conditions may hold them."
                   : undefined}
             >
               <b className="font-semibold text-foreground tabular-nums">{counter.value}</b>{" "}

@@ -155,7 +155,7 @@ export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: st
   const scope = projectId === null ? accessible : accessible.includes(projectId) ? [projectId] : [];
   const view = normalized(input);
   const key = JSON.stringify([owner, projectId, scope, view.q, view.state, view.label, view.assignee,
-    view.priority.map((name) => String(priorityValue(name) ?? name)).sort(), view.archived === true]);
+    view.priority.map((name) => String(priorityValue(name) ?? name)).sort(), view.archived === true, view.completedWindow]);
   let board = boards.get(key);
   if (board !== undefined) {
     boards.delete(key);
@@ -261,7 +261,7 @@ export class BoardRead {
 
   private async loadProject(id: string, signal: AbortSignal, cursor?: string): Promise<Loaded> {
     const [project, page] = await Promise.all([getProject(this.http, id), this.http.listWorkItems({
-      projectId: id, limit: 100, includeWork: true, q: this.view.q, state: this.view.state,
+      projectId: id, limit: 100, includeWork: true, completedWindow: this.view.completedWindow, q: this.view.q, state: this.view.state,
       archived: this.view.archived === true, label: this.view.label, assignee: this.view.assignee,
       priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)), cursor, signal,
     })]);
@@ -375,18 +375,21 @@ export class BoardRead {
     let totals: ScopedWorkStats | null = null;
     if (loaded.every((entry) => entry.work !== undefined)) {
       const counts = Object.create(null) as Record<string, number>;
-      let running = 0, queued = 0, completed = 0, total = 0;
+      let running = 0, queued = 0, closed = 0, total = 0;
       for (const entry of loaded) {
         for (const lane of entry.work!.lanes) {
           const state = entry.project.states.find((state) => state.name === lane.state);
           counts[lane.state] = (counts[lane.state] ?? 0) + lane.total;
           total += lane.total;
           running += lane.running;
-          if (state?.terminal) completed += lane.total;
-          else if (state?.dispatchable) queued += lane.total - lane.running;
+          if (state?.terminal) closed += lane.total;
+          else if (state?.dispatchable || lane.state.toLowerCase() === "backlog") queued += lane.total - lane.running;
         }
       }
-      totals = { lanes: counts, running, queued, open: total - completed, completed, total,
+      const completed = loaded.every((entry) => entry.work!.completed !== undefined)
+        ? loaded.reduce((count, entry) => count + entry.work!.completed!, 0)
+        : this.view.completedWindow === "all" ? closed : null;
+      totals = { lanes: counts, running, queued, open: total - closed, completed, total,
         asOf: loaded.map((entry) => entry.work!.as_of).toSorted()[0]!,
         truncated: loaded.some((entry) => entry.work!.truncated) };
     }

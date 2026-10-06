@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -285,7 +286,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		t.Fatal("large open inventory displaced live work or exceeded the bound")
 	}
 	q := &runtimeReadQuery{nativeQueryer: f.service.database.db}
-	_, err = readNativeWorkSummary(t.Context(), q, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 100, f.service.config.now())
+	_, err = readNativeWorkSummary(t.Context(), q, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 100, f.service.config.now(), "all")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,4 +299,83 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		}
 	}
 	t.Logf("%d compact queries for at most 100 open items; aggregate totals independent of 130 history items", len(q.statements))
+}
+
+func TestNativeWorkPageCompletedWindow(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.October, 6, 12, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	descriptor := hubTestPolicy()
+	descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true}, tracker.NativeState{Name: "Retired", Terminal: true})}
+	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor.WithID())
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	for _, seed := range []struct {
+		state    string
+		entries  []time.Time
+		from     string
+		archived bool
+	}{
+		{"Done", []time.Time{now.Add(-time.Hour)}, "Todo", false},
+		{"Retired", []time.Time{now.Add(-time.Hour)}, "Todo", false},
+		{"Done", []time.Time{now.Add(-48 * time.Hour)}, "Todo", false},
+		{"Done", []time.Time{now.Add(-48*time.Hour - time.Second)}, "Todo", false},
+		{"Cancelled", []time.Time{now.Add(-8 * 24 * time.Hour)}, "Todo", false},
+		{"Done", []time.Time{now.Add(-15 * 24 * time.Hour)}, "Todo", false},
+		{"Done", nil, "Todo", false},
+		{"Done", []time.Time{now.Add(-time.Hour)}, "Todo", true},
+		{"Todo", []time.Time{now.Add(-time.Hour)}, "Todo", false},
+		{"Done", []time.Time{now.Add(time.Hour)}, "Todo", false},
+		{"Done", []time.Time{now.Add(-time.Hour)}, "Cancelled", false},
+		{"Done", []time.Time{now.Add(-15 * 24 * time.Hour), now.Add(-time.Hour)}, "Todo", false},
+	} {
+		issue := seedArchiveIssues(t, f.service, scope, 1, seed.state)[0]
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		to := seed.state
+		if to == "Todo" {
+			to = "Done"
+		}
+		for _, at := range seed.entries {
+			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: seed.from, ToState: to}, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET updated_at = ?, native_updated_at = ?, archived = ? WHERE native_id = ?", formatHubTime(now), formatHubTime(now), seed.archived, issue.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		window, filter string
+		want           int
+		status         int
+	}{
+		{"", "", 4, http.StatusOK},
+		{"48h", "", 4, http.StatusOK},
+		{"7d", "", 5, http.StatusOK},
+		{"14d", "", 6, http.StatusOK},
+		{"all", "", 10, http.StatusOK},
+		{"all", "&state=Cancelled", 1, http.StatusOK},
+		{"48h", "&state=Todo", 0, http.StatusOK},
+		{"48h", "&archived=true", 1, http.StatusOK},
+		{"bad", "", 0, http.StatusUnprocessableEntity},
+		{"48h", "&completed_window=all", 0, http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.window+test.filter, func(t *testing.T) {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work&completed_window="+test.window+test.filter, f.token, nil)
+			requireNativeStatus(t, response, test.status)
+			if test.status != http.StatusOK {
+				return
+			}
+			var page tracker.NativeIssuePage
+			decodeHubResponse(t, response, &page)
+			if page.Work == nil || page.Work.Completed != test.want {
+				t.Fatalf("completed = %+v, want %d", page.Work, test.want)
+			}
+		})
+	}
 }

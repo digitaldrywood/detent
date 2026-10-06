@@ -128,7 +128,7 @@ func validateNativeIssueQuery(params url.Values) error {
 			single[key] = values
 		}
 	}
-	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint")
+	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window")
 }
 
 // parseNativeIssueIncludes reads the include query and reports whether it asks
@@ -164,6 +164,9 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items"
 
 	if err := validateNativeIssueQuery(params); err != nil {
+		return tracker.NativeIssuePage{}, err
+	}
+	if _, err := nativeCompletedWindow(params.Get("completed_window")); err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
 	includeWorkspace, err := parseNativeIssueIncludes(params.Get("include"))
@@ -258,7 +261,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 
 	var work *tracker.NativeWorkSummary
 	if workIncluded {
-		work, err = readNativeWorkSummary(ctx, s.database.db, scope, query, args, limit, s.config.now())
+		work, err = readNativeWorkSummary(ctx, s.database.db, scope, query, args, limit, s.config.now(), params.Get("completed_window"))
 		if err != nil {
 			return tracker.NativeIssuePage{}, err
 		}

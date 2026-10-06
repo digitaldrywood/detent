@@ -103,7 +103,9 @@ test.describe("the work board", () => {
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
     const todo = page.locator('[data-testid="board-lane"][data-lane="Todo"]');
     const done = page.locator('[data-testid="board-lane"][data-lane="Done"]');
-    await page.getByTestId("lane-collapse-Done").click();
+    await page.getByTestId("lanes-trigger").click();
+    await page.getByTestId("lane-toggle-Done").click();
+    await page.keyboard.press("Escape");
     await expect(todo.getByTestId("issue-card-open")).toHaveText(["Sort fixture 3", "Sort fixture 1", "Sort fixture 2"]);
     await expect(done.getByTestId("issue-card-open")).toHaveText(["Sort fixture 5", "Sort fixture 6", "Sort fixture 4"]);
     await page.getByTestId("view-list").click();
@@ -738,13 +740,15 @@ test("shares project scope between the sidebar and Work across reloads", async (
     await page.getByRole("option", { name, exact: true }).click();
   };
   const expectProject = async (project) => {
-    await expect(page).toHaveURL(new RegExp(`/work/p/${project.id}$`));
+    await expect.poll(() => new URL(page.url()).pathname).toBe(`/work/p/${project.id}`);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(project.name);
     await expect(scope).toHaveText(project.name);
-    await expect(page.getByTestId("lane-count-Done")).toHaveText("1");
-    if (await page.getByTestId("lane-collapse-Done").getAttribute("aria-expanded") === "false") {
-      await page.getByRole("button", { name: "Expand Done", exact: true }).click();
+    if (await done.count() === 0) {
+      await page.getByTestId("lanes-trigger").click();
+      await page.getByTestId("lane-toggle-Done").click();
+      await page.keyboard.press("Escape");
     }
+    await expect(page.getByTestId("lane-count-Done")).toHaveText("1");
     await expect(done.getByRole("button", { name: project.title, exact: true })).toBeVisible();
     const other = projects.find((candidate) => candidate.id !== project.id);
     await expect(done.getByRole("button", { name: other.title, exact: true })).toHaveCount(0);
@@ -766,13 +770,15 @@ test("shares project scope between the sidebar and Work across reloads", async (
 
   await selectScope("All projects");
   const expectAll = async () => {
-    await expect(page).toHaveURL(/\/work$/);
+    await expect(page).toHaveURL(/\/work(?:\?|$)/);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("All projects");
     await expect(scope).toHaveText("All projects");
-    await expect(page.getByTestId("lane-count-Done")).toHaveText("2");
-    if (await page.getByTestId("lane-collapse-Done").getAttribute("aria-expanded") === "false") {
-      await page.getByRole("button", { name: "Expand Done", exact: true }).click();
+    if (await done.count() === 0) {
+      await page.getByTestId("lanes-trigger").click();
+      await page.getByTestId("lane-toggle-Done").click();
+      await page.keyboard.press("Escape");
     }
+    await expect(page.getByTestId("lane-count-Done")).toHaveText("2");
     for (const project of projects) {
       await expect(done.getByRole("button", { name: project.title, exact: true })).toBeVisible();
     }

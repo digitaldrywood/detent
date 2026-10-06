@@ -1,4 +1,4 @@
-import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "lucide-react";
+import { PlusIcon } from "lucide-react";
 import React from "react";
 
 import { Button } from "../../../components/ui/button.tsx";
@@ -21,8 +21,6 @@ export interface BoardLaneProps {
   readonly onDragEnd: () => void;
   /** Null when the dragged card may not land here. */
   readonly onDrop: ((lane: Lane) => void) | null;
-  readonly collapsed: boolean;
-  readonly onToggleCollapsed: () => void;
   readonly emptyLabel?: string;
   /** Opens the New issue dialog on this lane. Null when this lane takes no new issues. */
   readonly onCreate?: (() => void) | null;
@@ -42,8 +40,6 @@ export function BoardLane({
   onDragStart,
   onDragEnd,
   onDrop,
-  collapsed,
-  onToggleCollapsed,
   emptyLabel,
   onCreate = null,
 }: BoardLaneProps): React.ReactElement {
@@ -57,34 +53,10 @@ export function BoardLane({
       data-testid="board-lane"
       data-lane={lane.name}
       data-terminal={lane.terminal ? "true" : undefined}
-      className={cn(
-        "flex max-h-full shrink-0 flex-col rounded-xl border border-border bg-muted",
-        collapsed ? "w-11" : "w-[300px]",
-      )}
+      className="flex max-h-full w-[300px] shrink-0 flex-col rounded-xl border border-border bg-muted"
     >
-      <h2 className={cn("flex items-center gap-2 px-3 pt-2.5 pb-2 font-semibold text-[13px]", collapsed && "flex-col px-0")}>
-        <button
-          type="button"
-          data-testid={`lane-collapse-${lane.name}`}
-          aria-expanded={!collapsed}
-          aria-label={`${collapsed ? "Expand" : "Collapse"} ${lane.name}`}
-          onClick={onToggleCollapsed}
-          className="inline-flex cursor-pointer items-center gap-1.5 rounded-sm outline-none ring-ring focus-visible:ring-2"
-        >
-          {collapsed ? (
-            <ChevronRightIcon className="size-3.5 text-muted-foreground" />
-          ) : (
-            <ChevronDownIcon className="size-3.5 text-muted-foreground" />
-          )}
-          <span className={cn(collapsed && "sr-only", lane.terminal && "text-muted-foreground")}>
-            {lane.name}
-          </span>
-        </button>
-        {collapsed ? (
-          <span className="mt-1 [writing-mode:vertical-rl] text-muted-foreground text-xs">
-            {lane.name}
-          </span>
-        ) : null}
+      <h2 className="flex items-center gap-2 px-3 pt-2.5 pb-2 font-semibold text-[13px]">
+        <span className={cn(lane.terminal && "text-muted-foreground")}>{lane.name}</span>
         <span
           data-testid={`lane-count-${lane.name}`}
           title={total === undefined ? "Loaded items" : `${items.length} shown / ${total} in project scope with server filters`}
@@ -97,10 +69,10 @@ export function BoardLane({
         >
           {total ?? items.length}
         </span>
-        {collapsed || live === 0 ? null : (
+        {live === 0 ? null : (
           <span className="font-normal text-[11px] text-muted-foreground">{live} live</span>
         )}
-        {collapsed || onCreate === null ? null : (
+        {onCreate === null ? null : (
           <Button
             variant="ghost"
             size="icon-xs"
@@ -114,55 +86,53 @@ export function BoardLane({
           </Button>
         )}
       </h2>
-      {collapsed ? null : (
-        <div
-          data-testid={`lane-body-${lane.name}`}
-          onDragOver={(event) => {
-            if (onDrop === null) return;
-            event.preventDefault();
-            // `dataTransfer` is absent on a synthesised drag event, which is
-            // what a test fires and what some assistive tooling produces.
-            if (event.dataTransfer !== null && event.dataTransfer !== undefined) {
-              event.dataTransfer.dropEffect = "move";
-            }
-            setOver(true);
-          }}
-          onDragLeave={() => setOver(false)}
-          onDrop={(event) => {
-            setOver(false);
-            if (onDrop === null) return;
-            event.preventDefault();
-            onDrop(lane);
-          }}
-          className={cn(
-            "flex min-h-16 flex-col gap-2 overflow-y-auto px-2 pb-2",
-            over && "rounded-b-xl outline-2 outline-primary/60 outline-dashed",
-          )}
-        >
-          {items.length === 0 ? (
-            <p className="px-3 py-6 text-center text-muted-foreground/70 text-xs">
-              {emptyLabel ?? `Nothing is in ${lane.name.toLowerCase()}.`}
-            </p>
-          ) : (
-            items.map((item) => (
-              <IssueCard
-                key={item.id}
-                item={item}
-                terminal={lane.terminal}
-                showProject={showProject}
-                now={now}
-                onOpen={onOpen}
-                moves={movesFor(item)}
-                onMove={onMove}
-                moving={movingIds.has(item.id)}
-                dragging={draggingId === item.id}
-                onDragStart={onDragStart}
-                onDragEnd={onDragEnd}
-              />
-            ))
-          )}
-        </div>
-      )}
+      <div
+        data-testid={`lane-body-${lane.name}`}
+        onDragOver={(event) => {
+          if (onDrop === null) return;
+          event.preventDefault();
+          // `dataTransfer` is absent on a synthesised drag event, which is
+          // what a test fires and what some assistive tooling produces.
+          if (event.dataTransfer !== null && event.dataTransfer !== undefined) {
+            event.dataTransfer.dropEffect = "move";
+          }
+          setOver(true);
+        }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(event) => {
+          setOver(false);
+          if (onDrop === null) return;
+          event.preventDefault();
+          onDrop(lane);
+        }}
+        className={cn(
+          "flex min-h-16 flex-col gap-2 overflow-y-auto px-2 pb-2",
+          over && "rounded-b-xl outline-2 outline-primary/60 outline-dashed",
+        )}
+      >
+        {items.length === 0 ? (
+          <p className="px-3 py-6 text-center text-muted-foreground/70 text-xs">
+            {emptyLabel ?? `Nothing is in ${lane.name.toLowerCase()}.`}
+          </p>
+        ) : (
+          items.map((item) => (
+            <IssueCard
+              key={item.id}
+              item={item}
+              terminal={lane.terminal}
+              showProject={showProject}
+              now={now}
+              onOpen={onOpen}
+              moves={movesFor(item)}
+              onMove={onMove}
+              moving={movingIds.has(item.id)}
+              dragging={draggingId === item.id}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+            />
+          ))
+        )}
+      </div>
     </section>
   );
 }

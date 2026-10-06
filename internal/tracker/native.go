@@ -359,6 +359,7 @@ type NativeIssuePage struct {
 }
 
 type NativeWorkSummary struct {
+	Completed int              `json:"completed"`
 	Items     []NativeIssue    `json:"items"`
 	Lanes     []NativeWorkLane `json:"lanes"`
 	Truncated bool             `json:"truncated"`
