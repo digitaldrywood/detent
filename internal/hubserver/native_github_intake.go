@@ -156,6 +156,7 @@ func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWeb
 	}
 	defer func() { resultErr = errors.Join(resultErr, rows.Close()) }()
 	var scopes []nativeScope
+	defer rows.Close()
 	for rows.Next() {
 		var scope nativeScope
 		scope.credential.Scope = apiScopeWorker
