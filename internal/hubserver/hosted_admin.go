@@ -318,7 +318,20 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 	if _, err := tx.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,?,?)", credential.ID, s.config.Hosted.OrganizationID, project); err != nil {
 		return "", err
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner)
+SELECT user_id,?,?,1,1 FROM hosted_members WHERE active=1 AND role IN ('owner','admin')
+ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=1,manage_runner=1`, s.config.Hosted.OrganizationID, project); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO token_grants(token_id,organization_id,project_id)
+SELECT principal_id,?,? FROM hosted_members WHERE active=1 AND role IN ('owner','admin')
+ON CONFLICT(token_id,organization_id,project_id) DO NOTHING`, s.config.Hosted.OrganizationID, project); err != nil {
+		return "", err
+	}
 	if err := s.database.checkHostedGrowth(ctx, tx, before, stamp, false); err != nil {
+		return "", err
+	}
+	if err := s.hostedAuditWith(ctx, tx, credential.Hosted, "project_created", "create_hosted_project", project, http.StatusCreated); err != nil {
 		return "", err
 	}
 	return project, nil

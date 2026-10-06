@@ -76,9 +76,6 @@ func TestWorkItemChangeSurfaceReportsAConnectorWithNoPullRequest(t *testing.T) {
 		query string
 		args  []any
 	}{
-		// Inserting a repository auto-creates its github_compatible alias
-		// project (migration 00008); the native project is the one that owns
-		// this repository.
 		{"UPDATE projects SET repository_id = NULL WHERE repository_id = ?", []any{repositoryID}},
 		{"UPDATE projects SET repository_id = ?, github_repository_enabled = 1 WHERE id = ?", []any{repositoryID, f.project.ID}},
 	} {

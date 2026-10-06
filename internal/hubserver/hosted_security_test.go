@@ -1072,6 +1072,13 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			user := f.user(t, "creator-"+test.role, test.role, test.role+"-creator@example.test", "write", "")
 			f.grant(t, user, true, true)
+			for _, role := range []string{"owner", "admin", "member", "viewer"} {
+				f.user(t, "other-"+role, role, role+"-other@example.test", "write", "")
+			}
+			inactive := f.user(t, "inactive-admin", "admin", "inactive@example.test", "write", "")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active = 0 WHERE user_id = ?", inactive.identity.Subject); err != nil {
+				t.Fatal(err)
+			}
 			// The request authenticated while the user was an owner; the
 			// provider's membership is what the transaction must trust.
 			var principal string
@@ -1089,6 +1096,26 @@ func TestHostedProjectCreationRechecksTheCreatorsRole(t *testing.T) {
 			var manageRunner bool
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT manage_runner FROM hosted_project_grants WHERE project_id = ? AND user_id = ?", project, user.identity.Subject).Scan(&manageRunner); err != nil || !manageRunner {
 				t.Fatalf("creator runner management = %v, %v", manageRunner, err)
+			}
+			for _, role := range []string{"owner", "admin", "member", "viewer"} {
+				var grants int
+				if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_project_grants g JOIN hosted_members m ON m.user_id=g.user_id JOIN token_grants t ON t.token_id=m.principal_id AND t.project_id=g.project_id WHERE g.project_id=? AND g.user_id=? AND g.can_write=1 AND g.manage_runner=1`, project, "user_other-"+role).Scan(&grants); err != nil {
+					t.Fatal(err)
+				}
+				want := 0
+				if role == "owner" || role == "admin" {
+					want = 1
+				}
+				if grants != want {
+					t.Fatalf("%s grants = %d, want %d", role, grants, want)
+				}
+			}
+			var inactiveGrants, audits int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_project_grants WHERE project_id=? AND user_id=?", project, inactive.identity.Subject).Scan(&inactiveGrants); err != nil || inactiveGrants != 0 {
+				t.Fatalf("inactive grants = %d, %v", inactiveGrants, err)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_audit WHERE project_id=? AND actual_actor=? AND event='project_created'", project, user.identity.Subject).Scan(&audits); err != nil || audits != 1 {
+				t.Fatalf("creation audits = %d, %v", audits, err)
 			}
 		})
 	}

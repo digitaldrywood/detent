@@ -1057,6 +1057,7 @@ func seedProjection(t *testing.T, db *sql.DB) (int64, int64) {
 	if err != nil {
 		t.Fatalf("repository id: %v", err)
 	}
+	seedCompatibilityProject(t, db, repositoryID)
 	workflow, err := db.ExecContext(t.Context(), "INSERT INTO workflow_states (repository_id, github_node_id, source_name, detent_state, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)", repositoryID, "WS_todo", "Todo", "Todo", testTimestamp, testTimestamp)
 	if err != nil {
 		t.Fatalf("insert workflow state: %v", err)
@@ -1084,4 +1085,20 @@ func seedProjection(t *testing.T, db *sql.DB) (int64, int64) {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func seedCompatibilityProject(t *testing.T, db *sql.DB, repositoryID int64) {
+	t.Helper()
+	var exists bool
+	if err := db.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects')").Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		return
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO projects(organization_id,repository_id,name,profile,created_at)
+SELECT o.id,r.id,r.github_owner || '/' || r.github_name,'github_compatible',r.created_at FROM organizations o CROSS JOIN repositories r WHERE o.local=1 AND r.id=?
+ON CONFLICT(repository_id) DO NOTHING`, repositoryID); err != nil {
+		t.Fatalf("seed compatibility project: %v", err)
+	}
 }

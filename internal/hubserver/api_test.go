@@ -316,6 +316,7 @@ func TestClaimNextAPIIsAtomicAndFenced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("other repository ID: %v", err)
 	}
+	seedCompatibilityProject(t, service.database.db, otherRepositoryID)
 	otherWorkflow, err := service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (repository_id, github_node_id, source_name, detent_state, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)", otherRepositoryID, "WS_other_todo", "Todo", "Todo", testTimestamp, testTimestamp)
 	if err != nil {
 		t.Fatalf("insert other workflow state: %v", err)
