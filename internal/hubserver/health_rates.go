@@ -440,11 +440,11 @@ func healthCapacityFindings(now time.Time, p healthRateProject, b healthRateBase
 }
 
 func healthCostFindings(p healthRateProject, b healthRateBaseline) []healthFinding {
+	out := []healthFinding{}
 	if len(b.Costs) < healthBaselineSamples {
-		return nil
+		return out
 	}
 	median := healthQuantile(b.Costs, healthMedianQuantile)
-	out := []healthFinding{}
 	for _, t := range p.Timelines {
 		cost := p.Costs[t.issue.id]
 		if !cost.Known || cost.Cost <= healthCostMinimum || cost.Cost <= healthCostMultiplier*median {

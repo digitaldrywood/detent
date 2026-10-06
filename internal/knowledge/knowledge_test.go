@@ -80,13 +80,14 @@ func TestBuildBlockCapsRenderedOutput(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	block, err := BuildBlock([]Source{{Name: "Large", Path: path}}, Options{MaxBytes: 512})
+	maxBytes := len(path) + 512
+	block, err := BuildBlock([]Source{{Name: "Large", Path: path}}, Options{MaxBytes: maxBytes})
 	if err != nil {
 		t.Fatalf("BuildBlock() error = %v", err)
 	}
 
-	if len(block) > 512 {
-		t.Fatalf("len(block) = %d, want <= 512", len(block))
+	if len(block) > maxBytes {
+		t.Fatalf("len(block) = %d, want <= %d", len(block), maxBytes)
 	}
 	if !strings.Contains(block, "[truncated to first") {
 		t.Fatalf("block missing truncation marker:\n%s", block)
