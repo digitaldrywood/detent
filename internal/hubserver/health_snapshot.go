@@ -134,6 +134,9 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 	if err := readHealthCurrentWaits(ctx, q, organization, now, &snapshot); err != nil {
 		return snapshot, err
 	}
+	if err := readHealthRates(ctx, q, organization, now, runners, &snapshot); err != nil {
+		return snapshot, err
+	}
 	return snapshot, nil
 }
 
