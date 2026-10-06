@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 // TestHostedMemberManagement covers the section 12 membership endpoints: the
@@ -159,6 +162,32 @@ func TestHostedMemberManagement(t *testing.T) {
 func TestHostedFleetVisibility(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
+	for _, project := range []string{f.project, f.privateProject} {
+		f.api(t, "owner", http.MethodPut, browserHostedOrganizationBase+"/members/membership_user_browser_owner/grants", map[string]any{
+			"project_id": project, "write": true, "runner": true, "idempotency_key": "fleet-runner-" + project,
+		}, http.StatusOK)
+	}
+	wantNames := map[string]hostedRunnerName{}
+	var activeID, removedID string
+	for _, name := range []string{"Active runner", "Retired runner"} {
+		binding := runnerauth.NewBinding()
+		request := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read}, TTLSeconds: 60}
+		var enrollment runnerauth.Enrollment
+		browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/runner-enrollments", request, http.StatusCreated), &enrollment)
+		credential, err := apikey.GenerateToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: name, Capacity: 2, Version: "test"}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, browserHostedOrganizationBase+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
+		wantNames[binding.RunnerID] = hostedRunnerName{DisplayName: name, Hostname: redemption.Hostname}
+		if name == "Retired runner" {
+			removedID = binding.RunnerID
+			f.api(t, "owner", http.MethodDelete, browserHostedOrganizationBase+"/runners/"+removedID, nil, http.StatusNoContent)
+		} else {
+			activeID = binding.RunnerID
+		}
+	}
 	for _, account := range []string{"owner", "viewer"} {
 		t.Run(account, func(t *testing.T) {
 			var fleet hostedFleetResponse
@@ -172,10 +201,51 @@ func TestHostedFleetVisibility(t *testing.T) {
 			if fleet.Usage.Allowances == nil {
 				t.Fatal("fleet omitted its allowances")
 			}
+			if len(fleet.Runners) != 1 || fleet.Runners[0].ID != activeID || fleet.RunnerNames[removedID] != wantNames[removedID] {
+				t.Fatalf("full fleet names = %#v, %#v", fleet.Runners, fleet.RunnerNames)
+			}
+			response := f.api(t, account, http.MethodGet, browserHostedOrganizationBase+"/fleet?include=names", nil, http.StatusOK)
+			var payload map[string]json.RawMessage
+			browserHostedDecode(t, response, &payload)
+			if len(payload) != 1 || payload["runner_names"] == nil {
+				t.Fatalf("names projection includes unrelated fleet fields: %#v", payload)
+			}
+			var names map[string]hostedRunnerName
+			if err := json.Unmarshal(payload["runner_names"], &names); err != nil {
+				t.Fatal(err)
+			}
+			if len(names) != len(wantNames) {
+				t.Fatalf("names = %#v, want %#v", names, wantNames)
+			}
+			for id, want := range wantNames {
+				if names[id] != want {
+					t.Fatalf("name %s = %#v, want %#v", id, names[id], want)
+				}
+			}
 		})
 	}
-	f.api(t, "staff", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusForbidden)
-	browserHostedStatus(t, f.page(t, "", browserHostedOrganizationBase+"/fleet"), http.StatusUnauthorized)
+	for _, path := range []string{"/fleet", "/fleet?include=names"} {
+		f.api(t, "staff", http.MethodGet, browserHostedOrganizationBase+path, nil, http.StatusForbidden)
+		f.api(t, "revoked", http.MethodGet, browserHostedOrganizationBase+path, nil, http.StatusUnauthorized)
+		f.api(t, "owner", http.MethodGet, "/api/v2/organizations/org_other"+path, nil, http.StatusNotFound)
+		browserHostedStatus(t, f.page(t, "", browserHostedOrganizationBase+path), http.StatusUnauthorized)
+	}
+	t.Run("names do not read retained collaboration quotas", func(t *testing.T) {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TABLE github_import_records"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.hostedFleetUsage(t.Context()); err == nil || !strings.Contains(err.Error(), "github_import_records") {
+			t.Fatalf("full fleet quota read = %v, want unavailable collaboration accounting", err)
+		}
+		f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusInternalServerError)
+		for _, account := range []string{"owner", "viewer"} {
+			var names hostedRunnerNamesResponse
+			browserHostedDecode(t, f.api(t, account, http.MethodGet, browserHostedOrganizationBase+"/fleet?include=names", nil, http.StatusOK), &names)
+			if len(names.RunnerNames) != len(wantNames) {
+				t.Fatalf("names require quota accounting: %#v", names)
+			}
+		}
+	})
 }
 
 // TestSortHostedMembers covers the one order the members list is served in.

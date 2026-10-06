@@ -449,6 +449,10 @@ unfinished attempts prevent removal; drain the runner and let its work finish
 first. Identity and machine records remain available to historical reads. The
 hosted fleet response excludes removed identities from `runners` and retains
 their display names and hostnames in `runner_names` for historical run labels.
+`GET /fleet?include=names` uses the same organization member authority and
+returns only `runner_names`, including active and removed identities. Name
+refreshes use this projection without reading Fleet quotas, routing or leases;
+the ordinary `GET /fleet` response retains its full usage contract.
 The existing `revoke_runner_identity` MCP operation performs the same removal.
 
 Hub time decides validity, with an inclusive start and exclusive expiry boundary.

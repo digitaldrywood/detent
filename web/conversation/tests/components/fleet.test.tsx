@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
@@ -10,8 +10,9 @@ import { resetRunnerNamesForTests, runnerDisplay, useRunnerNames } from "../../s
 import { parseRunnerWindow, serializeRunnerWindow } from "../../src/app/fleet/runnerSchedule.ts";
 import emptyFixture from "../../src/contracts/fixtures/account-fleet-empty.json";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
+import bootstrapFixture from "../../src/contracts/fixtures/account-bootstrap.json";
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); resetRunnerNamesForTests(); window.history.replaceState(null, "", "/"); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); resetRunnerNamesForTests(); window.history.replaceState(null, "", "/"); });
 
 const FLEET = fleetFixture as unknown as FleetResponse;
 const EMPTY = emptyFixture as unknown as FleetResponse;
@@ -39,12 +40,38 @@ describe("runner rows", () => {
     renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, update: { status, desired: { version: "1.2.4" } } }] });
     expect(screen.getByText(`${label} · 1.2.4`)).toBeTruthy();
   });
-  it("keeps a removed runner's name for historical attempts without a fleet row", async () => {
+  it("refreshes active and historical names through the scoped names projection", async () => {
+    vi.useFakeTimers();
     const id = FLEET.runners[0]!.id;
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ...EMPTY, runner_names: { [id]: { display_name: "Retired Mac", hostname: "retired.local" } } }))));
-    const client = { http: { origin: "https://hub.test", apiBase: "/api/v2/organizations/org_test", csrfToken: "test" } } as React.ContextType<typeof ClientContext>;
+    const active = FLEET.runners[1]!;
+    const names = { [id]: { display_name: "Retired Mac", hostname: "retired.local" }, [active.id]: { display_name: active.display_name, hostname: active.hostname } };
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ runner_names: names })));
+    vi.stubGlobal("fetch", fetch);
+    const client = { bootstrap: bootstrapFixture, http: { origin: "https://hub.test", apiBase: "/api/v2/organizations/org_test", csrfToken: "test" } } as unknown as React.ContextType<typeof ClientContext>;
     const { result } = renderHook(() => useRunnerNames(), { wrapper: ({ children }) => <ClientContext.Provider value={client}>{children}</ClientContext.Provider> });
-    await waitFor(() => expect(runnerDisplay(result.current, id)).toBe("Retired Mac"));
+    await act(async () => {});
+    expect(runnerDisplay(result.current, id)).toBe("Retired Mac");
+    expect(result.current.get(active.id)).toEqual({ display: active.display_name, host: active.hostname });
+    expect(result.current.get(id)?.host).toBe("retired.local");
+    expect(runnerDisplay(result.current, "runner_0000000000000000000000000000dead")).toBe("runner_00000000");
+    expect(fetch).toHaveBeenCalledWith("https://hub.test/api/v2/organizations/org_test/fleet?include=names", expect.objectContaining({ method: "GET", credentials: "same-origin" }));
+    const shared = renderHook(() => useRunnerNames(), { wrapper: ({ children }) => <ClientContext.Provider value={client}>{children}</ClientContext.Provider> });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    names[active.id]!.display_name = "Renamed host";
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(runnerDisplay(result.current, active.id)).toBe("Renamed host");
+    expect(runnerDisplay(shared.result.current, active.id)).toBe("Renamed host");
+    fetch.mockImplementation(async () => new Response("", { status: 403 }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(runnerDisplay(result.current, active.id)).toBe("Renamed host");
+    shared.unmount();
+    cleanup();
+    const otherClient = { ...client!, bootstrap: { ...bootstrapFixture, actor: { ...bootstrapFixture.actor, principal_id: "other-account" } } };
+    const other = renderHook(() => useRunnerNames(), { wrapper: ({ children }) => <ClientContext.Provider value={otherClient}>{children}</ClientContext.Provider> });
+    await act(async () => {});
+    expect(other.result.current.size).toBe(0);
+    expect(runnerDisplay(other.result.current, id)).toBe(id);
   });
 
   it("removes through the existing DELETE API and accepts its empty response", async () => {

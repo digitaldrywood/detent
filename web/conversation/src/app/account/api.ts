@@ -18,6 +18,7 @@ import {
   CheckoutResponse,
   CreateOrganizationResponse,
   FleetResponse,
+  FleetNamesResponse,
   Member,
   MembersResponse,
   NextResponse,
@@ -462,6 +463,7 @@ export function makeAccountApi(options: AccountApiOptions) {
 
     // --- Fleet, plan and billing --------------------------------------------
     fleet: () => send(FleetResponse, "GET", `${base}/fleet`),
+    fleetNames: () => send(FleetNamesResponse, "GET", `${base}/fleet?include=names`),
     plan: () => send(PlanReport, "GET", `${base}/plan`),
     billing: () => send(BillingReport, "GET", `${base}/billing`),
     checkout: (input: { price: string; key: string }) =>
