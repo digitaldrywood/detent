@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -57,7 +58,8 @@ type LandOptions struct {
 }
 
 type LandResult struct {
-	Rebased             bool `json:"rebased,omitempty"`
+	Gate                gate.CommandResult `json:"gate,omitzero"`
+	Rebased             bool               `json:"rebased,omitempty"`
 	MergeSHA            string
 	BaseRef             string
 	BaseBefore          string
@@ -323,13 +325,14 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	}
 	validationInfo := normalized
 	validationInfo.Path = staging
-	if err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, mergeSHA); err != nil {
-		return LandResult{Rebased: rebased}, err
+	validation, err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, mergeSHA)
+	if err != nil {
+		return LandResult{Rebased: rebased, Gate: validation, BaseBefore: targetHead}, err
 	}
-	result := LandResult{MergeSHA: mergeSHA, BaseRef: target, BaseBefore: targetHead, Method: method, Rebased: rebased}
+	result := LandResult{Gate: validation, MergeSHA: mergeSHA, BaseRef: target, BaseBefore: targetHead, Method: method, Rebased: rebased}
 	pushArgs := []string{"push", "--force-with-lease=refs/heads/" + target + ":" + targetHead, remote, mergeSHA + ":refs/heads/" + target}
 	if _, err := runGitAt(ctx, staging, pushArgs...); err != nil {
-		return LandResult{Rebased: rebased}, classifyLandingPush(err, target)
+		return LandResult{Rebased: rebased, Gate: validation, BaseBefore: targetHead}, classifyLandingPush(err, target)
 	}
 	if opts.PushAttemptBranch && strings.TrimSpace(normalized.Branch) != "" {
 		if _, err := runGitAt(ctx, normalized.Path, "push", remote, head+":refs/heads/"+normalized.Branch); err == nil {
@@ -605,19 +608,30 @@ func forgetStale(path string) bool {
 	return false
 }
 
-func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, command, head string) error {
-	if err := l.validateMergeResolution(ctx, info, issue, command); err != nil {
-		return err
+func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, command, head string) (gate.CommandResult, error) {
+	if strings.TrimSpace(command) == "" {
+		return gate.CommandResult{}, nil
 	}
-	current, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
+	validationIssue := issue
+	validationIssue.PullRequestHeadSHA = head
+	result, err := l.RunReviewCommand(ctx, info, validationIssue, command)
 	if err != nil {
-		return err
+		if result.Command != "" && ctx.Err() == nil {
+			current, headErr := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
+			if headErr != nil {
+				return result, errors.Join(err, headErr)
+			}
+			if strings.TrimSpace(current) != head {
+				return result, refuse(LandRefusalHeadMoved, "validation changed the reviewed landing head")
+			}
+			if treeErr := l.VerifyReviewTree(ctx, info, validationIssue); treeErr != nil {
+				return result, refuse(LandRefusalHeadMoved, "validation left source changes: "+treeErr.Error())
+			}
+		}
+		return result, err
 	}
-	if strings.TrimSpace(current) != head {
-		return refuse(LandRefusalHeadMoved, "validation changed the reviewed landing head")
+	if result.ExitCode != 0 {
+		return result, &ValidationError{Output: result.Output, Err: fmt.Errorf("exit status %d", result.ExitCode)}
 	}
-	if _, err := runGitAt(ctx, info.Path, "diff", "--quiet", "HEAD", "--"); err != nil {
-		return refuse(LandRefusalHeadMoved, "validation left tracked source changes")
-	}
-	return nil
+	return result, nil
 }

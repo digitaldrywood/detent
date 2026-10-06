@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -46,7 +47,17 @@ type githubLandingMerge struct {
 
 func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Issue, opts LandOptions) (result LandResult, returnErr error) {
 	rebased := false
-	defer func() { result.Rebased = result.Rebased || rebased }()
+	var validation gate.CommandResult
+	var baseBefore string
+	defer func() {
+		result.Rebased = result.Rebased || rebased
+		if result.BaseBefore == "" {
+			result.BaseBefore = baseBefore
+		}
+		if result.Gate.Command == "" {
+			result.Gate = validation
+		}
+	}()
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return LandResult{}, err
@@ -99,7 +110,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, "+refs/heads/"+base+":"+baseRef); err != nil {
 		return LandResult{}, fmt.Errorf("fetch base branch: %w", err)
 	}
-	baseBefore, err := runGitAt(ctx, normalized.Path, "rev-parse", baseRef)
+	baseBefore, err = runGitAt(ctx, normalized.Path, "rev-parse", baseRef)
 	if err != nil {
 		return LandResult{}, fmt.Errorf("inspect fetched base: %w", err)
 	}
@@ -118,8 +129,11 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if kept, found := keptLanding(ctx, normalized.Path, head, baseRef); found {
 		return kept, nil
 	}
-	if err := l.validateLanding(ctx, normalized, issue, opts.ValidationCommand, head); err != nil {
-		return LandResult{}, err
+	if strings.TrimSpace(opts.ValidationCommand) != "" {
+		_, validation, err = l.prepareGitHubLanding(ctx, normalized, issue, opts, baseBefore)
+		if err != nil {
+			return LandResult{}, err
+		}
 	}
 	if opts.External == nil {
 		previous, exists, err := remoteBranchHead(ctx, normalized.Path, remote, branch)
@@ -178,6 +192,16 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 				return LandResult{}, err
 			}
 		}
+		if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, "+refs/heads/"+base+":"+baseRef); err != nil {
+			return LandResult{}, fmt.Errorf("refresh validated landing base: %w", err)
+		}
+		currentBase, err := runGitAt(ctx, normalized.Path, "rev-parse", baseRef)
+		if err != nil {
+			return LandResult{}, err
+		}
+		if strings.TrimSpace(currentBase) != baseBefore {
+			return LandResult{}, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: strings.TrimSpace(currentBase), Reason: "the base branch changed after landing validation"}
+		}
 		var merged githubLandingMerge
 		if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", fmt.Sprintf("repos/%s/pulls/%d/merge", repository, pull.Number),
 			"merge_method="+opts.Method, "sha="+head); err != nil {
@@ -188,7 +212,10 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 					return LandResult{}, verified
 				}
 				baseBefore = refusal.BaseSHA
-				retryHead, retryErr := l.refreshGitHubLanding(ctx, normalized, issue, opts, remote, baseBefore)
+				retryHead, retryValidation, retryErr := l.refreshGitHubLanding(ctx, normalized, issue, opts, remote, baseBefore)
+				if retryValidation.Command != "" {
+					validation = retryValidation
+				}
 				if retryErr != nil {
 					return LandResult{Rebased: true}, retryErr
 				}
@@ -230,27 +257,33 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	return LandResult{MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil, Rebased: rebased}, nil
 }
 
-func (l *LocalGit) refreshGitHubLanding(ctx context.Context, info Info, issue Issue, opts LandOptions, remote, base string) (string, error) {
+func (l *LocalGit) prepareGitHubLanding(ctx context.Context, info Info, issue Issue, opts LandOptions, base string) (string, gate.CommandResult, error) {
 	staging := filepath.Join(l.root, "landing-"+info.Key)
 	l.removeLandingWorktree(ctx, info.Path, staging)
 	if _, err := runGitAt(ctx, info.Path, "worktree", "add", "--detach", staging, base); err != nil {
-		return "", fmt.Errorf("add refreshed landing worktree: %w", err)
+		return "", gate.CommandResult{}, fmt.Errorf("add landing validation worktree: %w", err)
 	}
 	defer l.removeLandingWorktree(context.WithoutCancel(ctx), info.Path, staging)
 	head, err := combine(ctx, staging, opts.Method, opts.HeadSHA, base, opts.Message)
 	if err != nil {
-		return "", err
+		return "", gate.CommandResult{}, err
 	}
 	validationInfo := info
 	validationInfo.Path = staging
-	if err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, head); err != nil {
-		return "", err
+	validation, err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, head)
+	return head, validation, err
+}
+
+func (l *LocalGit) refreshGitHubLanding(ctx context.Context, info Info, issue Issue, opts LandOptions, remote, base string) (string, gate.CommandResult, error) {
+	head, validation, err := l.prepareGitHubLanding(ctx, info, issue, opts, base)
+	if err != nil {
+		return "", validation, err
 	}
 	branch := githubLandingBranch(info, opts)
-	if _, err := runGitAt(ctx, staging, "push", "--force-with-lease=refs/heads/"+branch+":"+opts.HeadSHA, remote, head+":refs/heads/"+branch); err != nil {
-		return "", classifyLandingPush(err, branch)
+	if _, err := runGitAt(ctx, info.Path, "push", "--force-with-lease=refs/heads/"+branch+":"+opts.HeadSHA, remote, head+":refs/heads/"+branch); err != nil {
+		return "", validation, classifyLandingPush(err, branch)
 	}
-	return head, nil
+	return head, validation, nil
 }
 
 func closeSupersededLandingPulls(ctx context.Context, client GitHubRESTClient, repository, base, key string, mergedNumber int) error {

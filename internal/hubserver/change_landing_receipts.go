@@ -5,24 +5,25 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readVersionLanding(ctx context.Context, query nativeQueryer, version string) (*tracker.NativeLandingReceipt, error) {
+func readVersionLanding(ctx context.Context, query nativeQueryer, version string) (tracker.NativeLandingReceipt, error) {
 	var raw string
 	err := query.QueryRowContext(ctx, `SELECT r.record_json FROM change_landing_receipts r
 JOIN native_attempts a ON a.id=r.attempt_id WHERE r.version_id=? ORDER BY a.fencing_token DESC LIMIT 1`, version).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return tracker.NativeLandingReceipt{}, err
 	}
 	if err != nil {
-		return nil, err
+		return tracker.NativeLandingReceipt{}, err
 	}
 	var receipt tracker.NativeLandingReceipt
 	err = json.Unmarshal([]byte(raw), &receipt)
-	return &receipt, err
+	return receipt, err
 }
 
 func recordAttemptLanding(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, attempt string, receipt tracker.NativeLandingReceipt) error {
@@ -40,7 +41,7 @@ func recordAttemptLanding(ctx context.Context, tx *sql.Tx, scope nativeScope, it
 	left.ObservedAt, right.ObservedAt = time.Time{}, time.Time{}
 	left.FromState, left.TargetState = "", ""
 	right.FromState, right.TargetState = "", ""
-	if storedRaw != "" && left == right {
+	if storedRaw != "" && reflect.DeepEqual(left, right) {
 		receipt = previous
 	} else {
 		issue, _, err := readNativeIssue(ctx, tx, scope, string(item))

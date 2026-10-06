@@ -384,6 +384,10 @@ func TestLocalGitLandChangeMethods(t *testing.T) {
 				t.Fatalf("result = %#v, remote main = %s (was %s)", result, after, before)
 			}
 			runGit(t, f.source, "fetch", "origin")
+			landedTree := strings.TrimSpace(runGit(t, f.source, "rev-parse", after+"^{tree}"))
+			if result.Gate.HeadSHA != after || result.Gate.TreeSHA != landedTree || result.Gate.ExitCode != 0 || result.Gate.DurationNS <= 0 {
+				t.Fatalf("gate did not validate the landed tree: %#v, landed tree=%s", result.Gate, landedTree)
+			}
 			parents := strings.Fields(strings.TrimSpace(runGit(t, f.source, "rev-list", "--parents", "-n", "1", after)))
 			if len(parents)-1 != test.wantParents {
 				t.Fatalf("landed commit has %d parents, want %d", len(parents)-1, test.wantParents)
@@ -475,6 +479,10 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 			f.advanceMain(t, "feature.txt", "conflicting\n")
 			return LandOptions{HeadSHA: f.head, Method: "squash"}
 		}, wantKind: LandRefusalConflict},
+		{name: "gate cannot rewrite the validated source", arrange: func(t *testing.T, f landingFixture) LandOptions {
+			t.Helper()
+			return LandOptions{HeadSHA: f.head, Method: "squash", ValidationCommand: "printf changed > feature.txt"}
+		}, wantKind: LandRefusalHeadMoved},
 		{name: "nothing left to land", arrange: func(t *testing.T, f landingFixture) LandOptions {
 			t.Helper()
 			runGit(t, f.info.Path, "push", "origin", f.head+":refs/heads/main")
@@ -515,6 +523,9 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 				result, err = f.backend.LandChange(context.Background(), f.info, f.issue, opts)
 			}
 			if test.gateFailure {
+				if result.Gate.Command != opts.ValidationCommand || result.Gate.ExitCode == 0 || result.Gate.DurationNS <= 0 || !validLandingHead(result.Gate.TreeSHA) {
+					t.Fatalf("failed landing gate lost receipt: %#v", result)
+				}
 				var validation *ValidationError
 				if !errors.As(err, &validation) || !strings.Contains(validation.Output, "lint-failure-sentinel") || f.remoteMain(t) != before || strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")) != f.head {
 					t.Fatalf("failed gate changed source or base: %v", err)
@@ -572,7 +583,7 @@ func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
 
 	t.Parallel()
 	f := newLandingFixture(t)
-	first, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash", Message: "Land the feature"})
+	first, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash", Message: "Land the feature", ValidationCommand: "true"})
 	if err != nil {
 		t.Fatalf("LandChange() error = %v", err)
 	}
@@ -580,11 +591,11 @@ func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
 	if err := RecordLanding(context.Background(), f.info, f.head, first); err != nil {
 		t.Fatal(err)
 	}
-	again, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash", Message: "Land the feature"})
+	again, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash", Message: "Land the feature", ValidationCommand: "true"})
 	if err != nil {
 		t.Fatalf("a kept landing was not reported: %v", err)
 	}
-	if again.MergeSHA != first.MergeSHA || again.BaseRef != first.BaseRef || f.remoteMain(t) != first.MergeSHA {
+	if again.Gate != first.Gate || again.Gate.Command != "true" || again.MergeSHA != first.MergeSHA || again.BaseRef != first.BaseRef || f.remoteMain(t) != first.MergeSHA {
 		t.Fatalf("kept landing = %#v, first = %#v, remote = %s", again, first, f.remoteMain(t))
 	}
 	if err := ForgetLanding(context.Background(), f.info); err != nil {

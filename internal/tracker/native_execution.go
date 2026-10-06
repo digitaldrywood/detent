@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -131,21 +132,22 @@ func (r *NativeRuntimeObservation) WithoutActivitySpans() *NativeRuntimeObservat
 }
 
 type NativeLandingReceipt struct {
-	FromState   string    `json:"from_state,omitempty"`
-	TargetState string    `json:"target_state,omitempty"`
-	Refusal     string    `json:"refusal,omitempty"`
-	GateFailed  bool      `json:"gate_failed,omitempty"`
-	Rebased     bool      `json:"rebased,omitempty"`
-	ChangeID    string    `json:"change_id,omitempty"`
-	VersionID   string    `json:"version_id,omitempty"`
-	HeadSHA     string    `json:"head_sha,omitempty"`
-	Landed      bool      `json:"landed"`
-	MergeSHA    string    `json:"merge_sha,omitempty"`
-	BaseRef     string    `json:"base_ref,omitempty"`
-	BaseSHA     string    `json:"base_sha,omitempty"`
-	Method      string    `json:"method,omitempty"`
-	RefusalKind string    `json:"refusal_kind,omitempty"`
-	ObservedAt  time.Time `json:"observed_at"`
+	Gate        *gate.CommandResult `json:"gate,omitempty"`
+	FromState   string              `json:"from_state,omitempty"`
+	TargetState string              `json:"target_state,omitempty"`
+	Refusal     string              `json:"refusal,omitempty"`
+	GateFailed  bool                `json:"gate_failed,omitempty"`
+	Rebased     bool                `json:"rebased,omitempty"`
+	ChangeID    string              `json:"change_id,omitempty"`
+	VersionID   string              `json:"version_id,omitempty"`
+	HeadSHA     string              `json:"head_sha,omitempty"`
+	Landed      bool                `json:"landed"`
+	MergeSHA    string              `json:"merge_sha,omitempty"`
+	BaseRef     string              `json:"base_ref,omitempty"`
+	BaseSHA     string              `json:"base_sha,omitempty"`
+	Method      string              `json:"method,omitempty"`
+	RefusalKind string              `json:"refusal_kind,omitempty"`
+	ObservedAt  time.Time           `json:"observed_at"`
 }
 
 type NativeRESTEvidence struct {

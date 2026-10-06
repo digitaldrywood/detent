@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -362,12 +363,18 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		refusalKind = ""
 	}
 	refused := runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, RefusalKind: refusalKind, GateFailed: gateFailed, Refusal: "private command and credentials"}
+	if gateFailed {
+		refused.Gate = &gate.CommandResult{Command: "make check-land", ExitCode: 7, HeadSHA: head, TreeSHA: strings.Repeat("a", 40), Output: "lint-error-sentinel", DurationNS: 123456}
+	}
 	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, refused); err != nil {
 		t.Fatal(err)
 	}
 	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
 	if err != nil || evidence.Attempt.Runtime.Landing == nil || evidence.Attempt.Runtime.Landing.Landed || evidence.Attempt.Runtime.Landing.RefusalKind != refusalKind || evidence.Change.Change.Landed != nil {
 		t.Fatalf("refused receipt=%#v err=%v", evidence, err)
+	}
+	if !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.Gate, refused.Gate) {
+		t.Fatalf("refusal lost gate: %#v", evidence.Attempt.Runtime.Landing)
 	}
 	refusalReceipt := *evidence.Attempt.Runtime.Landing
 	sequence := evidence.Attempt.Sequence
@@ -403,7 +410,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		}
 		return
 	}
-	landed := runner.NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Landed: true, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: target.Method, Rebased: true}
+	landed := runner.NativeLanding{Gate: &gate.CommandResult{Command: "make check-land", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), DurationNS: 987654}, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Landed: true, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: target.Method, Rebased: true}
 	if err := execution.RecordLanding(guarded, landed); err != nil {
 		t.Fatal(err)
 	}
@@ -430,6 +437,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.Gate, landed.Gate) {
+		t.Fatalf("success lost gate: %#v", evidence.Attempt.Runtime.Landing)
 	}
 	landedReceipt := *evidence.Attempt.Runtime.Landing
 	sequence = evidence.Attempt.Sequence

@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -340,6 +341,9 @@ func TestLandNativeChange(t *testing.T) {
 	t.Parallel()
 	head := strings.Repeat("c", 40)
 	merge := strings.Repeat("e", 40)
+	gateResult := gate.CommandResult{Command: "make check-land", HeadSHA: merge, TreeSHA: strings.Repeat("a", 40), DurationNS: 123456}
+	failedGate := gateResult
+	failedGate.ExitCode, failedGate.Output = 1, "lint-error-sentinel"
 	target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "merge", Title: "Add a sign-in link", Number: 2}
 	githubTarget := target
 	githubTarget.Repository, githubTarget.GitHubPullRequest = "https://github.com/digitaldrywood/detent", true
@@ -364,14 +368,14 @@ func TestLandNativeChange(t *testing.T) {
 		wantMessage    string
 		gateFailure    bool
 	}{
-		{name: "lands and records", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
+		{name: "lands and records", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{Gate: gateResult, MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantMessage: wantMessage},
 		{name: "GitHub source issues retain their original numbers without duplicate closing lines", stub: landingStub{target: githubTarget}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: wantMessage + "\n\nCloses acme/orders#12\nCloses digitaldrywood/detent#3410"},
 		{name: "opted-in project uses GitHub PR landing", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: "Land " + head + "\n\nChange Request change_1, round 0, head " + head + "."},
 		{name: "quota retains reviewed identity and actual metrics", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{githubRequest: true}, wantErr: "github rate limited", quota: true},
-		{name: "gate command failure retains output and reviewed identity", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.ValidationError{Output: "lint-error-sentinel", Err: errors.New("exit status 1")}}, wantOutput: RunOutputNativeLandingRefused, gateFailure: true},
+		{name: "gate command failure retains output and reviewed identity", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{Gate: failedGate}, err: &workspace.ValidationError{Output: "lint-error-sentinel", Err: errors.New("exit status 1")}}, wantOutput: RunOutputNativeLandingRefused, gateFailure: true},
 		{name: "a refusal is reported, not recorded", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "the base branch main refused the push"}},
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalProtected},
 		{name: "a GitHub conflict retains reviewed identity without a landing receipt", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{err: &workspace.LandRefusal{Kind: workspace.LandRefusalConflict, Reason: "Pull Request is not mergeable (HTTP 405)"}},
@@ -443,6 +447,16 @@ func TestLandNativeChange(t *testing.T) {
 			}
 			if result.FinalState != FinalStateCompleted || result.Output != test.wantOutput || result.NativeLanding == nil {
 				t.Fatalf("result = %#v", result)
+			}
+			if backend.result.Gate.Command != "" {
+				if result.NativeLanding.Gate == nil || *result.NativeLanding.Gate != backend.result.Gate {
+					t.Fatalf("landing lost gate command evidence: %#v", result.NativeLanding)
+				}
+				for _, recorded := range stub.recorded {
+					if recorded.Gate == nil || *recorded.Gate != backend.result.Gate {
+						t.Fatalf("published landing lost gate: %#v", recorded)
+					}
+				}
 			}
 			if result.NativeLanding.Rebased != backend.result.Rebased {
 				t.Fatalf("landing lost retry evidence: %#v", result.NativeLanding)

@@ -66,6 +66,12 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	defer func() {
 		if runResult.NativeLanding != nil {
 			runResult.NativeLanding.Rebased = result.Rebased
+			if runResult.NativeLanding.BaseSHA == "" {
+				runResult.NativeLanding.BaseSHA = result.BaseBefore
+			}
+			if result.Gate.Command != "" {
+				runResult.NativeLanding.Gate = &result.Gate
+			}
 		}
 	}()
 	if target.GitHubPullRequest {
@@ -122,7 +128,10 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	if err != nil {
 		return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
 	}
-	landed := NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+	landed := NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+	if result.Gate.Command != "" {
+		landed.Gate = &result.Gate
+	}
 	// The base branch already carries the commit. Keep the landing beside the
 	// worktree before reporting it, so a report the hub cannot take right now
 	// is delivered by the next landing run instead of being lost.

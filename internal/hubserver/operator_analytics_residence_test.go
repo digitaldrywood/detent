@@ -1,10 +1,10 @@
 package hubserver
 
 import (
-	"fmt"
 	"math"
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -199,7 +199,7 @@ VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_stat
 			}
 			for i := range maxAnalyticsPopulation {
 				if kind == "issues" {
-					_, err = createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: fmt.Sprint(i), State: "Todo"}, base)
+					_, err = createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: strconv.Itoa(i), State: "Todo"}, base)
 				} else {
 					from, to := "Todo", "In Progress"
 					if i%2 == 1 {

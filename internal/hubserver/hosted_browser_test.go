@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1090,7 +1091,7 @@ func (f *browserHostedFixture) shutdownForRestart(ctx context.Context) error {
 
 type browserShutdownFrameWriter struct {
 	http.ResponseWriter
-	ctx      context.Context
+	done     <-chan struct{}
 	draining <-chan struct{}
 }
 
@@ -1098,8 +1099,8 @@ func (w browserShutdownFrameWriter) Write(data []byte) (int, error) {
 	if strings.Contains(string(data), `"reason":"server_shutdown"`) {
 		select {
 		case <-w.draining:
-		case <-w.ctx.Done():
-			return 0, w.ctx.Err()
+		case <-w.done:
+			return 0, context.Canceled
 		}
 	}
 	return w.ResponseWriter.Write(data)
@@ -1119,7 +1120,7 @@ func TestHostedBrowserPreviewRestartDrainsStreams(t *testing.T) {
 	f.server.Config.RegisterOnShutdown(func() { close(draining) })
 	handler := f.server.Config.Handler
 	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(browserShutdownFrameWriter{ResponseWriter: w, ctx: r.Context(), draining: draining}, r)
+		handler.ServeHTTP(browserShutdownFrameWriter{ResponseWriter: w, done: r.Context().Done(), draining: draining}, r)
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
@@ -1159,7 +1160,7 @@ func TestHostedBrowserPreviewRestartDrainsStreams(t *testing.T) {
 			break
 		}
 	}
-	if _, err := readSSEFrame(reader); err != io.EOF {
+	if _, err := readSSEFrame(reader); !errors.Is(err, io.EOF) {
 		t.Fatalf("stream end = %v, want EOF", err)
 	}
 }

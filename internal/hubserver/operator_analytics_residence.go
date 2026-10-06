@@ -120,6 +120,7 @@ JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT
 	if err != nil {
 		return nil, nil, false, err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var state tracker.NativeState
 		if err := rows.Scan(&state.Name, &state.Terminal, &state.Dispatchable); err != nil {
@@ -148,6 +149,7 @@ ORDER BY i.native_id LIMIT ?`, scope.organization, scope.project, formatHubTime(
 	if err != nil {
 		return nil, nil, false, err
 	}
+	defer rows.Close()
 	issues := []analyticsResidenceIssue{}
 	clipped := false
 	for rows.Next() {

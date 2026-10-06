@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"slices"
 )
 
 func TestRunnerRoutingClaims(t *testing.T) {

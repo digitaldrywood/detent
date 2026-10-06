@@ -843,6 +843,7 @@ type NativeLandingTarget struct {
 // commit the base branch advanced to; a refused one carries the refusal kind
 // and the reason, and the base branch is unchanged.
 type NativeLanding struct {
+	Gate        *gate.CommandResult
 	Rebased     bool
 	GateFailed  bool
 	ChangeID    string
