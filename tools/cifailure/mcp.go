@@ -62,7 +62,22 @@ func (m *cloudMCP) request(ctx context.Context, method string, params any, notif
 		Result  json.RawMessage `json:"result"`
 		Error   json.RawMessage `json:"error"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&envelope); err != nil || envelope.JSONRPC != "2.0" || envelope.ID != m.sequence || len(envelope.Result) == 0 || (len(envelope.Error) != 0 && string(envelope.Error) != "null") {
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&envelope); err != nil || envelope.JSONRPC != "2.0" || envelope.ID != m.sequence {
+		return errors.New("scheduled MCP returned an invalid or failed response")
+	}
+	if len(envelope.Error) != 0 && string(envelope.Error) != "null" {
+		var rpcError struct {
+			Code int `json:"code"`
+		}
+		if json.Unmarshal(envelope.Error, &rpcError) == nil {
+			switch rpcError.Code {
+			case -32700, -32600, -32601, -32602, -32603:
+				return fmt.Errorf("scheduled MCP request rejected (JSON-RPC code %d)", rpcError.Code)
+			}
+		}
+		return errors.New("scheduled MCP returned an invalid or failed response")
+	}
+	if len(envelope.Result) == 0 {
 		return errors.New("scheduled MCP returned an invalid or failed response")
 	}
 	if err := json.Unmarshal(envelope.Result, result); err != nil {

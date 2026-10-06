@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -211,7 +212,7 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 	if result.ResourceID == "" {
 		return errors.New("scheduled Cloud creation returned no native identity")
 	}
-	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, State: state, Priority: &priority, Labels: labels}, bodies: []string{body}})
+	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, State: state, Priority: &priority, Labels: labels}, bodies: []string{args["description"].(string)}})
 	return nil
 }
 
@@ -285,7 +286,63 @@ func (c *cloudDestination) publish(ctx context.Context, name string, args map[st
 			return errors.New("scheduled diagnostic evidence could not be retained")
 		}
 	}
+	if err := boundCloudEvidence(args); err != nil {
+		return err
+	}
 	return c.command(ctx, name, args, result)
+}
+
+func boundCloudEvidence(args map[string]any) error {
+	const bodyLimit = 32 * 1024
+	field := "description"
+	body, ok := args[field].(string)
+	if !ok {
+		field = "body"
+		body, ok = args[field].(string)
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return errors.New("scheduled Cloud arguments could not be encoded")
+	}
+	if len(encoded) <= operatortool.MaxArgumentBytes && len(body) <= bodyLimit {
+		return nil
+	}
+	prefix, evidence, found := strings.Cut(body, "\n\n```text\n")
+	if !ok || !found {
+		return errors.New("scheduled Cloud metadata exceeds the MCP argument byte limit")
+	}
+	end := strings.LastIndex(evidence, "\n```\n\nDiagnose this problem")
+	if end < 0 {
+		end = strings.LastIndex(evidence, "\n```\n\nThe release workflow")
+	}
+	if end < 0 {
+		return errors.New("scheduled Cloud evidence could not be summarized")
+	}
+	suffix := evidence[end:]
+	evidence = evidence[:end]
+	const notice = "\n[remaining evidence omitted; complete evidence is retained in the linked logs and scheduled reporting artifact]"
+	setExcerpt := func(size int) bool {
+		for size > 0 && size < len(evidence) && !utf8.RuneStart(evidence[size]) {
+			size--
+		}
+		args[field] = prefix + "\n\n```text\n" + evidence[:size] + notice + suffix
+		encoded, _ := json.Marshal(args)
+		return len(encoded) <= operatortool.MaxArgumentBytes && len(args[field].(string)) <= bodyLimit
+	}
+	if !setExcerpt(0) {
+		return errors.New("scheduled Cloud metadata exceeds the MCP argument byte limit")
+	}
+	low, high := 0, len(evidence)
+	for low < high {
+		mid := low + (high-low+1)/2
+		if setExcerpt(mid) {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+	setExcerpt(low)
+	return nil
 }
 
 func (c *cloudDestination) comment(ctx context.Context, issue *cloudIssue, body, key string) error {
@@ -294,7 +351,7 @@ func (c *cloudDestination) comment(ctx context.Context, issue *cloudIssue, body,
 	if err := c.publish(ctx, "add_comment", args, &result); err != nil {
 		return err
 	}
-	issue.bodies = append(issue.bodies, body)
+	issue.bodies = append(issue.bodies, args["body"].(string))
 	return nil
 }
 
