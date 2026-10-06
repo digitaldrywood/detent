@@ -131,6 +131,7 @@ func (r *NativeRuntimeObservation) WithoutActivitySpans() *NativeRuntimeObservat
 }
 
 type NativeLandingReceipt struct {
+	Rebased     bool      `json:"rebased,omitempty"`
 	ChangeID    string    `json:"change_id,omitempty"`
 	VersionID   string    `json:"version_id,omitempty"`
 	HeadSHA     string    `json:"head_sha,omitempty"`

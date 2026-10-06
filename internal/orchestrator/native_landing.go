@@ -9,6 +9,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -90,7 +91,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if !ok {
 			return handoff(fmt.Errorf("native workflow allows no move from %s to the landing refusal lane %s", strings.TrimSpace(issue.State), destination))
 		}
-		if err := o.updateIssueStateByID(ctx, state, issueID, issue, lane, event.CompletedAt, "completed_active_review_transition"); err != nil {
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, lane, event.CompletedAt, "completed_active_review_transition", workflowLaneMetadata{ReasonDetail: workpad.FinalSummary(landing.Refusal)}); err != nil {
 			return handoff(fmt.Errorf("move native item to %s: %w", lane, err))
 		}
 		target = lane
@@ -133,6 +134,9 @@ func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
 		return nil
 	}
 	metadata := map[string]any{"native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
+	if landing.Rebased {
+		metadata["rebased"] = true
+	}
 	if landing.BaseSHA != "" {
 		metadata["native_base_sha"] = landing.BaseSHA
 	}

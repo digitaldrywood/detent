@@ -23,11 +23,13 @@ func TestLaneWritePersistsBeforeTrackerAndRetainsUncertainIdentity(t *testing.T)
 
 	t.Parallel()
 	for _, tt := range []struct {
-		name        string
-		mutationErr error
-		result      string
-		origin      provenance.Origin
+		name         string
+		mutationErr  error
+		result       string
+		origin       provenance.Origin
+		reasonDetail string
 	}{
+		{name: "conflicting files preserved in reason detail", result: "applied", origin: provenance.OriginDetent, reasonDetail: "conflict: internal/web/templates/work_templ.go, internal/store/sqlc/db.go"},
 		{name: "applied", result: "applied", origin: provenance.OriginDetent},
 		{name: "uncertain", mutationErr: errors.New("response lost"), result: "uncertain", origin: provenance.OriginDetent},
 		{name: "blocked", mutationErr: connector.ErrStateUpdateBlocked, result: "blocked", origin: provenance.OriginHuman},
@@ -43,14 +45,18 @@ func TestLaneWritePersistsBeforeTrackerAndRetainsUncertainIdentity(t *testing.T)
 				if err != nil || result != "prepared" || write.To != target || write.From != issue.State || write.FenceToken == 0 {
 					t.Fatalf("tracker called before durable intent: %#v, %s, %v", write, result, err)
 				}
-				if reason := connector.LaneTransitionReason(ctx); reason != "test transition" {
+				wantReason := tt.reasonDetail
+				if wantReason == "" {
+					wantReason = "test transition"
+				}
+				if reason := connector.LaneTransitionReason(ctx); reason != wantReason {
 					t.Fatalf("tracker lost lane ledger reason: %q", reason)
 				}
 				return tt.mutationErr
 			}}
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, backend, nil, at)
 			state := newState(cfg)
-			err := orch.updateIssueStateByIDStrictWithMetadata(t.Context(), &state, issue.ID, issue, "Rework", at, "test_transition", workflowLaneMetadata{})
+			err := orch.updateIssueStateByIDStrictWithMetadata(t.Context(), &state, issue.ID, issue, "Rework", at, "test_transition", workflowLaneMetadata{ReasonDetail: tt.reasonDetail})
 			if !errors.Is(err, tt.mutationErr) {
 				t.Fatalf("write error=%v, want %v", err, tt.mutationErr)
 			}

@@ -364,11 +364,11 @@ func TestLandNativeChange(t *testing.T) {
 		wantMessage    string
 		gateFailure    bool
 	}{
-		{name: "lands and records", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
+		{name: "lands and records", stub: landingStub{target: target}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantMessage: wantMessage},
-		{name: "GitHub source issues retain their original numbers without duplicate closing lines", stub: landingStub{target: githubTarget}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
+		{name: "GitHub source issues retain their original numbers without duplicate closing lines", stub: landingStub{target: githubTarget}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: wantMessage + "\n\nCloses acme/orders#12\nCloses digitaldrywood/detent#3410"},
-		{name: "opted-in project uses GitHub PR landing", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
+		{name: "opted-in project uses GitHub PR landing", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
 			wantOutput: RunOutputNativeLanded, wantRecorded: 1, wantGitHub: true, wantMessage: "Land " + head + "\n\nChange Request change_1, round 0, head " + head + "."},
 		{name: "quota retains reviewed identity and actual metrics", stub: landingStub{target: NativeLandingTarget{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Method: "merge", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}, backend: landingBackend{githubRequest: true}, wantErr: "github rate limited", quota: true},
 		{name: "gate command failure retains output and reviewed identity", stub: landingStub{target: target}, backend: landingBackend{err: &workspace.ValidationError{Output: "lint-error-sentinel", Err: errors.New("exit status 1")}}, wantOutput: RunOutputNativeLandingRefused, gateFailure: true},
@@ -394,7 +394,7 @@ func TestLandNativeChange(t *testing.T) {
 			wantOutput: RunOutputNativeLandingRefused, wantRefusal: workspace.LandRefusalHeadMoved},
 		{name: "a git failure fails the run", stub: landingStub{target: target}, backend: landingBackend{err: errors.New("git fetch origin: network down")},
 			wantErr: "network down"},
-		{name: "an unrecorded landing fails the run after retrying the report", stub: landingStub{target: target, recordErr: errors.New("hub unavailable")}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge"}},
+		{name: "an unrecorded landing fails the run after retrying the report", stub: landingStub{target: target, recordErr: errors.New("hub unavailable")}, backend: landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "merge", Rebased: true}},
 			wantErr: "record landing", wantRecorded: landingReportTries},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -443,6 +443,14 @@ func TestLandNativeChange(t *testing.T) {
 			}
 			if result.FinalState != FinalStateCompleted || result.Output != test.wantOutput || result.NativeLanding == nil {
 				t.Fatalf("result = %#v", result)
+			}
+			if result.NativeLanding.Rebased != backend.result.Rebased {
+				t.Fatalf("landing lost retry evidence: %#v", result.NativeLanding)
+			}
+			for _, recorded := range stub.recorded {
+				if recorded.Rebased != backend.result.Rebased {
+					t.Fatalf("recorded landing lost retry evidence: %#v", recorded)
+				}
 			}
 			if result.ForgeWriteCompleted != (test.wantGitHub && test.wantRecorded == 1) {
 				t.Fatalf("forge landing completion evidence = %t", result.ForgeWriteCompleted)
