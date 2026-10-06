@@ -146,7 +146,6 @@ No new brake, breaker, lease, park, recovery path, revocation, reason code or
 reconciliation loop is allowed; any change to one must remove or consolidate
 an existing one, and the remedy is never a guard. Do not add configuration keys,
 CLI subcommands or dashboard surfaces to work around a mechanism. Fix the mechanism.
-New or expanded mechanism scope also requires the human approval in INV-11.
 
 Constant lane-transition reasons must use the
 [existing vocabulary](../internal/invariants/source_policy.json). Dynamic
@@ -156,8 +155,7 @@ consolidation. Provider messages, operator reasons and decision helpers remain
 review boundaries.
 
 **Enforcement:** `TestRepositorySources` and `TestSourceViolations` in
-`internal/invariants`. Review verifies removal or consolidation and the
-operator's scope authority.
+`internal/invariants`. Review verifies removal or consolidation.
 
 ## INV-4 — Native merge queue
 
@@ -418,25 +416,6 @@ durations, private instruction causality or zero-valued analytics.
 `TestHostedAnalyticsReads` and `TestNativeAnalyticsRuntimePopulation` in
 `internal/hubserver` enforce scoped current evidence and recorded-read boundaries.
 Review rejects semantic reservation and preemption substitutes.
-
-## INV-11 — Human mechanism scope approval before Todo
-
-No new or expanded operational mechanism enters Todo without a human's explicit
-approval of that scope, regardless of author or title type. Assistants file
-such work to Backlog. Only a mechanism fix with recorded runtime evidence whose
-remedy removes or consolidates may reach Todo without a human.
-Features that add or expand no mechanism may be filed straight to Todo.
-Admission approval does not lift the mechanism moratorium.
-
-**Enforcement:** Admission Criteria rule 9 and review enforce scope and runtime
-evidence. The diagnostic `INV-11 human scope approval` checks applied Todo
-ledger entries, current issue scope and matching human provenance; missing
-evidence warns, and current text cannot prove admission-time scope.
-`TestDoctorInvariantAdmission`, `TestDoctorInvariantAdmissionBatches`,
-`TestDoctorInvariantScopeClassification`,
-`TestDoctorInvariantAdmissionRepeatedEntries`, and
-`TestDoctorInvariantAdmissionUnavailableEvidence` in `internal/cli`;
-`TestDoctorInvariantRegistration` in `internal/invariants`.
 
 ## INV-12 — Native toolchain caches
 

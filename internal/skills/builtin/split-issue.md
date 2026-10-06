@@ -43,7 +43,6 @@ Draw the dependency graph:
 
 Respect the scope rules:
 
-- A child that adds or expands a mechanism (brake, breaker, lease, park, recovery path, revocation, reason code, reconciliation loop) goes to Backlog for human approval (INV-11). Everything else can go to Todo.
 - Under INV-15, a child may add visible UI only when the human-authored parent names that UI change. Quote the parent's words in the child. If the parent does not name it, describe the idea in a comment and do not file a UI child.
 - Do not widen the parent's scope while splitting. Unrelated defects you find become their own issues.
 

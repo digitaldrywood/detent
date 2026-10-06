@@ -134,14 +134,6 @@ Do not admit, regardless of how well argued:
    Polish is not a priority on its own.
 8. **Umbrella and epic issues.** Flat issues with `Depends on:` lines
    only. Decompose before admitting anything inside.
-9. **New or expanded mechanisms without a human's scope approval.** Any
-   issue that adds configuration, a brake, breaker, lease, park,
-   recovery path, reservation, or reason code stays in `Backlog` until
-   a human moves it, regardless of who filed it or how the title is
-   typed. Only a fix with recorded runtime evidence (log lines, database
-   rows, attempt ids, a reproducible failure) whose remedy removes or
-   consolidates may be admitted without a human. Operator decision
-   2026-09-14; features released from this gate 2026-10-01.
 
 ### Readiness
 
