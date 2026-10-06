@@ -57,6 +57,7 @@ type ExecLauncher struct {
 	RestartLimit int
 
 	mu       sync.Mutex
+	closed   bool
 	running  map[string]*supervisedTenant
 	failures map[string]error
 }
@@ -71,6 +72,9 @@ type supervisedTenant struct {
 func (l *ExecLauncher) Start(_ context.Context, spec TenantSpec) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return errors.New("tenant launcher is closed")
+	}
 	if l.running == nil {
 		l.running = make(map[string]*supervisedTenant)
 	}
@@ -174,26 +178,28 @@ func (l *ExecLauncher) logger() *slog.Logger {
 func (l *ExecLauncher) Stop(id string) error {
 	l.mu.Lock()
 	tenant, ok := l.running[id]
-	delete(l.running, id)
 	delete(l.failures, id)
 	l.mu.Unlock()
 	if !ok {
 		return nil
 	}
 	tenant.cancel()
-	select {
-	case <-tenant.done:
-		return nil
-	case <-time.After(30 * time.Second):
-		return fmt.Errorf("tenant %s did not stop", id)
+	<-tenant.done
+	l.mu.Lock()
+	if l.running[id] == tenant {
+		delete(l.running, id)
 	}
+	l.mu.Unlock()
+	return nil
 }
 
 func (l *ExecLauncher) Close() error {
 	l.mu.Lock()
+	l.closed = true
 	ids := make([]string, 0, len(l.running))
-	for id := range l.running {
+	for id, tenant := range l.running {
 		ids = append(ids, id)
+		tenant.cancel()
 	}
 	l.mu.Unlock()
 	var err error
