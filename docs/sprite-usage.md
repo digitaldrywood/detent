@@ -6,7 +6,9 @@ plan allowances. `internal/usagecost.Observation` is the reusable source
 contract. The Hub's `recordCostObservation` and `database.monthlyCosts` own source
 revision storage and aggregation for all cost buckets. Sprite imports use
 `sprite_infrastructure`; runner accounting can reuse the contract with its own
-bucket without another schema or aggregation implementation.
+bucket without another schema or aggregation implementation. See
+[runner AI accounting](runner-usage.md) for runner billing-mode, reported-cost
+precedence and Luna separation.
 
 ## Provider feasibility
 

@@ -41,14 +41,17 @@ func turnUsageEntry(result RunResult, sessionModel, backendKind string, price us
 		return tracker.NativeUsage{}, false
 	}
 	entry := tracker.NativeUsage{
-		Provider:    tracker.UsageProviderID(backendKind),
-		Model:       model,
-		Input:       max(result.Tokens.InputTokens, 0),
-		CachedInput: max(result.Tokens.CachedInputTokens, 0),
-		Output:      max(result.Tokens.OutputTokens, 0),
-		Currency:    usageCurrency,
+		BillingMode:        result.BillingMode,
+		ReportedCostMicros: result.ReportedCostMicros,
+		CostSource:         result.CostSource,
+		Provider:           tracker.UsageProviderID(backendKind),
+		Model:              model,
+		Input:              max(result.Tokens.InputTokens, 0),
+		CachedInput:        max(result.Tokens.CachedInputTokens, 0),
+		Output:             max(result.Tokens.OutputTokens, 0),
+		Currency:           usageCurrency,
 	}
-	if entry.Input == 0 && entry.CachedInput == 0 && entry.Output == 0 {
+	if entry.Input == 0 && entry.CachedInput == 0 && entry.Output == 0 && entry.ReportedCostMicros == nil {
 		return tracker.NativeUsage{}, false
 	}
 	if price != nil {

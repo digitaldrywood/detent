@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 )
 
 type nativeExecution struct {
+	usageStartedAt    time.Time
 	artifacts         nativeArtifacts
 	scheduler         *Scheduler
 	claim             nativeClaim
@@ -481,6 +483,18 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 		return err
 	}
 	data := e.data
+	at := e.scheduler.now().UTC()
+	if kind == "run.started" {
+		e.usageStartedAt = at
+	}
+	if kind == "run.finished" {
+		data.Usage = slices.Clone(data.Usage)
+		for i := range data.Usage {
+			data.Usage[i].From = e.usageStartedAt
+			data.Usage[i].To, data.Usage[i].ReportedAt = at, at
+			data.Usage[i].Revision = data.Sequence + 1
+		}
+	}
 	data.Sequence++
 	data.Outcome = outcome
 	if kind == "run.finished" {

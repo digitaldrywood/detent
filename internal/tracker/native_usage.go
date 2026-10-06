@@ -1,6 +1,9 @@
 package tracker
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // Per-attempt usage (decisions section 17.5). A runner reports what a turn
 // spent; the execution accumulates the attempt's running total and the hub
@@ -20,13 +23,23 @@ const (
 // served from its cache. CostEstimate is what the runner priced the usage
 // at; when it is zero the hub prices it from its own table.
 type NativeUsage struct {
-	Provider     string  `json:"provider"`
-	Model        string  `json:"model"`
-	Input        int64   `json:"input"`
-	CachedInput  int64   `json:"cached_input"`
-	Output       int64   `json:"output"`
-	CostEstimate float64 `json:"cost_estimate"`
-	Currency     string  `json:"currency"`
+	BillingMode        string    `json:"billing_mode,omitempty"`
+	ReportedCostMicros *int64    `json:"reported_cost_micros,omitempty"`
+	CostCoverage       string    `json:"cost_coverage,omitempty"`
+	CostSource         string    `json:"cost_source,omitempty"`
+	UsageKind          string    `json:"usage_kind,omitempty"`
+	SourceID           string    `json:"source_id,omitempty"`
+	Revision           int64     `json:"revision,omitempty"`
+	From               time.Time `json:"from,omitzero"`
+	To                 time.Time `json:"to,omitzero"`
+	ReportedAt         time.Time `json:"reported_at,omitzero"`
+	Provider           string    `json:"provider"`
+	Model              string    `json:"model"`
+	Input              int64     `json:"input"`
+	CachedInput        int64     `json:"cached_input"`
+	Output             int64     `json:"output"`
+	CostEstimate       float64   `json:"cost_estimate"`
+	Currency           string    `json:"currency"`
 }
 
 // Tokens is what the usage report counts as processed: every input token

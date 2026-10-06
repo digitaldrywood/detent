@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -26,6 +27,7 @@ func (e *recordingUsageExecution) RecordUsage(_ context.Context, entry tracker.N
 
 func TestTurnUsageEntry(t *testing.T) {
 	t.Parallel()
+	paid, zero := int64(1000), int64(0)
 	cases := []struct {
 		name         string
 		backendKind  string
@@ -49,6 +51,10 @@ func TestTurnUsageEntry(t *testing.T) {
 			result: RunResult{Model: "gpt-5.6-sol", Tokens: TokenTotals{InputTokens: 5, OutputTokens: 1}},
 			want:   tracker.NativeUsage{Provider: "codex", Model: "gpt-5.6-sol", Input: 5, Output: 1, Currency: "USD"},
 		},
+
+		{name: "metered cost and token estimate remain separate", backendKind: "claude_code", sessionModel: "model", result: RunResult{BillingMode: "metered", ReportedCostMicros: &paid, CostSource: "backend_result", Tokens: TokenTotals{InputTokens: 10}}, want: tracker.NativeUsage{Provider: "claude", Model: "model", BillingMode: "metered", ReportedCostMicros: &paid, CostSource: "backend_result", Input: 10, Currency: "USD"}},
+		{name: "subscription preserves raw cost without changing mode", backendKind: "claude_code", sessionModel: "model", result: RunResult{BillingMode: "subscription", ReportedCostMicros: &paid, CostSource: "backend_result", Tokens: TokenTotals{InputTokens: 10}}, want: tracker.NativeUsage{Provider: "claude", Model: "model", BillingMode: "subscription", ReportedCostMicros: &paid, CostSource: "backend_result", Input: 10, Currency: "USD"}},
+		{name: "explicit zero cost with no tokens is reportable", backendKind: "codex", sessionModel: "model", result: RunResult{BillingMode: "metered", ReportedCostMicros: &zero, CostSource: "runner_report"}, want: tracker.NativeUsage{Provider: "codex", Model: "model", BillingMode: "metered", ReportedCostMicros: &zero, CostSource: "runner_report", Currency: "USD"}},
 		{name: "a turn that spent nothing", backendKind: "codex", sessionModel: "gpt-6-astra"},
 		{name: "no model to name", backendKind: "codex", result: RunResult{Tokens: TokenTotals{InputTokens: 5}}},
 	}
@@ -59,7 +65,7 @@ func TestTurnUsageEntry(t *testing.T) {
 			if ok != (test.want != tracker.NativeUsage{}) {
 				t.Fatalf("turnUsageEntry() reported = %t, want %t", ok, !ok)
 			}
-			if ok && got != test.want {
+			if ok && !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("turnUsageEntry() = %+v, want %+v", got, test.want)
 			}
 		})
