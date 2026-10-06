@@ -8,7 +8,7 @@ Record gate/current-head checks; reuse verified same-head/test-input receipts wi
 
 The orchestrator is the only writer of tracker lane state. Never change lane labels or status fields.
 
-POST real blocker `issue_id` to `dependencies/blocked_by` before coding; keep `Depends on: owner/repo#123`. Refs: positive `#N`/`owner/repo#N`, no URLs/YAML `blocked_by`; instance-owned `instance:tool` clears via Workpad.
+Before coding, POST blocker `issue_id` to `dependencies/blocked_by`; keep `Depends on: owner/repo#123`. Positive `#N`/`owner/repo#N` only, no URLs/YAML `blocked_by`; instance-owned `instance:tool` clears via Workpad.
 
 ```detent-status
 schema: 1
@@ -19,7 +19,7 @@ blockers:
 human_action: null
 ```
 
-`blocked` needs blocker, `human_action`, or `reason_code`; default issue-state/tick checks never clear reason-only blockers. Credential/write failures are instance-owned. Finish independent work; keep PR. Human needs: blocked `human_action`; resume needs authorized newer Workpad evidence, `in_progress`, `human_action: null`. Invent no dependencies/breaker acknowledgments; replies authorize only stated actions.
+`blocked` needs blocker, `human_action`, or `reason_code`; issue-state/tick checks never clear reason-only blockers. Credential/write failures are instance-owned. Finish independent work; keep PR. Human needs: `human_action`; resume: authorized newer Workpad, `in_progress`, `human_action: null`. Invent no dependencies/breaker acknowledgments; replies authorize only stated actions.
 
 Success:
 
