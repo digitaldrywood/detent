@@ -218,7 +218,7 @@ func TestAppSharedEntry(t *testing.T) {
 	}
 	for _, path := range []string{"/app/bootstrap", "/chat/bootstrap"} {
 		t.Run("bootstrap "+path, func(t *testing.T) {
-			response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + path})
+			response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + path, mutate: func(claims *cloudassert.Claims) { claims.PlatformRole = "admin" }})
 			if response.Code != http.StatusOK {
 				t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 			}
@@ -227,16 +227,16 @@ func TestAppSharedEntry(t *testing.T) {
 			if payload.BasePath != prefix || payload.SignInPath != "/organizations?switch=1" || payload.APIBase != "/api/v2/organizations/org_security" || payload.CSRFToken != csrf(owner) {
 				t.Fatalf("bootstrap = %#v", payload)
 			}
-			if payload.Actor.Subject != "user_owner" || payload.Actor.Role != "owner" || len(payload.Projects) != 1 || len(payload.Organizations) != 0 {
+			if payload.Actor.PlatformRole != "admin" || payload.Actor.Subject != "user_owner" || payload.Actor.Role != "owner" || len(payload.Projects) != 1 || len(payload.Organizations) != 0 {
 				t.Fatalf("bootstrap = %#v", payload)
 			}
 		})
 	}
 	t.Run("bootstrap per session csrf", func(t *testing.T) {
-		response := f.serve(t, hostedSharedRequest{user: &viewer, target: prefix + "/app/bootstrap"})
+		response := f.serve(t, hostedSharedRequest{user: &viewer, target: prefix + "/app/bootstrap", mutate: func(claims *cloudassert.Claims) { claims.PlatformRole = "admin" }})
 		var payload appBootstrap
 		decodeHubResponse(t, response, &payload)
-		if payload.CSRFToken != csrf(viewer) || payload.CSRFToken == csrf(owner) {
+		if payload.Actor.PlatformRole != "admin" || payload.Actor.Role != "viewer" || payload.Actor.CanManage || payload.Actor.CanManageRunners || payload.CSRFToken != csrf(viewer) || payload.CSRFToken == csrf(owner) {
 			t.Fatalf("viewer csrf = %q", payload.CSRFToken)
 		}
 	})

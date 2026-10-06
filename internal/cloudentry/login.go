@@ -210,10 +210,6 @@ func (s *Service) completeLogin(c echo.Context) error {
 		}
 	}
 	if transaction.InvitationToken != "" {
-		if s.staff(identity.Email) {
-			callback.Reason = "staff_session"
-			return s.loginDenied(c, http.StatusForbidden, "Staff accounts cannot join customer organizations", callback)
-		}
 		invitation, invitationErr := s.config.Provider.Invitation(ctx, transaction.InvitationToken)
 		message := auth.InvitationUnavailable
 		if invitationErr == nil {
@@ -243,7 +239,7 @@ func (s *Service) completeLogin(c echo.Context) error {
 	case transaction.Organization != "":
 		return c.Redirect(http.StatusSeeOther, s.organizationHome(transaction.Organization))
 	default:
-		return c.Redirect(http.StatusSeeOther, s.landing(identity.Email, *identity.Hosted))
+		return c.Redirect(http.StatusSeeOther, s.landing(ctx, identity.Email, *identity.Hosted))
 	}
 }
 
@@ -367,9 +363,6 @@ func (s *Service) chooser(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
 	}
-	if s.platformStaff(session) {
-		return c.Redirect(http.StatusSeeOther, platformPath)
-	}
 	if served, err := s.clientShell(c); served || err != nil {
 		return err
 	}
@@ -405,7 +398,7 @@ func (s *Service) sessionJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "membership_unavailable", "message": "Organization information is temporarily unavailable"})
 	}
-	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": account.CanCreate, "staff": account.Staff})
+	return c.JSON(http.StatusOK, map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_create": account.CanCreate, "platform_role": account.PlatformRole})
 }
 
 func (s *Service) organizationsJSON(c echo.Context) error {
@@ -421,7 +414,7 @@ func (s *Service) organizationsJSON(c echo.Context) error {
 	if choices == nil {
 		choices = []organizationChoice{}
 	}
-	result := map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "organizations": choices, "pending": []organizationChoice{}, "can_create": false, "staff": s.platformStaff(session)}
+	result := map[string]any{"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "organizations": choices, "pending": []organizationChoice{}, "can_create": false, "platform_role": s.sessionPlatformRole(c.Request().Context(), session), "can_grant": s.entitlementAdministrator(c.Request().Context(), session)}
 	if s.config.Allocation != nil {
 		pending, err := s.pendingOrganizations(c.Request().Context(), session.Subject)
 		if err != nil {

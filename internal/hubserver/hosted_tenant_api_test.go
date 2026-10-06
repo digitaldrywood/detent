@@ -345,12 +345,12 @@ func TestHostedSharedTenantAPI(t *testing.T) {
 		{name: "invite with another organization's CSRF", request: hostedSharedRequest{user: &owner, method: http.MethodPost, target: api + "/members/invitations", body: invite, csrf: cloudassert.CSRFToken("shared-user_owner", "org_other")}, status: http.StatusForbidden},
 		{name: "invite with the entry CSRF", request: hostedSharedRequest{user: &owner, method: http.MethodPost, target: api + "/members/invitations", body: invite, csrf: ownerCSRF}, status: http.StatusCreated},
 		{name: "other organization API", request: hostedSharedRequest{user: &owner, target: "/api/v2/organizations/org_other/members"}, status: http.StatusNotFound},
-		{name: "staff members", request: hostedSharedRequest{user: &staff, target: api + "/members"}, status: http.StatusForbidden},
+		{name: "platform member uses tenant role", request: hostedSharedRequest{user: &staff, target: api + "/members"}, status: http.StatusOK},
 		{name: "member root", request: hostedSharedRequest{user: &owner, target: "/organizations/org_security"}, status: http.StatusOK, shell: true},
 		{name: "member project", request: hostedSharedRequest{user: &viewer, target: "/organizations/org_security/projects/prj_security"}, status: http.StatusOK, shell: true},
 		{name: "member project issue", request: hostedSharedRequest{user: &viewer, target: "/organizations/org_security/projects/prj_security/issues/wi_any"}, status: http.StatusOK, shell: true},
 		{name: "member project changes", request: hostedSharedRequest{user: &viewer, target: "/organizations/org_security/projects/prj_security/changes"}, status: http.StatusOK, shell: true},
-		{name: "staff root keeps the organization page", request: hostedSharedRequest{user: &staff, target: "/organizations/org_security"}, status: http.StatusOK},
+		{name: "platform member uses tenant shell", request: hostedSharedRequest{user: &staff, target: "/organizations/org_security"}, status: http.StatusOK, shell: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := f.serve(t, test.request)

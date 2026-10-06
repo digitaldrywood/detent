@@ -82,6 +82,13 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 	if err != nil {
 		return err
 	}
+	if platformMemberOperation(name) {
+		role := s.sessionPlatformRole(ctx, session)
+		if role == "" || name != platformMemberList && role != "admin" {
+			return operatortool.ErrAccessDenied
+		}
+		return nil
+	}
 	switch name {
 	case operatortool.ProvisioningPage, operatortool.ResumeProvisioning:
 		if s.config.Allocation == nil {
@@ -98,7 +105,7 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 	case operatortool.OrganizationSession, operatortool.OrganizationList, operatortool.SessionLogout:
 		return nil
 	case operatortool.SupportStart:
-		if !s.supportActor(session.Email) || session.Identity.SupportActor != "" {
+		if !s.supportActor(ctx, session.Email) || session.Identity.SupportActor != "" {
 			return operatortool.ErrAccessDenied
 		}
 		if in.OrganizationID != "" {
@@ -112,7 +119,7 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 		if s.config.Allocation == nil {
 			return operatoradmin.ErrUnavailable
 		}
-		if s.staff(session.Email) || session.Identity.SupportActor != "" || !s.signupAllowed(session.Email) {
+		if session.Identity.SupportActor != "" || !s.signupAllowed(session.Email) {
 			return operatortool.ErrAccessDenied
 		}
 		if resource != "" {
@@ -144,7 +151,7 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 		}
 		return nil
 	case operatortool.OrganizationSwitch:
-		if s.staff(session.Email) || session.Identity.SupportActor != "" {
+		if session.Identity.SupportActor != "" {
 			return operatortool.ErrAccessDenied
 		}
 		if in.OrganizationID == "" {
@@ -153,7 +160,7 @@ func (a entryAdministration) Authorize(ctx context.Context, name string, in oper
 		_, err = s.switchOrganizationFor(ctx, session, in.OrganizationID)
 		return err
 	case operatortool.InvitationAccept:
-		if s.staff(session.Email) || session.Identity.SupportActor != "" {
+		if session.Identity.SupportActor != "" {
 			return operatortool.ErrAccessDenied
 		}
 		if in.InvitationID != "" {
@@ -195,6 +202,9 @@ func (a entryAdministration) Read(ctx context.Context, name string, in operatora
 	session, err := s.currentAdministrationSession(ctx, operatortool.ConnectionIdentity(ctx))
 	if err != nil {
 		return nil, err
+	}
+	if name == platformMemberList {
+		return s.readPlatformMembers(ctx, session)
 	}
 	if name == operatortool.ProvisioningPage {
 		organization, err := s.creatorOrganizationFor(ctx, session, in.OrganizationID)
@@ -288,6 +298,9 @@ func (a entryAdministration) Execute(ctx context.Context, name string, in operat
 	session, err := s.currentAdministrationSession(ctx, operatortool.ConnectionIdentity(ctx))
 	if err != nil {
 		return operatoradmin.Output{}, err
+	}
+	if platformMemberOperation(name) {
+		return a.executePlatformMember(ctx, name, in, m, session)
 	}
 	if name == operatortool.SessionLogout {
 		outcome, err := s.logoutFor(ctx, session)
@@ -406,16 +419,16 @@ func (a entryAdministration) Audit(ctx context.Context, m mutation.Metadata, out
 
 // accountContext is the semantic browser landing/session projection without form secrets.
 type accountContext struct {
-	Subject     string `json:"subject"`
-	Email       string `json:"email"`
-	CanCreate   bool   `json:"can_create"`
-	CanSupport  bool   `json:"can_support"`
-	Staff       bool   `json:"staff"`
-	Destination string `json:"destination"`
-	Reconnect   bool   `json:"reconnect"`
+	Subject      string `json:"subject"`
+	Email        string `json:"email"`
+	CanCreate    bool   `json:"can_create"`
+	CanSupport   bool   `json:"can_support"`
+	PlatformRole string `json:"platform_role"`
+	Destination  string `json:"destination"`
+	Reconnect    bool   `json:"reconnect"`
 }
 
 func (s *Service) accountContextFor(ctx context.Context, session accountSession) (accountContext, error) {
 	canCreate, err := s.canCreate(ctx, session)
-	return accountContext{Subject: session.Subject, Email: session.Email, CanCreate: canCreate, CanSupport: s.supportActor(session.Email), Staff: s.platformStaff(session), Destination: s.config.PublicURL + s.landing(session.Email, session.Identity), Reconnect: true}, err
+	return accountContext{Subject: session.Subject, Email: session.Email, CanCreate: canCreate, CanSupport: session.Identity.SupportActor == "" && s.supportActor(ctx, session.Email), PlatformRole: s.sessionPlatformRole(ctx, session), Destination: s.config.PublicURL + s.landing(ctx, session.Email, session.Identity), Reconnect: true}, err
 }

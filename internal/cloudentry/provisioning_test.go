@@ -205,7 +205,7 @@ func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*Al
 	if mutate != nil {
 		mutate(allocation)
 	}
-	config := Config{PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: f.key, Provider: f.provider,
+	config := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: f.key, Provider: f.provider,
 		StaffEmails: []string{"staff@example.test"}, StateDir: f.state, Logger: slog.New(slog.DiscardHandler), clientFS: fstest.MapFS{}, Allocation: allocation, Billing: f.billing, tenantStartTimeout: f.timeout, now: f.now}
 	if !f.launcher.useUnix {
 		config.transport = f.launcher.transport
@@ -737,7 +737,7 @@ func TestCanCreateCountsOrganizationsTheIdentityCreated(t *testing.T) {
 		{name: "at limit counting pending", service: f.service, session: accountSession{Subject: "pending", Email: "pending@example.test"}, want: false},
 		{name: "at limit with only pending", service: f.service, session: accountSession{Subject: "requested", Email: "requested@example.test"}, want: false},
 		{name: "deleted not counted", service: f.service, session: accountSession{Subject: "deleted", Email: "deleted@example.test"}, want: true},
-		{name: "staff", service: f.service, session: accountSession{Subject: "staff", Email: "staff@example.test"}, want: false},
+		{name: "platform member", service: f.service, session: accountSession{Subject: "staff", Email: "staff@example.test"}, want: true},
 		{name: "support session", service: f.service, session: accountSession{Subject: "below", Email: "below@example.test", Identity: auth.HostedIdentity{SupportActor: "support@example.test"}}, want: false},
 		{name: "no allocation", service: &Service{}, session: accountSession{Subject: "none", Email: "none@example.test"}, want: false},
 	}

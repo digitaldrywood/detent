@@ -19,12 +19,12 @@ const (
 	platformTenantWorkers   = 8
 )
 
-func (s *Service) platformIdentity(email string, identity auth.HostedIdentity) bool {
-	return s.staff(email) && identity.SupportActor == "" && identity.OrganizationID == ""
+func (s *Service) platformIdentity(ctx context.Context, email string, identity auth.HostedIdentity) bool {
+	return s.platformRole(ctx, email) != "" && identity.SupportActor == ""
 }
 
-func (s *Service) platformStaff(session accountSession) bool {
-	return s.platformIdentity(session.Email, session.Identity)
+func (s *Service) platformStaff(ctx context.Context, session accountSession) bool {
+	return s.platformIdentity(ctx, session.Email, session.Identity)
 }
 
 func (s *Service) platformSession(c echo.Context, event string) (accountSession, bool, error) {
@@ -32,7 +32,7 @@ func (s *Service) platformSession(c echo.Context, event string) (accountSession,
 	if err != nil {
 		return accountSession{}, false, c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
-	if !s.platformStaff(session) {
+	if !s.platformStaff(c.Request().Context(), session) {
 		return accountSession{}, false, c.JSON(http.StatusForbidden, map[string]string{"code": "forbidden", "message": "The platform console is limited to Detent staff"})
 	}
 	if err := s.auth.audit(c.Request().Context(), session.Subject, "", event); err != nil {
@@ -46,7 +46,7 @@ func (s *Service) platformPage(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Fplatform")
 	}
-	if !s.platformStaff(session) {
+	if !s.platformStaff(c.Request().Context(), session) {
 		return s.denied(c, http.StatusForbidden, "The platform console is limited to Detent staff")
 	}
 	if err := s.auth.audit(c.Request().Context(), session.Subject, "", "platform_opened"); err != nil {
@@ -152,7 +152,7 @@ func (s *Service) platformOrganizationsJSON(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "registry_unavailable", "message": "The organization registry is temporarily unavailable"})
 	}
-	canSupport := s.supportActor(session.Email)
+	canSupport := s.supportActor(c.Request().Context(), session.Email)
 	ids := make([]string, len(organizations))
 	for index, organization := range organizations {
 		ids[index] = organization.ID
@@ -164,7 +164,7 @@ func (s *Service) platformOrganizationsJSON(c echo.Context) error {
 		}
 	})
 	return c.JSON(http.StatusOK, map[string]any{
-		"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_support": canSupport, "can_grant": s.entitlementAdministrator(session),
+		"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_support": canSupport, "can_grant": s.entitlementAdministrator(ctx, session),
 		"organizations": organizations, "unavailable": platformUnavailable,
 	})
 }

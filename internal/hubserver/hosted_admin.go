@@ -74,7 +74,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 		return s.hostedError(c, http.StatusForbidden, "You cannot invite a member with this role")
 	}
 	email := strings.ToLower(strings.TrimSpace(c.FormValue("email")))
-	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || hostedEmailListed(s.config.Hosted.StaffEmails, email) {
+	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
 	if err := s.validateHostedInvitationGrants(c.Request().Context(), s.database.db, credential, email, nil); err != nil {

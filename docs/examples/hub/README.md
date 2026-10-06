@@ -44,9 +44,8 @@ rewrites paths to choose a tenant). Its configuration:
 public_url: https://cloud.detent.build
 listen: 127.0.0.1:8017
 state_directory: /var/lib/detent/cloud
-staff_emails: []
-support_actors: []
-entitlement_administrators: []
+platform:
+  bootstrap_admin_email: operator@example.test
 assertion:
   issuer: detent-cloud
   signing_key_env: DETENT_CLOUD_ASSERTION_KEY
@@ -55,10 +54,21 @@ workos:
   api_key_env: WORKOS_API_KEY
 ```
 
-`entitlement_administrators` lists the staff who may grant and revoke
-complimentary plans from `/platform`; each must also appear in `staff_emails`,
-and the list requires `allocation.entitlement_admin_token_env`. The entry refuses
-to start otherwise. See [allowances](../../hosted-allowances.md#granting-from-the-platform-console).
+Platform membership lives in `registry.db`, independently of customer organization
+membership. Set `platform.bootstrap_admin_email` to the operator's verified email;
+startup restores this address to `admin`, and the members API cannot remove it.
+The entry requires this address or an existing registry admin to start.
+`admin` manages platform members and includes support and billing privileges;
+`support` can read the console and start support access; `billing` can read the
+console and grant or revoke complimentary plans; `viewer` can read the console.
+Complimentary plans also require `allocation.entitlement_admin_token_env`.
+See [allowances](../../hosted-allowances.md#granting-from-the-platform-console).
+
+The entry's `staff_emails`, `support_actors`, and `entitlement_administrators` are
+deprecated. They seed an empty registry: remaining staff become viewers, support
+actors become support members, entitlement administrators become billing members,
+and addresses in both privileged lists become admins. After seeding, only registry
+roles grant platform access; configured legacy lists produce one startup warning.
 
 `detent cloud assertion-key` prints a new signing seed and public key; put the seed
 in the entry's private environment and the public key in each tenant's

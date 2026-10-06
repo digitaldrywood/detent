@@ -124,7 +124,7 @@ func TestEntryAdministrationContext(t *testing.T) {
 					CanCreate   bool   `json:"can_create"`
 				} `json:"data"`
 			}
-			if json.Unmarshal(contextResult.Content, &account) != nil || account.Data.Email != session.Email || account.Data.Destination != f.service.config.PublicURL+f.service.landing(session.Email, session.Identity) || !account.Data.Reconnect {
+			if json.Unmarshal(contextResult.Content, &account) != nil || account.Data.Email != session.Email || account.Data.Destination != f.service.config.PublicURL+f.service.landing(t.Context(), session.Email, session.Identity) || !account.Data.Reconnect {
 				t.Fatalf("session context=%s", contextResult.Content)
 			}
 			for _, secret := range []string{session.Hash, session.CSRFSecret, session.Identity.SessionID, `"csrf"`} {
