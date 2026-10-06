@@ -707,9 +707,9 @@ func appendSkillCreationBlock(prompt string, cfg config.Skills) string {
 
 	var b strings.Builder
 	b.WriteString("## Skill creation loop\n\n")
-	b.WriteString("Only reusable multi-step methods, debugging recipes or learned conventions; no routine edits, secrets or issue restatements. ")
-	b.WriteString("Draft at most " + pluralizeCount(cfg.Creation.MaxDraftsPerRun, "skill file", "skill files") + " under `" + path + "`; YAML name/description/when_to_use, concise Markdown. Revalidate; PR review approves.\n")
-	b.WriteString("One line: `Skill draft: yes — <path and purpose>` or `Skill draft: no — <reason>`.\n")
+	b.WriteString("Reusable multi-step methods/conventions only; no routine edits/secrets/issue restatements. ")
+	b.WriteString("Draft at most " + pluralizeCount(cfg.Creation.MaxDraftsPerRun, "skill file", "skill files") + " under `" + path + "`; YAML name/description/when_to_use + concise Markdown. Revalidate; PR review approves.\n")
+	b.WriteString("One line: `Skill draft: yes — <path/purpose>` or `Skill draft: no — <reason>`.\n")
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimRight(b.String(), "\n")
 }
@@ -720,7 +720,7 @@ func appendFollowupsBlock(prompt string, cfg config.Followups) string {
 	}
 
 	const block = "## Out-of-scope discoveries\n\n" +
-		"Use the host-owned file_machine_issue intake. Search open work first with bounded work_list reads using query or fingerprint and open: true. Include exact test failure output with its package summary or the migration collision diagnostic: the host derives defect identity and routes reproducible Detent release blockers to Todo at least High. Other follow-ups remain in project Backlog; missing tool: report here; missing state: file stateless and report. Reuse stable problem keys (no timestamps/attempt IDs). Priority (integer): 1=Urgent, 2=High, 3=Normal, 4=Low; omitted: unset. Native reuse raises only weaker/unset priority; preserve stronger priority, holds, lanes and admission. Include fenced `detent-agent`: schema: 1, `effort` per project rubric."
+		"Host file_machine_issue only. First search open work: bounded work_list query/fingerprint, open: true. Evidence: exact test output/package summary or migration collision diagnostic. Host derives identity; reproducible Detent release blockers: Todo at least High; others: project Backlog. missing tool: report here; missing state: file stateless and report. Stable keys: no timestamps/attempt IDs. Priority 1/2/3/4=Urgent/High/Normal/Low; omitted: unset. Raise only weaker/unset priority; preserve holds/lanes/admission. Include fenced `detent-agent`: schema: 1, `effort` per project rubric."
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block
 }
@@ -800,8 +800,8 @@ func githubTrackerHostname(tracker config.Tracker) string {
 	return parsed.Host
 }
 
-const repositoryHandoffContract = "Detent owns completion and durable attempt/session records. Ignore earlier instructions to maintain repository notes. Do not create, update, stage, or commit `.detent/notes.md`; leave existing notes intact." +
-	"\n\nFinish source/pre-merge requirements. Integration/release Workpad/final: exact PR/head, pending acceptance, procedure, authorization and existing post-integration owner; reuse/file permitted follow-ups. Pending acceptance remains unverified; ready source need not await its PR's release. Detent integrates; release owner deploys; source workers must not merge/deploy for PR mergeability. Preserve pre-merge evidence, approvals and gates. Without a permitted owner, retain original acceptance."
+const repositoryHandoffContract = "Detent owns durable completion/attempt/session records. Ignore earlier instructions to maintain repository notes. Do not create, update, stage, or commit `.detent/notes.md`; preserve notes." +
+	"\n\nFinish source/pre-merge requirements. Integration/release Workpad/final: exact PR/head, pending acceptance, procedure, authorization, existing post-integration owner; reuse/file permitted follow-ups. Pending acceptance remains unverified; ready source need not await release. Detent integrates; release owner deploys. Never merge/deploy for PR mergeability. Preserve pre-merge evidence, approvals and gates. Without a permitted owner, retain original acceptance."
 
 func appendBlockedHandoffBlock(prompt string, opts PromptOptions) string {
 	completionFields := ""

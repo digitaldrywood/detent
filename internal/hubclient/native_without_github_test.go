@@ -37,6 +37,11 @@ func (a *environmentRecordingAgent) RunTurn(ctx context.Context, request runner.
 	return a.committingAgent.RunTurn(ctx, request, onUpdate)
 }
 
+func (a *environmentRecordingAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, tools []runner.AgentTool, handler runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	a.requests = append(a.requests, request)
+	return a.committingAgent.RunTurnWithTools(ctx, request, tools, handler, update)
+}
+
 func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
