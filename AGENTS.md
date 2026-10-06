@@ -13,11 +13,12 @@ component variants before introducing feature-specific styling. Proposed
 components and layout baselines do not expand the authorized UI scope.
 
 Follow [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue):
-add visible UI only when a human-authored issue names that UI change. This covers
-the Cloud app (`web/conversation`), Hub server-rendered pages, and the local Templ
-dashboard, including rows, lines, banners, badges, chips, columns, panels, pages,
-tooltip text, and status copy. Machine-filed issues, agent-expanded scope, and
-"while I was here" additions never qualify, even for a legitimate issue.
+add visible UI only when a human-authored issue names the surface or feature it
+belongs to. This covers the Cloud app (`web/conversation`), Hub server-rendered
+pages, and the local Templ dashboard. A human-authored feature issue authorizes
+the whole surface it describes, including the rows, controls, states, empty and
+error copy, and responsive layout that surface needs. Machine-filed issues,
+agent-expanded scope, and "while I was here" additions never qualify.
 Removing UI or fixing an existing element in place without adding visible
 content does not need that approval.
 
@@ -90,17 +91,14 @@ Escalation is an operator action: applying the `complexity:very-complex` label
 routes the issue to Astra at `medium`. Agents never apply complexity labels and
 never assign `xhigh` or `max`.
 
-## Mechanism moratorium
+## Mechanism budget
 
-Effective 2026-09-10 until the operator lifts it. Detent has grown a large set
-of interacting self-protection mechanisms (brakes, breakers, leases, parks,
-recovery sweeps, revocations, reconcilers). Their interactions are now the main
-source of incidents.
+Detent carries a large set of interacting self-protection mechanisms (brakes,
+breakers, leases, parks, recovery sweeps, revocations, reconcilers). Their
+interactions are the main source of incidents, so the set may not grow.
 
-- Do not add a new brake, breaker, lease, park, recovery path, revocation,
-  reason code, or reconciliation loop.
-- A fix for a misbehaving mechanism must remove or consolidate a mechanism, or
-  state in the PR why it cannot. "Add a guard for the new case" is not a fix.
+- INV-3: a change that adds or expands a mechanism removes or consolidates an
+  existing one in the same change. "Add a guard for the new case" is not a fix.
 - Infrastructure failures (backend startup, protocol errors, workspace hooks)
   are attributed to the instance, never to the issue.
 - The orchestrator is the only writer of tracker lane state; workers report

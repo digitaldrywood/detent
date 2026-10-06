@@ -18,7 +18,7 @@ handoff between issues or runs; no repository file is append-only by convention.
 
 ## UI Surface Contract
 
-Adds visible UI? If yes, link the human-authored issue that names it.
+Adds visible UI? If yes, link the human-authored issue that names the surface or feature it belongs to.
 
 - [ ] N/A, or the linked issue explicitly authorizes any high-impact UI surface, layout, density, first-viewport, or responsive visibility tradeoff.
 - [ ] Persistent top-of-screen messaging is explicitly authorized by the issue, or this PR does not add it.
