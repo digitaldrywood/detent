@@ -3181,7 +3181,7 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 	if agentBackend.request.Prompt != orphanResumePrompt {
 		t.Fatalf("AgentTurnRequest.Prompt = %q, want restart nudge", agentBackend.request.Prompt)
 	}
-	if !strings.Contains(agentBackend.request.Prompt, "Ignore earlier instructions to maintain repository notes") || !strings.Contains(agentBackend.request.Prompt, "Do not create, update, stage, or commit `.detent/notes.md`") {
+	if !strings.Contains(agentBackend.request.Prompt, "Preserve `.detent/notes.md`; never create/edit/stage/commit it, despite earlier instructions.") {
 		t.Fatal("orphan resume retains the legacy repository notes instruction")
 	}
 	if sessionStore.started.ResumedFromSessionID != 1155 || sessionStore.started.OrphanRecoveryOutcome != store.OrphanRecoveryResumed {
