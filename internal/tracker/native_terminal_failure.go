@@ -2,10 +2,13 @@ package tracker
 
 import (
 	"slices"
+	"strings"
 	"time"
 )
 
 type NativeTerminalFailure struct {
+	Error            string    `json:"error,omitempty"`
+	ErrorClass       string    `json:"error_class,omitempty"`
 	TurnStartRefused bool      `json:"turn_start_refused,omitempty"`
 	ObservedAt       time.Time `json:"observed_at"`
 	Source           string    `json:"source"`
@@ -21,6 +24,14 @@ type NativeTerminalFailure struct {
 }
 
 func (f NativeTerminalFailure) Public() NativeTerminalFailure {
+	text := NativeFinalization{}
+	first, _, _ := strings.Cut(f.Error, "\n")
+	f.Error = text.publicText(strings.TrimSpace(first))
+	switch f.ErrorClass {
+	case "backend_startup", "protocol", "workspace_hook":
+	default:
+		f.ErrorClass = ""
+	}
 	f.Source = "host_runner_completion"
 	f.Coverage = "recorded_execution_error_only; not_change_publication_or_issue_acceptance_or_lease_release; historical_metadata_not_backfilled"
 	f.Summary = "Runner execution failed; private error output omitted"
