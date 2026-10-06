@@ -65,6 +65,7 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 				var linked tracker.NativeIssue
 				h, linked = newLinkedChangeHub(t)
 				h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
+					t.Error("runner fetched GitHub source after Hub intake")
 					return tracker.GitHubIssueSnapshot{}, errors.New("runner must not fetch a source after Hub intake")
 				}
 				issue = issueFromNative(linked)
