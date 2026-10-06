@@ -29,6 +29,7 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
@@ -1524,8 +1525,8 @@ func runInstalledSubcommands(t *testing.T, binary string, root string, env []str
 		if project.ID != "detent" || project.Workflow != workflowPath || project.Workdir != projectDir {
 			t.Fatalf("project = %#v, want installed detent project", project)
 		}
-		if project.Weight != 2 || project.Priority != 4 {
-			t.Fatalf("project scheduling = weight %d priority %d, want 2/4", project.Weight, project.Priority)
+		if project.Weight != 1 || project.Priority != 0 {
+			t.Fatalf("project scheduling = weight %d priority %d, want 1/0", project.Weight, project.Priority)
 		}
 	})
 
@@ -1545,16 +1546,13 @@ func runInstalledSubcommands(t *testing.T, binary string, root string, env []str
 
 	runDetentCommand(t, binary, workdir, env, "--config", configPath, "promote", "detent", "--priority", "1")
 	assertInstalledProject(t, configPath, func(project globalconfig.Project) {
-		if project.Priority != 1 {
-			t.Fatalf("project Priority = %d, want 1", project.Priority)
+		if project.Priority != 0 {
+			t.Fatalf("project Priority = %d, want 0", project.Priority)
 		}
 	})
 
 	runDetentCommand(t, binary, workdir, env, "--config", configPath, "remove-project", "detent")
-	cfg, err := globalconfig.Read(configPath)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
+	cfg := readInstalledConfiguration(t, configPath)
 	if len(cfg.Projects) != 0 {
 		t.Fatalf("Projects = %#v, want none", cfg.Projects)
 	}
@@ -1649,14 +1647,34 @@ func gitOutput(t *testing.T, root string, args ...string) (string, bool) {
 func assertInstalledProject(t *testing.T, configPath string, check func(globalconfig.Project)) {
 	t.Helper()
 
-	cfg, err := globalconfig.Read(configPath)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
+	cfg := readInstalledConfiguration(t, configPath)
 	if len(cfg.Projects) != 1 {
 		t.Fatalf("Projects length = %d, want 1", len(cfg.Projects))
 	}
 	check(cfg.Projects[0])
+}
+
+func readInstalledConfiguration(t *testing.T, configPath string) globalconfig.Config {
+	t.Helper()
+
+	cfg, err := globalconfig.Read(configPath)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	settings, err := store.Open(t.Context(), store.Config{Path: filepath.Join(filepath.Dir(configPath), "detent.db")})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() {
+		if err := settings.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	cfg, err = settings.LocalConfiguration(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("LocalConfiguration() error = %v", err)
+	}
+	return cfg
 }
 
 func gateWorkflowContent() string {
