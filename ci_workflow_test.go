@@ -249,7 +249,7 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 
 	workflow := readNormalizedFile(t, ".github/workflows/deploy-staging.yml")
 	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	if want := "on:\n  workflow_call:\n    inputs:\n      version:\n        required: true\n        type: string\n"; triggers != want {
+	if want := "on:\n  push:\n    branches: [develop]\n  workflow_call:\n    inputs:\n      version:\n        required: false\n        type: string\n"; triggers != want {
 		t.Fatalf("deploy-staging triggers = %q, want exactly %q", triggers, want)
 	}
 	for _, test := range []struct {
@@ -261,7 +261,8 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 		{name: "staging environment", want: "    environment:\n      name: staging\n      url: https://staging.cloud.detent.build\n", present: true},
 		{name: "read-only token", want: "permissions:\n  contents: read\n", present: true},
 		{name: "release artifact", want: "          name: release-hub-binary\n", present: true},
-		{name: "release version", want: "          RELEASE_VERSION: ${{ inputs.version }}\n", present: true},
+		{name: "release version", want: "          RELEASE_VERSION: ${{ steps.source.outputs.version }}\n", present: true},
+		{name: "develop build on push", want: "      - name: Build develop binary\n        if: inputs.version == ''\n", present: true},
 		{name: "release commit", want: "          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}\n", present: true},
 		{name: "shared release deployment", want: `bash scripts/deploy-release.sh staging "$RELEASE_COMMIT" "$RELEASE_VERSION"`, present: true},
 		{name: "release identity smoke", want: `python3 scripts/cloud-origin-smoke.py --environment staging --expected-version "$RELEASE_VERSION" --expected-commit "$RELEASE_COMMIT"`, present: true},

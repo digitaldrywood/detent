@@ -47,14 +47,11 @@ jobs:
           set -euo pipefail
           commit="$(git rev-parse HEAD)"
           version="$INPUT_VERSION"
-          stamp="$commit"
           if [ -z "$version" ]; then
             version="develop-${commit:0:9}"
-            stamp="${commit:0:9}"
           fi
           {
             echo "commit=$commit"
-            echo "stamp=$stamp"
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
       - name: Build develop binary
@@ -64,11 +61,11 @@ jobs:
           GOOS: linux
           GOARCH: amd64
           RELEASE_VERSION: ${{ steps.source.outputs.version }}
-          RELEASE_STAMP: ${{ steps.source.outputs.stamp }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/release-hub"
-          go build -trimpath -ldflags "-X main.version=$RELEASE_VERSION -X main.commit=$RELEASE_STAMP -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/release-hub/detent" ./cmd/detent
+          go build -trimpath -ldflags "-X main.version=$RELEASE_VERSION -X main.commit=$RELEASE_COMMIT -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/release-hub/detent" ./cmd/detent
       - name: Deploy to staging
         id: deploy
         env:
@@ -84,10 +81,10 @@ jobs:
         id: smoke
         env:
           RELEASE_VERSION: ${{ steps.source.outputs.version }}
-          RELEASE_STAMP: ${{ steps.source.outputs.stamp }}
+          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           set -euo pipefail
-          python3 scripts/cloud-origin-smoke.py --environment staging --expected-version "$RELEASE_VERSION" --expected-commit "$RELEASE_STAMP" 2>&1 | tee -a "$RUNNER_TEMP/release-staging.log"
+          python3 scripts/cloud-origin-smoke.py --environment staging --expected-version "$RELEASE_VERSION" --expected-commit "$RELEASE_COMMIT" 2>&1 | tee -a "$RUNNER_TEMP/release-staging.log"
       - name: Report release failure at High
         if: failure() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure')
         env:
