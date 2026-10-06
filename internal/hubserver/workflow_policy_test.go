@@ -6,9 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestObservedRepositoryWorkflowApply(t *testing.T) {
@@ -18,7 +20,26 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		initial, reachable, local, occupied, wrongRepository, legacy, missingRevision, replay bool
 		status                                                                                int
 		applied                                                                               bool
+		canonical, changedInputs, active                                                      bool
+		fromLegacy                                                                            bool
+		forge                                                                                 string
+		nilConfiguration                                                                      bool
 	}{
+		{name: "first release carries existing default branch approval", initial: true, canonical: true, fromLegacy: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "nil configuration projection carries only authored policy", initial: true, canonical: true, active: true, nilConfiguration: true, forge: "gate", status: http.StatusNoContent, applied: true},
+		{name: "nil configuration invented digest is refused", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "digest", status: http.StatusUnprocessableEntity},
+		{name: "canonical version carries feature approval", initial: true, canonical: true, status: http.StatusNoContent, applied: true},
+		{name: "canonical version preserves active lease", initial: true, canonical: true, active: true, status: http.StatusNoContent, applied: true},
+		{name: "canonical version without source stays pending", initial: true, canonical: true, local: true, status: http.StatusNoContent},
+		{name: "canonical version wrong repository stays pending", initial: true, canonical: true, wrongRepository: true, status: http.StatusNoContent},
+		{name: "copied provenance cannot change gate", initial: true, canonical: true, local: true, active: true, forge: "gate", status: http.StatusNoContent},
+		{name: "copied provenance cannot change selector", initial: true, canonical: true, local: true, active: true, forge: "selector", status: http.StatusNoContent},
+		{name: "copied provenance cannot change behavior", initial: true, canonical: true, local: true, active: true, forge: "behavior", status: http.StatusNoContent},
+		{name: "copied provenance cannot change local grant", initial: true, canonical: true, local: true, active: true, forge: "grant", status: http.StatusUnprocessableEntity},
+		{name: "nil configuration cannot change gate", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "gate", status: http.StatusNoContent},
+		{name: "nil configuration cannot change selector", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "selector", status: http.StatusNoContent},
+		{name: "nil configuration cannot change profile", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "profile", status: http.StatusNoContent},
+		{name: "canonical version with changed inputs pending", initial: true, canonical: true, changedInputs: true, status: http.StatusNoContent},
 		{name: "default branch initial definition", reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "default branch revision", initial: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "previously applied definition records each apply", initial: true, reachable: true, replay: true, status: http.StatusNoContent, applied: true},
@@ -37,8 +58,29 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 			runner.enroll(t)
+			var canonicalPolicy policy.Descriptor
 			original := hubTestPolicy()
 			original.Workflow = &policy.Workflow{Source: "detent.yaml", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
+			if test.canonical {
+				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: acme/orders\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done]\n      In Progress: [Todo, Done]\n      Done: [Todo]\n"), HasConfig: true, ConfigPath: "detent.yaml"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				workflow.Definition.Revision = strings.Repeat("a", 40)
+				canonicalPolicy, err = workflowconfig.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+				workflow.Authored.Version = 1
+				original, err = workflowconfig.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.fromLegacy {
+				original = hubTestPolicy()
+				original.Workflow = canonicalPolicy.Workflow
+			}
 			original = original.WithID()
 			historyCount := 0
 			if test.initial {
@@ -56,6 +98,57 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			if test.missingRevision {
 				candidate.Workflow.Revision = ""
 			}
+			if test.canonical {
+				candidate = canonicalPolicy
+				authored := *canonicalPolicy.Authored
+				if test.changedInputs {
+					files := make(map[string]string)
+					for name, content := range authored.Files {
+						files[name] = content
+					}
+					files["WORKFLOW.md"] = "Changed authored instructions.\n"
+					workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte(files["WORKFLOW.md"]), Config: []byte(files["detent.yaml"]), HasConfig: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+					updated, err := workflowconfig.ResolvePolicy(workflow)
+					if err != nil {
+						t.Fatal(err)
+					}
+					authored = *updated.Authored
+				}
+				candidate.Authored = &authored
+				candidate.SourceDigest, candidate.ConfigDigest, candidate.SourceRevision = authored.Digest, authored.Digest, authored.Digest
+				workflow := *canonicalPolicy.Workflow
+				workflow.Revision = strings.Repeat("b", 40)
+				candidate.Workflow = &workflow
+			}
+			switch test.forge {
+			case "digest":
+				candidate.Authored.Digest = policy.Digest([]byte("invented identity"))
+				candidate.SourceDigest, candidate.ConfigDigest, candidate.SourceRevision = candidate.Authored.Digest, candidate.Authored.Digest, candidate.Authored.Digest
+				candidate.Gates.AutoPromote = !candidate.Gates.AutoPromote
+			case "gate":
+				candidate.Gates.AutoPromote = !candidate.Gates.AutoPromote
+			case "profile":
+				candidate.Profile = "privileged"
+			case "selector":
+				candidate.Requirements = policy.Requirements{MachineID: "machine_privileged"}
+			case "behavior":
+				configuration := policy.Configuration{}
+				configuration.Behavior = []byte(`{"Worker":{"AllowLocalBinding":true}}`)
+				candidate.Configuration = &configuration
+			case "grant":
+				files := make(map[string]string)
+				for name, content := range candidate.Authored.Files {
+					files[name] = content
+				}
+				files["detent.local.yaml"] = "schema: 1\nworker:\n  allow_local_binding: true\n"
+				candidate.Authored.Files = files
+			}
+			if test.nilConfiguration {
+				candidate.Configuration = nil
+			}
 			candidate = candidate.WithID()
 			source := &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("b", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("c", 40), DefaultBranchReachable: test.reachable}
 			if test.local {
@@ -68,8 +161,35 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			if test.legacy {
 				token = f.worker(t, "legacy")
 			}
+			var pinned tracker.NativeLease
+			worker := ""
+			if test.active {
+				worker = f.worker(t, "active")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_abc", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: item.WorkItemID, PolicyID: original.ID, MachineID: "machine_abc", SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &pinned)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID), f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &item)
+			}
 			report := policy.Observation{Descriptor: candidate, Source: source}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
+			if test.forge != "" && !test.applied {
+				approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				if err != nil || approval.Policy.ID != original.ID || !reflect.DeepEqual(approval.Policy.Gates, original.Gates) || !reflect.DeepEqual(approval.Policy.Requirements, original.Requirements) || approval.Policy.Profile != original.Profile {
+					t.Fatalf("forgery changed approval: %+v %v", approval, err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
+				return
+			}
+			if test.applied && test.canonical {
+				resolved, err := workflowconfig.ResolveSharedPolicy(candidate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				candidate = resolved
+			}
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var setup onboarding.Project
@@ -82,6 +202,25 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), http.StatusNoContent)
 			} else if len(setup.ObservedPolicies) != 1 || setup.Policy == nil || setup.Policy.Policy.ID != original.ID || !reflect.DeepEqual(setup.ObservedPolicies[0].Source, source) {
 				t.Fatalf("unapplied revision changed approval or lost report: %+v", setup)
+			}
+			if test.applied && test.canonical && !test.fromLegacy {
+				previousSource := *source
+				previousSource.Commit = original.Workflow.Revision
+				previousReport := policy.Observation{Descriptor: original, Source: &previousSource}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, previousReport), http.StatusNoContent)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &setup)
+				if setup.Policy == nil || setup.Policy.Policy.ID != candidate.ID || len(setup.ObservedPolicies) != 0 {
+					t.Fatalf("older runner reverted approval or requested reapproval: %+v", setup)
+				}
+			}
+			if test.active {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
+				policyID, err := f.service.database.leasePolicyID(t.Context(), pinned.ID)
+				if err != nil || policyID != original.ID {
+					t.Fatalf("lease pin changed: %s, %v", policyID, err)
+				}
 			}
 			if test.replay {
 				previousSource := *source
@@ -129,6 +268,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			project, err := readNativeProject(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 			wantStates := nativeFixtureStates()
+			if test.initial {
+				wantStates = original.Workflow.States
+			}
 			if test.applied {
 				wantStates = candidate.Workflow.States
 			}

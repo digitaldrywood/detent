@@ -158,3 +158,47 @@ func TestDescriptorMatch(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthoredDescriptorIdentity(t *testing.T) {
+	t.Parallel()
+	d := testDescriptor()
+	digest := Digest([]byte("canonical authored config"))
+	d.Authored = &Authored{Version: 1, Digest: digest, Files: map[string]string{"WORKFLOW.md": "file bytes"}}
+	d.SourceRevision, d.SourceDigest, d.ConfigDigest = digest, digest, digest
+	d = d.WithID()
+	for _, test := range []struct {
+		name          string
+		change        func(*Descriptor)
+		sameID, match bool
+	}{
+		{"runtime descriptor shape", func(d *Descriptor) {
+			d.Configuration = &Configuration{Behavior: json.RawMessage(`{"new_default":true}`)}
+			d.Gates.AutoPromote = true
+		}, true, true},
+		{"repository commit", func(d *Descriptor) {
+			d.Workflow = &Workflow{Source: "detent.yaml", Revision: strings.Repeat("b", 40), States: []State{{Name: "Todo", Dispatchable: true}}}
+		}, true, true},
+		{"canonical version", func(d *Descriptor) {
+			d.Authored.Version++
+			d.Authored.Digest = Digest([]byte("new canonical form"))
+			d.SourceRevision, d.SourceDigest, d.ConfigDigest = d.Authored.Digest, d.Authored.Digest, d.Authored.Digest
+		}, false, true},
+		{"changed authored inputs", func(d *Descriptor) {
+			d.Authored.Version++
+			d.Authored.Digest = Digest([]byte("changed config"))
+			d.Authored.Files = map[string]string{"WORKFLOW.md": "different bytes"}
+			d.SourceRevision, d.SourceDigest, d.ConfigDigest = d.Authored.Digest, d.Authored.Digest, d.Authored.Digest
+		}, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			actual := d
+			authored := *d.Authored
+			actual.Authored = &authored
+			test.change(&actual)
+			actual = actual.WithID()
+			if (actual.ID == d.ID) != test.sameID || (actual.Match(d) == nil) != test.match {
+				t.Fatalf("identity=%s match=%v", actual.ID, actual.Match(d))
+			}
+		})
+	}
+}

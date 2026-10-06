@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/policy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -139,7 +140,13 @@ func readProjectDefinitionSources(path string) (ProjectDefinitionSources, error)
 	return sources, nil
 }
 
-func ParseProjectDefinition(sources ProjectDefinitionSources) (Workflow, error) {
+func ParseProjectDefinition(sources ProjectDefinitionSources) (workflow Workflow, resultErr error) {
+	defer func() {
+		if resultErr == nil {
+			workflow.Authored = &policy.Authored{Version: PolicyCanonicalizationVersion}
+			workflow.DefinitionSources = &sources
+		}
+	}()
 	definition := projectDefinitionFromSources(sources)
 	shared, err := splitProjectWorkflow(sources.Workflow)
 	if err != nil {

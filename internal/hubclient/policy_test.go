@@ -71,6 +71,19 @@ func TestSchedulerRejectsUnapprovedPolicyBeforeWork(t *testing.T) {
 func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 	t.Parallel()
 	changed := func() policy.Descriptor { d := clientTestPolicy(); d.Gates.AutoPromote = true; return d.WithID() }()
+	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n"), HasConfig: true, ConfigPath: "detent.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := workflowconfig.ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow.Authored.Version = 1
+	previous, err := workflowconfig.ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name       string
 		autoApply  bool
@@ -82,6 +95,9 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 		wantLost   bool
 		reports    int
 	}{
+		{name: "canonical version carries feature approval", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40)}, approved: &previous, status: http.StatusOK, local: current, reports: 1},
+		{name: "canonical version without source remains pending", approved: &previous, status: http.StatusOK, local: current, wantError: true, wantLost: true, reports: 1},
+		{name: "older canonical runner remains approved", approved: &current, status: http.StatusOK, local: previous, reports: 1},
 		{name: "default branch applies immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
 		{name: "default branch replaces old policy immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
 		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), wantError: true, wantLost: true, reports: 1},

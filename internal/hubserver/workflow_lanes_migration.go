@@ -96,6 +96,7 @@ FROM project_policies p JOIN policy_revisions r ON r.scope=p.scope AND r.policy_
 		return err
 	}
 	approved.SourceHash = newWorkflow.SourceHash
+	approved.Authored, approved.DefinitionSources = newWorkflow.Authored, newWorkflow.DefinitionSources
 	approved.Config.Tracker.Lanes = newWorkflow.Config.Tracker.Lanes
 	updated, err := workflowconfig.ResolvePolicy(approved)
 	if err != nil {

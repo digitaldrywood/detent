@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -127,6 +128,27 @@ func (b nativeBehavior) apply(local Config) Config {
 }
 
 func resolveNativePolicy(workflow Workflow) (policy.Descriptor, error) {
+	if workflow.DefinitionSources != nil {
+		sources, err := nativeAuthoredSources(*workflow.DefinitionSources)
+		if err != nil {
+			return policy.Descriptor{}, err
+		}
+		authored, err := authoredProjectDefinitionVersion(sources, workflow.Authored.Version)
+		if err != nil {
+			return policy.Descriptor{}, err
+		}
+		authored.Files = authoredSourceFiles(sources)
+		workflow.Authored = authored
+		descriptor, err := resolvePolicyDescriptor(workflow, authored.Digest, authored.Digest, authored.Digest)
+		if err != nil {
+			return policy.Descriptor{}, err
+		}
+		descriptor.Configuration = &policy.Configuration{Behavior: json.RawMessage("null")}
+		if workflow.Definition.Layout == ProjectDefinitionCloud {
+			descriptor.Configuration.DefinitionDigest = workflow.SourceHash
+		}
+		return descriptor.WithID(), nil
+	}
 	behavior, err := json.Marshal(nativeProjectBehavior(workflow.Config))
 	if err != nil {
 		return policy.Descriptor{}, fmt.Errorf("encode shared project behavior: %w", err)
@@ -140,6 +162,9 @@ func resolveNativePolicy(workflow Workflow) (policy.Descriptor, error) {
 		return policy.Descriptor{}, err
 	}
 	digest := policy.Digest(raw)
+	if workflow.Authored != nil {
+		digest = workflow.Authored.Digest
+	}
 	descriptor, err := resolvePolicyDescriptor(workflow, digest, digest, digest)
 	if err != nil {
 		return policy.Descriptor{}, err
@@ -152,6 +177,16 @@ func resolveNativePolicy(workflow Workflow) (policy.Descriptor, error) {
 func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflow, error) {
 	if err := descriptor.Validate(); err != nil {
 		return Workflow{}, err
+	}
+	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
+		shared, _, err := resolveAuthoredNativePolicy(descriptor)
+		if err != nil {
+			return Workflow{}, err
+		}
+		workflow.Config = nativeProjectBehavior(shared.Config).apply(workflow.Config)
+		workflow.Prompt, workflow.SharedPrompt, workflow.AgentsPrompt = shared.Prompt, shared.SharedPrompt, shared.AgentsPrompt
+		workflow.Authored, workflow.DefinitionSources, workflow.Definition = shared.Authored, shared.DefinitionSources, shared.Definition
+		return workflow, nil
 	}
 	if descriptor.Configuration == nil {
 		return workflow, nil
@@ -172,6 +207,8 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 			behavior.PriorityMap.Map[name] = int(rank)
 		}
 	}
+	workflow.Authored = descriptor.Authored
+	workflow.DefinitionSources = nil
 	workflow.Config = behavior.apply(workflow.Config)
 	workflow.Prompt, workflow.SharedPrompt = descriptor.Configuration.Prompt, descriptor.Configuration.SharedPrompt
 	workflow.AgentsPrompt = descriptor.Configuration.AgentsPrompt
@@ -187,22 +224,77 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 	if err != nil {
 		return Workflow{}, err
 	}
+	if !reflect.DeepEqual(resolved.Gates, descriptor.Gates) || !reflect.DeepEqual(resolved.Requirements, descriptor.Requirements) || resolved.Profile != descriptor.Profile || !reflect.DeepEqual(resolved.Workflow, descriptor.Workflow) {
+		return Workflow{}, errors.New("policy_mismatch: runtime metadata differs from shared configuration")
+	}
 	if err := resolved.Match(descriptor); err != nil {
 		return Workflow{}, err
 	}
 	return workflow, nil
 }
 
-func ValidateSharedPolicy(descriptor policy.Descriptor) error {
+func resolveAuthoredNativePolicy(descriptor policy.Descriptor) (Workflow, policy.Descriptor, error) {
 	if err := descriptor.Validate(); err != nil {
-		return err
+		return Workflow{}, policy.Descriptor{}, err
+	}
+	sources := sourcesFromAuthoredFiles(descriptor.Authored.Files)
+	authored, err := authoredProjectDefinitionVersion(sources, descriptor.Authored.Version)
+	if err != nil {
+		return Workflow{}, policy.Descriptor{}, err
+	}
+	if authored.Digest != descriptor.Authored.Digest {
+		return Workflow{}, policy.Descriptor{}, errors.New("policy_mismatch: authored inputs do not match their digests")
+	}
+	authored.Files = authoredSourceFiles(sources)
+	shared, err := ParseProjectDefinition(sources)
+	if err != nil {
+		return Workflow{}, policy.Descriptor{}, err
+	}
+	shared.Config = shared.Config.ForNativeTracker()
+	shared.Authored = authored
+	shared.Definition = ProjectDefinition{}
+	if descriptor.Workflow != nil {
+		shared.Definition.Layout = ProjectDefinitionSplit
+		if !sources.HasConfig {
+			shared.Definition.Layout = ProjectDefinitionLegacy
+		}
+		shared.Definition.ConfigPath, shared.Definition.WorkflowPath, shared.Definition.Revision = descriptor.Workflow.Source, descriptor.Workflow.Source, descriptor.Workflow.Revision
+	} else if descriptor.Configuration != nil && descriptor.Configuration.DefinitionDigest != "" {
+		shared.Definition.Layout = ProjectDefinitionCloud
+		shared.SourceHash = descriptor.Configuration.DefinitionDigest
+	}
+	if err := shared.Config.Validate(); err != nil {
+		return Workflow{}, policy.Descriptor{}, err
+	}
+	if err := ValidateWorkflowAdmission(shared); err != nil {
+		return Workflow{}, policy.Descriptor{}, err
+	}
+	resolved, err := resolveNativePolicy(shared)
+	return shared, resolved, err
+}
+
+func ResolveSharedPolicy(descriptor policy.Descriptor) (policy.Descriptor, error) {
+	if err := descriptor.Validate(); err != nil {
+		return policy.Descriptor{}, err
+	}
+	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
+		_, resolved, err := resolveAuthoredNativePolicy(descriptor)
+		return resolved, err
 	}
 	if descriptor.Configuration == nil {
-		return nil
+		return descriptor, nil
 	}
 	workflow, err := ApplyNativePolicy(Workflow{Config: Default()}, descriptor)
 	if err != nil {
-		return err
+		return policy.Descriptor{}, err
 	}
-	return ValidateWorkflowAdmission(workflow)
+	if err := ValidateWorkflowAdmission(workflow); err != nil {
+		return policy.Descriptor{}, err
+	}
+	return descriptor, nil
+}
+
+func ValidateSharedPolicy(descriptor policy.Descriptor) error {
+	_, err := ResolveSharedPolicy(descriptor)
+	return err
 }

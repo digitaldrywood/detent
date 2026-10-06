@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -627,7 +628,7 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  api_key: " + host + "-credential\nworkspace:\n  root: " + host + "/worktrees\nworker:\n  ssh_hosts: [local]\nhooks:\n  runner_setup: " + host + "/setup.sh\n  before_run: " + host + "/isolate.sh\n---\nImplement the issue and preserve explicit human review holds.\n"))
+		workflow, err := workflowconfig.ParseWorkflow([]byte(fmt.Sprintf("---\ntracker:\n  kind: hub_native\n  api_key: %s-credential\nworkspace:\n  root: %s/worktrees\nworker:\n  ssh_hosts: [local]\nhooks:\n  runner_setup: %s/setup.sh\n  before_run: %s/isolate.sh\nplan:\n  enabled: %t\ngate:\n  run: true\n  validator:\n    enabled: %t\nagent:\n  auto_promote:\n    enabled: %t\n---\nImplement the issue and preserve explicit human review holds.\n", host, host, host, host, planning, validator, promotion)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -668,8 +669,10 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 	if len(historical.ObservedPolicies) != 1 || !historical.ObservedPolicies[0].PreviouslyApproved || !historical.ObservedPolicies[0].Conflict {
 		t.Fatalf("historical report offered as a new approval: %+v", historical.ObservedPolicies)
 	}
-	combined := proWorkflow
-	combined.Config.Agent.AutoPromote.Enabled = true
+	combined, err := workflowconfig.ParseWorkflowOverlay(proWorkflow.DefinitionSources.Workflow, []byte("---\nagent:\n  auto_promote:\n    enabled: true\n---\n"), "operator-approved.local.md")
+	if err != nil {
+		t.Fatal(err)
+	}
 	descriptor, err := workflowconfig.ResolvePolicy(combined)
 	if err != nil {
 		t.Fatal(err)
