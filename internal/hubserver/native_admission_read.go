@@ -97,6 +97,13 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			refuse("no_claimable_work", "The existing native claim candidate query does not select this item")
 			a.UnresolvedDependencies = candidate.UnresolvedDependencies
 			a.Unavailable = append(a.Unavailable, candidate.Unavailable...)
+			if evidence.NativeCandidateExclusion != nil {
+				for i, name := range a.Unavailable {
+					if name == "native_candidate_exclusion" {
+						a.Unavailable[i] = "other_native_candidate_exclusions"
+					}
+				}
+			}
 			if len(a.UnresolvedDependencies) > 0 {
 				a.Reason += "; observed required dependencies remain unfinished"
 			}

@@ -797,8 +797,10 @@ Candidate refusals preserve `no_claimable_work` and expose up to 100 authorized
 item. Projects that do not require dependencies never report them as exclusion
 evidence. Per-runner snapshot `observed_at` and projected refusal `at` identify
 the current read. `other_native_candidate_exclusions` remains unavailable when
-dependency evidence does not establish all exclusions; `native_candidate_exclusion`
-remains unavailable for a generic refusal without authorized dependency evidence.
+dependency evidence does not establish all exclusions. `native_candidate_exclusion`
+remains unavailable for a generic refusal without authorized dependency evidence
+or a recorded scheduler refusal. When a recorded refusal is available, unknown
+current exclusion details remain `other_native_candidate_exclusions`.
 Truncated dependency evidence also marks `unresolved_dependencies` unavailable.
 These observations do not create recorded scheduler skips or analytics samples.
 
@@ -842,6 +844,15 @@ lease reads omit private isolation configuration. Current candidate readiness is
 not full runner eligibility, and board counts or nil PRs cannot establish it.
 Historical decisions are recorded only when the existing scheduler evaluates
 them, with actor, item revision, source and server time; reads add no history.
+Declined claims record `scheduler.decision` with `outcome: skipped` and the
+existing refusal reason. Refusals are recorded once per item, runner and reason
+while the item revision and current Change version remain unchanged and no
+successful claim intervenes. Repeated polls do not append duplicate events.
+The runtime snapshot's `native_candidate_exclusion` contains the latest recorded
+refusal, including its runner, reason and item revision, even after a later
+claim succeeds. `explain_item` exposes it as historical evidence; it does not
+establish current ineligibility. Analytics `skip_reasons` counts these recorded
+events rather than current admission snapshots.
 
 `GET /work-items?include=work` adds a compact `work` member to the existing
 inventory page. `work.lanes` contains state, total and observed running counts

@@ -12,9 +12,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"slices"
 )
 
 func TestRunnerRoutingClaims(t *testing.T) {
@@ -37,6 +40,14 @@ func TestRunnerRoutingClaims(t *testing.T) {
 		{"disabled", nil, "disabled", policy.Requirements{}, http.StatusConflict, "Todo"},
 		{"draining rework", nil, "draining", policy.Requirements{}, http.StatusConflict, "Rework"},
 		{"draining custom lane", nil, "draining", policy.Requirements{}, http.StatusConflict, "Repair Queue"},
+		{"stale policy", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"host full", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"draining broad claim", nil, "draining", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"candidate excluded", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"intake pending", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"isolation unsupported", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"stale policy broad claim", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"host full broad claim", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -72,6 +83,30 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			descriptor = descriptor.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			switch test.name {
+			case "stale policy", "stale policy broad claim":
+				claim.PolicyID = "stale"
+			case "host full", "host full broad claim":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE id=?", r.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+			case "draining broad claim":
+				claim.WorkItemID = ""
+			case "candidate excluded":
+				claim.LabelInclude = []string{"missing"}
+			case "isolation unsupported":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET backend_isolation_json='{}' WHERE id=?", r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				r.redemption.BackendIsolation = nil
+			case "intake pending":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO github_imports (id, project_id, issue_number, work_item_id, intake_pending, observed_at) VALUES (?, ?, 1, ?, 1, ?)", newNativeID("import"), f.project.ID, issue.WorkItemID, testTimestamp); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.name == "stale policy broad claim" || test.name == "host full broad claim" {
+				claim.WorkItemID = ""
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
 			var leases int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&leases); err != nil {
@@ -84,7 +119,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			if leases != wantLeases {
 				t.Fatalf("leases = %d, want %d", leases, wantLeases)
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Build runner", "capacity": 2, "version": "test"})
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Build runner", "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation})
 			requireNativeStatus(t, response, http.StatusOK)
 			var snapshot runnerauth.RoutingSnapshot
 			decodeHubResponse(t, response, &snapshot)
@@ -93,6 +128,11 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			}
 			if wantLeases > 0 && snapshot.ClaimState.Slots[0].RunnerID != r.binding.RunnerID {
 				t.Fatalf("heartbeat slot owner = %#v", snapshot.ClaimState.Slots)
+			}
+			if test.name == "host full" || test.name == "host full broad claim" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE id=?", r.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			runtimePath := f.base + "/work-items/" + string(issue.WorkItemID) + "/runtime"
 			var evidence tracker.NativeRuntimeEvidence
@@ -103,7 +143,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 				decodeHubResponse(t, response, &evidence)
 			}
 			readDecision()
-			if test.want == http.StatusConflict && test.state != "draining" {
+			if test.state == "disabled" {
 				if evidence.LatestDecision != nil {
 					t.Fatal("pre-evaluation refusal manufactured a scheduling decision")
 				}
@@ -133,8 +173,33 @@ func TestRunnerRoutingClaims(t *testing.T) {
 				}
 				return
 			}
-			if decision.Data.Decision.Outcome != "skipped" {
-				t.Fatalf("refusal evidence = %#v", decision)
+			wantReason := "selector_no_match"
+			switch {
+			case test.state == "draining":
+				wantReason = "runner_draining"
+			case test.name == "stale policy" || test.name == "stale policy broad claim":
+				wantReason = "policy_mismatch"
+			case test.name == "host full" || test.name == "host full broad claim":
+				wantReason = "host_capacity"
+			case test.name == "candidate excluded" || test.name == "intake pending" || test.name == "isolation unsupported":
+				wantReason = "no_claimable_work"
+			}
+			if decision.Data.Decision.Outcome != "skipped" || decision.Data.Decision.Reason != wantReason || evidence.NativeCandidateExclusion == nil || evidence.NativeCandidateExclusion.ID != decision.ID {
+				t.Fatalf("refusal evidence = %#v", evidence)
+			}
+			explanation := explain.FromNativeEvidence(evidence)
+			if !slices.ContainsFunc(explanation.Sources, func(source explain.SourceStatus) bool {
+				return source.Name == "native_candidate_exclusion" && source.State == explain.SourceAvailable
+			}) {
+				t.Fatal("explain_item omitted recorded refusal availability")
+			}
+			for _, admission := range explanation.NativeRuntime.Admission {
+				if slices.Contains(admission.Unavailable, "native_candidate_exclusion") {
+					t.Fatal("explain_item marked the recorded exclusion unavailable")
+				}
+			}
+			if test.name == "intake pending" && !slices.Contains(evidence.Admission[0].Unavailable, "other_native_candidate_exclusions") {
+				t.Fatal("historical refusal hid unavailable current exclusion detail")
 			}
 			for range 3 {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
@@ -143,13 +208,80 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			if evidence.LatestDecision.ID != decisionID {
 				t.Fatal("unchanged refused evaluation appended duplicate history")
 			}
+			var count int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("repeated polls recorded %d decisions: %v", count, err)
+			}
+			now := time.Now().UTC()
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			analytics, err := readNativeAnalytics(t.Context(), f.service.database.db, scope, operatortool.AnalyticsRequest{}, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour})
+			if err != nil || len(analytics.SkipReasons) != 1 || analytics.SkipReasons[0].Reason != wantReason || analytics.SkipReasons[0].Count != 1 {
+				t.Fatalf("skip_reasons = %#v: %v", analytics.SkipReasons, err)
+			}
+			if test.name == "draining" {
+				claim.PolicyID = "stale"
+				for range 2 {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+				}
+				claim.PolicyID = descriptor.ID
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 2 {
+					t.Fatalf("alternating refusals recorded %d decisions: %v", count, err)
+				}
+			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", issue.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
 			readDecision()
 			if evidence.LatestDecision.ID == decisionID || evidence.LatestDecision.Data.Decision.WorkItemRevision != issue.Revision+1 {
-				t.Fatalf("changed revision lost fresh refusal: %#v", evidence.LatestDecision)
+				t.Fatalf("changed revision lost fresh refusal: event=%s original=%s decision=%+v expected=%d", evidence.LatestDecision.ID, decisionID, *evidence.LatestDecision.Data.Decision, issue.Revision+1)
+			}
+			if test.name == "draining" {
+				refusalID := evidence.NativeCandidateExclusion.ID
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET state='active' WHERE id=?", r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				claim.SessionID = "accepted"
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				readDecision()
+				if evidence.LatestDecision.Data.Decision.Outcome != "claimed" || evidence.NativeCandidateExclusion.ID != refusalID {
+					t.Fatal("successful claim lost the historical refusal")
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET state='draining' WHERE id=?", r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				claim.SessionID = "next-cycle"
+				for range 2 {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+				}
+				readDecision()
+				if evidence.NativeCandidateExclusion.ID == refusalID {
+					t.Fatal("successful claim did not start a new evaluation cycle")
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 5 {
+					t.Fatalf("claim cycle recorded %d decisions: %v", count, err)
+				}
+				other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
+				other.enroll(t)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET state='draining' WHERE id=?", other.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				claim.MachineID, claim.SessionID = other.binding.MachineID, "other-runner"
+				for range 2 {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", other.redemption.Credential, claim), http.StatusConflict)
+				}
+				readDecision()
+				if evidence.NativeCandidateExclusion.Data.Decision.RunnerID != other.binding.RunnerID {
+					t.Fatal("another runner's refusal was deduplicated away")
+				}
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 6 {
+					t.Fatalf("runner refusals recorded %d decisions: %v", count, err)
+				}
 			}
 		})
 	}

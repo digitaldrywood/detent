@@ -96,7 +96,7 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var history tracker.Page[tracker.CollaborationEvent]
 	decodeHubResponse(t, response, &history)
-	wantHistory := []string{"issue.created", "dependency.changed", "scheduler.decision", "run.started", "scheduler.decision"}
+	wantHistory := []string{"issue.created", "dependency.changed", "scheduler.decision", "scheduler.decision", "run.started", "scheduler.decision"}
 	if len(history.Items) != len(wantHistory) {
 		t.Fatalf("history after restart = %#v", history.Items)
 	}
@@ -105,8 +105,14 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 		if event.Type != kind || event.AggregateSequence != int64(i+1) {
 			t.Fatalf("history event %d = %#v, want %s", i, event, kind)
 		}
-		if kind == "scheduler.decision" && (event.Data.Decision == nil || event.Data.Decision.Source != "native_claim" || event.Data.Decision.Outcome != "claimed") {
-			t.Fatalf("claim decision %d = %#v", i, event.Data.Decision)
+		if kind == "scheduler.decision" {
+			source, outcome := "native_claim", "claimed"
+			if i == 2 {
+				source, outcome = "native_claim_eligibility", "skipped"
+			}
+			if event.Data.Decision == nil || event.Data.Decision.Source != source || event.Data.Decision.Outcome != outcome {
+				t.Fatalf("claim decision %d = %#v", i, event.Data.Decision)
+			}
 		}
 	}
 	f.service.config.Version = "v1.2.5"

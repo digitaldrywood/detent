@@ -59,6 +59,11 @@ projects:
 			if err != nil {
 				return 0, false, err
 			}
+			if len(projectIDs) == 0 && project == query.NativeScope.project && query.WorkItemID > 0 {
+				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, query.WorkItemID, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: "no_claimable_work"}, now); err != nil {
+					return 0, false, err
+				}
+			}
 			for _, id := range projectIDs {
 				current, found, err := readUnreleasedLease(ctx, tx, id)
 				if err != nil {
