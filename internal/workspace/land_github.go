@@ -115,6 +115,9 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		return LandResult{}, fmt.Errorf("inspect fetched base: %w", err)
 	}
 	baseBefore = strings.TrimSpace(baseBefore)
+	if kept, found := keptLanding(ctx, normalized.Path, head, baseRef); found {
+		return kept, nil
+	}
 	var pull githubLandingPull
 	createdPull := false
 	if opts.External != nil {
@@ -125,9 +128,6 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		if pull.Head.Ref != githubLandingBranch(normalized, opts) {
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the external pull request branch differs from the landing workspace")
 		}
-	}
-	if kept, found := keptLanding(ctx, normalized.Path, head, baseRef); found {
-		return kept, nil
 	}
 	if strings.TrimSpace(opts.ValidationCommand) != "" {
 		_, validation, err = l.prepareGitHubLanding(ctx, normalized, issue, opts, baseBefore)
@@ -174,9 +174,13 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		}
 	}
 	var mergeSHA string
-	if pull.Merged || pull.MergedAt != "" {
+	alreadyMerged := pull.Merged || pull.MergedAt != ""
+	if alreadyMerged {
 		mergeSHA, err = githubLandingMergedCommit(ctx, opts.GitHubClient, repository, pull.Number, head, githubLandingBranch(normalized, opts), base)
 		if err != nil {
+			return LandResult{}, err
+		}
+		if err := verifyGitHubLandingMerge(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
 			return LandResult{}, err
 		}
 	} else {
@@ -236,11 +240,14 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if mergeSHA == "" {
 		return LandResult{}, errors.New("GitHub reported a merged pull request without a merge commit")
 	}
-	if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, "+refs/heads/"+base+":"+baseRef); err != nil {
-		return LandResult{}, fmt.Errorf("verify merged base branch: %w", err)
+	result = LandResult{Gate: validation, MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil, Rebased: rebased}
+	if err := RecordLanding(ctx, normalized, head, result); err != nil {
+		return result, fmt.Errorf("keep merged landing: %w", err)
 	}
-	if _, err := runGitAt(ctx, normalized.Path, "merge-base", "--is-ancestor", mergeSHA, baseRef); err != nil {
-		return LandResult{}, fmt.Errorf("GitHub merge commit %s is not on %s: %w", mergeSHA, base, err)
+	if !alreadyMerged {
+		if err := verifyGitHubLandingMerge(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
+			return result, err
+		}
 	}
 	if opts.External == nil && branch == autoBranchPrefix+"landing/"+strings.ToLower(normalized.Key)+"/"+head {
 		if err := closeSupersededLandingPulls(ctx, opts.GitHubClient, repository, base, normalized.Key, pull.Number); err != nil {
@@ -251,10 +258,20 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 			} else if class, unavailable := forgeavailability.Classify(operation, err.Error()); unavailable {
 				err = forgeavailability.NewError(forgeavailability.Scope{Host: "github.com", Operation: operation}, class, err)
 			}
-			return LandResult{}, fmt.Errorf("close superseded landing pull requests after merging %d: %w", pull.Number, err)
+			return result, fmt.Errorf("close superseded landing pull requests after merging %d: %w", pull.Number, err)
 		}
 	}
-	return LandResult{MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil, Rebased: rebased}, nil
+	return result, nil
+}
+
+func verifyGitHubLandingMerge(ctx context.Context, path, remote, base, baseRef, mergeSHA string) error {
+	if _, err := runGitAt(ctx, path, "fetch", remote, "+refs/heads/"+base+":"+baseRef); err != nil {
+		return fmt.Errorf("verify merged base branch: %w", err)
+	}
+	if _, err := runGitAt(ctx, path, "merge-base", "--is-ancestor", mergeSHA, baseRef); err != nil {
+		return fmt.Errorf("GitHub merge commit %s is not on %s: %w", mergeSHA, base, err)
+	}
+	return nil
 }
 
 func (l *LocalGit) prepareGitHubLanding(ctx context.Context, info Info, issue Issue, opts LandOptions, base string) (string, gate.CommandResult, error) {
