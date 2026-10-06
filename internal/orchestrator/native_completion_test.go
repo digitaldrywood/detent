@@ -247,6 +247,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "typed unfinished published source cannot auto land", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "detent-status in_progress"},
 		{name: "malformed published report cannot auto land", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 99\nstatus: complete\n```", wantState: "In Review", wantComment: "no valid complete detent-status disposition"},
 		{name: "typed accepted current version lands normally", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Merging", wantComment: "runner lands it next"},
+		{name: "completed reviewed Rework reaches landing", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Merging", wantComment: "runner lands it next"},
+		{name: "refused completed Rework landing retains completion ownership", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", updateErr: errors.New("stale fencing token"), wantState: "Merging", wantDeferred: true, roundTrip: true},
 		{name: "publication outage retries current publisher", republish: true, change: &runpkg.NativeChange{Error: "hub unavailable"}, states: landing, wantDeferred: true},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
 		{name: "a workflow without the review lane is handed off, never ended", change: waiting, states: hosted, wantDeferred: true},
@@ -772,7 +774,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					if test.updateErr == nil {
 						t.Fatalf("the item was moved: %#v", tick.updates)
 					}
-					if update.state != "In Review" && (test.finalMessage == "" || update.state != "Blocked") {
+					if update.state != "In Review" && update.state != test.wantState && (test.finalMessage == "" || update.state != "Blocked") {
 						t.Fatalf("refused write targeted %s", update.state)
 					}
 				}

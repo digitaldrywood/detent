@@ -225,8 +225,8 @@ func (s *Service) landChange(c echo.Context) error {
 		if strings.TrimSpace(request.BaseRef) == "" || len(request.BaseRef) > 256 || !slices.Contains([]string{"squash", "merge", "rebase"}, request.Method) {
 			return nil, nativeInvalid("Landing names the base branch and a merge method of squash, merge or rebase")
 		}
-		if change.Landed != nil {
-			if change.Landed.VersionID == version.ID && change.Landed.MergeSHA == request.MergeSHA {
+		if landed := change.CurrentLanding(); landed != nil {
+			if landed.VersionID == version.ID && landed.MergeSHA == request.MergeSHA {
 				return change, nil
 			}
 			return nil, nativeConflict(change.Revision)
@@ -289,7 +289,7 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 	if err != nil || !found {
 		return false, true, err
 	}
-	if change.Landed != nil || change.CurrentVersion == "" {
+	if change.CurrentLanding() != nil || change.CurrentVersion == "" {
 		return false, true, nil
 	}
 	detail, err := readCurrentChangeDetail(ctx, query, *scope, change, now)
@@ -346,5 +346,5 @@ func nativeChangeLandingReady(state string, detail *tracker.ChangeDetail) bool {
 	if !strings.EqualFold(strings.TrimSpace(state), "Merging") {
 		return true
 	}
-	return detail != nil && detail.Change.Landed == nil && detail.Change.CurrentVersion != "" && detail.Summary.Status == "reviewed"
+	return detail != nil && detail.Change.CurrentLanding() == nil && detail.Change.CurrentVersion != "" && detail.Summary.Status == "reviewed"
 }

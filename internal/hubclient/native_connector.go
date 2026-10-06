@@ -159,14 +159,15 @@ func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.N
 		return connector.Issue{}, err
 	}
 	for _, change := range changes {
-		if change.WorkItemID != native.WorkItemID || change.Landed == nil {
+		landed := change.CurrentLanding()
+		if change.WorkItemID != native.WorkItemID || landed == nil {
 			continue
 		}
-		if change.Landed.HeadSHA == "" || change.Landed.MergeSHA == "" {
+		if landed.HeadSHA == "" || landed.MergeSHA == "" {
 			continue
 		}
-		issue.Metadata["hub_landed_head_sha"] = change.Landed.HeadSHA
-		issue.Metadata["hub_landed_merge_sha"] = change.Landed.MergeSHA
+		issue.Metadata["hub_landed_head_sha"] = landed.HeadSHA
+		issue.Metadata["hub_landed_merge_sha"] = landed.MergeSHA
 	}
 	return issue, nil
 }

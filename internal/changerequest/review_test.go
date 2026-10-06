@@ -86,6 +86,13 @@ func TestSummarizeVersionReview(t *testing.T) {
 		{"landed after review", func(d *tracker.ChangeDetail, _ *time.Time) {
 			d.Change.Landed = &tracker.ChangeLanding{VersionID: "v1", MergeSHA: "abc", BaseRef: "main"}
 		}, "approved", "not_required", "landed"},
+		{"earlier landed version does not finish reopened work", func(d *tracker.ChangeDetail, _ *time.Time) {
+			d.Change.Landed = &tracker.ChangeLanding{VersionID: "v0", MergeSHA: "abc", BaseRef: "main"}
+		}, "approved", "success", "reviewed"},
+		{"earlier landing does not satisfy current review", func(d *tracker.ChangeDetail, _ *time.Time) {
+			d.Change.Landed = &tracker.ChangeLanding{VersionID: "v0", MergeSHA: "abc", BaseRef: "main"}
+			d.Reviews = nil
+		}, "pending", "success", "needs_evidence"},
 		{"landed without a reviewer", func(d *tracker.ChangeDetail, _ *time.Time) {
 			d.Change.Landed = &tracker.ChangeLanding{VersionID: "v1", MergeSHA: "abc", BaseRef: "main"}
 			d.Reviews = nil

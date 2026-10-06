@@ -126,7 +126,7 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	if !slices.Contains([]string{"approved", "changes_requested", "commented"}, request.Decision) || len(request.Body) > 64<<10 {
 		return nil, nativeInvalid("Review decision is invalid or body exceeds 64 KiB")
 	}
-	if change.Landed != nil {
+	if change.CurrentLanding() != nil {
 		return nil, nativeConflict(change.Revision)
 	}
 	if err := validateNativeValidatorReview(ctx, tx, scope, change, version, request); err != nil {

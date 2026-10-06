@@ -1001,6 +1001,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		interactive    bool
 		hosted         bool
 		rework         bool
+		reopened       bool
 		formal         bool
 		failDetail     bool
 		failVersion    bool
@@ -1050,6 +1051,8 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "host signing unavailable preserves requested changes", rework: true, formal: true, staged: true, signingFail: true},
 		{name: "growing multi-page machine history keeps fresh conflict recovery compact", rework: true, staleBase: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "Rework lands the clean preserved reviewed head without source changes", rework: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "reopened completed Rework lands its reviewed current version", reopened: true, rework: true, staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "reopened Rework accepts current requested changes before repair", reopened: true, rework: true, formal: true, staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "Rework forwards a refused version to review", rework: true, commit: true, failVersion: true, wantState: "Human Review"},
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
@@ -1086,6 +1089,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					transitions = append(transitions, "Rework")
 				}
 				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: transitions})
+			}
+			if test.reopened {
+				states[4].Transitions = []string{"Rework"}
 			}
 			h := newNativeChangeHubTransport(t, review, states, true)
 			if test.validator != "" {
@@ -1195,8 +1201,24 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: old.ID, Body: "Historical discussion"}); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, old.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "changes_requested", Body: "Historical requested changes"}); err != nil {
+				historicalDecision := "changes_requested"
+				if test.reopened {
+					historicalDecision = "approved"
+				}
+				if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, old.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: historicalDecision, Body: "Historical review"}); err != nil {
 					t.Fatal(err)
+				}
+				if test.reopened {
+					if _, err := h.admin.LandChangeVersion(t.Context(), item, change.ID, old.ID, tracker.LandChangeVersion{Mutation: nativeMutationKey(), MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}); err != nil {
+						t.Fatal(err)
+					}
+					currentIssue, err := h.admin.Issue(t.Context(), item)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
+						t.Fatal(err)
+					}
 				}
 				head, err := exec.CommandContext(t.Context(), "git", "-C", reviewedPath, "rev-parse", "HEAD").Output()
 				if err != nil {
@@ -1730,6 +1752,12 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if change == nil || change.Changed != test.wantChanged || (change.ChangeID != "") != test.wantChanged {
 				t.Fatalf("native change = %#v, want changed = %t", change, test.wantChanged)
 			}
+			if test.reopened {
+				reviewed, err := h.connector.ChangeReviewed(t.Context(), issue.ID, change.ChangeID, change.VersionID)
+				if err != nil || !reviewed {
+					t.Fatalf("completed Rework lost current review after an earlier landing: reviewed=%t, error=%v", reviewed, err)
+				}
+			}
 			h.complete(t, issue.ID, change, test.land)
 			if state := h.state(t, issue.ID); state != test.wantState {
 				t.Fatalf("state = %s, want %s", state, test.wantState)
@@ -1774,7 +1802,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if test.land && !test.lateConflict && !test.staleBase {
+					if test.reopened && (detail.Change.CurrentLanding() != nil || !reflect.DeepEqual(detail.Change.Landed, expected.Change.Landed)) {
+						t.Fatal("new publication lost the historical landing or treated it as current")
+					}
+					if test.land && !test.lateConflict && !test.staleBase && !test.reopened {
 						if len(detail.Versions) != len(expected.Versions) || change.VersionID != expected.Change.CurrentVersion || change.HeadSHA != expected.Versions[len(expected.Versions)-1].HeadSHA {
 							t.Fatalf("unchanged Rework replaced the immutable version: change=%+v, detail=%+v", change, detail)
 						}

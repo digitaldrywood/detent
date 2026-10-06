@@ -23,9 +23,15 @@ type ChangeRequest struct {
 	UpdatedAt      time.Time          `json:"updated_at"`
 }
 
+func (c ChangeRequest) CurrentLanding() *ChangeLanding {
+	if c.CurrentVersion != "" && c.Landed != nil && c.Landed.VersionID == c.CurrentVersion {
+		return c.Landed
+	}
+	return nil
+}
+
 // ChangeLanding records that a reviewed version reached the base branch: the
 // commit the runner pushed there, the branch, and the merge method it used.
-// A landed Change Request is finished; no later version is published on it.
 type ChangeLanding struct {
 	Rebased   bool      `json:"rebased,omitempty"`
 	VersionID string    `json:"version_id"`
