@@ -455,7 +455,7 @@ func (intakeRepositoryBackend) Reconcile(context.Context, hubserver.ReconcileReq
 func (intakeRepositoryBackend) FetchImportPage(_ context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
 	snapshot := intakeSnapshot()
 	if request.Stage == "issue" {
-		return hubserver.GitHubImportPage{Issue: &hubserver.IssueSource{NodeID: snapshot.Provenance.ExternalID, Number: 12, URL: snapshot.URL, Title: snapshot.Title, Body: snapshot.Body, AuthorID: snapshot.Provenance.AuthorID, CreatedAt: snapshot.Provenance.CreatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}}, nil
+		return hubserver.GitHubImportPage{Issue: &hubserver.IssueSource{NodeID: snapshot.Provenance.ExternalID, Number: request.IssueNumber, URL: snapshot.URL, Title: snapshot.Title, Body: snapshot.Body, AuthorID: snapshot.Provenance.AuthorID, CreatedAt: snapshot.Provenance.CreatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}}, nil
 	}
 	page := hubserver.GitHubImportPage{}
 	for _, comment := range snapshot.Comments {
@@ -503,6 +503,9 @@ func newPendingLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIs
 		db, err := sql.Open("sqlite", path)
 		if err != nil {
 			return err
+		}
+		if _, err := db.ExecContext(t.Context(), "UPDATE issues SET native_source_key = ? WHERE native_id = ?", "github:https://github.com/acme/orders/issues/12", issue.WorkItemID); err != nil {
+			return errors.Join(err, db.Close())
 		}
 		_, seedErr := db.ExecContext(t.Context(), "INSERT INTO linked_issue_sources (work_item_id, source_url, title_supplied, body_supplied) VALUES (?, ?, 0, 0)", issue.WorkItemID, "https://github.com/acme/orders/issues/12")
 		return errors.Join(seedErr, db.Close())

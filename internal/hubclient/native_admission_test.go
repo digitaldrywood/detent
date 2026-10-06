@@ -134,7 +134,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 					}
 					return response.Result(), nil
 				}
-				if r.URL.Query().Get("view") == "recovery" {
+				if r.Method == http.MethodGet && r.URL.Query().Get("view") == "recovery" {
 					recoveries++
 					if recoveries == test.failAfter {
 						return nil, errors.New("injected hydration failure")
