@@ -65,7 +65,9 @@ func projectNativeAnalyticsActivity(out *nativeAnalyticsProject, a *nativeAnalyt
 		out.SourceAt = p.AsOf
 	}
 	runtime := tracker.NativeRuntimeObservation{Activity: &p}
-	a.Activity = runtime.WithoutActivitySpans().Activity
+	if summary := runtime.WithoutActivitySpans(); summary != nil {
+		a.Activity = summary.Activity
+	}
 }
 
 func addNativeAnalyticsActivity(out *nativeAnalyticsActivityTiming, p workflowmetrics.ActivityProfile, from, to time.Time) {
