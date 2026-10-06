@@ -152,6 +152,13 @@ func (s *Service) recordSlackResult(ctx context.Context, db hostedExecer, organi
 }
 
 func (s *Service) processSlackDelivery(ctx context.Context) (bool, error) {
+	var pending int
+	if err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM health_slack_deliveries WHERE completed_at IS NULL AND attempts<2`).Scan(&pending); err != nil {
+		return false, err
+	}
+	if pending == 0 {
+		return false, nil
+	}
 	now := s.config.now()
 	var organization tracker.OrganizationID
 	var finding healthFinding

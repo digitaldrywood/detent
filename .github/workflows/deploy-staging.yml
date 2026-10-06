@@ -1,46 +1,81 @@
 name: Deploy staging
 
 on:
+  push:
+    branches: [develop]
   workflow_call:
     inputs:
       version:
-        required: true
+        required: false
         type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
 jobs:
   deploy:
     name: Deploy and smoke staging
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     environment:
       name: staging
       url: https://staging.cloud.detent.build
-    env:
-      TMPDIR: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
+      - uses: ./.github/actions/prepare-conversation
+        if: inputs.version == ''
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
           cache: true
       - uses: actions/download-artifact@v8
+        if: inputs.version != ''
         with:
           name: release-hub-binary
           path: ${{ runner.temp }}/release-hub
-      - name: Identify release commit
+      - name: Identify deployment
         id: source
-        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Deploy signed release
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          version="$INPUT_VERSION"
+          stamp="$commit"
+          if [ -z "$version" ]; then
+            version="develop-${commit:0:9}"
+            stamp="${commit:0:9}"
+          fi
+          {
+            echo "commit=$commit"
+            echo "stamp=$stamp"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build develop binary
+        if: inputs.version == ''
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          RELEASE_STAMP: ${{ steps.source.outputs.stamp }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release-hub"
+          go build -trimpath -ldflags "-X main.version=$RELEASE_VERSION -X main.commit=$RELEASE_STAMP -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$RUNNER_TEMP/release-hub/detent" ./cmd/detent
+      - name: Deploy to staging
         id: deploy
         env:
+          TMPDIR: ${{ runner.temp }}
           SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
           RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           set -euo pipefail
@@ -48,16 +83,16 @@ jobs:
       - name: Smoke deployed release
         id: smoke
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
-          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}
+          RELEASE_VERSION: ${{ steps.source.outputs.version }}
+          RELEASE_STAMP: ${{ steps.source.outputs.stamp }}
         run: |
           set -euo pipefail
-          python3 scripts/cloud-origin-smoke.py --environment staging --expected-version "$RELEASE_VERSION" --expected-commit "$RELEASE_COMMIT" 2>&1 | tee -a "$RUNNER_TEMP/release-staging.log"
+          python3 scripts/cloud-origin-smoke.py --environment staging --expected-version "$RELEASE_VERSION" --expected-commit "$RELEASE_STAMP" 2>&1 | tee -a "$RUNNER_TEMP/release-staging.log"
       - name: Report release failure at High
         if: failure() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure')
         env:
           DETENT_RELEASE_ENVIRONMENT: staging
-          DETENT_RELEASE_TAG: ${{ inputs.version }}
+          DETENT_RELEASE_TAG: ${{ steps.source.outputs.version }}
           CI_DEVELOP_SHA: ${{ steps.source.outputs.commit }}
           DETENT_RELEASE_FAILURE_PHASE: ${{ steps.deploy.outcome == 'failure' && 'deploy' || 'smoke' }}
           DETENT_MCP_URL: https://cloud.detent.build/organizations/org_9e0e65eec07a6639979a/mcp

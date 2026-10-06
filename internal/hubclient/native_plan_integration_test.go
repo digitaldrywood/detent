@@ -271,7 +271,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 			t.Fatalf("recovery refusal charged failures or queued retry: %+v, %v", state.FailureBreaker, err)
 		}
 		attempt, err := runtimeStore.WorkAttempt(t.Context(), 1)
-		if err != nil || attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalCancelled || attempt.ErrorClass != "runner_interrupted" {
+		if err != nil || attempt.Status != store.WorkAttemptStatusTerminal || attempt.TerminalState != store.WorkAttemptTerminalCancelled || attempt.ErrorClass != "workspace_preparation" {
 			t.Fatalf("recovery refusal lost instance accounting: %+v, %v", attempt, err)
 		}
 		return

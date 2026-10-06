@@ -11,7 +11,10 @@ case "$environment" in
   *) exit 2 ;;
 esac
 [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
-[[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+case "$environment:$version" in
+  staging:develop-[a-f0-9]*) [[ "$version" =~ ^develop-[a-f0-9]{7,40}$ ]] ;;
+  *) [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] ;;
+esac
 test -n "${SSH_KEY:-}" || { echo "${environment} SSH key is required" >&2; exit 1; }
 test -n "${KNOWN_HOSTS:-}" || { echo "${environment} pinned SSH host key is required" >&2; exit 1; }
 ssh_dir="$(mktemp -d "$scratch/release-ssh.XXXXXX")"

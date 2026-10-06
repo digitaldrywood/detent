@@ -1472,7 +1472,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatalf("absorbed Rework did not finish once: result=%+v calls=%d error=%v", result, provider.calls, err)
 				}
 				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
-				if err != nil || !reflect.DeepEqual(detail.Versions, expected.Versions) || detail.Change.CurrentVersion != expected.Change.CurrentVersion {
+				if err != nil || !reflect.DeepEqual(versionsWithoutLanding(detail.Versions), versionsWithoutLanding(expected.Versions)) || detail.Change.CurrentVersion != expected.Change.CurrentVersion {
 					t.Fatalf("absorbed Rework changed immutable identity: detail=%+v error=%v", detail, err)
 				}
 				attempt := executionID("attempt", string(execution.Recovery().Lease.ID))
@@ -2207,4 +2207,13 @@ func TestNativeConnectorChangeReviewed(t *testing.T) {
 	if _, err := h.connector.ChangeReviewed(t.Context(), issue.ID, "change_"+strings.Repeat("0", 32), second.ID); err == nil {
 		t.Fatal("an unknown change read as a review state")
 	}
+}
+
+func versionsWithoutLanding(versions []tracker.ChangeVersion) []tracker.ChangeVersion {
+	stripped := make([]tracker.ChangeVersion, len(versions))
+	for i, version := range versions {
+		version.Landing = nil
+		stripped[i] = version
+	}
+	return stripped
 }

@@ -18,8 +18,6 @@ jobs:
     environment:
       name: production
       url: https://cloud.detent.build
-    env:
-      TMPDIR: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -38,6 +36,7 @@ jobs:
       - name: Deploy signed release
         id: deploy
         env:
+          TMPDIR: ${{ runner.temp }}
           SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
           RELEASE_VERSION: ${{ inputs.version }}

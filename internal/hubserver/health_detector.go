@@ -66,7 +66,7 @@ func (s *Service) evaluateTenantHealth(ctx context.Context) error {
 	}
 	var failures error
 	for _, organization := range organizations {
-		failures = errors.Join(failures, s.evaluateOrganizationHealth(ctx, organization, s.config.now()))
+		failures = errors.Join(failures, s.evaluateOrganizationHealth(ctx, organization, time.Now().UTC()))
 	}
 	return failures
 }

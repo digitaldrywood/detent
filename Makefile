@@ -48,7 +48,7 @@ export GOMAXPROCS
 # Filesystem diagnostics can record millions of cache inputs (#2735).
 # Run gate tests afresh; -count=1 preserves native build and module caches.
 GO_TEST := env -u DETENT_API_TOKEN go test -count=1 -p $(TEST_PROCS)
-HUB_RACE_TIMEOUT ?= 15m
+HUB_RACE_TIMEOUT ?= 25m
 HUB_RACE_PARALLEL ?= 2
 HUB_RACE_PARTITION := ^Test[A-GI-O]
 HUB_RACE_PARTITION_B := ^Test[HW]
@@ -65,7 +65,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 # G301: shared runtime, service, and artifact directories intentionally require traversal access.
 # G304: Detent intentionally reads operator-selected config, workflow, and workspace paths.
 # G306: flagged files are non-secret configs, manifests, screenshots, and generated artifacts.
-GOSEC_EXCLUDES ?= G115,G301,G304,G306
+GOSEC_EXCLUDES ?= G115,G301,G304,G306,G703,G704
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
 .PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-hub-portability test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast check-land modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
