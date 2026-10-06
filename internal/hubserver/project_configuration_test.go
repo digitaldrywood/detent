@@ -160,7 +160,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 }
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"drain", "apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
@@ -216,6 +216,22 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			if observed.RunnerID != r.binding.RunnerID || observed.ConfigRevision != view.ConfigRevision || observed.AllowLocalBinding || observed.LocalBindingPolicy == nil || observed.LocalBindingPolicy.ID != candidate.ID {
 				t.Fatalf("configuration=%s", result.Content)
+			}
+			if scenario == "drain" {
+				args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "drain", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID}
+				result, err := call("drain_local_project", args)
+				if err != nil || !strings.Contains(string(result.Content), `"pending":true`) {
+					t.Fatalf("drain queued=%s %v", result.Content, err)
+				}
+				request := heartbeat().ProjectConfigurationRequest
+				if request == nil || request.Operation != "drain_local_project" || request.RequestID != args.RequestID {
+					t.Fatalf("drain delivery=%+v", request)
+				}
+				view.RequestID, view.Saved, view.Applied, view.Draining = args.RequestID, true, true, true
+				if heartbeat().ProjectConfigurationRequest != nil {
+					t.Fatal("acknowledged drain repeated")
+				}
+				return
 			}
 			enabled := true
 			args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "enable-local-binding", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID, PolicyID: candidate.ID, SourceRevision: candidate.SourceRevision, AllowLocalBinding: &enabled}

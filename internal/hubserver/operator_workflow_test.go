@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -43,10 +44,17 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			}
 			operatorSQL(t, f, "UPDATE projects SET checkout_repository='digitaldrywood/detent' WHERE id=?", f.project)
 			previous := hubTestPolicy()
+			pinnedPolicyID := previous.ID
 			policyScope := "org_security/" + string(f.project)
 			if _, err := f.service.database.approvePolicy(t.Context(), policyScope, "previous-admin", policy.Change{Policy: previous}); err != nil {
 				t.Fatal(err)
 			}
+			issueID := f.seedIssue(t, 1)
+			now := f.service.config.now()
+			stamp := formatHubTime(now)
+			operatorSQL(t, f, "INSERT INTO machines(id,organization_id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES('machine_policy','org_security','runner',1,'test',?,?,?)", stamp, stamp, stamp)
+			operatorSQL(t, f, "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'policy-lease',id,'machine_policy','policy-session',?,?,?,?,? FROM issues WHERE native_id=?", formatHubTime(now.Add(time.Hour)), stamp, stamp, stamp, stamp, issueID)
+			operatorSQL(t, f, "INSERT INTO lease_policies(lease_id,scope,policy_id) VALUES('policy-lease',?,?)", policyScope, previous.ID)
 			issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
 			if err != nil {
 				t.Fatal(err)
@@ -315,6 +323,79 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 			requireNativeStatus(t, read, http.StatusOK)
 			if strings.Contains(read.Body.String(), `"isError":true`) || !strings.Contains(read.Body.String(), descriptor.ID) {
 				t.Fatalf("approved policy read=%s", read.Body)
+			}
+			for _, channel := range []string{"UI", "API"} {
+				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+					ConfigPath: "detent.yaml", HasConfig: true,
+					Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: make check-land\n  required_status_checks: []\n"),
+					WorkflowPath: "WORKFLOW.md", Workflow: []byte("Implement the approved policy via " + channel),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				next, err := workflowconfig.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+				change := policy.Change{ExpectedID: approved.Policy.ID, Policy: next}
+				var response *httptest.ResponseRecorder
+				if channel == "API" && scenario.deployment != "shared" {
+					response = performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", key.Token, change)
+				} else if scenario.deployment == "shared" {
+					raw, err := json.Marshal(change)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if channel == "API" {
+						response = shared.serve(t, hostedSharedRequest{kind: cloudassert.KindMachine, method: http.MethodPut, target: "/organizations/org_security" + f.base + "/policy", bearer: key.Token, body: string(raw)})
+					} else {
+						response = shared.serve(t, hostedSharedRequest{user: &user, method: http.MethodPut, target: "/organizations/org_security" + f.base + "/onboarding/policy", body: string(raw), csrf: cloudassert.CSRFToken("shared-"+user.identity.Subject, "org_security")})
+					}
+				} else {
+					response = f.request(t, user, http.MethodPut, f.base+"/onboarding/policy", change)
+				}
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &approved)
+				if approved.Policy.ID != next.ID {
+					t.Fatalf("%s approval=%+v", channel, approved)
+				}
+				pinned, err := f.service.database.leasePolicyID(t.Context(), "policy-lease")
+				if err != nil || pinned != pinnedPolicyID {
+					t.Fatalf("%s approval changed active lease: %s %v", channel, pinned, err)
+				}
+			}
+			configuration := runnerauth.ProjectConfiguration{ProjectID: string(f.project), Authority: "local_global_configuration", ConfigRevision: strings.Repeat("a", 64), Registered: true, RuntimeRegistered: true, SelectedPolicy: &approved.Policy, EffectivePolicy: &approved.Policy, ObservedAt: f.service.config.now()}
+			rawConfiguration, err := json.Marshal(map[string]runnerauth.ProjectConfiguration{string(f.project): configuration})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, statement := range []struct {
+				query string
+				args  []any
+			}{
+				{"UPDATE hosted_project_grants SET manage_runner=1 WHERE user_id=?", []any{user.identity.Subject}},
+				{"INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at,expires_at,native_only) VALUES('policy-worker','runner',?,'worker','worker',?,?,?,1)", []any{strings.Repeat("c", 64), stamp, stamp, formatHubTime(expires)}},
+				{"INSERT INTO token_grants(token_id,organization_id,project_id) VALUES('policy-worker','org_security',?)", []any{f.project}},
+				{"INSERT INTO runner_enrollments(id,organization_id,runner_id,machine_id,token_hash,operations_json,created_at,expires_at,created_by,redeemed_at) VALUES('policy-enrollment','org_security','policy-runner','machine_policy',?,'[\"claim\",\"heartbeat\"]',?,?,?,?)", []any{strings.Repeat("d", 64), stamp, formatHubTime(expires), key.ID, stamp}},
+				{"INSERT INTO runner_identities(id,organization_id,machine_id,token_id,enrollment_id,operations_json,created_at,display_name,capacity_limit,reported_capacity,last_heartbeat_at,project_configuration_json) VALUES('policy-runner','org_security','machine_policy','policy-worker','policy-enrollment','[\"claim\",\"heartbeat\"]',?,'runner',1,1,?,?)", []any{stamp, stamp, string(rawConfiguration)}},
+			} {
+				operatorSQL(t, f, statement.query, statement.args...)
+			}
+			for _, call := range []operatortool.Call{
+				{Name: operatortool.ListRunnerRouting, Arguments: json.RawMessage(`{}`)},
+				{Name: "drain_local_project"},
+			} {
+				if call.Name == "drain_local_project" {
+					call.Arguments, err = json.Marshal(operatortool.LocalProjectArguments{ProjectID: string(f.project), RunnerID: "policy-runner", ExpectedRunnerRevision: 1, RequestID: "drain", ExpectedConfigRevision: configuration.ConfigRevision, ExpectedPolicyID: approved.Policy.ID})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				response := send(map[string]any{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": map[string]any{"name": call.Name, "arguments": call.Arguments}})
+				requireNativeStatus(t, response, http.StatusOK)
+				if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), "policy-runner") || call.Name == "drain_local_project" && !strings.Contains(response.Body.String(), `\"pending\":true`) {
+					t.Fatalf("%s owner administration=%s", call.Name, response.Body)
+				}
 			}
 			operatorSQL(t, f, "UPDATE projects SET checkout_repository='' WHERE id=?", f.project)
 			missing := projectCall(t, "approve_project_policy", string(f.project), "missing-binding", operatortool.PolicyApprovalInput{ExpectedID: descriptor.ID, Policy: descriptor, RepositoryPolicy: true})

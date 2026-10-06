@@ -128,7 +128,7 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 					}
 				}
 				lease.Exclusions = r.Exclusions(lease.ProjectID, lease.Policy.Requirements, true)
-				if lease.Policy.ID == "" || lease.Policy.ID != approved {
+				if lease.Policy.ID == "" || approved == "" {
 					lease.Exclusions = append(lease.Exclusions, runnerauth.Exclusion{Code: "policy_mismatch", Message: "This run's pinned policy is missing or revoked"})
 				}
 				r.Leases = append(r.Leases, lease)

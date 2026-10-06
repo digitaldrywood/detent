@@ -3044,14 +3044,11 @@ policy `PUT` answered `200` eight seconds later.
 gives a workspace its own lease so the runner's capacity accounting, renewal
 and expiry sweep apply to it with no second mechanism, and nothing runs under
 it but a person reading files, a diff or a preview — no model, no gate, no
-command — so it holds nothing a policy approval could invalidate. The
-approval's unexpired-lease count now excludes leases held on a
-`detent:workspace` item (`executingLeaseCountQuery` in
-`internal/hubserver/policy.go`) and counts only attempt and claim leases. A
-seventh run does **not** need to delete the pre-warm workspace before `PUT
-{nativeBase}/policy`, and the third run's item 1 wait is gone with it; a
-project with a running attempt still answers `409 policy_mismatch`, which is
-the half that has to keep working. Deleting the pre-warm workspace remains
+command — so it holds nothing a policy approval could invalidate. Policy
+approval also leaves running attempts on their recorded policy revisions;
+new claims require the new approval. Neither workspace leases nor executing
+attempts require a project to stop before `PUT {nativeBase}/policy`.
+Deleting the pre-warm workspace remains
 harmless if a run wants the slot back: the fourth run's terminal-state fix
 moved that workspace's own item #4 to `Done` in the same breath, so the third
 run's "move the pre-warmed `detent:workspace` item to Done by hand" is still

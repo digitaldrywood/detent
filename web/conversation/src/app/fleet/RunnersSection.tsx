@@ -262,7 +262,7 @@ export function RunnersSectionView({
             <div key={runner.id} role="alert" data-testid={runner.health === "needs_attention" ? "runner-attention" : "host-update"} className="flex min-w-0 items-start gap-3 rounded-xl border border-warning/30 bg-warning/8 p-4">
               <AlertTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
               <div className="min-w-0 flex-1 space-y-2 text-xs">
-                <p className="text-sm font-medium">{runner.display_name} can't take work</p>
+                <p className="text-sm font-medium">{runner.display_name} {runner.health === "needs_attention" && !runner.claim_refusal_reason ? "needs attention" : "can't take work"}</p>
                 {runner.sprite?.wake_failed ? <p>The Hub could not wake this Sprite. Check the Sprite and its project’s Sprites token.</p> : runner.sprite && !runner.sprite.can_wake ? <p>No Sprites token is set for an accessible project; the Hub cannot wake this Sprite.</p> : null}
                 {runner.health === "needs_attention" && runner.problems?.[0] ? <div className="space-y-1"><p>{runner.problems[0].message}</p><p className="text-muted-foreground">{runner.problems[0].fix_hint}</p></div> : null}
                 {runner.claim_refusal_reason ? <div data-testid={runner.health === "needs_attention" ? "host-update" : undefined} className="space-y-2"><p>{runner.claim_refusal_reason}</p><PathValue value={RUNNER_UPGRADE_COMMAND} /></div> : null}

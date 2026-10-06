@@ -198,25 +198,6 @@ func (s *Service) revokeProjectPolicy(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// executingLeaseCountQuery counts the unexpired leases in a scope that would
-// actually run under the policy being replaced: attempt and claim leases, the
-// ones a model or a command executes beneath.
-//
-// A workspace session lease is deliberately not one of them. Section 18.1 gives
-// a workspace its own lease so the runner's capacity accounting, renewal and
-// expiry sweep apply to it with no second mechanism, and section 18.2 says what
-// runs under it: a person reading files, a diff, a preview, a shell. No policy
-// decides any of that -- there is no model, no gate and no command -- so a
-// workspace holds nothing the approval could invalidate. Counting one was worse
-// than merely strict: a workspace renews its lease for as long as it is open,
-// so an open Files panel blocked every policy change in the project until
-// somebody deleted the workspace, with no wait that ended.
-const executingLeaseCountQuery = `SELECT count(*) FROM lease_policies p
-JOIN leases l ON l.lease_id = p.lease_id
-JOIN issues i ON i.id = l.issue_id
-WHERE p.scope = ? AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)
- AND ` + notWorkspaceItemClause
-
 func (d *database) approvePolicy(ctx context.Context, scope, actor string, change policy.Change) (result policy.Approval, resultErr error) {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -263,13 +244,6 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 		carryover = change.Policy.SameAuthoredInputs(previous.Policy)
 	}
 	if current != change.Policy.ID && !carryover {
-		var active int
-		if err := tx.QueryRowContext(ctx, executingLeaseCountQuery, scope, formatHubTime(now)).Scan(&active); err != nil {
-			return result, err
-		}
-		if active != 0 {
-			return result, policyMismatch("Active leases retain their approved policy; finish or cancel them before approving a different revision")
-		}
 		organization, project, native := strings.Cut(scope, "/")
 		if native && !strings.HasPrefix(scope, "repository:") {
 			nativeScope := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}
@@ -282,9 +256,6 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 					return result, policyMismatch("Repository-controlled workflow requires a resolved workflow in the policy descriptor; inspect the repository definition with an updated runner")
 				}
 				if change.Policy.Workflow != nil {
-					if err := requireIntegrationIdle(ctx, tx, nativeScope, now); err != nil {
-						return result, err
-					}
 					if err := applyNativeProjectStates(ctx, tx, nativeScope, change.Policy.Workflow.States, now); err != nil {
 						return result, err
 					}
@@ -527,8 +498,10 @@ func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (st
 
 func requireApprovedLeasePolicy(ctx context.Context, tx *sql.Tx, lease tracker.LeaseID, required bool) error {
 	var pinned, approved string
-	err := tx.QueryRowContext(ctx, `SELECT l.policy_id, coalesce(p.policy_id, '') FROM lease_policies l
-LEFT JOIN project_policies p ON p.scope = l.scope WHERE l.lease_id = ?`, lease).Scan(&pinned, &approved)
+	var recorded bool
+	err := tx.QueryRowContext(ctx, `SELECT l.policy_id, coalesce(p.policy_id, ''),
+EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = l.scope AND r.policy_id = l.policy_id)
+FROM lease_policies l LEFT JOIN project_policies p ON p.scope = l.scope WHERE l.lease_id = ?`, lease).Scan(&pinned, &approved, &recorded)
 	if errors.Is(err, sql.ErrNoRows) {
 		if required {
 			return policyMismatch("Legacy lease has no pinned policy; release it and request a new approved claim")
@@ -538,22 +511,8 @@ LEFT JOIN project_policies p ON p.scope = l.scope WHERE l.lease_id = ?`, lease).
 	if err != nil {
 		return err
 	}
-	if pinned != approved {
-		var scope string
-		if err := tx.QueryRowContext(ctx, "SELECT scope FROM lease_policies WHERE lease_id=?", lease).Scan(&scope); err != nil {
-			return err
-		}
-		current, err := readProjectPolicy(ctx, tx, scope)
-		if err != nil {
-			return policyMismatch("Pinned policy has been revoked; stop the attempt and obtain administrator approval before restarting")
-		}
-		matches, err := approvedPolicyRevisionMatches(ctx, tx, scope, pinned, current.Policy)
-		if err != nil {
-			return err
-		}
-		if !matches {
-			return policyMismatch("Pinned policy has been revoked; stop the attempt and obtain administrator approval before restarting")
-		}
+	if pinned == "" || approved == "" || !recorded {
+		return policyMismatch("Pinned policy is missing or project approval has been revoked; stop the attempt and obtain administrator approval before restarting")
 	}
 	return requireLeaseRouting(ctx, tx, lease)
 }

@@ -26,7 +26,11 @@ for exact revision, policy and handoff requirements. Cloud also reaches the
 enrolled runner's configuration owner through its existing heartbeat transport,
 independently of the local board. Select `runner_id` when more than one granted
 runner reports the project. Commands through Cloud additionally require that
-runner's current `expected_runner_revision`. A stopped or missing runner owner
+runner's current `expected_runner_revision`. Runner administration and local
+project commands require an Admin key. Hosted owners and admins have organization
+runner access; members require runner management grants on the organization’s
+projects. An all-project Write key
+does not grant runner administration. A stopped or missing runner owner
 returns an explicit constraint; these calls never start or enable a board.
 Verify `registered` and `runtime_registered` through a
 fresh read after a saved removal; a command retry returns its original receipt.

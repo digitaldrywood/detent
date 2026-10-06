@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -432,8 +433,21 @@ func TestHostedSecurityRoleProjectMatrix(t *testing.T) {
 				}
 				command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "new issue", Body: "private-body-sentinel", State: "Todo"}
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items", command), writeStatus)
+				policyStatus, revokeStatus := http.StatusNotFound, http.StatusNotFound
+				if grant == "write" && (role == "owner" || role == "admin") {
+					policyStatus, revokeStatus = http.StatusOK, http.StatusNoContent
+				}
+				descriptor := hubTestPolicy()
+				for _, route := range []string{"/policy", "/onboarding/policy"} {
+					requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+route, policy.Change{Policy: descriptor}), policyStatus)
+				}
+				requireNativeStatus(t, f.request(t, user, http.MethodDelete, f.base+"/policy", map[string]string{"expected_policy_id": descriptor.ID}), revokeStatus)
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/claims", map[string]any{}), http.StatusForbidden)
-				requireNativeStatus(t, f.request(t, user, http.MethodGet, "/api/v2/organizations/org_security/runners", nil), http.StatusNotFound)
+				runnerStatus := http.StatusNotFound
+				if role == "owner" || role == "admin" {
+					runnerStatus = http.StatusOK
+				}
+				requireNativeStatus(t, f.request(t, user, http.MethodGet, "/api/v2/organizations/org_security/runners", nil), runnerStatus)
 			})
 		}
 	}
