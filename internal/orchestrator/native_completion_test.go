@@ -91,6 +91,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	customRework[len(customRework)-1].Name = "Fixing"
 	unfinishedReport := "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
 	instanceReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused the mock listener with EPERM\nhuman_action: null\n```"
+	prerequisiteReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: prj_6d4919bebd73446798e6cd807feda10e#411\n    reason: prerequisite must finish\nhuman_action: null\n```"
 	yes, no := true, false
 	head := strings.Repeat("c", 40)
 	opened := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}
@@ -228,6 +229,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "an unreadable workflow is handed off", change: waiting, statesErr: errors.New("hub unavailable"), wantDeferred: true},
 		{name: "a refused lane write is handed off", change: waiting, states: workflow, updateErr: errors.New("stale fencing token"), wantDeferred: true},
 		{name: "missing native result keeps ordinary continuation", states: workflow, wantOrdinary: true, wantContinue: true},
+		{name: "dirty1067 prerequisite report retains native blocked handoff", states: workflow, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "detent-status blocked", diffStats: DiffStats{Status: "changed", FilesChanged: 2, TrackedPaths: []string{"inventory.go", "inventory_test.go"}}},
+		{name: "clean prerequisite report retains the same blocked handoff", change: &runpkg.NativeChange{}, states: workflow, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "detent-status blocked"},
+		{name: "prerequisite handoff respects a workflow without Blocked", states: fourLanes, finalMessage: prerequisiteReport, wantState: "Human Review", wantComment: "detent-status blocked"},
+		{name: "prerequisite cannot bypass publication refusal", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionError: "policy mismatch"}, states: workflow, finalMessage: prerequisiteReport, wantState: "In Review", wantComment: "for review"},
+		{name: "malformed dirty prerequisite retains ordinary path", states: workflow, finalMessage: strings.Replace(prerequisiteReport, "schema: 1", "schema: 99", 1), wantOrdinary: true, wantContinue: true},
+		{name: "human owned dirty prerequisite retains ordinary path", states: workflow, finalMessage: strings.Replace(prerequisiteReport, "    reason:", "    owner: human\n    reason:", 1), wantOrdinary: true, wantContinue: true},
 		{name: "dirty tracked native Code keeps ordinary continuation", states: workflow, wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"source.go"}}},
 		{name: "dirty untracked native Rework keeps ordinary continuation", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, UntrackedPaths: []string{"source.go"}}},
 		{name: "late host source conflict preserves progress", states: rework, sourceState: "Rework", wantOrdinary: true, wantContinue: true, diffStats: DiffStats{Status: "changed", FilesChanged: 1, TrackedPaths: []string{"docs/invariants.md"}, Fingerprint: "late-host-conflict", RecoveryStateExpected: true, RecoveryStateAvailable: true}},
@@ -696,10 +703,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
 				t.Fatal(err)
 			}
-			if metadata.ChangeID != test.change.ChangeID || metadata.VersionID != test.change.VersionID || metadata.HeadSHA != test.change.HeadSHA {
+			wantChange := test.change
+			if wantChange == nil {
+				wantChange = &runpkg.NativeChange{}
+			}
+			if metadata.ChangeID != wantChange.ChangeID || metadata.VersionID != wantChange.VersionID || metadata.HeadSHA != wantChange.HeadSHA {
 				t.Fatalf("completion lost the published native identity: %+v, want %+v", metadata, test.change)
 			}
-			if metadata.VersionError != test.change.VersionError || metadata.VersionCode != test.change.VersionCode {
+			if metadata.VersionError != wantChange.VersionError || metadata.VersionCode != wantChange.VersionCode {
 				t.Fatalf("completion lost publication diagnostic: %+v", metadata)
 			}
 			if state.Draining != test.draining || len(state.Running) != 0 {

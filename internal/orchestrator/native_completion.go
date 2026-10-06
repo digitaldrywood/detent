@@ -80,40 +80,53 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.releaseClaim(state, issueID)
 		return true
 	}
-	if change == nil {
+	report, reported := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
+	blocked := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusBlocked
+	if blocked {
+		blocked = len(report.Blockers) > 0 && report.HumanAction == "" && report.ReasonCode == ""
+		for _, blocker := range report.Blockers {
+			blocked = blocked && blocker.Owner == workpad.BlockerOwnerOrchestrator && !blocker.Unverifiable && blocker.Predicate != nil && blocker.Predicate.Type == workpad.PredicateIssueState
+		}
+	}
+	if change == nil && !blocked {
 		return false
 	}
-	if change.Error != "" {
+	if change != nil && change.Error != "" {
 		return handoff(errors.New(change.Error))
 	}
-	if change.Changed && change.ChangeID == "" {
+	changed := change != nil && change.Changed
+	if changed && change.ChangeID == "" {
 		return handoff(fmt.Errorf("native change request was not opened: %s", change.Error))
 	}
-	if change.Changed && change.VersionID == "" && change.VersionError == "" {
+	if changed && change.VersionID == "" && change.VersionError == "" {
 		return handoff(errors.New("the native change has no published current version"))
 	}
-	report, reported := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
-	if change.VersionError == "" && o.completeRecordedInstanceBlockers(ctx, state, event, running, report) {
+	if (change == nil || change.VersionError == "") && o.completeRecordedInstanceBlockers(ctx, state, event, running, report) {
 		return true
 	}
 	states, err := reader.WorkflowStates(ctx)
 	if err != nil {
 		return handoff(fmt.Errorf("read native workflow states: %w", err))
 	}
-	change = o.refreshNativeChangeReview(ctx, issueID, change)
+	if change != nil {
+		change = o.refreshNativeChangeReview(ctx, issueID, change)
+	}
 	accepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusComplete && len(report.Blockers) == 0 && report.HumanAction == ""
-	needsReview := !change.Changed && !accepted || reported && !accepted
+	needsReview := !changed && !accepted || reported && !accepted
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	review := cfg.reviewTargetState()
 	if autoPromoteOptoutLabel(issue, cfg) {
 		review = cfg.SourceState
 	}
-	target, ok := connector.CompletionLane(states, issue.State, review, change.Changed || needsReview)
-	if change.Changed || needsReview {
+	target, ok := connector.CompletionLane(states, issue.State, review, changed || needsReview)
+	if changed || needsReview {
 		target, ok = connector.LandingRefusalLane(states, issue.State, review, false)
 	}
-	validatorRework := change.Validator != nil && change.Validator.Verdict == "rework"
-	unfinished := validatorRework || reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "" && change.VersionError == ""
+	if blocked && (change == nil || change.VersionError == "") {
+		target, ok = connector.LandingRefusalLane(states, issue.State, "Blocked", false)
+	}
+	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework"
+	unfinished := validatorRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == "" && change.VersionError == ""
 	if unfinished && nativePlanStateExists(states, cfg.ReworkState) && dispatchableState(states, cfg.ReworkState) {
 		if normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
 			target, ok = issue.State, true
@@ -121,7 +134,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 			target, ok = rework, true
 		}
 	}
-	if change.Changed && change.Reviewed && !needsReview && !autoPromoteOptoutLabel(issue, cfg) {
+	if changed && change.Reviewed && !needsReview && !autoPromoteOptoutLabel(issue, cfg) {
 		if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); direct && dispatchableState(states, landing) {
 			target, ok = landing, true
 		} else if _, allowed := connector.CompletionLane(states, issue.State, "", false); allowed {
@@ -134,7 +147,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 	}
 	if !ok {
-		if change.Changed || needsReview {
+		if changed || needsReview {
 			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", strings.TrimSpace(issue.State), review))
 		}
 		return handoff(fmt.Errorf("native workflow allows no move from %s to a terminal lane", strings.TrimSpace(issue.State)))
@@ -144,7 +157,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 			return handoff(fmt.Errorf("move native item to %s: %w", target, err))
 		}
 	}
-	comment := nativeCompletionComment(change, issue.State, target)
+	comment := ""
 	if needsReview {
 		disposition := "no valid complete detent-status disposition"
 		if report != nil && report.Invalid == nil {
@@ -154,10 +167,12 @@ func (o *Orchestrator) completeNativeChangeRun(
 		if unfinished && normalizeState(target) == normalizeState(cfg.ReworkState) {
 			comment = fmt.Sprintf("The provider turn completed with %s and no reported blocker or human action. Implementation remains unfinished in %s; the completed turn and any genuine source version are preserved for further work, but issue acceptance is not recorded.", disposition, displayStateName(target))
 		}
+	} else {
+		comment = nativeCompletionComment(change, issue.State, target)
 	}
 	if needsReview {
 		comment = nativeCompletionReason(comment, report, event.Result.FinalMessage)
-		if change.VersionError != "" {
+		if change != nil && change.VersionError != "" {
 			comment += "\n\n" + change.VersionError
 		}
 	}
@@ -186,10 +201,14 @@ func (o *Orchestrator) completeNativeChangeRun(
 		Message: "moved " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + target + " after successful completion",
 	})
 	if o.logger != nil {
+		changeID := ""
+		if change != nil {
+			changeID = change.ChangeID
+		}
 		o.logger.Info("completed native issue transition",
 			"issue_id", issueID, "identifier", issue.Identifier,
 			"from_state", issue.State, "target_state", target,
-			"changed", change.Changed, "change_id", change.ChangeID)
+			"changed", changed, "change_id", changeID)
 	}
 	return true
 }
@@ -297,6 +316,9 @@ func (o *Orchestrator) warnNativeCompletion(issue connector.Issue, err error) {
 }
 
 func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
+	if change == nil {
+		return nil
+	}
 	metadata := map[string]any{"native_changed": change.Changed, "native_files": change.Files}
 	if change.ChangeID != "" {
 		metadata["native_change_id"] = change.ChangeID

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestNativeAdmissionBatch(t *testing.T) {
@@ -213,9 +215,11 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		name, refusal string
 		qualified     bool
 		advancePolicy bool
+		dirty         bool
 	}{
 		{name: "reported prerequisite without typed relation"},
 		{name: "canonical native reference", qualified: true},
+		{name: "dirty1067 canonical prerequisite retains checkpoint and recovery", qualified: true, dirty: true},
 		{name: "new approved policy recovers historical report", advancePolicy: true},
 		{name: "human action retains hold", refusal: "human"},
 		{name: "operator transition retains hold", refusal: "operator"},
@@ -260,8 +264,16 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
-			execution.(runner.DiffExecution).SetDiffSource(nativeChangeDiff(strings.Repeat("a", 40)))
-			if err := execution.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "local_only", WorktreeState: "clean", HeadSHA: strings.Repeat("a", 40), ExternalEffect: "none", EffectState: "none"}); err != nil {
+			checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "local_only", WorktreeState: "clean", HeadSHA: strings.Repeat("a", 40), ExternalEffect: "none", EffectState: "none"}
+			diff := nativeChangeDiff(checkpoint.HeadSHA)
+			if test.dirty {
+				checkpoint.Resume, checkpoint.WorktreeState = "resume_session", "dirty"
+				checkpoint.HeadSHA = "60c199a71dfe408cc26e730b9567c8606985ebfb"
+				checkpoint.WorkspaceDigest = strings.Repeat("b", 64)
+				diff = nativeChangeDiff(checkpoint.HeadSHA, "inventory.go", "inventory_test.go")
+			}
+			execution.(runner.DiffExecution).SetDiffSource(diff)
+			if err := execution.Checkpoint(t.Context(), checkpoint); err != nil {
 				t.Fatal(err)
 			}
 			reference := fmt.Sprintf("#%d", prerequisite.Number)
@@ -273,11 +285,17 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 				human = "Approve the release"
 			}
 			report := fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '%s'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: %s\n```", reference, human)
+			if test.dirty {
+				report = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '%s'\n    reason: prerequisite must finish\nhuman_action: null\n```", reference)
+			}
 			if err := execution.(runner.CompletionExecution).PrepareFinish(t.Context(), "succeeded", report); err != nil {
 				t.Fatal(err)
 			}
 			if err := execution.Finish(t.Context(), "succeeded"); err != nil {
 				t.Fatal(err)
+			}
+			if test.dirty && (execution.(runner.ChangeExecution).NativeChange() != nil || len(h.changes(t, issue.ID)) != 0) {
+				t.Fatal("dirty prerequisite report published unfinished source")
 			}
 			if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Blocked"); err != nil {
 				t.Fatal(err)
@@ -307,6 +325,25 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			attempt, prior, valid := tracker.RecordedNativeBlockers(blocked, attempts, history)
 			if !valid || prior != "In Progress" {
 				t.Fatalf("current report missing: %+v, %s, %t", attempt, prior, valid)
+			}
+			if test.dirty {
+				signal, valid := workpad.SignalFromComment(report, "", "")
+				if !valid || signal.Invalid != nil || attempt.Status != "succeeded" || !reflect.DeepEqual(attempt.Checkpoint, &checkpoint) || !reflect.DeepEqual(attempt.Disposition.BlockerEvidence, signal.Blockers) {
+					t.Fatalf("dirty terminal authority or checkpoint lost: %+v", attempt)
+				}
+				page, err := h.admin.History(t.Context(), blocked.WorkItemID, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, event := range page.Items {
+					if event.Type == "run.finished" && event.Data.Run != nil && event.Data.Run.AttemptID == attempt.AttemptID {
+						found = reflect.DeepEqual(event.Data.Run.Disposition, attempt.Disposition)
+					}
+				}
+				if !found {
+					t.Fatal("run.finished omitted dirty terminal disposition")
+				}
 			}
 			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "too-early", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, PolicyID: h.descriptor.ID, BlockerAttemptID: attempt.AttemptID, ExpectedRevision: blocked.Revision, State: prior, Reason: "dependency_ready", ReasonDetail: "recorded_blocker_recovery"}
 			if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err == nil {
@@ -388,6 +425,12 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			case run := <-started:
 				if run.Issue.ID != issue.ID || run.Issue.State != prior {
 					t.Fatalf("recovery dispatched wrong lane: %+v", run.Issue)
+				}
+				if test.dirty {
+					fresh, ok := run.Execution.(*nativeExecution)
+					if !ok || fresh.claim.lease.FencingToken <= attempt.FencingToken || len(fresh.Recovery().Attempts) != 1 || !reflect.DeepEqual(fresh.Recovery().Attempts[0].Checkpoint, &checkpoint) {
+						t.Fatal("prerequisite recovery lost fresh fencing or retained dirty checkpoint")
+					}
 				}
 			case <-time.After(10 * time.Second):
 				t.Fatalf("native recorded recovery did not autonomously dispatch: state=%s", h.state(t, issue.ID))
