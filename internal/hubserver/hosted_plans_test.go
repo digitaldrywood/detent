@@ -1090,9 +1090,15 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "accounting")
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	worker := f.worker(t, "worker")
+	credential, _, err := f.service.authenticateAPIToken(t.Context(), worker, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	d := f.service.database
 	now := time.Now()
 	previous := 0
+	var runEvent tracker.NativeRunEvent
+	var runItem tracker.NativeWorkItemID
 	for _, retained := range []int{1, 32} {
 		d.hostedPlans = nil
 		for i := previous; i < retained; i++ {
@@ -1104,7 +1110,9 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token,
 				tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("comment-%d", i)}, Body: body}), http.StatusOK)
 			lease := claimNativeAttempt(t, f, worker, fmt.Sprintf("machine-%d", i), fmt.Sprintf("session-%d", i), issue.WorkItemID)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
+			runEvent = nativeStartedEvent(lease)
+			runItem = issue.WorkItemID
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, runEvent), http.StatusOK)
 			if _, err := d.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.retained',?) WHERE lease_id=?", body, lease.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -1191,6 +1199,126 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					}
 				}
 				t.Logf("retained_issue_comment_attempt_rows=%d full_queries=%d full_result_rows=%d selected_queries=%d selected_result_rows=%d retained_bytes=%d", retained*3, len(fullQueries.statements), fullQueries.resultRows, len(queries.statements), queries.resultRows, full["collaboration_bytes"])
+			})
+		}
+
+		for _, test := range []struct {
+			name                             string
+			unchanged, replay, legacy, start bool
+		}{
+			{name: "new attempt", start: true},
+			{name: "published replacement"},
+			{name: "heartbeat replacement", unchanged: true},
+			{name: "sequence replay", replay: true},
+			{name: "legacy event", legacy: true},
+		} {
+			t.Run(fmt.Sprintf("%d retained/local %s", retained, test.name), func(t *testing.T) {
+				tx, err := d.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				var stored string
+				if err := tx.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", runEvent.Data.AttemptID).Scan(&stored); err != nil {
+					t.Fatal(err)
+				}
+				event := runEvent
+				if err := json.Unmarshal([]byte(stored), &event.Data); err != nil {
+					t.Fatal(err)
+				}
+				event.IdempotencyKey = "local-accounting"
+				if test.start {
+					if _, err := tx.ExecContext(t.Context(), "DELETE FROM native_attempt_events WHERE attempt_id=?", event.Data.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.ExecContext(t.Context(), "DELETE FROM native_attempts WHERE id=?", event.Data.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				} else if test.legacy {
+					event.Data.AttemptID, event.Data.Sequence = newNativeID("attempt"), 0
+				} else if !test.replay {
+					event.Type, event.Data.Sequence = "run.observed", 2
+					event.Data.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: now, Phase: "implementation"}
+					priorRuntime := "null"
+					if test.unchanged {
+						previous := *event.Data.Runtime
+						previous.HeartbeatAt = now.Add(-time.Second)
+						priorRuntime, err = marshalNative(previous)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					evidence, err := marshalNative([]tracker.NativeEvidence{{AttachmentID: "att_retained", Caption: "保留された証拠", Reference: "retained"}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime',json(?),'$.evidence',json(?)) WHERE id=?", priorRuntime, evidence, event.Data.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				queries := &hostedConsumptionQueries{nativeQueryer: tx}
+				metrics := hostedNativeMutationMetrics(event, false)
+				before, err := d.hostedConsumption(t.Context(), queries, now, metrics...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				state, err := readHostedRunEventState(t.Context(), queries, event)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+				publish := true
+				if !test.legacy {
+					appended, history, err := recordNativeAttempt(t.Context(), tx, scope, runItem, event, now)
+					if err != nil {
+						t.Fatal(err)
+					}
+					publish = appended && history
+				}
+				if publish {
+					if err := appendNativeHistory(t.Context(), tx, scope, string(runItem), event.Type, tracker.CollaborationData{Run: &event.Data}, now); err != nil {
+						t.Fatal(err)
+					}
+				}
+				response := `{"accepted":true}`
+				if _, err := tx.ExecContext(t.Context(), "INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,?,?,?)", scope.organization, credential.ID, "local-event", event.IdempotencyKey, "hash", response, formatHubTime(now)); err != nil {
+					t.Fatal(err)
+				}
+				after, err := d.hostedRunEventConsumption(t.Context(), queries, now, before, state, event, response)
+				if err != nil {
+					t.Fatal(err)
+				}
+				full, err := d.hostedConsumption(t.Context(), tx, now, metrics...)
+				if err != nil || !maps.Equal(after, full) {
+					t.Fatalf("local=%v full=%v error=%v", after, full, err)
+				}
+				if len(queries.statements) != 7 || queries.resultRows != 9 {
+					t.Fatalf("queries=%d rows=%d", len(queries.statements), queries.resultRows)
+				}
+				for _, statement := range []string{queries.statements[4], queries.statements[5]} {
+					args := []any{event.Data.AttemptID, event.Data.AttemptID, event.Data.Sequence}
+					if strings.Contains(statement, "rowid>?") {
+						args = append(args, state.eventRowID)
+					}
+					rows, err := tx.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+statement, args...)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for rows.Next() {
+						var id, parent, unused int
+						var detail string
+						if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+							t.Fatal(err)
+						}
+						if strings.Contains(detail, "SCAN collaboration_events") || strings.Contains(detail, "SCAN native_attempts") || strings.Contains(detail, "SCAN native_attempt_events") {
+							t.Fatalf("unbounded local accounting: %s", detail)
+						}
+					}
+					if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Logf("retained=%d ordinary_accounting_queries=%d tenant_byte_aggregates=1 local_state_rows=2", retained, len(queries.statements))
 			})
 		}
 	}
@@ -1283,15 +1411,18 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		limits map[string]int64
-		finish bool
+		kind   string
 		status int
 	}{
-		{"unrelated allocation exhaustion", map[string]int64{"projects": 0, "unarchived_issues": 0, "repositories": 0, "registered_runners": 0, "connected_runners": 0}, false, http.StatusOK},
-		{"storage exhaustion", map[string]int64{"collaboration_bytes": 1}, false, http.StatusTooManyRequests},
-		{"history exhaustion", map[string]int64{"history_records": 0}, false, http.StatusTooManyRequests},
-		{"event exhaustion", map[string]int64{"ingested_events": 0}, false, http.StatusTooManyRequests},
-		{"window exhaustion", map[string]int64{"api_mutations": 0}, false, http.StatusTooManyRequests},
-		{"failed completion while exhausted", map[string]int64{"collaboration_bytes": 1, "history_records": 0, "ingested_events": 0, "api_mutations": 0}, true, http.StatusOK},
+		{"unrelated allocation exhaustion", map[string]int64{"projects": 0, "unarchived_issues": 0, "repositories": 0, "registered_runners": 0, "connected_runners": 0}, "run.observed", http.StatusOK},
+		{"storage exhaustion", map[string]int64{"collaboration_bytes": 1}, "run.observed", http.StatusTooManyRequests},
+		{"history exhaustion", map[string]int64{"history_records": 0}, "run.observed", http.StatusTooManyRequests},
+		{"event exhaustion", map[string]int64{"ingested_events": 0}, "run.observed", http.StatusTooManyRequests},
+		{"window exhaustion", map[string]int64{"api_mutations": 0}, "run.observed", http.StatusTooManyRequests},
+		{"failed completion while exhausted", map[string]int64{"collaboration_bytes": 1, "history_records": 0, "ingested_events": 0, "api_mutations": 0}, "run.finished", http.StatusOK},
+		{"checkpoint while exhausted", map[string]int64{"collaboration_bytes": 1, "history_records": 0, "ingested_events": 0, "api_mutations": 0}, "run.checkpointed", http.StatusOK},
+		{"start allowed", nil, "run.started", http.StatusOK},
+		{"start storage exhaustion", map[string]int64{"collaboration_bytes": 1}, "run.started", http.StatusTooManyRequests},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}), "", "runtime-quota")
@@ -1301,15 +1432,22 @@ func TestHostedNativeRunMutationQuotas(t *testing.T) {
 			lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
 			event := nativeStartedEvent(lease)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+			if test.kind != "run.started" {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+			}
 			f.service.config.Hosted = &HostedConfig{}
 			f.service.database.hostedOrganization = f.project.OrganizationID
 			hostedTestPlans(t, f.service, test.limits)
 			f.service.config.Hosted = nil
-			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "observed", 2
-			event.Data.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: time.Now(), Phase: "implementation"}
-			if test.finish {
-				event.Type, event.Data.Outcome = "run.finished", "failed"
+			if test.kind != "run.started" {
+				event.Type, event.IdempotencyKey, event.Data.Sequence = test.kind, "next", 2
+				event.Data.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: time.Now(), Phase: "implementation"}
+			}
+			if test.kind == "run.finished" {
+				event.Data.Outcome = "failed"
+			}
+			if test.kind == "run.checkpointed" {
+				event.Data.Handoff = nativeTestCheckpoint()
 			}
 			before, err := f.service.database.hostedConsumption(t.Context(), f.service.database.db, time.Now())
 			if err != nil {

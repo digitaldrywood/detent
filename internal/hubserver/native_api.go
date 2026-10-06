@@ -383,6 +383,15 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	completion := options.Completion
+	event, runEvent := input.(tracker.NativeRunEvent)
+	consolidateRunEvent := runEvent && !completion && s.database.hostedPlans != nil
+	var runEventState hostedRunEventState
+	if consolidateRunEvent {
+		runEventState, err = readHostedRunEventState(ctx, tx, event)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if !completion && !options.ArtifactRead {
 		if err := s.database.requireHostedFeature(ctx, tx, options.Feature, now); err != nil {
 			return nil, err
@@ -399,7 +408,15 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, scope.organization, scope.credential.ID, operationID, command.IdempotencyKey, requestHash, response, formatHubTime(now)); err != nil {
 		return nil, err
 	}
-	if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
+	if consolidateRunEvent {
+		after, err := s.database.hostedRunEventConsumption(ctx, tx, now, before, runEventState, event, response)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.database.checkHostedConsumptionGrowth(ctx, tx, before, after, now, completion); err != nil {
+			return nil, err
+		}
+	} else if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
