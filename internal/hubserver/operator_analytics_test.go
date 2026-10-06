@@ -28,6 +28,27 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 	}
 	other := f
 	other.project = "prj_other"
+	scope := nativeScope{organization: "org_security", project: f.project}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	states := []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "In Progress", Dispatchable: true}, {Name: "Done", Terminal: true}}
+	if err := applyNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
+		t.Fatal(err)
+	}
+	issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "lane residence", State: "Todo"}, now.Add(-6*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.State = "In Progress"
+	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, now.Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	call := func(user hostedSecurityUser, name string, args map[string]any) (*httptest.ResponseRecorder, json.RawMessage) {
 		t.Helper()
 		payload := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args, "_meta": json.RawMessage(fleetProtocolMeta)}}
@@ -97,6 +118,21 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				}
 				if grant == "native" && strings.Contains(string(raw), "prj_other") || grant == "github" && strings.Contains(string(raw), string(f.project)) {
 					t.Fatalf("cross-project data %s", raw)
+				}
+				for _, project := range report.Projects {
+					if project.ProjectID != string(f.project) {
+						continue
+					}
+					if project.LaneResidence.SystemTotal.Seconds != 360 || project.QueueTime.Seconds != 240 || len(project.LaneResidence.Issues.Items) != 1 || len(project.LaneResidence.Aging.Items) != 1 {
+						t.Fatalf("MCP residence %s", raw)
+					}
+					var queueSeconds float64
+					for _, bucket := range project.Digest {
+						queueSeconds += bucket.QueueSeconds
+					}
+					if queueSeconds != 240 {
+						t.Fatalf("MCP queue buckets %s", raw)
+					}
 				}
 				if grant == "both" {
 					for offset := range 2 {
@@ -290,8 +326,8 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	if report.CostPerOutcome.Shipped != 0 || len(report.Efficiency) != 1 || report.Efficiency[0].Seconds != 300 || len(report.Attempts.Items) != 1 {
 		t.Fatalf("runtime %#v", report)
 	}
-	if report.QueueTime.IntervalsObserved != 1 || report.QueueTime.Seconds < 300 || report.QueueTime.Seconds > 305 || !report.QueueTime.Partial {
-		t.Fatalf("recorded queue %#v", report.QueueTime)
+	if report.ProviderCapacityWait.IntervalsObserved != 1 || report.ProviderCapacityWait.Seconds < 300 || report.ProviderCapacityWait.Seconds > 305 || !report.ProviderCapacityWait.Partial {
+		t.Fatalf("recorded queue %#v", report.ProviderCapacityWait)
 	}
 	if report.Activity.ProfilesObserved != 1 || report.Activity.Timing.ElapsedSeconds != 300 || report.Activity.Timing.ObservedSeconds != 240 || report.Activity.Timing.UnknownSeconds != 60 || report.Activity.Timing.ConcurrentSeconds != 60 || report.Activity.DroppedEvents != 2 {
 		t.Fatalf("activity %#v", report.Activity)
@@ -453,8 +489,8 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.QueueTime.ClaimsObserved != 1 || got.QueueTime.Seconds != test.seconds || got.Digest[0].QueueSeconds != test.seconds || got.Digest[1].QueueSeconds != 0 || (got.QueueTime.IntervalsObserved == 1) != (test.seconds > 0) {
-				t.Fatalf("queue boundary %#v", got.QueueTime)
+			if got.ProviderCapacityWait.ClaimsObserved != 1 || got.ProviderCapacityWait.Seconds != test.seconds || got.Digest[0].ProviderCapacityWaitSeconds != test.seconds || got.Digest[1].ProviderCapacityWaitSeconds != 0 || (got.ProviderCapacityWait.IntervalsObserved == 1) != (test.seconds > 0) {
+				t.Fatalf("queue boundary %#v", got.ProviderCapacityWait)
 			}
 		})
 	}
