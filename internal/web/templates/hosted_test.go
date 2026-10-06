@@ -37,6 +37,7 @@ func TestHostedPagesExcludeInstanceSurfaces(t *testing.T) {
 		{mode: "onboarding", title: "Your organization"},
 		{mode: "organization", title: "Organization"},
 		{mode: "denied", title: "Access denied"},
+		{mode: "unavailable", title: "Organization"},
 		{mode: "support", title: "Support access"},
 		{mode: "unknown", title: "Organization"},
 	}
@@ -45,9 +46,22 @@ func TestHostedPagesExcludeInstanceSurfaces(t *testing.T) {
 			t.Parallel()
 			data := hostedTestData(tt.mode)
 			html := renderSSEFingerprintComponent(t, HostedPage(data))
-			for _, want := range []string{"<title>" + tt.title + " · Detent</title>", `name="viewport"`, `aria-label="Open navigation"`, `md:hidden`, `overflow-y-auto`, `min-h-11`, `name="referrer" content="no-referrer"`} {
+			for _, want := range []string{"<title>" + tt.title + " · Detent</title>", `name="viewport"`, `name="referrer" content="no-referrer"`} {
 				if !strings.Contains(html, want) {
 					t.Errorf("hosted page missing %q", want)
+				}
+			}
+			if tt.mode == "denied" || tt.mode == "unavailable" {
+				for _, want := range []string{`href="/static/css/entry.css"`, `class="detent-sign-in detent-entry"`, `class="entry-card"`} {
+					if !strings.Contains(html, want) {
+						t.Errorf("entry page missing %q", want)
+					}
+				}
+			} else {
+				for _, want := range []string{`aria-label="Open navigation"`, `md:hidden`, `overflow-y-auto`, `min-h-11`} {
+					if !strings.Contains(html, want) {
+						t.Errorf("hosted workspace missing %q", want)
+					}
 				}
 			}
 			for _, forbidden := range []string{`sse-connect`, `sse-swap`, `hx-get`, `<script`, `/events`, `/fleet`, `/api/v1/`, `/settings`, `/api-keys`, `/analytics`, `/reports`, `/library`, `chat-panel`, `detail-sheet`, `data-work-search`, `data-help`, `data-detent-dashboard-stream`, `data-hosted-impersonation`} {
@@ -231,15 +245,20 @@ func TestHostedSupportIdentityIndicator(t *testing.T) {
 		name        string
 		authorized  bool
 		impersonate bool
+		mode        string
 	}{
 		{name: "ordinary staff"},
 		{name: "authorized support", authorized: true},
 		{name: "active impersonation", authorized: true, impersonate: true},
+		{name: "denied during impersonation", authorized: true, impersonate: true, mode: "denied"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			data := hostedTestData("support")
+			if tt.mode != "" {
+				data.Mode = tt.mode
+			}
 			data.CanSupport = tt.authorized
 			if tt.impersonate {
 				data.SupportActor, data.SupportReason, data.SupportExpiry = "support@example.com", "Customer requested help", "2026-09-07T12:00:00Z"

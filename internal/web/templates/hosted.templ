@@ -1,6 +1,14 @@
 package templates
 
 templ HostedPage(data HostedPageData) {
+	if data.Mode == "denied" || data.Mode == "unavailable" {
+		@hostedEntryPage(data)
+	} else {
+		@hostedWorkspacePage(data)
+	}
+}
+
+templ hostedWorkspacePage(data HostedPageData) {
 	@AppShell(DashboardShellData{Hosted: &data}, nil) {
 		<main id="hosted-content" class="min-h-0 flex-1 overflow-y-auto p-4 md:p-8">
 			<div class="mx-auto w-full max-w-4xl space-y-6">
@@ -47,12 +55,6 @@ templ HostedPage(data HostedPageData) {
 						@hostedOrganization(data)
 					case "support":
 						@hostedSupport(data)
-					case "unavailable":
-						<section class="max-w-lg space-y-4 rounded-card border border-line bg-surface p-6">
-							<h2 class="text-lg font-semibold">Please try again shortly</h2>
-							<p class="text-sm text-sec">A temporary service problem prevented us from opening your organization.</p>
-							<a href={ templ.URL(data.RetryURL) } class="inline-flex min-h-11 items-center rounded-card border border-line px-4 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Try again</a>
-						</section>
 					default:
 						<section class="max-w-lg space-y-4 rounded-card border border-line bg-surface p-6">
 							<h2 class="text-lg font-semibold">This page is unavailable to your account</h2>

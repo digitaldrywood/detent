@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -41,6 +42,10 @@ func TestSharedOriginClientPreview(t *testing.T) {
 	if directory == "" {
 		t.Skip("set DETENT_SHARED_ORIGIN_CLIENT_PREVIEW to a private directory to serve the shared-origin client preview")
 	}
+	if os.Getenv("DETENT_ENTRY_FALLBACK_PREVIEW") == "1" {
+		serveEntryFallbackPreview(t, directory)
+		return
+	}
 	p := newSharedOriginPilotWith(t, 3, 3, detent.StaticFS(), previewBillingProvider{})
 	stop := make(chan struct{})
 	var once sync.Once
@@ -69,6 +74,41 @@ func TestSharedOriginClientPreview(t *testing.T) {
 	select {
 	case <-stop:
 	case <-timer.C:
+	case <-t.Context().Done():
+	}
+}
+
+func serveEntryFallbackPreview(t *testing.T, directory string) {
+	t.Helper()
+	f := newEntryFixture(t)
+	stop := make(chan struct{})
+	var once sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /__preview/outage", func(w http.ResponseWriter, _ *http.Request) {
+		f.provider.mu.Lock()
+		f.provider.keysDown = true
+		f.provider.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /__preview/stop", func(w http.ResponseWriter, _ *http.Request) {
+		once.Do(func() { close(stop) })
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.Handle("/", f.service.Handler())
+	server := httptest.NewUnstartedServer(mux)
+	f.service.config.PublicURL = "http://" + server.Listener.Addr().String()
+	server.Start()
+	defer server.Close()
+	raw, err := json.Marshal(map[string]string{"origin": server.URL, "stop": server.URL + "/__preview/stop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "shared-origin-client-preview.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("shared-origin client preview: %s", server.URL)
+	select {
+	case <-stop:
 	case <-t.Context().Done():
 	}
 }

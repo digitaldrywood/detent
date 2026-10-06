@@ -134,6 +134,7 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "Temporarily unavailable") {
 				t.Fatalf("browser outage = %d: %s", response.StatusCode, body)
 			}
+			assertEntryFallback(t, alice, body)
 			for _, denial := range []string{"Access unavailable", "unavailable to your account", "access may have changed", "Sign in again"} {
 				if strings.Contains(body, denial) {
 					t.Fatalf("browser outage claims access was lost: %s", body)

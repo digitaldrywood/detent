@@ -1,0 +1,77 @@
+package templates
+
+templ hostedEntryPage(data HostedPageData) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="application-name" content="Detent"/>
+			<meta name="referrer" content="no-referrer"/>
+			<title>{ hostedPageTitle(data) } · Detent</title>
+			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
+			<link rel="preload" href="/static/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin/>
+			<link rel="stylesheet" href="/static/css/entry.css"/>
+		</head>
+		<body class="detent-sign-in detent-entry">
+			<header>
+				<nav aria-label="Hosted workspace">
+					<a class="entry-logo" href={ hostedURL(data, "/organization") }><span aria-hidden="true">D</span> Detent</a>
+					if data.Email != "" {
+						<p class="entry-account">{ data.Email }</p>
+						<a class="entry-button" href={ hostedURL(data, "/organization") }>Organization</a>
+					} else {
+						<a class="entry-button" href={ hostedSignInURL(data) }>Sign in</a>
+					}
+					if data.CanSupport && data.SupportActor == "" {
+						<a class="entry-button" href="/support">Support access</a>
+					}
+				</nav>
+			</header>
+			<main id="hosted-content">
+				<section class="entry-card" aria-labelledby="entry-title">
+					if data.SupportActor != "" {
+						<section class="entry-support" role="status" aria-label="Temporary support session" data-hosted-impersonation>
+							<h2>Temporary support session</h2>
+							<p>{ data.SupportActor } is acting as { data.Email } in { data.OrganizationName }.</p>
+							<p>Reason: { data.SupportReason }</p>
+							<p>Expires: { data.SupportExpiry }</p>
+							<form method="post" action={ hostedURL(data, "/logout") }>
+								@hostedCSRF(data.CSRF)
+								<button type="submit" class="entry-button">Exit support session</button>
+							</form>
+						</section>
+					}
+					<h1 id="entry-title">{ hostedPageTitle(data) }</h1>
+					if data.Error != "" {
+						<p class="entry-message" role="alert">{ data.Error }</p>
+					}
+					if data.Notice != "" {
+						<p class="entry-message" role="status">{ data.Notice }</p>
+					}
+					if data.Mode == "unavailable" {
+						<h2>Please try again shortly</h2>
+						<p class="entry-message">A temporary service problem prevented us from opening your organization.</p>
+					} else {
+						<h2>This page is unavailable to your account</h2>
+						<p class="entry-message">Your organization or project access may have changed. Sign in again or return to your organization to check your current access.</p>
+					}
+					<div class="entry-actions">
+						if data.Mode == "unavailable" {
+							<a href={ templ.URL(data.RetryURL) } class="entry-button entry-primary">Try again</a>
+						} else {
+							<a href={ hostedURL(data, "/organization") } class="entry-button entry-primary">Return to organization</a>
+							<a href={ hostedSignInURL(data) } class="entry-button">Sign in again</a>
+						}
+						if data.Email != "" {
+							<form method="post" action={ hostedURL(data, "/logout") }>
+								@hostedCSRF(data.CSRF)
+								<button type="submit" class="entry-button">Sign out</button>
+							</form>
+						}
+					</div>
+				</section>
+			</main>
+		</body>
+	</html>
+}

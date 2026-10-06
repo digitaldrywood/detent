@@ -1174,3 +1174,23 @@ func (p *fakeProvider) HasUser(_ context.Context, email string) (bool, error) {
 	}
 	return false, nil
 }
+
+func assertEntryFallback(t *testing.T, browser *browser, body string) {
+	t.Helper()
+	for _, want := range []string{`class="detent-sign-in detent-entry"`, `href="/static/css/entry.css"`, `class="entry-card"`, `<form method="post" action="/logout">`, `name="csrf"`, `>Sign out</button>`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("entry fallback missing %s: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `<details`) || strings.Contains(body, `/static/app/`) {
+		t.Fatalf("entry fallback depends on workspace chrome or client assets: %s", body)
+	}
+	if csrfFrom(t, body) == "" {
+		t.Fatal("entry fallback has no logout CSRF token")
+	}
+	for _, asset := range []string{"/static/css/entry.css", "/static/css/sign-in.css", "/static/fonts/Geist-Variable.woff2"} {
+		if response, content := browser.get(asset); response.StatusCode != http.StatusOK || len(content) == 0 {
+			t.Fatalf("entry fallback asset %s = %d", asset, response.StatusCode)
+		}
+	}
+}
