@@ -279,6 +279,21 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 		}
 	}
 	return map[string]conversationFixtureCase{
+		"native-actors.json": {decode: func(t *testing.T, raw []byte) {
+			var want []tracker.Actor
+			if err := json.Unmarshal(raw, &want); err != nil {
+				t.Fatal(err)
+			}
+			got := []tracker.Actor{
+				(nativeScope{credential: apiCredential{ID: "actor-contract", Scope: apiScopeOperator}}).actor(),
+				(nativeScope{credential: apiCredential{ID: "actor-contract", Scope: apiScopeWorker}}).actor(),
+				*nativeIntegrationActor("github"),
+				healthIssueScope("", "").actor(),
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("server actors = %+v, client fixture = %+v", got, want)
+			}
+		}},
 		"command-answer.json":       {decode: command},
 		"command-cancel.json":       {decode: command},
 		"command-continue.json":     {decode: command},

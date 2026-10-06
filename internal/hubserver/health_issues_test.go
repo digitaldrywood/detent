@@ -98,7 +98,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 						} else if issue.Priority != nil || len(issue.Labels) != 0 {
 							t.Fatalf("intake priority/labels = %+v", issue)
 						}
-						if issue.State != wantState || issue.Actor != (tracker.Actor{Kind: "system", PrincipalID: "health_detector"}) {
+						if issue.State != wantState || issue.Actor != (tracker.Actor{Kind: "integration", PrincipalID: "health_detector"}) {
 							t.Fatalf("state/attribution = %+v", issue)
 						}
 						origin, ok := issueorigin.Parse(issue.Body)

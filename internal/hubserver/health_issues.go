@@ -13,7 +13,7 @@ import (
 )
 
 func healthIssueScope(organization tracker.OrganizationID, project tracker.ProjectID) nativeScope {
-	return nativeScope{organization: organization, project: project, sourceActor: &tracker.Actor{Kind: "system", PrincipalID: "health_detector"}}
+	return nativeScope{organization: organization, project: project, sourceActor: nativeIntegrationActor("health_detector")}
 }
 
 func healthIssueRequest(f healthFinding) (tracker.CreateIssue, error) {
