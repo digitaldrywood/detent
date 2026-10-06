@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -501,41 +502,136 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 
-	t.Parallel()
-	head := strings.Repeat("c", 40)
-	merge := strings.Repeat("e", 40)
-	target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash"}
-	dir := t.TempDir()
-	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.email", "t@example.test"}, {"config", "user.name", "t"}, {"config", "commit.gpgsign", "false"}, {"commit", "-q", "--allow-empty", "-m", "init"}} {
-		if out, err := gitCommand(dir, args...); err != nil {
-			t.Fatalf("git %v: %v %s", args, err, out)
-		}
-	}
-	info := workspace.Info{Path: dir, Branch: "detent/land"}
-	stub := landingStub{target: target, recordErr: errors.New("hub unavailable")}
-	backend := landingBackend{result: workspace.LandResult{MergeSHA: merge, BaseRef: "main", Method: "squash"}}
-	r := &Runner{}
-	_, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"}, workerGitHubPolicy{Token: "landing-test-token"}, nil)
-	if err == nil || !strings.Contains(err.Error(), "record landing") {
-		t.Fatalf("error = %v, want the report failure", err)
-	}
-	if len(stub.recorded) != landingReportTries {
-		t.Fatalf("report attempts = %d, want %d", len(stub.recorded), landingReportTries)
-	}
-	kept, err := os.ReadFile(filepath.Join(dir, ".git", "detent-landing.json"))
-	if err != nil {
-		t.Fatalf("the pushed landing was not kept: %v", err)
-	}
-	if !strings.Contains(string(kept), merge) || !strings.Contains(string(kept), head) {
-		t.Fatalf("kept landing = %s", kept)
-	}
-	// The next run reports it and forgets it.
-	stub.recordErr = nil
-	if _, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, &backend, info, workspace.Issue{Identifier: "DD-1"}, workerGitHubPolicy{Token: "landing-test-token"}, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, ".git", "detent-landing.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the reported landing was kept: %v", err)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, test := range []struct {
+		name          string
+		cleanupStatus int
+		reportFailure bool
+	}{
+		{name: "keeps an unreported landing", reportFailure: true},
+		{name: "reports a merged landing despite cleanup 502", cleanupStatus: http.StatusBadGateway},
+		{name: "reports the kept landing after cleanup 502 and a Hub outage", cleanupStatus: http.StatusBadGateway, reportFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "origin.git")
+			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
+			repository := "https://github.com/example/repo"
+			runRunnerGit(t, source, "config", "url.file://"+remote+".insteadOf", repository+".git")
+			runRunnerGit(t, source, "remote", "add", "origin", repository+".git")
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+			if err := os.WriteFile(filepath.Join(source, "feature.txt"), []byte("reviewed source\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runRunnerGit(t, source, "add", "feature.txt")
+			runRunnerGit(t, source, "commit", "-m", "reviewed source")
+			head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var info workspace.Info
+			var recordPath, merge string
+			var requests int
+			readKept := func() workspace.LandResult {
+				t.Helper()
+				raw, err := os.ReadFile(recordPath)
+				if err != nil {
+					t.Fatalf("merged landing was not kept: %v", err)
+				}
+				var kept struct {
+					HeadSHA string               `json:"head_sha"`
+					Result  workspace.LandResult `json:"result"`
+				}
+				if err := json.Unmarshal(raw, &kept); err != nil {
+					t.Fatal(err)
+				}
+				if kept.HeadSHA != head || kept.Result.MergeSHA != merge || kept.Result.BaseBefore != base || kept.Result.Gate.Command != "git status --porcelain" || kept.Result.Gate.TreeSHA == "" {
+					t.Fatalf("kept landing lost reviewed identity or evidence: %#v", kept)
+				}
+				return kept.Result
+			}
+			client, err := github.NewClient(github.ClientConfig{
+				TokenSource: github.StaticTokenSource(t.Name()), DisableConditionalRequests: true,
+				HTTPClient: workerGitHubHTTPClientFunc(func(req *http.Request) (*http.Response, error) {
+					requests++
+					status, body := http.StatusOK, `[]`
+					switch {
+					case req.Method == http.MethodGet && req.URL.Path == "/repos/example/repo/pulls":
+						if req.URL.Query().Get("state") == "open" {
+							readKept()
+							if test.cleanupStatus != 0 {
+								status, body = test.cleanupStatus, `{"message":"cleanup unavailable"}`
+							}
+						}
+					case req.Method == http.MethodPost && req.URL.Path == "/repos/example/repo/pulls":
+						body = `{"number":7,"state":"open"}`
+					case req.Method == http.MethodPut && req.URL.Path == "/repos/example/repo/pulls/7/merge":
+						var payload map[string]string
+						if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+							t.Fatal(err)
+						}
+						if payload["sha"] != head || payload["merge_method"] != "squash" {
+							t.Fatalf("merge request lost reviewed identity: %#v", payload)
+						}
+						merge = strings.TrimSpace(runRunnerGit(t, info.Path, "commit-tree", head+"^{tree}", "-p", base, "-m", "squash landing"))
+						runRunnerGit(t, info.Path, "push", "origin", merge+":refs/heads/main")
+						body = fmt.Sprintf(`{"merged":true,"sha":%q}`, merge)
+					default:
+						t.Fatalf("unexpected landing request: %s %s", req.Method, req.URL)
+					}
+					return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+				}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := workspace.Issue{Identifier: "DD-1", Landing: &workspace.LandOptions{HeadSHA: head, Repository: repository, GitHubClient: client}}
+			info, err = backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recordPath = strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "--git-path", "detent-landing.json"))
+			if !filepath.IsAbs(recordPath) {
+				recordPath = filepath.Join(info.Path, recordPath)
+			}
+			target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: repository, GitHubPullRequest: true}
+			stub := landingStub{target: target}
+			if test.reportFailure {
+				stub.recordErr = errors.New("hub unavailable")
+			}
+			var logs bytes.Buffer
+			r := &Runner{workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "git status --porcelain"}}}, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+			result, err := r.landNativeChange(t.Context(), RunRequest{}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
+			if test.cleanupStatus != 0 && (!strings.Contains(logs.String(), "worker_native_landing_warning") || !strings.Contains(logs.String(), "cleanup unavailable") || !strings.Contains(logs.String(), merge)) {
+				t.Fatalf("post-merge warning lost failure evidence: %s", logs.String())
+			}
+			if test.reportFailure {
+				if err == nil || !strings.Contains(err.Error(), "record landing") || len(stub.recorded) != landingReportTries {
+					t.Fatalf("Hub failure = %v, report attempts = %d", err, len(stub.recorded))
+				}
+				readKept()
+				stub.recordErr = nil
+				previousRequests := requests
+				result, err = r.landNativeChange(t.Context(), RunRequest{}, &stub, backend, info, issue, workerGitHubPolicy{}, nil)
+				if requests != previousRequests {
+					t.Fatalf("second landing called the forge: requests=%d want=%d", requests, previousRequests)
+				}
+			}
+			if err != nil || result.Output != RunOutputNativeLanded || result.FinalState != FinalStateCompleted || result.NativeLanding == nil || !result.NativeLanding.Landed || result.NativeLanding.RefusalKind != "" || result.NativeLanding.MergeSHA != merge || !result.ForgeWriteCompleted {
+				t.Fatalf("merged change was not reported landed: %#v, error=%v", result, err)
+			}
+			for _, recorded := range stub.recorded {
+				if !recorded.Landed || recorded.MergeSHA != merge || recorded.HeadSHA != head || recorded.RefusalKind != "" {
+					t.Fatalf("landing report lost the merge: %#v", recorded)
+				}
+			}
+			if _, err := os.Stat(recordPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("reported landing was kept: %v", err)
+			}
+		})
 	}
 }
 

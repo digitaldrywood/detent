@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -36,11 +37,13 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
 		name           string
-		cleanupFailure bool
+		cleanupFailure string
 		supersededHead string
 	}{
 		{name: "closes the superseded head"},
-		{name: "retries failed cleanup", cleanupFailure: true},
+		{name: "keeps a landing when listing superseded pulls fails", cleanupFailure: http.MethodGet},
+		{name: "keeps a landing when commenting on a superseded pull fails", cleanupFailure: http.MethodPost},
+		{name: "keeps a landing when closing a superseded pull fails", cleanupFailure: http.MethodPatch},
 		{name: "retains a force pushed superseded PR", supersededHead: "moved"},
 		{name: "retains a superseded PR without head evidence", supersededHead: "missing"},
 	} {
@@ -53,14 +56,20 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 			f.advanceMain(t, "feature.txt", "parallel conflict\n")
 			base := f.remoteMain(t)
 			pulls := make(map[int]githubLandingPull)
+			var landingInfo Info
+			var requests int
 			var comments []string
 			wantComments := 1
-			if cleanupFailure {
-				wantComments = 2
+			if cleanupFailure != "" {
+				wantComments = 0
+				if cleanupFailure != http.MethodGet {
+					wantComments = 1
+				}
 			}
 			client, err := github.NewClient(github.ClientConfig{
 				TokenSource: github.StaticTokenSource(t.Name()), DisableConditionalRequests: true,
 				HTTPClient: landingHTTPClient(func(req *http.Request) (*http.Response, error) {
+					requests++
 					status := http.StatusOK
 					var response any
 					var body map[string]string
@@ -78,6 +87,10 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 							}
 						}
 						if req.URL.Query().Get("state") == "open" {
+							kept, found := keptLanding(t.Context(), landingInfo.Path, pulls[18].Head.SHA, "refs/remotes/origin/main")
+							if !found || kept.MergeSHA != pulls[18].Head.SHA || kept.BaseBefore != base || kept.Gate.Command != "git status --porcelain" {
+								t.Fatalf("cleanup started without the kept landing: %#v, found=%t", kept, found)
+							}
 							if req.URL.Query().Get("base") != "main" {
 								t.Fatal("cleanup did not scope its base")
 							}
@@ -138,19 +151,23 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 						if body["state"] != "closed" || f.remoteMain(t) == base {
 							t.Fatalf("cleanup before verified merge: %v", body)
 						}
-						if cleanupFailure {
-							cleanupFailure = false
-							status, response = http.StatusInternalServerError, map[string]string{"message": "cleanup unavailable"}
-						} else {
-							pull := pulls[17]
-							pull.State = "closed"
-							pulls[17], response = pull, pull
-						}
+						pull := pulls[17]
+						pull.State = "closed"
+						pulls[17], response = pull, pull
 					case req.URL.Path == "/graphql":
 						pull := pulls[18]
 						response = map[string]any{"data": map[string]any{"repository": map[string]any{"nameWithOwner": "example/repo", "pullRequest": map[string]any{"number": 18, "merged": true, "headRefOid": pull.Head.SHA, "headRefName": pull.Head.Ref, "baseRefName": "main", "headRepository": map[string]string{"nameWithOwner": "example/repo"}, "mergeCommit": map[string]string{"oid": pull.Head.SHA}}}}}
 					default:
 						t.Fatalf("unexpected landing request %s %s", req.Method, req.URL)
+					}
+					if req.Method == cleanupFailure && (req.URL.Query().Get("state") == "open" || strings.HasSuffix(req.URL.Path, "/comments") || req.Method == http.MethodPatch) {
+						cleanupFailure = ""
+						status, response = http.StatusBadGateway, map[string]string{"message": "cleanup unavailable"}
+						if req.Method == http.MethodPatch {
+							pull := pulls[17]
+							pull.State = "open"
+							pulls[17] = pull
+						}
 					}
 					encoded, err := json.Marshal(response)
 					if err != nil {
@@ -176,6 +193,7 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 			}
 			tree := strings.TrimSpace(runGit(t, f.source, "rev-parse", f.head+"^{tree}"))
 			opts.HeadSHA = strings.TrimSpace(runGit(t, f.source, "commit-tree", tree, "-p", base, "-m", "Resolved rebased head"))
+			opts.ValidationCommand = "git status --porcelain"
 			wantState := "closed"
 			if test.supersededHead != "" {
 				wantState, wantComments = "open", 0
@@ -192,12 +210,19 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = f.backend.LandChangeViaGitHub(t.Context(), info, issue, opts)
-			if wantComments == 2 {
-				if !errors.Is(err, forgeavailability.ErrUnavailable) || errors.As(err, &refusal) || !pulls[18].Merged {
-					t.Fatalf("cleanup failure changed merged outcome: %v", err)
+			landingInfo = info
+			result, err := f.backend.LandChangeViaGitHub(t.Context(), info, issue, opts)
+			if test.cleanupFailure != "" {
+				wantState = "open"
+				if !errors.Is(err, forgeavailability.ErrUnavailable) || errors.As(err, &refusal) || !pulls[18].Merged || result.MergeSHA != opts.HeadSHA {
+					t.Fatalf("cleanup failure changed merged outcome: %#v, %v", result, err)
 				}
-				_, err = f.backend.LandChangeViaGitHub(t.Context(), info, issue, opts)
+				previousRequests := requests
+				kept, retryErr := f.backend.LandChangeViaGitHub(t.Context(), info, issue, opts)
+				if retryErr != nil || !reflect.DeepEqual(kept, result) || requests != previousRequests {
+					t.Fatalf("second landing did not reuse the kept result: %#v, error=%v, requests=%d want=%d", kept, retryErr, requests, previousRequests)
+				}
+				err = retryErr
 			}
 			if err != nil || !pulls[18].Merged || pulls[17].State != wantState || len(comments) != wantComments || wantComments > 0 && !strings.Contains(comments[0], repository+"/pull/18") {
 				t.Fatalf("replacement leaked conflicted pull: err=%v pulls=%v comments=%v", err, pulls, comments)
