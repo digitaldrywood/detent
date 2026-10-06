@@ -24,9 +24,9 @@ func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
 		{"workspace", fmt.Errorf("%w: /private/worktree token=secret-value", ErrWorkspacePreparation), "workspace_hook", "workspace preparation failed: [redacted] [redacted]"},
 		{"startup timeout", ErrMergeWorkerStartupTimeout, "backend_startup", "merge worker startup timed out"},
 		{"startup failure", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Kind: backendcapacity.StartupFailureKind}, errors.New("start backend failed")), "backend_startup", "start backend failed"},
-		{"protocol", &testProviderResponseError{operation: "turn/start"}, "protocol", "codex turn_start failed: rpc -32602"},
-		{"provider body omitted", signatureProviderError{}, "protocol", "codex turn_start failed: rpc -32602"},
-		{"initialize", &testProviderResponseError{operation: "initialize"}, "backend_startup", "codex initialize failed: rpc -32602"},
+		{"protocol", &testProviderResponseError{operation: "turn/start"}, "protocol", "provider request refused"},
+		{"provider body omitted", signatureProviderError{}, "protocol", "codex turn_start: count 2 failed [redacted]"},
+		{"initialize", &testProviderResponseError{operation: "initialize"}, "backend_startup", "provider request refused"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := nativeTerminalFailure(test.err, now, false)

@@ -399,7 +399,7 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 	}
 	result, err := (&committingAgent{staged: !plan}).RunTurn(ctx, req, update)
 	if a.failure == "provider" {
-		return result, errors.Join(err, &codex.ResponseError{Request: "turn/start", Code: -32602, Message: "private-prompt /private/source token=private-secret", Body: `{"error":{"code":-32602,"message":"private-prompt","data":{"code":"input_too_large","max_chars":1048576,"actual_chars":2927066,"prompt":"private-prompt","token":"private-secret","path":"/private/source","other":"private-rpc-data"}}}`})
+		return result, errors.Join(err, &codex.ResponseError{Request: "turn/start", Code: -32602, Message: "input_too_large", Body: `{"error":{"code":-32602,"message":"private-prompt","data":{"code":"input_too_large","max_chars":1048576,"actual_chars":2927066,"prompt":"private-prompt","token":"private-secret","path":"/private/source","other":"private-rpc-data"}}}`})
 	}
 	return result, err
 }

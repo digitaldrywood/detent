@@ -2,7 +2,6 @@ package tracker
 
 import (
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -54,9 +53,6 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	if f.ActualChars != nil && *f.ActualChars < 0 {
 		f.ActualChars = nil
 	}
-	if f.Provider == "codex" {
-		f.Error = codexPublicError(f.Operation, f.ProviderCode, f.RPCCode)
-	}
 	f.TurnStartRefused = f.TurnStartRefused && f.Provider == "codex" && f.Operation == "turn/start" && f.RPCCode != nil
 	f.Unavailable = []string{}
 	if f.Provider == "" {
@@ -78,19 +74,4 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 		f.Unavailable = append(f.Unavailable, "actual_chars")
 	}
 	return f
-}
-
-func codexPublicError(operation, providerCode string, rpcCode *int) string {
-	message := "codex"
-	if operation != "" {
-		message += " " + strings.ReplaceAll(operation, "/", "_")
-	}
-	message += " failed"
-	switch {
-	case providerCode != "":
-		message += ": " + providerCode
-	case rpcCode != nil:
-		message += ": rpc " + strconv.Itoa(*rpcCode)
-	}
-	return message
 }
