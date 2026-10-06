@@ -379,7 +379,7 @@ func (c *NativeConnector) SetIntakeIssueState(ctx context.Context, id, state str
 }
 
 func nativeIntakeIssue(issue connector.Issue) intake.Issue {
-	return intake.Issue{ID: issue.ID, Identifier: issue.Identifier, Number: issue.Number, URL: issue.URL, Body: issue.Description, Closed: issue.Closed, Reused: issue.PublicationReused}
+	return intake.Issue{State: issue.State, ID: issue.ID, Identifier: issue.Identifier, Number: issue.Number, URL: issue.URL, Body: issue.Description, Closed: issue.Closed, Reused: issue.PublicationReused}
 }
 
 // ChangeReviewed reports whether the given version is the change's current

@@ -17,13 +17,14 @@ type machineIssueTracker struct {
 	*memory.Connector
 	draft               intake.IssueDraft
 	reused              bool
+	state               string
 	createErr, stateErr error
 	states              int
 }
 
 func (s *machineIssueTracker) CreateIntakeIssue(_ context.Context, draft intake.IssueDraft) (intake.Issue, error) {
 	s.draft = draft
-	return intake.Issue{ID: "issue", Identifier: "example/repo#1", Reused: s.reused}, s.createErr
+	return intake.Issue{ID: "issue", Identifier: "example/repo#1", Reused: s.reused, State: s.state}, s.createErr
 }
 
 func (s *machineIssueTracker) SetIntakeIssueState(_ context.Context, _, state string) error {
@@ -38,12 +39,14 @@ func TestMachineIssueTool(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name, arguments                        string
+		state                                  string
 		reused, createFail, stateFail, success bool
 		states                                 int
 		cfg                                    Config
 		labels                                 []string
 		priority                               *int
 	}{
+		{name: "host routes Todo", state: "Todo", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk"}`, success: true},
 		{name: "create", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk"}`, success: true, states: 1},
 		{name: "prose priority stays unset", arguments: `{"title":"Disk","body":"Priority: High.","fingerprint":"disk"}`, success: true, states: 1},
 		{name: "urgent", arguments: `{"title":"Disk","body":"Evidence","fingerprint":"disk","priority":1}`, success: true, states: 1, priority: new(1)},
@@ -80,7 +83,7 @@ func TestMachineIssueTool(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			tracker := &machineIssueTracker{Connector: memory.New(memory.Config{}), reused: tt.reused}
+			tracker := &machineIssueTracker{Connector: memory.New(memory.Config{}), reused: tt.reused, state: tt.state}
 			if tt.createFail {
 				tracker.createErr = errors.New("create failed")
 			}

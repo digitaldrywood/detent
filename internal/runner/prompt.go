@@ -720,7 +720,7 @@ func appendFollowupsBlock(prompt string, cfg config.Followups) string {
 	}
 
 	const block = "## Out-of-scope discoveries\n\n" +
-		"Use only file_machine_issue in project Backlog; missing tool: report here; missing state: file stateless and report. Search/reuse open fingerprints/stable problem keys (no timestamps/attempt IDs). Priority (integer): 1=Urgent, 2=High, 3=Normal, 4=Low; omitted: unset. Native reuse raises only weaker/unset priority; preserve stronger priority, holds, lanes and admission. Include fenced `detent-agent`: schema: 1, `effort` per project rubric."
+		"Use the host-owned file_machine_issue intake. Search open work first with bounded work_list reads using query or fingerprint and open: true. Include exact test failure output with its package summary or the migration collision diagnostic: the host derives defect identity and routes reproducible Detent release blockers to Todo at least High. Other follow-ups remain in project Backlog; missing tool: report here; missing state: file stateless and report. Reuse stable problem keys (no timestamps/attempt IDs). Priority (integer): 1=Urgent, 2=High, 3=Normal, 4=Low; omitted: unset. Native reuse raises only weaker/unset priority; preserve stronger priority, holds, lanes and admission. Include fenced `detent-agent`: schema: 1, `effort` per project rubric."
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block
 }

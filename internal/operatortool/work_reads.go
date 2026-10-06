@@ -63,6 +63,8 @@ type WorkReadRequest struct {
 	ProjectID       string   `json:"project_id"`
 	Reference       string   `json:"reference,omitempty"`
 	Query           string   `json:"query,omitempty"`
+	Fingerprint     string   `json:"fingerprint,omitempty"`
+	Open            *bool    `json:"open,omitempty"`
 	State           string   `json:"state,omitempty"`
 	Label           string   `json:"label,omitempty"`
 	States          []string `json:"states,omitempty"`
@@ -106,7 +108,7 @@ func EncodeResult(value any) (Result, error) { return encodeResult(value) }
 func WorkReadCatalog() []Definition {
 	var definitions []Definition
 	for _, spec := range []struct{ name, description, fields string }{
-		{WorkList, "List or search work items in one authorized project. Native projects support archived selection, OR selections within each filter, and workspace/work projections. GitHub snapshots refuse unsupported native selectors.", "query state label states labels assignee assignees priority priorities archived include cursor offset limit"},
+		{WorkList, "List or search work items in one authorized project. Native projects support archived selection, OR selections within each filter, and workspace/work projections. GitHub snapshots refuse unsupported native selectors.", "query fingerprint open state label states labels assignee assignees priority priorities archived include cursor offset limit"},
 		{WorkConfig, "Read configured project lanes, priorities and available labels.", ""},
 		{WorkItem, "Read a work item's detail and source freshness.", "reference"},
 		{WorkComments, "Read a bounded page of work-item comments with edit revisions.", "reference cursor offset limit"},
@@ -128,6 +130,8 @@ func WorkReadCatalog() []Definition {
 		required := []string{"project_id"}
 		for field := range strings.FieldsSeq(spec.fields) {
 			switch field {
+			case "open":
+				properties[field] = map[string]any{"type": "boolean"}
 			case "limit":
 				properties[field] = map[string]any{"type": "integer", "minimum": 1, "maximum": MaxItemLimit}
 			case "offset":
@@ -226,7 +230,7 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 	}
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
 	request.Reference = strings.TrimSpace(request.Reference)
-	if request.ProjectID == "" || len(request.ProjectID) > 256 || len(request.Reference) > 256 || len(request.Query) > 256 || len(request.State) > 256 || len(request.Label) > 256 || len(request.CommentID) > 256 || len(request.Cursor) > 4096 || request.Offset < 0 || request.Offset > 1000000 || request.Limit < 0 || request.Limit > MaxItemLimit {
+	if request.ProjectID == "" || len(request.ProjectID) > 256 || len(request.Reference) > 256 || len(request.Query) > 256 || len(request.Fingerprint) > 256 || len(request.State) > 256 || len(request.Label) > 256 || len(request.CommentID) > 256 || len(request.Cursor) > 4096 || request.Offset < 0 || request.Offset > 1000000 || request.Limit < 0 || request.Limit > MaxItemLimit {
 		return request, ErrInvalidArguments
 	}
 	for _, field := range schema.Required {
@@ -290,6 +294,12 @@ func (r WorkReadRequest) NativeWorkQuery() url.Values {
 	}
 	for _, value := range r.Priorities {
 		params.Add("priority", strconv.Itoa(value))
+	}
+	if r.Open != nil {
+		params.Set("open", strconv.FormatBool(*r.Open))
+	}
+	if r.Fingerprint != "" {
+		params.Set("fingerprint", r.Fingerprint)
 	}
 	if r.Query != "" {
 		params.Set("q", r.Query)

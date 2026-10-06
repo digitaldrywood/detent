@@ -62,11 +62,16 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 		}
 	}
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
-		if origin, machine := issueorigin.Parse(request.Body); machine && origin.Kind == "worker" && request.GitHubIssueURL == "" && request.State == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != "" {
-			if _, err := validateRunnerLeaseTx(ctx, tx, scope, request.LeaseID, request.FencingToken, now); err != nil {
-				return nil, err
+		origin, machine := issueorigin.Parse(request.Body)
+		workerReport := machine && origin.Kind == "worker" && request.State == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != ""
+		scheduledReport := machine && origin.Kind == "doctor" && origin.Instance == "github-actions" && scope.credential.Scope != apiScopeWorker
+		if request.GitHubIssueURL == "" && (workerReport || scheduledReport) {
+			if origin.Kind == "worker" {
+				if _, err := validateRunnerLeaseTx(ctx, tx, scope, request.LeaseID, request.FencingToken, now); err != nil {
+					return nil, err
+				}
 			}
-			return createNativeMachineIntakeTx(ctx, tx, scope, request, origin.Fingerprint, now)
+			return createNativeMachineIntakeTx(ctx, tx, scope, request, now)
 		}
 		if sourceRepository != nil {
 			owner, name, node := sourceRepository.Owner, sourceRepository.Name, sourceRepository.NodeID
@@ -87,12 +92,35 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	return result, err
 }
 
-func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, fingerprint string, now time.Time) (tracker.NativeIssue, error) {
-	if _, err := validateNativeIssueDraft(ctx, tx, scope, request); err != nil {
+func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
+	project, err := validateNativeIssueDraft(ctx, tx, scope, request)
+	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.body FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 AND ws.terminal = 0 ORDER BY i.number`, scope.organization, scope.project)
+	origin, _ := issueorigin.Parse(request.Body)
+	canonical := issueorigin.DefectFingerprint(request.Body)
+	if canonical != "" {
+		if origin.Kind == "worker" {
+			origin.Fingerprint = canonical
+			request.Body = issueorigin.Stamp(request.Body, origin)
+		}
+		if string(scope.project) == issueorigin.DetentCloudProjectID {
+			backlog, todo := false, false
+			for _, state := range project.States {
+				backlog = backlog || state.Name == "Backlog" && !state.Dispatchable && !state.Terminal && !state.OperatorOnly
+				todo = todo || state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly
+			}
+			if !backlog || !todo {
+				return tracker.NativeIssue{}, nativeInvalid("Defect reporting requires nondispatchable Backlog and dispatchable Todo")
+			}
+			request.State = "Todo"
+			if request.Priority == nil || *request.Priority > 1 {
+				request.Priority = new(1)
+			}
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.body || char(10) || COALESCE((SELECT group_concat(c.body, char(10)) FROM native_comments c WHERE c.work_item_id = i.native_id), '') FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id
+WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 ORDER BY ws.terminal, i.number DESC`, scope.organization, scope.project)
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
@@ -103,7 +131,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 AND ws.termi
 		if err := rows.Scan(&id, &body); err != nil {
 			return tracker.NativeIssue{}, errors.Join(err, rows.Close())
 		}
-		if origin, machine := issueorigin.Parse(body); machine && origin.Fingerprint == fingerprint {
+		if issueorigin.SameDefect(body, request.Body) {
 			existing = id
 			break
 		}
@@ -112,13 +140,17 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 AND ws.termi
 		return tracker.NativeIssue{}, err
 	}
 	if existing != "" {
-		occurrence := issueorigin.Occurrence(request.Body)
-		if len(occurrence) > 64<<10 {
-			return tracker.NativeIssue{}, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
-		}
 		issue, _, err := readNativeIssue(ctx, tx, scope, existing)
 		if err != nil {
 			return tracker.NativeIssue{}, err
+		}
+		if issue.Terminal {
+			issue.PublicationReused = true
+			return issue, nil
+		}
+		occurrence := issueorigin.Occurrence(request.Body)
+		if len(occurrence) > 64<<10 {
+			return tracker.NativeIssue{}, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
 		}
 		if request.Priority != nil && (issue.Priority == nil || *request.Priority < *issue.Priority) {
 			if err := requireNativeEdit(issue, issue.Revision); err != nil {

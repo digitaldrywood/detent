@@ -28,7 +28,7 @@ func (o *Orchestrator) attachMachineIssueTool(request *RunRequest) {
 	source := strconv.FormatInt(request.WorkAttemptID, 10)
 	request.AgentTools = append(request.AgentTools, runner.AgentTool{
 		Name:        "file_machine_issue",
-		Description: "File a machine-discovered follow-up in this repository's Backlog, or comment on an open issue with the same fingerprint. Use a stable problem key shared across occurrences, excluding attempt IDs, wording variations and timestamps. Inspect existing issues for their fingerprint first. Optional priority uses creation ranks 1=Urgent, 2=High, 3=Normal, 4=Low; omit it to leave priority unset. Optional labels supply metadata only; configured lane labels are omitted.",
+		Description: "Report a machine-discovered follow-up through the host intake owner, or add an occurrence to matching open work. Detent reproducible tests, source diagnostics and migration failures enter Todo at least High; other follow-ups enter Backlog. Include the exact failing diagnostic and package summary so the host can derive the defect identity. Use a stable problem key shared across occurrences, excluding attempt IDs, wording variations and timestamps. Inspect existing issues for their fingerprint first. Optional priority uses creation ranks 1=Urgent, 2=High, 3=Normal, 4=Low; omit it to leave priority unset. Optional labels supply metadata only; configured lane labels are omitted.",
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["title","body","fingerprint"],"properties":{"title":{"type":"string","minLength":1},"body":{"type":"string","minLength":1},"fingerprint":{"type":"string","minLength":1},"priority":{"type":"integer","minimum":1,"maximum":4},"labels":{"type":"array","items":{"type":"string"}}}}`),
 	})
 	request.AgentToolHandler = func(ctx context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
@@ -88,7 +88,7 @@ func (o *Orchestrator) attachMachineIssueTool(request *RunRequest) {
 		if err != nil {
 			return runner.AgentToolResult{Content: err.Error()}, nil
 		}
-		if !issue.Reused {
+		if !issue.Reused && issue.State == "" {
 			if err := backend.SetIntakeIssueState(ctx, issue.ID, "Backlog"); err != nil {
 				return runner.AgentToolResult{Content: err.Error()}, nil
 			}
