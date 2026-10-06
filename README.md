@@ -174,9 +174,12 @@ rigor, isolation, and parallelism across many issues at once. The intelligence
 stays in your spec; the runtime supplies the discipline.
 
 **See it for real:** Detent uses the same host-and-project configuration model
-to dispatch the agents that build Detent itself. The in-repository
+to dispatch the agents that build Detent itself. The root `detent.yaml` and
+`WORKFLOW.md` define Detent's own project configuration and agent instructions.
+For reusable starting points, use the paired presets in
+[`docs/templates`](docs/templates) or the in-repository
 [worked multi-project configuration](docs/examples/multi-project/README.md)
-shows that setup with complete, annotated, and sanitized files you can copy.
+with complete, annotated, and sanitized files you can copy.
 Use
 [Bootstrap On A New Machine](docs/bootstrap.md#bootstrap-on-a-new-machine-humans-and-ai-agents)
 to go from a bare machine to a running board. To onboard a repository, verify an

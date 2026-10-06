@@ -113,7 +113,8 @@ gh api repos/<owner>/<repo>/labels --paginate --jq '.[].name'
 
 3. Create `detent.yaml` and `WORKFLOW.md` in the repository you want Detent to
    work on. Start from a paired `docs/templates/detent.*.yaml` and
-   `docs/templates/WORKFLOW.*.md` preset.
+   `docs/templates/WORKFLOW.*.md` preset. Detent's root files configure Detent
+   itself; use the presets or [`docs/examples`](examples) for other projects.
 
 Existing combined `WORKFLOW.md` frontmatter remains readable during the
 compatibility window. Run `detent doctor` to identify legacy, split, mixed, or
