@@ -26,7 +26,7 @@ func TestSandboxUnavailable(t *testing.T) {
 		t.Fatal("failed enforcement must not advertise sandbox")
 	}
 	t.Logf("actual host sandbox unavailable: %v", err)
-	service, err := New(t.TempDir(), "/bin/sh", workspacesession.IsolationSandbox, nil)
+	service, err := New(ctx, t.TempDir(), "/bin/sh", workspacesession.IsolationSandbox, nil)
 	if err != nil {
 		if !errors.Is(err, ErrSandboxIsolation) {
 			t.Fatal(err)
@@ -63,7 +63,7 @@ func TestSandboxTerminalContainment(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
 		t.Fatal(err)
 	}
-	service, err := New(root, "/bin/sh", workspacesession.IsolationSandbox, nil)
+	service, err := New(t.Context(), root, "/bin/sh", workspacesession.IsolationSandbox, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

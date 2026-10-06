@@ -81,14 +81,14 @@ type Service struct {
 // runner cannot provide it.
 var ErrContainerIsolation = errors.New("workspaceterminal: container isolation is not implemented by this runner")
 
-func New(worktree string, shellName string, isolation string, logger *slog.Logger) (*Service, error) {
+func New(ctx context.Context, worktree string, shellName string, isolation string, logger *slog.Logger) (*Service, error) {
 	if isolation == workspacesession.IsolationSandbox && AvailableIsolation() != workspacesession.IsolationSandbox {
 		return nil, ErrSandboxIsolation
 	}
-	return newService(worktree, shellName, isolation, logger)
+	return newService(ctx, worktree, shellName, isolation, logger)
 }
 
-func newService(worktree string, shellName string, isolation string, logger *slog.Logger) (*Service, error) {
+func newService(ctx context.Context, worktree string, shellName string, isolation string, logger *slog.Logger) (*Service, error) {
 	if isolation == "" {
 		isolation = workspacesession.IsolationUser
 	}
@@ -118,7 +118,7 @@ func newService(worktree string, shellName string, isolation string, logger *slo
 		if err := validateSandboxRoot(canonical); err != nil {
 			return nil, err
 		}
-		if err := sandboxHostProbe(); err != nil {
+		if err := sandboxHostProbe(ctx); err != nil {
 			return nil, err
 		}
 	}

@@ -84,7 +84,7 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 
 func newTestService(t *testing.T, worktree string) *Service {
 	t.Helper()
-	service, err := New(worktree, "/bin/sh", workspacesession.IsolationUser,
+	service, err := New(t.Context(), worktree, "/bin/sh", workspacesession.IsolationUser,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -125,7 +125,7 @@ func TestServiceNew(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			service, err := New(tt.worktree, "/bin/sh", tt.isolation, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			service, err := New(t.Context(), tt.worktree, "/bin/sh", tt.isolation, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			switch {
 			case tt.wantOK && err != nil:
 				t.Fatalf("New() error = %v, want nil", err)

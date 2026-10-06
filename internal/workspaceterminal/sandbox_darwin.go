@@ -15,12 +15,12 @@ import (
 
 const sandboxSupported = true
 
-func sandboxHostProbe() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func sandboxHostProbe(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)(deny file-write*)", "/usr/bin/true")
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%w: host denied sandbox launch: %v", ErrSandboxIsolation, err)
+		return fmt.Errorf("%w: host denied sandbox launch: %w", ErrSandboxIsolation, err)
 	}
 	return nil
 }
@@ -40,7 +40,7 @@ func validateSandboxRoot(root string) error {
 	}
 	count, err := unix.Getfsstat(nil, unix.MNT_NOWAIT)
 	if err != nil {
-		return fmt.Errorf("%w: inspect mounts: %v", ErrSandboxIsolation, err)
+		return fmt.Errorf("%w: inspect mounts: %w", ErrSandboxIsolation, err)
 	}
 	mounts := make([]unix.Statfs_t, count+1)
 	count, err = unix.Getfsstat(mounts, unix.MNT_NOWAIT)
@@ -51,7 +51,7 @@ func validateSandboxRoot(root string) error {
 		path := unix.ByteSliceToString(mount.Mntonname[:])
 		within, err := mountWithinRoot(root, path)
 		if err != nil {
-			return fmt.Errorf("%w: resolve mount: %v", ErrSandboxIsolation, err)
+			return fmt.Errorf("%w: resolve mount: %w", ErrSandboxIsolation, err)
 		}
 		if within {
 			return fmt.Errorf("%w: worktree contains a mount", ErrSandboxIsolation)

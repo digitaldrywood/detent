@@ -61,7 +61,7 @@ func ProbeSandbox(ctx context.Context) (result error) {
 	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
 		return err
 	}
-	service, err := newService(root, "/bin/sh", workspacesession.IsolationSandbox, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	service, err := newService(ctx, root, "/bin/sh", workspacesession.IsolationSandbox, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		return err
 	}

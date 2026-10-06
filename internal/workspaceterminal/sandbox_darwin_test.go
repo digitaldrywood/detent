@@ -1,6 +1,7 @@
 package workspaceterminal
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -20,6 +21,14 @@ func TestSandboxRootAuthority(t *testing.T) {
 	if err := validateSandboxRoot(root); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("canceled sandbox construction", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		service, err := newService(ctx, root, "/bin/sh", workspacesession.IsolationSandbox, nil)
+		if service != nil || !errors.Is(err, ErrSandboxIsolation) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled construction = %v, %v; want sandbox refusal wrapping cancellation", service, err)
+		}
+	})
 	if err := validateSandboxRoot("/"); !errors.Is(err, ErrSandboxIsolation) {
 		t.Fatalf("filesystem root accepted: %v", err)
 	}
@@ -104,7 +113,7 @@ func TestSandboxChildCannotDetach(t *testing.T) {
 	if err := errors.Join(copyErr, closeErr); err != nil {
 		t.Fatal(err)
 	}
-	service, err := New(root, "/bin/sh", workspacesession.IsolationSandbox, nil)
+	service, err := New(t.Context(), root, "/bin/sh", workspacesession.IsolationSandbox, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +141,8 @@ func TestSandboxChildHelper(t *testing.T) {
 	if err := unix.Setpgid(0, 0); !errors.Is(err, unix.EPERM) {
 		t.Fatalf("setpgid = %v, want sandbox refusal", err)
 	}
-	if _, _, err := unix.Syscall6(unix.SYS_POSIX_SPAWN, 0, 0, 0, 0, 0, 0); !errors.Is(err, unix.EPERM) {
+	const syscallPosixSpawn = 244
+	if _, _, err := unix.Syscall6(syscallPosixSpawn, 0, 0, 0, 0, 0, 0); !errors.Is(err, unix.EPERM) {
 		t.Fatalf("posix_spawn = %v, want sandbox refusal", err)
 	}
 	if _, err := unix.SysctlRaw("kern.procargs2", os.Getppid()); err == nil {
