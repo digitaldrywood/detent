@@ -396,6 +396,17 @@ export function ProjectSettingsView({
             )
           }
         />
+        {integration.profile === "native" && repository !== "" && transportAvailable && integration.github_app_install_url && integration.github_app_installed !== undefined ? (
+          <SettingsRow
+            title="GitHub App"
+            status={<span className="[overflow-wrap:anywhere]">Detent Cloud is {integration.github_app_installed ? "installed" : "not installed"} on {repository}</span>}
+            control={
+              <a className="text-sm text-primary underline underline-offset-2" href={integration.github_app_install_url} target="_blank" rel="noopener noreferrer">
+                {integration.github_app_installed ? "Manage installation" : "Install the Detent Cloud GitHub App"}
+              </a>
+            }
+          />
+        ) : null}
         <SettingsRow
           title="Repository and pull request integration"
           help={transportAvailable ? {
