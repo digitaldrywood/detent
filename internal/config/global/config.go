@@ -85,8 +85,8 @@ type Config struct {
 	LogLevel              string           `yaml:"log_level,omitempty"`
 	LogMaxSizeBytes       *int             `yaml:"log_max_size_bytes,omitempty"`
 	LogMaxBackups         *int             `yaml:"log_max_backups,omitempty"`
-	GitHubToken           string           `yaml:"github_token,omitempty"`
-	APIToken              string           `yaml:"api_token,omitempty"`
+	GitHubToken           string           `yaml:"github_token,omitempty" json:"-"`
+	APIToken              string           `yaml:"api_token,omitempty" json:"-"`
 	TrustLoopbackPeerRead bool             `yaml:"trust_loopback_peer_read,omitempty"`
 	DashboardAccess       DashboardAccess  `yaml:"dashboard_access,omitempty"`
 	Client                HubClient        `yaml:"client,omitempty"`
@@ -104,7 +104,7 @@ type Config struct {
 
 type DashboardAccess struct {
 	Mode       string `yaml:"mode,omitempty"`
-	Token      string `yaml:"token,omitempty"`
+	Token      string `yaml:"token,omitempty" json:"-"`
 	AllowWrite bool   `yaml:"allow_write,omitempty"`
 }
 

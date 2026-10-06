@@ -1,6 +1,7 @@
 package global
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -666,9 +667,10 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		LogLevel:              "debug",
 		LogMaxSizeBytes:       &logMaxSizeBytes,
 		LogMaxBackups:         &logMaxBackups,
-		GitHubToken:           "gh",
+		GitHubToken:           "github_test_token",
 		APIToken:              "detent_test_api_token",
 		TrustLoopbackPeerRead: true,
+		DashboardAccess:       DashboardAccess{Mode: DashboardAccessModePrivateToken, Token: strings.Repeat("d", 42) + "A", AllowWrite: true},
 		Port:                  &port,
 		Global: Settings{
 			LocalIntakeEnabled:  new(false),
@@ -716,6 +718,26 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		},
 	}
 
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range []string{cfg.GitHubToken, cfg.APIToken, cfg.DashboardAccess.Token} {
+		if strings.Contains(string(raw), credential) {
+			t.Fatal("JSON configuration contains a credential")
+		}
+	}
+	var public Config
+	if err := json.Unmarshal(raw, &public); err != nil {
+		t.Fatal(err)
+	}
+	if public.GitHubToken != "" || public.APIToken != "" || public.DashboardAccess.Token != "" {
+		t.Fatal("JSON configuration includes credential fields")
+	}
+	if public.LogLevel != cfg.LogLevel || public.Global.MaxConcurrentAgents != cfg.Global.MaxConcurrentAgents || !reflect.DeepEqual(public.Projects, cfg.Projects) || public.DashboardAccess.Mode != cfg.DashboardAccess.Mode || public.DashboardAccess.AllowWrite != cfg.DashboardAccess.AllowWrite {
+		t.Fatal("JSON configuration changed non-credential settings")
+	}
+
 	if err := Write(configPath, cfg, WithHome(paths.home)); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -745,6 +767,9 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 	}
 	if got.APIToken != cfg.APIToken {
 		t.Fatalf("APIToken = %q, want %q", got.APIToken, cfg.APIToken)
+	}
+	if got.DashboardAccess != cfg.DashboardAccess {
+		t.Fatal("DashboardAccess did not round-trip through YAML")
 	}
 	if got.TrustLoopbackPeerRead != cfg.TrustLoopbackPeerRead {
 		t.Fatalf("TrustLoopbackPeerRead = %t, want %t", got.TrustLoopbackPeerRead, cfg.TrustLoopbackPeerRead)
