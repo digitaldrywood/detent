@@ -37,7 +37,7 @@ func secretAAD(organization, project, kind string) []byte {
 }
 
 func readSecretRows(ctx context.Context, db nativeQueryer) ([]projectSecretRow, error) {
-	rows, err := db.QueryContext(ctx, `SELECT organization_id, project_id, kind, ciphertext, nonce, wrapped_data_key, master_key_version FROM project_secrets ORDER BY organization_id, project_id, kind`)
+	rows, err := db.QueryContext(ctx, `SELECT organization_id, project_id, kind, ciphertext, nonce, wrapped_data_key, master_key_version FROM project_secrets UNION ALL SELECT organization_id, '', kind, ciphertext, nonce, wrapped_data_key, master_key_version FROM organization_secrets ORDER BY organization_id, project_id, kind`)
 	if err != nil {
 		return nil, err
 	}
@@ -127,6 +127,10 @@ func secretActor(scope nativeScope) string {
 }
 
 func secretAudit(ctx context.Context, exec hostedExecer, organization, project, actor, kind, event string, version int, at string) error {
+	if project == "" {
+		_, err := exec.ExecContext(ctx, `INSERT INTO organization_secret_audit(organization_id,actor,kind,key_version,event,recorded_at) VALUES(?,?,?,?,?,?)`, organization, actor, kind, version, event, at)
+		return err
+	}
 	_, err := exec.ExecContext(ctx, `INSERT INTO project_secret_audit(organization_id, project_id, actor, kind, key_version, event, recorded_at) VALUES(?,?,?,?,?,?,?)`, organization, project, actor, kind, version, event, at)
 	return err
 }
@@ -270,7 +274,12 @@ func RotateProjectSecrets(ctx context.Context, cfg Config, actor string) (count 
 		if err != nil {
 			return 0, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE project_secrets SET wrapped_data_key=?, master_key_version=? WHERE organization_id=? AND project_id=? AND kind=?`, wrapped.WrappedKey, wrapped.Version, row.organization, row.project, row.kind); err != nil {
+		if row.project == "" {
+			_, err = tx.ExecContext(ctx, `UPDATE organization_secrets SET wrapped_data_key=?,master_key_version=? WHERE organization_id=? AND kind=?`, wrapped.WrappedKey, wrapped.Version, row.organization, row.kind)
+		} else {
+			_, err = tx.ExecContext(ctx, `UPDATE project_secrets SET wrapped_data_key=?, master_key_version=? WHERE organization_id=? AND project_id=? AND kind=?`, wrapped.WrappedKey, wrapped.Version, row.organization, row.project, row.kind)
+		}
+		if err != nil {
 			return 0, err
 		}
 		if err := secretAudit(ctx, tx, row.organization, row.project, actor, row.kind, "rotate", wrapped.Version, formatHubTime(cfg.now())); err != nil {

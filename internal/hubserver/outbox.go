@@ -860,7 +860,17 @@ func (w *outboxWorker) run(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		for {
-			processed, err := w.service.ProcessOutbox(ctx)
+			processed, err := w.service.processSlackDelivery(ctx)
+			if err != nil && ctx.Err() == nil {
+				w.service.config.Logger.WarnContext(ctx, "Slack delivery storage failed", "error", err)
+			}
+			githubProcessed := false
+			if w.service.config.OutboxBackend != nil {
+				githubProcessed, err = w.service.ProcessOutbox(ctx)
+			} else {
+				err = nil
+			}
+			processed = processed || githubProcessed
 			if err != nil && !errors.Is(err, context.Canceled) {
 				w.service.config.Logger.WarnContext(ctx, "github outbox delivery failed", "error", err)
 			}

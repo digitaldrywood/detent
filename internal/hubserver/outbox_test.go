@@ -445,6 +445,7 @@ func (b *blockingOutboxBackend) VerifyAndExecute(ctx context.Context, item Outbo
 func openManualOutboxService(t *testing.T, cfg Config, backend OutboxBackend) *Service {
 	t.Helper()
 	service := openTestService(t, cfg)
+	service.outbox.stop()
 	service.config.OutboxBackend = backend
 	return service
 }

@@ -10,7 +10,7 @@ import { attemptIdentityLabel, attemptStage, diagnosticsVerdict, durationLabel, 
 import { useWorkHttp } from "../lib/useWork.ts";
 
 export function IssueDetailTabs({ native, diagnostics, children }: { readonly native: boolean; readonly diagnostics: React.ReactNode; readonly children: React.ReactNode }) {
-  const [value, setValue] = React.useState("timeline");
+  const [value, setValue] = React.useState(() => window.location.hash === "#diagnostics" ? "diagnostics" : "timeline");
   if (!native) return <>{children}</>;
   return <Tabs.Root value={value} onValueChange={setValue} className="min-w-0 space-y-5">
     <Tabs.List aria-label="Issue detail tabs" className="flex w-fit gap-0.5 rounded-lg bg-input/40 p-0.5">

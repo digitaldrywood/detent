@@ -47,6 +47,7 @@ import {
 import { CreditSettings } from "./CreditSettings.tsx";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
 import { ProjectRankSettings } from "./ProjectRankSettings.tsx";
+import { SlackSettings } from "./SlackSettings.tsx";
 import { MCPSettings } from "./MCPSettings.tsx";
 import { signInPath } from "../../runtime/basePath.ts";
 
@@ -250,6 +251,7 @@ export function IntegrationsSettings({
   if (projects.length === 0) {
     return (
       <SettingsPageContainer>
+        <SlackSettings />
         <SettingsSection
           id="settings-integrations"
           title="Integrations"
@@ -265,37 +267,40 @@ export function IntegrationsSettings({
   }
 
   const picker = (
-    <SettingsSection
-      id="settings-integrations"
-      title="Integrations"
-      icon={<BlocksIcon className="size-3.5" />}
-    >
-      <SettingsRow
-        title="Project"
-        description="Integration, intake, projection and policy are configured per project."
-        control={
-          <Select
-            value={selected}
-            onValueChange={(value) =>
-              onNavigate?.(`/settings/integrations?project=${String(value)}`)
-            }
-          >
-            <SelectTrigger aria-label="Project" size="sm" className="min-w-44">
-              <SelectValue>
-                {projects.find((candidate) => candidate.id === selected)?.name ?? selected}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup>
-              {projects.map((candidate) => (
-                <SelectItem key={candidate.id} value={candidate.id}>
-                  {candidate.name}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
-        }
-      />
-    </SettingsSection>
+    <>
+      <SlackSettings />
+      <SettingsSection
+        id="settings-integrations"
+        title="Integrations"
+        icon={<BlocksIcon className="size-3.5" />}
+      >
+        <SettingsRow
+          title="Project"
+          description="Integration, intake, projection and policy are configured per project."
+          control={
+            <Select
+              value={selected}
+              onValueChange={(value) =>
+                onNavigate?.(`/settings/integrations?project=${String(value)}`)
+              }
+            >
+              <SelectTrigger aria-label="Project" size="sm" className="min-w-44">
+                <SelectValue>
+                  {projects.find((candidate) => candidate.id === selected)?.name ?? selected}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup>
+                {projects.map((candidate) => (
+                  <SelectItem key={candidate.id} value={candidate.id}>
+                    {candidate.name}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+      </SettingsSection>
+    </>
   );
 
   // One scroll container, not two: the picker goes inside the project screen's

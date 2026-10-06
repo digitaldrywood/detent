@@ -1,6 +1,6 @@
 const at = (time) => `2026-10-01T${time}Z`;
 
-async function installDiagnostics(page, fixture, state, unavailable = false) {
+async function installDiagnostics(page, fixture, state, unavailable = false, hash = "") {
   const terminal = state === "Done";
   const action = "Reduce the instruction payload before resuming this issue.";
   const reason = terminal ? "The reviewed change landed" : "Instruction payload exceeds the provider limit";
@@ -33,7 +33,7 @@ async function installDiagnostics(page, fixture, state, unavailable = false) {
     native_runtime: { capacity: [{ runner_id: "runner-studio", observed_at: at("10:08:12"), available: 2, health: "healthy", exclusions: [] }], unavailable: ["historical_scheduler_decision"] },
   } }));
   await page.goto(fixture.accounts.owner);
-  await page.goto(new URL(`/work/i/${fixture.work_item}`, fixture.url).toString());
+  await page.goto(new URL(`/work/i/${fixture.work_item}${hash}`, fixture.url).toString());
 }
 
 module.exports = { installDiagnostics };
