@@ -81,6 +81,7 @@ func TestWorkerTranscriptDirectories(t *testing.T) {
 }
 
 func TestPruneCodexTranscripts(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name      string
@@ -98,6 +99,7 @@ func TestPruneCodexTranscripts(t *testing.T) {
 		{name: "expired child", age: 31 * 24 * time.Hour, parent: "parent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			for _, profile := range []string{workerCodexProfileDir, launchdCodexProfileDir} {
 				for _, dir := range []string{"sessions", "archived_sessions"} {
 					home := t.TempDir()

@@ -339,6 +339,9 @@ func boolCount(value bool) int {
 
 func startHeartbeatWorkerProcess(t *testing.T, exitNormally ...bool) procgroup.Identity {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("worker subprocess lifecycle integration")
+	}
 	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^TestHeartbeatWorkerProcessHelper$")
 	cmd.Env = append(os.Environ(), "DETENT_HEARTBEAT_PROCESS_HELPER=1")
 	procgroup.Configure(t.Context(), cmd)

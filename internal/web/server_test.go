@@ -14130,6 +14130,9 @@ func openEventStream(t *testing.T, server *web.Server) io.ReadCloser {
 
 func startWebServer(t *testing.T, server *web.Server) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("network listener integration")
+	}
 
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
