@@ -365,12 +365,18 @@ func (s *Service) denied(c echo.Context, status int, message string) error {
 	return s.render(c, status, data)
 }
 
-func (s *Service) browserUnavailable(c echo.Context, retry string) error {
+func (s *Service) browserUnavailable(c echo.Context, status int) error {
+	request := c.Request()
+	organization := c.Param("organization")
+	retry := "/organizations/" + organization + "/work"
+	if (request.Method == http.MethodGet || request.Method == http.MethodHead) && validReturnPath(request.URL.Path, organization) {
+		retry = request.URL.RequestURI()
+	}
 	data := templates.HostedPageData{Mode: "unavailable", Title: "Temporarily unavailable", Error: "We could not open this organization right now. Please try again shortly.", RetryURL: retry}
 	if session, err := s.storedSession(c); err == nil {
 		data.Email, data.CSRF = session.Email, cloudassert.CSRFToken(session.CSRFSecret, "")
 	}
-	return s.render(c, http.StatusServiceUnavailable, data)
+	return s.render(c, status, data)
 }
 
 func (s *Service) loginDenied(c echo.Context, status int, message string, denial auth.HostedDenial) error {

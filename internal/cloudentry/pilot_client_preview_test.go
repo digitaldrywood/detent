@@ -81,9 +81,15 @@ func TestSharedOriginClientPreview(t *testing.T) {
 func serveEntryFallbackPreview(t *testing.T, directory string) {
 	t.Helper()
 	f := newEntryFixture(t)
+	transport, stopTenant := entryTenantTransport(t, f.tenants[testSocketEndpoint("alpha.sock")])
+	f.service.config.transport = func(Organization) (http.RoundTripper, error) { return transport, nil }
 	stop := make(chan struct{})
 	var once sync.Once
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /__preview/stop-tenant", func(w http.ResponseWriter, _ *http.Request) {
+		stopTenant()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /__preview/outage", func(w http.ResponseWriter, _ *http.Request) {
 		f.provider.mu.Lock()
 		f.provider.keysDown = true

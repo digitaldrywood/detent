@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -751,6 +752,82 @@ func TestSharedEntryBoundaries(t *testing.T) {
 	if metadata.StatusCode != http.StatusOK {
 		t.Fatalf("machine metadata status = %d", metadata.StatusCode)
 	}
+	transport, stop := entryTenantTransport(t, f.tenants[testSocketEndpoint("alpha.sock")])
+	for _, failure := range []struct {
+		name  string
+		setup bool
+	}{
+		{name: "transport setup failure", setup: true},
+		{name: "stopped tenant"},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			f.service.config.transport = func(Organization) (http.RoundTripper, error) {
+				if failure.setup {
+					return nil, errors.New("tenant transport unavailable")
+				}
+				return transport, nil
+			}
+			if !failure.setup {
+				if response, _ := alice.get("/organizations/org_alpha/organization"); response.StatusCode != http.StatusOK {
+					t.Fatalf("tenant before stop = %d", response.StatusCode)
+				}
+				stop()
+			}
+			for _, request := range []struct {
+				name, method, path, accept string
+				bearer, html               bool
+			}{
+				{name: "browser root", method: http.MethodGet, path: "/organizations/org_alpha?tab=work&view=board", accept: "text/html", html: true},
+				{name: "browser accept list", method: http.MethodGet, path: "/organizations/org_alpha/organization", accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", html: true},
+				{name: "browser head", method: http.MethodHead, path: "/organizations/org_alpha/organization", accept: "text/html", html: true},
+				{name: "JSON request", method: http.MethodGet, path: "/organizations/org_alpha", accept: "application/json"},
+				{name: "JSON accept list", method: http.MethodGet, path: "/organizations/org_alpha", accept: "application/json, text/html"},
+				{name: "no accept", method: http.MethodGet, path: "/organizations/org_alpha"},
+				{name: "HTML excluded", method: http.MethodGet, path: "/organizations/org_alpha", accept: "text/html;q=0"},
+				{name: "API path", method: http.MethodGet, path: "/organizations/org_alpha/api/cloud/metadata", accept: "text/html"},
+				{name: "machine caller", method: http.MethodGet, path: "/organizations/org_alpha", accept: "text/html", bearer: true},
+				{name: "mutation", method: http.MethodPost, path: "/organizations/org_alpha/projects", accept: "text/html"},
+			} {
+				t.Run(request.name, func(t *testing.T) {
+					headers := map[string]string{"Accept": request.accept}
+					if request.bearer {
+						headers["Authorization"] = "Bearer " + testAdminKey
+					}
+					response := alice.do(request.method, request.path, nil, headers)
+					if response.StatusCode != http.StatusBadGateway {
+						t.Fatalf("tenant failure = %d: %s", response.StatusCode, response.Body)
+					}
+					if request.html {
+						assertEntryFallback(t, alice, response.Body)
+						if !strings.HasPrefix(response.Header.Get("Content-Type"), "text/html") || !strings.Contains(response.Body, `href="`+strings.ReplaceAll(request.path, "&", "&amp;")+`" class="entry-button entry-primary">Try again`) {
+							t.Fatalf("browser failure lost HTML or retry path: %s", response.Body)
+						}
+					} else {
+						want := `{"code":"tenant_unavailable","message":"The organization is temporarily unavailable"}`
+						if failure.setup {
+							want += "\n"
+						}
+						if response.Body != want || !strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
+							t.Fatalf("tenant JSON changed: %q, want %q", response.Body, want)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func entryTenantTransport(t *testing.T, handler http.Handler) (http.RoundTripper, func()) {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	address := server.Listener.Addr().String()
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, network, address)
+	}}
+	t.Cleanup(transport.CloseIdleConnections)
+	t.Cleanup(server.Close)
+	return transport, server.Close
 }
 
 func TestSharedEntryLoginTransactions(t *testing.T) {

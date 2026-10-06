@@ -9,7 +9,7 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { await entry?.stop(); });
 
-for (const mode of ["denied", "unavailable"]) {
+for (const mode of ["denied", "stopped", "unavailable"]) {
   test(`${mode} uses the standalone sign-in surface on desktop and mobile`, async ({ page }) => {
     const origin = entry.fixture.origin;
     const start = await page.request.get(`${origin}/auth/oidc/start?organization=org_alpha`, { maxRedirects: 0 });
@@ -17,12 +17,18 @@ for (const mode of ["denied", "unavailable"]) {
     const state = new URL(start.headers().location).searchParams.get("state");
     const query = new URLSearchParams({ state, code: "user_alice:porg_alpha" });
     await page.goto(`${origin}/auth/oidc/callback?${query}`, { waitUntil: "domcontentloaded" });
+    if (mode === "stopped") {
+      expect((await page.request.post(`${origin}/__preview/stop-tenant`)).status()).toBe(204);
+      const json = await page.request.get(`${origin}/organizations/org_alpha`, { headers: { Accept: "application/json" } });
+      expect(json.status()).toBe(502);
+      expect(await json.text()).toBe('{"code":"tenant_unavailable","message":"The organization is temporarily unavailable"}');
+    }
     if (mode === "unavailable") {
       expect((await page.request.post(`${origin}/__preview/outage`)).status()).toBe(204);
     }
-    const target = mode === "denied" ? "/platform" : "/organizations/org_alpha/organization?tab=work&view=board";
+    const target = mode === "denied" ? "/platform" : mode === "stopped" ? "/organizations/org_alpha?tab=work&view=board" : "/organizations/org_alpha/organization?tab=work&view=board";
     const response = await page.goto(`${origin}${target}`, { waitUntil: "networkidle" });
-    expect(response.status()).toBe(mode === "denied" ? 403 : 503);
+    expect(response.status()).toBe(mode === "denied" ? 403 : mode === "stopped" ? 502 : 503);
     const card = page.getByRole("region", { name: mode === "denied" ? "Access unavailable" : "Temporarily unavailable" });
     await expect(card).toBeVisible();
     await expect(page.locator("script")).toHaveCount(0);
@@ -49,7 +55,7 @@ for (const mode of ["denied", "unavailable"]) {
       await expect(card).toBeInViewport();
       await expect(card.getByRole("button", { name: "Sign out" })).toBeInViewport();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-      await expect(page).toHaveScreenshot(`entry-${mode}-${size}.png`);
+      await expect(page).toHaveScreenshot(`entry-${mode === "denied" ? "denied" : "unavailable"}-${size}.png`);
     }
     await page.evaluate(() => document.documentElement.classList.add("dark"));
     expect(await page.locator("body").evaluate((body) => getComputedStyle(body).backgroundColor)).toBe("rgb(11, 13, 16)");
