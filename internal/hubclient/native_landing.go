@@ -35,8 +35,8 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 			}
 		}
 	}
-	if detail.Change.Landed != nil {
-		return target, fmt.Errorf("%w: the Change Request already landed as %s", runner.ErrLandingNotReviewed, detail.Change.Landed.MergeSHA)
+	if landed := detail.Change.CurrentLanding(); landed != nil {
+		return target, fmt.Errorf("%w: the Change Request already landed as %s", runner.ErrLandingNotReviewed, landed.MergeSHA)
 	}
 	if target.HeadSHA == "" {
 		return target, fmt.Errorf("%w: no version is published", runner.ErrLandingNotReviewed)

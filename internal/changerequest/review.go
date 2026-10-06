@@ -113,7 +113,7 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 		summary.Messages = append(summary.Messages, "No immutable version has been published.")
 		return summary
 	}
-	if landed := detail.Change.Landed; landed != nil {
+	if landed := detail.Change.CurrentLanding(); landed != nil {
 		summary.NativeReview, summary.Checks, summary.Status = "approved", "not_required", "landed"
 		if !current.ReviewPolicy.RequireReview {
 			summary.NativeReview = "not_required"

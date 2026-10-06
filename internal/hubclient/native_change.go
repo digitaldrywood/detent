@@ -90,7 +90,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 			change.VersionError = "the final attempt diff does not identify the current Change Request head"
 			if version.PolicyID != e.data.PolicyID || detail.Summary.Status == "stale_policy" {
 				change.VersionCode = "policy_mismatch"
-			} else if detail.Summary.Status == "reviewed" && detail.Change.Landed == nil &&
+			} else if detail.Summary.Status == "reviewed" && detail.Change.CurrentLanding() == nil &&
 				diff.BaseSHA == diff.HeadSHA && len(diff.Files) == 0 && e.integrationSource != nil &&
 				e.preparedDisposition != nil && e.preparedDisposition.Status == "complete" && !e.preparedDisposition.Blockers && !e.preparedDisposition.HumanAction {
 				result, err := e.integrationSource(ctx, version, diff.BaseSHA)
