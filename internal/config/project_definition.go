@@ -11,8 +11,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/policy"
 	"gopkg.in/yaml.v3"
+
+	"github.com/digitaldrywood/detent/internal/policy"
 )
 
 const ProjectDefinitionSchema = 1
