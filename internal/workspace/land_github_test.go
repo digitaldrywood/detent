@@ -213,36 +213,39 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
-		name           string
-		method         string
-		pullState      string
-		reworked       bool
-		failureMethod  string
-		status         int
-		message        string
-		failureBody    string
-		emptyBody      bool
-		rate           bool
-		retryAfter     string
-		wantRefusal    string
-		moved          bool
-		external       bool
-		isolated       bool
-		pullError      string
-		sourceConflict bool
-		advanceOnMerge bool
-		projection     string
-		wantDeferred   bool
-		wantRefresh    bool
-		refreshQuota   bool
-		refreshStatus  int
-		wantOutage     bool
-		gitReadFailure string
-		gitReadClass   string
-		sourceIssues   bool
-		existingBody   string
-		wantPatch      bool
-		gateFailure    bool
+		name             string
+		method           string
+		pullState        string
+		reworked         bool
+		failureMethod    string
+		status           int
+		message          string
+		failureBody      string
+		emptyBody        bool
+		rate             bool
+		retryAfter       string
+		wantRefusal      string
+		moved            bool
+		external         bool
+		isolated         bool
+		pullError        string
+		sourceConflict   bool
+		advanceOnMerge   bool
+		projection       string
+		wantDeferred     bool
+		wantRetry        bool
+		retrySuccess     bool
+		retryGateFailure bool
+		retryHeadMoved   bool
+		refreshQuota     bool
+		refreshStatus    int
+		wantOutage       bool
+		gitReadFailure   string
+		gitReadClass     string
+		sourceIssues     bool
+		existingBody     string
+		wantPatch        bool
+		gateFailure      bool
 	}{
 		{name: "creates the exact source closing payload", method: "squash", sourceIssues: true},
 		{name: "reuse preserves human delivery attribution", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses example/repo#44", wantPatch: true},
@@ -293,7 +296,13 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "base advancing at refusal is inspected afresh", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, advanceOnMerge: true, wantRefusal: LandRefusalConflict},
 		{name: "earlier head projection cannot prove a conflict", method: "squash", reworked: true, pullState: "stale", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "head", wantDeferred: true},
 		{name: "stale base projection uses current conflicting base", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "base", wantRefusal: LandRefusalConflict},
-		{name: "stale base projection with current clean base refreshes", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", wantDeferred: true, wantRefresh: true},
+		{name: "clean conflict retry preserves merge delivery", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retrySuccess: true, wantRetry: true},
+		{name: "clean conflict retry preserves linear rebase delivery", method: "rebase", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retrySuccess: true, wantRetry: true},
+		{name: "conflict rebases cleanly and lands once", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retrySuccess: true, wantRetry: true},
+		{name: "isolated external conflict rebases cleanly", method: "squash", external: true, isolated: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retrySuccess: true, wantRetry: true},
+		{name: "retry refuses a branch moved after source verification", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retryHeadMoved: true},
+		{name: "rebased landing reruns the gate before retry", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retryGateFailure: true},
+		{name: "stale base projection with current clean base refreshes", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", wantDeferred: true, wantRetry: true},
 		{name: "moved published head cannot prove reviewed conflict", method: "squash", reworked: true, pullState: "stale", moved: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, wantDeferred: true},
 		{name: "different PR branch cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "branch", wantDeferred: true},
 		{name: "missing base evidence cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "missing", wantDeferred: true},
@@ -352,6 +361,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				runGit(t, fixture.source, "push", "origin", previous+":refs/heads/"+fixture.info.Branch)
 			}
 			var methods []string
+			mergeCalls := 0
 			createdPull := false
 			reset := time.Now().Add(time.Hour).Truncate(time.Second)
 			newClient := func(healthy bool) *github.Client {
@@ -372,7 +382,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 							if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 								t.Fatal(err)
 							}
-							if req.Method == http.MethodPut && (body["sha"] != fixture.head || body["merge_method"] != test.method) {
+							if req.Method == http.MethodPut {
+								mergeCalls++
+							}
+							if req.Method == http.MethodPut && (mergeCalls == 1 && body["sha"] != fixture.head || body["merge_method"] != test.method) {
 								t.Fatalf("merge body = %#v", body)
 							}
 						}
@@ -398,7 +411,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 							pull = fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}},"base":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}}}`, pullHead, headRef, headRepo, base, baseRef, baseRepo)
 						}
 						pull = strings.Replace(pull, `"number":7,`, fmt.Sprintf(`"number":7,"body":%q,`, test.existingBody), 1)
-						if !healthy && req.Method == test.failureMethod {
+						if !healthy && req.Method == test.failureMethod && (!test.retrySuccess || mergeCalls == 1) {
 							status = test.status
 							if test.advanceOnMerge {
 								fixture.advanceMain(t, "feature.txt", "base conflict\n")
@@ -505,8 +518,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 									status = http.StatusConflict
 									response = `{"message":"Head branch was modified. Review and try the merge again."}`
 								} else {
-									runGit(t, fixture.remote, "update-ref", "refs/heads/main", fixture.head)
-									response = fmt.Sprintf(`{"merged":true,"sha":"%s"}`, fixture.head)
+									runGit(t, fixture.remote, "update-ref", "refs/heads/main", body["sha"])
+									response = fmt.Sprintf(`{"merged":true,"sha":"%s"}`, body["sha"])
 								}
 							}
 						}
@@ -520,6 +533,12 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			}
 			client := newClient(false)
 			opts := LandOptions{HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client, ValidationCommand: "test -f feature.txt"}
+			if test.retryHeadMoved {
+				opts.ValidationCommand = "test -f feature.txt && if test -f parallel.txt; then git push --force origin " + shellQuote(originalBase+":refs/heads/"+fixture.info.Branch) + "; fi"
+			}
+			if test.retryGateFailure {
+				opts.ValidationCommand = "test -f feature.txt && test ! -f parallel.txt"
+			}
 			if test.gateFailure {
 				opts.ValidationCommand = "git cat-file -e short-test-failure-sentinel"
 			}
@@ -544,6 +563,33 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				}
 			}
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), landingInfo, landingIssue, opts)
+			if test.wantRetry || test.retryGateFailure || test.retryHeadMoved {
+				wantCalls := 2
+				if test.retryGateFailure || test.retryHeadMoved {
+					wantCalls = 1
+				}
+				if mergeCalls != wantCalls || !result.Rebased {
+					t.Fatalf("retry calls=%d result=%#v err=%v", mergeCalls, result, err)
+				}
+				if got := strings.TrimSpace(runGit(t, landingInfo.Path, "rev-parse", "HEAD")); got != fixture.head {
+					t.Fatalf("retry moved reviewed workspace: %s", got)
+				}
+			}
+			if test.retryHeadMoved {
+				var refusal *LandRefusal
+				published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || published != originalBase || fixture.remoteMain(t) != base {
+					t.Fatalf("retry overwrote a moved published head: result=%#v err=%v published=%s", result, err, published)
+				}
+				return
+			}
+			if test.retryGateFailure {
+				var validation *ValidationError
+				if !errors.As(err, &validation) || fixture.remoteMain(t) != base {
+					t.Fatalf("retry gate failure = %#v, %v", result, err)
+				}
+				return
+			}
 			if test.gateFailure {
 				var validation *ValidationError
 				if !errors.As(err, &validation) || !strings.Contains(validation.Output, "short-test-failure-sentinel") || len(methods) != 0 || fixture.remoteMain(t) != base || result.MergeSHA != "" {
@@ -580,10 +626,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if test.wantDeferred {
 				var status *github.StatusError
 				var refusal *LandRefusal
-				if errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.message) || !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || (refusal.BaseSHA != "") != test.wantRefresh || test.wantRefresh && refusal.BaseSHA != base || result.MergeSHA != "" || fixture.remoteMain(t) != base {
+				if errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.message) || !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || refusal.BaseSHA != "" || result.MergeSHA != "" || fixture.remoteMain(t) != base {
 					t.Fatalf("unproven conflict = %#v, %v; base = %s", result, err, fixture.remoteMain(t))
 				}
-				if strings.Join(methods, ",") != "GET,PUT,GET" && strings.Join(methods, ",") != "GET,POST,PUT,GET" {
+				if !test.wantRetry && strings.Join(methods, ",") != "GET,PUT,GET" && strings.Join(methods, ",") != "GET,POST,PUT,GET" {
 					t.Fatalf("conflict refresh sequence = %v", methods)
 				}
 				return
@@ -592,6 +638,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				var refusal *LandRefusal
 				if !errors.As(err, &refusal) || refusal.Kind != test.wantRefusal || errors.Is(err, forgeavailability.ErrUnavailable) || errors.Is(err, github.ErrRateLimited) || fixture.remoteMain(t) != base || result.MergeSHA != "" {
 					t.Fatalf("merge refusal = %#v, %v; base = %s", result, err, fixture.remoteMain(t))
+				}
+				if test.wantRefusal == LandRefusalConflict && !strings.Contains(refusal.Reason, "feature.txt") {
+					t.Fatalf("conflict lost file evidence: %v", refusal)
 				}
 				if test.wantRefusal == LandRefusalBaseMoved {
 					var status *github.StatusError
@@ -616,7 +665,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				}
 				return
 			}
-			if test.failureMethod != "" {
+			if test.failureMethod != "" && !test.retrySuccess {
 				var refusal *LandRefusal
 				if test.rate {
 					var status *github.StatusError
@@ -649,7 +698,22 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.MergeSHA != fixture.head || result.BaseRef != "main" || result.BaseBefore != base || result.Method != test.method || result.AttemptBranchPushed != !test.external || fixture.remoteMain(t) != fixture.head {
+			wantHead := fixture.head
+			if test.retrySuccess {
+				wantHead = strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
+				if wantHead == fixture.head {
+					t.Fatal("retry did not combine reviewed source with the current base")
+				}
+				wantTree := strings.TrimSpace(runGit(t, fixture.source, "merge-tree", "--write-tree", base, fixture.head))
+				if gotTree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", wantHead+"^{tree}")); gotTree != wantTree {
+					t.Fatalf("retry changed reviewed source delta: tree=%s want=%s", gotTree, wantTree)
+				}
+				if test.method == "rebase" && strings.TrimSpace(runGit(t, fixture.source, "rev-list", "--min-parents=2", base+".."+wantHead)) != "" {
+					t.Fatal("rebase delivery acquired a merge commit")
+				}
+				runGit(t, fixture.source, "merge-base", "--is-ancestor", base, wantHead)
+			}
+			if result.MergeSHA != wantHead || result.BaseRef != "main" || result.BaseBefore != base || result.Method != test.method || result.AttemptBranchPushed != !test.external || fixture.remoteMain(t) != wantHead {
 				t.Fatalf("landing = %#v", result)
 			}
 			wantCreate := !test.external && test.pullState != "open" && test.pullState != "stale" && test.pullState != "merged" && (!test.rate || test.failureMethod != "PUT")
@@ -661,7 +725,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if strings.Contains(calls, "POST") != wantCreate || strings.Contains(calls, "PUT") != wantMerge {
 				t.Fatalf("operations = %v", methods)
 			}
-			if published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch)); published != fixture.head {
+			if published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch)); published != wantHead {
 				t.Fatalf("published = %s", published)
 			}
 		})

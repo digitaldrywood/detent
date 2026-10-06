@@ -496,6 +496,7 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 			opts := test.arrange(t, f)
 			before := f.remoteMain(t)
 			var err error
+			var result LandResult
 			if test.integration {
 				const repository = "https://github.com/example/integration"
 				runGit(t, f.source, "remote", "set-url", "origin", repository)
@@ -511,7 +512,7 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 					return
 				}
 			} else {
-				_, err = f.backend.LandChange(context.Background(), f.info, f.issue, opts)
+				result, err = f.backend.LandChange(context.Background(), f.info, f.issue, opts)
 			}
 			if test.gateFailure {
 				var validation *ValidationError
@@ -523,6 +524,9 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 			var refusal *LandRefusal
 			if !errors.As(err, &refusal) || refusal.Kind != test.wantKind {
 				t.Fatalf("LandChange() error = %v, want a %s refusal", err, test.wantKind)
+			}
+			if test.wantKind == LandRefusalConflict && (!result.Rebased || !strings.Contains(refusal.Reason, "feature.txt")) {
+				t.Fatalf("conflict retry lost marker or files: result=%#v refusal=%v", result, refusal)
 			}
 			if test.wantKind == LandRefusalProtected && !strings.Contains(refusal.Reason, "enable GitHub pull request mode") {
 				t.Fatalf("protected refusal reason = %q", refusal.Reason)

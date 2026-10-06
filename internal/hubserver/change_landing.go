@@ -241,7 +241,7 @@ func (s *Service) landChange(c echo.Context) error {
 		if detail.Summary.Status != "reviewed" {
 			return nil, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: 409}
 		}
-		change.Landed = &tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.actor(), LandedAt: now}
+		change.Landed = &tracker.ChangeLanding{VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: request.MergeSHA, BaseRef: request.BaseRef, Method: request.Method, Actor: scope.actor(), LandedAt: now, Rebased: request.Rebased}
 		change.UpdatedAt = now
 		change.Revision++
 		raw, err := marshalNative(change)

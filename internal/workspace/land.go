@@ -57,6 +57,7 @@ type LandOptions struct {
 }
 
 type LandResult struct {
+	Rebased             bool `json:"rebased,omitempty"`
 	MergeSHA            string
 	BaseRef             string
 	BaseBefore          string
@@ -300,18 +301,35 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	defer l.removeLandingWorktree(context.WithoutCancel(ctx), normalized.Path, staging)
 
 	mergeSHA, err := combine(ctx, staging, method, head, targetHead, opts.Message)
+	rebased := false
+	var refusal *LandRefusal
+	if errors.As(err, &refusal) && refusal.Kind == LandRefusalConflict {
+		if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, "+refs/heads/"+target+":"+targetRef); err != nil {
+			return LandResult{}, fmt.Errorf("refresh conflicted landing base: %w", err)
+		}
+		currentBase, refreshErr := runGitAt(ctx, normalized.Path, "rev-parse", targetRef)
+		if refreshErr != nil {
+			return LandResult{}, refreshErr
+		}
+		targetHead = strings.TrimSpace(currentBase)
+		if _, err := runGitAt(ctx, staging, "reset", "--hard", targetHead); err != nil {
+			return LandResult{}, err
+		}
+		rebased = true
+		mergeSHA, err = combine(ctx, staging, method, head, targetHead, opts.Message)
+	}
 	if err != nil {
-		return LandResult{}, err
+		return LandResult{Rebased: rebased}, err
 	}
 	validationInfo := normalized
 	validationInfo.Path = staging
 	if err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, mergeSHA); err != nil {
-		return LandResult{}, err
+		return LandResult{Rebased: rebased}, err
 	}
-	result := LandResult{MergeSHA: mergeSHA, BaseRef: target, BaseBefore: targetHead, Method: method}
+	result := LandResult{MergeSHA: mergeSHA, BaseRef: target, BaseBefore: targetHead, Method: method, Rebased: rebased}
 	pushArgs := []string{"push", "--force-with-lease=refs/heads/" + target + ":" + targetHead, remote, mergeSHA + ":refs/heads/" + target}
 	if _, err := runGitAt(ctx, staging, pushArgs...); err != nil {
-		return LandResult{}, classifyLandingPush(err, target)
+		return LandResult{Rebased: rebased}, classifyLandingPush(err, target)
 	}
 	if opts.PushAttemptBranch && strings.TrimSpace(normalized.Branch) != "" {
 		if _, err := runGitAt(ctx, normalized.Path, "push", remote, head+":refs/heads/"+normalized.Branch); err == nil {
