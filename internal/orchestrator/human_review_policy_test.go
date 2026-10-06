@@ -17,10 +17,10 @@ func TestHumanReviewDisabledRouting(t *testing.T) {
 		gate   string
 		want   string
 	}{
-		{name: "default completion", want: "Human Review"},
+		{name: "default completion", want: "Blocked"},
 		{name: "legacy opt out label", labels: []string{"requires-human-review"}, want: "Human Review"},
 		{name: "configured opt out label", labels: []string{"custom-review"}, want: "Human Review"},
-		{name: "human review gate disabled", gate: gate.KindHumanReview, want: "Human Review"},
+		{name: "human review gate disabled", gate: gate.KindHumanReview, want: "Blocked"},
 		{name: "human review enabled", human: true, gate: gate.KindHumanReview, want: "Human Review"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -48,6 +48,9 @@ func TestHumanReviewDisabledDraftMerge(t *testing.T) {
 		cfg := Config{AutoPromote: AutoPromoteConfig{HumanReview: &human}}
 		got := draftMergingPullRequestDecision(issue, cfg)
 		want := "Human Review"
+		if !human {
+			want = "Blocked"
+		}
 		if got.targetState != want || got.reason != mergeRevocationDraftPullRequest {
 			t.Fatalf("human=%t: decision = %#v, want %s/draft_pull_request", human, got, want)
 		}

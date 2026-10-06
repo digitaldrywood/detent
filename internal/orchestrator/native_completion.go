@@ -70,6 +70,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 				return handoff(fmt.Errorf("read native workflow states: %w", err))
 			}
 			review := cfg.reviewTargetState()
+			if autoPromoteOptoutLabel(issue, cfg) {
+				review = cfg.SourceState
+			}
 			target, allowed := connector.LandingRefusalLane(states, issue.State, review, false)
 			if !allowed {
 				return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", issue.State, review))

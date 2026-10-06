@@ -389,13 +389,17 @@ func completedActiveReviewTargetState(
 	if !completedActiveFinalStateReviewEligible(finalState, reviewState) {
 		return ""
 	}
+	targetState := cfg.reviewTargetState()
+	if autoPromoteOptoutLabel(issue, cfg) {
+		targetState = reviewState
+	}
 	if !operationalCompletionAccepted && gateRequiresPullRequest(cfg.Gate) && len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
-		return cfg.reviewTargetState()
+		return targetState
 	}
 	if !completedActiveShouldEnterReview(issue, cfg, operationalCompletionAccepted) {
 		return ""
 	}
-	return cfg.reviewTargetState()
+	return targetState
 }
 
 func completedActiveShouldEnterReview(issue connector.Issue, cfg AutoPromoteConfig, operationalCompletionAccepted bool) bool {

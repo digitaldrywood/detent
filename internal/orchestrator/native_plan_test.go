@@ -33,7 +33,7 @@ func TestNativePlanWorkflowHandoff(t *testing.T) {
 		{name: "automated approval without Plan Review lane", output: approved, want: []string{"In Progress"}},
 		{name: "P1 requests another planner", output: "## Detent Plan Review\n\n- state: P1\n\nMissing tests.", want: []string{"Rework"}},
 		{name: "missing review remains under review", output: "Plan only.", humanReview: true, want: []string{"In Progress", "Human Review"}},
-		{name: "fenced approval example cannot approve", output: "```markdown\n## Detent Plan Review\n- state: approved\n```", want: []string{"In Progress", "Human Review"}},
+		{name: "fenced approval example cannot approve", output: "```markdown\n## Detent Plan Review\n- state: approved\n```", want: []string{"In Progress", "Blocked"}},
 		{name: "human policy does not consume automated approval", output: approved, review: gate.PlanReviewHuman, humanReview: true, want: []string{"In Progress", "Human Review"}},
 		{name: "both permits automated approval", output: approved, review: gate.PlanReviewBoth, want: []string{"In Progress"}},
 		{name: "human approval consumes configured label", review: gate.PlanReviewHuman, labels: []string{"plan-approved"}, want: []string{"In Progress"}},

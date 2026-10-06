@@ -83,6 +83,9 @@ func (o *Orchestrator) completeNativeLandingRun(
 		}
 		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 		destination := cfg.reviewTargetState()
+		if autoPromoteOptoutLabel(issue, cfg) {
+			destination = cfg.SourceState
+		}
 		rework := landing.GateFailed || landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved
 		if rework {
 			destination = cfg.ReworkState
