@@ -164,7 +164,11 @@ func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versi
 	if err := query.QueryRowContext(ctx, "SELECT record_json FROM change_versions WHERE change_id = ? AND id = ?", changeID, versionID).Scan(&raw); err != nil {
 		return version, err
 	}
-	err := json.Unmarshal([]byte(raw), &version)
+	if err := json.Unmarshal([]byte(raw), &version); err != nil {
+		return version, err
+	}
+	var err error
+	version.Landing, err = readVersionLanding(ctx, query, version.ID)
 	return version, err
 }
 
@@ -261,6 +265,12 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 	result.Versions, err = changeRows[tracker.ChangeVersion](ctx, query, "SELECT record_json FROM change_versions WHERE change_id = ?"+versionFilter+" ORDER BY number", args...)
 	if err != nil {
 		return result, err
+	}
+	for i := range result.Versions {
+		result.Versions[i].Landing, err = readVersionLanding(ctx, query, result.Versions[i].ID)
+		if err != nil {
+			return result, err
+		}
 	}
 	result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'review'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
