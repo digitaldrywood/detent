@@ -61,7 +61,11 @@ type nativeExecution struct {
 	runtimeSupported         *bool
 	// repository is the https URL of the checkout's origin, which a published
 	// version names; empty when the remote cannot be named that way.
-	repository string
+	repository      string
+	changeSource    func(context.Context, string, string) (tracker.ChangeSourceCapture, error)
+	retainedSource  *tracker.ChangeSourceCapture
+	sourceRequired  bool
+	recoveredSource *tracker.NativeChangeReference
 }
 
 type nativeMutationAuthorityKey struct{}
@@ -470,6 +474,9 @@ func (e *nativeExecution) captureDiff(ctx context.Context) error {
 		e.lastDiff = &last
 	case e.lastDiff == nil:
 		return errors.New("the run's final attempt diff is unavailable")
+	}
+	if e.worktreeState == "clean" || e.worktreeState == "unpushed" {
+		return e.retainChangeSource(ctx, *e.lastDiff)
 	}
 	return nil
 }
