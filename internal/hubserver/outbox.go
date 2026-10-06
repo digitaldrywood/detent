@@ -83,6 +83,8 @@ type WorkflowLabelDesired struct {
 type WorkpadDesired struct {
 	Summary     bool   `json:"summary,omitempty"`
 	CloseSource bool   `json:"close_source,omitempty"`
+	StateReason string `json:"state_reason,omitempty"`
+	IssueNumber int    `json:"issue_number,omitempty"`
 	Phase       string `json:"phase"`
 	Body        string `json:"body"`
 	Marker      string `json:"marker"`
@@ -581,12 +583,12 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 	var createdAt string
 	err = tx.QueryRowContext(ctx, `
 		SELECT o.id, o.idempotency_key, o.repository_id, r.github_owner, r.github_name,
-		       COALESCE(o.issue_id, 0), COALESCE(i.github_number, 0), o.mutation_kind,
+		       COALESCE(o.issue_id, 0), COALESCE(i.github_number, json_extract(o.desired_json, '$.issue_number'), 0), o.mutation_kind,
 		       COALESCE(o.target_node_id, ''), o.desired_json, o.status, o.attempts, o.created_at, p.profile
 		FROM github_outbox o
 		JOIN repositories r ON r.id = o.repository_id
 		LEFT JOIN issues i ON i.id = o.issue_id
-		JOIN projects p ON p.repository_id = r.id
+		JOIN projects p ON p.id = i.project_id
 		WHERE (
 			o.status IN (?, ?)
 			AND (o.next_retry_at IS NULL OR o.next_retry_at <= ?)

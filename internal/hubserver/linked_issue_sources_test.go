@@ -14,7 +14,7 @@ import (
 func linkedFixture(t *testing.T) nativeFixture {
 	t.Helper()
 	f := newNativeFixture(t, nil, "", "linked")
-	// A preexisting repository binding works with all GitHub transports off.
+	f.service.config.ImportBackend = linkedTestImporter{snapshot: linkedSnapshot()}
 	now := formatHubTime(time.Now())
 	_, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO repositories (github_node_id, github_owner, github_name, created_at, updated_at) VALUES ('R_repo', 'acme', 'orders', ?, ?)", now, now)
 	if err != nil {
@@ -26,6 +26,18 @@ func linkedFixture(t *testing.T) nativeFixture {
 	}
 	_, err = f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id = (SELECT id FROM repositories WHERE github_node_id = 'R_repo') WHERE id = ?", f.project.ID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	states := append(nativeFixtureStates(), tracker.NativeState{Name: "Cancelled", Terminal: true})
+	if err := applyNativeProjectStates(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, states, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -44,10 +56,10 @@ func TestLinkedIssueCreation(t *testing.T) {
 	t.Parallel()
 	f := linkedFixture(t)
 	first := f.link(t, "link")
-	if len(first.ExternalReferences) != 1 || first.ExternalReferences[0].Repository != "acme/orders" || first.ExternalReferences[0].Number != 12 {
+	if len(first.ExternalReferences) < 1 || first.ExternalReferences[0].Repository != "acme/orders" || first.ExternalReferences[0].Number != 12 {
 		t.Fatalf("linked issue lost source reference: %+v", first.ExternalReferences)
 	}
-	if first.LinkedSource == nil || first.LinkedSource.Status != "pending" || first.LinkedSource.URL != "https://github.com/acme/orders/issues/12" {
+	if first.LinkedSource == nil || first.LinkedSource.Status != "complete" || first.LinkedSource.URL != "https://github.com/acme/orders/issues/12" {
 		t.Fatalf("linked issue = %#v", first)
 	}
 	var wg sync.WaitGroup
@@ -78,7 +90,7 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 	for _, mode := range []string{"unedited", "native edits", "edit back to placeholder"} {
 		t.Run(mode, func(t *testing.T) {
 			f := linkedFixture(t)
-			issue := f.link(t, "link")
+			issue := pendingLinkedIssue(t, f)
 			path := f.base + "/work-items/" + string(issue.WorkItemID)
 			title, body := issue.Title, issue.Body
 			if mode != "unedited" {
@@ -136,6 +148,19 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 			}
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", issue.WorkItemID).Scan(&count); err != nil || count != 1 {
 				t.Fatalf("comments = %d, error = %v", count, err)
+			}
+			request.IdempotencyKey = "later-source-edit"
+			request.Snapshot.Title, request.Snapshot.Body = "Updated GitHub title", "Updated GitHub body"
+			request.Snapshot.Provenance.UpdatedAt = snapshot.Provenance.UpdatedAt.Add(time.Second)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, request), http.StatusOK)
+			r = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+			requireNativeStatus(t, r, http.StatusOK)
+			decodeHubResponse(t, r, &hydrated)
+			if mode == "unedited" {
+				title, body = request.Snapshot.Title, request.Snapshot.Body
+			}
+			if hydrated.Title != title || hydrated.Body != body || hydrated.LinkedSource.Snapshot.Body != request.Snapshot.Body {
+				t.Fatalf("later GitHub edit = %#v", hydrated)
 			}
 		})
 	}

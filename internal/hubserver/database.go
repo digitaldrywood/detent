@@ -19,6 +19,7 @@ import (
 const hubApplicationID = 0x44544842
 
 type database struct {
+	linkedSourceBase       string
 	db                     *sql.DB
 	lock                   *instancelock.Lock
 	path                   string
@@ -68,6 +69,12 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	db.SetMaxIdleConns(1)
 
 	store := &database{db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier}
+	if cfg.Hosted != nil {
+		store.linkedSourceBase = cfg.Hosted.PublicURL
+		if cfg.Hosted.SharedEntry != nil {
+			store.linkedSourceBase += "/organizations/" + cfg.Hosted.OrganizationID
+		}
+	}
 	if cfg.Workspace != nil {
 		store.workspaceRetainAfterRun = cfg.Workspace.RetainAfterRun
 		store.workspaceTerminalIsolation = cfg.Workspace.Terminal.Isolation

@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ type InstallationTokenConfig struct {
 	Endpoint       string
 	AppID          string
 	InstallationID string
+	Repository     string
 	PrivateKey     string
 	PrivateKeyPath string
 	HTTPClient     HTTPClient
@@ -45,6 +47,7 @@ type InstallationTokenSource struct {
 	endpoint          string
 	appID             string
 	installationID    string
+	repository        string
 	privateKey        string
 	httpClient        HTTPClient
 	now               func() time.Time
@@ -87,7 +90,7 @@ func NewInstallationTokenSource(cfg InstallationTokenConfig) (*InstallationToken
 	if err != nil {
 		return nil, err
 	}
-	if appID == "" || installationID == "" || privateKey == "" {
+	if appID == "" || installationID == "" && cfg.Repository == "" || privateKey == "" {
 		return nil, ErrMissingAppConfig
 	}
 
@@ -104,6 +107,7 @@ func NewInstallationTokenSource(cfg InstallationTokenConfig) (*InstallationToken
 		endpoint:       endpoint,
 		appID:          appID,
 		installationID: installationID,
+		repository:     strings.TrimSpace(cfg.Repository),
 		privateKey:     normalizePrivateKey(privateKey),
 		httpClient:     httpClient,
 		now:            now,
@@ -145,6 +149,11 @@ func (s *InstallationTokenSource) TokenDetails(ctx context.Context) (Installatio
 		return InstallationTokenDetails{}, err
 	}
 
+	if s.installationID == "" {
+		if err := s.resolveRepositoryInstallation(ctx, jwt); err != nil {
+			return InstallationTokenDetails{}, err
+		}
+	}
 	details, err := s.requestInstallationToken(ctx, jwt)
 	if err != nil {
 		return InstallationTokenDetails{}, err
@@ -361,4 +370,49 @@ func parseRSAPrivateKey(raw []byte) (*rsa.PrivateKey, error) {
 		return nil, ErrInvalidPrivateKey
 	}
 	return key, nil
+}
+
+func (s *InstallationTokenSource) resolveRepositoryInstallation(ctx context.Context, jwt string) error {
+	parts := strings.Split(s.repository, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(s.repository, "?#%") {
+		return ErrMissingAppConfig
+	}
+	endpoint, err := installationTokenURL(s.endpoint, "repository")
+	if err != nil {
+		return err
+	}
+	endpoint = strings.TrimSuffix(endpoint, "/app/installations/repository/access_tokens") + "/repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/installation"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+jwt)
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+	attribution := connector.RESTScopeFromContext(ctx).Attribution("app installation tokens", "")
+	response, finish, err := timedHTTPAttempt(attribution, s.httpClient, request, true, true)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	finish.BeginBody()
+	body, err := io.ReadAll(response.Body)
+	finish.BodyConsumed(err)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusOK {
+		return classifyStatus(response.StatusCode, response.Header, body)
+	}
+	var installation struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(body, &installation); err != nil {
+		return err
+	}
+	if installation.ID <= 0 {
+		return ErrInvalidResponse
+	}
+	s.installationID = strconv.FormatInt(installation.ID, 10)
+	return nil
 }

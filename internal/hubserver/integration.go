@@ -59,6 +59,9 @@ FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organ
 	if err := json.Unmarshal([]byte(states), &result.States); err != nil {
 		return result, err
 	}
+	if result.Profile == "native" && (result.Repository != "" || result.CheckoutRepository != "") {
+		result.Intake = "automatic"
+	}
 	owner := "detent"
 	if result.Profile == "github_compatible" {
 		owner = "github"
@@ -122,6 +125,9 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		}
 		if current.Revision != request.ExpectedRevision {
 			return nil, nativeConflict(current.Revision)
+		}
+		if current.Profile == "native" && (current.Repository != "" || current.CheckoutRepository != "") && request.Intake == "automatic" {
+			request.Intake = "manual"
 		}
 		if (request.Intake != "disabled" && request.Intake != "manual") || (request.Projection != "disabled" && request.Projection != "summary") {
 			return nil, nativeInvalid("Intake must be disabled or manual; projection must be disabled or summary")
@@ -201,7 +207,7 @@ func requireIntegrationIdle(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 func supersedeDisallowedOutbox(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
 	_, err := tx.ExecContext(ctx, `UPDATE github_outbox SET status = 'superseded', completed_at = ?, updated_at = ?
 WHERE issue_id IN (SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.id = ? AND
-((p.profile = 'native' AND (mutation_kind = 'workflow_label' OR (mutation_kind = 'workpad' AND (p.github_projection = 'disabled' OR COALESCE(json_extract(desired_json, '$.summary'), 0) = 0)))) OR (mutation_kind = 'merge_pull_request' AND p.github_repository_enabled = 0)))
+((p.profile = 'native' AND (mutation_kind = 'workflow_label' OR (mutation_kind = 'workpad' AND ((p.github_projection = 'disabled' AND COALESCE(json_extract(desired_json, '$.issue_number'), 0) = 0) OR COALESCE(json_extract(desired_json, '$.summary'), 0) = 0)))) OR (mutation_kind = 'merge_pull_request' AND p.github_repository_enabled = 0)))
 AND status IN ('pending', 'retrying')`, formatOutboxTime(now), formatOutboxTime(now), scope.project)
 	return err
 }

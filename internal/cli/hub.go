@@ -25,18 +25,24 @@ func newHubCommand(opts options) *cobra.Command {
 		if cfg.GitHubDisabled {
 			return hubserver.Run(ctx, cfg)
 		}
-		token, err := opts.ghAuthToken(ctx)
-		if err != nil {
-			return fmt.Errorf("resolve github credentials for hub outbox: %w", err)
+		var transport *hubgithub.Transport
+		appID, privateKey := opts.lookupEnv("DETENT_HUB_GITHUB_APP_ID"), opts.lookupEnv("DETENT_HUB_GITHUB_APP_PRIVATE_KEY")
+		if appID != "" && privateKey != "" {
+			transport = hubgithub.NewAppTransport(connectorgithub.InstallationTokenConfig{AppID: appID, PrivateKey: privateKey, LookupEnv: opts.lookupEnv})
+		} else {
+			if cfg.Hosted != nil {
+				return fmt.Errorf("hosted GitHub intake requires the product GitHub App credentials")
+			}
+			token, err := opts.ghAuthToken(ctx)
+			if err != nil {
+				return fmt.Errorf("resolve github credentials for hub outbox: %w", err)
+			}
+			client, err := connectorgithub.NewClient(connectorgithub.ClientConfig{TokenSource: connectorgithub.StaticTokenSource(token), Logger: cfg.Logger})
+			if err != nil {
+				return fmt.Errorf("configure github hub outbox client: %w", err)
+			}
+			transport = hubgithub.NewTransport(client)
 		}
-		client, err := connectorgithub.NewClient(connectorgithub.ClientConfig{
-			TokenSource: connectorgithub.StaticTokenSource(token),
-			Logger:      cfg.Logger,
-		})
-		if err != nil {
-			return fmt.Errorf("configure github hub outbox client: %w", err)
-		}
-		transport := hubgithub.NewTransport(client)
 		cfg.OutboxBackend = hubgithub.NewWriter(transport)
 		cfg.ReconcileBackend = hubgithub.NewReconciler(transport)
 		cfg.ImportBackend = hubgithub.NewImporter(transport)
@@ -187,7 +193,7 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 				Usage:                      usage,
 				Workspace:                  workspaces,
 				CredentialMaintenance:      credentialMaintenance,
-				GitHubDisabled:             githubDisabled || hosted != nil,
+				GitHubDisabled:             githubDisabled || hosted != nil && (lookupEnv("DETENT_HUB_GITHUB_APP_ID") == "" || lookupEnv("DETENT_HUB_GITHUB_APP_PRIVATE_KEY") == ""),
 				DatabasePath:               databasePath,
 				ListenAddress:              listenAddress,
 				TLSCertFile:                strings.TrimSpace(tlsCertificateFile),

@@ -211,6 +211,7 @@ func sameImportSourceTime(left, right string) bool {
 
 func applyCutover(ctx context.Context, tx *sql.Tx, scope nativeScope, request CutoverRequest, now time.Time) error {
 	stamp := formatHubTime(now)
+	request.States = nativeTriageStates(request.States)
 	for _, state := range request.States {
 		_, err := tx.ExecContext(ctx, "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, stamp, stamp)
 		if err != nil {
@@ -221,7 +222,7 @@ func applyCutover(ctx context.Context, tx *sql.Tx, scope nativeScope, request Cu
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE projects SET profile = 'native', states_json = ?, github_intake = 'disabled', integration_revision = integration_revision + 1 WHERE id = ?", states, scope.project)
+	_, err = tx.ExecContext(ctx, "UPDATE projects SET profile = 'native', states_json = ?, github_intake = 'manual', integration_revision = integration_revision + 1 WHERE id = ?", states, scope.project)
 	if err != nil {
 		return err
 	}
@@ -330,6 +331,13 @@ func (s *Service) projectNativeSummaryOperation(request projectNativeSummaryRequ
 		if integration.Profile != "native" || integration.Projection != "summary" {
 			return nil, nativeInvalid("Native summary projection is not enabled")
 		}
+		var linked int
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM linked_issue_sources WHERE work_item_id = ?", item).Scan(&linked); err != nil {
+			return nil, err
+		}
+		if linked != 0 {
+			return nil, nativeInvalid("Linked source comments are private to Cloud")
+		}
 		if err := enqueueNativeSummary(ctx, tx, scope, item, request.IdempotencyKey, request.Body, false, now); err != nil {
 			return nil, err
 		}
@@ -340,14 +348,41 @@ func (s *Service) projectNativeSummaryOperation(request projectNativeSummaryRequ
 }
 
 func enqueueNativeSummary(ctx context.Context, tx *sql.Tx, scope nativeScope, item, key, body string, closeSource bool, now time.Time) error {
+	return enqueueNativeSourceSummary(ctx, tx, scope, item, key, body, closeSource, "", now)
+}
+
+func enqueueNativeSourceSummary(ctx context.Context, tx *sql.Tx, scope nativeScope, item, key, body string, closeSource bool, stateReason string, now time.Time) error {
 	if strings.TrimSpace(body) == "" || len(body) > 60<<10 {
 		return nativeInvalid("Summary must contain 1 byte to 60 KiB")
 	}
 	var issueID, repositoryID int64
-	if err := tx.QueryRowContext(ctx, "SELECT id, repository_id FROM issues WHERE project_id = ? AND native_id = ? AND github_node_id IS NOT NULL", scope.project, item).Scan(&issueID, &repositoryID); err != nil {
+	var sourceNumber int
+	var linkedNumber int
+	var sourceURL string
+	if err := tx.QueryRowContext(ctx, `SELECT i.id, COALESCE(i.repository_id, 0), COALESCE(i.github_number, 0), COALESCE(l.source_url, '')
+ FROM issues i LEFT JOIN linked_issue_sources l ON l.work_item_id = i.native_id
+ WHERE i.project_id = ? AND i.native_id = ?`, scope.project, item).Scan(&issueID, &repositoryID, &sourceNumber, &sourceURL); err != nil {
 		return err
 	}
-	desired, err := marshalNative(WorkpadDesired{Phase: "summary", Body: body, Marker: "<!-- detent-summary:" + item + " -->", Summary: true, CloseSource: closeSource})
+	if sourceURL != "" {
+		_, repository, number, err := tracker.ParseGitHubIssueURL(sourceURL)
+		if err != nil {
+			return err
+		}
+		sourceNumber = number
+		linkedNumber = number
+		if err := tx.QueryRowContext(ctx, "SELECT id FROM repositories WHERE lower(github_owner || '/' || github_name) = ?", repository).Scan(&repositoryID); err != nil {
+			return err
+		}
+	}
+	if repositoryID == 0 || sourceNumber == 0 {
+		return nativeInvalid("Issue has no GitHub source")
+	}
+	marker := "<!-- detent-summary:" + item + " -->"
+	if key == "intake" || strings.HasPrefix(key, "cancelled:") {
+		marker = "<!-- detent-summary:" + item + ":" + key + " -->"
+	}
+	desired, err := marshalNative(WorkpadDesired{Phase: "summary", Body: body, Marker: marker, Summary: true, CloseSource: closeSource, StateReason: stateReason, IssueNumber: linkedNumber})
 	if err != nil {
 		return err
 	}

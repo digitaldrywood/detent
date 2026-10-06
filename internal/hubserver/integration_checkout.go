@@ -97,6 +97,9 @@ WHERE cr.project_id=? AND lower(cr.repository)=lower(?) AND r.state='active' AND
 		if _, err := tx.ExecContext(ctx, "UPDATE projects SET checkout_repository=?, integration_revision=integration_revision+1 WHERE id=?", repository, scope.project); err != nil {
 			return nil, err
 		}
+		if err := ensureNativeTriage(ctx, tx, scope, now); err != nil {
+			return nil, err
+		}
 		return readProjectIntegration(ctx, tx, scope)
 	})
 }

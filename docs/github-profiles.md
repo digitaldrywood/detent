@@ -7,7 +7,8 @@ profile, configuration revision, repository binding and field-authority map.
 
 | Field or operation | github_compatible | native |
 | --- | --- | --- |
-| Issue title, body, labels, assignees, discussion | GitHub | Detent |
+| Issue title and body | GitHub | Detent; linked source fields follow GitHub until edited in Cloud |
+| Labels, assignees, discussion | GitHub | Detent; GitHub source comments append with provenance |
 | Workflow and priority | GitHub projection with existing managed writes | Detent |
 | Dependencies | Existing compatibility graph | Detent graph, initially imported at cutover |
 | Original authors and timestamps | Source provenance | Retained source provenance plus authenticated native actors |
@@ -19,7 +20,8 @@ profile, configuration revision, repository binding and field-authority map.
 An administrator can `PUT /integration` with `idempotency_key`,
 `expected_revision` (a decimal string), `intake` (`disabled` or `manual`),
 `projection` (`disabled` or `summary`) and `repository_enabled` (boolean).
-These configure transport capabilities, not competing field owners. Compatibility
+Bound native projects always report `intake: automatic`; intake updates cannot
+disable their webhook intake. These configure transport capabilities, not competing field owners. Compatibility
 projects cannot enable native summary projection. Profile changes only occur
 through the cutover operation. Repository integration can be disabled independently
 of issue ownership. Disabling it does not authorize bypassing GitHub merge gates.
@@ -31,42 +33,57 @@ repository. To attach GitHub to an existing native project, an administrator pos
 `expected_revision`. This verifies repository metadata without fetching issues and
 preserves the native project identity. A repository can belong to only one project;
 for an existing compatibility binding, import/cut over that project instead.
-Bindings are immutable. Enable the desired transport capabilities separately.
+Bindings are immutable. Native issue intake is automatic; repository execution
+capabilities remain independently configured.
 Hub's scoped v2 APIs accept its existing operator or enrolled runner
 credentials. Configuration and cutover require administrator authority.
 
-## Link one issue for its first run
+## Native GitHub intake
 
-In a native project's New issue dialog, paste a GitHub issue URL from the
-project's attached repository. Title and body can stay empty. The equivalent
-scoped request is `POST /work-items` with `github_issue_url`, `state` and
-`idempotency_key`. Repeated links return the same native identity. Linking
-does not enable manual import, GitHub transport on Hub, or background sync.
+Every native project with an attached GitHub repository receives new GitHub issues
+through the product GitHub App webhook. Intake is always on; the integration read
+reports `intake: automatic`. Triage is the first holding lane, with dispatch and
+terminal flags both false. Existing bound projects gain it through migration;
+unbound projects keep their workflows. Repository workflow approval retains this
+product intake lane alongside its ordered configured lanes.
 
-The issue shows its historical GitHub link and pending intake. Before its first
-agent dispatch, the runner uses its own instance GitHub credential to read the
-current title, body and all accessible comment pages through GraphQL. It posts
-the complete snapshot to `/work-items/{item}/source-intake` under its existing
-claim. Hub saves source IDs, authors, source timestamps and observation time,
-deduplicates discussion, and marks intake complete in one transaction. Native
-title/body edits remain authoritative; the original source snapshot stays
-available separately. GitHub credentials are never included in agent context.
+New reports from any author enter Triage with a linked-source snapshot. GitHub
+authors remain provenance, without Cloud membership. No reliable spam flag is
+available in the issue webhook used here, so all reports are admitted, including
+reports with empty bodies or unavailable authors. A human moves the report to
+Backlog, Todo or Cancelled.
 
-Missing credentials, private-access failures, rate limits, incomplete pagination
-and persistence failures are instance setup/retry diagnostics. The runner releases
-the claim without starting an agent or changing the issue's lane. Correct the
-runner's existing GitHub credential or access and retry. Intake has no separate
-retry loop or configuration. Subsequent runs, native collaboration and native
-landing use Hub alone; closing the historical GitHub issue is not required.
+`POST /work-items` with `github_issue_url` and `idempotency_key` links a pre-existing
+issue through the same record and snapshot transaction. It reads the source and
+accessible comment pages through the product App before creation. The requested
+state is ignored for a new linked source: it starts in Triage. Repeated links and
+webhook deliveries reuse the source key and native identity. Explicitly supplied
+Cloud title/body content and subsequent Cloud edits retain field ownership.
 
-This is execution context intake, not the full historical importer below. Deleted
-or inaccessible comments and edit history are not reconstructed. A source change
-that invalidates pagination requires a fresh complete fetch rather than publishing
-an excerpt.
+Later GitHub comments are appended with provenance. GitHub title/body updates
+follow source ownership until edited in Cloud. GitHub close/reopen events add a
+Cloud comment without changing its state. Cloud discussion remains private;
+linked-source summary projection cannot mirror it to GitHub.
+
+The existing summary outbox sends one `Tracked in Detent: <url>` linkback. Cancelled
+uses its existing source-close path with a short link comment and GitHub's
+`not_planned` state reason. Done closes only through the landing PR's
+`Closes owner/repo#N` reference. Webhook receipt, retry and outbox delivery retain
+their existing owners; intake adds no polling loop. Targeted manual reads fail
+without creating a partial issue when App access or complete pagination fails.
+
+The hosted deployment supplies `DETENT_HUB_GITHUB_APP_ID`,
+`DETENT_HUB_GITHUB_APP_PRIVATE_KEY` and `DETENT_HUB_GITHUB_WEBHOOK_SECRET` from its
+secret store. Each repository's App installation is resolved with the App's signed
+identity and its existing installation-token source. Tenants mint no tokens.
+Configure the App webhook for `issues` and `issue_comment` events at
+`/api/v1/webhooks/github`, and install the App with issues read/write permission on
+the bound repositories. Credentials never enter issue or agent context.
 
 ## Import and inspect
 
-Enable manual intake on the repository-backed project. All paths below are
+For explicit historical import, enable manual intake on a compatibility project;
+native repository-backed projects already have automatic intake. All paths below are
 relative to its scoped v2 project URL.
 
 1. `POST /imports` with `{"idempotency_key":"import-123","issue_number":123}`.
@@ -105,8 +122,7 @@ To reimport, `POST /imports` with a new idempotency key, `restart: true`, and th
 `expected_revision`. The cursor resets, retained source records remain, and native
 body/discussion edits remain authoritative. Reimport adds newly discovered source
 events; it does not overwrite native comments, reinstate removed native dependencies
-or automatically follow later GitHub workflow changes. For new intake after cutover,
-explicitly re-enable manual intake. Newly imported native issues remain ineligible
+or automatically follow later GitHub workflow changes. New GitHub reports after cutover enter Triage automatically. Newly imported native issues remain ineligible
 for claims until traversal finishes and imported dependencies resolve; unrelated
 native work continues.
 

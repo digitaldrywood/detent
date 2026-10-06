@@ -23,6 +23,7 @@ const nativeBase = "/api/v2/organizations/:organization/projects/:project"
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 type nativeScope struct {
+	sourceActor        *tracker.Actor
 	organization       tracker.OrganizationID
 	project            tracker.ProjectID
 	credential         apiCredential
@@ -283,6 +284,9 @@ func nativeRequestScope(c echo.Context) nativeScope {
 }
 
 func (scope nativeScope) actor() tracker.Actor {
+	if scope.sourceActor != nil {
+		return *scope.sourceActor
+	}
 	kind := "human"
 	if scope.credential.Scope == apiScopeWorker {
 		kind = "runner"
@@ -324,6 +328,7 @@ type nativeCommandOptions struct {
 // executeNativeMutation owns the shared transaction, current native authority,
 // hosted allowances, audit history and durable business replay for all callers.
 func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
+	ctx = s.linkedSourceContext(ctx)
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativeInvalid("An idempotency key of at most 128 bytes is required")
 	}

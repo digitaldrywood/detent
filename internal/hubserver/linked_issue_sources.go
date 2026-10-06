@@ -72,6 +72,10 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 	if !errors.Is(err, sql.ErrNoRows) {
 		return tracker.NativeIssue{}, err
 	}
+	if err := ensureNativeTriage(ctx, tx, scope, now); err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	request.State = "Triage"
 	titleSupplied, bodySupplied := request.Title != "", request.Body != ""
 	if !titleSupplied {
 		request.Title = fmt.Sprintf("GitHub issue %s#%d", repository, number)
@@ -110,9 +114,7 @@ func intakeLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, id 
 	if issue.Profile != "native" || issue.LinkedSource == nil {
 		return nil, nativeInvalid("Issue has no linked source awaiting intake")
 	}
-	if issue.LinkedSource.Status == "complete" {
-		return issue, nil
-	}
+	completed := issue.LinkedSource.Status == "complete"
 	canonical, _, _, err := tracker.ParseGitHubIssueURL(snapshot.URL)
 	if err != nil || canonical != issue.LinkedSource.URL {
 		return nil, nativeInvalid("Intake source does not match the linked issue")
@@ -143,16 +145,20 @@ FROM linked_issue_sources s WHERE work_item_id = ?`, issue.WorkItemID).Scan(&tit
 	if err != nil {
 		return nil, err
 	}
-	if !titleOwned {
+	stale := completed && !snapshot.Provenance.UpdatedAt.After(issue.LinkedSource.Snapshot.Provenance.UpdatedAt)
+	if !titleOwned && !stale {
 		issue.Title = snapshot.Title
 	}
-	if !bodyOwned {
+	if !bodyOwned && !stale {
 		issue.Body = snapshot.Body
 	}
 	for _, comment := range snapshot.Comments {
 		if err := importGitHubComment(ctx, tx, scope, string(issue.WorkItemID), GitHubImportRecord{Body: comment.Body, Provenance: comment.Provenance}, now); err != nil {
 			return nil, err
 		}
+	}
+	if stale {
+		return readLinkedNativeIssue(ctx, tx, scope, id)
 	}
 	// Comment originals already live in append-only collaboration versions;
 	// keep issue snapshot evidence without duplicating discussion on reads.
@@ -168,8 +174,12 @@ FROM linked_issue_sources s WHERE work_item_id = ?`, issue.WorkItemID).Scan(&tit
 	if _, err := tx.ExecContext(ctx, "UPDATE linked_issue_sources SET snapshot_json = ? WHERE work_item_id = ?", raw, issue.WorkItemID); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE issues SET provenance_json = ? WHERE native_id = ?", provenance, issue.WorkItemID); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE issues SET provenance_json = ?, author_login = ? WHERE native_id = ?", provenance, snapshot.Provenance.AuthorID, issue.WorkItemID); err != nil {
 		return nil, err
 	}
-	return persistNativeIssue(ctx, tx, scope, issue, "github.imported", tracker.CollaborationData{Operation: "source_intake", Reason: canonical}, now)
+	issue, err = persistNativeIssue(ctx, tx, scope, issue, "github.imported", tracker.CollaborationData{Operation: "source_intake", Reason: canonical}, now)
+	if err == nil && !completed {
+		err = enqueueLinkedSourceSummary(ctx, tx, scope, issue, "intake", false, now)
+	}
+	return issue, err
 }

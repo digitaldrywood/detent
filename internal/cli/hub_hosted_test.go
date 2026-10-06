@@ -106,6 +106,7 @@ func TestHubServeIdentityModes(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		maintenance bool
+		app         bool
 		name        string
 		hosted      bool
 		native      bool
@@ -115,6 +116,8 @@ func TestHubServeIdentityModes(t *testing.T) {
 		{name: "local native", native: true, wantMode: true},
 		{name: "hosted without GitHub flag", hosted: true, wantMode: true},
 		{name: "hosted credential maintenance", hosted: true, maintenance: true, wantMode: true},
+		{name: "hosted product GitHub App", hosted: true, app: true},
+		{name: "hosted product GitHub App explicitly disabled", hosted: true, app: true, native: true, wantMode: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -139,6 +142,11 @@ func TestHubServeIdentityModes(t *testing.T) {
 				switch name {
 				case "DETENT_HUB_ADMIN_TOKEN":
 					return "reporter-fixture"
+				case "DETENT_HUB_GITHUB_APP_ID", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY":
+					if test.app {
+						return "product-app-fixture"
+					}
+					return ""
 				case "WORKOS_API_KEY":
 					if !test.hosted {
 						t.Error("local mode resolved a WorkOS credential")

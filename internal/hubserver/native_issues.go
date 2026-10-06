@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -441,6 +442,11 @@ WHERE organization_id = ? AND project_id = ? AND native_id = ?`, issue.Title, is
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE queue_entries SET state = ?, priority_override = ?, updated_at = ? WHERE issue_id = (SELECT id FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?)`, issue.State, issue.Priority, formatHubTime(now), scope.organization, scope.project, issue.WorkItemID); err != nil {
 		return issue, err
+	}
+	if eventType == "workflow.transitioned" && data.FromState != issue.State && issue.State == "Cancelled" {
+		if err := enqueueLinkedSourceSummary(ctx, tx, scope, issue, "cancelled:"+strconv.FormatInt(int64(issue.Revision), 10), true, now); err != nil {
+			return issue, err
+		}
 	}
 	data.Revision = issue.Revision
 	issue, _, err = readNativeIssue(ctx, tx, scope, string(issue.WorkItemID))

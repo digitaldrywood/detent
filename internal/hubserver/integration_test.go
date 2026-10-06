@@ -72,7 +72,7 @@ func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 	requireNativeStatus(t, r, http.StatusOK)
 	var integration ProjectIntegration
 	decodeHubResponse(t, r, &integration)
-	if integration.Profile != "native" || integration.Repository != "digitaldrywood/detent" || integration.Intake != "disabled" {
+	if integration.Profile != "native" || integration.Repository != "digitaldrywood/detent" || integration.Intake != "automatic" {
 		t.Fatalf("binding = %+v", integration)
 	}
 	// A replay must consult its receipt before current-revision/provider checks.
@@ -103,10 +103,7 @@ func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 			t.Fatal(err)
 		}
 		tx.Rollback()
-		want := 2
-		if pending {
-			want = 1
-		}
+		want := 1
 		if len(ids) != want {
 			t.Fatalf("claim candidates during intake=%t: %+v", pending, ids)
 		}
@@ -232,7 +229,7 @@ func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 			}
 			request.DryRun, request.IdempotencyKey, request.Checkpoint = false, "apply", receipt.Checkpoint
 			receipt = cutoverFixture(t, f, request)
-			if !receipt.Applied || receipt.Integration.Profile != "native" || receipt.Integration.Intake != "disabled" {
+			if !receipt.Applied || receipt.Integration.Profile != "native" || receipt.Integration.Intake != "automatic" {
 				t.Fatalf("cutover = %+v", receipt)
 			}
 			cutoverFixture(t, f, request)
