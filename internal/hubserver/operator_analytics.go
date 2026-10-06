@@ -17,14 +17,16 @@ import (
 const maxAnalyticsPopulation = 1000
 
 type nativeAnalyticsBucket struct {
-	From         time.Time                     `json:"from"`
-	To           time.Time                     `json:"to"`
-	Shipped      int                           `json:"shipped"`
-	Sessions     int                           `json:"sessions"`
-	Tokens       int64                         `json:"tokens"`
-	Cost         float64                       `json:"cost_usd"`
-	Activity     nativeAnalyticsActivityTiming `json:"activity"`
-	QueueSeconds float64                       `json:"queue_seconds"`
+	LaneResidence               operatortool.AnalyticsResidenceSummary `json:"lane_residence"`
+	ProviderCapacityWaitSeconds float64                                `json:"provider_capacity_wait_seconds"`
+	From                        time.Time                              `json:"from"`
+	To                          time.Time                              `json:"to"`
+	Shipped                     int                                    `json:"shipped"`
+	Sessions                    int                                    `json:"sessions"`
+	Tokens                      int64                                  `json:"tokens"`
+	Cost                        float64                                `json:"cost_usd"`
+	Activity                    nativeAnalyticsActivityTiming          `json:"activity"`
+	QueueSeconds                float64                                `json:"queue_seconds"`
 }
 type nativeAnalyticsLanding struct {
 	ChangeID   string                   `json:"change_id"`
@@ -58,24 +60,26 @@ type nativeAnalyticsOutcome struct {
 	TokensPerShipped *float64 `json:"tokens_per_shipped,omitempty"`
 }
 type nativeAnalyticsProject struct {
-	ProjectID         string                                        `json:"project_id"`
-	Source            string                                        `json:"source"`
-	SourceAt          time.Time                                     `json:"source_at"`
-	Window            operatortool.AnalyticsWindow                  `json:"window"`
-	Digest            []nativeAnalyticsBucket                       `json:"digest"`
-	Efficiency        []nativeAnalyticsPhase                        `json:"efficiency"`
-	CostPerOutcome    nativeAnalyticsOutcome                        `json:"cost_per_outcome"`
-	Landings          operatortool.ReadPage[nativeAnalyticsLanding] `json:"landings"`
-	Attempts          operatortool.ReadPage[nativeAnalyticsAttempt] `json:"attempts"`
-	Activity          nativeAnalyticsActivity                       `json:"activity"`
-	QueueTime         nativeAnalyticsQueue                          `json:"queue_time"`
-	SkipReasons       []nativeAnalyticsSkip                         `json:"skip_reasons"`
-	PopulationLimit   int                                           `json:"population_limit"`
-	AttemptsObserved  int                                           `json:"attempts_observed"`
-	DecisionsObserved int                                           `json:"decisions_observed"`
-	UsageRowsObserved int                                           `json:"usage_rows_observed"`
-	Partial           bool                                          `json:"partial"`
-	Unavailable       []string                                      `json:"unavailable"`
+	LaneResidence        operatortool.AnalyticsResidence               `json:"lane_residence"`
+	ProviderCapacityWait nativeAnalyticsCapacityWait                   `json:"provider_capacity_wait"`
+	ProjectID            string                                        `json:"project_id"`
+	Source               string                                        `json:"source"`
+	SourceAt             time.Time                                     `json:"source_at"`
+	Window               operatortool.AnalyticsWindow                  `json:"window"`
+	Digest               []nativeAnalyticsBucket                       `json:"digest"`
+	Efficiency           []nativeAnalyticsPhase                        `json:"efficiency"`
+	CostPerOutcome       nativeAnalyticsOutcome                        `json:"cost_per_outcome"`
+	Landings             operatortool.ReadPage[nativeAnalyticsLanding] `json:"landings"`
+	Attempts             operatortool.ReadPage[nativeAnalyticsAttempt] `json:"attempts"`
+	Activity             nativeAnalyticsActivity                       `json:"activity"`
+	QueueTime            operatortool.AnalyticsQueue                   `json:"queue_time"`
+	SkipReasons          []nativeAnalyticsSkip                         `json:"skip_reasons"`
+	PopulationLimit      int                                           `json:"population_limit"`
+	AttemptsObserved     int                                           `json:"attempts_observed"`
+	DecisionsObserved    int                                           `json:"decisions_observed"`
+	UsageRowsObserved    int                                           `json:"usage_rows_observed"`
+	Partial              bool                                          `json:"partial"`
+	Unavailable          []string                                      `json:"unavailable"`
 }
 type nativeAnalyticsReport struct {
 	OrganizationID string                       `json:"organization_id"`
@@ -362,7 +366,10 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 	if err := rows.Close(); err != nil {
 		return out, err
 	}
-	if err := projectNativeAnalyticsQueue(ctx, q, scope, &out); err != nil {
+	if err := projectNativeAnalyticsCapacityWait(ctx, q, scope, &out); err != nil {
+		return out, err
+	}
+	if err := projectNativeAnalyticsResidence(ctx, q, scope, r, &out); err != nil {
 		return out, err
 	}
 	return out, nil

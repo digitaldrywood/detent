@@ -8,7 +8,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type nativeAnalyticsQueue struct {
+type nativeAnalyticsCapacityWait struct {
 	Source               string    `json:"source"`
 	Coverage             string    `json:"coverage"`
 	ClaimsObserved       int       `json:"claims_observed"`
@@ -19,8 +19,8 @@ type nativeAnalyticsQueue struct {
 	Partial              bool      `json:"partial"`
 }
 
-func projectNativeAnalyticsQueue(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
-	queue := nativeAnalyticsQueue{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window; lane_residence_and_unclaimed_waits_unavailable", Partial: true}
+func projectNativeAnalyticsCapacityWait(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
+	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
 	rows, err := q.QueryContext(ctx, `SELECT c.data_json,c.recorded_at,
 coalesce((SELECT p.data_json FROM collaboration_events p
  WHERE p.organization_id=c.organization_id AND p.project_id=c.project_id AND p.work_item_id=c.work_item_id AND p.sequence<c.sequence
@@ -66,21 +66,20 @@ ORDER BY c.recorded_at,c.id LIMIT ?`, scope.organization, scope.project, formatH
 			b := &out.Digest[i]
 			from, to := maxTime(start, b.From), minTime(finish, b.To)
 			if to.After(from) {
-				b.QueueSeconds += to.Sub(from).Seconds()
+				b.ProviderCapacityWaitSeconds += to.Sub(from).Seconds()
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	out.QueueTime = queue
+	out.ProviderCapacityWait = queue
 	if queue.SourceAt.After(out.SourceAt) {
 		out.SourceAt = queue.SourceAt
 	}
 	if queue.IntervalsObserved == 0 {
-		out.Unavailable = append(out.Unavailable, "queue_time")
+		out.Unavailable = append(out.Unavailable, "provider_capacity_wait")
 	}
-	out.Unavailable = append(out.Unavailable, "queue_time_complete_population")
 	return nil
 }
 
