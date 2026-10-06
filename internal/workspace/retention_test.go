@@ -38,6 +38,100 @@ func retentionFixture(t *testing.T, path string, at time.Time) {
 	}
 }
 
+func TestLandingRetention(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		age    time.Duration
+		remove bool
+	}{
+		{name: "stale", age: 2 * time.Hour, remove: true},
+		{name: "boundary", age: time.Hour, remove: true},
+		{name: "recent", age: time.Hour - time.Second},
+		{name: "active", age: 2 * time.Hour},
+		{name: "busy", age: 2 * time.Hour},
+		{name: "locked", age: 2 * time.Hour},
+		{name: "missing", age: 2 * time.Hour, remove: true},
+		{name: "unregistered", age: 2 * time.Hour},
+		{name: "staging", age: 2 * time.Hour, remove: true},
+		{name: "legacy receipt", age: 2 * time.Hour, remove: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			backend := retentionBackend(t)
+			head := strings.TrimSpace(runGit(t, backend.sourceRoot, "rev-parse", "HEAD"))
+			issue := Issue{Identifier: "DD-LAND", Landing: &LandOptions{HeadSHA: head}}
+			info, err := backend.infoForIssue(issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := info.Path
+			if test.name == "staging" {
+				path = filepath.Join(backend.root, "landing-"+info.Key)
+			}
+			if test.name == "unregistered" {
+				retentionFixture(t, filepath.Join(path, "keep"), time.Now())
+			} else {
+				runGit(t, backend.sourceRoot, "worktree", "add", "--detach", path, head)
+			}
+			now := time.Now()
+			at := now.Add(-test.age)
+			stamp := path
+			request := RetentionRequest{Now: now}
+			switch test.name {
+			case "active":
+				request.Active = []Issue{issue}
+			case "busy":
+				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return []int{123}, nil }
+			case "locked":
+				runGit(t, backend.sourceRoot, "worktree", "lock", path)
+			case "missing":
+				dir := strings.TrimSpace(runGit(t, path, "rev-parse", "--absolute-git-dir"))
+				stamp = filepath.Join(dir, "gitdir")
+				if err := os.RemoveAll(path); err != nil {
+					t.Fatal(err)
+				}
+			case "legacy receipt":
+				dir := strings.TrimSpace(runGit(t, path, "rev-parse", "--absolute-git-dir"))
+				if err := os.WriteFile(filepath.Join(dir, landingRecordFile), []byte(`{"head_sha":"`+head+`","result":{"MergeSHA":"`+head+`"}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Chtimes(stamp, at, at); err != nil {
+				t.Fatal(err)
+			}
+			totals, err := backend.SweepRetention(t.Context(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if test.remove {
+				want = 1
+			}
+			if totals.Landing.Count != want {
+				t.Fatalf("landing removed = %+v, want %d", totals.Landing, want)
+			}
+			registered := strings.Contains(runGit(t, backend.sourceRoot, "worktree", "list", "--porcelain"), path)
+			if test.name != "unregistered" && registered == test.remove {
+				t.Fatalf("landing registration remains = %v, remove = %v", registered, test.remove)
+			}
+			_, statErr := os.Stat(path)
+			if test.remove && !errors.Is(statErr, os.ErrNotExist) || !test.remove && statErr != nil {
+				t.Fatalf("landing directory: %v", statErr)
+			}
+			if test.name == "legacy receipt" {
+				runGit(t, backend.sourceRoot, "worktree", "add", "--detach", path, head)
+				if kept, ok := keptLanding(t.Context(), path, head, "HEAD"); !ok || kept.MergeSHA != head {
+					t.Fatalf("legacy receipt lost: %+v, %v", kept, ok)
+				}
+			}
+		})
+	}
+}
+
 func TestRetentionHookLogs(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)

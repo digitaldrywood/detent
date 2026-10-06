@@ -564,7 +564,7 @@ func issueKeyDigest(issue Issue) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
+func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, returnErr error) {
 	info, err := l.infoForIssue(issue)
 	if err != nil {
 		return Info{}, err
@@ -593,6 +593,13 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 		info, created, err = l.createLandingWorktree(ctx, info, issue)
 	} else {
 		created, err = l.createWorktree(ctx, info.Path, info.Branch, issue.FreshCheckout)
+	}
+	if issue.Landing != nil && created {
+		defer func() {
+			if returnErr != nil {
+				returnErr = errors.Join(returnErr, l.CleanupLanding(context.WithoutCancel(ctx), info, issue))
+			}
+		}()
 	}
 	if err != nil {
 		var creationErr *worktreeCreationError
