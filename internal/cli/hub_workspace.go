@@ -159,7 +159,7 @@ func newWorkspaceLane(
 		return nil, fmt.Errorf("load workflow for %s: %w", projectID, err)
 	}
 	workflow.Config = project.MapNativeTracker(workflow.Config, true)
-	workflow, err = native.ResolveProjectWorkflow(ctx, workflow)
+	workflow, err = native.ResolveProjectWorkflow(ctx, workflow, nil)
 	if err != nil {
 		return nil, fmt.Errorf("load shared configuration for %s: %w", projectID, err)
 	}

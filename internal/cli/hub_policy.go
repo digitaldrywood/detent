@@ -41,7 +41,7 @@ func newHubPolicyCommand(lookupEnv func(string) string) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				workflow, err = native.ResolveProjectWorkflow(cmd.Context(), workflow)
+				workflow, err = native.ResolveProjectWorkflow(cmd.Context(), workflow, nil)
 				if err != nil {
 					return err
 				}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -79,22 +80,31 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	legacyWorkflow := workflow
+	legacyWorkflow.Authored, legacyWorkflow.DefinitionSources = nil, nil
+	legacy, err := workflowconfig.ResolvePolicy(legacyWorkflow)
+	if err != nil {
+		t.Fatal(err)
+	}
 	workflow.Authored.Version = 1
 	previous, err := workflowconfig.ResolvePolicy(workflow)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name       string
-		autoApply  bool
-		provenance *policy.RepositorySource
-		approved   *policy.Descriptor
-		status     int
-		local      policy.Descriptor
-		wantError  bool
-		wantLost   bool
-		reports    int
+		name         string
+		autoApply    bool
+		loadApproved bool
+		provenance   *policy.RepositorySource
+		approved     *policy.Descriptor
+		status       int
+		local        policy.Descriptor
+		wantError    bool
+		wantLost     bool
+		reports      int
 	}{
+		{name: "legacy external load retains approved configuration", loadApproved: true, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
+		{name: "verified legacy source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "canonical version carries feature approval", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40)}, approved: &previous, status: http.StatusOK, local: current, reports: 1},
 		{name: "canonical version without source remains pending", approved: &previous, status: http.StatusOK, local: current, wantError: true, wantLost: true, reports: 1},
 		{name: "older canonical runner remains approved", approved: &current, status: http.StatusOK, local: previous, reports: 1},
@@ -165,7 +175,23 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 			for _, layout := range []workflowconfig.ProjectDefinitionLayout{workflowconfig.ProjectDefinitionLegacy, workflowconfig.ProjectDefinitionSplit, workflowconfig.ProjectDefinitionCloud} {
 				workflow := workflowconfig.Workflow{Config: workflowconfig.Default(), Prompt: "Current supplied instructions.", Definition: workflowconfig.ProjectDefinition{Layout: layout}}
 				workflow.Config.Tracker.Kind = workflowconfig.TrackerHubNative
-				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "site", workflow)
+				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "site", workflow, test.provenance)
+				if test.status == http.StatusServiceUnavailable && layout != workflowconfig.ProjectDefinitionCloud {
+					if err == nil {
+						t.Fatal("unavailable approval was ignored")
+					}
+					continue
+				}
+				if test.loadApproved && layout != workflowconfig.ProjectDefinitionCloud {
+					if err != nil {
+						t.Fatal(err)
+					}
+					actual, err := workflowconfig.ResolvePolicy(resolved)
+					if err != nil || !reflect.DeepEqual(actual, *approved) {
+						t.Fatalf("legacy load replaced the approved descriptor: %+v %v", actual, err)
+					}
+					continue
+				}
 				if err != nil || resolved.Prompt != workflow.Prompt {
 					t.Fatalf("supplied %s definition was replaced by shared approval: %q, %v", layout, resolved.Prompt, err)
 				}

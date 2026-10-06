@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -25,6 +26,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		forge                                                                                 string
 		nilConfiguration                                                                      bool
 	}{
+		{name: "first release retains external legacy approval without source", initial: true, canonical: true, fromLegacy: true, local: true, active: true, status: http.StatusNoContent},
 		{name: "first release carries existing default branch approval", initial: true, canonical: true, fromLegacy: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "nil configuration projection carries only authored policy", initial: true, canonical: true, active: true, nilConfiguration: true, forge: "gate", status: http.StatusNoContent, applied: true},
 		{name: "nil configuration invented digest is refused", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "digest", status: http.StatusUnprocessableEntity},
@@ -71,15 +73,20 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				workflow.Authored.Version = 1
+				if test.fromLegacy {
+					workflow.Config.Gate.Run = "approved-validator --fast"
+					workflow.Config.Gate.Validator.Enabled = true
+					workflow.Config.Worker.AllowLocalBinding = new(true)
+					workflow.Config.Worker.ExtraNetworkDomains = []string{"private.example.test"}
+					workflow.Authored = nil
+					workflow.DefinitionSources = nil
+				} else {
+					workflow.Authored.Version = 1
+				}
 				original, err = workflowconfig.ResolvePolicy(workflow)
 				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			if test.fromLegacy {
-				original = hubTestPolicy()
-				original.Workflow = canonicalPolicy.Workflow
 			}
 			original = original.WithID()
 			historyCount := 0
@@ -284,6 +291,40 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			decodeHubResponse(t, response, &retained)
 			if !reflect.DeepEqual(retained, item) {
 				t.Fatalf("apply remapped or edited work item: %+v -> %+v", item, retained)
+			}
+			if test.fromLegacy && test.local {
+				local, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte(candidate.Authored.Files["WORKFLOW.md"]), Config: []byte(candidate.Authored.Files["detent.yaml"]), HasConfig: true, WorkflowPath: "/operator/private/WORKFLOW.md", ConfigPath: "/operator/private/detent.yaml"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				local.Config.Hooks.BeforeRun = "private-isolation.sh"
+				client, err := hubclient.New(hubclient.Config{URL: "https://legacy-policy.example.test", TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native(f.project.OrganizationID, f.project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				loaded, err := native.ResolveProjectWorkflow(t.Context(), local, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				actual, err := workflowconfig.ResolvePolicy(loaded)
+				if err != nil || !reflect.DeepEqual(actual, original) || loaded.Config.Hooks != local.Config.Hooks {
+					t.Fatalf("legacy load lost authoritative configuration: %+v %v", actual, err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_second", "hostname": "second", "capacity": 1, "version": "test"}), http.StatusOK)
+				fresh := f.create(t, "Claim retained legacy approval after upgrade")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: "machine_second", SessionID: "unapproved", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusConflict)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: actual.ID, MachineID: "machine_second", SessionID: "second", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
+				current, err := native.ProjectPolicy(t.Context())
+				if err != nil || current.Policy.ID != original.ID || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || !reflect.DeepEqual(current.History, approval.History) {
+					t.Fatalf("legacy load rewrote approval or history: %+v %v", current, err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", testHubAdminToken, map[string]string{"expected_policy_id": original.ID}), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusConflict)
 			}
 		})
 	}

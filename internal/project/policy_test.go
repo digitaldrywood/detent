@@ -139,7 +139,7 @@ func (s *mappedPolicyScheduling) CheckProjectPolicy(_ context.Context, _, _ stri
 	return descriptor.Match(s.approved)
 }
 
-func (s *mappedPolicyScheduling) ResolveProjectWorkflow(_ context.Context, _ string, workflow workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+func (s *mappedPolicyScheduling) ResolveProjectWorkflow(_ context.Context, _ string, workflow workflowconfig.Workflow, _ *policy.RepositorySource) (workflowconfig.Workflow, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.modelSelection.Configured() {

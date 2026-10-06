@@ -122,15 +122,15 @@ func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, r
 	return err
 }
 
-func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, workflow workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, workflow workflowconfig.Workflow, provenance *policy.RepositorySource) (workflowconfig.Workflow, error) {
 	source := s.nativeProjects[project]
 	if source == nil {
 		return workflow, nil
 	}
-	return source.client.ResolveProjectWorkflow(ctx, workflow)
+	return source.client.ResolveProjectWorkflow(ctx, workflow, provenance)
 }
 
-func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow workflowconfig.Workflow) (workflowconfig.Workflow, error) {
+func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow workflowconfig.Workflow, provenance *policy.RepositorySource) (workflowconfig.Workflow, error) {
 	project, err := c.Project(ctx)
 	if err != nil {
 		return workflowconfig.Workflow{}, fmt.Errorf("load Cloud model selection: %w", err)
@@ -152,7 +152,8 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 	}
 	workflow.Config.Agents.ModelSelection = selection
 
-	if workflow.Definition.Layout == workflowconfig.ProjectDefinitionSplit || workflow.Definition.Layout == workflowconfig.ProjectDefinitionLegacy || workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud {
+	supplied := workflow.Definition.Layout == workflowconfig.ProjectDefinitionSplit || workflow.Definition.Layout == workflowconfig.ProjectDefinitionLegacy
+	if workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud || supplied && provenance != nil {
 		return workflow, nil
 	}
 	approval, err := c.ProjectPolicy(ctx)
@@ -162,6 +163,9 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 	}
 	if err != nil {
 		return workflowconfig.Workflow{}, fmt.Errorf("load approved shared project configuration: %w", err)
+	}
+	if supplied && (approval.Policy.Authored != nil || approval.Policy.Configuration == nil) {
+		return workflow, nil
 	}
 	return workflowconfig.ApplyNativePolicy(workflow, approval.Policy)
 }
