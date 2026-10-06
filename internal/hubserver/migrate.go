@@ -159,7 +159,30 @@ func hubGoMigrations(loggers ...*slog.Logger) []*goose.Migration {
 		goose.NewGoMigration(20261006023000, &goose.GoFunc{RunTx: func(ctx context.Context, tx *sql.Tx) error {
 			return migrateGitHubIssueReferences(ctx, tx, logger)
 		}}, nil),
+		goose.NewGoMigration(20261006031016, &goose.GoFunc{RunTx: func(ctx context.Context, tx *sql.Tx) error {
+			if err := migrateSpritePlacement(ctx, tx); err != nil {
+				return err
+			}
+			return migrateGitHubIssueReferences(ctx, tx, logger)
+		}}, nil),
 	}
+}
+
+func migrateSpritePlacement(ctx context.Context, tx *sql.Tx) error {
+	var placement int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('project_sprite_pools') WHERE name = 'placement_json'").Scan(&placement); err != nil {
+		return err
+	}
+	if placement != 0 {
+		return nil
+	}
+	data, err := migrationFiles.ReadFile("migration_steps/20261006023000_sprite_placement.sql")
+	if err != nil {
+		return err
+	}
+	up, _, _ := strings.Cut(string(data), "-- +goose Down")
+	_, err = tx.ExecContext(ctx, up)
+	return err
 }
 
 func migrateAttachmentReferences(ctx context.Context, tx *sql.Tx) error {
