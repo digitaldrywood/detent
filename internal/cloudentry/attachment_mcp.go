@@ -106,7 +106,7 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 		if call.Params.Name == operatortool.ReadAttachmentMetadata {
 			err = s.readAttachmentMetadata(read)
 		} else {
-			err = s.readAttachmentMCP(read, input)
+			err = s.readAttachmentContent(read, input)
 		}
 		if err != nil {
 			return err
@@ -172,7 +172,7 @@ func (s *Service) attachmentMCPContext(c echo.Context, buffer *attachmentRespons
 	return read
 }
 
-func (s *Service) readAttachmentMCP(c echo.Context, input operatortool.AttachmentOperationArguments) error {
+func (s *Service) readAttachmentContent(c echo.Context, input operatortool.AttachmentOperationArguments) error {
 	if s.attachments == nil {
 		return attachmentNotFound(c)
 	}
@@ -200,14 +200,8 @@ func (s *Service) readAttachmentMCP(c echo.Context, input operatortool.Attachmen
 		return attachmentError(c, http.StatusBadGateway, "attachment_unavailable", "Attachment content is incomplete")
 	}
 	record.AuthorizedPrincipal = ""
-	return c.JSON(http.StatusOK, struct {
-		Metadata        attachment.Metadata `json:"metadata"`
-		ContentBase64   string              `json:"content_base64"`
-		Offset          int64               `json:"offset"`
-		ReturnedBytes   int                 `json:"returned_bytes"`
-		EOF             bool                `json:"eof"`
-		MaxContentBytes int                 `json:"max_content_bytes"`
-	}{record, base64.StdEncoding.EncodeToString(content), input.Offset, len(content), input.Offset+length == record.Size, operatortool.AttachmentContentBytes})
+	c.Response().Header().Set("Cache-Control", "private, no-store")
+	return c.JSON(http.StatusOK, operatortool.AttachmentContentResult{Metadata: record, ContentBase64: base64.StdEncoding.EncodeToString(content), Offset: input.Offset, ReturnedBytes: len(content), EOF: input.Offset+length == record.Size, MaxContentBytes: operatortool.AttachmentContentBytes})
 }
 
 func (s *Service) finishAttachmentMCPDeletion(c echo.Context, input operatortool.AttachmentOperationArguments) bool {

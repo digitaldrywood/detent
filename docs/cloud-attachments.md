@@ -37,6 +37,17 @@ comment body. Raster references use `![name](path)`; other files use
 same transaction. Path references retain their existing binding to one issue
 body or comment. Reads still require a session or a scoped token.
 
+Native issue agents can call `read_attachment_metadata` and `read_attachment`
+with `project_id` and `attachment_id` from an issue or comment reference. The
+runner uses its current execution authority and project read grant through the
+existing entry attachment owner. Content reads return base64 with metadata,
+offset, returned byte count and EOF, bounded to 32768 bytes per call; `offset`
+and `length` select a part of the recorded file. The existing
+`GET .../attachments/:id` route accepts these bounds as query parameters and
+returns the same content result. Reads without bounds retain the file response.
+Missing, deleted or unauthorized attachments are refused; incomplete storage
+content is unavailable. Workers receive no attachment mutation tools.
+
 Native issue agents can call `attach_evidence` with a workspace-relative `path`
 and a short, single-line `caption`. The runner reads the file on the worker that
 owns the attempt, including Sprite workers, and uploads through the existing

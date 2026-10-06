@@ -96,7 +96,9 @@ func (c *NativeClient) Labels(ctx context.Context) ([]tracker.NativeLabel, error
 
 func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHandler) {
 	var tools []runner.AgentTool
-	for _, definition := range append(operatortool.WorkReadCatalog(), operatortool.ChangeCatalog()...) {
+	definitions := append(operatortool.WorkReadCatalog(), operatortool.ChangeCatalog()...)
+	definitions = append(definitions, operatortool.AttachmentCatalog()...)
+	for _, definition := range definitions {
 		switch definition.Name {
 		case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkRuns, operatortool.BoardActivity, operatortool.WorkAttemptReceipt:
 			switch definition.Name {
@@ -109,7 +111,7 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 			}
 			definition.Description += " reference must be a canonical native work-item ID beginning with wi_; numbers, titles and URLs are not supported. Use cursor, not offset, for paging."
 			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
-		case operatortool.ListChanges, operatortool.GetChange:
+		case operatortool.ListChanges, operatortool.GetChange, operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment:
 			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
 		}
 	}
@@ -133,6 +135,19 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 	var value any
 	var err error
 	switch call.Name {
+	case operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment:
+		request, decodeErr := operatortool.DecodeAttachmentOperation(call.Name, call.Arguments)
+		if decodeErr != nil {
+			return operatortool.Result{}, decodeErr
+		}
+		if request.ProjectID != string(c.project) {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		value, err = c.readAgentAttachment(ctx, call.Name, request)
+		var refusal *APIError
+		if errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest {
+			return operatortool.Result{}, operatortool.ErrInvalidArguments
+		}
 	case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkRuns, operatortool.BoardActivity, operatortool.WorkAttemptReceipt:
 		request, decodeErr := operatortool.DecodeWorkRead(call.Name, call.Arguments)
 		if decodeErr != nil {

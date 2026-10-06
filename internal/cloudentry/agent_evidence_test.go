@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/png"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -69,6 +71,14 @@ func TestNativeAgentEvidence(t *testing.T) {
 			response := ownerJSON(http.MethodPost, o.projectAPI()+"/work-items", o.ownerCSRF, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "evidence-work"}, Title: "Screenshot the page", State: "Todo"})
 			pilotStatus(t, "issue", response, http.StatusOK)
 			pilotDecode(t, response, &issue)
+			inputContent := strings.Repeat("approved portable input\n", 1600)
+			inputPath := o.projectAPI() + "/attachments"
+			inputUpload := request(http.MethodPost, inputPath, strings.NewReader(inputContent), map[string]string{"Content-Type": "text/plain", "X-Attachment-Name": "approved-input.txt", "X-CSRF-Token": o.ownerCSRF})
+			pilotStatus(t, "human input upload", inputUpload, http.StatusCreated)
+			var inputAttachment attachment.Metadata
+			pilotDecode(t, inputUpload, &inputAttachment)
+			inputComment := ownerJSON(http.MethodPost, o.projectAPI()+"/work-items/"+string(issue.WorkItemID)+"/comments", o.ownerCSRF, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "input-comment"}, Body: inputAttachment.Reference})
+			pilotStatus(t, "human input comment", inputComment, http.StatusOK)
 			client, err := hubclient.New(hubclient.Config{URL: testPublicURL + "/organizations/" + o.id, TokenSource: func() string { return credential }, HTTPClient: &http.Client{Transport: handlerTransport{f.service.Handler()}}})
 			if err != nil {
 				t.Fatal(err)
@@ -97,7 +107,134 @@ func TestNativeAgentEvidence(t *testing.T) {
 				content, err := os.ReadFile(filepath.Join(workspace, path))
 				return runner.ValidationEvidence{Name: "page.png", ContentType: "image/png", Content: content}, err
 			})
-			_, handler := execution.(runner.ToolExecution).AgentTools()
+			tools, handler := execution.(runner.ToolExecution).AgentTools()
+			for _, tool := range tools {
+				if operatortool.IsAttachmentTool(tool.Name) && tool.Name != operatortool.ReadAttachment && tool.Name != operatortool.ReadAttachmentMetadata {
+					t.Fatalf("worker gained attachment mutation %s", tool.Name)
+				}
+			}
+			for _, part := range []struct {
+				name string
+				args map[string]any
+				want string
+			}{
+				{operatortool.WorkComments, map[string]any{"reference": issue.WorkItemID}, inputAttachment.ID},
+				{operatortool.ReadAttachmentMetadata, map[string]any{"attachment_id": inputAttachment.ID}, inputAttachment.SHA256},
+				{operatortool.ReadAttachment, map[string]any{"attachment_id": inputAttachment.ID}, inputContent[:operatortool.AttachmentContentBytes]},
+				{operatortool.ReadAttachment, map[string]any{"attachment_id": inputAttachment.ID, "offset": operatortool.AttachmentContentBytes}, inputContent[operatortool.AttachmentContentBytes:]},
+				{operatortool.ReadAttachment, map[string]any{"attachment_id": inputAttachment.ID, "length": 1}, inputContent[:1]},
+				{operatortool.ReadAttachment, map[string]any{"attachment_id": inputAttachment.ID, "offset": len(inputContent)}, ""},
+			} {
+				part.args["project_id"] = o.project
+				arguments, err := json.Marshal(part.args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := handler(t.Context(), runner.AgentToolCall{Name: part.name, Arguments: arguments})
+				if err != nil || !result.Success {
+					t.Fatalf("worker input %s: %+v, %v", part.name, result, err)
+				}
+				if strings.Contains(result.Content, credential) || strings.Contains(result.Content, "authorized_principal") || strings.Contains(result.Content, "spaces.test") {
+					t.Fatal("worker attachment read exposed internal authority or storage")
+				}
+				if part.name == operatortool.ReadAttachment {
+					var read operatortool.AttachmentContentResult
+					if json.Unmarshal([]byte(result.Content), &read) != nil {
+						t.Fatal("worker input was not a content result")
+					}
+					content, err := base64.StdEncoding.DecodeString(read.ContentBase64)
+					if err != nil || string(content) != part.want || read.ReturnedBytes != len(content) || read.Metadata.ID != inputAttachment.ID || len(read.Metadata.ReferencedBy) != 1 || read.Metadata.ReferencedBy[0].WorkItemID != string(issue.WorkItemID) || read.EOF != (read.Offset+int64(len(content)) == inputAttachment.Size) {
+						t.Fatalf("worker input content=%+v, %v", read, err)
+					}
+				} else if !strings.Contains(result.Content, part.want) {
+					t.Fatalf("worker input %s omitted %s", part.name, part.want)
+				}
+			}
+			for _, refusal := range []struct {
+				name string
+				args map[string]any
+				want error
+			}{
+				{operatortool.ReadAttachment, map[string]any{"length": 32769}, operatortool.ErrInvalidArguments},
+				{operatortool.ReadAttachment, map[string]any{"length": 0}, operatortool.ErrInvalidArguments},
+				{operatortool.ReadAttachment, map[string]any{"offset": -1}, operatortool.ErrInvalidArguments},
+				{operatortool.ReadAttachment, map[string]any{"offset": inputAttachment.Size + 1}, operatortool.ErrInvalidArguments},
+				{operatortool.ReadAttachment, map[string]any{"project_id": "prj_foreign"}, operatortool.ErrAccessDenied},
+				{operatortool.ReadAttachmentMetadata, map[string]any{"project_id": "prj_foreign"}, operatortool.ErrAccessDenied},
+				{operatortool.ReadAttachment, map[string]any{"attachment_id": "att_missing"}, operatortool.ErrInvalidArguments},
+				{operatortool.ReadAttachment, map[string]any{"attachment_id": "att_" + strings.Repeat("0", 32)}, operatortool.ErrAccessDenied},
+				{operatortool.ReadAttachmentMetadata, map[string]any{"attachment_id": "att_" + strings.Repeat("0", 32)}, operatortool.ErrAccessDenied},
+				{operatortool.DeleteAttachment, map[string]any{}, operatortool.ErrUnknownTool},
+				{operatortool.ReferenceAttachment, map[string]any{}, operatortool.ErrUnknownTool},
+			} {
+				arguments := map[string]any{"project_id": o.project, "attachment_id": inputAttachment.ID}
+				for field, value := range refusal.args {
+					arguments[field] = value
+				}
+				raw, err := json.Marshal(arguments)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before := len(store.requests())
+				result, err := handler(t.Context(), runner.AgentToolCall{Name: refusal.name, Arguments: raw})
+				if !errors.Is(err, refusal.want) || result.Success || len(store.requests()) != before {
+					t.Fatalf("worker input refusal %s %s: %+v, %v, want %v", refusal.name, raw, result, err, refusal.want)
+				}
+			}
+			canonical := request(http.MethodGet, "/api/v2/organizations/"+o.id+"/projects/"+o.project+"/attachments/"+inputAttachment.ID+"?length=1", nil, map[string]string{"Authorization": "Bearer " + credential})
+			var canonicalContent operatortool.AttachmentContentResult
+			if canonical.status != http.StatusOK || json.Unmarshal([]byte(canonical.body), &canonicalContent) != nil || canonicalContent.ContentBase64 != base64.StdEncoding.EncodeToString([]byte(inputContent[:1])) {
+				t.Fatalf("canonical worker input: %+v", canonical)
+			}
+			for _, bounds := range []struct {
+				query string
+				want  int
+			}{{"?offset=invalid", http.StatusBadRequest}, {"?offset=-1", http.StatusBadRequest}, {"?length=1.5", http.StatusBadRequest}, {"?length=32769", http.StatusBadRequest}, {"?length=1&length=2", http.StatusNotFound}} {
+				before := len(store.requests())
+				read := request(http.MethodGet, inputPath+"/"+inputAttachment.ID+bounds.query, nil, map[string]string{"Authorization": "Bearer " + credential})
+				if read.status != bounds.want || len(store.requests()) != before {
+					t.Fatalf("invalid worker read bounds %s: %+v", bounds.query, read)
+				}
+			}
+			inputKey, err := attachment.Key(o.id, inputAttachment.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, unavailable := range []struct {
+				missing bool
+				want    error
+			}{{want: operatortool.ErrReadUnavailable}, {missing: true, want: operatortool.ErrAccessDenied}} {
+				store.mu.Lock()
+				object := store.objects[inputKey]
+				if unavailable.missing {
+					delete(store.objects, inputKey)
+				} else {
+					store.objects[inputKey] = spacesObject{content: []byte("short"), created: object.created}
+				}
+				store.mu.Unlock()
+				raw, err := json.Marshal(map[string]string{"project_id": o.project, "attachment_id": inputAttachment.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.ReadAttachment, Arguments: raw})
+				store.mu.Lock()
+				store.objects[inputKey] = object
+				store.mu.Unlock()
+				if !errors.Is(err, unavailable.want) || result.Success {
+					t.Fatalf("unavailable worker input: %+v, %v", result, err)
+				}
+			}
+			pilotStatus(t, "delete human input", request(http.MethodDelete, inputPath+"/"+inputAttachment.ID, nil, map[string]string{"X-CSRF-Token": o.ownerCSRF}), http.StatusNoContent)
+			for _, name := range []string{operatortool.ReadAttachment, operatortool.ReadAttachmentMetadata} {
+				raw, err := json.Marshal(map[string]string{"project_id": o.project, "attachment_id": inputAttachment.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := handler(t.Context(), runner.AgentToolCall{Name: name, Arguments: raw})
+				if !errors.Is(err, operatortool.ErrAccessDenied) || result.Success {
+					t.Fatalf("deleted worker input: %+v, %v", result, err)
+				}
+			}
 			call := runner.AgentToolCall{Name: "attach_evidence", Arguments: json.RawMessage(`{"path":"page.png","caption":"Page rendered correctly"}`)}
 			result, err := handler(t.Context(), call)
 			var uploaded attachment.Metadata
@@ -128,7 +265,7 @@ func TestNativeAgentEvidence(t *testing.T) {
 				t.Fatal("native client unavailable")
 			}
 			comments, err := native.Comments(t.Context(), issue.WorkItemID, "")
-			if err != nil || len(comments.Items) != 1 || !strings.Contains(comments.Items[0].Body, completion) || !strings.Contains(comments.Items[0].Body, "Page rendered correctly") || !strings.Contains(comments.Items[0].Body, uploaded.Reference) {
+			if err != nil || len(comments.Items) != 2 || !strings.Contains(comments.Items[1].Body, completion) || !strings.Contains(comments.Items[1].Body, "Page rendered correctly") || !strings.Contains(comments.Items[1].Body, uploaded.Reference) {
 				t.Fatalf("completion evidence: %+v, %v", comments, err)
 			}
 			attempts, err := native.Attempts(t.Context(), issue.WorkItemID, "")

@@ -28,6 +28,15 @@ type AttachmentOperationArguments struct {
 	Length       int    `json:"length,omitempty"`
 }
 
+type AttachmentContentResult struct {
+	Metadata        attachment.Metadata `json:"metadata"`
+	ContentBase64   string              `json:"content_base64"`
+	Offset          int64               `json:"offset"`
+	ReturnedBytes   int                 `json:"returned_bytes"`
+	EOF             bool                `json:"eof"`
+	MaxContentBytes int                 `json:"max_content_bytes"`
+}
+
 func IsAttachmentTool(name string) bool {
 	switch name {
 	case UploadAttachment, ReadAttachmentMetadata, ReadAttachment, ReferenceAttachment, DeleteAttachment:
