@@ -58,6 +58,7 @@ func TestReworkCurrentHeadCIDispatch(t *testing.T) {
 				issue.Priority = new(1)
 				issue.PullRequest = tt.pr
 				next := dispatchTestIssue("next", "Todo")
+				next.Priority = new(2)
 				if retry {
 					state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 2, DueAt: now}
 				}
