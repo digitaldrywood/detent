@@ -15,6 +15,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -414,13 +415,18 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	clock = now.Add(-10 * time.Minute)
 	lease := claimNativeAttempt(t, f, worker, "analytics-machine", "analytics-session", issue.WorkItemID)
 	start := nativeStartedEvent(lease)
+	start.Data.Identity.Role = "merge"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 900}), http.StatusOK)
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start)
 	requireNativeStatus(t, response, http.StatusOK)
 	clock = now
 	start.Type, start.IdempotencyKey, start.Data.Sequence = "run.observed", "analytics-runtime", 2
-	start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now, Phases: []tracker.NativePhase{{Name: "planning", StartedAt: now.Add(-10 * time.Minute), FinishedAt: now.Add(-5 * time.Minute)}}}
+	start.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: now, Phases: []tracker.NativePhase{{Name: "planning", StartedAt: now.Add(-10 * time.Minute), FinishedAt: now.Add(-5 * time.Minute)}}}
 	start.Data.Runtime.LocalAttemptID, start.Data.Runtime.Generation = 1, 1
+	start.Data.Runtime.Identity = agentidentity.RuntimeUpdate("merge-model", "openai", "high", "", now)
+	start.Data.Runtime.Identity.Role, start.Data.Runtime.Identity.BackendKind = "merge", "codex"
+	start.Data.Runtime.Landing = &tracker.NativeLandingReceipt{RefusalKind: "conflict", ObservedAt: now}
+	start.Data.Usage = []tracker.NativeUsage{{Provider: "openai", Model: "merge-model", Input: 10}}
 	start.Data.Runtime.Activity = &workflowmetrics.ActivityProfile{
 		Schema: 1, AttemptID: 1, Generation: 1,
 		StartedAt: now.Add(-10 * time.Minute), AsOf: now.Add(-5 * time.Minute), FinishedAt: now.Add(-5 * time.Minute),
@@ -441,6 +447,10 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	}
 	if report.CostPerOutcome.Shipped != 0 || len(report.Efficiency) != 1 || report.Efficiency[0].Seconds != 300 || len(report.Attempts.Items) != 1 {
 		t.Fatalf("runtime %#v", report)
+	}
+	attempt := report.Attempts.Items[0]
+	if attempt.Identity.Role != "merge" || attempt.Identity.ResolvedModel.Value != "merge-model" || attempt.Landing == nil || attempt.Landing.Refusal != "conflict" || attempt.UsageRowsObserved != 1 {
+		t.Fatalf("merge analytics = %#v", attempt)
 	}
 	if report.ProviderCapacityWait.IntervalsObserved != 1 || report.ProviderCapacityWait.Seconds < 300 || report.ProviderCapacityWait.Seconds > 305 || !report.ProviderCapacityWait.Partial {
 		t.Fatalf("recorded queue %#v", report.ProviderCapacityWait)

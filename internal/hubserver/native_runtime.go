@@ -57,14 +57,18 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		r.Activity = &profile
 	}
 	if l := r.Landing; l != nil {
-		if l.ChangeID != "" && !validNativeID(l.ChangeID, "change") || l.VersionID != "" && !validNativeID(l.VersionID, "version") || l.HeadSHA != "" && !validCommitID(l.HeadSHA) {
+		if l.Refusal != "" && l.Refusal != l.RefusalKind || l.FromState != "" || l.TargetState != "" {
+			return nativeInvalid("Landing state observations belong to the workflow owner")
+		}
+		l.Refusal = l.RefusalKind
+		if l.ChangeID != "" && !validNativeID(l.ChangeID, "change") || l.VersionID != "" && (l.ChangeID == "" || !validNativeID(l.VersionID, "version")) || l.HeadSHA != "" && !validCommitID(l.HeadSHA) {
 			return nativeInvalid("Invalid landing identity")
 		}
 		if l.Landed {
-			if !validNativeID(l.ChangeID, "change") || !validNativeID(l.VersionID, "version") || !validCommitID(l.HeadSHA) || l.RefusalKind != "" || !validCommitID(l.MergeSHA) || !slices.Contains([]string{"squash", "merge", "rebase"}, l.Method) || !validExecutionName(l.BaseRef) {
+			if !validNativeID(l.ChangeID, "change") || !validNativeID(l.VersionID, "version") || !validCommitID(l.HeadSHA) || l.RefusalKind != "" || l.GateFailed || !validCommitID(l.MergeSHA) || !slices.Contains([]string{"squash", "merge", "rebase"}, l.Method) || !validExecutionName(l.BaseRef) {
 				return nativeInvalid("Invalid landing receipt")
 			}
-		} else if l.MergeSHA != "" || !slices.Contains([]string{"head_moved", "missing_head", "conflict", "nothing_to_land", "base_protected", "base_moved"}, l.RefusalKind) {
+		} else if l.MergeSHA != "" || !(l.GateFailed && l.RefusalKind == "") && !slices.Contains([]string{"head_moved", "missing_head", "conflict", "nothing_to_land", "base_protected", "base_moved"}, l.RefusalKind) {
 			return nativeInvalid("Invalid landing refusal")
 		}
 	}
