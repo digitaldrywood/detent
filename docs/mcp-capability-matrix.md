@@ -105,10 +105,10 @@ Sources: [GET /organizations/:organization/delete](../internal/cloudentry/servic
 Health
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3339.
-- Decision: Public HTTP liveness probe returning only status=ok. This is a transport boundary with no operator resource, organization data or command; MCP discovery already provides protocol liveness. No operator capability is excluded.
+- Decision: Public HTTP liveness probe returning status=ok plus the entry build version and commit. Build identity is transport metadata with no operator resource, organization data or command; MCP discovery already provides protocol liveness. No operator capability is excluded.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role anonymous liveness probe; credential none; project not project-scoped; ownership no organization or application resource data.
-- Application: func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{"status": "ok"}) }; handler-owned application validation/read/command
+- Application: func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{"status": "ok", "version": s.config.Build.Version, "commit": s.config.Build.Commit}) }; anonymous transport liveness and build identity
 - Extraction: No application extraction: this anonymous transport liveness route has no operator business data.
 - Preconditions: Public transport liveness; no operator resource or action
 - Coverage: Source-derived inventory; execution authorization and parity regressions belong to the owner child
