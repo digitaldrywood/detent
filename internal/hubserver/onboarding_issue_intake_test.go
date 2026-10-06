@@ -269,7 +269,7 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
 			decodeHubResponse(t, response, &native)
-			if native.Title != title || native.Body != body || native.State != "Backlog" || native.LinkedSource.Status != "complete" {
+			if native.Title != title || native.Body != body || native.State != "Triage" || native.LinkedSource.Status != "complete" {
 				t.Fatalf("native ownership = %#v", native)
 			}
 			var comments, count int

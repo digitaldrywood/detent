@@ -34,8 +34,7 @@ export type Revision = typeof Revision.Type;
 
 // --- Shared members ---------------------------------------------------------
 
-/** `human` for an operator's session, `runner` for a worker credential. */
-export const NativeActorKind = Schema.Literals(["human", "runner"]);
+export const NativeActorKind = Schema.Literals(["human", "runner", "integration"]);
 
 export const NativeActor = Schema.Struct({
   kind: NativeActorKind,

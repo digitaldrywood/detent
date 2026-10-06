@@ -394,3 +394,62 @@ func decodeJWTSegment(t *testing.T, segment string) map[string]any {
 	}
 	return decoded
 }
+
+func TestRepositoryInstallationTokenSource(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		status    int
+		id        int64
+		wantError bool
+	}{
+		{"repository installation", http.StatusOK, 987, false},
+		{"repository has no installation", http.StatusNotFound, 0, true},
+		{"invalid installation response", http.StatusOK, 0, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var discoveries atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+					t.Error("missing App authentication")
+				}
+				switch r.URL.Path {
+				case "/repos/acme/orders/installation":
+					discoveries.Add(1)
+					w.WriteHeader(test.status)
+					if err := json.NewEncoder(w).Encode(map[string]int64{"id": test.id}); err != nil {
+						t.Error(err)
+					}
+				case "/app/installations/987/access_tokens":
+					if err := json.NewEncoder(w).Encode(map[string]any{"token": "product-installation-token", "expires_at": time.Now().Add(time.Hour)}); err != nil {
+						t.Error(err)
+					}
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(server.Close)
+			source, err := NewInstallationTokenSource(InstallationTokenConfig{Endpoint: server.URL + "/graphql", AppID: "123", PrivateKey: testPrivateKeyPEM(t), Repository: "acme/orders", HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := source.Token(t.Context())
+			if (err != nil) != test.wantError {
+				t.Fatalf("Token error = %v", err)
+			}
+			if !test.wantError {
+				if token != "product-installation-token" {
+					t.Fatalf("token = %q", token)
+				}
+				if _, err := source.Token(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if discoveries.Load() != 1 {
+					t.Fatalf("installation discovery repeated %d times", discoveries.Load())
+				}
+			}
+		})
+	}
+}

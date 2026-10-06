@@ -163,7 +163,7 @@ func (d *database) processWebhook(ctx context.Context, inboxID int64, now time.T
 		return errors.Join(fmt.Errorf("mark GitHub webhook processing: %w", err), rollbackErr)
 	}
 
-	result, err := applyWebhook(ctx, tx, delivery, now)
+	result, err := applyWebhook(context.WithValue(ctx, linkedSourceURLKey{}, d.linkedSourceBase), tx, delivery, now)
 	if err != nil {
 		rollbackErr := tx.Rollback()
 		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)

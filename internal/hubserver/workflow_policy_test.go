@@ -132,6 +132,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			if test.applied {
 				wantStates = candidate.Workflow.States
 			}
+			wantStates = nativeTriageStates(wantStates)
 			if err != nil || !reflect.DeepEqual(project.States, wantStates) {
 				t.Fatalf("workflow states = %+v, %v; want %+v", project.States, err, wantStates)
 			}

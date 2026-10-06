@@ -104,6 +104,9 @@ func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeS
 		if _, err := tx.ExecContext(ctx, "UPDATE projects SET repository_id = ?, integration_revision = integration_revision + 1 WHERE id = ?", id, scope.project); err != nil {
 			return nil, err
 		}
+		if err := ensureNativeTriage(ctx, tx, scope, now); err != nil {
+			return nil, err
+		}
 		return readProjectIntegration(ctx, tx, scope)
 	})
 }

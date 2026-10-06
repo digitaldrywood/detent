@@ -18,6 +18,50 @@ import (
 
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}
+	var snapshot *tracker.GitHubIssueSnapshot
+	var sourceRepository *RepositorySource
+	if request.GitHubIssueURL != "" {
+		if replay, found, err := s.nativeCommandReplay(ctx, scope, options.OperationID, request.IdempotencyKey, request); found || err != nil {
+			if err != nil {
+				return nil, err
+			}
+			return s.nativeIssueJSON(replay)
+		}
+		canonical, _, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
+		if err != nil {
+			return nil, nativeInvalid(err.Error())
+		}
+		var exists int
+		if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id = ? AND native_source_key = ?", scope.project, "github:"+canonical).Scan(&exists); err != nil {
+			return nil, err
+		}
+		if exists == 0 {
+			snapshot, err = s.fetchLinkedSnapshot(ctx, scope, canonical)
+			if err != nil {
+				return nil, err
+			}
+			_, repository, _, _ := tracker.ParseGitHubIssueURL(canonical)
+			if _, found, err := resolveWebhookRepositoryID(ctx, s.database.db, repository); err != nil {
+				return nil, err
+			} else if !found {
+				if s.config.ReconcileBackend == nil {
+					return nil, nativeInvalid("GitHub App repository transport is unavailable")
+				}
+				parts := strings.Split(repository, "/")
+				fetched, err := s.config.ReconcileBackend.Reconcile(ctx, ReconcileRequest{Profile: "native", SkipIssues: true, SkipRepository: true, Repository: RepositoryTarget{Owner: parts[0], Name: parts[1]}})
+				if err != nil {
+					return nil, err
+				}
+				if err := validateReconcileSnapshot(ReconcileSnapshot{Repository: fetched.Repository}); err != nil {
+					return nil, err
+				}
+				if !strings.EqualFold(fetched.Repository.Owner+"/"+fetched.Repository.Name, repository) {
+					return nil, nativeInvalid("GitHub App repository does not match the linked source")
+				}
+				sourceRepository = &fetched.Repository
+			}
+		}
+	}
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if origin, machine := issueorigin.Parse(request.Body); machine && origin.Kind == "worker" && request.GitHubIssueURL == "" && request.State == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != "" {
 			if _, err := validateRunnerLeaseTx(ctx, tx, scope, request.LeaseID, request.FencingToken, now); err != nil {
@@ -25,7 +69,18 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			}
 			return createNativeMachineIntakeTx(ctx, tx, scope, request, origin.Fingerprint, now)
 		}
-		return createNativeIssueTx(ctx, tx, scope, request, now)
+		if sourceRepository != nil {
+			owner, name, node := sourceRepository.Owner, sourceRepository.Name, sourceRepository.NodeID
+			_, err := ensureWebhookSourceRepository(ctx, tx, &githubWebhookRepository{NodeID: &node, Name: &name, Owner: &githubWebhookActor{Login: &owner}}, now)
+			if err != nil {
+				return nil, err
+			}
+		}
+		issue, err := createNativeIssueTx(ctx, tx, scope, request, now)
+		if err != nil || snapshot == nil || issue.LinkedSource == nil {
+			return issue, err
+		}
+		return intakeLinkedIssueTx(ctx, tx, scope, string(issue.WorkItemID), *snapshot, now)
 	})
 	if err == nil {
 		s.wakeSpriteRunnersAfter(scope, result)

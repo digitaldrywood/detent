@@ -99,8 +99,8 @@ For GitHub compatibility, remove `--github-disabled` only after configuring
 GitHub credentials for the dedicated service user and, if used, a webhook HMAC
 secret through the existing CLI environment options. Allow GitHub API traffic
 and the separately selected Git transport. Follow [GitHub profiles](github-profiles.md)
-for import, mirror cutover and projection; native-only mode does not project
-changes to GitHub. The example service's `ProtectHome` means interactive login
+for import, cutover and native GitHub intake. Hosted deployments use the product
+App credentials described there; Cloud comments remain private. The example service's `ProtectHome` means interactive login
 files in a human home directory are deliberately unavailable.
 
 ## Authentication, projects and runners

@@ -224,6 +224,13 @@ func applyNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if project.Profile != "native" {
 		return nativeInvalid("Compatibility project workflow is externally owned")
 	}
+	integration, err := readProjectIntegration(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	if integration.Repository != "" || integration.CheckoutRepository != "" {
+		states = nativeTriageStates(states)
+	}
 	if err := validateNativeStates(states); err != nil {
 		return err
 	}
