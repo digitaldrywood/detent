@@ -36,6 +36,10 @@ export function OperatorActionPreview({ action }: { action: Record<string, unkno
     if (parsed._tag === "None") return null;
     const split = parsed.value;
     const parent = issueSplitParent(action, split.children.length);
+    const lanes = [...new Set(split.children.map((child) => child.state))];
+    const laneSummary = lanes.length === 1
+      ? `Children will be created in ${lanes[0]}${lanes[0] === "Todo" ? " · work starts as soon as a runner is free" : ""}`
+      : "Mixed lanes";
     const node = (position: number): string => position === 0 ? parent.label : `${position}. ${split.children[position - 1]?.title ?? "Unknown child"}`;
     const blockers = (position: number): number[] => (split.edges ?? []).filter((edge) => edge.dependent === position).map((edge) => edge.blocker);
     const parentBlockers = blockers(0);
@@ -43,6 +47,7 @@ export function OperatorActionPreview({ action }: { action: Record<string, unkno
     const projectId = typeof action.project_id === "string" ? action.project_id : undefined;
     return (
       <div className="space-y-3" data-testid="issue-split-proposal">
+        <p className="text-sm font-medium" data-testid="issue-split-lane-summary">{laneSummary}</p>
         {split.children.map((child, index) => (
           <section key={index} className="rounded-lg border border-border p-3">
             <h3 className="break-words font-medium text-sm">{index + 1}. {child.title}</h3>

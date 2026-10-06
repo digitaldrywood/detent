@@ -149,14 +149,14 @@ func (f *browserHostedFixture) seedIssueAsk(t *testing.T) {
 		}
 		prompt, _, _ := strings.Cut(request.Prompt, "\n\n## Available skills")
 		if strings.HasSuffix(prompt, "Use the split-issue skill to break this issue into smaller issues that can each land on their own. Wire up the dependencies so independent pieces can run in parallel, and show me the whole split as one proposal so I can confirm it once.") {
-			result, err := f.proposeBrowserIssueSplit(ctx, handle, false, false)
+			result, err := f.proposeBrowserIssueSplit(ctx, handle, false, false, "Blocked")
 			if err != nil {
 				return runner.AgentTurnResult{}, err
 			}
 			if !result.Success {
 				return runner.AgentTurnResult{}, errors.New(result.Content)
 			}
-			return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "Review the whole split below and confirm it once."})
+			return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: fmt.Sprintf("All 3 children will be created in Blocked, matching #%d.", issue.Number)})
 		}
 		if strings.HasSuffix(prompt, "Post answer as comment") {
 			raw, err := json.Marshal(map[string]string{"work_item_id": f.workItem, "body": "The issue was blocked for the recorded reason: user_requested."})

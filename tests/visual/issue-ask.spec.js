@@ -288,6 +288,7 @@ test("the split suggestion proposes one batch in Ask and confirmation files its 
   const approval = panel(page).getByTestId("operator-action-card");
   const proposal = approval.getByTestId("issue-split-proposal");
   await expect(proposal).toBeVisible();
+  await expect(proposal.getByTestId("issue-split-lane-summary")).toHaveText("Children will be created in Blocked");
   for (const title of ["1. Split storage", "2. Split API", "3. Split UI"]) {
     await expect(proposal.getByRole("heading", { name: title, exact: true })).toBeVisible();
   }
@@ -300,6 +301,7 @@ test("the split suggestion proposes one batch in Ask and confirmation files its 
   expect(detail.conversation.subject_work_item_id).toBe(hub.fixture.work_item);
   expect(detail.messages.find((message) => message.role === "user").text).toBe(splitPrompt);
   expect(await workItems()).toHaveLength(before.length);
+  expect(detail.messages.filter((message) => message.role === "assistant").map((message) => message.text).join(" ")).toContain("All 3 children will be created in Blocked, matching #2.");
   const action = detail.messages.find((message) => message.data.operator_action).data.operator_action.action;
   const bootstrap = await page.evaluate(async () => (await fetch("/chat/bootstrap")).json());
   const denied = await page.request.post(`${hub.fixture.url}${bootstrap.api_base}/projects/${hub.fixture.project_id}/conversations/${threadId}/actions`, {
@@ -315,6 +317,7 @@ test("the split suggestion proposes one batch in Ask and confirmation files its 
   const children = (await workItems()).filter((item) => item.title.startsWith("Split "));
   const storage = children.find((item) => item.title === "Split storage");
   const api = await read(page, `work-items/${children.find((item) => item.title === "Split API").work_item_id}`);
+  expect(api.state).toBe("Blocked");
   expect(api.dependencies).toEqual([storage.work_item_id]);
   const ui = await read(page, `work-items/${children.find((item) => item.title === "Split UI").work_item_id}`);
   expect(ui.dependencies).toEqual([]);
