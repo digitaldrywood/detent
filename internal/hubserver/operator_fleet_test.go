@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -24,9 +25,6 @@ import (
 
 const fleetProtocolMeta = `{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"fleet-test","version":"1"}}`
 
-// Direct calls must enforce instance administrator authority even without
-// discovery. Worker protocol credentials never gain operator tools; an absent
-// real approval browser cannot be replaced by an admin bearer token.
 func TestHubMCPFleetBoundary(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{GitHubRequestCounts: func() []GitHubRequestCount { return []GitHubRequestCount{} }})
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
@@ -350,18 +348,39 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 					})
 				}
 			}
-			t.Run("runner revocation approval", func(t *testing.T) {
-				args := json.RawMessage(`{"request_id":"revoke","runner_id":"` + r.binding.RunnerID + `"}`)
-				if _, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.RevokeRunnerIdentity, Arguments: args}); err == nil {
-					t.Fatal("bearer credential replaced real human approval")
+			t.Run("runner revocation authority", func(t *testing.T) {
+				target := prepareRunner(t, f, runnerauth.Read)
+				target.enroll(t)
+				args := json.RawMessage(`{"request_id":"revoke","runner_id":"` + target.binding.RunnerID + `"}`)
+				result, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.RevokeRunnerIdentity, Arguments: args})
+				if tt.authorized {
+					if err != nil {
+						t.Fatal(err)
+					}
+					var action struct {
+						Status chatpkg.ActionStatus `json:"status"`
+					}
+					if err := json.Unmarshal(result.Content, &action); err != nil {
+						t.Fatal(err)
+					}
+					if action.Status != chatpkg.ActionSucceeded {
+						t.Fatalf("revocation status=%s", action.Status)
+					}
+				} else if !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("revocation error=%v", err)
 				}
-				var revoked int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM api_tokens t JOIN runner_identities r ON r.token_id=t.id WHERE r.id=? AND t.revoked_at IS NOT NULL", r.binding.RunnerID).Scan(&revoked); err != nil {
+				var removed, revoked bool
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT r.removed_at IS NOT NULL, t.revoked_at IS NOT NULL FROM api_tokens t JOIN runner_identities r ON r.token_id=t.id WHERE r.id=?", target.binding.RunnerID).Scan(&removed, &revoked); err != nil {
 					t.Fatal(err)
 				}
-				if revoked != 0 {
-					t.Fatal("unapproved credential revoked")
+				if removed != tt.authorized || revoked != tt.authorized {
+					t.Fatalf("authorized=%t removed=%t revoked=%t", tt.authorized, removed, revoked)
 				}
+				status := http.StatusOK
+				if tt.authorized {
+					status = http.StatusUnauthorized
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, target.identityPath(), target.redemption.Credential, nil), status)
 			})
 		})
 	}
