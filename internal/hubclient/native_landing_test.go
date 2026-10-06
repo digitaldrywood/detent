@@ -115,19 +115,23 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if err := h.admin.client.request(t.Context(), http.MethodPost, h.admin.base()+"/onboarding/repository", map[string]any{"idempotency_key": "attach", "expected_revision": "1", "repository": "acme/orders"}, nil); err != nil {
 			t.Fatal(err)
 		}
-		created, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), GitHubIssueURL: "https://github.com/acme/orders/issues/12", State: "In Progress"})
+		created, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Land me", GitHubIssueURL: "https://github.com/acme/orders/issues/12", State: "In Progress"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, state := range []string{"Todo", "In Progress"} {
+			if err := h.connector.UpdateIssueState(t.Context(), string(created.WorkItemID), state); err != nil {
+				t.Fatal(err)
+			}
+		}
+		created, err = h.admin.Issue(t.Context(), created.WorkItemID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		issue = issueFromNative(created)
 		h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
 			sourceCalls++
-			if sourceCalls > 1 {
-				return tracker.GitHubIssueSnapshot{}, errors.New("GitHub source access removed after intake")
-			}
-			snapshot := intakeSnapshot()
-			snapshot.Title = "Land me"
-			return snapshot, nil
+			return tracker.GitHubIssueSnapshot{}, errors.New("GitHub source access removed after Hub intake")
 		}
 	}
 	item := tracker.NativeWorkItemID(issue.ID)
@@ -320,7 +324,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatalf("landing target = %#v", target)
 	}
 	if linked {
-		if len(target.SourceIssues) != 1 || target.SourceIssues[0].Repository != "acme/orders" || target.SourceIssues[0].Number != 12 || sourceCalls != 1 {
+		if len(target.SourceIssues) != 1 || target.SourceIssues[0].Repository != "acme/orders" || target.SourceIssues[0].Number != 12 || sourceCalls != 0 {
 			t.Fatalf("landing lost durable source identity or polled GitHub: sources=%+v calls=%d", target.SourceIssues, sourceCalls)
 		}
 	} else if len(target.SourceIssues) != 0 {
@@ -420,8 +424,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if _, err := execution.LandingTarget(guarded); !errors.Is(err, runner.ErrLandingNotReviewed) {
 		t.Fatalf("landing target after landing = %v, want %v", err, runner.ErrLandingNotReviewed)
 	}
-	if linked && sourceCalls != 1 {
-		t.Fatalf("source calls across implementation and native landing = %d, want 1", sourceCalls)
+	if linked && sourceCalls != 0 {
+		t.Fatalf("source calls across implementation and native landing = %d, want 0", sourceCalls)
 	}
 }
 

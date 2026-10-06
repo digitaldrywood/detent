@@ -192,6 +192,9 @@ func projectSchema(t reflect.Type) map[string]any {
 			if f.Type.Kind() == reflect.String {
 				child["maxLength"] = projectStringLimit(tag[0])
 			}
+			if f.Type.Kind() == reflect.Map && f.Type.Elem().Kind() == reflect.String {
+				child["additionalProperties"].(map[string]any)["maxLength"] = projectStringLimit(tag[0])
+			}
 			if tag[0] == "limit" {
 				child["minimum"], child["maximum"] = 1, 200
 			}
@@ -203,6 +206,8 @@ func projectSchema(t reflect.Type) map[string]any {
 		return map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}
 	case reflect.Slice:
 		return map[string]any{"type": "array", "maxItems": 200, "items": projectSchema(t.Elem())}
+	case reflect.Map:
+		return map[string]any{"type": "object", "maxProperties": 200, "propertyNames": map[string]any{"maxLength": 256}, "additionalProperties": projectSchema(t.Elem())}
 	case reflect.Bool:
 		return map[string]any{"type": "boolean"}
 	case reflect.Int, reflect.Int64:
@@ -249,6 +254,17 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 				}
 			}
 		case map[string]any:
+			if t.Kind() == reflect.Map {
+				if len(x) > 200 {
+					return false
+				}
+				for name, item := range x {
+					if len(name) > 256 || !bounded(item, key, t.Elem()) {
+						return false
+					}
+				}
+				return true
+			}
 			for i := range t.NumField() {
 				field := t.Field(i)
 				name := strings.Split(field.Tag.Get("json"), ",")[0]
@@ -282,7 +298,7 @@ func projectStringLimit(key string) int {
 	switch key {
 	case "rate_source", "evidence_source", "resource_name":
 		return 512
-	case "prompt", "shared_prompt", "agents_prompt":
+	case "prompt", "shared_prompt", "agents_prompt", "files":
 		return MaxArgumentBytes
 	case "source":
 		return 1024

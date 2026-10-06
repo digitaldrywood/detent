@@ -3,18 +3,30 @@ package operatortool
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 // Catch bounds or authority fields reaching the shared application/preview path.
 func TestProjectArgumentBounds(t *testing.T) {
+	files := make([]string, 201)
+	for i := range files {
+		files[i] = `"` + strconv.Itoa(i) + `":"work"`
+	}
 	for _, tt := range []struct {
 		name, raw string
 		target    func() any
 		invalid   bool
 	}{
 		{"bounded read", `{"project_id":"p","limit":200}`, func() any { return &ProjectReadRequest{} }, false},
+		{"authored files", `{"input":{"policy":{"authored":{"files":{"WORKFLOW.md":"` + strings.Repeat("x", 257) + `"}}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
+		{"long authored path", `{"input":{"policy":{"authored":{"files":{"` + strings.Repeat("x", 257) + `":"work"}}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, true},
+		{"too many map entries", `{"input":{"files":{` + strings.Join(files, ",") + `}}}`, func() any {
+			return &ProjectRequest[struct {
+				Files map[string]string `json:"files"`
+			}]{}
+		}, true},
 		{"large page", `{"limit":201}`, func() any { return &ProjectReadRequest{} }, true},
 		{"negative page", `{"limit":-1}`, func() any { return &ProjectReadRequest{} }, true},
 		{"long project", `{"project_id":"` + strings.Repeat("p", 257) + `"}`, func() any { return &ProjectReadRequest{} }, true},
@@ -55,6 +67,10 @@ func TestProjectArgumentBounds(t *testing.T) {
 			input := properties(schema, "input")
 			descriptor := properties(input, "policy")
 			configuration := properties(descriptor, "configuration")
+			files := properties(properties(descriptor, "authored"), "files")
+			if files["type"] != "object" || files["maxProperties"] != float64(200) || files["propertyNames"].(map[string]any)["maxLength"] != float64(256) || files["additionalProperties"].(map[string]any)["maxLength"] != float64(MaxArgumentBytes) {
+				t.Fatal("authored file discovery differs from map validation")
+			}
 			if len(properties(configuration, "behavior")) != 0 {
 				t.Fatal("policy behavior must allow any JSON value")
 			}

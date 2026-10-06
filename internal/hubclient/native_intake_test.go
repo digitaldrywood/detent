@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -451,13 +452,62 @@ func (intakeRepositoryBackend) Reconcile(context.Context, hubserver.ReconcileReq
 	return hubserver.ReconcileSnapshot{Repository: hubserver.RepositorySource{NodeID: "R_source", Owner: "acme", Name: "orders", UpdatedAt: time.Now().UTC()}}, nil
 }
 
-func newLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIssue) {
+func (intakeRepositoryBackend) FetchImportPage(_ context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+	snapshot := intakeSnapshot()
+	if request.Stage == "issue" {
+		return hubserver.GitHubImportPage{Issue: &hubserver.IssueSource{NodeID: snapshot.Provenance.ExternalID, Number: 12, URL: snapshot.URL, Title: snapshot.Title, Body: snapshot.Body, AuthorID: snapshot.Provenance.AuthorID, CreatedAt: snapshot.Provenance.CreatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}}, nil
+	}
+	page := hubserver.GitHubImportPage{}
+	for _, comment := range snapshot.Comments {
+		page.Records = append(page.Records, hubserver.GitHubImportRecord{Kind: "comment", Body: comment.Body, Provenance: comment.Provenance})
+	}
+	return page, nil
+}
+
+func newIntakeChangeHub(t *testing.T) *nativeChangeHub {
 	t.Helper()
 	h := newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates(), intakeRepositoryBackend{})
 	if err := h.admin.client.request(t.Context(), http.MethodPost, h.admin.base()+"/onboarding/repository", map[string]any{"idempotency_key": "attach", "expected_revision": "1", "repository": "acme/orders"}, nil); err != nil {
 		t.Fatal(err)
 	}
+	return h
+}
+
+func newLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIssue) {
+	t.Helper()
+	h := newIntakeChangeHub(t)
 	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), GitHubIssueURL: "https://github.com/acme/orders/issues/12", State: "In Progress"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"Todo", "In Progress"} {
+		if err := h.connector.UpdateIssueState(t.Context(), string(issue.WorkItemID), state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issue, err = h.admin.Issue(t.Context(), issue.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, issue
+}
+
+func newPendingLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIssue) {
+	t.Helper()
+	h := newIntakeChangeHub(t)
+	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "GitHub issue acme/orders#12", State: "In Progress"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.reopen(func(path string) error {
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			return err
+		}
+		_, seedErr := db.ExecContext(t.Context(), "INSERT INTO linked_issue_sources (work_item_id, source_url, title_supplied, body_supplied) VALUES (?, ?, 0, 0)", issue.WorkItemID, "https://github.com/acme/orders/issues/12")
+		return errors.Join(seedErr, db.Close())
+	})
+	issue, err = h.admin.Issue(t.Context(), issue.WorkItemID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +542,7 @@ func TestNativeSourceIntakeRetryBeforeDispatch(t *testing.T) {
 		{name: "persistence failure", persist: true},
 	} {
 		t.Run(failure.name, func(t *testing.T) {
-			h, issue := newLinkedChangeHub(t)
+			h, issue := newPendingLinkedChangeHub(t)
 			var calls int
 			if !failure.missing {
 				h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
@@ -568,7 +618,7 @@ func TestNativeEditsDuringSourceFetch(t *testing.T) {
 	}
 
 	t.Parallel()
-	h, issue := newLinkedChangeHub(t)
+	h, issue := newPendingLinkedChangeHub(t)
 	started, proceed := make(chan struct{}), make(chan struct{})
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()

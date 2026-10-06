@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -63,7 +64,9 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 			if name == "linked source" {
 				var linked tracker.NativeIssue
 				h, linked = newLinkedChangeHub(t)
-				h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) { return intakeSnapshot(), nil }
+				h.scheduler.githubIntake = func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
+					return tracker.GitHubIssueSnapshot{}, errors.New("runner must not fetch a source after Hub intake")
+				}
 				issue = issueFromNative(linked)
 			} else {
 				h = newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates())

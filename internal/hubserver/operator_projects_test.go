@@ -172,8 +172,12 @@ func TestHostedProjectTools(t *testing.T) {
 			if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read("get_change_review_policy")); err != nil {
 				t.Fatal(err)
 			}
-			workflow.Prompt += "Changed policy.\n"
-			workflow.Definition.ConfigPath = "stale-detent.yaml"
+			sources := *workflow.DefinitionSources
+			sources.Workflow = append(sources.Workflow, []byte("Changed policy.\n")...)
+			workflow, err = workflowconfig.ParseProjectDefinition(sources)
+			if err != nil {
+				t.Fatal(err)
+			}
 			updated, err := workflowconfig.ResolvePolicy(workflow)
 			if err != nil {
 				t.Fatal(err)

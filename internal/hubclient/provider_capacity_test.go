@@ -306,7 +306,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		if unavailable == "provider hydration" {
 			reads := 0
 			client.httpClient.Transport = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
-				if strings.HasSuffix(r.URL.Path, "/comments") {
+				if r.URL.Query().Get("view") == "recovery" {
 					reads++
 					if reads == 2 {
 						return nil, errors.New("injected hydration failure")
