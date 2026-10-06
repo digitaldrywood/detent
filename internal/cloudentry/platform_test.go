@@ -235,18 +235,36 @@ func TestPlatformStaffLanding(t *testing.T) {
 	f := newEntryFixture(t)
 	f.provider.member("user_support", "porg_alpha", "owner")
 	f.provider.users["user_staff"] = "staff@example.test"
+	f.provider.users["user_admin"] = "bootstrap@example.test"
 	for _, test := range []struct {
 		name, target, code, landing, home string
 		chooserStatus                     int
 		chooserLocation                   string
 		platformRole                      string
+		canCreate                         bool
 	}{
-		{"member with organizations", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support"},
-		{"member without organizations", "/auth/oidc/start", "user_staff:", "/platform", "/platform", http.StatusOK, "", "viewer"},
-		{"customer default", "/auth/oidc/start", "user_alice:", "/organizations", "/organizations", http.StatusOK, "", ""},
-		{"member organization session", "/auth/oidc/start", "user_support:porg_alpha", "/organizations", "/organizations", http.StatusOK, "", "support"},
+		{"member with organizations", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support", false},
+		{"member without organizations", "/auth/oidc/start", "user_staff:", "/platform", "/platform", http.StatusOK, "", "viewer", false},
+		{"customer default", "/auth/oidc/start", "user_alice:", "/organizations", "/organizations", http.StatusOK, "", "", false},
+		{"member organization session", "/auth/oidc/start", "user_support:porg_alpha", "/organizations", "/organizations", http.StatusOK, "", "support", false},
+		{"member without organizations may create", "/auth/oidc/start", "user_admin:", "/platform", "/platform", http.StatusOK, "", "admin", true},
+		{"member with one organization may create", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support", true},
+		{"non-member may create", "/auth/oidc/start", "user_carol:", "/organizations", "/organizations", http.StatusOK, "", "", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			f.service.config.Allocation = nil
+			if test.canCreate {
+				f.service.config.Allocation = &AllocationConfig{MaxPerIdentity: 1}
+			}
+			user, _, _ := strings.Cut(test.code, ":")
+			session := accountSession{Subject: user, Email: f.provider.users[user], Identity: auth.HostedIdentity{Subject: user}}
+			if landing := f.service.landing(t.Context(), session.Email, session.Identity); landing != test.landing {
+				t.Errorf("landing = %q, want %q", landing, test.landing)
+			}
+			account, err := f.service.accountContextFor(t.Context(), session)
+			if err != nil || account.Destination != f.service.config.PublicURL+test.landing || account.CanCreate != test.canCreate {
+				t.Errorf("administration context = %+v (%v)", account, err)
+			}
 			b := newBrowser(t, f.service.Handler())
 			if location := b.login(test.target, test.code); location != test.landing {
 				t.Fatalf("post-login location = %q, want %q", location, test.landing)
@@ -261,7 +279,7 @@ func TestPlatformStaffLanding(t *testing.T) {
 				_, body := b.get(path)
 				var session map[string]any
 				decodeJSON(t, body, &session)
-				if session["platform_role"] != test.platformRole || session["can_create"] != false {
+				if session["platform_role"] != test.platformRole || session["can_create"] != test.canCreate {
 					t.Fatalf("%s = %s", path, body)
 				}
 			}
@@ -281,7 +299,7 @@ func TestPlatformMembersCreateAndJoinOrganizations(t *testing.T) {
 		f := newProvisioningFixture(t, 3, nil)
 		f.provider.users["user_staff"] = "staff@example.test"
 		staff := newBrowser(t, f.service.Handler())
-		if landing := staff.login("/auth/oidc/start", "user_staff:"); landing != "/organizations" {
+		if landing := staff.login("/auth/oidc/start", "user_staff:"); landing != "/platform" {
 			t.Fatalf("member who may create lands at %q", landing)
 		}
 		if response, _ := staff.get("/organizations/new"); response.StatusCode != http.StatusOK {

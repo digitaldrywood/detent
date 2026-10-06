@@ -352,10 +352,6 @@ func (s *Service) landing(ctx context.Context, email string, identity auth.Hoste
 	if err != nil || len(choices) > 0 {
 		return "/organizations"
 	}
-	canCreate, err := s.canCreate(ctx, accountSession{Subject: identity.Subject, Email: email, Identity: identity})
-	if err != nil || canCreate {
-		return "/organizations"
-	}
 	return platformPath
 }
 
