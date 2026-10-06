@@ -308,6 +308,11 @@ export type PolicyGates = typeof PolicyGates.Type;
 
 /** `policy.Descriptor`: the resolved policy a human approves by identity. */
 export const PolicyDescriptor = Schema.Struct({
+  authored: Schema.optional(Schema.Struct({
+    version: Schema.Number,
+    digest: Schema.String,
+    files: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  })),
   workflow: Schema.optional(Schema.Struct({ source: Schema.String, revision: Schema.optional(Schema.String), states: Schema.Array(WorkflowState) })),
   schema: Schema.Number,
   policy_id: Schema.String,

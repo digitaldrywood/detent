@@ -5,9 +5,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -19,34 +24,41 @@ func resolvedWorkflowPolicy(t *testing.T, states []policy.State, revision string
 	if !slices.ContainsFunc(states, func(state policy.State) bool { return state.Name == "Blocked" }) {
 		states = append(slices.Clone(states), policy.State{Name: "Blocked"})
 	}
-	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	cfg.Tracker.Lanes = []workflowconfig.Lane{}
-	cfg.Tracker.ActiveStates = []string{}
-	cfg.Tracker.ObservedStates = []string{}
-	cfg.Tracker.TerminalStates = []string{}
-	cfg.Plan.Enabled = false
-	cfg.Gate.Run = "true"
-	cfg.Agent.AutoPromote.Enabled = promotion
-	cfg.Server.Kanban.AllowedTransitions = map[string][]string{}
+	lanes := []workflowconfig.Lane{}
+	transitions := map[string][]string{}
 	for _, state := range states {
 		role := workflowconfig.LaneHolding
 		if state.Terminal {
 			role = workflowconfig.LaneTerminal
-			cfg.Tracker.TerminalStates = append(cfg.Tracker.TerminalStates, state.Name)
 		} else if state.Dispatchable {
 			role = workflowconfig.LaneActive
-			cfg.Tracker.ActiveStates = append(cfg.Tracker.ActiveStates, state.Name)
-		} else {
-			cfg.Tracker.ObservedStates = append(cfg.Tracker.ObservedStates, state.Name)
 		}
-		cfg.Tracker.Lanes = append(cfg.Tracker.Lanes, workflowconfig.Lane{Name: state.Name, Role: role})
-		cfg.Server.Kanban.AllowedTransitions[state.Name] = state.Transitions
+		lanes = append(lanes, workflowconfig.Lane{Name: state.Name, Role: role})
+		transitions[state.Name] = state.Transitions
 	}
-	descriptor, err := workflowconfig.ResolvePolicy(workflowconfig.Workflow{
-		Config: cfg, SourceHash: policy.Digest([]byte(revision)), Prompt: "Implement the assigned issue.",
-		Definition: workflowconfig.ProjectDefinition{Layout: workflowconfig.ProjectDefinitionSplit, ConfigPath: "detent.yaml", Revision: revision},
+	raw, err := yaml.Marshal(map[string]any{
+		"schema":  1,
+		"tracker": map[string]any{"kind": "hub_native", "repository": "acme/orders", "lanes": lanes},
+		"gate":    map[string]any{"run": "true"},
+		"plan":    map[string]any{"enabled": false},
+		"agent":   map[string]any{"auto_promote": map[string]any{"enabled": promotion}},
+		"server":  map[string]any{"kanban": map[string]any{"allowed_transitions": transitions}},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+		Workflow: []byte("Implement the assigned issue."), Config: raw, HasConfig: true, ConfigPath: "detent.yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow.Definition.Revision = revision
+	descriptor, err := workflowconfig.ResolvePolicy(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err = workflowconfig.ResolveSharedPolicy(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,5 +99,30 @@ func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project strin
 	}, strings.Repeat("c", 40), false)
 	pendingSource := *source
 	pendingSource.Commit, pendingSource.DefaultBranchReachable = pending.Workflow.Revision, false
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/policy/observed", credential, policy.Observation{Descriptor: pending, Source: &pendingSource}), http.StatusNoContent)
+	client, err := hubclient.New(hubclient.Config{URL: "https://workflow-browser.example.test", TokenSource: func() string { return credential }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+		OrganizationID: tracker.OrganizationID(strings.TrimPrefix(browserHostedOrganizationBase, "/api/v2/organizations/")), NativeProjects: map[string]tracker.ProjectID{"workflow": tracker.ProjectID(project)},
+		Machine: hubclient.Machine{ID: binding.MachineID, Hostname: "workflow-host", Capacity: 2, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "workflow", local, &pendingSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := workflowconfig.ResolvePolicy(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.CheckProjectPolicyWithSource(t.Context(), "workflow", "acme/orders", descriptor, &pendingSource); err == nil || !connector.IsRetryable(err) {
+		t.Fatalf("browser runner's unapproved candidate = %v", err)
+	}
 }

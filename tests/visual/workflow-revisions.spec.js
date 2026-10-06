@@ -41,11 +41,11 @@ test("applied and pending workflow revisions show stored before/after changes ne
   await expect(row(applied, "Lane order")).toContainText("Todo → Review → In Progress → Done");
   await expect(row(applied, "Transitions from Todo")).toContainText("Done, In Progress");
   await expect(row(applied, "Transitions from Todo")).toContainText("In Progress, Review");
-  await expect(row(applied, "Agent · Auto promote · Enabled").getByRole("cell")).toHaveText(["false", "true"]);
+  await expect(row(applied, "Execution · Auto promote").getByRole("cell")).toHaveText(["false", "true"]);
   await expect(pending).toContainText("c".repeat(40));
   await expect(row(pending, "Lane: Review").getByRole("cell")).toHaveText(["Nondispatchable", "Dispatchable"]);
   await expect(row(pending, "Lane order")).toContainText("Todo → In Progress → Review → Done");
-  await expect(row(pending, "Agent · Auto promote · Enabled").getByRole("cell")).toHaveText(["true", "false"]);
+  await expect(row(pending, "Execution · Auto promote").getByRole("cell")).toHaveText(["true", "false"]);
   await expect(pending.getByRole("button", { name: /Approve updated policy/ })).toBeEnabled();
   const execution = page.locator("section").filter({ has: page.getByRole("heading", { name: "Execution", exact: true }) });
   await expect(execution.getByRole("button", { name: /Approve updated policy/ })).toHaveCount(0);
@@ -68,7 +68,9 @@ test("selecting a project offers its exact runner policy and approval records th
   expect(setup.observed_policies).toHaveLength(1);
   const candidate = setup.observed_policies[0];
   expect(candidate.conflict).toBe(false);
-  expect(candidate.policy.configuration.behavior).toBeDefined();
+  expect(candidate.policy.authored.version).toBe(2);
+  expect(candidate.policy.authored.files["detent.yaml"]).toContain("lanes:");
+  expect(candidate.policy.configuration.behavior).toBeNull();
   const pending = workflow.locator('[data-slot="settings-row"]').filter({ has: page.getByRole("heading", { name: "Pending revision", exact: true }) });
   const approvalRequest = page.waitForRequest((request) =>
     request.method() === "PUT" && request.url().endsWith(`/projects/${selectedProject}/onboarding/policy`),
@@ -82,7 +84,7 @@ test("selecting a project offers its exact runner policy and approval records th
   const latest = workflow.locator('[data-slot="settings-row"]').filter({ has: page.getByRole("heading", { name: "Applied revision", exact: true }) }).first();
   await expect(latest).toContainText("c".repeat(40));
   await expect(row(latest, "Lane: Review").getByRole("cell")).toHaveText(["Nondispatchable", "Dispatchable"]);
-  await expect(row(latest, "Agent · Auto promote · Enabled").getByRole("cell")).toHaveText(["true", "false"]);
+  await expect(row(latest, "Execution · Auto promote").getByRole("cell")).toHaveText(["true", "false"]);
   await expect(latest).toContainText(/Applied by hosted_/);
 });
 
