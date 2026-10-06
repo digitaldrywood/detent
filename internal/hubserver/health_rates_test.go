@@ -45,6 +45,12 @@ func TestHealthRateSignals(t *testing.T) {
 			p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("fail-", age, "-", i), Item: "active", Status: "failed", Signature: "protocol error", At: now.Add(-age), Cost: 2})
 		}
 	}
+	mixedRetry := func(p *healthRateProject) {
+		retry(p, 10*time.Minute, 5)
+		for i := 0; i < 5; i++ {
+			p.Attempts[len(p.Attempts)-5+i].Signature = fmt.Sprint("failure-", i)
+		}
+	}
 	conflict := func(p *healthRateProject, age time.Duration, n, failed int) {
 		for i := 0; i < n; i++ {
 			p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("landing-", age, "-", i), Item: fmt.Sprint("item-", age, "-", i), At: now.Add(-age), Landing: true, Conflict: i < failed, Landed: i >= failed, LandingAt: now.Add(-age)})
@@ -64,11 +70,11 @@ func TestHealthRateSignals(t *testing.T) {
 	}{
 		{"same signature count", "retry_storm", "attention", func(p *healthRateProject) { retry(p, 10*time.Minute, 5) }, func(p *healthRateProject) { retry(p, 10*time.Minute, 4) }},
 		{"retry ratio both windows", "retry_storm", "attention", func(p *healthRateProject) {
-			retry(p, 10*time.Minute, 2)
+			mixedRetry(p)
 			p.Attempts = append(p.Attempts, healthRateAttempt{ID: "success", Item: "active", Status: "succeeded", At: now.Add(-5 * time.Minute)})
 		}, func(p *healthRateProject) {
-			retry(p, 10*time.Minute, 2)
-			for i := 0; i < 10; i++ {
+			mixedRetry(p)
+			for i := 0; i < 20; i++ {
 				p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Status: "succeeded", At: now.Add(-2 * time.Hour)})
 			}
 			p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Status: "succeeded", At: now.Add(-5 * time.Minute)})
@@ -212,6 +218,10 @@ func TestHealthRateBoundaries(t *testing.T) {
 		{"retry long breach alone", "retry_storm", func(p *healthRateProject) {
 			failing(p, now.Add(-2*time.Hour), 2)
 			p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Status: "succeeded", At: now.Add(-time.Minute)})
+		}, false},
+		{"retry ratio below repetition threshold", "retry_storm", func(p *healthRateProject) {
+			failing(p, now.Add(-time.Minute), 4)
+			p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Status: "succeeded", At: now.Add(-2 * time.Minute)})
 		}, false},
 		{"retry usual repeated failures", "retry_storm", func(p *healthRateProject) {
 			for _, a := range slices.Clone(p.Attempts[:24]) {
