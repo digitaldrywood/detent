@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -476,8 +477,8 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := restarted.request(t.Context(), http.MethodGet, "/api/v2/capabilities", nil, nil); err != nil {
-		t.Fatalf("restart with pending credential: %v", err)
+	if recovered, err := restarted.RunnerIdentity(t.Context()); err != nil || recovered.Binding != pending.Identity.Binding || !slices.Equal(recovered.ProjectIDs, reassignedFile.Identity.ProjectIDs) {
+		t.Fatalf("identity refresh with pending credential: %#v, %v", recovered, err)
 	}
 	rotated, err := runnerauth.Load(path)
 	if err != nil || rotated.PendingCredential != "" || rotated.Credential != pending.PendingCredential {

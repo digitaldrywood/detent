@@ -20,7 +20,7 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 	report := doctorReport{}
 	selected := strings.TrimSpace(cfg.ProjectID)
 	if selected != "" {
-		_, scoped, scope, scopeCheck, configCheck := checkDoctorConfig(cfg.ConfigPath, selected, opts)
+		_, scoped, scope, scopeCheck, configCheck := checkDoctorConfig(ctx, cfg.ConfigPath, selected, opts)
 		report.Scope = scope
 		if scoped == nil {
 			report.Add(configCheck)
@@ -30,7 +30,11 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 			report.Add(*scopeCheck)
 			return report
 		}
-		opts.read = func(string) (globalconfig.Config, error) { return *scoped, nil }
+		opts.read = func(string) (globalconfig.Config, error) {
+			snapshot := *scoped
+			snapshot.WorkspaceRoot = ""
+			return snapshot, nil
+		}
 	}
 	boot, err := resolveBootConfig(ctx, cfg.ConfigPath, cfg.Host, cfg.Flags, opts)
 	if err != nil {

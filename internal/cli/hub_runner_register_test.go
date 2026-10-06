@@ -137,32 +137,21 @@ func TestRunnerHubTarget(t *testing.T) {
 	}
 }
 
-func TestRunnerProjectSlug(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct{ name, want string }{
-		{name: "detent.build", want: "detent.build"},
-		{name: "Client Portal", want: "client-portal"},
-		{name: "  Ops / Infra  ", want: "ops-infra"},
-		{name: "snake_case", want: "snake_case"},
-		{name: "!!!", want: "prj_fallback"},
-	} {
-		if got := runnerProjectSlug(test.name, "prj_fallback"); got != test.want {
-			t.Errorf("runnerProjectSlug(%q) = %q, want %q", test.name, got, test.want)
-		}
-	}
-}
-
 type registerHub struct {
-	server     *httptest.Server
-	credential atomic.Value
-	identity   atomic.Value
-	redeemed   atomic.Int32
-	projects   map[tracker.ProjectID]string
+	server       *httptest.Server
+	credential   atomic.Value
+	identity     atomic.Value
+	redeemed     atomic.Int32
+	projects     map[tracker.ProjectID]string
+	repositories map[tracker.ProjectID]string
 }
 
 func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *registerHub {
 	t.Helper()
-	hub := &registerHub{projects: projects}
+	hub := &registerHub{projects: projects, repositories: make(map[tracker.ProjectID]string, len(projects))}
+	for id := range projects {
+		hub.repositories[id] = "acme/" + string(id)
+	}
 	hub.credential.Store("")
 	hub.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -205,7 +194,11 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 		}
 		for id, name := range projects {
 			if strings.HasSuffix(r.URL.Path, "/projects/"+string(id)) {
-				_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: id, OrganizationID: "org_example", Name: name})
+				_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: id, OrganizationID: "org_example", Name: name, Repository: hub.repositories[id], States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/projects/"+string(id)+"/work-items") {
+				_ = json.NewEncoder(w).Encode(tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID("wi_" + string(id)), ProjectID: id, OrganizationID: "org_example", Number: 7}, State: "Todo"}}})
 				return
 			}
 		}
@@ -266,12 +259,12 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	steps := strings.Join(registration.NextSteps, "\n")
-	if len(started) != 0 || !strings.Contains(steps, "Clone the ops-tools repository into "+filepath.Join(workspaces, "ops-tools")) || !strings.Contains(steps, "detent start --config") {
+	if len(started) != 1 || strings.Contains(steps, "Clone") {
 		t.Fatalf("service started before every checkout exists (%v):\n%s", started, output)
 	}
 
 	var written runnerConfigFile
-	if err := yaml.Unmarshal([]byte(mustRead(t, configPath)), &written); err != nil || written.Client.NativeProjects["ops-tools"] != "prj_ops" {
+	if err := yaml.Unmarshal([]byte(mustRead(t, configPath)), &written); err != nil || written.WorkspaceRoot != workspaces {
 		t.Fatalf("written config = %+v, %v", written, err)
 	}
 	info, err := os.Stat(configPath)
@@ -294,7 +287,7 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &rerun); err != nil {
 		t.Fatalf("rerun output is not JSON: %v\n%s", err, output)
 	}
-	if len(started) != 1 || started[0] != configPath || rerun.Created || !rerun.ServiceRun || !strings.HasPrefix(mustRead(t, configPath), "# edited by the operator") {
+	if len(started) != 2 || started[0] != configPath || rerun.Created || !rerun.ServiceRun || !strings.HasPrefix(mustRead(t, configPath), "# edited by the operator") {
 		t.Fatalf("rerun: started %v, output:\n%s", started, output)
 	}
 
@@ -310,109 +303,32 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	if cfg.ServiceName != runnerServiceName || cfg.Client.URL != hub.server.URL+"/organizations/org_example" || cfg.Client.IdentityFile != identityPath || cfg.Client.OrganizationID != "org_example" || cfg.Client.Capacity != 2 || cfg.Client.DisplayName != "Build host" {
 		t.Fatalf("client config = %+v, service %q", cfg.Client, cfg.ServiceName)
 	}
-	if cfg.Client.NativeProjects["detent.build"] != "prj_site" || cfg.Client.NativeProjects["ops-tools"] != "prj_ops" || len(cfg.Projects) != 2 {
-		t.Fatalf("projects = %+v, native = %v", cfg.Projects, cfg.Client.NativeProjects)
-	}
-	for _, project := range cfg.Projects {
-		if project.Workdir != filepath.Join(workspaces, project.ID) || project.Workflow != filepath.Join(project.Workdir, "WORKFLOW.md") {
-			t.Fatalf("project entry = %+v", project)
-		}
+	if len(cfg.Client.NativeProjects) != 0 || len(cfg.Projects) != 0 || cfg.WorkspaceRoot != workspaces {
+		t.Fatalf("machine config = %+v", cfg)
 	}
 	if file.Identity.OrganizationID != "org_example" || !strings.Contains(output, file.Identity.RunnerID) {
 		t.Fatalf("identity = %+v", file.Identity)
 	}
 }
 
-func TestHubRunnerRegisterChecksKeptProjectWorkdirs(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
+func TestHubRunnerRegisterKeepsMachineSettings(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name            string
-		ready           bool
-		workspaceRoot   bool
-		absentPaths     bool
-		relativeWorkdir bool
-		missingWorkflow bool
-	}{
-		{name: "kept checkout with default root", ready: true},
-		{name: "kept checkout overrides supplied root", ready: true, workspaceRoot: true},
-		{name: "missing kept checkout ignores supplied checkout", workspaceRoot: true},
-		{name: "absent kept workdir and workflow", absentPaths: true},
-		{name: "absent kept paths with relative workdir", absentPaths: true, relativeWorkdir: true},
-		{name: "kept workdir without workflow", missingWorkflow: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build"})
-			root := t.TempDir()
-			configPath := filepath.Join(root, "config", "global.yaml")
-			workdir := filepath.Join(root, "actual-checkout")
-			paths := runnerPaths{config: configPath, identity: filepath.Join(root, "config", "identity.json"), workspaces: filepath.Join(root, "unused-root")}
-			kept := runnerConfig(hub.server.URL+"/organizations/org_example", "org_example", "Build host", 2, paths, []runnerRegisteredCheck{{Name: "local-project", ID: "prj_site", Workdir: workdir}})
-			if test.relativeWorkdir {
-				cwd, err := os.Getwd()
-				if err != nil {
-					t.Fatal(err)
-				}
-				// This case only inspects an absent checkout. Keep its relative path
-				// on the current drive when Windows scratch lives on another drive.
-				kept.Projects[0].Workdir = filepath.Join("missing-checkout", filepath.Base(filepath.Dir(root)))
-				workdir = filepath.Join(cwd, kept.Projects[0].Workdir)
-			}
-			if _, err := writeRunnerConfig(configPath, kept); err != nil {
-				t.Fatal(err)
-			}
-			kept.ServiceName = "" // Runner configs predating service_name remain supported.
-			body, err := yaml.Marshal(kept)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(configPath, body, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if !test.absentPaths {
-				checkout(t, workdir)
-			}
-			if !test.ready && !test.absentPaths {
-				if err := os.RemoveAll(filepath.Join(workdir, ".git")); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if test.missingWorkflow {
-				if err := os.Remove(filepath.Join(workdir, "WORKFLOW.md")); err != nil {
-					t.Fatal(err)
-				}
-			}
-			args := []string{"--url", hub.server.URL + "/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--service"}
-			if test.workspaceRoot {
-				checkout(t, filepath.Join(paths.workspaces, "detent.build"))
-				args = append(args, "--workspace-root", paths.workspaces)
-			}
-			started := false
-			output, err := runRegisterInTestWorkspace(t, nil, func(_ *cobra.Command, path string) error { started = true; return nil }, args...)
-			if err != nil {
-				t.Fatalf("register: %v\n%s", err, output)
-			}
-			var result runnerRegistration
-			if err := json.Unmarshal([]byte(output), &result); err != nil {
-				t.Fatal(err)
-			}
-			if started != test.ready || result.ServiceRun != test.ready || len(result.Projects) != 1 || result.Projects[0].Workdir != workdir || result.Projects[0].Checkout != test.ready {
-				t.Fatalf("started %v, registration %+v", started, result)
-			}
-			if !test.ready {
-				steps := strings.Join(result.NextSteps, "\n")
-				if !strings.Contains(steps, "Clone the local-project repository into "+workdir) || !strings.Contains(steps, "detent start --config "+shellQuote(configPath)+" --yes") {
-					t.Fatalf("next steps = %v", result.NextSteps)
-				}
-			}
-			if mustRead(t, configPath) != string(body) {
-				t.Fatal("kept config was rewritten")
-			}
-		})
+	hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_site": "detent.build"})
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config", "global.yaml")
+	paths := runnerPaths{config: configPath, identity: filepath.Join(root, "config", "identity.json"), workspaces: filepath.Join(root, "kept-root")}
+	kept := runnerConfig(hub.server.URL+"/organizations/org_example", "org_example", "Build host", 2, paths)
+	if _, err := writeRunnerConfig(configPath, kept); err != nil {
+		t.Fatal(err)
+	}
+	before := mustRead(t, configPath)
+	started := false
+	output, err := runRegisterInTestWorkspace(t, nil, func(_ *cobra.Command, path string) error { started = true; return nil }, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", filepath.Join(root, "supplied-root"), "--service")
+	if err != nil {
+		t.Fatalf("register: %v: %s", err, output)
+	}
+	if !started || mustRead(t, configPath) != before {
+		t.Fatalf("registration changed existing machine settings: %s", output)
 	}
 }
 
@@ -530,7 +446,7 @@ func TestHubRunnerRegisterReportsBeforeService(t *testing.T) {
 		if _, err := os.Stat(cfg.Path); err != nil {
 			t.Fatal("diagnostics ran before config was written", err)
 		}
-		if version != "test" || cfg.Client.NativeProjects["orders"] != "prj_orders" {
+		if version != "test" || cfg.WorkspaceRoot != workspaces || len(cfg.Client.NativeProjects) != 0 {
 			t.Fatalf("wrong diagnostic context: %+v", cfg)
 		}
 		reported = true

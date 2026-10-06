@@ -61,6 +61,8 @@ type Scheduler struct {
 	isolationReport       func(context.Context) isolationpolicy.Report
 	providerReports       func() ([]providercapacity.Report, error)
 	claimPolicies         map[string]claimPolicy
+	organizationID        tracker.OrganizationID
+	nativeProjectsMu      sync.RWMutex
 	nativeProjects        map[string]*NativeConnector
 	nativeClaims          map[string]nativeClaim
 	nativeHeartbeats      map[tracker.ProjectID]time.Time
@@ -102,6 +104,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		organizationID:        config.OrganizationID,
 		prepareProject:        config.PrepareProject,
 		capacityConfiguration: config.CapacityConfiguration,
 		updateOwner:           config.UpdateOwner,
@@ -146,7 +149,7 @@ func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrat
 	if err := s.CheckProjectPolicy(ctx, request.ProjectID, request.Repository, request.Policy); err != nil {
 		return nil, schedulingError(err)
 	}
-	if source := s.nativeProjects[request.ProjectID]; source != nil {
+	if source := s.nativeProject(request.ProjectID); source != nil {
 		return s.fetchNativeCandidate(ctx, request, source)
 	}
 	if err := s.ensureMachine(ctx); err != nil {
@@ -220,7 +223,7 @@ func (s *Scheduler) PrepareProject(ctx context.Context, project string) error {
 		s.localChecks[project] = checks
 	}
 	s.mu.Unlock()
-	if source := s.nativeProjects[project]; source != nil && reported && previous != checks.Setup {
+	if source := s.nativeProject(project); source != nil && reported && previous != checks.Setup {
 		s.mu.Lock()
 		if !s.nativeHeartbeats[source.client.project].IsZero() {
 			s.nativeHeartbeats[source.client.project] = s.now().Add(-s.heartbeatInterval)

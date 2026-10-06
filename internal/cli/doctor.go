@@ -394,7 +394,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 
 	report := doctorReport{Scope: doctorScope{SelectedProject: strings.TrimSpace(cfg.ProjectID)}}
 	writeDoctorProgressStart(progressOut, "Config resolution")
-	resolution, global, scope, projectScopeCheck, configCheck := checkDoctorConfig(cfg.ConfigPath, cfg.ProjectID, opts)
+	resolution, global, scope, projectScopeCheck, configCheck := checkDoctorConfig(ctx, cfg.ConfigPath, cfg.ProjectID, opts)
 	writeDoctorProgressDone(progressOut, configCheck)
 	report.Scope = scope
 	report.Add(configCheck)
@@ -1075,7 +1075,7 @@ func newDoctorOutputReport(report doctorReport) doctorOutputReport {
 	}
 }
 
-func checkDoctorConfig(configPath string, projectID string, opts options) (globalconfig.PathResolution, *globalconfig.Config, doctorScope, *doctorCheck, doctorCheck) {
+func checkDoctorConfig(ctx context.Context, configPath string, projectID string, opts options) (globalconfig.PathResolution, *globalconfig.Config, doctorScope, *doctorCheck, doctorCheck) {
 	projectID = strings.TrimSpace(projectID)
 	scope := doctorScope{SelectedProject: projectID}
 	resolution, err := resolveConfigPathResolution(configPath, opts)
@@ -1113,6 +1113,23 @@ func checkDoctorConfig(configPath string, projectID string, opts options) (globa
 		}
 	}
 
+	if err == nil && cfg.Client.IdentityFile != "" && cfg.WorkspaceRoot != "" {
+		cfg, err = resolveRunnerProjects(ctx, cfg)
+		if err != nil {
+			return resolution, nil, scope, nil, doctorCheck{Name: "Config resolution", Status: doctorFail, Detail: err.Error()}
+		}
+		if projectID != "" {
+			var selected []globalconfig.Project
+			for _, candidate := range cfg.Projects {
+				if candidate.ID == projectID {
+					selected = append(selected, candidate)
+				} else {
+					scope.SkippedProjects = append(scope.SkippedProjects, candidate.ID)
+				}
+			}
+			cfg.Projects = selected
+		}
+	}
 	var projectScopeCheck *doctorCheck
 	if projectID != "" && len(cfg.Projects) == 0 {
 		check := missingDoctorProjectScopeCheck(scope)

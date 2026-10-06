@@ -2,7 +2,9 @@
 
 Detent has two configuration layers:
 
-- `global.yaml` selects projects and controls host-wide runtime settings.
+- A Cloud runner's `global.yaml` holds machine settings only; Cloud supplies
+  allowed projects and model selection. See [Multi-project operation](multi-project.md)
+  for the machine-only shape and compatibility warnings.
 - Each project has a checked-in `detent.yaml` machine contract, with optional
   machine-local overrides in `detent.local.yaml`. The project contract can also
   live in legacy `WORKFLOW.md` YAML frontmatter.
@@ -167,17 +169,19 @@ Configuration precedence and authorization are applied in this order:
 | Order | Layer | Effect |
 | --- | --- | --- |
 | 1 | Parser defaults | Existing defaults and legacy compatibility are unchanged. |
-| 2 | Project definition anchor | `projects[].workflow` selects the definition directory, including an external root. `detent.yaml` plus prompt-only `WORKFLOW.md` use schema 1; legacy frontmatter remains supported. Mixed structured authority is rejected. No competing checkout file is searched. |
+| 2 | Project definition anchor | Cloud runners discover allowed repositories and read the remote default branch's `detent.yaml` and `WORKFLOW.md`. Legacy frontmatter remains supported; mixed structured authority is rejected. Repository compatibility configurations retain their existing definition anchors. |
 | 3 | Machine overlays | Existing `detent.local.yaml` and `WORKFLOW.local.md` rules apply: mappings merge, explicit scalars/sequences replace, supported empty/false values clear, and local prose appends. |
-| 4 | Host configuration | Existing flags/environment/global precedence, identity, paths, authorization filters, pool/backend limits, budgets and host ceilings remain enforced on customer infrastructure. Repository requirements cannot increase host permissions or capacity. |
+| 4 | Host configuration | Flags/environment/global precedence, private runner identity, workspace root, capacity, pressure limits, cache and startup pacing remain machine settings. Repository requirements cannot increase host permissions or capacity. Organization/project policy and model selection come from Cloud. |
 | 5 | Hub policy approval | Native runners consume the approved shared behavior and instructions while retaining host configuration. Compatibility runners must resolve the approved effective files and local overrides. Both require an exact descriptor match; missing, stale or contradictory policy denies dispatch. |
 | 6 | Run pin | Claims atomically pin the approved policy. The customer runner rechecks approval before dispatch, claim adoption and renewal, and checks its loaded workflow before credentials or workspace creation. |
 
-Use an administrator-selected `workflow_ref` to read shared files from a trusted
-Git commit. The loader resolves the ref once and reads shared files at that
-commit; edits to the working branch do not change it. Shared behavior changes in
-local overlays still need approval. An external definition is authorized by
-reviewing its resolved content digest through the same approval command.
+Cloud runners resolve the remote default branch through the existing committed
+workflow source and watcher. Each load reads shared files at one immutable
+revision; edits to the working branch do not change it. Repository compatibility
+configurations retain their administrator-selected `workflow_ref` semantics.
+Shared behavior changes in local overlays still need approval. An external
+compatibility definition is authorized by reviewing its resolved content digest
+through the same approval command.
 Approvals must be performed outside
 the implementation worker; do not give workers the Hub administrator credential.
 
@@ -445,7 +449,7 @@ example a local board and a Detent Cloud runner; `detent hub runner register`
 writes `service_name: detent.runner`. Names use lowercase letters, digits, dots
 and hyphens.
 
-A project listed under `client.native_projects` whose committed `detent.yaml`
+A Cloud-allowed project whose committed `detent.yaml`
 uses the GitHub tracker (`github` or `github_local`) uses the Hub instead
 (`tracker.kind: hub_native`), so a runner host can use a repository checkout
 as it is. Any other tracker kind is treated as a deliberate local choice and
@@ -492,22 +496,20 @@ use for event ingestion, reconciliation, write-back, and fresh safety checks,
 but the scheduling claim cycle does not depend on a GitHub read.
 
 Native issue projects use `tracker.kind: hub_native` in their existing repository
-workflow configuration. In `global.yaml`, bind each local project ID to its stable
-Hub project ID and organization:
+workflow configuration. Runner `global.yaml` names the Hub organization and
+private identity; the Hub supplies allowed projects:
 
 ```yaml
 client:
   hub_url: https://hub.example.com
-  token_env: DETENT_HUB_TOKEN
+  identity_file: /absolute/private/runner/identity.json
   organization_id: org_example
-  native_projects:
-    example: prj_example
 ```
 
-Replace the example IDs with IDs returned by the Hub. The token needs explicit
-grants for the mapped projects. Native issue creation, full-body refresh,
+Use the organization ID returned by the Hub. Set the runner's allowed projects
+in Cloud. Native issue creation, full-body refresh,
 discussion, history and scheduling use the Hub v2 API without GitHub issue
-networking. Native startup requires the mapping and negotiated capabilities;
+networking. Native startup requires enrolled identity and negotiated capabilities;
 there is no fallback scheduler. The [Hub API](hub-api.md#native-collaboration-protocol)
 documents project provisioning, workflow states and the typed operations.
 Repository workflow files and machine-local overrides keep their existing paths.

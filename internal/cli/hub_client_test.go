@@ -102,7 +102,7 @@ func TestHubSchedulingUsesEnrolledIdentity(t *testing.T) {
 		{"hostname identity override", func(c *globalconfig.HubClient) { c.MachineID = "hostname" }, false},
 		{"foreign organization", func(c *globalconfig.HubClient) { c.OrganizationID = "org_other" }, false},
 		{"foreign project", func(c *globalconfig.HubClient) { c.NativeProjects = map[string]string{"native": "prj_other"} }, false},
-		{"no project restriction", func(c *globalconfig.HubClient) { c.NativeProjects = nil }, false},
+		{"Cloud project discovery pending", func(c *globalconfig.HubClient) { c.NativeProjects = nil }, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := globalconfig.Config{Client: globalconfig.HubClient{URL: file.HubURL, IdentityFile: path, OrganizationID: "org_example", NativeProjects: map[string]string{"native": "prj_example"}}, Global: globalconfig.Settings{MaxConcurrentAgents: 1}}

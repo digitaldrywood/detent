@@ -430,7 +430,7 @@ fi
 if ! gh auth status >/dev/null 2>&1; then
     printf '  GitHub: run gh auth login and gh auth setup-git for private clones and pushes.\n'
 fi
-printf '  Clone each project into the directory printed by register, including WORKFLOW.md and detent.yaml.\n'
+printf '  The runner clones Cloud-allowed repositories into workspace_root and reads their detent.yaml and WORKFLOW.md.\n'
 printf '  Prepare dependencies and git author identity; approve the observed repository policy in the Hub.\n'
 printf '  Re-run this script with empty input to restart the service, then route a Todo issue.\n'
 printf '  After auth and checkout changes, take a new baseline with sprite-env checkpoints create.\n'

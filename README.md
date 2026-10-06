@@ -262,8 +262,8 @@ boardless issue field, or repository status labels drive everything.
 5. **The merge train is serialized** — one rebase, CI-watch, and merge at a
    time, so concurrent candidates never invalidate each other's CI — then the
    issue is `Done`.
-6. **One host, many repos.** `global.yaml` runs multiple projects with weights,
-   priority, pause, and fair scheduling. The web dashboard and terminal UI show
+6. **One host, many repos.** Cloud assigns allowed projects to each runner; `global.yaml` holds
+   machine settings. Cloud owns project rank and routing. The web dashboard and terminal UI show
    live counts, running agents, token / budget / rate-limit state, and board
    flow.
 
@@ -290,8 +290,8 @@ counts:
 - **[GitHub Projects v2, not Linear](#why-these-defaults).** Issues, status
   columns, priorities, labels, blockers, comments, and pull requests are the
   state machine.
-- **Multi-project from one host.** `global.yaml` runs many repositories with
-  weights, priority, pause, and fair scheduling.
+- **Multi-project from one host.** Cloud assigns allowed repositories to runners and
+  owns project rank; each runner file contains only machine settings.
 - **Explicit gates + a serialized merge train.** CI, optional automated PR
   review criteria, and a one-at-a-time `Merging` lane, so what lands is always
   green.

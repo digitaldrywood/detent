@@ -133,12 +133,8 @@ func TestRunnerCapacityOwner(t *testing.T) {
 				<-observed
 				cfg.APIToken = "private-updated-api-credential"
 				cfg.GitHubToken = "private-updated-github-credential"
-				cfg.Projects[0].Paused = true
-				cfg.Projects[0].PausedReason = "operator hold"
-				cfg.Projects[0].Priority = 3
-				cfg.Projects[0].Weight = 4
-				cfg.Projects[0].CredentialRef = "updated-credential"
-				cfg.Projects = append(cfg.Projects, globalconfig.Project{ID: "added", Workflow: cfg.Projects[0].Workflow, Workdir: root, Weight: 1})
+				cfg.WorkspaceRoot = filepath.Join(root, "updated-workspaces")
+				cfg.Global.Memory.MaxAgentRSSBytes = 16 << 30
 				switch scenario {
 				case "concurrent replay":
 					cfg.Global.MaxConcurrentAgents, cfg.Client.Capacity = 6, 6
@@ -152,7 +148,7 @@ func TestRunnerCapacityOwner(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if saved.APIToken != cfg.APIToken || saved.GitHubToken != cfg.GitHubToken || len(saved.Projects) != 2 || !saved.Projects[0].Paused || saved.Projects[0].PausedReason != "operator hold" || saved.Projects[0].Priority != 3 || saved.Projects[0].Weight != 4 || saved.Projects[0].CredentialRef != "updated-credential" || saved.Projects[1].ID != "added" {
+				if saved.APIToken != cfg.APIToken || saved.GitHubToken != cfg.GitHubToken || saved.WorkspaceRoot != cfg.WorkspaceRoot || saved.Global.Memory.MaxAgentRSSBytes != cfg.Global.Memory.MaxAgentRSSBytes {
 					t.Fatal("concurrent edit was not saved before capacity resumed")
 				}
 				original, err = os.ReadFile(path)

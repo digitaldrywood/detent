@@ -78,6 +78,7 @@ type PathResolution struct {
 }
 
 type Config struct {
+	WorkspaceRoot         string           `yaml:"workspace_root,omitempty"`
 	Path                  string           `yaml:"-"`
 	APIVersion            string           `yaml:"apiVersion"`
 	Kind                  string           `yaml:"kind"`
@@ -733,6 +734,10 @@ func decodeConfigRoot(raw []byte, path string) (map[string]any, error) {
 }
 
 func parseConfigRoot(root map[string]any, path string, readOptions options, opts ...Option) (Config, error) {
+	warnings := normalizeRunnerConfig(root)
+	for _, key := range warnings {
+		slog.Warn("runner configuration key is removed and ignored; remove it before the next release", "key", key)
+	}
 	if problems := validateRaw(root, readOptions); len(problems) > 0 {
 		return Config{}, ValidationError{Path: path, Problems: problems}
 	}
@@ -745,6 +750,19 @@ func parseConfigRoot(root map[string]any, path string, readOptions options, opts
 		return Config{}, err
 	}
 
+	if cfg.Client.IdentityFile != "" {
+		workspaceRoot, _ := root["workspace_root"].(string)
+		if workspaceRoot == "" {
+			workspaceRoot = filepath.Join(readOptions.home, "detent-runner")
+		}
+		cfg.WorkspaceRoot, err = expandPath(workspaceRoot, readOptions)
+		if err != nil {
+			return Config{}, buildValidationError(path, err)
+		}
+		if !filepath.IsAbs(cfg.WorkspaceRoot) {
+			return Config{}, ValidationError{Path: path, Problems: []string{"workspace_root: must be an absolute path"}}
+		}
+	}
 	return cfg, nil
 }
 
@@ -1158,6 +1176,7 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, requiredErrors(attrs, []string{"apiVersion", "kind", "global", "projects"})...)
 	problems = append(problems, versionErrors(attrs["apiVersion"])...)
 	problems = append(problems, kindErrors(attrs["kind"])...)
+	problems = append(problems, optionalStringTypeError(attrs, "workspace_root")...)
 	problems = append(problems, optionalStringTypeError(attrs, "env")...)
 	problems = append(problems, optionalStringTypeError(attrs, "log_level")...)
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["log_max_size_bytes"], "log_max_size_bytes")...)

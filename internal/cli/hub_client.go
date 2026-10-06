@@ -53,7 +53,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		if err != nil {
 			return nil, err
 		}
-		if clientConfig.TokenEnvironment != "" || len(clientConfig.NativeProjects) == 0 || string(file.Identity.OrganizationID) != clientConfig.OrganizationID || clientConfig.MachineID != "" && clientConfig.MachineID != string(file.Identity.MachineID) {
+		if clientConfig.TokenEnvironment != "" || string(file.Identity.OrganizationID) != clientConfig.OrganizationID || clientConfig.MachineID != "" && clientConfig.MachineID != string(file.Identity.MachineID) {
 			return nil, errors.New("hub runner configuration does not match the enrolled identity")
 		}
 		for _, id := range clientConfig.NativeProjects {
@@ -130,7 +130,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		return nil, err
 	}
 	for name, checks := range localChecks {
-		checks.Setup = setupResults[name]
+		checks.Setup = firstNonBlankString(setupResults[name], "failed")
 		localChecks[name] = checks
 	}
 	tokenSource := githubconnector.StaticTokenSource("")
@@ -156,11 +156,26 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		GitHubIntake:          github.FetchIssueSnapshot,
 		GitHubDiscovery:       github.DiscoverIssues,
 		Problems:              reportProblems,
-		IsolationReport:       func(ctx context.Context) isolation.Report { return probeRunnerIsolation(ctx, cfg) },
-		ProviderReports:       providerReports,
-		OrganizationID:        tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
+		IsolationReport: func(ctx context.Context) isolation.Report {
+			current := cfg
+			if setupOptions.runtimeConfig != nil {
+				current = setupOptions.runtimeConfig()
+			}
+			return probeRunnerIsolation(ctx, current)
+		},
+		ProviderReports: providerReports,
+		OrganizationID:  tracker.OrganizationID(clientConfig.OrganizationID), NativeProjects: nativeProjects,
 		CheckoutRepository: func(project string) string {
-			return runnerCheckoutRepository(ctx, checkouts[project])
+			selected := checkouts[project]
+			if setupOptions.runtimeConfig != nil {
+				for _, current := range setupOptions.runtimeConfig().Projects {
+					if current.ID == project {
+						selected = current
+						break
+					}
+				}
+			}
+			return runnerCheckoutRepository(ctx, selected)
 		},
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,

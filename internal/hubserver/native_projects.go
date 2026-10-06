@@ -189,6 +189,14 @@ func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeSco
 	if err := json.Unmarshal([]byte(states), &project.States); err != nil {
 		return project, err
 	}
+	integration, err := readProjectIntegration(ctx, query, scope)
+	if err != nil {
+		return project, err
+	}
+	project.Repository = integration.Repository
+	if project.Repository == "" {
+		project.Repository = integration.CheckoutRepository
+	}
 	selection, err := readCloudModelSelection(ctx, query, scope)
 	if err != nil {
 		return project, err

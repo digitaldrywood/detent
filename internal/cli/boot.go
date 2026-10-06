@@ -74,6 +74,10 @@ func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, ho
 
 	cfg, err := opts.read(path)
 	if err == nil {
+		cfg, err = resolveRunnerProjects(ctx, cfg)
+		if err != nil {
+			return BootConfig{}, err
+		}
 		workflowPath := firstGlobalWorkflowPath(cfg)
 		runtime, err := resolveRuntimeSettings(ctx, runtimeInput{
 			Config:     &cfg,
@@ -499,6 +503,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 	reloadLogLevel := runtimeLogLevelForReload(cfg)
 	applyRuntimeConfig := func(reloaded globalconfig.Config) error {
+		if source, ok := hubScheduling.(interface{ SetNativeProjects(map[string]string) error }); ok {
+			if err := source.SetNativeProjects(reloaded.Client.NativeProjects); err != nil {
+				return err
+			}
+		}
 		return applyGlobalRuntimeConfig(globalDispatchGate, reloadLogLevel, reloaded)
 	}
 	startProjects := func(ctx context.Context) error {

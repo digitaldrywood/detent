@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"slices"
@@ -22,7 +23,7 @@ import (
 // authentication probe. Raw details never cross the runner/Hub boundary.
 func collectRunnerLocalChecks(ctx context.Context, cfg globalconfig.Config, name string, diagnose func(context.Context, doctorConfig) doctorReport, auth func(context.Context, workflowconfig.AgentBackend) bool) runnerauth.LocalChecks {
 	checks := runnerauth.LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "pending"}
-	resolved, workflow, _, err := resolveRunnerSetupPolicy(ctx, cfg.Path, name)
+	resolved, workflow, _, err := resolveRunnerSetupPolicyConfig(ctx, cfg, name)
 	if err != nil || !runnerCheckoutReady(ctx, project.ManagerConfigFromGlobal(resolved).Projects[0]) {
 		return checks
 	}
@@ -132,20 +133,16 @@ func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, cli
 		return nil, err
 	}
 	reports := make(map[string]runnerauth.LocalChecks)
-	for _, selected := range cfg.Projects {
-		id := cfg.Client.NativeProjects[selected.ID]
-		if id == "" {
-			continue
-		}
+	for name, id := range cfg.Client.NativeProjects {
 		native, err := client.Native(file.Identity.OrganizationID, tracker.ProjectID(id))
 		if err != nil {
 			return nil, err
 		}
-		checks := collectRunnerLocalChecks(ctx, cfg, selected.ID, func(ctx context.Context, cfg doctorConfig) doctorReport {
+		checks := collectRunnerLocalChecks(ctx, cfg, name, func(ctx context.Context, cfg doctorConfig) doctorReport {
 			return runDoctorStartupPreflight(ctx, cfg, options{}, doctorDeps{})
 		}, probeRunnerProviderAuth)
 		if checks.Checkout == "passed" {
-			_, _, descriptor, err := resolveRunnerSetupPolicy(ctx, cfg.Path, selected.ID)
+			_, _, descriptor, err := resolveRunnerSetupPolicyConfig(ctx, cfg, name)
 			if err != nil {
 				return nil, err
 			}
@@ -153,7 +150,7 @@ func collectRunnerSetupReports(ctx context.Context, cfg globalconfig.Config, cli
 				return nil, err
 			}
 		}
-		reports[selected.ID] = checks
+		reports[name] = checks
 	}
 	return reports, nil
 }
@@ -166,11 +163,25 @@ func readRunnerSetupConfig(path string) (globalconfig.Config, error) {
 }
 
 func resolveRunnerSetupPolicy(ctx context.Context, path, name string) (globalconfig.Config, workflowconfig.Workflow, policy.Descriptor, error) {
-	cfg, _, err := globalconfig.ReadProject(path, name)
+	cfg, err := readRunnerRuntimeConfig(ctx, path)
 	if err != nil {
 		return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, err
 	}
-	selected := project.ManagerConfigFromGlobal(cfg).Projects[0]
+	return resolveRunnerSetupPolicyConfig(ctx, cfg, name)
+}
+
+func resolveRunnerSetupPolicyConfig(ctx context.Context, cfg globalconfig.Config, name string) (globalconfig.Config, workflowconfig.Workflow, policy.Descriptor, error) {
+	var selected globalconfig.Project
+	for _, candidate := range project.ManagerConfigFromGlobal(cfg).Projects {
+		if candidate.ID == name {
+			selected = candidate
+			break
+		}
+	}
+	if selected.ID == "" {
+		return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, fmt.Errorf("runner project checkout %s is unavailable", name)
+	}
+	cfg.Projects = []globalconfig.Project{selected}
 	workflow, err := project.LoadWorkflowContext(ctx, selected)
 	if err != nil {
 		return cfg, workflow, policy.Descriptor{}, err
