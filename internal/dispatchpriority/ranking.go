@@ -15,66 +15,29 @@ type LabelMatch struct {
 }
 
 type Ranker struct {
-	stateRanks   map[string]int
-	labelRanks   map[string]LabelMatch
-	mergingFirst bool
+	stateRanks map[string]int
+	labelRanks map[string]LabelMatch
 }
 
 func New(states []string, labels []string) Ranker {
 	return Ranker{
-		stateRanks:   stateRanks(states),
-		mergingFirst: len(states) > 0 && normalize(states[0]) == "merging",
-		labelRanks:   labelRanks(labels),
+		stateRanks: stateRanks(states),
+		labelRanks: labelRanks(labels),
 	}
 }
 
 type Candidate struct {
-	Issue connector.Issue
-	Rank  string
+	Issue       connector.Issue
+	ProjectRank int
+	Rank        string
 }
 
 func (r Ranker) Compare(left, right Candidate, prioritizeUnblockers bool) int {
 	a, b := left.Issue, right.Issue
-	aMerging := r.mergingFirst && normalize(a.State) == "merging"
-	bMerging := r.mergingFirst && normalize(b.State) == "merging"
-	if aMerging != bMerging {
-		if aMerging {
-			return -1
-		}
-		return 1
-	}
 	if order := cmp.Compare(Priority(a.Priority), Priority(b.Priority)); order != 0 {
 		return order
 	}
-	aLabel, aLabeled := r.MatchLabel(a.Labels)
-	bLabel, bLabeled := r.MatchLabel(b.Labels)
-	if aLabeled != bLabeled {
-		if aLabeled {
-			return -1
-		}
-		return 1
-	}
-	if aLabeled {
-		if order := cmp.Compare(aLabel.Rank, bLabel.Rank); order != 0 {
-			return order
-		}
-	}
-	if order := cmp.Compare(r.State(a.State), r.State(b.State)); order != 0 {
-		return order
-	}
-	if prioritizeUnblockers && !aLabeled {
-		if order := cmp.Compare(b.UnblockerCount, a.UnblockerCount); order != 0 {
-			return order
-		}
-	}
-	aRank, bRank := strings.TrimSpace(left.Rank), strings.TrimSpace(right.Rank)
-	if (aRank == "") != (bRank == "") {
-		if aRank != "" {
-			return -1
-		}
-		return 1
-	}
-	if order := cmp.Compare(aRank, bRank); order != 0 {
+	if order := cmp.Compare(left.ProjectRank, right.ProjectRank); order != 0 {
 		return order
 	}
 	if a.CreatedAt != nil && b.CreatedAt != nil {

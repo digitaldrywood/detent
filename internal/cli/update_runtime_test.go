@@ -223,10 +223,7 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 func TestRuntimeUpdateIdleReservationBlocksDispatch(t *testing.T) {
 	t.Parallel()
 
-	candidates := []scheduler.ProjectCandidate{
-		{ID: "detent", Weight: 1},
-		{ID: "video", Pool: "video", Weight: 1},
-	}
+	candidates := []scheduler.ProjectCandidate{{ID: "detent"}, {ID: "video", Pool: "video"}}
 	gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{
 		{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}},
 		{Name: "video", Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}},

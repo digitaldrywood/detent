@@ -51,15 +51,15 @@ func TestNewFromConfigSelectsMode(t *testing.T) {
 		kind string
 		want scheduler.Mode
 	}{
-		{name: "empty defaults to weighted fair", kind: "", want: scheduler.ModeWeightedFair},
-		{name: "weighted fair", kind: "weighted_fair", want: scheduler.ModeWeightedFair},
-		{name: "weighted alias", kind: " weighted ", want: scheduler.ModeWeightedFair},
+		{name: "empty defaults to strict priority", kind: "", want: scheduler.ModeStrictPriority},
+		{name: "weighted fair", kind: "weighted_fair", want: scheduler.ModeStrictPriority},
+		{name: "weighted alias", kind: " weighted ", want: scheduler.ModeStrictPriority},
 		{name: "strict priority", kind: "strict_priority", want: scheduler.ModeStrictPriority},
 		{name: "strict alias", kind: "strict", want: scheduler.ModeStrictPriority},
-		{name: "round robin", kind: "round_robin", want: scheduler.ModeRoundRobin},
-		{name: "round-robin alias", kind: "round-robin", want: scheduler.ModeRoundRobin},
-		{name: "fair share", kind: "fair_share", want: scheduler.ModeFairShare},
-		{name: "fair-share alias", kind: "fair-share", want: scheduler.ModeFairShare},
+		{name: "round robin", kind: "round_robin", want: scheduler.ModeStrictPriority},
+		{name: "round-robin alias", kind: "round-robin", want: scheduler.ModeStrictPriority},
+		{name: "fair share", kind: "fair_share", want: scheduler.ModeStrictPriority},
+		{name: "fair-share alias", kind: "fair-share", want: scheduler.ModeStrictPriority},
 		{name: "counting semaphore compatibility", kind: "counting_semaphore", want: scheduler.ModeCountingSemaphore},
 	}
 
@@ -68,9 +68,8 @@ func TestNewFromConfigSelectsMode(t *testing.T) {
 			t.Parallel()
 
 			got, err := scheduler.NewFromConfig(scheduler.Config{
-				Kind:           tt.kind,
-				Capacity:       2,
-				FairShareStore: &fairShareStore{},
+				Kind:     tt.kind,
+				Capacity: 2,
 			})
 			if err != nil {
 				t.Fatalf("NewFromConfig() error = %v", err)
@@ -79,18 +78,6 @@ func TestNewFromConfigSelectsMode(t *testing.T) {
 				t.Fatalf("Mode() = %q, want %q", got.Mode(), tt.want)
 			}
 		})
-	}
-}
-
-func TestNewFromConfigRejectsFairShareWithoutStore(t *testing.T) {
-	t.Parallel()
-
-	got, err := scheduler.NewFromConfig(scheduler.Config{Kind: "fair_share"})
-	if got != nil {
-		t.Fatalf("scheduler = %T, want nil", got)
-	}
-	if !errors.Is(err, scheduler.ErrFairShareStoreRequired) {
-		t.Fatalf("error = %v, want ErrFairShareStoreRequired", err)
 	}
 }
 

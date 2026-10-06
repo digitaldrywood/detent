@@ -205,8 +205,6 @@ func (o *Orchestrator) logSchedulerSlotDecision(issue connector.Issue, outcome s
 		"outcome", strings.TrimSpace(outcome),
 		"reason", reason,
 		"pool", strings.TrimSpace(decision.PoolName),
-		"project_weight", o.cfg.Project.Weight,
-		"project_priority", o.cfg.Project.Priority,
 		"global_capacity", decision.GlobalCapacity,
 		"global_used", decision.GlobalUsed,
 		"global_available", decision.GlobalAvailable,
@@ -438,8 +436,6 @@ func (o *Orchestrator) schedulerDecisionAttrs(state *State, now time.Time, issue
 	all := []any{
 		"lane", normalizeState(issue.State),
 		"pool", pool.Name,
-		"project_weight", o.cfg.Project.Weight,
-		"project_priority", o.cfg.Project.Priority,
 		"project_state_capacity", projectStats.capacity,
 		"project_state_used", projectStats.used,
 		"project_state_available", projectStats.available,

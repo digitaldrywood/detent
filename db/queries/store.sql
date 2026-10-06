@@ -736,31 +736,6 @@ WHERE usage_events.project_id = sqlc.arg(project_id)
       AND usage_by_identifier.identifier = sqlc.arg(identifier)
   );
 
--- name: ListFairShareUsage :many
-SELECT
-  project_id,
-  weight,
-  dispatches,
-  runtime_seconds,
-  updated_at
-FROM fair_share_usage
-ORDER BY project_id;
-
--- name: UpsertFairShareUsage :one
-INSERT INTO fair_share_usage (
-  project_id,
-  weight,
-  dispatches,
-  runtime_seconds,
-  updated_at
-) VALUES (?, ?, 1, ?, ?)
-ON CONFLICT(project_id) DO UPDATE SET
-  weight = excluded.weight,
-  dispatches = fair_share_usage.dispatches + excluded.dispatches,
-  runtime_seconds = fair_share_usage.runtime_seconds + excluded.runtime_seconds,
-  updated_at = excluded.updated_at
-RETURNING *;
-
 -- name: CreateWorkflowPhaseEvent :one
 INSERT INTO workflow_phase_events (
   project_id,

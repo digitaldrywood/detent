@@ -357,8 +357,7 @@ export function RunnersSettings(): React.ReactElement {
           {...(canEnroll && fleet.value.editable ? { onSaveRouting: async (runner: FleetRunner, routing: RunnerRouting) => {
             await api.setRunnerRouting({ runner: runner.id, revision: runner.revision ?? 0, displayName: routing.display_name,
               tags: routing.tags, state: routing.state, capacityLimit: routing.capacity_limit, projectIds: routing.project_ids,
-              homeProjectIds: routing.home_project_ids ?? [], isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability,
-              spillover: routing.spillover });
+              isolationTier: routing.isolation_tier, hostServices: routing.host_services, availability: routing.availability });
             await reloadRunner();
           } } : {})}
         />

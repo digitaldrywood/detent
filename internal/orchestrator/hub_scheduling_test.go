@@ -556,7 +556,7 @@ func (r *hubSchedulingRunner) Run(ctx context.Context, request RunRequest) (RunR
 }
 
 func schedulerProjectCandidate(id string) scheduler.ProjectCandidate {
-	return scheduler.ProjectCandidate{ID: id, Weight: 1}
+	return scheduler.ProjectCandidate{ID: id}
 }
 
 func TestHubRefillRetainsNewClaims(t *testing.T) {

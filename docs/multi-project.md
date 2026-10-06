@@ -31,7 +31,6 @@ global:
     mode: proportional
     floor_percent: 20
     stale_after_seconds: 900
-  scheduling: weighted
   active_hours:
     timezone: America/Chicago
     windows:
@@ -43,9 +42,6 @@ global:
     - name: video
       max_concurrent_agents: 10
       burst_to: 15
-      scheduling: round_robin
-  fair_share:
-    half_life: 1h
   startup:
     jitter_seconds: 10
     max_spawn_per_second: 2
@@ -68,8 +64,6 @@ projects:
     workflow: /absolute/path/to/detent/WORKFLOW.md
     workdir: /absolute/path/to/detent
     color: "#1192e8"
-    weight: 2
-    priority: 1
     active_hours:
       timezone: America/Chicago
       windows:
@@ -78,28 +72,26 @@ projects:
   - id: website
     workflow: /absolute/path/to/website/WORKFLOW.md
     workdir: /absolute/path/to/website
-    weight: 1
-    priority: 3
     paused: true
     paused_reason: waiting for website#42
     paused_at: 2026-07-27T12:00:00Z
     paused_until_issue: digitaldrywood/website#42
 ```
 
-Project weights are relative scheduling weights. Higher weights receive a
-larger dispatch share in weighted and fair-share scheduling modes. Project
-priority is a rank: `0` is highest and `4` is lowest.
+Runner owners set the allowed-project list in Cloud; an empty list runs nothing.
+Cloud organization settings hold one project rank shared by all runners.
+When a slot opens, eligible ready work sorts by issue priority (Urgent, High,
+Normal, Low, then unset), project rank, and oldest issue creation time.
+Legacy local project weights, priorities, scheduling modes and fair-share
+settings do not affect selection. Their configuration compatibility belongs
+to the runner configuration migration.
 
-Priority picks the next job (INV-10). Eligible requests wait without owning
-capacity. The gate ranks pending and new requests together and acquires real
-capacity for each request that fits, including on slot release. Project event
-loops consume grants without waiting for another tracker poll, rechecking current
-candidate eligibility before starting work. Lifecycle-state priority leads in `weighted`, `fair_share`, and
-`round_robin` pools; `strict` orders project priority first, then lane priority.
-The configured project scheduler breaks ties. All modes share the same
-acquisition lifecycle. A request that cannot start owns nothing. A project
-scanning candidates or having no eligible work cannot hold idle capacity.
-Running work is never cancelled or displaced by priority.
+Priority picks the next job (INV-10). Pending requests own no capacity.
+Requests that cannot acquire their actual project, lane or host capacity do
+not prevent another ready request from using a free slot. Running work is
+never cancelled or displaced by priority. A lower-ranked project may wait
+indefinitely while higher-ranked ready work exists; dedicated runners limit
+competition through their allowed-project lists.
 
 Dispatch
 stall age survives restarts and refusal-reason changes by using the later of
@@ -110,13 +102,12 @@ from an older selection.
 `global.agent_pools` defines independent agent-capacity partitions. Each
 project belongs to exactly one pool through `projects[].pool`. A project with
 no `pool` uses the implicit `default` pool, whose capacity is
-`global.max_concurrent_agents` and whose policy is `global.scheduling`.
+`global.max_concurrent_agents` and uses the same dispatch ordering rule.
 `default` is reserved and cannot be declared in `agent_pools`.
 
 Every named pool requires a unique non-empty `name` and a positive
-`max_concurrent_agents`. Its optional `scheduling` accepts `weighted`,
-`strict`, `round_robin`, or `fair_share`; when omitted it inherits
-`global.scheduling`. `max_concurrent_agents` is the pool's guaranteed
+`max_concurrent_agents`. Every pool uses the same ordering rule.
+`max_concurrent_agents` is the pool's guaranteed
 capacity. Optional `burst_to` must be greater than or equal to that guarantee
 and lets the pool borrow unused guaranteed capacity from sibling pools up to
 the configured ceiling. Omitting `burst_to`, or setting it equal to
@@ -318,7 +309,7 @@ can include `--workflow-ref origin/main` during registration or add
 | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
 | `global.active_hours` | Live reload at the next dispatch decision; running agents drain when a window closes |
 | `global.rate_window_pacing` and `agent.rate_window_pacing` | Live reload at the next dispatch decision without interrupting running agents; the project value wins when explicitly set |
-| `global.max_concurrent_agents`, `global.scheduling`, `global.agent_pools`, `global.fair_share`, and project pool assignments | Live reload at the next dispatch decision; adding, removing, or lowering `burst_to` preserves active workers and drains to the new ceiling, and removed pools drain their active workers before retirement |
+| `global.max_concurrent_agents`, `global.agent_pools`, and project pool assignments | Live reload at the next dispatch decision; adding, removing, or lowering `burst_to` preserves active workers and drains to the new ceiling, and removed pools drain their active workers before retirement |
 | `global.memory.pressure_some_avg60_threshold`, `global.memory.poll_interval_ms`, `global.io`, and `global.cpu` | Live reload in each project orchestrator without interrupting active attempts or provider sessions; threshold changes immediately re-evaluate the latest supported pressure sample instead of waiting for the next poll |
 | `log_level` | Live reload |
 | `port`, `env`, `log_max_size_bytes`, `log_max_backups` | Restart required |
@@ -360,7 +351,6 @@ apiVersion: detent/v1
 kind: GlobalConfig
 global:
   max_concurrent_agents: 4
-  scheduling: weighted
   identity:
     name: detent-alpha
     github_login: detent-alpha
@@ -370,8 +360,6 @@ projects:
   - id: detent-alpha
     workflow: /absolute/path/to/detent/WORKFLOW.md
     workdir: /absolute/path/to/detent
-    weight: 1
-    priority: 1
     authorization:
       labels:
         include:
@@ -386,7 +374,6 @@ apiVersion: detent/v1
 kind: GlobalConfig
 global:
   max_concurrent_agents: 4
-  scheduling: weighted
   identity:
     name: detent-beta
     github_login: detent-beta
@@ -396,8 +383,6 @@ projects:
   - id: detent-beta
     workflow: /absolute/path/to/detent/WORKFLOW.md
     workdir: /absolute/path/to/detent
-    weight: 1
-    priority: 1
     authorization:
       labels:
         include:

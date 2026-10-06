@@ -60,8 +60,8 @@ func TestDispatchReadyIssuesPreservesGlobalCapacityRefusal(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 8, 20, 0, 0, 0, time.UTC)
-	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
-	heldSlot, ok, decision, err := globalGate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "alpha", Weight: 1}, scheduler.SlotRequest{
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	heldSlot, ok, decision, err := globalGate.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "alpha"}, scheduler.SlotRequest{
 		State:    "Todo",
 		Priority: 2,
 	}, now)
@@ -82,7 +82,7 @@ func TestDispatchReadyIssuesPreservesGlobalCapacityRefusal(t *testing.T) {
 		FailureRetryBaseDelay: time.Second,
 		ActiveStates:          []string{"Todo"},
 		TerminalStates:        []string{"Done"},
-		Project:               scheduler.ProjectCandidate{ID: "bravo", Weight: 1},
+		Project:               scheduler.ProjectCandidate{ID: "bravo"},
 	})
 	orch := Orchestrator{cfg: cfg, globalDispatchGate: globalGate}
 	state := newState(cfg)

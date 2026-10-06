@@ -2580,7 +2580,7 @@ func TestDispatchReadyIssuesRechecksStartTransitionStateCapacity(t *testing.T) {
 func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 	t.Parallel()
 
-	global := scheduler.NewRoundRobin(scheduler.Config{Capacity: 1})
+	global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 1})
 	globalGate := scheduler.NewGlobalDispatchGate(global)
 	now := time.Now()
 	ctx := t.Context()
@@ -2590,7 +2590,7 @@ func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 		MaxConcurrentAgents: 2,
 		ActiveStates:        []string{"Todo"},
 		TerminalStates:      []string{"Done"},
-		Project:             scheduler.ProjectCandidate{ID: "alpha", Weight: 1},
+		Project:             scheduler.ProjectCandidate{ID: "alpha"},
 	})
 	alpha := Orchestrator{
 		cfg:                alphaCfg,
@@ -2614,7 +2614,7 @@ func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 		MaxConcurrentAgents: 2,
 		ActiveStates:        []string{"Todo"},
 		TerminalStates:      []string{"Done"},
-		Project:             scheduler.ProjectCandidate{ID: "bravo", Weight: 1},
+		Project:             scheduler.ProjectCandidate{ID: "bravo"},
 	})
 	bravo := Orchestrator{
 		cfg:                bravoCfg,
@@ -2652,7 +2652,7 @@ func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 func TestDispatchReadyIssuesAllowsOneMergeWorkerPerProject(t *testing.T) {
 	t.Parallel()
 
-	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 2}))
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
 	now := time.Date(2026, 6, 25, 13, 0, 0, 0, time.UTC)
 	ctx := t.Context()
 
@@ -2665,7 +2665,7 @@ func TestDispatchReadyIssuesAllowsOneMergeWorkerPerProject(t *testing.T) {
 		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
 		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:          []string{"Done"},
-		Project:                 scheduler.ProjectCandidate{ID: "alpha", Weight: 1},
+		Project:                 scheduler.ProjectCandidate{ID: "alpha"},
 	})
 	alpha := Orchestrator{
 		cfg:                alphaCfg,
@@ -2695,7 +2695,7 @@ func TestDispatchReadyIssuesAllowsOneMergeWorkerPerProject(t *testing.T) {
 		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
 		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:          []string{"Done"},
-		Project:                 scheduler.ProjectCandidate{ID: "bravo", Weight: 1},
+		Project:                 scheduler.ProjectCandidate{ID: "bravo"},
 	})
 	bravo := Orchestrator{
 		cfg:                bravoCfg,
@@ -2732,8 +2732,8 @@ func TestDispatchReadyIssuesLogsMergeSlotDecisionAndStopsAfterGlobalWait(t *test
 
 	now := time.Date(2026, 6, 25, 14, 0, 0, 0, time.UTC)
 	ctx := t.Context()
-	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
-	lowerPriorityProject := scheduler.ProjectCandidate{ID: "alpha", Weight: 1}
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	lowerPriorityProject := scheduler.ProjectCandidate{ID: "alpha"}
 	lowerSlot, ok, decision, err := globalGate.TryAcquireWithDecision(ctx, lowerPriorityProject, scheduler.SlotRequest{
 		State:    "Todo",
 		Priority: 2,
@@ -2758,7 +2758,7 @@ func TestDispatchReadyIssuesLogsMergeSlotDecisionAndStopsAfterGlobalWait(t *test
 		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
 		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:          []string{"Done"},
-		Project:                 scheduler.ProjectCandidate{ID: "zulu", Weight: 1},
+		Project:                 scheduler.ProjectCandidate{ID: "zulu"},
 	})
 	runner := newWorkerHostRunner()
 	var logs strings.Builder
@@ -2814,8 +2814,8 @@ func TestDispatchReadyIssuesRecordsNonMergeSlotWaitTelemetry(t *testing.T) {
 
 	now := time.Date(2026, 6, 26, 10, 0, 0, 0, time.UTC)
 	ctx := t.Context()
-	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
-	lowerSlot, ok, decision, err := globalGate.TryAcquireWithDecision(ctx, scheduler.ProjectCandidate{ID: "alpha", Weight: 1}, scheduler.SlotRequest{
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+	lowerSlot, ok, decision, err := globalGate.TryAcquireWithDecision(ctx, scheduler.ProjectCandidate{ID: "alpha"}, scheduler.SlotRequest{
 		State:    "Todo",
 		Priority: 2,
 	}, now)
@@ -2836,7 +2836,7 @@ func TestDispatchReadyIssuesRecordsNonMergeSlotWaitTelemetry(t *testing.T) {
 		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
 		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:          []string{"Done"},
-		Project:                 scheduler.ProjectCandidate{ID: "zulu", Weight: 1},
+		Project:                 scheduler.ProjectCandidate{ID: "zulu"},
 	})
 	runner := newWorkerHostRunner()
 	var logs strings.Builder
@@ -3257,7 +3257,7 @@ func TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle(t *testing.T) {
 		MaxConcurrentAgents: 3,
 		ActiveStates:        []string{"Todo", "In Progress"},
 		TerminalStates:      []string{"Done"},
-		Project:             scheduler.ProjectCandidate{ID: "detent", Weight: 2, Priority: 10},
+		Project:             scheduler.ProjectCandidate{ID: "detent", Rank: 10},
 	})
 	runner := newWorkerHostRunner()
 	var logs strings.Builder
@@ -3543,7 +3543,7 @@ func TestDispatchReadyIssuesPreservesConcretePressureRefusal(t *testing.T) {
 		Project:             scheduler.ProjectCandidate{ID: "detent"},
 	})
 	globalGate := scheduler.NewGlobalDispatchGate(
-		scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}),
+		scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}),
 		cfg.Project,
 	)
 	heldSlot, ok, decision, err := globalGate.TryAcquireWithDecision(

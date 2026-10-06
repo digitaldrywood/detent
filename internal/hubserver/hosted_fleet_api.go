@@ -50,11 +50,9 @@ type hostedFleetRunner struct {
 	ProviderCapacity   []providercapacity.View  `json:"provider_capacity"`
 	LastHeartbeatAt    time.Time                `json:"last_heartbeat_at"`
 	Leases             []hostedFleetLease       `json:"leases"`
-	HomeProjectIDs     []tracker.ProjectID      `json:"home_project_ids"`
-	HomeStatus         string                   `json:"home_status"`
-	HomeDrySince       *time.Time               `json:"home_dry_since"`
 	IsolationTier      string                   `json:"isolation_tier"`
 	Availability       runnerauth.Availability  `json:"availability"`
+	CanEditProjects    bool                     `json:"can_edit_projects"`
 	Routing            *runnerauth.Routing      `json:"routing,omitempty"`
 	Revision           int64                    `json:"revision,omitempty"`
 }
@@ -221,6 +219,11 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 			return nil, err
 		}
 		if editable {
+			owned, err := runnerOwnedBy(ctx, s.database.db, organization, runner.RunnerID, credential)
+			if err != nil {
+				return nil, err
+			}
+			view.CanEditProjects = owned
 			view.Routing = &runner.Routing
 			view.Revision = runner.Revision
 			capacity, err := s.runnerCapacityView(ctx, s.database.db, runner, "", s.config.now())
@@ -254,8 +257,7 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},
-		IsolationTier: runner.IsolationTier, Availability: runner.Availability, HomeProjectIDs: []tracker.ProjectID{},
-		HomeStatus: runner.HomeStatus, HomeDrySince: runner.HomeDrySince,
+		IsolationTier: runner.IsolationTier, Availability: runner.Availability,
 		Problems: runner.Problems,
 	}
 	if view.ProviderCapacity == nil {
@@ -264,20 +266,6 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 	view.Problems = slices.Clone(runner.Problems)
 	if view.Problems == nil {
 		view.Problems = []runnerauth.Problem{}
-	}
-	for _, project := range runner.HomeProjectIDs {
-		if visible[project] {
-			view.HomeProjectIDs = append(view.HomeProjectIDs, project)
-		}
-	}
-	if len(view.HomeProjectIDs) != len(runner.HomeProjectIDs) {
-		view.HomeStatus = ""
-		view.HomeDrySince = nil
-		view.Problems = slices.DeleteFunc(view.Problems, func(p runnerauth.Problem) bool { return p.Code == "home_project_unservable" })
-		if len(view.Problems) == 0 && runner.Health == "needs_attention" {
-			runner.Health = runner.ConnectionHealth
-			view.Health = runner.Status(now)
-		}
 	}
 	for _, lease := range runner.Leases {
 		if !visible[lease.ProjectID] {

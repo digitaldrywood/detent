@@ -30,8 +30,8 @@ func TestMergeWorkerDurationCeilingCancelsProgressingRunAndReleasesSlot(t *testi
 		Now:       func() time.Time { return completedAt },
 		EventSink: func(event memory.Event) { events = append(events, event) },
 	})
-	project := scheduler.ProjectCandidate{ID: "detent", Weight: 1}
-	dispatchGate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+	project := scheduler.ProjectCandidate{ID: "detent"}
+	dispatchGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 	cfg := normalizeConfig(Config{
 		MaxConcurrentAgents:        1,
 		MaxConcurrentAgentsByState: map[string]int{"Merging": 1},
@@ -199,7 +199,7 @@ func TestNormalDurationMergeIsUnaffected(t *testing.T) {
 	cfg := normalizeConfig(Config{
 		MaxConcurrentAgents:    1,
 		MergeWorkerMaxDuration: 6 * time.Hour,
-		Project:                scheduler.ProjectCandidate{ID: "detent", Weight: 1},
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
 		ActiveStates:           []string{"Merging"},
 		ObservedStates:         []string{"Blocked"},
 		TerminalStates:         []string{"Done", "Cancelled"},
@@ -266,8 +266,8 @@ func TestMergeWorkerDurationCeilingStartsAtSlotAcquisition(t *testing.T) {
 		return ctx.Err()
 	}
 	tracker := claimTestConnector{store: store, login: "worker"}
-	project := scheduler.ProjectCandidate{ID: "detent", Weight: 1}
-	dispatchGate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+	project := scheduler.ProjectCandidate{ID: "detent"}
+	dispatchGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 	cfg := normalizeConfig(Config{
 		MaxConcurrentAgents:    1,
 		MergeWorkerMaxDuration: 6 * time.Hour,
@@ -385,7 +385,7 @@ func TestMergeWorkerDurationCeilingHonorsLatestTerminalState(t *testing.T) {
 			cfg := normalizeConfig(Config{
 				MaxConcurrentAgents:    1,
 				MergeWorkerMaxDuration: 6 * time.Hour,
-				Project:                scheduler.ProjectCandidate{ID: "detent", Weight: 1},
+				Project:                scheduler.ProjectCandidate{ID: "detent"},
 				ActiveStates:           []string{"Merging"},
 				ObservedStates:         []string{"Blocked"},
 				TerminalStates:         []string{"Done", "Cancelled"},
@@ -455,7 +455,7 @@ func TestMergeWorkerDurationTransitionFailureKeepsDispatchBlocked(t *testing.T) 
 	cfg := normalizeConfig(Config{
 		MaxConcurrentAgents:    1,
 		MergeWorkerMaxDuration: 6 * time.Hour,
-		Project:                scheduler.ProjectCandidate{ID: "detent", Weight: 1},
+		Project:                scheduler.ProjectCandidate{ID: "detent"},
 		ActiveStates:           []string{"Merging"},
 		ObservedStates:         []string{"Blocked"},
 		TerminalStates:         []string{"Done", "Cancelled"},

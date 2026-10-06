@@ -211,12 +211,12 @@ func TestBuildGlobalSchedulerFromSettings(t *testing.T) {
 		MaxConcurrentAgents: 2,
 		Scheduling:          globalconfig.SchedulingRoundRobin,
 		FairShare:           map[string]any{"half_life": "30m"},
-	}, nil)
+	})
 	if err != nil {
 		t.Fatalf("buildGlobalScheduler() error = %v", err)
 	}
-	if global.Mode() != scheduler.ModeRoundRobin {
-		t.Fatalf("Mode() = %q, want %q", global.Mode(), scheduler.ModeRoundRobin)
+	if global.Mode() != scheduler.ModeStrictPriority {
+		t.Fatalf("Mode() = %q, want %q", global.Mode(), scheduler.ModeStrictPriority)
 	}
 
 	first, err := global.RequestSlot(context.Background(), scheduler.SlotRequest{State: "Todo"})
@@ -238,7 +238,7 @@ func TestBuildGlobalSchedulerFromSettings(t *testing.T) {
 	}
 }
 
-func TestGlobalPoolConfigsApplySchedulingInheritanceAndOverrides(t *testing.T) {
+func TestGlobalPoolConfigsIgnoreLegacyScheduling(t *testing.T) {
 	t.Parallel()
 
 	pools, err := globalPoolConfigs(globalconfig.Settings{
@@ -249,7 +249,7 @@ func TestGlobalPoolConfigsApplySchedulingInheritanceAndOverrides(t *testing.T) {
 			{Name: "video", MaxConcurrentAgents: 10, BurstTo: 15, Scheduling: globalconfig.SchedulingRoundRobin},
 		},
 		FairShare: map[string]any{"half_life": "30m"},
-	}, nil)
+	})
 	if err != nil {
 		t.Fatalf("globalPoolConfigs() error = %v", err)
 	}
@@ -264,7 +264,7 @@ func TestGlobalPoolConfigsApplySchedulingInheritanceAndOverrides(t *testing.T) {
 	}{
 		{index: 0, name: scheduler.DefaultPoolName, capacity: 1, kind: globalconfig.SchedulingStrict},
 		{index: 1, name: "code", capacity: 5, kind: globalconfig.SchedulingStrict},
-		{index: 2, name: "video", capacity: 10, kind: globalconfig.SchedulingRoundRobin},
+		{index: 2, name: "video", capacity: 10, kind: globalconfig.SchedulingStrict},
 	}
 	for _, tt := range tests {
 		pool := pools[tt.index]

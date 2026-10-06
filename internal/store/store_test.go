@@ -55,8 +55,11 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	if got := queryInt(t, sqliteBackend.db, "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", got)
 	}
-	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions', 'merge_required_check_streaks', 'validator_verdicts', 'api_keys', 'api_usage_logs', 'efficiency_receipts', 'budget_overrides', 'auth_magic_links', 'auth_sessions', 'routine_runs', 'project_dispatch_status')"); got != 17 {
-		t.Fatalf("migrated table count = %d, want 17", got)
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions', 'merge_required_check_streaks', 'validator_verdicts', 'api_keys', 'api_usage_logs', 'efficiency_receipts', 'budget_overrides', 'auth_magic_links', 'auth_sessions', 'routine_runs', 'project_dispatch_status')"); got != 16 {
+		t.Fatalf("migrated table count = %d, want 16", got)
+	}
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'fair_share_usage'"); got != 0 {
+		t.Fatalf("retired fair-share table count = %d, want 0", got)
 	}
 }
 
@@ -3262,56 +3265,6 @@ func workflowMetricTestTrend(t *testing.T, trends []WorkflowLaneTrend, phaseName
 	}
 	t.Fatalf("missing trend %q in %#v", phaseName, trends)
 	return WorkflowLaneTrend{}
-}
-
-func TestFairShareStoreRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	backend := openTestStore(t, ctx)
-	dispatchedAt := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
-
-	if err := backend.RecordFairShareDispatch(ctx, FairShareDispatch{
-		ProjectID:      " alpha ",
-		Weight:         2,
-		RuntimeSeconds: 30,
-		DispatchedAt:   dispatchedAt,
-	}); err != nil {
-		t.Fatalf("RecordFairShareDispatch() first error = %v", err)
-	}
-	if err := backend.RecordFairShareDispatch(ctx, FairShareDispatch{
-		ProjectID:      "alpha",
-		Weight:         2,
-		RuntimeSeconds: 45,
-		DispatchedAt:   dispatchedAt.Add(time.Minute),
-	}); err != nil {
-		t.Fatalf("RecordFairShareDispatch() second error = %v", err)
-	}
-
-	usage, err := backend.ListFairShareUsage(ctx)
-	if err != nil {
-		t.Fatalf("ListFairShareUsage() error = %v", err)
-	}
-	if len(usage) != 1 {
-		t.Fatalf("usage len = %d, want 1: %#v", len(usage), usage)
-	}
-
-	got := usage[0]
-	if got.ProjectID != "alpha" {
-		t.Fatalf("ProjectID = %q, want alpha", got.ProjectID)
-	}
-	if got.Weight != 2 {
-		t.Fatalf("Weight = %d, want 2", got.Weight)
-	}
-	if got.Dispatches != 2 {
-		t.Fatalf("Dispatches = %d, want 2", got.Dispatches)
-	}
-	if got.RuntimeSeconds != 75 {
-		t.Fatalf("RuntimeSeconds = %d, want 75", got.RuntimeSeconds)
-	}
-	if !got.UpdatedAt.Equal(dispatchedAt.Add(time.Minute)) {
-		t.Fatalf("UpdatedAt = %s, want %s", got.UpdatedAt, dispatchedAt.Add(time.Minute))
-	}
 }
 
 func TestUsageLedgerRoundTrip(t *testing.T) {

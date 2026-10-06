@@ -32,9 +32,6 @@ func NewProblem(code string) Problem {
 	case "keep_awake_failed":
 		p.Message = "The runner could not inhibit host sleep."
 		p.FixHint = "Install or repair the host sleep inhibitor and check its permissions."
-	case "home_project_unservable":
-		p.Message = "Home work requires an isolation tier this runner does not advertise."
-		p.FixHint = "Restore the required isolation tier or assign home work to a compatible runner."
 	case "settings_rejected":
 		p.Message = "The runner could not apply the Hub's routing settings."
 		p.FixHint = "Check the runner's routing cache permissions and configured host services."

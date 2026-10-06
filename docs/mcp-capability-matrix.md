@@ -279,7 +279,7 @@ Sources: [GET /api/cloud/organizations/:organization/provisioning](../internal/c
 Proxy
 
 - Audience: transport; status: **excluded**; owner: digitaldrywood/detent#3335.
-- Decision: Exact transport/protocol plumbing site. Application payload operations are inventoried separately; do not expose an HTTP or relay proxy tool.
+- Decision: Exact transport/protocol plumbing site. Application payload operations are inventoried separately; do not expose an HTTP or relay proxy tool. The unavailable-page retry link reloads the current organization path through this existing proxy transport; it introduces no application command.
 - Tool: `boundary.no_tool` — not applicable → explicit source decision
 - Authority: role current account identity and organization membership; credential hosted account session; CSRF for mutation; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
 - Application: s.proxy; s.browserClaims, s.browserDenied, s.claims, s.config.transport, s.logProxied, s.readyOrganization, s.registry.Organization
@@ -292,7 +292,7 @@ Proxy
 - Availability: credential_maintenance / github,native / shared entry account/organization service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: this non-operator source site → not_applicable
 
-Sources: [Any /api/v2/organizations/:organization/*](../internal/cloudentry/service.go#L244), [Any /organizations/:organization](../internal/cloudentry/service.go#L242), [Any /organizations/:organization/*](../internal/cloudentry/service.go#L243)
+Sources: [Any /api/v2/organizations/:organization/*](../internal/cloudentry/service.go#L244), [Any /organizations/:organization](../internal/cloudentry/service.go#L242), [Any /organizations/:organization/*](../internal/cloudentry/service.go#L243), [internal/web/templates/hosted.templ:54](../internal/web/templates/hosted.templ#L54)
 ## cloudentry.resume_provisioning
 
 Resume provisioning
@@ -5155,12 +5155,12 @@ Update runner host
 Sources: [PUT /api/v2/organizations/:organization/machines/:machine/routing](../internal/hubserver/runner_enrollment.go#L41)
 ## hubserver.update_runner_routing
 
-Update runner routing
+Update runner settings and owner allowed projects
 
 - Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3343.
 - Decision: Expose the meaningful application operation through a typed tool using shared dashboard authority and commands.
 - Tool: `fleet.update_runner_routing` — Typed update_runner_routing schema in operatortool.CommandCatalog/FleetCatalog: identifiers 1–256 bytes, request_id required for mutations, 64 KiB request bound, nested bounded settings, expected revision for runner/host edits; no authority arguments. → Exact action preview/outcome, originating connection, durable audit/retry receipt; max 256 KiB. Arguments cannot select identity, organization, confirmation.
-- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Authority: role unhosted instance admin; hosted non-viewer with current manage_runner grants for every organization project; credential existing instance admin or authenticated hosted browser runner administration; project not project-scoped; organization/instance authority still enforced; ownership Current organization; only the enrollment owner may change allowed projects. Other runner administration retains current role and grants.
 - Application: Service.updateRunnerRoutingCommand / runnerRoutingRequest.effective
 - Extraction: HTTP and MCP reuse the same application service/command and validation. Fresh authority is checked on direct calls and execution; no handler proxy or worker protocol adapter.
 - Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); current scope, project access and grants are checked on every call; confirmation belongs to clients.
@@ -5172,7 +5172,7 @@ Update runner routing
 - Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
 - Confirmation: authorized call; the client controls user confirmation → none
 
-Sources: [PUT /api/v2/organizations/:organization/runners/:runner/routing](../internal/hubserver/runner_enrollment.go#L34), [web/conversation/src/app/account/api.ts:406](../web/conversation/src/app/account/api.ts#L406), [web/conversation/src/app/fleet/RunnerDetailSheet.tsx:121](../web/conversation/src/app/fleet/RunnerDetailSheet.tsx#L121), [web/conversation/src/app/fleet/RunnerDetailSheet.tsx:121](../web/conversation/src/app/fleet/RunnerDetailSheet.tsx#L121), [web/conversation/src/app/fleet/RunnerDetailSheet.tsx:121](../web/conversation/src/app/fleet/RunnerDetailSheet.tsx#L121)
+Sources: [PUT /api/v2/organizations/:organization/runners/:runner/routing](../internal/hubserver/runner_enrollment.go#L34), [web/conversation/src/app/account/api.ts:409](../web/conversation/src/app/account/api.ts#L409), [web/conversation/src/app/fleet/RunnerDetailSheet.tsx:121](../web/conversation/src/app/fleet/RunnerDetailSheet.tsx#L121), [web/conversation/src/app/fleet/RunnerDetailSheet.tsx:121](../web/conversation/src/app/fleet/RunnerDetailSheet.tsx#L121), [web/conversation/src/app/fleet/RunnerDetailSheet.tsx:121](../web/conversation/src/app/fleet/RunnerDetailSheet.tsx#L121)
 ## hubserver.upload_conversation_attachment
 
 Upload conversation attachment
@@ -7929,3 +7929,43 @@ Update Cloud project model selection
 - Confirmation: Authorized direct application call; existing non-material command semantics → none
 
 Sources: [PUT /api/v2/organizations/:organization/projects/:project/model-selection](../internal/hubserver/integration.go#L219)
+## hubserver.organization_project_rank
+
+Read organization project scheduling order
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Organization administration exposes the same rank order approved for Cloud settings, using the shared command and current owner/admin authority.
+- Tool: `organization.organization_project_rank` — Empty object; organization and identity come from the current connection → Current organization project IDs in scheduling order and scheduling revision; updates return the existing action receipt and revised order
+- Authority: role Current organization owner or admin; credential Hosted browser session or current admin-scope tool connection; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: readOrganizationProjectRank / Service.updateOrganizationProjectRankCommand
+- Extraction: HTTP and administration tools share the organization rank read and revisioned transaction; existing authorization, audit and mutation receipt paths apply.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); current scope, project access and grants are checked on every call; confirmation belongs to clients.; Current owner/admin authority; updates require the current scheduling revision and every organization project exactly once.
+- Coverage: TestHostedProjectRank; TestHostedProjectRankTools
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: hosted_dedicated / github,native / hub application service
+- Availability: hosted_shared / github,native / hub application service
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: authorized call; the client controls user confirmation → none
+
+Sources: [GET /api/v2/organizations/:organization/project-rank](../internal/hubserver/hosted_org_api.go#L46), [web/conversation/src/app/account/api.ts:251](../web/conversation/src/app/account/api.ts#L251)
+## hubserver.organization_project_rank_update
+
+Update organization project scheduling order
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3344.
+- Decision: Organization administration exposes the same rank order approved for Cloud settings, using the shared command and current owner/admin authority.
+- Tool: `organization.organization_project_rank_update` — expected_revision >= 1, project_ids with at most 200 identifiers of 1–256 bytes, and request_id with 1–128 bytes; organization and identity come from the current connection → Current organization project IDs in scheduling order and scheduling revision; updates return the existing action receipt and revised order
+- Authority: role Current organization owner or admin; credential Hosted browser session or current admin-scope tool connection; project not project-scoped; organization/instance authority still enforced; ownership current organization/account; no cross-organization resource lookup.
+- Application: readOrganizationProjectRank / Service.updateOrganizationProjectRankCommand
+- Extraction: HTTP and administration tools share the organization rank read and revisioned transaction; existing authorization, audit and mutation receipt paths apply.
+- Preconditions: Current authenticated principal and organization; current role, scope, project grant and ownership at execution; Underlying deployment service must be installed/enabled; otherwise return an opaque safe unavailable result without credentials or sensitive payloads.; Mutations reuse the shared audit/retry contract (#3338); current scope, project access and grants are checked on every call; confirmation belongs to clients.; Current owner/admin authority; updates require the current scheduling revision and every organization project exactly once.
+- Coverage: TestHostedProjectRank; TestHostedProjectRankTools
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=true. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Availability: hosted_dedicated / github,native / hub application service
+- Availability: hosted_shared / github,native / hub application service
+- Availability: credential_maintenance / github,native / hub application service — unavailable: This route is not registered in this deployment; use the corresponding deployment application operation, where present.
+- Confirmation: authorized call; the client controls user confirmation → none
+
+Sources: [PUT /api/v2/organizations/:organization/project-rank](../internal/hubserver/hosted_org_api.go#L47), [web/conversation/src/app/account/api.ts:252](../web/conversation/src/app/account/api.ts#L252)

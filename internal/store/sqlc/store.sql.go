@@ -3105,46 +3105,6 @@ func (q *Queries) ListActiveWorkerProcesses(ctx context.Context) ([]ListActiveWo
 	return items, nil
 }
 
-const listFairShareUsage = `-- name: ListFairShareUsage :many
-SELECT
-  project_id,
-  weight,
-  dispatches,
-  runtime_seconds,
-  updated_at
-FROM fair_share_usage
-ORDER BY project_id
-`
-
-func (q *Queries) ListFairShareUsage(ctx context.Context) ([]FairShareUsage, error) {
-	rows, err := q.db.QueryContext(ctx, listFairShareUsage)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []FairShareUsage{}
-	for rows.Next() {
-		var i FairShareUsage
-		if err := rows.Scan(
-			&i.ProjectID,
-			&i.Weight,
-			&i.Dispatches,
-			&i.RuntimeSeconds,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listHealthNotificationStates = `-- name: ListHealthNotificationStates :many
 SELECT identity, state_json, updated_at
 FROM health_notification_states
@@ -5346,47 +5306,6 @@ func (q *Queries) UpsertBudgetOverride(ctx context.Context, arg UpsertBudgetOver
 		&i.ExpiresAt,
 		&i.CreatedAt,
 		&i.Reason,
-	)
-	return i, err
-}
-
-const upsertFairShareUsage = `-- name: UpsertFairShareUsage :one
-INSERT INTO fair_share_usage (
-  project_id,
-  weight,
-  dispatches,
-  runtime_seconds,
-  updated_at
-) VALUES (?, ?, 1, ?, ?)
-ON CONFLICT(project_id) DO UPDATE SET
-  weight = excluded.weight,
-  dispatches = fair_share_usage.dispatches + excluded.dispatches,
-  runtime_seconds = fair_share_usage.runtime_seconds + excluded.runtime_seconds,
-  updated_at = excluded.updated_at
-RETURNING project_id, weight, dispatches, runtime_seconds, updated_at
-`
-
-type UpsertFairShareUsageParams struct {
-	ProjectID      string `json:"project_id"`
-	Weight         int64  `json:"weight"`
-	RuntimeSeconds int64  `json:"runtime_seconds"`
-	UpdatedAt      string `json:"updated_at"`
-}
-
-func (q *Queries) UpsertFairShareUsage(ctx context.Context, arg UpsertFairShareUsageParams) (FairShareUsage, error) {
-	row := q.db.QueryRowContext(ctx, upsertFairShareUsage,
-		arg.ProjectID,
-		arg.Weight,
-		arg.RuntimeSeconds,
-		arg.UpdatedAt,
-	)
-	var i FairShareUsage
-	err := row.Scan(
-		&i.ProjectID,
-		&i.Weight,
-		&i.Dispatches,
-		&i.RuntimeSeconds,
-		&i.UpdatedAt,
 	)
 	return i, err
 }

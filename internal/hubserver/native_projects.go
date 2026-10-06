@@ -135,7 +135,10 @@ func (s *Service) createNativeProjectOperation(request createNativeProjectReques
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO projects (id, organization_id, name, profile, states_json, require_dependencies, created_at, github_repository_enabled) VALUES (?, ?, ?, 'native', ?, ?, ?, 0)", project.ID, project.OrganizationID, project.Name, states, project.RequireDependencies, formatHubTime(now)); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO projects (id, organization_id, name, profile, states_json, require_dependencies, created_at, github_repository_enabled, scheduling_rank) VALUES (?, ?, ?, 'native', ?, ?, ?, 0, (SELECT COALESCE(max(scheduling_rank),-1)+1 FROM projects WHERE organization_id=?))", project.ID, project.OrganizationID, project.Name, states, project.RequireDependencies, formatHubTime(now), project.OrganizationID); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE organizations SET scheduling_revision = scheduling_revision + 1 WHERE id = ?", project.OrganizationID); err != nil {
 			return nil, err
 		}
 		for _, state := range project.States {

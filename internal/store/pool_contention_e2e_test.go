@@ -41,8 +41,8 @@ func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 		}
 	})
 
-	localProject := scheduler.ProjectCandidate{ID: "local", Weight: 1, Priority: 0}
-	cloudProject := scheduler.ProjectCandidate{ID: "cloud", Weight: 1, Priority: 1}
+	localProject := scheduler.ProjectCandidate{ID: "local", Rank: 0}
+	cloudProject := scheduler.ProjectCandidate{ID: "cloud", Rank: 1}
 	dispatchGate := scheduler.NewGlobalDispatchGate(
 		scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}),
 		localProject,

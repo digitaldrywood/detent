@@ -551,23 +551,15 @@ export const RunnerAvailability = Schema.Struct({
 });
 export type RunnerAvailability = typeof RunnerAvailability.Type;
 
-export const RunnerSpillover = Schema.Struct({
-  mode: Schema.String,
-  after_minutes: Schema.Number,
-});
-export type RunnerSpillover = typeof RunnerSpillover.Type;
-
 export const RunnerRouting = Schema.Struct({
   display_name: Schema.String,
   tags: Schema.Array(Schema.String),
   state: Schema.String,
   capacity_limit: Schema.Number,
   project_ids: Schema.Array(Schema.String),
-  home_project_ids: Schema.optional(Schema.Array(Schema.String)),
   isolation_tier: Schema.String,
   host_services: Schema.Array(Schema.String),
   availability: RunnerAvailability,
-  spillover: RunnerSpillover,
 });
 export type RunnerRouting = typeof RunnerRouting.Type;
 
@@ -581,6 +573,7 @@ export const FleetRunner = Schema.Struct({
     status: Schema.String,
     desired: Schema.NullOr(Schema.Struct({ version: Schema.String })),
   })),
+  can_edit_projects: Schema.optional(Schema.Boolean),
   machine_id: Schema.String,
   sprite: Schema.optional(Schema.Struct({ name: Schema.String, status: Schema.String, can_wake: Schema.Boolean, wake_failed: Schema.Boolean })),
   claim_refusal_reason: Schema.optional(Schema.String),
@@ -607,9 +600,6 @@ export const FleetRunner = Schema.Struct({
   leases: Schema.Array(RunnerLease),
   isolation_tier: Schema.optional(Schema.String),
   availability: Schema.optional(RunnerAvailability),
-  home_project_ids: Schema.optional(Schema.Array(Schema.String)),
-  home_status: Schema.optional(Schema.String),
-  home_dry_since: Schema.optional(Schema.NullOr(Schema.String)),
   routing: Schema.optional(RunnerRouting),
   revision: Schema.optional(Schema.Number),
 });
@@ -893,3 +883,8 @@ export const CloudModelSelection = Schema.Struct({
   revision: Schema.String, selection: Schema.NullOr(CloudSelection), effective: CloudSelection,
 });
 export type CloudModelSelection = typeof CloudModelSelection.Type;
+export const OrganizationProjectRank = Schema.Struct({
+  revision: Schema.Number,
+  project_ids: Schema.Array(Schema.String),
+});
+export type OrganizationProjectRank = typeof OrganizationProjectRank.Type;

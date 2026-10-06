@@ -116,8 +116,8 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "capacity", "idempotency_key": "capacity", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}, {Name: "Rework", Dispatchable: true}}}, &project); err != nil {
 		t.Fatal(err)
 	}
-	var otherHome tracker.NativeProject
-	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "other home", "idempotency_key": "other-home", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &otherHome); err != nil {
+	var otherProject tracker.NativeProject
+	if err := admin.request(t.Context(), http.MethodPost, "/api/v2/organizations/"+string(organization)+"/projects", map[string]any{"name": "other project", "idempotency_key": "other-project", "states": []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, &otherProject); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "private", "identity.json")
@@ -125,7 +125,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrollment, err := admin.CreateRunnerEnrollment(t.Context(), organization, runnerauth.EnrollmentRequest{Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 60})
+	enrollment, err := admin.CreateRunnerEnrollment(t.Context(), organization, runnerauth.EnrollmentRequest{Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{project.ID, otherProject.ID}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 60})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,9 +142,9 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err := runnerauth.Save(path, file); err != nil {
 		t.Fatal(err)
 	}
-	routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: machine.Capacity, ProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}, HomeProjectIDs: []tracker.ProjectID{project.ID, otherHome.ID}}}
+	routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: machine.Capacity, ProjectIDs: []tracker.ProjectID{project.ID, otherProject.ID}}}
 	if unavailable == "plain" {
-		routing.HomeProjectIDs = []tracker.ProjectID{project.ID}
+		routing.ProjectIDs = []tracker.ProjectID{project.ID}
 	}
 	if err := admin.request(t.Context(), http.MethodPut, "/api/v2/organizations/"+string(organization)+"/runners/"+file.Identity.RunnerID+"/routing", routing, nil); err != nil {
 		t.Fatal(err)
@@ -161,14 +161,14 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if _, err := native.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
 		t.Fatal(err)
 	}
-	other, err := admin.Native(organization, otherHome.ID)
+	other, err := admin.Native(organization, otherProject.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := other.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-unsupported"}, Title: "higher priority unsupported home", Body: "```detent-agent\nschema: 1\nmodel: astra\n```", State: "Todo", Priority: new(1)}); err != nil {
+	if _, err := other.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-unsupported"}, Title: "higher priority unsupported project", Body: "```detent-agent\nschema: 1\nmodel: astra\n```", State: "Todo", Priority: new(1)}); err != nil {
 		t.Fatal(err)
 	}
 	if unavailable == "known waits" {

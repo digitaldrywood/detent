@@ -84,7 +84,6 @@ func (s *sqliteStore) RuntimeEvidence(ctx context.Context, query RuntimeEvidence
 	}{
 		{name: "detent_runs"},
 		{name: "codex_sessions"},
-		{name: "fair_share_usage", projectScoped: true},
 		{name: "usage_events", projectScoped: true},
 		{name: "workflow_phase_events", projectScoped: true},
 		{name: "efficiency_receipts", projectScoped: true},
@@ -1204,52 +1203,6 @@ func (s *sqliteStore) CycleTimeReport(ctx context.Context) (CycleTimeReport, err
 	}, nil
 }
 
-func (s *sqliteStore) ListFairShareUsage(ctx context.Context) ([]FairShareUsage, error) {
-	rows, err := s.queries.ListFairShareUsage(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("reading fair-share usage: %w", err)
-	}
-
-	usage := make([]FairShareUsage, 0, len(rows))
-	for _, row := range rows {
-		updatedAt, err := parseTimestamp("updated_at", row.UpdatedAt)
-		if err != nil {
-			return nil, err
-		}
-		usage = append(usage, FairShareUsage{
-			ProjectID:      row.ProjectID,
-			Weight:         int(row.Weight),
-			Dispatches:     row.Dispatches,
-			RuntimeSeconds: row.RuntimeSeconds,
-			UpdatedAt:      updatedAt,
-		})
-	}
-	return usage, nil
-}
-
-func (s *sqliteStore) RecordFairShareDispatch(ctx context.Context, attrs FairShareDispatch) error {
-	projectID := strings.TrimSpace(attrs.ProjectID)
-	if projectID == "" {
-		return errors.New("project_id is required")
-	}
-
-	dispatchedAt, err := requiredTimestamp("dispatched_at", attrs.DispatchedAt)
-	if err != nil {
-		return err
-	}
-
-	_, err = s.queries.UpsertFairShareUsage(ctx, sqlc.UpsertFairShareUsageParams{
-		ProjectID:      projectID,
-		Weight:         int64(positiveWeight(attrs.Weight)),
-		RuntimeSeconds: nonNegative(attrs.RuntimeSeconds),
-		UpdatedAt:      dispatchedAt,
-	})
-	if err != nil {
-		return fmt.Errorf("recording fair-share dispatch: %w", err)
-	}
-	return nil
-}
-
 func normalizeIssueIdentity(identity IssueIdentity) IssueIdentity {
 	return IssueIdentity{
 		ProjectID:  strings.TrimSpace(identity.ProjectID),
@@ -1321,8 +1274,6 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 	var row *sql.Row
 	if projectScoped && projectID != "" {
 		switch tableName {
-		case "fair_share_usage":
-			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM fair_share_usage WHERE project_id = ?", projectID)
 		case "usage_events":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM usage_events WHERE project_id = ?", projectID)
 		case "workflow_phase_events":
@@ -1362,8 +1313,6 @@ func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, p
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM detent_runs")
 		case "codex_sessions":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM codex_sessions")
-		case "fair_share_usage":
-			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM fair_share_usage")
 		case "usage_events":
 			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM usage_events")
 		case "workflow_phase_events":

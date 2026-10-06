@@ -300,7 +300,10 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 	if err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled) VALUES (?,?,?,'native',?,?,0)", project, s.config.Hosted.OrganizationID, name, encoded, now); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_repository_enabled,scheduling_rank) VALUES (?,?,?,'native',?,?,0,(SELECT COALESCE(max(scheduling_rank),-1)+1 FROM projects WHERE organization_id=?))", project, s.config.Hosted.OrganizationID, name, encoded, now, s.config.Hosted.OrganizationID); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE organizations SET scheduling_revision = scheduling_revision + 1 WHERE id = ?", s.config.Hosted.OrganizationID); err != nil {
 		return "", err
 	}
 	for _, state := range states {

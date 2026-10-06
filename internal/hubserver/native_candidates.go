@@ -84,39 +84,14 @@ func nativeCandidateIDs(ctx context.Context, tx nativeQueryer, query claimCandid
 		}
 		return bind(raw)
 	}
-	stateRanks := normalizedQueryStrings(query.DispatchPriorityByState)
-	labelRanks := normalizedQueryStrings(query.DispatchPriorityByLabel)
-	merging := len(query.DispatchPriorityByState) > 0 && strings.EqualFold(strings.TrimSpace(query.DispatchPriorityByState[0]), "merging")
 	statement := strings.Join([]string{`WITH candidates AS NOT MATERIALIZED (
 SELECT i.id,
- CASE WHEN `,
-		bind(merging),
-		` AND lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END AS merging,
  CASE WHEN q.priority_override BETWEEN 0 AND 3 THEN q.priority_override + 1 ELSE 5 END AS priority,
- COALESCE((SELECT min(CAST(pref.key AS INTEGER)) FROM json_each(`,
-		jsonList(labelRanks),
-		`) pref
-  WHERE EXISTS (SELECT 1 FROM json_each(i.labels_json) label WHERE lower(trim(label.value)) = pref.value)), `,
-		bind(len(labelRanks)),
-		`) AS label_rank,
- COALESCE((SELECT CAST(pref.key AS INTEGER) FROM json_each(`,
-		jsonList(stateRanks),
-		`) pref WHERE pref.value = lower(trim(ws.detent_state))), `,
-		bind(len(stateRanks)),
-		`) AS state_rank,
- CASE WHEN `,
-		bind(query.PrioritizeUnblockers),
-		` THEN -(SELECT count(DISTINCT d.dependent_issue_id) FROM issue_dependencies d
-  JOIN issues dependent ON dependent.id = d.dependent_issue_id
-  JOIN projects dp ON dp.id = dependent.project_id AND dp.require_dependencies = 1
-  LEFT JOIN workflow_states ds ON ds.id = dependent.workflow_state_id
-  WHERE d.blocker_issue_id = i.id AND dependent.archived = 0 AND COALESCE(ds.terminal, 0) = 0) ELSE 0 END AS unblockers,
- CASE WHEN trim(COALESCE(q.rank, '')) = '' THEN 1 ELSE 0 END AS unranked,
- trim(COALESCE(q.rank, '')) AS queue_rank,
  substr(COALESCE(i.native_created_at, i.created_at), 1, 19) || '.' || substr(CASE
   WHEN substr(COALESCE(i.native_created_at, i.created_at), 20, 1) = '.'
   THEN substr(COALESCE(i.native_created_at, i.created_at), 21, length(COALESCE(i.native_created_at, i.created_at)) - 21) || '000000000'
   ELSE '000000000' END, 1, 9) AS created,
+ p.scheduling_rank AS project_rank,
  i.project_id || '#' || i.number AS identifier
 FROM issues i
 JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
@@ -146,12 +121,12 @@ WHERE i.organization_id = `,
 		nativeCandidateDependenciesSatisfied,
 		` AND `,
 		nativeCandidateRecordedDependenciesSatisfied}, "")
-	if len(query.HomeProjects) > 0 {
-		statement += ` AND i.project_id IN (SELECT value FROM json_each(` + jsonList(query.HomeProjects) + `))`
-	} else {
+	if query.NativeScope.project != "" {
 		statement += ` AND i.project_id = ` + bind(query.NativeScope.project)
+	} else {
+		statement += ` AND i.project_id IN (SELECT project_id FROM token_grants WHERE token_id = ` + bind(query.NativeScope.credential.ID) + ` AND organization_id = ` + bind(query.NativeScope.organization) + `)`
 	}
-	if query.Scope != "" || len(query.HomeProjects) > 0 {
+	if query.Scope != "" {
 		statement += ` AND q.id IS NOT NULL`
 	}
 	if query.WorkItemID > 0 {
@@ -195,20 +170,20 @@ WHERE i.organization_id = `,
 	if encodingErr != nil {
 		return nil, encodingErr
 	}
-	statement += `), ranked AS NOT MATERIALIZED (SELECT *, CASE WHEN label_rank < ` + bind(len(labelRanks)) + ` THEN 0 ELSE unblockers END AS unblocker_rank FROM candidates)`
-	order := "merging, priority, label_rank, state_rank, unblocker_rank, unranked, queue_rank, created, identifier, id"
+	statement += `)`
+	order := "priority, project_rank, created, identifier, id"
 	baseArgs := args
 	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
 		args = append([]any(nil), baseArgs...)
-		page := statement + `, page AS MATERIALIZED (SELECT * FROM ranked WHERE 1 = 1`
+		page := statement + `, page AS MATERIALIZED (SELECT * FROM candidates WHERE 1 = 1`
 		if anchor {
 			page += ` AND id = ` + bind(after)
 		} else {
 			if after > 0 {
-				page += ` AND (` + order + `) > (SELECT ` + order + ` FROM ranked WHERE id = ` + bind(after) + `)`
+				page += ` AND (` + order + `) > (SELECT ` + order + ` FROM candidates WHERE id = ` + bind(after) + `)`
 			}
 			if !query.AvailableAt.IsZero() {
-				page += ` AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id = ranked.id AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(` + bind(formatHubTime(query.AvailableAt)) + `))`
+				page += ` AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id = candidates.id AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(` + bind(formatHubTime(query.AvailableAt)) + `))`
 			}
 		}
 		page += ` ORDER BY ` + order + ` LIMIT ` + bind(limit) + `)`

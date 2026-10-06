@@ -53,7 +53,6 @@ type Store interface {
 	ProtectedCodexThreadIDs(context.Context) ([]string, error)
 	auth.Store
 	StatsStore
-	FairShareStore
 	BudgetCostStore
 	ProgressSpendStore
 	WorkflowMetricsStore
@@ -144,11 +143,6 @@ type DailyDigestDay struct {
 	FailedSessions       int64
 	DominantErrorClass   string
 	Models               []UsageReportModel
-}
-
-type FairShareStore interface {
-	ListFairShareUsage(context.Context) ([]FairShareUsage, error)
-	RecordFairShareDispatch(context.Context, FairShareDispatch) error
 }
 
 type BudgetCostStore interface {
@@ -1229,21 +1223,6 @@ type ModelTokenSpend struct {
 	ReasoningOutputTokens int64
 	TotalTokens           int64
 	Sessions              int64
-}
-
-type FairShareUsage struct {
-	ProjectID      string
-	Weight         int
-	Dispatches     int64
-	RuntimeSeconds int64
-	UpdatedAt      time.Time
-}
-
-type FairShareDispatch struct {
-	ProjectID      string
-	Weight         int
-	RuntimeSeconds int64
-	DispatchedAt   time.Time
 }
 
 func Open(ctx context.Context, cfg Config) (Store, error) {

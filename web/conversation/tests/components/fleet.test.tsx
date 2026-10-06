@@ -18,12 +18,11 @@ const EMPTY = emptyFixture as unknown as FleetResponse;
 const NOW = Date.parse("2026-09-10T12:09:31Z");
 const ROUTING: RunnerRouting = {
   display_name: FLEET.runners[0]!.display_name, state: "active", capacity_limit: 6,
-  project_ids: ["prj_known", "prj_unknown"], home_project_ids: ["prj_unknown"], tags: ["linux"],
+  project_ids: ["prj_known", "prj_unknown"], tags: ["linux"],
   isolation_tier: "sandbox", host_services: ["tcp:127.0.0.1:8080"],
   availability: { timezone: "America/Chicago", windows: ["Mon-Fri 09:00-17:00", "Sat-Sun 00:00-24:00"], hard_deadline: "30m" },
-  spillover: { mode: "after", after_minutes: 5 },
 };
-const RUNNER = { ...FLEET.runners[0]!, routing: ROUTING, revision: 7 };
+const RUNNER = { can_edit_projects: true, ...FLEET.runners[0]!, routing: ROUTING, revision: 7 };
 const PROJECTS = [{ id: "prj_known", name: "Known project" }, { id: "prj_second", name: "Second project" }];
 
 function renderSection(fleet: FleetResponse = FLEET) {
@@ -209,31 +208,29 @@ describe("providers", () => {
 });
 
 describe("runner details", () => {
-  it("round-trips project and home IDs, including unreadable projects", async () => {
+  it("round-trips allowed project IDs, including unreadable projects", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
     const sheet = screen.getByRole("dialog");
     expect((within(sheet).getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).checked).toBe(true);
     expect((within(sheet).getByRole("checkbox", { name: "prj_unknown" }) as HTMLInputElement).checked).toBe(true);
-    expect((within(sheet).getByRole("checkbox", { name: "Home prj_unknown" }) as HTMLInputElement).checked).toBe(true);
     fireEvent.click(within(sheet).getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, ROUTING));
   });
 
-  it("keeps home projects within selected access and lets unknown projects be reselected", async () => {
+  it("edits allowed projects and lets unknown projects be reselected", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
     const sheet = screen.getByRole("dialog");
-    fireEvent.click(within(sheet).getByRole("checkbox", { name: "Home Second project" }));
-    expect((within(sheet).getByRole("checkbox", { name: "Second project" }) as HTMLInputElement).checked).toBe(true);
+    expect((within(sheet).getByRole("checkbox", { name: "Second project" }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(within(sheet).getByRole("checkbox", { name: "Second project" }));
     fireEvent.click(within(sheet).getByRole("checkbox", { name: "prj_unknown" }));
-    expect((within(sheet).getByRole("checkbox", { name: "Home prj_unknown" }) as HTMLInputElement).checked).toBe(false);
     fireEvent.click(within(sheet).getByRole("checkbox", { name: "prj_unknown" }));
     fireEvent.click(within(sheet).getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, expect.objectContaining({
-      project_ids: ["prj_known", "prj_second", "prj_unknown"], home_project_ids: ["prj_second"],
+      project_ids: ["prj_known", "prj_second", "prj_unknown"],
     })));
   });
 
@@ -256,10 +253,9 @@ describe("runner details", () => {
     rerender(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
     fireEvent.change(screen.getByLabelText("Availability"), { target: { value: "always" } });
-    fireEvent.change(screen.getByLabelText("Queued work spillover"), { target: { value: "never" } });
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenLastCalledWith(RUNNER, expect.objectContaining({
-      availability: { ...ROUTING.availability, windows: [], hard_deadline: "" }, spillover: { mode: "never", after_minutes: 0 },
+      availability: { ...ROUTING.availability, windows: [], hard_deadline: "" }
     })));
   });
 
@@ -269,7 +265,7 @@ describe("runner details", () => {
     const sheet = screen.getByRole("dialog");
     expect(sheet.querySelectorAll("input, select, textarea")).toHaveLength(0);
     expect(sheet.querySelector('[data-slot="sheet-footer"]')).toBeNull();
-    for (const name of ["Taking work", "Capacity", "Projects", "Tags", "Schedule", "Isolation", "Running work", "Provider accounts"]) {
+    for (const name of ["Taking work", "Capacity", "Allowed projects", "Tags", "Schedule", "Isolation", "Running work", "Provider accounts"]) {
       expect(within(sheet).getByRole("heading", { name })).toBeTruthy();
     }
     expect(sheet.textContent).toContain("Known project");
@@ -285,7 +281,6 @@ describe("runner details", () => {
     expect(sheet.textContent).toContain("Project access is not reported.");
     expect(sheet.textContent).toContain("Tags are not reported.");
     expect(sheet.textContent).toContain("Host services are not reported.");
-    expect(sheet.textContent).toContain("Queued work spillover is not reported.");
     expect(sheet.textContent).toContain("Mon-Fri 09:00-17:00");
   });
 
@@ -330,15 +325,6 @@ describe("runner details", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it.each(["Spilled over", "Waiting for home work (5m)"])("keeps %s out of the list and in Manage", (status) => {
-    renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, home_project_ids: ["prj_home"], home_status: status }] });
-    const row = screen.getByTestId("host-card");
-    expect(within(row).queryByText("Home projects: prj_home")).toBeNull();
-    fireEvent.click(within(row).getByRole("button", { name: "Manage Michael's MacBook Pro" }));
-    const details = screen.getByRole("dialog");
-    expect(within(details).getByText("Home projects: prj_home")).toBeTruthy();
-    expect(within(details).getByText(status)).toBeTruthy();
-  });
 
   it("shows outside hours as a plain runner status", () => {
     renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, health: "outside_hours", claim_refusal_reason: "" }] });

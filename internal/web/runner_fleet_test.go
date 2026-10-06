@@ -187,8 +187,8 @@ func TestRunnerFleetFormAuthorizationAndConflict(t *testing.T) {
 			if len(match) != 2 {
 				t.Fatal("missing management token")
 			}
-			form := url.Values{"revision": {"1"}, "display_name": {"Renamed runner"}, "tags": {"macos, build"}, "state": {"draining"}, "capacity_limit": {"1"}, "project_ids": {"prj_a"}, "home_project_ids": {"prj_a"},
-				"isolation_tier": {"native-trusted"}, "host_services": {"tcp:127.0.0.1:8080"}, "timezone": {"UTC"}, "windows": {"Mon-Fri 09:00-17:00"}, "hard_deadline": {"30m"}, "spillover_mode": {"after"}, "after_minutes": {"0"}}
+			form := url.Values{"revision": {"1"}, "display_name": {"Renamed runner"}, "tags": {"macos, build"}, "state": {"draining"}, "capacity_limit": {"1"}, "project_ids": {"prj_a"},
+				"isolation_tier": {"native-trusted"}, "host_services": {"tcp:127.0.0.1:8080"}, "timezone": {"UTC"}, "windows": {"Mon-Fri 09:00-17:00"}, "hard_deadline": {"30m"}}
 			request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777/fleet/runners/runner_a", strings.NewReader(form.Encode()))
 			request.RemoteAddr = "127.0.0.1:4444"
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -208,26 +208,8 @@ func TestRunnerFleetFormAuthorizationAndConflict(t *testing.T) {
 			}
 			if test.updates == 1 {
 				routing := probe.fleet.Runners[0].Routing
-				if len(routing.HomeProjectIDs) != 1 || routing.HomeProjectIDs[0] != "prj_a" || routing.IsolationTier != "native-trusted" || routing.Availability.HardDeadline != "30m" || routing.Spillover.Mode != "after" || len(routing.HostServices) != 1 {
+				if routing.IsolationTier != "native-trusted" || routing.Availability.HardDeadline != "30m" || len(routing.HostServices) != 1 {
 					t.Fatalf("saved settings = %#v", routing)
-				}
-				form.Set("revision", "2")
-				form.Set("spillover_mode", "never")
-				form.Set("after_minutes", "5")
-				request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7777/fleet/runners/runner_a", strings.NewReader(form.Encode()))
-				request.RemoteAddr = "127.0.0.1:4444"
-				request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-				request.Header.Set("HX-Request", "true")
-				request.Header.Set("HX-Current-URL", "http://127.0.0.1:7777/fleet/runners")
-				request.Header.Set("HX-Target", "runner-fleet-feedback")
-				request.Header.Set("X-Detent-API-Key-Dashboard", match[1])
-				for _, cookie := range page.Result().Cookies() {
-					request.AddCookie(cookie)
-				}
-				response = httptest.NewRecorder()
-				server.Handler().ServeHTTP(response, request)
-				if response.Code != http.StatusNoContent || probe.fleet.Runners[0].Spillover.Mode != "never" || probe.fleet.Runners[0].Spillover.AfterMinutes != 0 {
-					t.Fatalf("clearing spillover: status=%d routing=%#v", response.Code, probe.fleet.Runners[0].Routing)
 				}
 			}
 			if test.fail && !strings.Contains(response.Body.String(), "Runner was not changed") {

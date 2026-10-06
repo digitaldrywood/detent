@@ -34,8 +34,8 @@ func TestMergeCompletionAfterHumanMoveReleasesAttemptAndCapacity(t *testing.T) {
 	}
 	revoked := cloneIssue(issue)
 	revoked.State = "Blocked"
-	project := scheduler.ProjectCandidate{ID: "detent", Weight: 1}
-	dispatchGate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+	project := scheduler.ProjectCandidate{ID: "detent"}
+	dispatchGate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 	slot, ok, err := dispatchGate.TryAcquire(t.Context(), project, scheduler.SlotRequest{State: "Merging"}, now)
 	if err != nil || !ok {
 		t.Fatalf("TryAcquire() = %#v, %v, want acquired slot", slot, err)

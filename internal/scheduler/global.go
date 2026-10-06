@@ -3,36 +3,23 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"fmt"
-	"math"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 var ErrNoCandidates = errors.New("scheduler has no project candidates")
 
-type FairShareStore interface {
-	ListFairShareUsage(context.Context) ([]store.FairShareUsage, error)
-	RecordFairShareDispatch(context.Context, store.FairShareDispatch) error
-}
-
 type GlobalScheduler interface {
 	Scheduler
 	Reconfigurable
-	SelectProject(context.Context, ProjectSelectionRequest) (ProjectSelection, error)
-	RecordProjectDispatch(context.Context, ProjectDispatch) error
 }
 
 type ProjectCandidate struct {
 	ID                       string
 	Pool                     string
-	Weight                   int
-	Priority                 int
+	Rank                     int
 	Paused                   bool
 	ActiveHours              activehours.Config
 	ActiveHoursOverrideUntil time.Time
@@ -42,41 +29,8 @@ func (p ProjectCandidate) ActiveHoursStatus(now time.Time) (activehours.Status, 
 	return activehours.Evaluate(p.ActiveHours, now, p.ActiveHoursOverrideUntil)
 }
 
-type RunningProject struct {
-	ProjectID    string
-	Priority     int
-	State        string
-	SlotPriority int
-}
-
-type ProjectSelectionRequest struct {
-	Projects []ProjectCandidate
-	Running  []RunningProject
-	Now      time.Time
-}
-
-type ProjectSelection struct {
-	Project ProjectCandidate
-}
-
-type ProjectDispatch struct {
-	ProjectID      string
-	Weight         int
-	RuntimeSeconds int64
-	DispatchedAt   time.Time
-}
-
 type globalScheduler struct {
 	sem *CountingSemaphore
-
-	mode           Mode
-	decayHalfLife  time.Duration
-	fairShareStore FairShareStore
-
-	mu                 sync.Mutex
-	weightedCurrent    map[string]float64
-	weightedLastUpdate time.Time
-	roundRobinLastID   string
 }
 
 var (
@@ -84,56 +38,17 @@ var (
 	_ GlobalScheduler = (*globalScheduler)(nil)
 )
 
-func NewWeightedFair(cfg Config) GlobalScheduler {
-	return newGlobalScheduler(ModeWeightedFair, cfg)
-}
-
 func NewStrictPriority(cfg Config) GlobalScheduler {
-	return newGlobalScheduler(ModeStrictPriority, cfg)
+	return &globalScheduler{sem: NewCountingSemaphore(cfg)}
 }
 
-func NewRoundRobin(cfg Config) GlobalScheduler {
-	return newGlobalScheduler(ModeRoundRobin, cfg)
-}
-
-func NewFairShare(cfg Config) GlobalScheduler {
-	return newGlobalScheduler(ModeFairShare, cfg)
-}
-
-func newGlobalScheduler(mode Mode, cfg Config) *globalScheduler {
-	return &globalScheduler{
-		sem:             NewCountingSemaphore(cfg),
-		mode:            mode,
-		decayHalfLife:   cfg.DecayHalfLife,
-		fairShareStore:  cfg.FairShareStore,
-		weightedCurrent: map[string]float64{},
-	}
-}
-
-func (s *globalScheduler) Mode() Mode {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.mode
-}
+func (s *globalScheduler) Mode() Mode { return ModeStrictPriority }
 
 func (s *globalScheduler) Reconfigure(cfg Config) error {
-	mode, err := globalModeFromConfig(cfg)
-	if err != nil {
+	if _, err := globalModeFromConfig(cfg); err != nil {
 		return err
 	}
-
 	s.sem.reconfigure(cfg)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.mode != mode {
-		clear(s.weightedCurrent)
-		s.weightedLastUpdate = time.Time{}
-		s.roundRobinLastID = ""
-	}
-	s.mode = mode
-	s.decayHalfLife = cfg.DecayHalfLife
-	s.fairShareStore = cfg.FairShareStore
 	return nil
 }
 
@@ -147,217 +62,6 @@ func (s *globalScheduler) ReleaseSlot(slot Slot) error {
 
 func (s *globalScheduler) capacitySnapshot(state string) capacitySnapshot {
 	return s.sem.capacitySnapshot(state)
-}
-
-func (s *globalScheduler) SelectProject(ctx context.Context, req ProjectSelectionRequest) (ProjectSelection, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	select {
-	case <-ctx.Done():
-		return ProjectSelection{}, ctx.Err()
-	default:
-	}
-
-	candidates := normalizeProjectCandidates(req.Projects)
-	if len(candidates) == 0 {
-		return ProjectSelection{}, ErrNoCandidates
-	}
-
-	s.mu.Lock()
-	mode := s.mode
-	s.mu.Unlock()
-
-	if s.capacitySnapshot("").draining || !s.projectSlotAvailable(req.Running) {
-		return ProjectSelection{}, ErrNoSlots
-	}
-	switch mode {
-	case ModeStrictPriority:
-		return s.selectStrictPriority(candidates), nil
-	case ModeRoundRobin:
-		return s.selectRoundRobin(candidates), nil
-	case ModeFairShare:
-		return s.selectFairShare(ctx, candidates)
-	default:
-		return s.selectWeightedFair(candidates, req.Now), nil
-	}
-}
-
-func (s *globalScheduler) RecordProjectDispatch(ctx context.Context, dispatch ProjectDispatch) error {
-	s.mu.Lock()
-	mode := s.mode
-	fairShareStore := s.fairShareStore
-	s.mu.Unlock()
-	if mode != ModeFairShare {
-		return nil
-	}
-	if fairShareStore == nil {
-		return ErrFairShareStoreRequired
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	projectID := normalizeProjectID(dispatch.ProjectID)
-	if projectID == "" {
-		return fmt.Errorf("%w: project id is required", ErrNoCandidates)
-	}
-
-	dispatchedAt := dispatch.DispatchedAt
-	if dispatchedAt.IsZero() {
-		dispatchedAt = time.Now()
-	}
-
-	return fairShareStore.RecordFairShareDispatch(ctx, store.FairShareDispatch{
-		ProjectID:      projectID,
-		Weight:         normalizeProjectWeight(dispatch.Weight),
-		RuntimeSeconds: nonNegative(dispatch.RuntimeSeconds),
-		DispatchedAt:   dispatchedAt,
-	})
-}
-
-func (s *globalScheduler) projectSlotAvailable(running []RunningProject) bool {
-	return len(running) < s.capacitySnapshot("").globalCapacity
-}
-
-func (s *globalScheduler) selectWeightedFair(candidates []ProjectCandidate, now time.Time) ProjectSelection {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if now.IsZero() {
-		now = time.Now()
-	}
-	s.applyWeightedDecayLocked(now)
-
-	totalWeight := 0
-	for _, candidate := range candidates {
-		totalWeight += candidate.Weight
-		s.weightedCurrent[candidate.ID] += float64(candidate.Weight)
-	}
-
-	selected := candidates[0]
-	best := s.weightedCurrent[selected.ID]
-	for _, candidate := range candidates[1:] {
-		if current := s.weightedCurrent[candidate.ID]; current > best {
-			selected = candidate
-			best = current
-		}
-	}
-	s.weightedCurrent[selected.ID] -= float64(totalWeight)
-	s.weightedLastUpdate = now
-
-	return ProjectSelection{Project: selected}
-}
-
-func (s *globalScheduler) applyWeightedDecayLocked(now time.Time) {
-	if s.decayHalfLife <= 0 || s.weightedLastUpdate.IsZero() || !now.After(s.weightedLastUpdate) {
-		return
-	}
-
-	factor := math.Pow(0.5, now.Sub(s.weightedLastUpdate).Seconds()/s.decayHalfLife.Seconds())
-	if factor < 0.01 {
-		clear(s.weightedCurrent)
-		return
-	}
-
-	for projectID, current := range s.weightedCurrent {
-		s.weightedCurrent[projectID] = current * factor
-	}
-}
-
-func (s *globalScheduler) selectStrictPriority(candidates []ProjectCandidate) ProjectSelection {
-	sort.SliceStable(candidates, func(i, j int) bool {
-		left := priorityRank(candidates[i].Priority)
-		right := priorityRank(candidates[j].Priority)
-		if left != right {
-			return left < right
-		}
-		return candidates[i].ID < candidates[j].ID
-	})
-
-	return ProjectSelection{Project: candidates[0]}
-}
-
-func (s *globalScheduler) selectRoundRobin(candidates []ProjectCandidate) ProjectSelection {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	index := 0
-	if s.roundRobinLastID != "" {
-		for i, candidate := range candidates {
-			if candidate.ID == s.roundRobinLastID {
-				index = (i + 1) % len(candidates)
-				break
-			}
-		}
-	}
-
-	selected := candidates[index]
-	s.roundRobinLastID = selected.ID
-	return ProjectSelection{Project: selected}
-}
-
-func (s *globalScheduler) selectFairShare(ctx context.Context, candidates []ProjectCandidate) (ProjectSelection, error) {
-	s.mu.Lock()
-	fairShareStore := s.fairShareStore
-	s.mu.Unlock()
-	if fairShareStore == nil {
-		return ProjectSelection{}, ErrFairShareStoreRequired
-	}
-
-	usageByProject := map[string]store.FairShareUsage{}
-	usage, err := fairShareStore.ListFairShareUsage(ctx)
-	if err != nil {
-		return ProjectSelection{}, fmt.Errorf("read fair-share usage: %w", err)
-	}
-	for _, item := range usage {
-		projectID := normalizeProjectID(item.ProjectID)
-		if projectID == "" {
-			continue
-		}
-		usageByProject[projectID] = item
-	}
-
-	selected := candidates[0]
-	best := fairShareScore(selected, usageByProject[selected.ID])
-	for _, candidate := range candidates[1:] {
-		if score := fairShareScore(candidate, usageByProject[candidate.ID]); score < best {
-			selected = candidate
-			best = score
-		}
-	}
-
-	return ProjectSelection{Project: selected}, nil
-}
-
-func globalModeFromConfig(cfg Config) (Mode, error) {
-	switch normalizeKind(cfg.Kind) {
-	case "", "weighted", "weighted_fair", "weightedfair":
-		return ModeWeightedFair, nil
-	case "strict", "strict_priority", "strictpriority":
-		return ModeStrictPriority, nil
-	case "round_robin", "roundrobin":
-		return ModeRoundRobin, nil
-	case "fair_share", "fairshare":
-		if cfg.FairShareStore == nil {
-			return "", ErrFairShareStoreRequired
-		}
-		return ModeFairShare, nil
-	default:
-		return "", fmt.Errorf("%w: %s", ErrUnsupportedBackend, strings.TrimSpace(cfg.Kind))
-	}
-}
-
-func fairShareScore(candidate ProjectCandidate, usage store.FairShareUsage) float64 {
-	cost := float64(nonNegative(usage.Dispatches)) + float64(nonNegative(usage.RuntimeSeconds))/60
-	return cost / float64(candidate.Weight)
-}
-
-func priorityRank(priority int) int {
-	if priority < 0 || priority > 4 {
-		return 5
-	}
-	return priority
 }
 
 func normalizeProjectCandidates(projects []ProjectCandidate) []ProjectCandidate {
@@ -384,7 +88,6 @@ func normalizeConfiguredProjectCandidates(projects []ProjectCandidate) []Project
 		}
 		seen[project.ID] = struct{}{}
 		project.Pool = normalizePoolName(project.Pool)
-		project.Weight = normalizeProjectWeight(project.Weight)
 		candidates = append(candidates, project)
 	}
 	return candidates
@@ -402,16 +105,11 @@ func normalizePoolName(pool string) string {
 	return pool
 }
 
-func normalizeProjectWeight(weight int) int {
-	if weight <= 0 {
-		return 1
+func globalModeFromConfig(cfg Config) (Mode, error) {
+	switch normalizeKind(cfg.Kind) {
+	case "", "strict", "strict_priority", "strictpriority", "weighted", "weighted_fair", "weightedfair", "round_robin", "roundrobin", "fair_share", "fairshare":
+		return ModeStrictPriority, nil
+	default:
+		return "", ErrUnsupportedBackend
 	}
-	return weight
-}
-
-func nonNegative(value int64) int64 {
-	if value < 0 {
-		return 0
-	}
-	return value
 }

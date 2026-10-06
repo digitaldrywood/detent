@@ -65,7 +65,6 @@ type claimCandidateQuery struct {
 	// is its own work item kind and not project work (decisions section
 	// 18.1).
 	WorkspaceLane bool
-	HomeProjects  []tracker.ProjectID
 }
 
 type renewLeaseAPIRequest struct {
@@ -403,18 +402,21 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 		}
 	}
-	homeID, homeRestricted, err := d.runnerHomeSelection(ctx, tx, query, request.WorkItemID, now)
+	query.WorkItemID = request.WorkItemID
+	selectedID, restricted, err := d.runnerAllowedSelection(ctx, tx, query, now)
 	if err != nil {
 		return tracker.Lease{}, err
 	}
-	query.WorkItemID = request.WorkItemID
-	query.AvailableAt = now
-	if homeRestricted && homeID > 0 {
-		query.OnlyIDs = []tracker.WorkItemID{homeID}
+	if restricted && selectedID == 0 {
+		return tracker.Lease{}, ErrNoClaimableWork
 	}
+	if restricted {
+		query.OnlyIDs = []tracker.WorkItemID{selectedID}
+	}
+	query.AvailableAt = now
 	if query.NativeScope != nil {
 		query.Limit = 100
-		if request.WorkItemID > 0 || len(query.ProviderCandidates) == 1 || homeRestricted && homeID > 0 {
+		if request.WorkItemID > 0 || len(query.ProviderCandidates) == 1 {
 			query.Limit = 1
 		}
 	}
@@ -433,9 +435,6 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	}
 	var providerWait error
 	for _, id := range ids {
-		if homeRestricted && id != homeID {
-			continue
-		}
 		if request.WorkItemID > 0 && id != request.WorkItemID {
 			continue
 		}
@@ -639,10 +638,6 @@ func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuer
 	assigneeFilter := stringSet(assignees)
 	labelIncludeFilter := stringSet(labelInclude)
 	labelExcludeFilter := stringSet(labelExclude)
-	homeProjects, err := marshalNative(query.HomeProjects)
-	if err != nil {
-		return nil, err
-	}
 	rows, err := tx.QueryContext(ctx, `
 SELECT i.id, COALESCE(r.id, 0), COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), lower(trim(ws.detent_state)),
        lower(trim(i.author_login)), i.labels_json, i.assignees_json,
@@ -666,7 +661,7 @@ LEFT JOIN queue_entries q ON q.id = (
 )
 WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
 	AND NOT EXISTS (SELECT 1 FROM github_imports g WHERE g.work_item_id = i.native_id AND g.intake_pending = 1)
-  AND ((? = '' AND p.profile = 'github_compatible') OR (i.organization_id = ? AND (i.project_id = ? AND ? = 0 OR i.project_id IN (SELECT value FROM json_each(?))) AND p.profile = 'native'))
+  AND ((? = '' AND p.profile = 'github_compatible') OR (i.organization_id = ? AND i.project_id = ? AND p.profile = 'native'))
   AND ws.id IS NOT NULL
   AND ws.terminal = 0
   AND i.archived = 0
@@ -674,7 +669,7 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
   AND ws.dispatchable = 1
   AND (? = 1 OR `+notWorkspaceItemClause+`)
   AND `+notAlreadyAnsweredClause+`
-  AND ((? = '' AND ? = 0) OR q.id IS NOT NULL)
+  AND (? = '' OR q.id IS NOT NULL)
   AND (p.require_dependencies = 0 OR NOT EXISTS (
     SELECT 1
     FROM issue_dependencies dependency
@@ -686,7 +681,7 @@ WHERE (p.profile = 'native' OR lower(trim(i.github_state)) = 'open')
 ORDER BY
   CASE q.priority_override WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 WHEN 3 THEN 3 ELSE 4 END,
   CASE WHEN q.rank IS NULL OR trim(q.rank) = '' THEN 1 ELSE 0 END,
-  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, query.PrioritizeUnblockers, scope, scope, scope, organization, organization, project, len(query.HomeProjects), homeProjects, claimWorkspaceExclusionArg(query), scope, len(query.HomeProjects))
+  trim(q.rank), i.created_at, lower(trim(r.github_owner)), lower(trim(r.github_name)), i.github_number, i.id`, query.PrioritizeUnblockers, scope, scope, scope, organization, organization, project, claimWorkspaceExclusionArg(query), scope)
 	if err != nil {
 		return nil, fmt.Errorf("query hub claim candidates: %w", err)
 	}

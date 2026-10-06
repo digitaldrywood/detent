@@ -285,7 +285,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 
 	events := hub.New[project.Event]()
 	activityBroker := activity.NewBroker()
-	globalDispatchGate, err := buildGlobalDispatchPools(cfg.Global, runtimeStore)
+	globalDispatchGate, err := buildGlobalDispatchPools(cfg.Global)
 	if err != nil {
 		return err
 	}
@@ -499,7 +499,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 	reloadLogLevel := runtimeLogLevelForReload(cfg)
 	applyRuntimeConfig := func(reloaded globalconfig.Config) error {
-		return applyGlobalRuntimeConfig(globalDispatchGate, runtimeStore, reloadLogLevel, reloaded)
+		return applyGlobalRuntimeConfig(globalDispatchGate, reloadLogLevel, reloaded)
 	}
 	startProjects := func(ctx context.Context) error {
 		if err := awaitStartupServer(ctx, startupServerURL(listener.Addr()), cfg.Build); err != nil {
@@ -892,8 +892,6 @@ func globalProjectCandidatesWithDefault(projects []globalconfig.Project, default
 		candidates = append(candidates, scheduler.ProjectCandidate{
 			ID:                       projectConfig.ID,
 			Pool:                     projectConfig.Pool,
-			Weight:                   projectConfig.Weight,
-			Priority:                 projectConfig.Priority,
 			Paused:                   projectConfig.Paused,
 			ActiveHours:              activeHours,
 			ActiveHoursOverrideUntil: overrideUntil,
@@ -1576,8 +1574,6 @@ func globalConfigFromWorkflow(globalPath string, workflowPath string) (globalcon
 			ID:       defaultProjectID,
 			Workflow: workflowPath,
 			Workdir:  workdir,
-			Weight:   1,
-			Priority: 0,
 		},
 	}
 	return cfg, nil
@@ -1613,8 +1609,8 @@ func bootWorkflow(ctx context.Context, cfg BootConfig) (workflowconfig.Workflow,
 	return workflow, true, nil
 }
 
-func buildGlobalScheduler(settings globalconfig.Settings, fairShareStore scheduler.FairShareStore) (scheduler.GlobalScheduler, error) {
-	schedulerConfig, err := globalSchedulerConfig(settings, fairShareStore)
+func buildGlobalScheduler(settings globalconfig.Settings) (scheduler.GlobalScheduler, error) {
+	schedulerConfig, err := globalSchedulerConfig(settings)
 	if err != nil {
 		return nil, err
 	}
@@ -1630,11 +1626,8 @@ func buildGlobalScheduler(settings globalconfig.Settings, fairShareStore schedul
 	return global, nil
 }
 
-func buildGlobalDispatchPools(
-	cfg globalconfig.Config,
-	fairShareStore scheduler.FairShareStore,
-) (*scheduler.PoolRegistry, error) {
-	pools, err := globalPoolConfigs(cfg.Global, fairShareStore)
+func buildGlobalDispatchPools(cfg globalconfig.Config) (*scheduler.PoolRegistry, error) {
+	pools, err := globalPoolConfigs(cfg.Global)
 	if err != nil {
 		return nil, err
 	}
@@ -1660,11 +1653,8 @@ func startupDispatchRampStarts(registry *scheduler.PoolRegistry) int {
 	return max(total, 1)
 }
 
-func globalPoolConfigs(
-	settings globalconfig.Settings,
-	fairShareStore scheduler.FairShareStore,
-) ([]scheduler.PoolConfig, error) {
-	defaultConfig, err := globalSchedulerConfig(settings, fairShareStore)
+func globalPoolConfigs(settings globalconfig.Settings) ([]scheduler.PoolConfig, error) {
+	defaultConfig, err := globalSchedulerConfig(settings)
 	if err != nil {
 		return nil, err
 	}
@@ -1676,11 +1666,7 @@ func globalPoolConfigs(
 	for _, pool := range settings.AgentPools {
 		poolSettings := settings
 		poolSettings.MaxConcurrentAgents = pool.MaxConcurrentAgents
-		poolSettings.Scheduling = pool.Scheduling
-		if strings.TrimSpace(poolSettings.Scheduling) == "" {
-			poolSettings.Scheduling = settings.Scheduling
-		}
-		poolConfig, err := globalSchedulerConfig(poolSettings, fairShareStore)
+		poolConfig, err := globalSchedulerConfig(poolSettings)
 		if err != nil {
 			return nil, err
 		}
@@ -1693,31 +1679,16 @@ func globalPoolConfigs(
 	return pools, nil
 }
 
-func globalSchedulerConfig(settings globalconfig.Settings, fairShareStore scheduler.FairShareStore) (scheduler.Config, error) {
-	halfLife, err := globalFairShareHalfLife(settings.FairShare)
-	if err != nil {
-		return scheduler.Config{}, err
-	}
-
-	schedulerConfig := scheduler.Config{
-		Kind:          settings.Scheduling,
-		Capacity:      settings.MaxConcurrentAgents,
-		DecayHalfLife: halfLife,
-	}
-	if settings.Scheduling == globalconfig.SchedulingFairShare {
-		schedulerConfig.FairShareStore = fairShareStore
-	}
-
-	return schedulerConfig, nil
+func globalSchedulerConfig(settings globalconfig.Settings) (scheduler.Config, error) {
+	return scheduler.Config{Kind: "strict", Capacity: settings.MaxConcurrentAgents}, nil
 }
 
 func applyGlobalRuntimeConfig(
 	gate *scheduler.PoolRegistry,
-	fairShareStore scheduler.FairShareStore,
 	logLevel *slog.LevelVar,
 	cfg globalconfig.Config,
 ) error {
-	pools, err := globalPoolConfigs(cfg.Global, fairShareStore)
+	pools, err := globalPoolConfigs(cfg.Global)
 	if err != nil {
 		return err
 	}
@@ -1736,30 +1707,6 @@ func runtimeLogLevelForReload(cfg BootConfig) *slog.LevelVar {
 		return cfg.LogLevel
 	default:
 		return nil
-	}
-}
-
-func globalFairShareHalfLife(settings map[string]any) (time.Duration, error) {
-	value, ok := settings["half_life"]
-	if !ok || value == nil {
-		return 0, nil
-	}
-
-	switch halfLife := value.(type) {
-	case string:
-		text := strings.TrimSpace(halfLife)
-		if text == "" {
-			return 0, nil
-		}
-		duration, err := time.ParseDuration(text)
-		if err != nil {
-			return 0, fmt.Errorf("global.fair_share.half_life: %w", err)
-		}
-		return duration, nil
-	case time.Duration:
-		return halfLife, nil
-	default:
-		return 0, errors.New("global.fair_share.half_life: must be a duration string")
 	}
 }
 

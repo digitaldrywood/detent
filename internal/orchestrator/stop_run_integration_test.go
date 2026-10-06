@@ -36,7 +36,7 @@ func TestStopRunTargetsOneRunAndBlocksRedispatch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = runtimeStore.Close() })
 	completionStore := &operatorStopCompletionStore{Store: runtimeStore, completed: make(chan store.WorkflowPhaseEvent)}
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 2}))
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
 	orch, err := orchestrator.New(orchestrator.Config{PollInterval: time.Hour, MaxConcurrentAgents: 2, MaxRetryBackoff: time.Hour, FailureRetryBaseDelay: time.Hour, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked"}, TerminalStates: []string{"Done"}, StopRunTargetState: "Blocked"}, orchestrator.Dependencies{Connector: tracker, Runner: runner, WorkspaceReaper: reaper, WorkAttempts: completionStore, WorkflowMetrics: completionStore, GlobalDispatchGate: gate})
 	if err != nil {
 		t.Fatalf("orchestrator.New() error = %v", err)

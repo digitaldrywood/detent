@@ -386,8 +386,8 @@ func TestDependencyResumeFailureReleasesReservations(t *testing.T) {
 			issue := dispatchTestIssue("released-child", "Todo")
 			issue.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#10", HumanOwned: true, HumanCompletionReady: true}}
 			tracker := memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{issue}})
-			gate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
-			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "test", Weight: 1}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}})
+			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "test"}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}})
 			o := &Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: gate, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			attempts := &recordingWorkAttemptStore{}
 			if tt.want == dispatchIssueFailureWorkAttemptStart {

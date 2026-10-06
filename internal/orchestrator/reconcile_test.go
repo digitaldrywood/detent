@@ -553,8 +553,8 @@ func TestTickReapsTerminalRunningIssue(t *testing.T) {
 	cancelled.State = "Cancelled"
 	cancelled.StageUpdatedAt = &terminalAt
 
-	project := scheduler.ProjectCandidate{ID: "detent", Weight: 1}
-	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	project := scheduler.ProjectCandidate{ID: "detent"}
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 	slot, ok, err := gate.TryAcquire(context.Background(), project, scheduler.SlotRequest{State: issue.State}, startedAt)
 	if err != nil {
 		t.Fatalf("TryAcquire() error = %v", err)

@@ -481,3 +481,67 @@ func TestHostedAPIKeyManagement(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedProjectRankTools(t *testing.T) {
+	for _, deployment := range []string{"shared", "dedicated"} {
+		for _, role := range []string{"owner", "viewer"} {
+			t.Run(deployment+"/"+role, func(t *testing.T) {
+				f, ctx := newHostedKeyMCPFixture(t, deployment, role)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects (id, organization_id, name, profile, created_at) SELECT 'prj_rank_second', organization_id, 'Second', profile, created_at FROM projects WHERE id = ?", f.project); err != nil {
+					t.Fatal(err)
+				}
+				executor := hostedOperatorExecutor{f.service}
+				_, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.OrganizationProjectRank, Arguments: json.RawMessage(`{}`)})
+				if role == "viewer" {
+					if !errors.Is(err, operatortool.ErrAccessDenied) {
+						t.Fatalf("viewer read: %v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				before, err := readOrganizationProjectRank(ctx, f.service.database.db, "org_security")
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids := slices.Clone(before.ProjectIDs)
+				slices.Reverse(ids)
+				args, err := json.Marshal(struct {
+					projectRankChange
+					RequestID string `json:"request_id"`
+				}{projectRankChange{ExpectedRevision: before.Revision, ProjectIDs: ids}, "rank-update"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				call := operatortool.Call{Name: operatortool.OrganizationProjectRankUpdate, Arguments: args}
+				_, err = executor.Execute(ctx, call)
+				if role == "viewer" {
+					if !errors.Is(err, operatortool.ErrAccessDenied) {
+						t.Fatalf("viewer update: %v", err)
+					}
+				} else {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err = executor.Execute(ctx, call); err != nil {
+						t.Fatalf("replay: %v", err)
+					}
+					stale := strings.Replace(string(args), "rank-update", "rank-stale", 1)
+					if _, err = executor.Execute(ctx, operatortool.Call{Name: call.Name, Arguments: json.RawMessage(stale)}); err == nil {
+						t.Fatal("stale revision accepted")
+					}
+				}
+				after, err := readOrganizationProjectRank(ctx, f.service.database.db, "org_security")
+				if err != nil {
+					t.Fatal(err)
+				}
+				expected, revision := before.ProjectIDs, before.Revision
+				if role == "owner" {
+					expected, revision = ids, revision+1
+				}
+				if !slices.Equal(after.ProjectIDs, expected) || after.Revision != revision {
+					t.Fatalf("rank changed incorrectly: %#v", after)
+				}
+			})
+		}
+	}
+}

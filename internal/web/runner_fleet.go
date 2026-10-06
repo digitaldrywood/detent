@@ -63,27 +63,13 @@ func (s *Server) updateFleetRunner(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusUnprocessableEntity, "Runner capacity is invalid")
 	}
-	afterMinutes := 0
-	if value := c.FormValue("after_minutes"); value != "" && c.FormValue("spillover_mode") != "never" {
-		afterMinutes, err = strconv.Atoi(value)
-		if err != nil {
-			return echo.NewHTTPError(http.StatusUnprocessableEntity, "Spillover wait is invalid")
-		}
-	}
 	change := runnerauth.RoutingChange{ExpectedRevision: revision, Routing: runnerauth.Routing{
 		DisplayName: c.FormValue("display_name"), Tags: splitRunnerValues(c.FormValue("tags")), State: c.FormValue("state"), CapacityLimit: capacity,
 		IsolationTier: c.FormValue("isolation_tier"), HostServices: splitRunnerWindows(c.FormValue("host_services")),
 		Availability: runnerauth.Availability{Timezone: c.FormValue("timezone"), Windows: splitRunnerWindows(c.FormValue("windows")), HardDeadline: c.FormValue("hard_deadline")},
-		Spillover:    runnerauth.Spillover{Mode: c.FormValue("spillover_mode"), AfterMinutes: afterMinutes},
 	}}
 	for _, id := range splitRunnerValues(c.FormValue("project_ids")) {
 		change.ProjectIDs = append(change.ProjectIDs, tracker.ProjectID(id))
-	}
-	for _, id := range splitRunnerValues(c.FormValue("home_project_ids")) {
-		change.HomeProjectIDs = append(change.HomeProjectIDs, tracker.ProjectID(id))
-	}
-	if change.HomeProjectIDs == nil {
-		change.HomeProjectIDs = []tracker.ProjectID{}
 	}
 	change.Routing = change.Normalized()
 	if err := change.Validate(); err != nil {

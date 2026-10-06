@@ -46,6 +46,7 @@ import {
 } from "./sections.tsx";
 import { CreditSettings } from "./CreditSettings.tsx";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
+import { ProjectRankSettings } from "./ProjectRankSettings.tsx";
 import { MCPSettings } from "./MCPSettings.tsx";
 import { signInPath } from "../../runtime/basePath.ts";
 
@@ -140,6 +141,7 @@ export function GeneralSettings(): React.ReactElement {
             </Button>
           }
         />
+        {bootstrap?.actor.role === "owner" || bootstrap?.actor.role === "admin" ? <ProjectRankSettings /> : null}
         {bootstrap?.plan == null ? null : (
           <SettingsRow
             id="settings-general-plan"
