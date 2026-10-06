@@ -46,7 +46,7 @@ func TestTerminalCloseKillsChildrenThatIgnoreTheHangup(t *testing.T) {
 					t.Skip("actual host sandbox enforcement is unavailable")
 				}
 				var err error
-				service, err = New(worktree, "/bin/sh", workspacesession.IsolationSandbox, nil)
+				service, err = New(t.Context(), worktree, "/bin/sh", workspacesession.IsolationSandbox, nil)
 				if err != nil {
 					t.Fatal(err)
 				}

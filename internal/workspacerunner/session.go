@@ -426,7 +426,7 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 	// disabled with the reason. A read-only workspace opens no service at all,
 	// because a terminal is refused there whatever the runner can do (18.1).
 	if s.config.Support.Terminal && !bound.Checkout.ReadOnly {
-		terminal, err := workspaceterminal.New(path, s.config.Shell, s.config.Support.TerminalIsolation(), s.logger)
+		terminal, err := workspaceterminal.New(sessionCtx, path, s.config.Shell, s.config.Support.TerminalIsolation(), s.logger)
 		if err != nil {
 			s.logger.Info("workspace.terminal_unavailable", "path", path, "error", err)
 		} else {
