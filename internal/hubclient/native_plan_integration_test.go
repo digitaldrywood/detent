@@ -45,6 +45,7 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		{name: "automatic handoff"},
 		{name: "abandon deferred planner and recover", abandon: true},
 		{name: "provider failure settles before lease retirement", failure: "provider"},
+		{name: "refused start retains fenced accounting", failure: "refused"},
 		{name: "owned cleanup failure settles instance outcome", failure: "cleanup"},
 		{name: "completed provider with exited process preserves staged finalization", failure: "exited"},
 		{name: "permanent pre-provider recovery refusal settles claim", failure: "recovery"},
@@ -119,9 +120,19 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 			t.Fatal(err)
 		}
 	}
+	runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtimeStore.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	plan := gate.PlanConfig{Enabled: failure == "", Review: gate.PlanReviewAutomated}
 	provider := &nativePlanningAgent{failure: failure}
 	agent, err := runner.NewRunner(runner.Dependencies{
+		ProjectID: "local", Store: runtimeStore,
 		Workflow:  config.Workflow{Config: config.Config{Policy: h.descriptor, Plan: plan, Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Complete the issue"},
 		Workspace: backend, AgentBackend: provider,
 		ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) {
@@ -134,15 +145,6 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := runtimeStore.Close(); err != nil {
-			t.Error(err)
-		}
-	})
 	finished := make(chan nativePlanFinish, 4)
 	transport := &nativePlanTransport{next: h.failChanges, native: h.native, finished: finished, blocked: make(chan struct{}, 1)}
 	transport.failWorkflow.Store(abandon)
@@ -233,6 +235,9 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 		}
 		wantStates = []string{"Human Review"}
 	}
+	if failure == "refused" {
+		wantStates = []string{"Todo"}
+	}
 	for _, want := range wantStates {
 		select {
 		case got := <-finished:
@@ -271,32 +276,42 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 		}
 		return
 	}
-	if failure == "provider" || failure == "cleanup" {
+	if failure == "provider" || failure == "cleanup" || failure == "refused" {
 		if len(changes) != 0 || provider.calls.Load() != 1 {
 			t.Fatalf("failed native run created a Change or repeated coding: changes=%v calls=%d", changes, provider.calls.Load())
 		}
-		if _, err := os.Stat(filepath.Join(provider.workspace, "CHANGE.md")); err != nil {
-			t.Fatalf("failed native source not preserved: %v", err)
-		}
-		staged, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "diff", "--cached", "--name-only").Output()
-		if err != nil || strings.TrimSpace(string(staged)) != "CHANGE.md" {
-			t.Fatalf("failed native staged source = %q, error=%v", staged, err)
+		if failure != "refused" {
+			if _, err := os.Stat(filepath.Join(provider.workspace, "CHANGE.md")); err != nil {
+				t.Fatalf("failed native source not preserved: %v", err)
+			}
+			staged, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "diff", "--cached", "--name-only").Output()
+			if err != nil || strings.TrimSpace(string(staged)) != "CHANGE.md" {
+				t.Fatalf("failed native staged source = %q, error=%v", staged, err)
+			}
 		}
 		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
 		if err != nil || len(current.Attempts) != 1 || current.Attempts[0].Status != "failed" {
 			t.Fatalf("native failed outcome = %+v, error=%v", current.Attempts, err)
 		}
 		attempt := current.Attempts[0]
-		if failure == "provider" {
+		spend, err := runtimeStore.IssueTokenSpend(t.Context(), store.IssueIdentity{ProjectID: "local", IssueID: issue.ID})
+		wantSessions := int64(1)
+		if failure == "refused" {
+			wantSessions = 0
+		}
+		if err != nil || spend.Sessions != wantSessions {
+			t.Fatalf("native lifetime accounting=%+v, %v; want sessions=%d", spend, err, wantSessions)
+		}
+		if failure == "provider" || failure == "refused" {
 			terminal := attempt.TerminalFailure
-			if terminal == nil || attempt.TerminalFailureAvailability != "available" || terminal.Provider != "codex" || terminal.Operation != "turn/start" || terminal.RPCCode == nil || *terminal.RPCCode != -32602 || terminal.ProviderCode != "input_too_large" || terminal.MaxChars == nil || *terminal.MaxChars != 1048576 || terminal.ActualChars == nil || *terminal.ActualChars != 2927066 || terminal.ObservedAt.IsZero() || terminal.Source != "host_runner_completion" {
+			if terminal == nil || attempt.TerminalFailureAvailability != "available" || terminal.TurnStartRefused != (failure == "refused") || terminal.Provider != "codex" || terminal.Operation != "turn/start" || terminal.RPCCode == nil || *terminal.RPCCode != -32602 || terminal.ProviderCode != "input_too_large" || terminal.MaxChars == nil || *terminal.MaxChars != 1048576 || terminal.ActualChars == nil || *terminal.ActualChars != 2927066 || terminal.ObservedAt.IsZero() || terminal.Source != "host_runner_completion" {
 				t.Fatalf("provider failure lost recorded metadata: %+v", terminal)
 			}
 			if attempt.Finalization != nil || attempt.ClaimReleasedAt == nil || attempt.Runtime.Completion != nil {
 				t.Fatalf("provider failure fabricated Change or acceptance evidence: %+v", attempt)
 			}
 			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), attempt.AttemptID)
-			if err != nil || evidence.Attempt == nil || evidence.Attempt.AttemptID != attempt.AttemptID || evidence.Attempt.FencingToken != attempt.FencingToken || evidence.Attempt.TerminalFailure == nil {
+			if err != nil || evidence.Attempt == nil || evidence.Attempt.AttemptID != attempt.AttemptID || evidence.Attempt.FencingToken != attempt.FencingToken || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.TerminalFailure.TurnStartRefused != (failure == "refused") {
 				t.Fatalf("runtime read lost fenced failure: %+v, %v", evidence.Attempt, err)
 			}
 			history, err := h.admin.History(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
@@ -307,7 +322,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 			for _, event := range history.Items {
 				if event.Type == "run.finished" && event.Data.Run.AttemptID == attempt.AttemptID {
 					found = true
-					if event.Data.Run.FencingToken != attempt.FencingToken || event.Data.Run.TerminalFailure == nil || event.Data.Run.TerminalFailure.ProviderCode != "input_too_large" {
+					if event.Data.Run.FencingToken != attempt.FencingToken || event.Data.Run.TerminalFailure == nil || event.Data.Run.TerminalFailure.ProviderCode != "input_too_large" || event.Data.Run.TerminalFailure.TurnStartRefused != (failure == "refused") {
 						t.Fatalf("immutable terminal event lost fenced failure: %+v", event.Data.Run)
 					}
 				}
@@ -372,6 +387,9 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 2081001, GroupID: 2081001, StartedAt: time.Now()}}); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
+	}
+	if a.failure == "refused" {
+		return runner.AgentTurnResult{}, &codex.ResponseError{Request: "turn/start", Code: -32602, Message: "input_too_large", Body: `{"error":{"data":{"code":"input_too_large","max_chars":1048576,"actual_chars":2927066}}}`}
 	}
 	plan := strings.Contains(req.Prompt, "This dispatch is plan-only.")
 	if plan {

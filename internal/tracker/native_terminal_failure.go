@@ -6,17 +6,18 @@ import (
 )
 
 type NativeTerminalFailure struct {
-	ObservedAt   time.Time `json:"observed_at"`
-	Source       string    `json:"source"`
-	Coverage     string    `json:"coverage"`
-	Unavailable  []string  `json:"unavailable"`
-	Provider     string    `json:"provider,omitempty"`
-	Operation    string    `json:"operation,omitempty"`
-	RPCCode      *int      `json:"rpc_code,omitempty"`
-	ProviderCode string    `json:"provider_code,omitempty"`
-	MaxChars     *int64    `json:"max_chars,omitempty"`
-	ActualChars  *int64    `json:"actual_chars,omitempty"`
-	Summary      string    `json:"summary"`
+	TurnStartRefused bool      `json:"turn_start_refused,omitempty"`
+	ObservedAt       time.Time `json:"observed_at"`
+	Source           string    `json:"source"`
+	Coverage         string    `json:"coverage"`
+	Unavailable      []string  `json:"unavailable"`
+	Provider         string    `json:"provider,omitempty"`
+	Operation        string    `json:"operation,omitempty"`
+	RPCCode          *int      `json:"rpc_code,omitempty"`
+	ProviderCode     string    `json:"provider_code,omitempty"`
+	MaxChars         *int64    `json:"max_chars,omitempty"`
+	ActualChars      *int64    `json:"actual_chars,omitempty"`
+	Summary          string    `json:"summary"`
 }
 
 func (f NativeTerminalFailure) Public() NativeTerminalFailure {
@@ -41,6 +42,7 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	if f.ActualChars != nil && *f.ActualChars < 0 {
 		f.ActualChars = nil
 	}
+	f.TurnStartRefused = f.TurnStartRefused && f.Provider == "codex" && f.Operation == "turn/start" && f.RPCCode != nil
 	f.Unavailable = []string{}
 	if f.Provider == "" {
 		f.Unavailable = append(f.Unavailable, "provider")

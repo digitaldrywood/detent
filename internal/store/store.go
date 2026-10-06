@@ -507,6 +507,7 @@ type SessionResumeState struct {
 }
 
 type SessionFinish struct {
+	TurnStartRefused      bool
 	CompletedAt           time.Time
 	Turns                 int64
 	InputTokens           int64

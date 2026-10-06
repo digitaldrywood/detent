@@ -85,6 +85,37 @@ func TestIssueIdentityReadsAreProjectScoped(t *testing.T) {
 		}
 
 	}
+	for _, test := range []struct {
+		name         string
+		refused      bool
+		turns        int64
+		active       bool
+		wantSessions int64
+	}{
+		{name: "confirmed refusal", refused: true},
+		{name: "real failed turn", turns: 1, wantSessions: 1},
+		{name: "turn contradicts refusal", refused: true, turns: 1, wantSessions: 1},
+		{name: "active session", active: true, wantSessions: 1},
+		{name: "unknown zero-turn failure", wantSessions: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := IssueIdentity{ProjectID: "project-a", IssueID: test.name}
+			sessionID, err := backend.StartSession(ctx, SessionStart{ProjectID: identity.ProjectID, IssueID: identity.IssueID, StartedAt: base, Model: "gpt-6.1-sol"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTokens := int64(67)
+			if test.active {
+				wantTokens = 0
+			} else if err := backend.FinishSession(ctx, sessionID, SessionFinish{CompletedAt: base.Add(time.Minute), FinalState: "failed", Turns: test.turns, TurnStartRefused: test.refused, InputTokens: 60, OutputTokens: 7, TotalTokens: wantTokens}); err != nil {
+				t.Fatal(err)
+			}
+			spend, err := backend.IssueTokenSpend(ctx, identity)
+			if err != nil || spend.Sessions != test.wantSessions || spend.TotalTokens != wantTokens || len(spend.ByModel) != 1 || spend.ByModel[0].Sessions != test.wantSessions || spend.ByModel[0].TotalTokens != wantTokens {
+				t.Fatalf("IssueTokenSpend() = %+v, %v; want sessions=%d tokens=%d", spend, err, test.wantSessions, wantTokens)
+			}
+		})
+	}
 }
 
 func TestIssueIdentityReadsRequireProject(t *testing.T) {

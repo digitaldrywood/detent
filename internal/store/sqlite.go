@@ -418,6 +418,7 @@ func (s *sqliteStore) FinishSession(ctx context.Context, sessionID int64, attrs 
 	rows, err := s.queries.FinishCodexSession(ctx, sqlc.FinishCodexSessionParams{
 		CompletedAt:           sql.NullString{String: completedAt, Valid: true},
 		Turns:                 nonNegative(attrs.Turns),
+		TurnStartRefused:      boolInt64(attrs.TurnStartRefused),
 		InputTokens:           nonNegative(attrs.InputTokens),
 		CachedInputTokens:     nullNonNegativeInt64(attrs.CachedInputTokens),
 		OutputTokens:          nonNegative(attrs.OutputTokens),

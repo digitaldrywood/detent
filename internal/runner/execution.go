@@ -231,7 +231,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}
 	if prepared, ok := req.Execution.(CompletionExecution); ok {
-		if err := prepared.PrepareFinish(finishCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now())); err != nil {
+		if err := prepared.PrepareFinish(finishCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused)); err != nil {
 			runErr = errors.Join(runErr, err)
 			outcome = "failed"
 		} else if outcome == "succeeded" {

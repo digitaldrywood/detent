@@ -204,6 +204,7 @@ type CodexSession struct {
 	WorkerCleanupRoot            sql.NullString `json:"worker_cleanup_root"`
 	WorkerCleanupPath            sql.NullString `json:"worker_cleanup_path"`
 	RuntimeIdentityJson          sql.NullString `json:"runtime_identity_json"`
+	TurnStartRefused             int64          `json:"turn_start_refused"`
 }
 
 type DetentRun struct {

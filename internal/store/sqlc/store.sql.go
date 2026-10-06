@@ -455,7 +455,7 @@ INSERT INTO codex_sessions (
   orphan_recovery_fallback_reason,
   runtime_identity_json
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json
+RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused
 `
 
 type CreateCodexSessionParams struct {
@@ -590,6 +590,7 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		&i.WorkerCleanupRoot,
 		&i.WorkerCleanupPath,
 		&i.RuntimeIdentityJson,
+		&i.TurnStartRefused,
 	)
 	return i, err
 }
@@ -1638,25 +1639,27 @@ const finishCodexSession = `-- name: FinishCodexSession :execrows
 UPDATE codex_sessions
 SET completed_at = ?1,
     turns = ?2,
-    input_tokens = ?3,
-    cached_input_tokens = ?4,
-    output_tokens = ?5,
-    reasoning_output_tokens = ?6,
-    total_tokens = ?7,
-    model_context_window = COALESCE(?8, model_context_window),
-    runtime_seconds = ?9,
-    final_state = ?10,
-    model = COALESCE(?11, model),
-    provider_thread_id = COALESCE(?12, provider_thread_id),
-    provider_session_id = COALESCE(?13, provider_session_id),
-    resumed_from_session_id = COALESCE(?14, resumed_from_session_id),
-    skill_draft_proposed = ?15
-WHERE id = ?16
+    turn_start_refused = ?3,
+    input_tokens = ?4,
+    cached_input_tokens = ?5,
+    output_tokens = ?6,
+    reasoning_output_tokens = ?7,
+    total_tokens = ?8,
+    model_context_window = COALESCE(?9, model_context_window),
+    runtime_seconds = ?10,
+    final_state = ?11,
+    model = COALESCE(?12, model),
+    provider_thread_id = COALESCE(?13, provider_thread_id),
+    provider_session_id = COALESCE(?14, provider_session_id),
+    resumed_from_session_id = COALESCE(?15, resumed_from_session_id),
+    skill_draft_proposed = ?16
+WHERE id = ?17
 `
 
 type FinishCodexSessionParams struct {
 	CompletedAt           sql.NullString `json:"completed_at"`
 	Turns                 int64          `json:"turns"`
+	TurnStartRefused      int64          `json:"turn_start_refused"`
 	InputTokens           int64          `json:"input_tokens"`
 	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
 	OutputTokens          int64          `json:"output_tokens"`
@@ -1677,6 +1680,7 @@ func (q *Queries) FinishCodexSession(ctx context.Context, arg FinishCodexSession
 	result, err := q.db.ExecContext(ctx, finishCodexSession,
 		arg.CompletedAt,
 		arg.Turns,
+		arg.TurnStartRefused,
 		arg.InputTokens,
 		arg.CachedInputTokens,
 		arg.OutputTokens,
@@ -1747,7 +1751,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, 
 }
 
 const getCodexSession = `-- name: GetCodexSession :one
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused
 FROM codex_sessions
 WHERE id = ?
 `
@@ -1804,6 +1808,7 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 		&i.WorkerCleanupRoot,
 		&i.WorkerCleanupPath,
 		&i.RuntimeIdentityJson,
+		&i.TurnStartRefused,
 	)
 	return i, err
 }
@@ -2474,7 +2479,8 @@ SELECT
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
   CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
-  CAST(COUNT(*) AS INTEGER) AS sessions
+  CAST(SUM(CASE WHEN completed_at IS NOT NULL AND turns = 0 AND turn_start_refused = 1
+    THEN 0 ELSE 1 END) AS INTEGER) AS sessions
 FROM codex_sessions NOT INDEXED
 WHERE codex_sessions.project_id = ?1
   AND codex_sessions.id IN (
@@ -3461,7 +3467,7 @@ func (q *Queries) ListIssueActivityEvents(ctx context.Context, arg ListIssueActi
 }
 
 const listIssueCodexSessions = `-- name: ListIssueCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused
 FROM codex_sessions
 WHERE project_id = ?1
   AND (
@@ -3542,6 +3548,7 @@ func (q *Queries) ListIssueCodexSessions(ctx context.Context, arg ListIssueCodex
 			&i.WorkerCleanupRoot,
 			&i.WorkerCleanupPath,
 			&i.RuntimeIdentityJson,
+			&i.TurnStartRefused,
 		); err != nil {
 			return nil, err
 		}
@@ -4093,7 +4100,7 @@ func (q *Queries) ListPendingWorkAttemptCapacityReleases(ctx context.Context, pr
 }
 
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused
 FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?
@@ -4157,6 +4164,7 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 			&i.WorkerCleanupRoot,
 			&i.WorkerCleanupPath,
 			&i.RuntimeIdentityJson,
+			&i.TurnStartRefused,
 		); err != nil {
 			return nil, err
 		}

@@ -789,6 +789,7 @@ type RunResult struct {
 	FinalMessage            string
 	Model                   string
 	TurnStarted             bool
+	TurnStartRefused        bool
 	TurnCount               int
 	RuntimeIdentity         agentidentity.Identity
 	Tokens                  TokenTotals
