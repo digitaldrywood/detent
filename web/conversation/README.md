@@ -35,7 +35,8 @@ make check-app  # typecheck, tests, rebuild, source diagnostics and attribution
 It is an optional diagnostic and runs in the scheduled integrated-source suite.
 There is no committed-output drift check.
 
-`make generate` and `make build` run `make app`. Its complete output lands in
+`make generate` and `make build` run `make assets`, including `make app` and
+the dashboard CSS build. The client's complete output lands in
 ignored `static/app/conversation/`, including the shell, CSS, workers, lazy
 chunks and third-party licenses. Feature commits contain client source only.
 Staging, releases and private operators generate assets from their selected

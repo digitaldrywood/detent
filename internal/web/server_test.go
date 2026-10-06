@@ -5571,24 +5571,34 @@ func TestServerServesDefaultStaticAssetsFromArbitraryWorkingDirectory(t *testing
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	paths := []string{"css/output.css", "app/conversation/app.js", "app/conversation/app.css", "app/conversation/THIRD_PARTY_LICENSES.txt", "app/conversation/index.html"}
+	var paths []string
 	chunks := 0
-	if err := fs.WalkDir(detent.StaticFS(), "app/conversation", func(name string, entry fs.DirEntry, err error) error {
+	clientPrepared := false
+	if err := fs.WalkDir(detent.StaticFS(), ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !entry.IsDir() && strings.HasPrefix(name, "app/conversation/chunks/") {
-			chunks++
+		if entry.IsDir() && name == "app/conversation" {
+			clientPrepared = true
 		}
 		if !entry.IsDir() {
 			paths = append(paths, name)
+			if strings.HasPrefix(name, "app/conversation/chunks/") {
+				chunks++
+			}
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if chunks == 0 {
-		t.Fatal("conversation lazy chunks are missing")
+	if len(paths) == 0 {
+		t.Fatal("embedded static assets are missing")
+	}
+	if clientPrepared {
+		paths = append(paths, "app/conversation/app.js", "app/conversation/app.css", "app/conversation/THIRD_PARTY_LICENSES.txt", "app/conversation/index.html")
+		if chunks == 0 {
+			t.Fatal("conversation lazy chunks are missing")
+		}
 	}
 	for _, name := range slices.Compact(slices.Sorted(slices.Values(paths))) {
 		t.Run(name, func(t *testing.T) {

@@ -1,5 +1,5 @@
 name: Prepare conversation assets
-description: Build embed inputs from the checked-out conversation source and lockfile
+description: Build client and dashboard embed inputs from the checked-out source and lockfiles
 runs:
   using: composite
   steps:
@@ -7,6 +7,8 @@ runs:
       with:
         node-version: '24'
         cache: npm
-        cache-dependency-path: web/conversation/package-lock.json
+        cache-dependency-path: |
+          web/conversation/package-lock.json
+          package-lock.json
     - shell: bash
-      run: make app
+      run: make assets

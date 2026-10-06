@@ -64,14 +64,14 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	if err := os.WriteFile(filepath.Join(source, "base.txt"), []byte("base\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	matrixFiles := []string{"docs/mcp-capability-matrix.md", "internal/operatortool/capability/matrix.json"}
+	conflictFiles := []string{"internal/web/templates/work_templ.go", "internal/store/sqlc/db.go"}
 	if sourceConflict {
-		for _, name := range matrixFiles {
+		for _, name := range conflictFiles {
 			path := filepath.Join(source, name)
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(path, []byte("initial matrix\n"), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte("initial generated source\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -97,11 +97,11 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 		t.Fatal(err)
 	}
 	if sourceConflict {
-		for _, name := range matrixFiles {
-			if err := os.WriteFile(filepath.Join(info.Path, name), []byte("reviewed matrix\n"), 0o600); err != nil {
+		for _, name := range conflictFiles {
+			if err := os.WriteFile(filepath.Join(info.Path, name), []byte("reviewed generated source\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(source, name), []byte("parallel matrix\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(source, name), []byte("parallel generated source\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -124,7 +124,7 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
 			t.Fatalf("fixture did not reproduce a source conflict: %s, %v", output, err)
 		}
-		for _, name := range matrixFiles {
+		for _, name := range conflictFiles {
 			if !strings.Contains(string(output), name) {
 				t.Fatalf("fixture conflict missing %s: %s", name, output)
 			}

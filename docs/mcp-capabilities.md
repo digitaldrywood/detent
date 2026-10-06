@@ -1,79 +1,11 @@
-# Dashboard capability inventory
+# MCP operator capabilities
 
-The [machine-readable matrix](../internal/operatortool/capability/matrix.json)
-and its [readable view](mcp-capability-matrix.md) are the implementation checklist
-for native #26 (imported #3259). #3335 inventories the surface; it does not
-deliver full MCP parity.
-The fixture is planning and review evidence, not a runtime authorization policy,
-tool catalog, deployment feature flag, or tracker writer. The original five read
-tool names and schemas in `internal/operatortool/catalog.go` remain unchanged;
-the current advertised names, toolsets and schemas come from the existing
-`operatortool.Registry` and deployment executors.
-
-Native #239 reconciles current source decisions, including conversation subjects,
-work search and attempt cursors, selected-workspace events, current key/routing/
-composer forms and Cloud issue attachments. Original imported child owners in
-the fixture retain their provenance. Native #234 delivered credit checkout and
-automatic funding adapters; native #235 delivered invitation grants/edit/resend.
-Their current implemented decisions retain the actual authority, retry and
-deployment restrictions. Those children do not depend on this inventory repair
-or on their acceptance parent. The parent completes typed conversation subject
-create/list and native work-list filters and projections through the same
-application owners, with execution coverage over stdio and HTTP. The source
-inventory check now requires zero pending operator rows on every invocation.
-
-Cloud issue `upload_attachment` is implemented only through shared Cloud entry:
-the tenant checks current operator write authority, then entry stores bytes and
-returns the genuine attachment receipt. Supply a `request_id` of 1–128 bytes;
-reuse it only for identical upload retries. The shared application binds it to
-the current principal, organization, project and validated name, type, dimensions,
-size and SHA-256. Native command receipts retain the attachment ID across connections.
-Changed content conflicts before storage. Conditional object creation and bounded
-SHA-256 verification handle a lost storage response without overwriting bytes;
-metadata registration shares the native command transaction. Completed retries
-return recorded metadata without uploading again. Revoked access and deleted
-attachments cannot be restored through a retry. The idempotent annotation is true.
-
-Native #238 supplies metadata, bounded byte reads, deletion and explicit
-item/comment references. Existing content saves bind attachment references in
-the application transaction; conversation attachments are a separate resource
-with their own tools and authority. API uploads can use the same retry contract
-with an `Idempotency-Key` header; uploads without that header keep their existing
-one-call behavior. The public entry routes have organization-prefixed and
-canonical API aliases. Signed tenant metadata calls retain native scope and
-project authority; service-only retention, existence and object-deletion
-callbacks remain explicit non-model boundaries. The Hub's `entry_upload`
-authorization marker does not establish storage success; entry replaces it with
-the application result and records the correlated mutation outcome without
-credentials or content. Interrupted uploads remain subject to the existing
-attachment maintenance cycle.
-
-Each stable operation ID has exact source-site decisions, deployment and tracker
-availability, current role/scope/grant/ownership restrictions, preconditions,
-client confirmation ownership, the application read/command and
-required extraction, a bounded typed tool proposal, child owner, implementation
-status and coverage evidence. Proposed annotations conservatively describe the
-whole operation, including risky argument variants. Reads are retry-safe; mutations
-remain non-idempotent hints until their shared retry contract is implemented. A route registration is a source site, not a
-capability count. Browser/JSON aliases and frontend calls can share a row.
-`pending` means required operator parity remains unfinished. It is never an
-accepted exclusion. `implemented` describes delivered child behavior with current
-connection authority, not parent acceptance. `excluded` is reserved for
-explicit current asset, local presentation, authentication exchange, worker,
-transport or staff authority sites. Staff decisions do not give organization
-operators staff privileges. Each child records the availability of its delivered delete/revoke actions.
-
-Deployment availability distinguishes the self-hosted dashboard and unhosted
-hub, hosted dedicated organization hub, shared entry plus organization hub,
-and the private credential-maintenance listener. Hosted application routes
-require hosted configuration. The shared entry proxies organization-bound MCP
-requests through the same authenticated assertion boundary as application API
-and browser traffic. GitHub/native availability
-is recorded per operation; native-only policy/workspace/changes services cannot
-be assumed present in a GitHub-only daemon. Every proposed tool must return a
-safe opaque unavailable result when its application service is absent; this
-inventory does not install services or change current authority. The current
-read executors already handle missing telemetry/explanation dependencies.
+`operatortool.Registry` is the canonical protocol catalog. Deployments advertise
+its tools according to application availability and current connection authority.
+The dashboard's operator API uses the same application executors as MCP.
+`TestOperatorToolAPIUsesSharedReadOnlyExecutor` checks that every tool advertised
+by the dashboard is registered in this catalog. Add new dashboard commands to
+the real catalog and preserve their authorization and execution regressions.
 
 ## Cloud issue attachments (native #177 and #238)
 
@@ -90,7 +22,6 @@ reads; local and dedicated deployments omit these shared-storage operations.
 Internal expiry, existence and deletion-confirmation callbacks require signed
 service authority and expose no model-callable tool. See
 [Cloud attachments](cloud-attachments.md) for the transport and deletion contract.
-These delivered adapters do not claim completion of the parent parity inventory.
 
 ## Work and board reads (#3340)
 
@@ -277,7 +208,7 @@ status, expiry and grant authority are rechecked at execution.
 Selected bearer keys cannot grant or remove access beyond their own project scope.
 Typed requests include the invitation and grants; durable command receipts
 prevent repeated provider delivery.
-Dedicated/shared and stdio/HTTP fixture coverage uses no live mail. Parent #26
+Dedicated/shared and stdio/HTTP fixture coverage uses no live mail. Native #26
 retains strict final conformance and unconditional zero-pending acceptance.
 
 Access-changing and destructive commands execute directly after current authority checks. Durable application receipts omit credential material; deliberate
@@ -301,70 +232,7 @@ remains separate application work.
 Workspace relay frames are transport; bounded file reads and predefined project
 actions belong to the shared application surface, never an arbitrary shell or
 relay proxy. Stored change reviews and diffs use the change/artifact application
-tools; their deployment availability is recorded in the matrix.
-
-## Updating a decision
-
-Edit only the affected operation rows, retaining IDs and owner references.
-Implementing children update `status`, shared command/extraction, typed tool
-proposal and execution coverage when their behavior actually ships. Keep
-operator rows pending until implemented; do not relabel a missing service as an
-excluded capability. Reassess role, scope, grant, ownership and confirmation
-when application arguments or authorization change. Authentication binds connection authority; tools cannot supply permission switches.
-Mutations use the shared audit/idempotency contract. Lane requests go through
-the orchestrator (INV-1). The matrix grants no execution permission.
-
-`capability.Discover(os.DirFS(repositoryRoot))` independently walks actual
-production Go registrations in all files under `internal/web`,
-`internal/hubserver`, and `internal/cloudentry`, Templ sources, React/TypeScript
-sources, and authored `static/js` sources. Go registrations are parsed with
-`go/ast`; Echo parameter names, local aliases and groups are recognized. Route
-constants are resolved from actual package declarations; changing a registered
-path through its constant also produces drift. Legacy hub v1 APIs currently
-refuse hosted sessions and native-only credentials; these restrictions remain
-explicit availability decisions, not operator exclusions.
-Frontend discovery conservatively records HTTP/request adapter calls (including
-body/action arguments), HTMX/action/submit/navigation attributes, browser/client
-forms/routes and named action-discriminator inputs/buttons. Exact definitions
-are reviewable; line numbers are informational and not identity. Multiple
-identical occurrences must each be decided. Generated Go/bundles, dependency
-code and test fixtures are not dashboard definitions. Conservative client
-matches get explicit local/transport decisions, rather than a source-directory
-exclusion. No source list is copied from the matrix into discovery.
-
-The scanner covers these existing source idioms, not arbitrary future languages
-or dynamically generated routing frameworks. A change introducing a new route
-registration/request idiom must extend the scanner and a synthetic regression
-in the same PR. Do not add wildcard source exclusions or automatic decisions.
-Only reviewed exact source sites belong in the fixture. To inspect candidates
-without copying matrix data, run `go run ./internal/operatortool/capability/viewgen
--root . -sources` from the repository root (redirect scratch output to the provided
-`TMPDIR`). Adding a route,
-frontend request, browser form, client route or form action without a decision
-fails; removed definitions and duplicate/orphan ownership fail too.
-
-Focused diagnostics:
-
-```sh
-go test ./internal/operatortool/...
-```
-
-The source inventory diagnostic always enforces full operator parity:
-
-```sh
-go test -timeout=60s ./internal/operatortool/capability -run '^TestDashboardCapabilityCoverage$'
-```
-
-The test rejects every pending or excluded operator operation. It supplements
-the parent's execution, authorization, approval, replay, client-conformance and
-service-absence regressions; inventory coverage does not substitute for them.
-The repository's configured gate remains `true`; this focused diagnostic is not
-a new blocking product/commit gate.
-
-Regenerate the readable view with `go generate ./internal/operatortool/capability`.
-It calls `capability.RenderMarkdown(matrix)` on the loaded fixture. The source-coverage diagnostic checks source decisions, not the
-text of the documentation. Regenerate the view after editing the fixture; no
-templates, queries or CSS inputs are changed by this inventory.
+tools; deployments advertise them only when their application services exist.
 
 ## Client confirmation and current authority
 
@@ -588,7 +456,7 @@ results, approvals and audit records never carry provider secrets. Secret
 metadata is available through its existing safe read; removal uses its existing
 command. Local project editing/tracker binding is part of interactive onboarding;
 settings/library/reports have no configuration mutation in that dashboard.
-Their read/filter parity uses the corresponding inventory application owners;
+Their reads and filters use the corresponding application owners;
 shared settings, budget and review-policy prerequisites remain enforced.
 
 ## Workspace, conversation and project actions
@@ -648,9 +516,8 @@ tools. Operator mutations use the named MCP tools after current authority checks
 workspace/runtime service returns an opaque unavailable result. No browser cookie,
 authentication context, arbitrary session ID or approval setting is a tool argument.
 
-This child implements #3346, not the final deployment/tracker/transport parity
-acceptance on #3259. The legacy board conversation panel reads tracker/PR comments,
-so its matrix ownership is corrected to the comments child #3341.
+The legacy board conversation panel reads tracker/PR comments through the
+comments application owner.
 
 Ordinary native work-item controls (native #145) use
 `get_work_item_conversation({project_id, work_item_id})` to read the canonical
