@@ -220,7 +220,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`, data.AttemptID, scop
 		if err != nil {
 			return false, false, err
 		}
-		if previous.LeaseID != data.LeaseID || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || *previous.Identity != *data.Identity || status != "running" || data.Sequence != sequence+1 || event.Type == "run.started" {
+		usageCorrection := status != "running" && event.Type == "run.finished" && nativeUsageCorrection(previous, data)
+		if previous.LeaseID != data.LeaseID || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || *previous.Identity != *data.Identity || status != "running" && !usageCorrection || data.Sequence != sequence+1 || event.Type == "run.started" {
 			return false, false, nativeExecutionConflict("Attempt identity, lifecycle or next sequence does not match")
 		}
 		if previous.Runtime != nil {
@@ -231,13 +232,18 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`, data.AttemptID, scop
 		if event.Type == "run.observed" {
 			publish = nativeRuntimeHistoryChanged(previous.Runtime, data.Runtime)
 		}
-		if event.Type == "run.finished" {
+		if event.Type == "run.finished" && !usageCorrection {
 			if err := publishAttemptEvidence(ctx, tx, scope, item, data, now); err != nil {
 				return false, false, err
 			}
 			status = data.Outcome
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence = ?, status = ?, data_json = ?, updated_at = ? WHERE id = ?", data.Sequence, status, encoded, formatHubTime(now), data.AttemptID); err != nil {
+		if usageCorrection {
+			publish = false
+			if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence=?,data_json=? WHERE id=?", data.Sequence, encoded, data.AttemptID); err != nil {
+				return false, false, err
+			}
+		} else if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence = ?, status = ?, data_json = ?, updated_at = ? WHERE id = ?", data.Sequence, status, encoded, formatHubTime(now), data.AttemptID); err != nil {
 			return false, false, err
 		}
 	}

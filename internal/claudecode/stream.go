@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
@@ -34,7 +35,7 @@ type claudeEvent struct {
 	IsError      bool           `json:"is_error"`
 	Result       string         `json:"result"`
 	DurationMS   int64          `json:"duration_ms"`
-	TotalCostUSD float64        `json:"total_cost_usd"`
+	TotalCostUSD *float64       `json:"total_cost_usd"`
 	RateLimit    *rateLimitInfo `json:"rate_limit_info"`
 }
 
@@ -88,16 +89,17 @@ type claudeUsage struct {
 }
 
 type turnState struct {
-	commandItems    map[string]bool
-	sessionID       string
-	model           string
-	partialItemID   string
-	usage           runner.AgentTokenUsage
-	sawResult       bool
-	resultSubtype   string
-	resultText      string
-	resultIsError   bool
-	turnStartedSent bool
+	reportedCostMicros *int64
+	commandItems       map[string]bool
+	sessionID          string
+	model              string
+	partialItemID      string
+	usage              runner.AgentTokenUsage
+	sawResult          bool
+	resultSubtype      string
+	resultText         string
+	resultIsError      bool
+	turnStartedSent    bool
 }
 
 func scanClaudeStream(ctx context.Context, r io.Reader, maxTokenSize int) <-chan streamItem {
@@ -414,7 +416,10 @@ func (s *turnState) applyResult(event claudeEvent, onUpdate runner.AgentUpdateHa
 	s.resultSubtype = event.Subtype
 	s.resultText = strings.TrimSpace(event.Result)
 	s.resultIsError = event.IsError
-	// Non-goals: --resume continuity and total_cost_usd budget ingest.
+	if event.TotalCostUSD != nil && !math.IsNaN(*event.TotalCostUSD) && !math.IsInf(*event.TotalCostUSD, 0) && *event.TotalCostUSD >= 0 && *event.TotalCostUSD <= 1e9 {
+		amount := int64(math.Round(*event.TotalCostUSD * 1_000_000))
+		s.reportedCostMicros = &amount
+	}
 	if event.Usage != nil && !event.Usage.empty() {
 		s.usage = event.Usage.agentUsage()
 		return s.emitUsage(onUpdate)

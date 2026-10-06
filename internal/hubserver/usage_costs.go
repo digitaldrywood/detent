@@ -21,7 +21,8 @@ const spriteCostBucket = "sprite_infrastructure"
 type costObservation = usagecost.Observation
 
 type attributedCostObservation struct {
-	ProjectID string `json:"project_id"`
+	ProjectID  string    `json:"project_id"`
+	ReceivedAt time.Time `json:"received_at,omitzero"`
 	costObservation
 }
 
@@ -45,7 +46,7 @@ func normalizeCostObservation(o *costObservation, now time.Time) error {
 	if len(o.Currency) != 3 || strings.Trim(o.Currency, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
 		return nativeInvalid("Cost currency must be a three-letter uppercase code")
 	}
-	if !slices.Contains([]string{"complete", "partial", "unknown"}, o.Coverage) || !slices.Contains([]string{"estimated", "provider_billed", "unknown"}, o.Basis) || !slices.Contains([]string{"measured", "provider_reported", "estimated", "unknown"}, o.QuantityBasis) {
+	if !slices.Contains([]string{"complete", "partial", "unknown"}, o.Coverage) || !slices.Contains([]string{"estimated", "provider_billed", "runner_reported", "unknown"}, o.Basis) || !slices.Contains([]string{"measured", "provider_reported", "estimated", "unknown"}, o.QuantityBasis) {
 		return nativeInvalid("Cost observations require explicit coverage, quantity basis and cost basis")
 	}
 	if o.EvidenceSource == "" || (o.Quantity == nil) != (o.QuantityBasis == "unknown") {
@@ -73,11 +74,16 @@ func normalizeCostObservation(o *costObservation, now time.Time) error {
 	if o.AmountMicros != nil && (*o.AmountMicros > 1e15 || *o.AmountMicros < -1e15) {
 		return nativeInvalid("Cost exceeds the supported amount")
 	}
-	if (o.AmountMicros == nil) != (o.Basis == "unknown") || (o.Basis == "estimated" && (o.Quantity == nil || o.UnitPriceMicros == nil)) {
+	runnerEstimate := o.Bucket == runnerCostBucket && o.AttemptID != "" && o.EstimatedAmountMicros != nil && o.EstimateSource != "" && o.AmountMicros != nil && *o.AmountMicros == *o.EstimatedAmountMicros
+	if (o.AmountMicros == nil) != (o.Basis == "unknown") || (o.Basis == "estimated" && !runnerEstimate && (o.Quantity == nil || o.UnitPriceMicros == nil)) {
 		return nativeInvalid("Estimated costs require quantity and rate; missing costs require an unknown basis")
 	}
 	if o.Basis == "provider_billed" && o.QuantityBasis != "provider_reported" && o.QuantityBasis != "unknown" {
 		return nativeInvalid("Billed costs require provider evidence rather than locally estimated quantities")
+	}
+
+	if o.Basis == "runner_reported" && (o.Bucket != runnerCostBucket || o.AttemptID == "" || o.BillingMode != "metered" || o.ReportedAmountMicros == nil || o.AmountMicros == nil || *o.AmountMicros != *o.ReportedAmountMicros || (o.EvidenceSource != "runner_report" && o.EvidenceSource != "backend_result")) {
+		return nativeInvalid("Runner-reported costs require explicit metered attempt evidence")
 	}
 	return nil
 }
@@ -104,7 +110,15 @@ WHERE organization_id=? AND provider=? AND provider_account=? AND source_id=? AN
 		if err := json.Unmarshal([]byte(previous), &old); err != nil {
 			return false, fmt.Errorf("decode cost observation: %w", err)
 		}
-		if previousProject != project || old.ResourceID != o.ResourceID || old.Bucket != o.Bucket || old.Metric != o.Metric || old.Unit != o.Unit || old.Currency != o.Currency {
+
+		if old.AttemptID != "" {
+			o.RunnerID, o.MachineID, o.Placement = old.RunnerID, old.MachineID, old.Placement
+			encoded, err = json.Marshal(o)
+			if err != nil {
+				return false, err
+			}
+		}
+		if previousProject != project || old.ResourceID != o.ResourceID || old.Bucket != o.Bucket || old.Metric != o.Metric || old.Unit != o.Unit || old.Currency != o.Currency || old.AttemptID != o.AttemptID || old.WorkItemID != o.WorkItemID || old.Model != o.Model || old.UsageKind != o.UsageKind {
 			return false, nativeInvalid("Corrections preserve original attribution, metric, unit and currency")
 		}
 		if o.Revision < revision {
@@ -154,7 +168,7 @@ func readCostObservations(ctx context.Context, query nativeQueryer, organization
 	if err != nil {
 		return nil, err
 	}
-	rows, err := query.QueryContext(ctx, `SELECT u.project_id,u.observation_json FROM usage_cost_observations u
+	rows, err := query.QueryContext(ctx, `SELECT u.project_id,u.observation_json,u.received_at FROM usage_cost_observations u
 WHERE u.organization_id=? AND u.period_start<? AND u.period_end>? AND (? OR u.project_id IN (SELECT value FROM json_each(?)))
 AND COALESCE(json_extract(u.observation_json,'$.voided'),0)=0
 AND NOT EXISTS (SELECT 1 FROM usage_cost_observations newer WHERE newer.organization_id=u.organization_id AND newer.provider=u.provider AND newer.provider_account=u.provider_account AND newer.source_id=u.source_id AND newer.period_start=u.period_start AND newer.period_end=u.period_end AND newer.revision>u.revision)
@@ -166,12 +180,16 @@ ORDER BY u.project_id,u.bucket,u.provider,u.provider_account,u.resource_id,u.met
 	result := []attributedCostObservation{}
 	for rows.Next() {
 		var entry attributedCostObservation
-		var raw string
-		if err := rows.Scan(&entry.ProjectID, &raw); err != nil {
+		var raw, received string
+		if err := rows.Scan(&entry.ProjectID, &raw, &received); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(raw), &entry.costObservation); err != nil {
 			return nil, fmt.Errorf("decode monthly cost observation: %w", err)
+		}
+		entry.ReceivedAt, err = time.Parse(costTimeLayout, received)
+		if err != nil {
+			return nil, err
 		}
 		result = append(result, entry)
 	}

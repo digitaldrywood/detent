@@ -42,6 +42,9 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 		t.Fatalf("RunTurn() result = %#v, want session-success IDs", result)
 	}
 
+	if result.ReportedCostMicros == nil || *result.ReportedCostMicros != 1000 || result.CostSource != "backend_result" {
+		t.Fatalf("reported result cost = %+v", result)
+	}
 	wantTypes := []runner.AgentUpdateType{
 		runner.AgentUpdateProcessStarted,
 		runner.AgentUpdateTurnStarted,
@@ -212,6 +215,9 @@ func TestAgentBackendRunTurnErrorResult(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("RunTurn() error = %q, want %q", err.Error(), want)
 		}
+	}
+	if result.ReportedCostMicros == nil || *result.ReportedCostMicros != 200 || result.CostSource != "backend_result" {
+		t.Fatalf("failed turn lost reported cost: %+v", result)
 	}
 	if result.SessionID != "session-error" {
 		t.Fatalf("RunTurn() result SessionID = %q, want session-error", result.SessionID)

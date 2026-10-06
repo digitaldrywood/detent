@@ -159,11 +159,15 @@ func (b *AgentBackend) RunTurn(
 	closeErr := errors.Join(stdout.Close(), stderrReader.Close())
 
 	result := runner.AgentTurnResult{
-		ThreadID:  state.sessionID,
-		TurnID:    state.sessionID,
-		SessionID: state.sessionID,
+		ReportedCostMicros: state.reportedCostMicros,
+		ThreadID:           state.sessionID,
+		TurnID:             state.sessionID,
+		SessionID:          state.sessionID,
 	}
 
+	if result.ReportedCostMicros != nil {
+		result.CostSource = "backend_result"
+	}
 	if streamErr != nil {
 		return result, errors.Join(streamErr, closeErr)
 	}

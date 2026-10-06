@@ -416,6 +416,8 @@ type AgentResume struct {
 }
 
 type AgentTurnResult struct {
+	ReportedCostMicros *int64
+	CostSource         string
 	ThreadID           string
 	TurnID             string
 	SessionID          string
@@ -773,6 +775,9 @@ type SecurityAuditExecution struct {
 }
 
 type RunResult struct {
+	BillingMode             string
+	ReportedCostMicros      *int64
+	CostSource              string
 	GitHubScope             *tracker.NativeGitHubScope
 	GitHubRESTUsage         *connector.RESTRateLimitUsage
 	GitHubRESTConsumer      string

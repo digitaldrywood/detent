@@ -16,8 +16,10 @@ type monthlyCostTotal struct {
 	Currency        string `json:"currency"`
 	KnownMicros     *int64 `json:"known_micros"`
 	EstimatedMicros *int64 `json:"estimated_micros"`
+	ReportedMicros  *int64 `json:"reported_micros"`
 	BilledMicros    *int64 `json:"billed_micros"`
 	Unknown         int    `json:"unknown_observations"`
+	UnreportedCosts int    `json:"unreported_cost_observations"`
 	Stale           int    `json:"stale_observations"`
 }
 
@@ -52,19 +54,23 @@ type costCoverageGap struct {
 }
 
 type monthlyCostReport struct {
-	OrganizationID  string               `json:"organization_id"`
-	Scope           string               `json:"scope"`
-	Timezone        string               `json:"timezone"`
-	Period          usageWindow          `json:"period"`
-	GeneratedAt     time.Time            `json:"generated_at"`
-	Coverage        string               `json:"coverage"`
-	Totals          []monthlyCostTotal   `json:"totals"`
-	ByProject       []monthlyProjectCost `json:"by_project"`
-	Sources         []monthlyCostSource  `json:"sources"`
-	Gaps            []costCoverageGap    `json:"gaps"`
-	SourceCount     int                  `json:"source_count"`
-	GapCount        int                  `json:"gap_count"`
-	DetailsComplete bool                 `json:"details_complete"`
+	RunnerReporting    string               `json:"runner_reporting"`
+	ActiveAttempts     int64                `json:"active_attempts"`
+	UnreportedAttempts int64                `json:"unreported_attempts"`
+	ActiveWorkComplete bool                 `json:"active_work_complete"`
+	OrganizationID     string               `json:"organization_id"`
+	Scope              string               `json:"scope"`
+	Timezone           string               `json:"timezone"`
+	Period             usageWindow          `json:"period"`
+	GeneratedAt        time.Time            `json:"generated_at"`
+	Coverage           string               `json:"coverage"`
+	Totals             []monthlyCostTotal   `json:"totals"`
+	ByProject          []monthlyProjectCost `json:"by_project"`
+	Sources            []monthlyCostSource  `json:"sources"`
+	Gaps               []costCoverageGap    `json:"gaps"`
+	SourceCount        int                  `json:"source_count"`
+	GapCount           int                  `json:"gap_count"`
+	DetailsComplete    bool                 `json:"details_complete"`
 }
 
 func addCostAmount(target **int64, value int64) error {
@@ -80,6 +86,9 @@ func addCostAmount(target **int64, value int64) error {
 }
 
 func addMonthlyCost(totals *[]monthlyCostTotal, source monthlyCostSource) error {
+	if source.Bucket == runnerCostBucket && source.BillingMode == "subscription" {
+		return nil
+	}
 	index := slices.IndexFunc(*totals, func(total monthlyCostTotal) bool {
 		return total.Bucket == source.Bucket && total.Currency == source.Currency
 	})
@@ -88,6 +97,9 @@ func addMonthlyCost(totals *[]monthlyCostTotal, source monthlyCostSource) error 
 		index = len(*totals) - 1
 	}
 	total := &(*totals)[index]
+	if source.Bucket == runnerCostBucket && (source.BillingMode != "metered" || source.ReportedAmountMicros == nil || source.Coverage != "complete") {
+		total.UnreportedCosts++
+	}
 	if source.Stale {
 		total.Stale++
 	}
@@ -97,6 +109,9 @@ func addMonthlyCost(totals *[]monthlyCostTotal, source monthlyCostSource) error 
 	}
 	if err := addCostAmount(&total.KnownMicros, *source.AllocatedMicros); err != nil {
 		return err
+	}
+	if source.AllocatedBasis == "runner_reported" {
+		return addCostAmount(&total.ReportedMicros, *source.AllocatedMicros)
 	}
 	if source.AllocatedBasis == "provider_billed" {
 		return addCostAmount(&total.BilledMicros, *source.AllocatedMicros)
@@ -123,10 +138,10 @@ func buildMonthlyCostReport(organization, scope string, window usageWindow, now 
 		if !end.After(start) {
 			continue
 		}
-		source := monthlyCostSource{attributedCostObservation: entry, Stale: now.After(entry.FreshUntil), AllocatedBasis: entry.Basis, Allocation: "whole_period"}
+		source := monthlyCostSource{attributedCostObservation: entry, Stale: now.After(entry.FreshUntil) && entry.AttemptID == "" && entry.Bucket != lunaCostBucket, AllocatedBasis: entry.Basis, Allocation: "whole_period"}
 		if !start.Equal(entry.From) || !end.Equal(entry.To) {
 			source.Allocation = "duration_prorated"
-			if source.AllocatedBasis == "provider_billed" {
+			if source.AllocatedBasis == "provider_billed" || source.AllocatedBasis == "runner_reported" {
 				source.AllocatedBasis = "estimated"
 			}
 		}
@@ -150,6 +165,12 @@ func buildMonthlyCostReport(organization, scope string, window usageWindow, now 
 			return report, err
 		}
 		report.Sources = append(report.Sources, source)
+		if entry.AttemptID != "" || entry.Bucket == lunaCostBucket {
+			if entry.Coverage != "complete" || entry.Quantity == nil || entry.AmountMicros == nil && entry.BillingMode != "subscription" {
+				report.Gaps = append(report.Gaps, costCoverageGap{costResource: costResource{ProjectID: entry.ProjectID, Provider: entry.Provider, ProviderAccount: entry.ProviderAccount, ResourceID: entry.ResourceID}, Bucket: entry.Bucket, Metric: entry.Metric, From: start, To: end})
+			}
+			continue
+		}
 		resource := costResource{ProjectID: entry.ProjectID, Provider: entry.Provider, ProviderAccount: entry.ProviderAccount, ResourceID: entry.ResourceID, ResourceName: entry.ResourceName}
 		if resource.ResourceID != "" {
 			resource.ResourceName = ""
@@ -271,6 +292,11 @@ func (d *database) monthlyCosts(ctx context.Context, organization, scope string,
 	if err != nil {
 		return monthlyCostReport{}, err
 	}
+	luna, err := readLunaCostObservations(ctx, tx, organization, projects, window)
+	if err != nil {
+		return monthlyCostReport{}, err
+	}
+	observations = append(observations, luna...)
 	resources, err := readSpriteCostResources(ctx, tx, organization, projects)
 	if err != nil {
 		return monthlyCostReport{}, err
@@ -278,6 +304,21 @@ func (d *database) monthlyCosts(ctx context.Context, organization, scope string,
 	report, err := buildMonthlyCostReport(organization, scope, window, now, observations, resources)
 	if err != nil {
 		return monthlyCostReport{}, err
+	}
+	encoded, err := json.Marshal(projects)
+	if err != nil {
+		return report, err
+	}
+	report.RunnerReporting = "finish_time"
+	err = tx.QueryRowContext(ctx, `SELECT coalesce(sum(status='running'),0),coalesce(sum(NOT EXISTS (SELECT 1 FROM usage_cost_observations u WHERE u.organization_id=a.organization_id AND u.resource_id=a.id AND u.bucket='runner_api')),0) FROM native_attempts a WHERE organization_id=? AND substr(started_at,1,19)<?
+AND (status='running' OR substr(updated_at,1,19)>? OR (substr(updated_at,1,19)=? AND length(updated_at)>20))
+AND (? OR project_id IN (SELECT value FROM json_each(?)))`, organization, window.To.UTC().Format("2006-01-02T15:04:05"), window.From.UTC().Format("2006-01-02T15:04:05"), window.From.UTC().Format("2006-01-02T15:04:05"), projects == nil, string(encoded)).Scan(&report.ActiveAttempts, &report.UnreportedAttempts)
+	if err != nil {
+		return report, err
+	}
+	report.ActiveWorkComplete = report.ActiveAttempts == 0 && report.UnreportedAttempts == 0
+	if !report.ActiveWorkComplete && report.Coverage == "complete" {
+		report.Coverage = "partial"
 	}
 	return report, tx.Commit()
 }

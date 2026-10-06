@@ -1152,7 +1152,9 @@ func (r *Runner) runAgentTurn(
 			return agentTurnExecution{err: err}
 		}
 	}
+	workflow, _, _, _ := r.runtimeSnapshot()
 	result := RunResult{
+		BillingMode:      strings.ToLower(strings.TrimSpace(workflow.Config.Budget.BillingMode)),
 		FinalState:       FinalStateCompleted,
 		RuntimeIdentity:  initialIdentity.Normalize(),
 		budgetProjection: budgetProjection,
@@ -1322,6 +1324,7 @@ func (r *Runner) runAgentTurn(
 		result.FinalState = finalStateForTurnError(turnErr)
 	}
 	result.TurnStarted = turnStarted
+	result.ReportedCostMicros, result.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 	reportTurnUsage(ctx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
 	return agentTurnExecution{
 		turnResult:  turnResult,
