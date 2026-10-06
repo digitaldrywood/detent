@@ -11,7 +11,7 @@ import (
 
 func TestHostedAdministratorProjectGrants(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"UI", "API", "native insertion", "repository alias", "backfill", "foreign organization"} {
+	for _, path := range []string{"UI", "API", "native insertion", "compatibility insertion", "backfill", "foreign organization"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			f := newHostedSecurityFixture(t)
@@ -41,19 +41,15 @@ func TestHostedAdministratorProjectGrants(t *testing.T) {
 				var created tracker.NativeProject
 				decodeHubResponse(t, response, &created)
 				project = string(created.ID)
-			case "repository alias":
-				operatorSQL(t, f, "UPDATE organizations SET local=(id='org_security')")
-				operatorSQL(t, f, "INSERT INTO repositories(github_node_id,github_owner,github_name,created_at,updated_at) VALUES ('repo_new','digitaldrywood','detent','now','now')")
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM projects WHERE organization_id='org_security' AND name='digitaldrywood/detent'").Scan(&project); err != nil {
-					t.Fatal(err)
-				}
+			case "compatibility insertion":
+				operatorSQL(t, f, "INSERT INTO projects(id,organization_id,name,profile,created_at) VALUES (?,?,'digitaldrywood/detent','github_compatible','now')", project, organization)
 			case "backfill":
 				project = string(f.project)
 				operatorSQL(t, f, "DROP TRIGGER projects_hosted_administrator_grants")
 				operatorSQL(t, f, "DROP TRIGGER projects_hosted_grants_delete")
 				operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id='user_other-owner'")
 				operatorSQL(t, f, "DELETE FROM token_grants WHERE token_id=(SELECT principal_id FROM hosted_members WHERE user_id='user_other-owner')")
-				operatorSQL(t, f, "DELETE FROM hub_schema_version WHERE version_id=20261006202000")
+				operatorSQL(t, f, "DELETE FROM hub_schema_version WHERE version_id=20261006213037")
 				if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
 					t.Fatal(err)
 				}
@@ -83,11 +79,11 @@ func TestHostedAdministratorProjectGrants(t *testing.T) {
 					t.Fatalf("%s grants/write/runner/tokens=%d/%d/%d/%d, want %d/%d/%d/%d", user.name, grants, write, runner, tokens, want, wantWrite, wantWrite, want)
 				}
 			}
-			if path == "repository alias" {
+			if path == "compatibility insertion" {
 				operatorSQL(t, f, "DELETE FROM projects WHERE id=?", project)
 				var remaining int
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM hosted_project_grants WHERE project_id=?)+(SELECT count(*) FROM token_grants WHERE project_id=?)", project, project).Scan(&remaining); err != nil || remaining != 0 {
-					t.Fatalf("deleted alias grants=%d error=%v", remaining, err)
+					t.Fatalf("deleted compatibility project grants=%d error=%v", remaining, err)
 				}
 			}
 		})
