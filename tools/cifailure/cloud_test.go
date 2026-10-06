@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -239,6 +240,12 @@ func TestCloudReport(t *testing.T) {
 		fmt.Fprintf(&verbose, "--- FAIL: TestVerbose%d (0s)\n%s\n", i, strings.Repeat("diagnostic output ", 500))
 	}
 	verbose.WriteString("FAIL\towner/repo/pkg\t0s")
+	var manyTests, manyDiagnostics strings.Builder
+	for i := range 700 {
+		fmt.Fprintf(&manyTests, "--- FAIL: TestMany%04d/%s (0s)\n    many_test.go:12: expected result missing\n", i, strings.Repeat("subtest", 40))
+		fmt.Fprintf(&manyDiagnostics, "internal/many.go:%d:3: finding%04d %s\n", i+1, i, strings.Repeat("<>&\"\\\t\u2028🙂", 20))
+	}
+	manyTests.WriteString("FAIL\towner/repo/pkg\t0s")
 	for _, tt := range []struct {
 		name, log, laterLog, lost, fail string
 		imported, green, foreign        bool
@@ -273,6 +280,8 @@ func TestCloudReport(t *testing.T) {
 		{name: "imported legacy run replay", log: diagnostic, imported: true, legacyReplay: true, wantItems: 2, wantWrites: 3, wantEdits: 1},
 		{name: "imported marker replay promotes priority", log: diagnostic, imported: true, legacyReplay: true, markerReplay: true, wantItems: 2, wantWrites: 3, wantEdits: 1},
 		{name: "verbose findings stay bounded", log: verbose.String(), wantItems: 2, wantWrites: 4},
+		{name: "many named tests stay bounded", log: manyTests.String(), wantItems: 2, wantWrites: 4},
+		{name: "many escaped diagnostics stay bounded", log: manyDiagnostics.String(), wantItems: 2, wantWrites: 4},
 		{name: "multiple findings stay in one job issue", log: diagnostic + "\n--- FAIL: TestTwo (0s)\nFAIL\towner/repo/pkg\t0s", wantItems: 2, wantWrites: 4},
 		{name: "changed findings reuse job", log: diagnostic, laterLog: "--- FAIL: TestTwo (0s)\nFAIL\towner/repo/pkg\t0s", wantItems: 2, wantWrites: 4},
 		{name: "unclassified then source reuses job", log: "exit code 1", laterLog: diagnostic, wantItems: 2, wantWrites: 4},
@@ -390,6 +399,18 @@ func TestCloudReport(t *testing.T) {
 				t.Fatal("priority changed imported content or history")
 			}
 			for _, args := range f.writes {
+				encoded, err := json.Marshal(args)
+				if err != nil || len(encoded) > operatortool.MaxArgumentBytes {
+					t.Fatalf("native arguments exceed byte contract: %d bytes, %v", len(encoded), err)
+				}
+				tool := "file_issue"
+				if _, ok := args["body"]; ok {
+					tool = "add_comment"
+				}
+				frame, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": int64(9223372036854775807), "method": "tools/call", "params": map[string]any{"name": tool, "arguments": args}})
+				if err != nil || len(frame) > mcp.MaxHTTPRequestBytes {
+					t.Fatalf("native frame exceeds byte contract: %d bytes, %v", len(frame), err)
+				}
 				if target, move := args["target_state"]; move {
 					if target != "Todo" || args["identifier"] != "wi_imported" || args["expected_revision"] != int64(8) {
 						t.Fatal("transition lost its native revision or target")
@@ -417,6 +438,27 @@ func TestCloudReport(t *testing.T) {
 						t.Fatal("instance failure has no infrastructure label")
 					}
 				}
+				if !utf8.ValidString(body) {
+					t.Fatal("native summary split a UTF-8 character")
+				}
+				fields := map[string]any{}
+				for name, value := range args {
+					if name != "request_id" {
+						fields[name] = value
+					}
+				}
+				decodedArgs, err := json.Marshal(fields)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if comment {
+					_, err = operatortool.DecodeWorkArguments(operatortool.AddComment, decodedArgs)
+				} else {
+					_, err = operatortool.DecodeFileIssue(decodedArgs)
+				}
+				if err != nil {
+					t.Fatalf("native %s violates the application argument contract: %v", tool, err)
+				}
 				if tt.green {
 					if !strings.Contains(body, scheduledEnv("CI_DEVELOP_SHA")) || !strings.Contains(body, "does not establish") {
 						t.Fatal("green evidence invented completion")
@@ -436,11 +478,28 @@ func TestCloudReport(t *testing.T) {
 					if tt.log == diagnostic && tt.laterLog == "" && !strings.Contains(body, "TestOne") && !tt.finalizerFailed {
 						t.Fatal("native occurrence lost failing test names")
 					}
-					if tt.log == verbose.String() {
-						for i := range 12 {
-							if !strings.Contains(body, fmt.Sprintf("go-test:owner/repo/pkg:TestVerbose%d`", i)) {
-								t.Fatal("bounded job evidence lost a failing test name")
+					if tt.log == verbose.String() && (!strings.Contains(body, "go-test:owner/repo/pkg:TestVerbose0`") || !strings.Contains(body, "diagnostic output")) {
+						t.Fatal("bounded job evidence lost its named diagnostic")
+					}
+					if strings.HasPrefix(tt.name, "many ") {
+						first, last := "TestMany0000", "TestMany0699"
+						if tt.log == manyDiagnostics.String() {
+							first, last = "finding0000", "finding0699"
+							if !strings.Contains(body, "<>&\"\\\t\u2028🙂") {
+								t.Fatal("escaped diagnostic evidence was lost")
 							}
+						} else if !strings.Contains(body, "many_test.go:12: expected result missing") {
+							t.Fatal("named test lost its assertion evidence")
+						}
+						if !strings.Contains(body, first) || strings.Contains(body, last) || !strings.Contains(body, "700 parsed findings") || !strings.Contains(body, "remaining evidence omitted") || !strings.Contains(evidence.String(), last) {
+							t.Fatal("native summary or retained complete evidence is incorrect")
+						}
+						key := strings.TrimPrefix(args["request_id"].(string), "scheduled-create-")
+						if comment {
+							key = strings.TrimPrefix(args["request_id"].(string), "scheduled-comment-")
+						}
+						if !strings.Contains(body, occurrenceMarker(key)) || comment && !strings.HasPrefix(body, "## New machine occurrence\n") {
+							t.Fatal("bounded evidence lost occurrence replay identity")
 						}
 					}
 					if strings.Contains(tt.name, "multiple findings") && !strings.Contains(body, "TestTwo") {
@@ -484,6 +543,9 @@ func TestCloudTransport(t *testing.T) {
 	for _, tt := range []struct {
 		name, fail, badPage    string
 		status                 int
+		argumentBytes          int
+		rpcCode                int
+		wantDiagnostic         string
 		states                 []tracker.NativeState
 		revokedAfterInitialize bool
 		priorityEdit           bool
@@ -496,10 +558,14 @@ func TestCloudTransport(t *testing.T) {
 		{name: "missing priority edit authority", fail: "edit_item"},
 		{name: "missing transition authority", fail: "move_item"},
 		{name: "missing item detail authority", fail: "work_item"},
-		{name: "revoked key", status: http.StatusUnauthorized},
+		{name: "revoked key", status: http.StatusUnauthorized, wantDiagnostic: "HTTP 401"},
 		{name: "revoked key on established session", revokedAfterInitialize: true},
 		{name: "narrow project grant", fail: "work_config"},
 		{name: "provider unavailable", status: http.StatusServiceUnavailable},
+		{name: "oversized arguments retain parameter rejection", argumentBytes: operatortool.MaxArgumentBytes, wantDiagnostic: "JSON-RPC code -32602"},
+		{name: "oversized frame retains HTTP rejection", argumentBytes: mcp.MaxHTTPRequestBytes, wantDiagnostic: "HTTP 413"},
+		{name: "standard parameter error hides private response", rpcCode: -32602, wantDiagnostic: "JSON-RPC code -32602"},
+		{name: "application error hides private response", rpcCode: -32001, wantDiagnostic: "invalid or failed response"},
 		{name: "Backlog must remain nondispatchable", states: []tracker.NativeState{{Name: "Backlog", Dispatchable: true}, {Name: "Todo", Dispatchable: true}}},
 		{name: "Backlog must remain nonterminal", states: []tracker.NativeState{{Name: "Backlog", Terminal: true}, {Name: "Todo", Dispatchable: true}}},
 		{name: "Backlog must allow reporter creation", states: []tracker.NativeState{{Name: "Backlog", OperatorOnly: true}, {Name: "Todo", Dispatchable: true}}},
@@ -536,6 +602,7 @@ func TestCloudTransport(t *testing.T) {
 				return operatortool.Identity{PrincipalID: "operator", OrganizationID: "org", CredentialID: "scoped-key"}
 			}})
 			revoked := false
+			initialized := false
 			client := &http.Client{Transport: handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Header.Get("Authorization") != "Bearer private-test-key" {
 					t.Error("missing private bearer")
@@ -549,21 +616,42 @@ func TestCloudTransport(t *testing.T) {
 					fmt.Fprint(w, "private-test-key provider diagnostics")
 					return
 				}
+				if initialized && tt.rpcCode != 0 && r.Method == http.MethodPost {
+					var request struct {
+						ID int `json:"id"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Error(err)
+					}
+					if err := json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": tt.rpcCode, "message": "private-test-key provider diagnostics", "data": "Bearer private-test-key"}}); err != nil {
+						t.Error(err)
+					}
+					return
+				}
 				handler.ServeHTTP(w, r)
 			})}}
 			transport := &cloudMCP{endpoint: "https://cloud.detent.build/api/v2/organizations/org/mcp", token: "private-test-key", client: client}
 			err := transport.initialize(t.Context())
+			initialized = true
 			revoked = tt.revokedAfterInitialize
 			destination := &cloudDestination{command: transport.call, project: scheduledCloudProject}
 			if err == nil {
-				err = destination.load(t.Context())
+				if tt.argumentBytes != 0 {
+					var result json.RawMessage
+					err = transport.call(t.Context(), "work_config", map[string]any{"project_id": scheduledCloudProject, "padding": strings.Repeat("x", tt.argumentBytes)}, &result)
+				} else {
+					err = destination.load(t.Context())
+				}
 				if err == nil && tt.priorityEdit {
 					body := issueorigin.Stamp("New source occurrence", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "current-run", Fingerprint: fingerprint})
 					err = destination.file(t.Context(), fingerprint, "source failure", body, "scoped-occurrence", nil, true)
 				}
 			}
-			if (err != nil) != (tt.fail != "" || tt.status != 0 || tt.states != nil || tt.badPage != "" || tt.revokedAfterInitialize || tt.summaryDetail) {
+			if (err != nil) != (tt.fail != "" || tt.status != 0 || tt.states != nil || tt.badPage != "" || tt.revokedAfterInitialize || tt.summaryDetail || tt.argumentBytes != 0 || tt.rpcCode != 0) {
 				t.Fatalf("transport result %v", err)
+			}
+			if tt.wantDiagnostic != "" && (err == nil || !strings.Contains(err.Error(), tt.wantDiagnostic)) {
+				t.Fatalf("transport diagnostic = %v; want %q", err, tt.wantDiagnostic)
 			}
 			if err != nil && strings.Contains(err.Error(), "private-test-key") {
 				t.Fatal("secret leaked into diagnostic")

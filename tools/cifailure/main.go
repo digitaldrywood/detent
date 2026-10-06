@@ -145,12 +145,12 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			problems = []problem{{Key: "scheduled-ci:" + repository + ":" + j.Name, Summary: "scheduled " + j.Name + " failure", Evidence: evidence}}
 		}
 		if _, native := destination.(*cloudDestination); native {
-			var findings, details []string
+			var findings []string
 			for _, p := range problems {
-				findings = append(findings, "Problem: `"+p.Key+"`")
-				details = append(details, p.Evidence)
+				findings = append(findings, "Problem: `"+p.Key+"`\n"+p.Evidence)
 			}
-			problems = []problem{{Key: "scheduled-ci:" + repository + ":" + j.Name, Summary: "scheduled " + j.Name + " failure", Evidence: strings.Join(findings, "\n") + "\n\n" + diagnosticExcerpt(strings.Join(details, "\n\n"))}}
+			evidence := fmt.Sprintf("%d parsed findings. Complete evidence is retained in the linked job logs and scheduled reporting artifact.\n\n%s", len(problems), strings.Join(findings, "\n\n"))
+			problems = []problem{{Key: "scheduled-ci:" + repository + ":" + j.Name, Summary: "scheduled " + j.Name + " failure", Evidence: evidence}}
 			labels = []string{"ci-scheduled-failure"}
 			if !sourceFailure {
 				labels = append(labels, "ci-infrastructure-failure")
