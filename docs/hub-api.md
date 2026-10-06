@@ -1,5 +1,9 @@
 # Detent Hub API
 
+See [monthly infrastructure usage](sprite-usage.md) for Sprite observation
+imports, shared UTC aggregation, corrections, scoped API/MCP reads and provider
+metering limits through the existing usage owner.
+
 Detent Hub owns its SQLite database and exposes fleet coordination through an authenticated HTTP API. Clients must never open or copy the live database files.
 
 This page documents implemented behavior, including native collaboration, Changes and scoped runner enrollment through `/api/v2`. See [self-hosted operations](hub-self-hosting.md) for deployment, export/import and recovery, and [artifact deployment](artifacts-deployment.md) for independent durable storage. The [native Hub and Cloud RFC](cloud-hub-rfc.md) defines the broader architecture.

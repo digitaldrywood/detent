@@ -31,6 +31,10 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		switch {
+		case c.Path() == "/api/v2/organizations/:organization/usage/monthly" && c.Request().Method == http.MethodGet:
+			if credential.HostedRole != "owner" && credential.HostedRole != "admin" || !s.hostedAllUsageGrants(c.Request().Context(), credential) {
+				return s.nativeAPIError(c, nativeNotFound())
+			}
 		case c.Path() == "/api/v2/organizations/:organization/projects" && c.Request().Method == http.MethodPost:
 			if credential.HostedRole != "owner" && credential.HostedRole != "admin" {
 				return s.nativeAPIError(c, nativeNotFound())
@@ -49,6 +53,12 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 		}
 		return next(c)
 	}
+}
+
+func (s *Service) hostedAllUsageGrants(ctx context.Context, credential apiCredential) bool {
+	var missing int
+	err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.organization_id=? AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.project_id=p.id AND g.user_id=?)`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&missing)
+	return err == nil && missing == 0
 }
 
 func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCredential) bool {

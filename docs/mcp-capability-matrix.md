@@ -7809,3 +7809,43 @@ Execute a browser client conversation action
 - Confirmation: browser client interaction → not_applicable
 
 Sources: [POST /api/v2/organizations/:organization/projects/:project/conversations/:conversation/actions](../internal/hubserver/conversation_api.go#L45), [web/conversation/src/app/components/InlineActionCard.tsx:25](../web/conversation/src/app/components/InlineActionCard.tsx#L25), [web/conversation/src/app/components/InlineActionCard.tsx:46](../web/conversation/src/app/components/InlineActionCard.tsx#L46)
+## hubserver.import_sprite_usage
+
+Import sanitized Sprite infrastructure usage
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Administrator ingestion through the shared Hub usage transaction. Provider credentials and invoices are not tool inputs. Source-period revisions and native business receipts make API and MCP retries idempotent; overlapping sources are rejected.
+- Tool: `projects.import_sprite_usage` — Typed bounded arguments in internal/operatortool/projects.go; organization and principal come from current connection authority. → Native import receipt with recorded observation count; MCP wraps the receipt in the existing action result.
+- Authority: role Project reader for project totals; administrator for organization totals and imports; credential Current API or MCP credential with read authority for reports and admin authority for import; project Current project grant is rechecked by the application; organization reports require all current project grants; ownership Current organization; original project and provider resource attribution retained in source revisions.
+- Application: Service.importSpriteUsageCommand; recordCostObservation
+- Extraction: Shared application owner used directly by API and typed MCP adapters.
+- Preconditions: Administrator ingestion through the shared Hub usage transaction. Provider credentials and invoices are not tool inputs. Source-period revisions and native business receipts make API and MCP retries idempotent; overlapping sources are rejected.; No visible UI or provider credential access. UTC calendar month and explicit evidence, coverage and freshness.
+- Coverage: TestSpriteUsageAPI; TestHostedMonthlyCostsAccess; TestCostLedgerReplay; TestCostLedgerScopeIsolation
+- Proposed hints: readOnly=false; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / Hub usage application owner
+- Availability: hosted_dedicated / github,native / Hub usage application owner
+- Availability: hosted_shared / github,native / Hub usage application owner
+- Availability: credential_maintenance / github,native / Hub usage application owner — unavailable: Usage routes are not registered in credential maintenance deployments.
+- Confirmation: Current authorized call; confirmation is owned by the client → none
+
+Sources: [POST /api/v2/organizations/:organization/projects/:project/usage/sprites](../internal/hubserver/sprite_usage_api.go#L41)
+## hubserver.monthly_usage_costs
+
+Monthly usage cost ledger reads
+
+- Audience: operator; status: **implemented**; owner: digitaldrywood/detent#3345.
+- Decision: Scope project requires its current read grant. Scope organization requires administrator access and grants to every current project. Reads preserve historical project attribution and use the same UTC monthly contract.
+- Tool: `projects.monthly_usage_costs` — Typed bounded arguments in internal/operatortool/projects.go; organization and principal come from current connection authority. → Monthly report with original sources, project breakdown, separate estimated/billed currency totals and coverage gaps.
+- Authority: role Project reader for project totals; administrator for organization totals and imports; credential Current API or MCP credential with read authority for reports and admin authority for import; project Current project grant is rechecked by the application; organization reports require all current project grants; ownership Current organization; original project and provider resource attribution retained in source revisions.
+- Application: database.monthlyCosts; buildMonthlyCostReport
+- Extraction: Shared application owner used directly by API and typed MCP adapters.
+- Preconditions: Scope project requires its current read grant. Scope organization requires administrator access and grants to every current project. Reads preserve historical project attribution and use the same UTC monthly contract.; No visible UI or provider credential access. UTC calendar month and explicit evidence, coverage and freshness.
+- Coverage: TestSpriteUsageAPI; TestHostedMonthlyCostsAccess; TestCostLedgerReplay; TestCostLedgerScopeIsolation
+- Proposed hints: readOnly=true; destructive=false; idempotent=true; openWorld=false. Authorization/confirmation still apply.
+- Availability: self_hosted / github,native / Hub usage application owner
+- Availability: hosted_dedicated / github,native / Hub usage application owner
+- Availability: hosted_shared / github,native / Hub usage application owner
+- Availability: credential_maintenance / github,native / Hub usage application owner — unavailable: Usage routes are not registered in credential maintenance deployments.
+- Confirmation: Current authorized call; confirmation is owned by the client → none
+
+Sources: [GET /api/v2/organizations/:organization/usage/monthly](../internal/hubserver/sprite_usage_api.go#L40), [GET /api/v2/organizations/:organization/projects/:project/usage/monthly](../internal/hubserver/sprite_usage_api.go#L39)

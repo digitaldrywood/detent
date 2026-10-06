@@ -31,7 +31,7 @@ func projectToolScope(name string, read bool) apikey.Scope {
 		return apikey.ScopeRead
 	}
 	switch name {
-	case "apply_local_project_policy", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret":
+	case "apply_local_project_policy", "drain_local_project", "detach_local_project", "command_git_hub_batch", "create_native_project", "create_hosted_project", "update_project_integration", "bind_native_repository", "cutover_project", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "import_sprite_usage":
 		return apikey.ScopeAdmin
 	}
 	return apikey.ScopeWrite
@@ -101,6 +101,9 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 	}
 	if d.Meta.Toolset != "projects" {
 		return operatortool.NewAuthorizedExecutor(nil).Execute(ctx, call)
+	}
+	if call.Name == "monthly_usage_costs" {
+		return e.monthlyUsageCosts(ctx, call.Arguments)
 	}
 	if d.Annotations.ReadOnly {
 		return e.read(ctx, call)
@@ -296,6 +299,27 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 	var projectID, requestID, resourceID string
 	feature := "collaboration"
 	switch call.Name {
+	case "import_sprite_usage":
+		r, err := projectCommandInput[operatortool.SpriteUsageInput](call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		if !canManageProjectSecrets(scope.credential) {
+			return nil, operatortool.ErrAccessDenied
+		}
+		request := spriteUsageRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, Observations: r.Input.Observations}
+		if err := validateSpriteUsageRequest(&request, s.config.now()); err != nil {
+			return nil, operatortool.ErrInvalidArguments
+		}
+		if mode == projectCommandPreview {
+			return nil, nil
+		}
+		scope.project, scope.requireHostedAdmin = tracker.ProjectID(r.ProjectID), true
+		if mode == projectCommandReplay {
+			raw, _, err := s.nativeCommandReplay(ctx, scope, "sprite_usage.import", r.RequestID, request)
+			return raw, err
+		}
+		return s.importSpriteUsageCommand(ctx, scope, request)
 	case "create_native_project":
 		if s.config.Hosted != nil {
 			return nil, errProjectServiceUnavailable

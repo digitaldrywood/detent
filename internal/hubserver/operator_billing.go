@@ -294,6 +294,10 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			if err != nil {
 				return result, err
 			}
+			if data.MonthlyCosts != nil {
+				bounded := boundedMonthlyCostDetails(*data.MonthlyCosts)
+				data.MonthlyCosts = &bounded
+			}
 			return billingResult(struct {
 				GeneratedAt time.Time   `json:"generated_at"`
 				Report      usageReport `json:"report"`
