@@ -29,6 +29,7 @@ import {
 } from "./PlatformConsole.tsx";
 import { usePageTitle } from "../pageTitle.ts";
 import { PlatformAuditPage } from "./PlatformAudit.tsx";
+import { PlatformAccountsPage } from "./PlatformAccounts.tsx";
 
 function useGo(): (to: string) => void {
   const navigate = useNavigate();
@@ -55,6 +56,7 @@ export const ENTRY_ROUTE_PATHS = [
   "/organizations/$organization/provisioning",
   "/platform",
   "/platform/tenants",
+  "/platform/accounts",
   "/platform/staff",
   "/platform/audit",
   "/platform/health",
@@ -81,6 +83,7 @@ const platformRoutes = platformRoute.addChildren([
     validateSearch: (search: Record<string, unknown>) => ({ tenant: typeof search.tenant === "string" ? search.tenant : undefined }),
     component: PlatformTenantsPage,
   }),
+  createRoute({ getParentRoute: () => platformRoute, path: "/accounts", component: PlatformAccountsPage }),
   createRoute({
     getParentRoute: () => platformRoute,
     path: "/staff",

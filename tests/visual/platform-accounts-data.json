@@ -1,0 +1,26 @@
+{
+  "accounts": [
+    {
+      "email": "michael@example.test",
+      "subject": "user_01HX_michael",
+      "platform_role": "support",
+      "last_sign_in_at": "2026-10-06T14:02:00Z",
+      "memberships": [
+        { "organization_id": "org_parable", "organization_name": "Parable", "role": "owner", "joined_at": "2026-09-28T10:00:00Z" },
+        { "organization_id": "org_drywood", "organization_name": "Drywood Creek", "role": "member", "joined_at": "2026-10-01T10:00:00Z" }
+      ],
+      "invitations": [
+        { "organization_id": "org_example", "organization_name": "Example Co", "expires_at": "2026-10-13T12:00:00Z" }
+      ]
+    },
+    {
+      "email": "cory+detent-prod-test@example.test",
+      "subject": "user_01HX_cory",
+      "platform_role": "",
+      "last_sign_in_at": "2026-09-30T11:50:00Z",
+      "memberships": [],
+      "invitations": []
+    }
+  ],
+  "unsearched": [{ "organization_id": "org_timeout", "organization_name": "Slow Tenant" }]
+}

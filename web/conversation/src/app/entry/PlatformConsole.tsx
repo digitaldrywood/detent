@@ -1,6 +1,6 @@
 import React from "react";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { Activity, Building2, ChevronDown, ListChecks, ScrollText, Users } from "lucide-react";
+import { Activity, Building2, ChevronDown, ListChecks, ScrollText, Users, UserSearch } from "lucide-react";
 
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../../components/ui/menu.tsx";
 import {
@@ -142,6 +142,7 @@ export function PlatformHealthPanel({ value }: { readonly value: PlatformHealth 
 
 const PLATFORM_SECTIONS = [
   { id: "tenants", title: "Tenants", icon: Building2 },
+  { id: "accounts", title: "Accounts", icon: UserSearch },
   { id: "staff", title: "Staff", icon: Users },
   { id: "audit", title: "Audit", icon: ScrollText },
   { id: "health", title: "Health", icon: Activity },
