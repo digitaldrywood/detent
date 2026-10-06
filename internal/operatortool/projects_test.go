@@ -24,6 +24,10 @@ func TestProjectArgumentBounds(t *testing.T) {
 		{"negative issue", `{"input":{"issue_number":-1}}`, func() any { return &ProjectRequest[ImportStartInput]{} }, true},
 		{"too many states", `{"input":{"states":[` + strings.TrimSuffix(strings.Repeat(`{},`, 201), ",") + `]}}`, func() any { return &ProjectRequest[ProjectCreateInput]{} }, true},
 		{"too many intake numbers", `{"input":{"numbers":[` + strings.TrimSuffix(strings.Repeat(`1,`, 201), ",") + `]}}`, func() any { return &ProjectRequest[GitHubBatchInput]{} }, true},
+		{"authored files", `{"input":{"policy":{"authored":{"files":{"AGENTS.md":"Preserve policy authority."}}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
+		{"long authored file", `{"input":{"policy":{"authored":{"files":{"AGENTS.md":"` + strings.Repeat("x", 3000) + `"}}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
+		{"null authored file", `{"input":{"policy":{"authored":{"files":{"AGENTS.md":null}}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, true},
+		{"oversized authored file", `{"input":{"policy":{"authored":{"files":{"AGENTS.md":"` + strings.Repeat("x", MaxArgumentBytes) + `"}}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, true},
 		{"behavior object", `{"input":{"policy":{"configuration":{"behavior":{"Budget":{"PerIssueMaxUSD":0.25},"ActiveStates":null,"AllowLocalBinding":null},"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
 		{"behavior array", `{"input":{"policy":{"configuration":{"behavior":[{"enabled":true},null,0.25],"prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
 		{"behavior string", `{"input":{"policy":{"configuration":{"behavior":"` + strings.Repeat("x", 257) + `","prompt":"work"}}}}`, func() any { return &ProjectRequest[PolicyApprovalInput]{} }, false},
@@ -55,6 +59,11 @@ func TestProjectArgumentBounds(t *testing.T) {
 			input := properties(schema, "input")
 			descriptor := properties(input, "policy")
 			configuration := properties(descriptor, "configuration")
+			files := properties(properties(descriptor, "authored"), "files")
+			file := files["additionalProperties"].(map[string]any)
+			if files["type"] != "object" || file["type"] != "string" || file["maxLength"] != float64(MaxArgumentBytes) {
+				t.Fatal("authored files discovery must describe bounded source content")
+			}
 			if len(properties(configuration, "behavior")) != 0 {
 				t.Fatal("policy behavior must allow any JSON value")
 			}
