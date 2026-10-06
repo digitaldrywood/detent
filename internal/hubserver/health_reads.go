@@ -14,9 +14,10 @@ import (
 )
 
 type healthFindingsPage struct {
-	Items      []healthFinding `json:"items"`
-	NextCursor string          `json:"next_cursor,omitempty"`
-	LastTickAt *time.Time      `json:"last_tick_at"`
+	BaselineUnavailable []healthBaselineUnavailable `json:"baseline_unavailable"`
+	Items               []healthFinding             `json:"items"`
+	NextCursor          string                      `json:"next_cursor,omitempty"`
+	LastTickAt          *time.Time                  `json:"last_tick_at"`
 }
 
 func (s *Service) getHealthFindings(c echo.Context) error {
@@ -36,7 +37,7 @@ func (s *Service) getHealthFindings(c echo.Context) error {
 }
 
 func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, state, since, cursor string, limit int) (healthFindingsPage, error) {
-	page := healthFindingsPage{Items: []healthFinding{}}
+	page := healthFindingsPage{Items: []healthFinding{}, BaselineUnavailable: []healthBaselineUnavailable{}}
 	if state == "" {
 		state = "open"
 	}
@@ -110,14 +111,22 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 			}
 			f.ResolvedAt = &at
 		}
+		if len(f.Evidence.Queues) > 0 {
+			queue, ok := f.Evidence.Queues[string(scope.project)]
+			f.Evidence.Queues = map[string]healthQueueEvidence{}
+			if ok {
+				f.Evidence.Queues[string(scope.project)] = queue
+				f.Evidence.Counts["queue_depth"] = queue.QueueDepth
+			}
+		}
 		page.Items = append(page.Items, f)
 		last = rowid
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return page, err
 	}
-	var tick string
-	err = s.database.db.QueryRowContext(ctx, "SELECT last_tick_at FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick)
+	var tick, unavailable string
+	err = s.database.db.QueryRowContext(ctx, "SELECT last_tick_at,baseline_unavailable_json FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick, &unavailable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return page, nil
 	}
@@ -127,6 +136,15 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	at, err := parseTimeValue(tick)
 	if err != nil {
 		return page, err
+	}
+	var gaps []healthBaselineUnavailable
+	if err := json.Unmarshal([]byte(unavailable), &gaps); err != nil {
+		return page, err
+	}
+	for _, gap := range gaps {
+		if gap.Project == string(scope.project) {
+			page.BaselineUnavailable = append(page.BaselineUnavailable, gap)
+		}
 	}
 	page.LastTickAt = &at
 	return page, nil

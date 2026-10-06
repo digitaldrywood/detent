@@ -145,6 +145,8 @@ func TestHealthFindingsReads(t *testing.T) {
 	}{{"first", f.project.ID}, {"second", f.project.ID}, {"hidden", other.project.ID}} {
 		findings = append(findings, newHealthFinding("test", "instance", "project", test.id, "Summary.", "The operator acts.", []string{string(test.project)}, healthEvidence{}))
 	}
+	findings[0].Projects = append(findings[0].Projects, string(other.project.ID))
+	findings[0].Evidence = healthEvidence{Counts: map[string]int{"queue_depth": 8}, Queues: map[string]healthQueueEvidence{string(f.project.ID): {QueueDepth: 3}, string(other.project.ID): {QueueDepth: 5}}}
 	applyTestHealth(t, f, now, findings)
 	for _, test := range []struct {
 		name, path string
@@ -169,6 +171,11 @@ func TestHealthFindingsReads(t *testing.T) {
 			}
 			var page healthFindingsPage
 			decodeHubResponse(t, response, &page)
+			for _, finding := range page.Items {
+				if len(finding.Evidence.Queues) > 0 && (len(finding.Evidence.Queues) != 1 || finding.Evidence.Queues[string(f.project.ID)].QueueDepth != 3 || finding.Evidence.Counts["queue_depth"] != 3) {
+					t.Fatalf("queue evidence escaped project scope: %+v", finding)
+				}
+			}
 			if len(page.Items) != test.count || page.LastTickAt == nil || !page.LastTickAt.Equal(now) {
 				t.Fatalf("page=%+v", page)
 			}
