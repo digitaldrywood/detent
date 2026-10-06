@@ -338,8 +338,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "external secondary quota 429", method: "merge", external: true, failureMethod: "GET", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if test.gitReadFailure != "" && runtime.GOOS == "windows" {
-				t.Skip("Git command fault injection requires a POSIX shell")
+			if (test.gitReadFailure != "" || test.combinedGateFailure || test.baseMovesDuringGate) && runtime.GOOS == "windows" {
+				t.Skip("Git command fault injection and shell gate fixtures require a POSIX shell")
 			}
 			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 			fixture := newLandingFixture(t)

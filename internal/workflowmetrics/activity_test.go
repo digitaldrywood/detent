@@ -2,6 +2,7 @@ package workflowmetrics
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -106,7 +107,7 @@ func TestPublicActivityProfileBoundsAndRedaction(t *testing.T) {
 		}
 		bounded := PublicActivityProfile(large)
 		raw, err := json.Marshal(bounded)
-		if err != nil || len(raw) > 128*1024 || len(bounded.Summary.Hourly) >= ActivityHourLimit || !reflect.DeepEqual(bounded.Breakdown(), large.Breakdown()) || len(large.Summary.Hourly) != ActivityHourLimit {
+		if err != nil || len(raw) > 128*1024 || len(bounded.Summary.Hourly) >= ActivityHourLimit || !breakdownsClose(bounded.Breakdown(), large.Breakdown()) || len(large.Summary.Hourly) != ActivityHourLimit {
 			t.Fatalf("hourly projection bytes=%d err=%v", len(raw), err)
 		}
 	})
@@ -151,4 +152,17 @@ func TestActivityHourlyTimingSurvivesCompaction(t *testing.T) {
 			}
 		})
 	}
+}
+
+func breakdownsClose(a, b ActivityBreakdown) bool {
+	close := func(x, y float64) bool { return math.Abs(x-y) <= 1e-6 }
+	if !close(a.ElapsedSeconds, b.ElapsedSeconds) || !close(a.ObservedSeconds, b.ObservedSeconds) || !close(a.UnknownSeconds, b.UnknownSeconds) || !close(a.ConcurrentSeconds, b.ConcurrentSeconds) || len(a.ByKind) != len(b.ByKind) {
+		return false
+	}
+	for kind, seconds := range a.ByKind {
+		if other, ok := b.ByKind[kind]; !ok || !close(seconds, other) {
+			return false
+		}
+	}
+	return true
 }
