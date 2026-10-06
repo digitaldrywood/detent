@@ -2262,7 +2262,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if req.Issue.PullRequest != nil {
 			expectedRemoteHead = req.Issue.PullRequest.HeadSHA
 		}
-		result, turnErr = r.verifyMergeFallback(ctx, runWorkspace, info, workspaceIssue, workspace.MergePrepareOptions{
+		result, turnErr = r.verifyMergeFallback(context.WithoutCancel(ctx), runWorkspace, info, workspaceIssue, workspace.MergePrepareOptions{
 			TargetBranch:       targetBranch,
 			VerifyResolution:   true,
 			ValidationCommand:  gate.Effective(workflow.Config.Gate).Run,
@@ -2311,6 +2311,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		r.logWorkerEvent(req.Issue, "worker_command_finished", commandFinishedAttrs...)
 	}
 	afterRunPending = false
+	afterRunCtx := ctx
+	afterRunCancel := func() {}
+	if turnErr == nil {
+		afterRunCtx, afterRunCancel = context.WithTimeoutCause(context.WithoutCancel(ctx), r.afterRunTimeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	}
+	defer afterRunCancel()
 	req.retainCheckpoint = turnErr != nil && (req.Execution != nil || result.Checkpoint != nil)
 	req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil
 	if errors.Is(turnErr, ErrWorkerProcessReap) {
@@ -2325,7 +2331,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			"error", turnErr,
 		)
 	} else {
-		if err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}, result.TurnStarted); err != nil {
+		if err := r.afterExecution(afterRunCtx, req, runWorkspace, info, workspaceIssue, AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}, result.TurnStarted); err != nil {
 			turnErr = errors.Join(turnErr, err)
 		}
 		r.logWorkerEvent(req.Issue, "worker_after_run_finished",
@@ -2334,8 +2340,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			"workspace_path", info.Path,
 		)
 	}
+	finalizationCtx := ctx
+	finalizationCancel := func() {}
+	if turnErr == nil {
+		finalizationCtx, finalizationCancel = context.WithTimeoutCause(context.WithoutCancel(ctx), r.afterRunTimeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	}
+	defer finalizationCancel()
 	if mode == RunModeImplement && workflow.Config.Deliverable.Kind == config.DeliverableArtifact {
-		finalArtifactEvidence := r.observeWorkspaceArtifactEvidence(runWorkspace, context.WithoutCancel(ctx), info, workspaceIssue, "final")
+		finalArtifactEvidence := r.observeWorkspaceArtifactEvidence(runWorkspace, finalizationCtx, info, workspaceIssue, "final")
 		result.ArtifactEvidence = artifactProgressEvidence(initialArtifactEvidence, finalArtifactEvidence)
 	}
 
@@ -2348,7 +2360,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		)
 	}
 
-	diffStat, err := runWorkspace.DiffStat(ctx, info, workspaceIssue)
+	diffStat, err := runWorkspace.DiffStat(finalizationCtx, info, workspaceIssue)
 	if err != nil {
 		if workspace.IsMissingWorkspaceError(err) {
 			r.logger.Info(
@@ -2378,7 +2390,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	if mode == RunModeImplement {
 		_, result.DiffStats.RecoveryStateExpected = runWorkspace.(workspace.RecoveryStateProvider)
-		if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "final"); recoveryState != nil {
+		if recoveryState := r.workspaceRecoveryState(runWorkspace, finalizationCtx, info, workspaceIssue, "final"); recoveryState != nil {
 			applyRecoveryState(&result.DiffStats, recoveryState)
 		}
 	}

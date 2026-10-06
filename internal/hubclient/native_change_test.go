@@ -1008,6 +1008,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		land           bool
 		commit         bool
 		staged         bool
+		expired        bool
 		signingFail    bool
 		lateConflict   bool
 		advanceTarget  bool
@@ -1035,6 +1036,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "commits", commit: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "initial interactive code stays conversation owned", interactive: true, staged: true, wantNone: true, wantState: "In Progress"},
 		{name: "host commits staged code", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
+		{name: "expired parent publishes completed staged code", expired: true, staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
+		{name: "expired parent publishes with native validation", expired: true, staged: true, validator: "pass", land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "expired parent publishes completed Rework commits", expired: true, rework: true, formal: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "ordinary staged code reaches landing", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "successful base moved wait reclaims the reviewed unlanded version", staged: true, land: true, baseMoved: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "hosted template commits reach Human Review", hosted: true, commit: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
@@ -1462,7 +1466,18 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				defer closePeers()
 				runExecution = remote
 			}
-			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: runExecution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			runCtx, cancelRun := context.WithCancelCause(t.Context())
+			defer cancelRun(context.Canceled)
+			if test.expired {
+				provider.afterTurn = func() { cancelRun(context.DeadlineExceeded) }
+			}
+			result, err := agent.Run(runCtx, runner.RunRequest{Execution: runExecution, DeferExecutionFinish: test.failVersion, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			if test.expired {
+				evidence, readErr := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+				if !errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || readErr != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" {
+					t.Fatalf("completed turn lost after parent expiry: attempt=%+v error=%v", evidence.Attempt, readErr)
+				}
+			}
 			if test.ssh && err == nil {
 				result.NativeChange = execution.(runner.ChangeExecution).NativeChange()
 			}
@@ -2008,6 +2023,7 @@ type committingAgent struct {
 	calls          int
 	bound          bool
 	duringTurn     func()
+	afterTurn      func()
 }
 
 func (a *committingAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, tools []runner.AgentTool, handler runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
@@ -2032,6 +2048,9 @@ func (a *committingAgent) RunTurnWithTools(ctx context.Context, request runner.A
 func (*committingAgent) SupportsLiveControl() bool { return true }
 
 func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if a.afterTurn != nil {
+		defer a.afterTurn()
+	}
 	a.calls++
 	if strings.Contains(request.Prompt, "Detent validator-agent") {
 		if request.Resume.ThreadID != "" || request.Resume.SessionID != "" || !request.ReadOnly || !strings.Contains(request.Prompt, "Reviewed native version:") {
