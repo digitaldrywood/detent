@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"gopkg.in/yaml.v3"
@@ -125,7 +126,13 @@ func MigrateTrackerLanes(raw []byte, laneOrder ...string) ([]byte, bool, error) 
 }
 
 func MigrateTrackerLanesFile(path string) (bool, error) {
-	raw, err := os.ReadFile(path)
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	name := filepath.Base(path)
+	raw, err := root.ReadFile(name)
 	if err != nil {
 		return false, err
 	}
@@ -133,11 +140,11 @@ func MigrateTrackerLanesFile(path string) (bool, error) {
 	if err != nil || !changed {
 		return false, err
 	}
-	info, err := os.Stat(path)
+	info, err := root.Stat(name)
 	if err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(path, out, info.Mode().Perm()); err != nil {
+	if err := root.WriteFile(name, out, info.Mode().Perm()); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -15,16 +16,35 @@ func TestConfigMigrateCommand(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, filename, raw string
+		symlinkTarget       string
 		fails               bool
 	}{
-		{"yaml", "detent.yaml", "schema: 1\ntracker:\n  observed_states: [Backlog, Blocked]\n  active_states: [Todo]\n  terminal_states: [Done]\n", false},
-		{"frontmatter", "WORKFLOW.md", "---\ntracker:\n  active_states: [Todo]\n---\nKeep this prompt.\n", false},
-		{"invalid legacy", "detent.yaml", "schema: 1\ntracker:\n  active_states: [Todo, '']\n", true},
-		{"mixed", "detent.yaml", "schema: 1\ntracker:\n  lanes: []\n  active_states: []\n", true},
+		{"yaml", "detent.yaml", "schema: 1\ntracker:\n  observed_states: [Backlog, Blocked]\n  active_states: [Todo]\n  terminal_states: [Done]\n", "", false},
+		{"frontmatter", "WORKFLOW.md", "---\ntracker:\n  active_states: [Todo]\n---\nKeep this prompt.\n", "", false},
+		{"invalid legacy", "detent.yaml", "schema: 1\ntracker:\n  active_states: [Todo, '']\n", "", true},
+		{"mixed", "detent.yaml", "schema: 1\ntracker:\n  lanes: []\n  active_states: []\n", "", true},
+		{"contained symlink", "detent.yaml", "schema: 1\ntracker:\n  active_states: [Todo]\n", "config/workflow.yaml", false},
+		{"escaping symlink", "detent.yaml", "schema: 1\ntracker:\n  active_states: [Todo]\n", "../workflow.yaml", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), test.filename)
-			if err := os.WriteFile(path, []byte(test.raw), 0o600); err != nil {
+			path := filepath.Join(t.TempDir(), "project", test.filename)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			target := path
+			if test.symlinkTarget != "" {
+				target = filepath.Join(filepath.Dir(path), test.symlinkTarget)
+				if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(test.symlinkTarget, path); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skipf("symlinks unavailable: %v", err)
+					}
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(target, []byte(test.raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			cmd := NewRootCommand(context.Background())
