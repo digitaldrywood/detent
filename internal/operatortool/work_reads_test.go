@@ -15,6 +15,8 @@ func TestWorkReadArguments(t *testing.T) {
 		valid           bool
 	}{
 		{"list default", WorkList, `{"project_id":"project"}`, true},
+		{"open fingerprint search", WorkList, `{"project_id":"project","fingerprint":"canonical","open":true,"limit":2}`, true},
+		{"nonboolean open", WorkList, `{"project_id":"project","open":"true"}`, false},
 		{"search", WorkList, `{"project_id":"project","query":"needle","limit":2,"offset":3}`, true},
 		{"native filters and projection", WorkList, `{"project_id":"project","archived":"all","states":["Todo","Done"],"labels":["bug"],"assignees":["operator"],"priorities":[0,3],"include":["work","workspace"]}`, true},
 		{"native singleton filters", WorkList, `{"project_id":"project","assignee":"operator","priority":0,"archived":"false"}`, true},

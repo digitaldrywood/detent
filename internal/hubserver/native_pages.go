@@ -128,7 +128,7 @@ func validateNativeIssueQuery(params url.Values) error {
 			single[key] = values
 		}
 	}
-	return validateNativeQuery(single, "include", "archived", "q")
+	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint")
 }
 
 // parseNativeIssueIncludes reads the include query and reports whether it asks
@@ -199,6 +199,20 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	case "all":
 	default:
 		return tracker.NativeIssuePage{}, nativeInvalid("archived must be true, false or all")
+	}
+	switch params.Get("open") {
+	case "":
+	case "true":
+		query += " AND ws.terminal = 0"
+	case "false":
+		query += " AND ws.terminal = 1"
+	default:
+		return tracker.NativeIssuePage{}, nativeInvalid("open must be true or false")
+	}
+	if value := strings.TrimSpace(params.Get("fingerprint")); value != "" {
+		query += " AND (instr(i.body, ?) > 0 OR EXISTS (SELECT 1 FROM native_comments c WHERE c.work_item_id = i.native_id AND instr(c.body, ?) > 0))"
+		marker := "\nfingerprint: " + value + "\n"
+		args = append(args, marker, marker)
 	}
 	if !includeWorkspace {
 		// Workspace items hold a worktree open for a person's surfaces, not

@@ -250,6 +250,7 @@ func TestCloudReport(t *testing.T) {
 		name, log, laterLog, lost, fail string
 		imported, green, foreign        bool
 		legacyReplay                    bool
+		worker                          bool
 		markerReplay                    bool
 		finalizerFailed                 bool
 		priority                        *int
@@ -259,6 +260,7 @@ func TestCloudReport(t *testing.T) {
 		wantItems, wantWrites           int
 		wantEdits, wantErrors           int
 	}{
+		{name: "worker Backlog owner retains lane", worker: true, log: diagnostic, wantItems: 1, wantWrites: 4},
 		{name: "source problem replay", log: diagnostic, wantItems: 2, wantWrites: 4},
 		{name: "source lint replay", log: lintDiagnostic, wantItems: 2, wantWrites: 4},
 		{name: "recorded gosec replay", log: gosecDiagnostic, wantItems: 2, wantWrites: 4},
@@ -297,6 +299,13 @@ func TestCloudReport(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := &fakeCloud{lost: tt.lost, fail: tt.fail, conflict: tt.conflict}
+			if tt.worker {
+				body := issueorigin.Stamp("Worker evidence:\n"+diagnostic, issueorigin.Origin{Kind: "worker", Source: "worker-attempt", Fingerprint: "different-worker-wording"})
+				item := cloudItem("wi_worker", 1, body)
+				item.State = "Backlog"
+				item.Priority = new(1)
+				f.items = []tracker.NativeIssue{item}
+			}
 			if tt.imported {
 				f.items = []tracker.NativeIssue{cloudItem("wi_unrelated", 1, "Operator work"), cloudItem("wi_imported", 2, "Imported body edited by operator")}
 				f.items[1].State = "Blocked"
@@ -369,6 +378,9 @@ func TestCloudReport(t *testing.T) {
 			}
 			if len(gh.created) != 0 || len(gh.comments) != 0 {
 				t.Fatal("native report wrote to GitHub")
+			}
+			if tt.worker && f.items[0].State != "Backlog" {
+				t.Fatal("scheduled occurrence moved the worker owner")
 			}
 			if tt.imported {
 				state := tt.holdState

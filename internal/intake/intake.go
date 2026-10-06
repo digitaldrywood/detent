@@ -39,6 +39,7 @@ type Event struct {
 }
 
 type Issue struct {
+	State      string `json:"state,omitempty"`
 	Reused     bool   `json:"-"`
 	ID         string `json:"id,omitempty"`
 	Identifier string `json:"identifier,omitempty"`

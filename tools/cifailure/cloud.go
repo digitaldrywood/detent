@@ -20,7 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const scheduledCloudProject = "prj_6d4919bebd73446798e6cd807feda10e"
+const scheduledCloudProject = issueorigin.DetentCloudProjectID
 
 type cloudCommand func(context.Context, string, map[string]any, any) error
 
@@ -176,7 +176,7 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 				continue
 			}
 			sameJob := currentName != "" && scheduledJob(previous) == currentName && origin.Kind == "doctor" && origin.Instance == "github-actions" && strings.HasPrefix(origin.Source, runPrefix+"/actions/runs/")
-			if origin.Fingerprint != fingerprint && !sameJob {
+			if !issueorigin.SameDefect(previous, body) && !sameJob {
 				continue
 			}
 			if origin.Source == currentOrigin.Source && currentJob != "" && jobEvidence(previous) == currentJob {
@@ -222,6 +222,8 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 
 func (c *cloudDestination) updateFailure(ctx context.Context, issue *cloudIssue, key string, labels []string) error {
 	const high = 1
+	origin, _ := issueorigin.Parse(issue.item.Body)
+	promote := issue.item.State == "Backlog" && origin.Kind != "worker"
 	args := map[string]any{"project_id": c.project, "identifier": string(issue.item.WorkItemID), "request_id": "scheduled-priority-" + key, "expected_revision": int64(issue.item.Revision)}
 	if issue.item.Priority == nil || *issue.item.Priority > high {
 		args["priority"] = high
@@ -229,7 +231,7 @@ func (c *cloudDestination) updateFailure(ctx context.Context, issue *cloudIssue,
 	if slices.Contains(labels, "ci-infrastructure-failure") && !slices.Contains(issue.item.Labels, "ci-infrastructure-failure") {
 		args["labels"] = append(slices.Clone(issue.item.Labels), "ci-infrastructure-failure")
 	}
-	if len(args) > 4 || issue.item.State == "Backlog" {
+	if len(args) > 4 || promote {
 		if issue.item.Revision <= 0 {
 			return errors.New("scheduled failure update has no observed native revision")
 		}
@@ -249,7 +251,7 @@ func (c *cloudDestination) updateFailure(ctx context.Context, issue *cloudIssue,
 		}
 		issue.item.Revision = result.Revision
 	}
-	if issue.item.State == "Backlog" {
+	if promote {
 		args = map[string]any{"project_id": c.project, "identifier": string(issue.item.WorkItemID), "request_id": "scheduled-todo-" + key, "expected_revision": int64(issue.item.Revision), "target_state": "Todo"}
 		var moved struct {
 			Data tracker.NativeIssue `json:"data"`

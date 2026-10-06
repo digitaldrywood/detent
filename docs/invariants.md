@@ -211,10 +211,15 @@ The worker's `file_machine_issue` tool accepts integer priority ranks 1–4
 it. A fingerprint match may raise unset or weaker priority through the existing
 mutation owner; it never lowers stronger priority, replaces origin or content,
 removes operator holds, changes lanes or authorizes admission. Host-owned
-worker intake requires the current runner's scoped lease and creates Backlog
-work; it does not inherit the scheduled reporting authority in INV-5.
+worker intake requires the current runner's scoped lease. Reproducible tests, source diagnostics
+and migration failures in the selected Detent Cloud project share the scheduled
+reporting owner and host-derived defect identity, entering Todo at least High.
+Other worker follow-ups remain Backlog. Reuse preserves existing lanes, holds
+and scheduled job origin stamps.
 
 **Enforcement:** `TestMachineIssueTool` in `internal/orchestrator`;
+`TestNativeMachineDefectOccurrences` in `internal/hubserver` and
+`TestDefectFingerprint` in `internal/issueorigin`;
 `TestMachineIssueDuplicate`, `TestMachineIssueSeparateConnectors`,
 `TestMachineOriginSurvivesBodyUpdates`,
 `TestConnectorFindIntakeIssueSearchesDurableMarker`, and
