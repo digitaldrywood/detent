@@ -4,6 +4,7 @@ import "github.com/digitaldrywood/detent/internal/mutation"
 
 type ConflictError struct {
 	Code            string           `json:"code"`
+	Message         string           `json:"message,omitempty"`
 	CurrentRevision int64            `json:"current_revision,string,omitempty"`
 	Details         *ConflictDetails `json:"details,omitempty"`
 }

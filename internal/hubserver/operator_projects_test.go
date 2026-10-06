@@ -237,8 +237,11 @@ func TestHostedProjectTools(t *testing.T) {
 				if err == nil && !strings.Contains(string(result.Content), "controlled by the repository") {
 					t.Fatalf("MCP accepted repository workflow override: %s", result.Content)
 				}
-				if err != nil && !strings.Contains(err.Error(), "controlled by the repository") {
-					t.Fatalf("MCP override refusal = %v", err)
+				if err != nil {
+					var refusal *operatortool.RequestError
+					if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "controlled by the repository") {
+						t.Fatalf("MCP override refusal = %v", err)
+					}
 				}
 				stored, readErr := readProjectIntegration(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: newProject.ID})
 				if readErr != nil || stored.Authority["workflow"] != "repository" || !reflect.DeepEqual(stored.States, states) || stored.Revision != 2 {
