@@ -398,8 +398,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "human action reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait", HumanAction: true, FinalSummary: "The operator must approve the migration."}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "instance limitation reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation", FinalSummary: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403."}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "unfinished clean source retains normalized disposition", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "in_progress"}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
+		{name: "unfinished dirty source retains normalized disposition without publication", role: runner.RoleCode, outcome: "succeeded", worktree: "dirty", finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "in_progress"}},
 		{name: "human action retains normalized disposition", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: Approve the rollout\n```", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "native272 instance report retains typed evidence", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "instance:worker-loopback", Owner: workpad.BlockerOwnerInstance, Reason: "sandbox refused listener with EPERM", Unverifiable: true}}}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
+		{name: "dirty instance report retains typed evidence without publication", role: runner.RoleCode, outcome: "succeeded", worktree: "dirty", finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "instance:worker-loopback", Owner: workpad.BlockerOwnerInstance, Reason: "sandbox refused listener with EPERM", Unverifiable: true}}}},
 		{name: "native273 malformed predicate retains rejection", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - reason: browser unavailable\n    predicate: instance_available\nhuman_action: null\n```", wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "invalid report preserves legacy receipt", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 99\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "commits open a change", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"),
@@ -1203,7 +1205,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				nativeChangeGit(t, source, "config", "commit.gpgsign", "true")
 				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
 			}
-			provider := &committingAgent{commit: test.commit, dirty: test.dirty, staged: test.staged, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed, hold: test.hold}
+			provider := &committingAgent{commit: test.commit, dirty: test.dirty, staged: test.staged, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed, hold: test.hold, inProgress: test.lateConflict}
 			var targetHead string
 			if test.advanceTarget {
 				provider.duringTurn = func() {
@@ -1325,6 +1327,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if attempt.Status != "succeeded" || attempt.Sequence != owner.data.Sequence || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != "dirty" || attempt.Checkpoint.HeadSHA != result.DiffStats.HeadSHA {
 					t.Fatalf("late conflict receipt disagrees with authentic outcome: %+v", attempt)
 				}
+				if attempt.Disposition == nil || attempt.Disposition.Status != "in_progress" || attempt.Disposition.Blockers || attempt.Disposition.HumanAction || attempt.Disposition.ReasonCode != "" {
+					t.Fatalf("late conflict did not retain an unfinished disposition: %+v", attempt.Disposition)
+				}
+				previousLease := execution.Recovery().Lease
 				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 					t.Fatal(err)
 				}
@@ -1337,6 +1343,13 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				execution = h.scheduler.RunExecution(issue.ID)
+				if execution.Recovery().Lease.ID == previousLease.ID || execution.Recovery().Lease.FencingToken == previousLease.FencingToken {
+					t.Fatal("conflict continuation reused terminal authority")
+				}
+				if execution.Recovery().Issue.Revision != recovery.Issue.Revision {
+					t.Fatal("conflict continuation fabricated an item edit")
+				}
+				provider.inProgress = false
 				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 			}
 			if !provider.bound && !test.ssh {
@@ -1707,6 +1720,7 @@ func nativeDiffHas(files []tracker.AttemptDiffFile, path string) bool {
 // file in the worktree first when commit is set.
 type committingAgent struct {
 	complete   bool
+	inProgress bool
 	hold       bool
 	lowScore   bool
 	validator  string
@@ -1766,6 +1780,9 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 		}
 	}
 	message := "Finished the native work"
+	if a.inProgress {
+		message = "Native work remains unfinished\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
+	}
 	if a.complete {
 		action := "null"
 		if a.hold {

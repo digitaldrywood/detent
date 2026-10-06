@@ -23,9 +23,12 @@ import (
 
 const maxNativeChangeTitle = 512
 
+func (e *nativeExecution) ownsIssueCompletion() bool {
+	return !e.conversationContinuation && (e.role == runner.RoleCode || e.role == runner.RoleRework)
+}
+
 func (e *nativeExecution) ownsChangeCompletion() bool {
-	return !e.conversationContinuation && (e.role == runner.RoleCode || e.role == runner.RoleRework) &&
-		e.worktreeState != "dirty"
+	return e.ownsIssueCompletion() && e.worktreeState != "dirty"
 }
 
 func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int64) error {
