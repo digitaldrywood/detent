@@ -260,11 +260,13 @@ func (c *commentRecordedBlockerConnector) FetchIssueComments(context.Context, co
 
 func TestDispatchLoadsRecordedBlockerComments(t *testing.T) {
 	for _, tt := range []struct {
-		name      string
-		readError bool
+		name              string
+		readError         bool
+		nativeDisposition bool
 	}{
 		{name: "Todo comments omitted by state read"},
 		{name: "comment read unavailable", readError: true},
+		{name: "native disposition survives comment refresh", nativeDisposition: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}})
@@ -276,6 +278,11 @@ func TestDispatchLoadsRecordedBlockerComments(t *testing.T) {
 			tracker := &commentRecordedBlockerConnector{blockerEvidenceTestConnector: &blockerEvidenceTestConnector{dependencyAutoUnblockConnector: &dependencyAutoUnblockConnector{blockers: []connector.Issue{blocker}}}, comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: digitaldrywood/detent#2635\n    reason: waiting for PR\n    owner: orchestrator\n    predicate:\n      type: pull_request_state\n      states: [open]\n    recheck_interval: tick\nhuman_action: null\n```"}}}
 			if tt.readError {
 				tracker.commentErr = errors.New("comment service unavailable")
+			}
+			if tt.nativeDisposition {
+				issue.WorkpadSignal, _ = workpad.SignalFromComment(tracker.comments[0].Body, "", "digitaldrywood/detent")
+				issue.Metadata = map[string]string{"hub_disposition_attempt_id": "blocked-attempt"}
+				tracker.comments = nil
 			}
 			o := Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1)}
 			state := newState(cfg)

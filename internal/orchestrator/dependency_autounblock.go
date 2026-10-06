@@ -459,8 +459,10 @@ func (o *Orchestrator) refreshDependencyAutoUnblockComments(ctx context.Context,
 		return connector.Issue{}, err
 	}
 	issue.Comments = comments
-	issue.WorkpadSignal = nil
-	issue.BlockerReason = ""
+	if issue.Metadata["hub_disposition_attempt_id"] == "" {
+		issue.WorkpadSignal = nil
+		issue.BlockerReason = ""
+	}
 	issue.WorkpadSignal, _ = rawIssueWorkpadSignal(issue)
 	return o.issueWithDependencyRefs(issue), nil
 }
