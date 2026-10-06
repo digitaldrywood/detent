@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -281,6 +282,7 @@ type appBootstrapOrganization struct {
 }
 
 type appBootstrapActor struct {
+	PlatformRole     string `json:"platform_role"`
 	PrincipalID      string `json:"principal_id"`
 	Subject          string `json:"subject"`
 	Email            string `json:"email"`
@@ -418,6 +420,7 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	payload.CSRFToken = csrf
+	payload.Actor.PlatformRole = sharedPlatformRole(c)
 	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -708,4 +711,12 @@ func (s *Service) hostedOrganizationChoices(ctx context.Context, session auth.Se
 		}
 	}
 	return choices, nil
+}
+
+func sharedPlatformRole(c echo.Context) string {
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindBrowser || claims.SupportActor != "" {
+		return ""
+	}
+	return claims.PlatformRole
 }

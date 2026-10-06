@@ -79,20 +79,9 @@ func (e *tenantStatusError) Error() string {
 	return fmt.Sprintf("tenant entitlements answered %d", e.status)
 }
 
-func (c Config) validateEntitlementAdministrators() error {
-	for _, email := range c.EntitlementAdministrators {
-		if !listed(c.StaffEmails, email) {
-			return fmt.Errorf("entitlement administrator %q must also be listed in staff_emails", email)
-		}
-	}
-	if len(c.EntitlementAdministrators) > 0 && (c.Allocation == nil || len(c.Allocation.EntitlementAdminToken) < 32) {
-		return errors.New("entitlement_administrators requires allocation.entitlement_admin_token_env naming a token of at least 32 bytes")
-	}
-	return nil
-}
-
-func (s *Service) entitlementAdministrator(session accountSession) bool {
-	return s.platformStaff(session) && listed(s.config.EntitlementAdministrators, session.Email) && s.config.Allocation != nil && len(s.config.Allocation.EntitlementAdminToken) >= 32
+func (s *Service) entitlementAdministrator(ctx context.Context, session accountSession) bool {
+	role := s.sessionPlatformRole(ctx, session)
+	return role == "admin" || role == "billing"
 }
 
 func tenantEntitlementsPath(organization string) string {
@@ -155,8 +144,11 @@ func (s *Service) entitlementSession(c echo.Context, event string) (accountSessi
 	if err != nil {
 		return accountSession{}, Organization{}, false, c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
-	if !s.entitlementAdministrator(session) {
+	if !s.entitlementAdministrator(c.Request().Context(), session) {
 		return accountSession{}, Organization{}, false, c.JSON(http.StatusForbidden, map[string]string{"code": "forbidden", "message": "Complimentary plans are limited to entitlement administrators"})
+	}
+	if s.config.Allocation == nil || len(s.config.Allocation.EntitlementAdminToken) < 32 {
+		return accountSession{}, Organization{}, false, c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Platform entitlement administration is not configured"})
 	}
 	ctx := c.Request().Context()
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))

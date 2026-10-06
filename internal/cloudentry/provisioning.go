@@ -374,9 +374,6 @@ func (s *Service) newOrganizationPage(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
 	}
-	if s.platformStaff(session) {
-		return c.Redirect(http.StatusSeeOther, platformPath)
-	}
 	key, err := cloudassert.NewID()
 	if err != nil {
 		return s.denied(c, http.StatusServiceUnavailable, "Organization creation is temporarily unavailable")
@@ -407,8 +404,8 @@ func (s *Service) createOrganization(c echo.Context) error {
 	case errors.Is(err, errQuota):
 		return s.refuse(c, http.StatusTooManyRequests, "quota_reached", "Your account has reached its organization limit")
 	case errors.Is(err, operatortool.ErrAccessDenied):
-		if s.staff(session.Email) || session.Identity.SupportActor != "" {
-			return s.refuse(c, http.StatusForbidden, "staff_session", "Staff and support sessions cannot create customer organizations")
+		if session.Identity.SupportActor != "" {
+			return s.refuse(c, http.StatusForbidden, "staff_session", "Support sessions cannot create customer organizations")
 		}
 		return s.refuse(c, http.StatusForbidden, "not_eligible", "This account cannot create customer organizations")
 	case errors.Is(err, operatortool.ErrInvalidArguments):
@@ -481,7 +478,7 @@ func ownedOrganizations(ctx context.Context, q rowQuerier, subject string) (int,
 }
 
 func (s *Service) canCreate(ctx context.Context, session accountSession) (bool, error) {
-	if s.config.Allocation == nil || s.staff(session.Email) || session.Identity.SupportActor != "" {
+	if s.config.Allocation == nil || session.Identity.SupportActor != "" {
 		return false, nil
 	}
 	owned, err := ownedOrganizations(ctx, s.registry.store.db, session.Subject)

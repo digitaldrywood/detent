@@ -130,7 +130,7 @@ func (s *Service) hostedHome(c echo.Context) error {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Organization information is temporarily unavailable")
 	}
 	data.CanCreate, data.CanSupport = setup.CanCreate, setup.CanSupport
-	if hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
+	if s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
 		data.Mode = "organization"
 		data.Notice = "Staff access is limited to account and usage metadata. Customer content requires authorized temporary support access."
 		return s.renderHosted(c, http.StatusOK, data)
@@ -415,6 +415,6 @@ func (s *Service) hostedAccountSetupFor(ctx context.Context, session auth.Sessio
 	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&members); err != nil {
 		return hostedAccountSetup{}, err
 	}
-	staff := hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == ""
-	return hostedAccountSetup{Email: session.Email, CanCreate: members == 0 && session.Identity.Subject == s.config.Hosted.BootstrapSubject && session.Identity.SupportActor == "" && !staff, CanSupport: session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email), Staff: staff}, nil
+	staff := s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == ""
+	return hostedAccountSetup{Email: session.Email, CanCreate: members == 0 && session.Identity.Subject == s.config.Hosted.BootstrapSubject && session.Identity.SupportActor == "" && (s.config.Hosted.SharedEntry != nil || !staff), CanSupport: session.Identity.SupportActor == "" && hostedEmailListed(s.config.Hosted.SupportActors, session.Email), Staff: staff}, nil
 }

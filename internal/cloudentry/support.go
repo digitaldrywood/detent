@@ -22,7 +22,7 @@ func (s *Service) supportPage(c echo.Context) error {
 	if err != nil {
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start")
 	}
-	data := templates.HostedPageData{Mode: "support", Title: "Temporary support access", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), CanSupport: s.supportActor(session.Email)}
+	data := templates.HostedPageData{Mode: "support", Title: "Temporary support access", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), CanSupport: session.Identity.SupportActor == "" && s.supportActor(c.Request().Context(), session.Email)}
 	if data.CanSupport {
 		organizations, err := s.registry.List(c.Request().Context())
 		if err != nil {
@@ -43,7 +43,7 @@ func (s *Service) startSupport(c echo.Context) error {
 		return s.loginDenied(c, http.StatusForbidden, "This account cannot start support access", auth.HostedDenial{Flow: "support_start", Reason: auth.HostedReasonSessionNotFound})
 	}
 	denial := auth.HostedDenial{Flow: "support_start", Email: session.Email}
-	if !s.supportActor(session.Email) {
+	if session.Identity.SupportActor != "" || !s.supportActor(c.Request().Context(), session.Email) {
 		denial.Reason = "support_denied"
 		return s.loginDenied(c, http.StatusForbidden, "This account cannot start support access", denial)
 	}
@@ -130,7 +130,7 @@ func (s *Service) completeSupport(c echo.Context) error {
 		return s.loginDenied(c, http.StatusUnauthorized, invalidLink, denial)
 	}
 	staff, err := s.session(c)
-	if err != nil || staff.Hash != transaction.SupportSession || !strings.EqualFold(staff.Email, transaction.SupportActor) || !s.supportActor(staff.Email) {
+	if err != nil || staff.Hash != transaction.SupportSession || !strings.EqualFold(staff.Email, transaction.SupportActor) || !s.supportActor(ctx, staff.Email) {
 		denial.Reason, denial.Email = "support_session_mismatch", staff.Email
 		return s.loginDenied(c, http.StatusForbidden, "Start support access from your authorized staff session", denial)
 	}
@@ -150,8 +150,6 @@ func (s *Service) completeSupport(c echo.Context) error {
 		denial.Reason = auth.HostedReasonSupportActorInvalid
 	case identity.Hosted.OrganizationID != organization.ProviderID:
 		denial.Reason = auth.HostedReasonOrganizationMismatch
-	case s.staff(identity.Email):
-		denial.Reason = "support_denied"
 	}
 	if err != nil || denial.Reason != "" {
 		return s.loginDenied(c, http.StatusForbidden, "Support access is not authorized", denial)

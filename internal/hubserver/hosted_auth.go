@@ -170,7 +170,7 @@ func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Sess
 }
 
 func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Session, hash string, membership auth.Membership) (apiCredential, int, error) {
-	if hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
+	if s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
 	providerID, err := s.hostedProviderOrganization(ctx)

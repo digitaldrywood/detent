@@ -15,7 +15,7 @@ func (s *Service) createOrganizationFor(ctx context.Context, session accountSess
 	if s.config.Allocation == nil {
 		return "", ErrOrganizationNotFound
 	}
-	if s.staff(session.Email) || session.Identity.SupportActor != "" || !s.signupAllowed(session.Email) {
+	if session.Identity.SupportActor != "" || !s.signupAllowed(session.Email) {
 		return "", operatortool.ErrAccessDenied
 	}
 	name = strings.TrimSpace(name)
@@ -82,7 +82,7 @@ func (s *Service) deleteOrganizationFor(ctx context.Context, session accountSess
 // it is never a generic URL or HTTP forwarding operation.
 func (s *Service) joinOrganizationFor(ctx context.Context, session accountSession, reference string) (Organization, error) {
 	invitation, err := auth.LookupInvitationID(ctx, s.config.Provider, reference)
-	if err != nil || !strings.EqualFold(invitation.Email, session.Email) || !invitation.ExpiresAt.After(s.config.now()) || s.staff(session.Email) || session.Identity.SupportActor != "" {
+	if err != nil || !strings.EqualFold(invitation.Email, session.Email) || !invitation.ExpiresAt.After(s.config.now()) || session.Identity.SupportActor != "" {
 		return Organization{}, operatortool.ErrAccessDenied
 	}
 	organization, err := s.registry.ByProvider(ctx, invitation.OrganizationID)

@@ -467,6 +467,7 @@ func newEntryFixtureWithLogger(t *testing.T, logger *slog.Logger) entryFixture {
 	beta, betaHandler := newTenant(t, provider, key, "org_beta", "porg_beta", "user_alice", "Beta secret project")
 	tenants := map[string]http.Handler{testSocketEndpoint("alpha.sock"): alphaHandler, testSocketEndpoint("beta.sock"): betaHandler}
 	service, err := Open(t.Context(), Config{
+		Platform:  PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"},
 		PublicURL: testPublicURL, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: key, Provider: provider, StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"}, StateDir: t.TempDir(),
 		Logger: logger, clientFS: fstest.MapFS{},
 		transport: func(organization Organization) (http.RoundTripper, error) {
@@ -1017,7 +1018,7 @@ func TestConfigRequiresLoopbackListener(t *testing.T) {
 		listen string
 		ok     bool
 	}{{"127.0.0.1:8017", true}, {"[::1]:8017", true}, {"localhost:8017", true}, {"0.0.0.0:8017", false}, {":8017", false}, {"10.0.0.5:8017", false}} {
-		config := Config{PublicURL: "https://hub.example.test", ListenAddress: test.listen, Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: newFakeProvider(), StateDir: "/state"}
+		config := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: "https://hub.example.test", ListenAddress: test.listen, Issuer: "entry", SigningKey: ed25519.NewKeyFromSeed(seed), Provider: newFakeProvider(), StateDir: "/state"}
 		if err := config.validate(); (err == nil) != test.ok {
 			t.Errorf("listen %q error = %v, want ok %v", test.listen, err, test.ok)
 		}

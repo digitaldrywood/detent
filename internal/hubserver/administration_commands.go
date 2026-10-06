@@ -70,7 +70,7 @@ func (s *Service) inviteHostedMemberFor(ctx context.Context, credential apiCrede
 		return hostedInvitationView{}, operatortool.ErrAccessDenied
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
-	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || hostedEmailListed(s.config.Hosted.StaffEmails, email) {
+	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return hostedInvitationView{}, operatortool.ErrInvalidArguments
 	}
 	grants = append([]hostedMemberGrant{}, grants...)
