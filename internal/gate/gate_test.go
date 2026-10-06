@@ -711,9 +711,9 @@ func TestInstructionsDescribeOptimizedMergingGate(t *testing.T) {
 	got := Instructions(Config{Kind: KindCommand, Run: "make check", RequireAutomatedReview: new(false)})
 	for _, want := range []string{
 		"Run `make check` from the workspace root; require eligible current-head checks before promotion",
-		"Skipped is not a test pass",
-		"For merge-group-only CI, require passing merge-group checks before merge",
-		"In Merging, use a focused smoke gate only after a clean rebase with unchanged source and known current-head validation",
+		"skips are not passes",
+		"Merge-group-only CI must pass before merge",
+		"Merging smoke gate requires clean rebase, unchanged source, known current-head validation",
 		"otherwise rerun `make check`",
 		"REST backoff",
 	} {
@@ -768,8 +768,8 @@ func TestInstructionsDescribeRequiredStatusChecks(t *testing.T) {
 			name: "omitted aggregate policy",
 			want: []string{
 				"require eligible current-head checks before promotion",
-				"Skipped is not a test pass",
-				"For merge-group-only CI, require passing merge-group checks before merge",
+				"skips are not passes",
+				"Merge-group-only CI must pass before merge",
 			},
 			absent: []string{"do not wait for a CI producer", "required_status_checks is explicitly empty"},
 		},
@@ -784,16 +784,16 @@ func TestInstructionsDescribeRequiredStatusChecks(t *testing.T) {
 			},
 			absent: []string{
 				"require eligible current-head checks before promotion",
-				"For merge-group-only CI, require passing merge-group checks before merge",
-				"Configured required status checks must be present",
+				"Merge-group-only CI must pass before merge",
+				"Required checks: present",
 			},
 		},
 		{
 			name:   "configured required checks",
 			checks: []string{"Windows Core"},
 			want: []string{
-				"required status checks must be present on the current PR head",
-				"missing, skipped, failed, cancelled, or still-running required checks block promotion",
+				"Required checks: present, completed, successful on current PR head",
+				"missing/skipped/failed/cancelled/running blocks promotion",
 				"Native required checks and red CI still block promotion and merge",
 			},
 			absent: []string{"do not wait for a CI producer", "required_status_checks is explicitly empty"},
