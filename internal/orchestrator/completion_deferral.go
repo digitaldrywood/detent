@@ -569,11 +569,18 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 			if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
 				execution := source.RunExecution(issueID)
 				if publisher, ok := execution.(runpkg.CompletionExecution); ok {
-					if err := execution.Validate(ctx); err != nil {
-						completion.Err = err
-					} else if err := publisher.PrepareFinish(ctx, "succeeded", completion.Result.FinalMessage); err != nil {
-						completion.Err = err
-					} else if changes, ok := execution.(runpkg.ChangeExecution); ok {
+					err := execution.Validate(ctx)
+					if err == nil {
+						err = publisher.PrepareFinish(ctx, "succeeded", completion.Result.FinalMessage)
+					}
+					if err != nil {
+						o.deferTrackerUnavailableCompletion(ctx, state, completion, record.Running, err)
+						if _, deferred := state.deferredCompletions[issueID]; deferred {
+							return false
+						}
+						continue
+					}
+					if changes, ok := execution.(runpkg.ChangeExecution); ok {
 						completion.Result.NativeChange = changes.NativeChange()
 					}
 				}

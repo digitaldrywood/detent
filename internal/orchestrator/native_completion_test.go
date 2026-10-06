@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -131,10 +132,13 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		wantTerminal  store.WorkAttemptTerminalState
 		roundTrip     bool
 		lifecycle     string
+		validationErr error
 	}{
 		{name: "native release outage keeps completion ownership", lifecycle: "release", change: accepted, states: landing, reviewed: &yes, wantState: "Merging"},
 		{name: "normal provider exit renews through delayed native settlement", lifecycle: "settle", change: accepted, states: landing, reviewed: &yes, wantState: "Merging"},
 		{name: "normal provider exit renews through deferred native publication", lifecycle: "defer", republish: true, change: &runpkg.NativeChange{Changed: true, Error: "native publication unavailable"}, states: landing, reviewed: &yes, wantState: "Merging"},
+		{name: "canceled validation retains completed native result", lifecycle: "interrupted", validationErr: context.Canceled, republish: true, change: &runpkg.NativeChange{Changed: true, Error: "native publication unavailable"}, states: landing, reviewed: &yes, wantState: "Merging"},
+		{name: "timed out validation retains completed native result", lifecycle: "interrupted", validationErr: context.DeadlineExceeded, republish: true, change: &runpkg.NativeChange{Changed: true, Error: "native publication unavailable"}, states: landing, reviewed: &yes, wantState: "Merging"},
 		{name: "deferred native publication loses fencing authority", lifecycle: "lost", republish: true, change: &runpkg.NativeChange{Changed: true, Error: "native publication unavailable"}, states: landing, reviewed: &yes},
 		{name: "true provider cancellation retires renewal", lifecycle: "cancel", runErr: context.Canceled, states: workflow, wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled},
 		{name: "four lane reviewed change lands from current lane", change: accepted, states: fourLanes, humanReview: &no, wantDirect: true},
@@ -394,7 +398,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					t.Fatal("retained release did not settle")
 				}
 			}
-			if test.lifecycle == "defer" || test.lifecycle == "lost" {
+			if test.lifecycle == "defer" || test.lifecycle == "lost" || test.lifecycle == "interrupted" {
 				advance()
 				last := attempts.heartbeats[len(attempts.heartbeats)-1]
 				record, err := decodeDeferredCompletion(store.WorkAttempt{ID: 42, WorkerMetadataJSON: last.WorkerMetadataJSON})
@@ -412,6 +416,23 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 						t.Fatal("lost fence revived deferred publication")
 					}
 					return
+				}
+				if test.lifecycle == "interrupted" {
+					publisher.validationErr = test.validationErr
+					if orch.retryDeferredCompletions(t.Context(), &state, now) {
+						t.Fatal("interrupted validation settled completed provider result")
+					}
+					retained, ok := state.deferredCompletions[issue.ID]
+					if !ok || retained.Error != "" || !reflect.DeepEqual(retained.Result, record.Result) || len(state.Claimed) != 1 || scheduling.releases != 0 || len(attempts.completions) != 0 || publisher.prepared != 0 || len(state.Running) != 0 {
+						t.Fatal("interrupted validation abandoned authority or changed completed result")
+					}
+					last = attempts.heartbeats[len(attempts.heartbeats)-1]
+					persisted, err := decodeDeferredCompletion(store.WorkAttempt{ID: 42, WorkerMetadataJSON: last.WorkerMetadataJSON})
+					if err != nil || persisted.Error != "" || !reflect.DeepEqual(persisted.Result, record.Result) {
+						t.Fatalf("interrupted validation lost durable completed result: %+v, %v", persisted, err)
+					}
+					publisher.validationErr = nil
+					now = state.Retry[issue.ID].DueAt
 				}
 				if !orch.retryDeferredCompletions(t.Context(), &state, now) || publisher.prepared != 1 {
 					t.Fatal("retained completion did not publish exactly once")
@@ -737,10 +758,13 @@ func (s *nativeCompletionScheduling) ReleaseClaim(ctx context.Context, issueID, 
 
 type nativeCompletionPublisher struct {
 	nativeLandingJourneyExecution
-	change   *runpkg.NativeChange
-	prepared int
-	prepare  func()
+	change        *runpkg.NativeChange
+	prepared      int
+	prepare       func()
+	validationErr error
 }
+
+func (p *nativeCompletionPublisher) Validate(context.Context) error { return p.validationErr }
 
 func (p *nativeCompletionPublisher) PrepareFinish(context.Context, string, string) error {
 	p.prepared++
