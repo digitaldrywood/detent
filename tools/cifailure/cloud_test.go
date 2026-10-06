@@ -13,8 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -246,6 +248,12 @@ func TestCloudReport(t *testing.T) {
 		fmt.Fprintf(&manyDiagnostics, "internal/many.go:%d:3: finding%04d %s\n", i+1, i, strings.Repeat("<>&\"\\\t\u2028🙂", 20))
 	}
 	manyTests.WriteString("FAIL\towner/repo/pkg\t0s")
+	check := gate.CheckObservation{Scope: "lint", Command: "make lint", HeadSHA: scheduledEnv("CI_DEVELOP_SHA"), TreeSHA: strings.Repeat("a", 40), Environment: gate.CheckEnvironment{OS: "linux", Architecture: "amd64", GoVersion: "go1.26.6"}, ExitCode: 1, StartedAt: time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC), FinishedAt: time.Date(2026, 10, 6, 12, 0, 1, 0, time.UTC), DurationNS: 1e9, DurationResolutionNS: 1e9}
+	encodedCheck, err := json.Marshal(check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceLog := lintDiagnostic + "\n2026-10-06T12:00:01Z " + gate.CheckEvidencePrefix + string(encodedCheck)
 	for _, tt := range []struct {
 		name, log, laterLog, lost, fail string
 		imported, green, foreign        bool
@@ -263,6 +271,7 @@ func TestCloudReport(t *testing.T) {
 		{name: "worker Backlog owner retains lane", worker: true, log: diagnostic, wantItems: 1, wantWrites: 4},
 		{name: "source problem replay", log: diagnostic, wantItems: 2, wantWrites: 4},
 		{name: "source lint replay", log: lintDiagnostic, wantItems: 2, wantWrites: 4},
+		{name: "structured check evidence replay", log: evidenceLog, wantItems: 2, wantWrites: 4},
 		{name: "recorded gosec replay", log: gosecDiagnostic, wantItems: 2, wantWrites: 4},
 		{name: "gosec cache keeps instance intake", log: strings.ReplaceAll(gosecDiagnostic, "/home/runner/work/detent/detent/", "/runner/cache/tool/"), wantItems: 2, wantWrites: 4},
 		{name: "lost creation response", log: diagnostic, lost: "file_issue", wantItems: 2, wantWrites: 4, wantErrors: 1},
@@ -448,6 +457,12 @@ func TestCloudReport(t *testing.T) {
 					}
 					if strings.Contains(body, "No source repair is authorized") && !slices.Contains(args["labels"].([]string), "ci-infrastructure-failure") {
 						t.Fatal("instance failure has no infrastructure label")
+					}
+				}
+				if tt.log == evidenceLog {
+					records := gate.ParseScheduledEvidence(body)
+					if len(records) != 1 || len(records[0].Checks) != 1 || records[0].RunAttempt != "1" || records[0].HeadSHA != check.HeadSHA || records[0].Checks[0] != check || records[0].OccurrenceKey == "" {
+						t.Fatalf("lost check evidence: %+v", records)
 					}
 				}
 				if !utf8.ValidString(body) {

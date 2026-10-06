@@ -81,28 +81,29 @@ type ChangeArguments struct {
 
 // ChangeResult contains bounded application data, never rendered HTML.
 type ChangeResult struct {
-	OrganizationID string                      `json:"organization_id"`
-	ProjectID      string                      `json:"project_id"`
-	WorkItemID     string                      `json:"work_item_id,omitempty"`
-	WorkItemState  string                      `json:"work_item_state,omitempty"`
-	ChangeID       string                      `json:"change_id,omitempty"`
-	URL            string                      `json:"url,omitempty"`
-	GeneratedAt    time.Time                   `json:"generated_at"`
-	Freshness      string                      `json:"freshness"`
-	NextOffset     *int                        `json:"next_offset,omitempty"`
-	Changes        []tracker.ChangeRequest     `json:"changes,omitempty"`
-	Detail         *tracker.ChangeDetail       `json:"detail,omitempty"`
-	Version        *tracker.ChangeVersion      `json:"version,omitempty"`
-	Policy         *tracker.ChangeReviewPolicy `json:"policy,omitempty"`
-	Viewed         []tracker.ChangeViewedFile  `json:"viewed_files,omitempty"`
-	Services       []artifact.Binding          `json:"services,omitempty"`
-	Artifacts      []artifact.Reference        `json:"artifacts,omitempty"`
-	Access         *ArtifactDownload           `json:"access,omitempty"`
-	Receipt        json.RawMessage             `json:"receipt,omitempty"`
-	Diff           *tracker.AttemptDiff        `json:"diff"`
-	PullRequests   []tracker.PullRequestView   `json:"pull_requests,omitempty"`
-	Library        []ArtifactLibraryRow        `json:"library,omitempty"`
-	Attempt        *tracker.NativeAttempt      `json:"attempt,omitempty"`
+	ValidationAudit *tracker.ValidationAudit    `json:"validation_audit,omitempty"`
+	OrganizationID  string                      `json:"organization_id"`
+	ProjectID       string                      `json:"project_id"`
+	WorkItemID      string                      `json:"work_item_id,omitempty"`
+	WorkItemState   string                      `json:"work_item_state,omitempty"`
+	ChangeID        string                      `json:"change_id,omitempty"`
+	URL             string                      `json:"url,omitempty"`
+	GeneratedAt     time.Time                   `json:"generated_at"`
+	Freshness       string                      `json:"freshness"`
+	NextOffset      *int                        `json:"next_offset,omitempty"`
+	Changes         []tracker.ChangeRequest     `json:"changes,omitempty"`
+	Detail          *tracker.ChangeDetail       `json:"detail,omitempty"`
+	Version         *tracker.ChangeVersion      `json:"version,omitempty"`
+	Policy          *tracker.ChangeReviewPolicy `json:"policy,omitempty"`
+	Viewed          []tracker.ChangeViewedFile  `json:"viewed_files,omitempty"`
+	Services        []artifact.Binding          `json:"services,omitempty"`
+	Artifacts       []artifact.Reference        `json:"artifacts,omitempty"`
+	Access          *ArtifactDownload           `json:"access,omitempty"`
+	Receipt         json.RawMessage             `json:"receipt,omitempty"`
+	Diff            *tracker.AttemptDiff        `json:"diff"`
+	PullRequests    []tracker.PullRequestView   `json:"pull_requests,omitempty"`
+	Library         []ArtifactLibraryRow        `json:"library,omitempty"`
+	Attempt         *tracker.NativeAttempt      `json:"attempt,omitempty"`
 }
 
 // ArtifactLibraryRow is the business data from the existing library read,
@@ -192,7 +193,7 @@ func ChangeCatalog() []Definition {
 		definitions = append(definitions, Definition{Name: name, Description: description, InputSchema: schema, Annotations: Annotations{ReadOnly: read, Destructive: material, Idempotent: true, OpenWorld: name != ArtifactLibrary}, Meta: ToolMetadata{Toolset: "changes_artifacts"}})
 	}
 	add(ListChanges, "List Change Requests linked to an owned work item.", "work_item_id", "limit offset", true, false)
-	add(GetChange, "Read Change Request versions, discussion, reviews, checks and landing evidence.", "work_item_id change_id", "", true, false)
+	add(GetChange, "Read Change Request versions, discussion, reviews, checks, landing evidence and bounded local/scheduled check comparisons.", "work_item_id change_id", "", true, false)
 	add(GetChangeVersion, "Read one immutable version with code/diff and artifact references.", "work_item_id change_id version_id", "", true, false)
 	add(GetChangeReviewPolicy, "Read the project's approved review policy.", "", "", true, false)
 	add(ChangeViewedFiles, "Read this principal's viewed-file digests for a version.", "work_item_id change_id version_id", "limit offset", true, false)

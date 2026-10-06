@@ -117,6 +117,10 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		}
 		if name == operatortool.GetChange {
 			result.Detail = &detail
+			result.ValidationAudit, err = readValidationAudit(ctx, tx, scope, "", "", args.ChangeID, "")
+			if err != nil {
+				return result, err
+			}
 		} else {
 			for _, v := range detail.Versions {
 				if v.ID == args.VersionID {

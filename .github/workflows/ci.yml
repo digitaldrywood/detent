@@ -55,7 +55,10 @@ jobs:
           go-version: '1.26.6'
           cache: true
       - name: Exercise required invariant behaviors
-        run: make check-invariants
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence invariants make check-invariants
 
   lint:
     needs: preflight
@@ -92,7 +95,10 @@ jobs:
             golangci-lint-analysis-${{ runner.os }}-
 
       - name: Run golangci-lint
-        run: make lint
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence lint make lint
 
   verify-fast:
     needs: preflight
@@ -115,32 +121,51 @@ jobs:
           cache: true
 
       - name: Generate documentation and verify committed SQL sources
-        run: make check-generated
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence generated make check-generated
 
       - name: Verify Cloud client sources and generated assets
-        run: make check-app
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence app make check-app
 
       - name: Check integrated migration versions
-        run: make check-migrations
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence migrations make check-migrations
 
       - name: Download modules
         run: go mod download
 
       - name: Build
-        run: go build ./...
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence build go build ./...
 
       - name: Vet
-        run: go vet ./...
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence vet make vet
 
       - name: Audit all Go packages with NilAway and the reviewed baseline
         env:
           TMPDIR: ${{ runner.temp }}
         run: |
           python3 -m unittest scripts/nilaway_changed_test.py
-          make nilaway-changed
+          source scripts/check-evidence.sh
+          check_with_evidence nilaway-changed make nilaway-changed
 
       - name: Test
-        run: make test
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence unit-full make test
 
       - name: Force acceptance probe failure
         if: github.event_name == 'workflow_dispatch' && inputs.fail_job == 'verify-fast'
@@ -191,7 +216,9 @@ jobs:
       - name: Race test shard
         env:
           SHARD: ${{ matrix.shard }}
-        run: bash scripts/ci-race-shard.sh "$SHARD"
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence race-shard bash scripts/ci-race-shard.sh "$SHARD"
       - name: Upload race evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -221,7 +248,10 @@ jobs:
           cache: true
 
       - name: Check coverage
-        run: make test-cover-packages
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence coverage make test-cover-packages
 
   security:
     needs: preflight
@@ -241,7 +271,10 @@ jobs:
           cache: true
 
       - name: Run govulncheck and gosec
-        run: make security
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence security make security
 
   browser-visual-shard:
     needs: preflight
@@ -336,14 +369,23 @@ jobs:
         run: go mod download
 
       - name: Build
-        run: go build ./...
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence build go build ./...
 
       - name: Vet
-        run: go vet ./...
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence vet make vet
 
       - name: Test
         if: runner.os != 'Windows'
-        run: make test
+        shell: bash
+        run: |
+          source scripts/check-evidence.sh
+          check_with_evidence unit-full make test
 
       - name: Upload workspace test evidence
         if: always() && runner.os != 'Windows'

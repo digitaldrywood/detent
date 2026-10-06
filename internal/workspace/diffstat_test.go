@@ -147,6 +147,20 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 	}
 
 	source := initSourceRepo(t)
+	if runtime.GOOS != "windows" {
+		script, err := os.ReadFile("../../scripts/check-evidence.sh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(source, "check-evidence.sh"), script, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(source, "Makefile"), []byte("lint:\n\t@echo lint-evidence\n\t@exit $${DETENT_CHECK_EVIDENCE_FIXTURE_EXIT:-0}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, source, "add", "check-evidence.sh", "Makefile")
+		runGit(t, source, "commit", "-m", "check evidence fixture")
+	}
 	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
@@ -192,6 +206,27 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 				t.Fatalf("missing command evidence: %+v", receipt)
 			}
 		})
+	}
+	if err := os.Remove(filepath.Join(info.Path, "untracked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		for _, resultCode := range []string{"0", "7"} {
+			t.Run("command scope result "+resultCode, func(t *testing.T) {
+				t.Setenv("DETENT_CHECK_EVIDENCE_FIXTURE_EXIT", resultCode)
+				receipt, err := backend.RunReviewCommand(t.Context(), info, issue, "bash -c 'source ./check-evidence.sh; check_with_evidence lint make lint'")
+				if err != nil || receipt.Evidence == nil || len(receipt.Evidence.Checks) != 1 {
+					t.Fatalf("lost execution evidence: %+v %v", receipt, err)
+				}
+				checked := receipt.Evidence.Checks[0]
+				if checked.HeadSHA != receipt.HeadSHA || checked.TreeSHA != receipt.TreeSHA || checked.ExitCode != receipt.ExitCode || checked.Scope != "lint" || !checked.Environment.Known() || checked.DurationResolutionNS != 1e9 {
+					t.Fatalf("inaccurate execution evidence: %+v %+v", receipt, checked)
+				}
+				if (resultCode == "0") != (receipt.ExitCode == 0) {
+					t.Fatalf("failed command result not preserved: %+v", receipt)
+				}
+			})
+		}
 	}
 	if err := os.WriteFile(filepath.Join(info.Path, "untracked.txt"), []byte("hook change"), 0o600); err != nil {
 		t.Fatal(err)

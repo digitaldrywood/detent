@@ -117,13 +117,14 @@ type Finding struct {
 }
 
 type CommandResult struct {
-	DurationNS      int64  `json:"duration_ns,omitempty"`
-	Command         string `json:"command"`
-	HeadSHA         string `json:"head_sha"`
-	TreeSHA         string `json:"tree_sha"`
-	ExitCode        int    `json:"exit_code"`
-	Output          string `json:"output"`
-	OutputTruncated bool   `json:"output_truncated,omitempty"`
+	Evidence        *CommandEvidence `json:"evidence,omitempty"`
+	DurationNS      int64            `json:"duration_ns,omitempty"`
+	Command         string           `json:"command"`
+	HeadSHA         string           `json:"head_sha"`
+	TreeSHA         string           `json:"tree_sha"`
+	ExitCode        int              `json:"exit_code"`
+	Output          string           `json:"output"`
+	OutputTruncated bool             `json:"output_truncated,omitempty"`
 }
 
 type ValidatorResult struct {

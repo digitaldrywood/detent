@@ -15,8 +15,11 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -230,6 +233,140 @@ func TestOperatorChangeCommands(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	at := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	environment := gate.CheckEnvironment{OS: "linux", Architecture: "amd64", GoVersion: "go1.26.6"}
+	checked := gate.CheckObservation{Scope: "lint", Command: "make lint", HeadSHA: version.HeadSHA, TreeSHA: strings.Repeat("d", 40), Environment: environment, StartedAt: at.Add(-time.Minute), FinishedAt: at.Add(-time.Second)}
+	scheduledCheck := checked
+	scheduledCheck.HeadSHA = strings.Repeat("e", 40)
+	scheduledCheck.StartedAt, scheduledCheck.FinishedAt, scheduledCheck.ExitCode = at.Add(time.Minute), at.Add(2*time.Minute), 1
+	scheduled := gate.ScheduledEvidence{Schema: 1, Repository: "example/repo", OccurrenceKey: strings.Repeat("f", 64), RunID: "123", RunAttempt: "2", JobID: "456", JobName: "Lint", RunURL: "https://github.com/example/repo/actions/runs/123/attempts/2", JobURL: "https://github.com/example/repo/actions/jobs/456", HeadSHA: scheduledCheck.HeadSHA, Conclusion: "failure", Checks: []gate.CheckObservation{scheduledCheck}}
+	report := f.create(t, "scheduled failure")
+	stamp := issueorigin.Stamp("Scheduled job failed"+scheduled.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: scheduled.RunURL, Fingerprint: strings.Repeat("a", 64)})
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", stamp, report.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	registered := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+	registered.enroll(t)
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeRunID := newNativeID("run")
+	nativeAttempt := seedHealthRateAttempt(t, tx, scope, f.issue, string(registered.binding.MachineID), "succeeded", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 168, Phase: "completed", HeartbeatAt: at}}, at, -1)
+	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET run_id=?,data_json=json_set(data_json,'$.attempt_id',id,'$.run_id',?) WHERE id=?", nativeRunID, nativeRunID, nativeAttempt); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, want string
+		edit       func(*tracker.NativeLandingReceipt)
+	}{
+		{name: "missing local evidence", want: "missing_local_evidence", edit: func(r *tracker.NativeLandingReceipt) { r.Gate = nil }},
+		{name: "nonzero local result", want: "local_nonzero", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.ExitCode = 7 }},
+		{name: "different checked content", want: "different_content", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.TreeSHA = strings.Repeat("a", 40) }},
+		{name: "scope differs", want: "different_check_scope", edit: func(r *tracker.NativeLandingReceipt) {
+			r.Gate.Evidence.Checks[0].Scope = "unit-short"
+			r.Gate.Evidence.Checks[0].Command = "make test-fast"
+		}},
+		{name: "unrecorded check scope", want: "unknown", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.Evidence.Checks = nil }},
+		{name: "environment differs", want: "different_environment", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.Evidence.Checks[0].Environment.OS = "darwin" }},
+		{name: "unknown historical metadata", want: "unknown", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.Evidence = nil }},
+		{name: "same content and check passes locally", want: "local_pass_scheduled_failure"},
+		{name: "earlier Change is only a candidate", want: "local_pass_scheduled_failure", edit: func(r *tracker.NativeLandingReceipt) { r.MergeSHA = strings.Repeat("9", 40) }},
+	} {
+		t.Run("validation audit "+test.name, func(t *testing.T) {
+			receipt := tracker.NativeLandingReceipt{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, MergeSHA: scheduled.HeadSHA, Landed: true, ObservedAt: at, Gate: &gate.CommandResult{Command: "make check-land", HeadSHA: checked.HeadSHA, TreeSHA: checked.TreeSHA, Output: "private prompt and credentials", Evidence: &gate.CommandEvidence{Environment: environment, Checks: []gate.CheckObservation{checked}}}}
+			if test.edit != nil {
+				test.edit(&receipt)
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := persistAttemptLanding(t.Context(), tx, nativeAttempt, receipt); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, base))
+			var value operatortool.ChangeResult
+			if err != nil || json.Unmarshal(result.Content, &value) != nil || value.ValidationAudit == nil || len(value.ValidationAudit.Occurrences) != 1 {
+				t.Fatalf("audit=%s %v", result.Content, err)
+			}
+			occurrence := value.ValidationAudit.Occurrences[0]
+			if occurrence.Source.WorkItemID != report.WorkItemID || occurrence.Source.Actor.PrincipalID == "" || len(occurrence.Comparisons) != 1 {
+				t.Fatalf("source/candidates=%+v", occurrence)
+			}
+			comparison := occurrence.Comparisons[0]
+			if comparison.Outcome != test.want || comparison.NativeAttemptID != nativeAttempt || comparison.NativeRunID != nativeRunID || comparison.LocalAttemptID != 168 || comparison.VersionID != version.ID || comparison.ChangeID != f.change.ID || comparison.Local != nil && comparison.Local.Output != "" {
+				t.Fatalf("comparison=%+v want=%s", comparison, test.want)
+			}
+			if test.name == "earlier Change is only a candidate" && (comparison.IntegratedSource != "different_commit" || !strings.Contains(comparison.Attribution, "unverified")) {
+				t.Fatalf("invented attribution=%+v", comparison)
+			}
+			for _, read := range []struct{ name, reference, attempt string }{
+				{operatortool.WorkItem, string(report.WorkItemID), ""},
+				{operatortool.WorkAttemptReceipt, string(f.issue.WorkItemID), nativeAttempt},
+			} {
+				args := map[string]string{"project_id": string(f.project.ID), "reference": read.reference}
+				if read.attempt != "" {
+					args["native_attempt_id"] = read.attempt
+				}
+				raw, err := json.Marshal(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := (hostedOperatorExecutor{service: f.service}).Execute(ctx, operatortool.Call{Name: read.name, Arguments: raw})
+				var envelope struct {
+					Data struct {
+						Audit *tracker.ValidationAudit `json:"validation_audit"`
+					} `json:"data"`
+				}
+				if err != nil || json.Unmarshal(result.Content, &envelope) != nil || envelope.Data.Audit == nil || len(envelope.Data.Audit.Occurrences) != 1 || envelope.Data.Audit.Occurrences[0].Comparisons[0].Outcome != test.want {
+					t.Fatalf("%s projection=%s %v", read.name, result.Content, err)
+				}
+			}
+			audit, err := readValidationAudit(t.Context(), f.service.database.db, scope, string(report.WorkItemID), "", "", "")
+			if err != nil || len(audit.Occurrences) != 1 || audit.Occurrences[0].Comparisons[0].Outcome != test.want {
+				t.Fatalf("scheduled read=%+v %v", audit, err)
+			}
+		})
+	}
+	t.Run("validation audit bounded observations", func(t *testing.T) {
+		large := scheduled
+		large.OccurrenceKey = strings.Repeat("1", 64)
+		large.Checks = nil
+		for range 32 {
+			large.Checks = append(large.Checks, scheduledCheck)
+		}
+		body := issueorigin.Stamp("Scheduled job failed"+large.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: large.RunURL, Fingerprint: strings.Repeat("a", 64)})
+		duplicate := large
+		duplicate.OccurrenceKey = strings.Repeat("2", 64)
+		body += duplicate.Stamp()
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(report.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "bounded-observations"}, Body: body})
+		requireNativeStatus(t, response, http.StatusOK)
+		var comment tracker.NativeComment
+		decodeHubResponse(t, response, &comment)
+		audit, err := readValidationAudit(t.Context(), f.service.database.db, scope, string(report.WorkItemID), "", "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(audit)
+		if err != nil || !audit.Partial || len(raw) > 64*1024 || len(audit.Occurrences) == 0 || audit.Occurrences[0].Source.RecordID != comment.ID {
+			t.Fatalf("unbounded audit: bytes=%d partial=%v occurrences=%d %v", len(raw), audit.Partial, len(audit.Occurrences), err)
+		}
+	})
+	foreignScope := nativeScope{organization: scope.organization, project: "prj_foreign"}
+	foreignAudit, err := readValidationAudit(t.Context(), f.service.database.db, foreignScope, "", "", "", "")
+	if err != nil || len(foreignAudit.Occurrences) != 0 {
+		t.Fatalf("foreign evidence=%+v %v", foreignAudit, err)
 	}
 	args := base
 	args.RequestID = "discussion"

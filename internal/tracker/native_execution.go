@@ -254,6 +254,7 @@ type NativeRuntimeAdmission struct {
 }
 
 type NativeRuntimeEvidence struct {
+	ValidationAudit          *ValidationAudit         `json:"validation_audit,omitempty"`
 	Admission                []NativeRuntimeAdmission `json:"admission,omitempty"`
 	CurrentLease             *NativeLease             `json:"current_lease,omitempty"`
 	Issue                    NativeIssue              `json:"issue"`

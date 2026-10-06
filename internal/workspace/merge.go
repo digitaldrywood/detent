@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -427,11 +428,13 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)
+	result.Evidence = validationEnvironment(ctx, cmd)
 	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
 	started := time.Now()
 	output, err := cmd.CombinedOutput()
 	result.DurationNS = time.Since(started).Nanoseconds()
 	result.Output = string(output)
+	result.Evidence.Checks = gate.CheckObservations(result.Output)
 	if ctx.Err() != nil {
 		return result, ctx.Err()
 	}
@@ -445,6 +448,26 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	}
 	result.ExitCode = 0
 	return result, nil
+}
+
+func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.CommandEvidence {
+	evidence := &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	probe := exec.CommandContext(ctx, "go", "env", "-json", "GOHOSTOS", "GOHOSTARCH", "GOVERSION")
+	probe.Dir, probe.Env = command.Dir, command.Env
+	probe.WaitDelay = workspaceCommandWaitDelay
+	var observed struct {
+		OS           string `json:"GOHOSTOS"`
+		Architecture string `json:"GOHOSTARCH"`
+		Version      string `json:"GOVERSION"`
+	}
+	output, err := probe.Output()
+	if err == nil && json.Unmarshal(output, &observed) == nil {
+		environment := gate.CheckEnvironment{OS: observed.OS, Architecture: observed.Architecture, GoVersion: observed.Version}
+		if environment.Valid() {
+			evidence.Environment = environment
+		}
+	}
+	return evidence
 }
 
 // mergeRemoteAncestor applies the checkpoint path's no-dropped-commits rule.
