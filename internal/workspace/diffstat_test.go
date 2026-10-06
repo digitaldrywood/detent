@@ -164,16 +164,20 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		t.Fatal(err)
 	}
 	issue.PullRequestHeadSHA = strings.TrimSpace(head)
+	failedCommand := "echo failed; exit 7"
+	if runtime.GOOS == "windows" {
+		failedCommand = "echo failed & exit /b 7"
+	}
 	for _, test := range []struct {
 		name, command, head string
 		exit                int
 		wantErr             bool
 	}{
-		{name: "passing observed output", command: "printf verified"},
-		{name: "failed command", command: "printf failed; exit 7", exit: 7},
-		{name: "wrong immutable head", command: "printf must-not-run", head: strings.Repeat("f", 40), wantErr: true},
+		{name: "passing observed output", command: "echo verified"},
+		{name: "failed command", command: failedCommand, exit: 7},
+		{name: "wrong immutable head", command: "echo must-not-run", head: strings.Repeat("f", 40), wantErr: true},
 		{name: "missing command", wantErr: true},
-		{name: "dirty result", command: "printf changed > untracked.txt", wantErr: true},
+		{name: "dirty result", command: "echo changed > untracked.txt", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := issue
