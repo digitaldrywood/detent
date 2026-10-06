@@ -16,7 +16,7 @@ func TestRepositoryPolicySource(t *testing.T) {
 	for _, test := range []struct {
 		name                                                                              string
 		gitRef, feature, dirty, local, ancestor, missingRemote, cosmetic, wrongRepository bool
-		wantSource, wantReachable                                                         bool
+		wantSource, wantReachable, external                                               bool
 	}{
 		{name: "committed working copy", wantSource: true, wantReachable: true},
 		{name: "default branch ref", gitRef: true, wantSource: true, wantReachable: true},
@@ -27,6 +27,7 @@ func TestRepositoryPolicySource(t *testing.T) {
 		{name: "uncommitted prompt", local: true},
 		{name: "unavailable remote", missingRemote: true},
 		{name: "different origin repository", wrongRepository: true},
+		{name: "external split definition retains unavailable provenance", external: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -73,6 +74,19 @@ func TestRepositoryPolicySource(t *testing.T) {
 			}
 			if test.missingRemote {
 				runWorkflowSourceGit(t, repo, "remote", "remove", "origin")
+			}
+			if test.external {
+				external := t.TempDir()
+				for _, name := range []string{"WORKFLOW.md", "detent.yaml"} {
+					raw, err := os.ReadFile(filepath.Join(repo, name))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(external, name), raw, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				workflowPath = filepath.Join(external, "WORKFLOW.md")
 			}
 			cfg := globalconfig.Project{ID: "orders", Workdir: repo, Workflow: workflowPath}
 			if test.gitRef {

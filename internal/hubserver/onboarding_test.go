@@ -681,7 +681,7 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptors[1].ID, Policy: descriptor}), http.StatusOK)
 	for i, runner := range []*hubclient.Scheduler{pro, air} {
 		local := []workflowconfig.Workflow{proWorkflow, airWorkflow}[i]
-		resolved, err := runner.ResolveProjectWorkflow(t.Context(), "shared", local)
+		resolved, err := runner.ResolveProjectWorkflow(t.Context(), "shared", local, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -707,7 +707,7 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 		if err != nil || approval.Policy.ID != descriptor.ID {
 			t.Fatalf("runner approval = %+v, %v", approval, err)
 		}
-		inspected, err := client.ResolveProjectWorkflow(t.Context(), []workflowconfig.Workflow{proWorkflow, airWorkflow}[i])
+		inspected, err := client.ResolveProjectWorkflow(t.Context(), []workflowconfig.Workflow{proWorkflow, airWorkflow}[i], nil)
 		if err != nil {
 			t.Fatal(err)
 		}

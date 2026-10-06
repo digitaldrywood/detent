@@ -25,6 +25,11 @@ func TestCloudModelSelectionDelivery(t *testing.T) {
 				t.Fatal(err)
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v2/organizations/org_test/projects/prj_test/policy" {
+					w.WriteHeader(http.StatusConflict)
+					_ = json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "No approved repository policy"})
+					return
+				}
 				if r.URL.Path != "/api/v2/organizations/org_test/projects/prj_test" {
 					t.Errorf("unexpected request %s", r.URL.Path)
 				}
@@ -41,7 +46,7 @@ func TestCloudModelSelectionDelivery(t *testing.T) {
 			}
 			workflow := config.Workflow{Config: config.Default(), Definition: config.ProjectDefinition{Layout: config.ProjectDefinitionSplit}, Prompt: "Keep instructions."}
 			workflow.Config.Agents.ModelSelection = config.ModelSelection{Preset: new("sol_first"), NormalModel: new("legacy-project")}
-			resolved, err := native.ResolveProjectWorkflow(t.Context(), workflow)
+			resolved, err := native.ResolveProjectWorkflow(t.Context(), workflow, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
