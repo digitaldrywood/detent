@@ -176,12 +176,16 @@ export function PolicyRow({
         ? "Runners report conflicting configurations. Load the approved shared configuration on these runners; approving their old reports will not converge the project."
         : "Runners report conflicting configurations. Choose one shared project configuration with the intended planning, validation and automatic promotion settings, then approve its inspected descriptor once."
       : observed.length > 0
-      ? "A runner reported an updated policy that needs approval."
+      ? canManage
+        ? "Review and approve the reported policy to resume work."
+        : "An owner or admin must approve the reported policy to resume work."
       : policy === null
-        ? "No policy is approved. Start a runner or paste an inspected descriptor."
+        ? canManage
+          ? "Start a runner or paste a policy to approve it."
+          : "An owner or admin must approve a policy before work can run."
         : shared
           ? "Authorized runners consume this approved project configuration."
-          : "The repository policy descriptor approved for execution.";
+          : "Approved for execution.";
   return (
     <SettingsRow
       title={shared ? "Shared project configuration" : "Repository policy"}
@@ -194,21 +198,23 @@ export function PolicyRow({
       description={description}
       status={
         <>
+          <span className={observed.length > 0 || policy === null ? "text-warning-foreground" : undefined}>
+            {observed.length > 0 ? "Needs approval" : policy === null ? "Not approved" : "Approved"}
+          </span>
           {policy === null ? null : (
-            <span className="block break-all">
-              Approved <span className="font-mono">{policy.policy.policy_id}</span> by {policy.approved_by} on{" "}
-              {policy.approved_at}
-              {shared ? ` · Planning ${policy.policy.gates.plan_enabled ? "on" : "off"} · Validation ${policy.policy.gates.validator ? "on" : "off"} · Automatic promotion ${policy.policy.gates.auto_promote ? "on" : "off"}` : null}
-            </span>
+            <details className="mt-1 text-sm">
+              <summary className="cursor-pointer">Approval details</summary>
+              <p className="mt-2 break-words">Approved by {policy.approved_by} on {policy.approved_at}</p>
+              <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-sm">{JSON.stringify(policy.policy, null, 2)}</pre>
+            </details>
           )}
           {observed.map((entry) => (
-            <span key={entry.policy.policy_id} className="mt-1 flex min-w-0 flex-wrap items-center gap-2 break-all text-warning-foreground">
-              <span>
-                Runner <span className="font-mono">{entry.runner_ids?.join(", ") ?? entry.runner_id}</span> reports{" "}
-                <span className="font-mono">{entry.policy.policy_id}</span> (source revision{" "}
-                <span className="font-mono">{entry.policy.source_revision.slice(0, 12)}</span>) at {entry.observed_at}
-                {entry.policy.configuration ? ` · Planning ${entry.policy.gates.plan_enabled ? "on" : "off"} · Validation ${entry.policy.gates.validator ? "on" : "off"} · Automatic promotion ${entry.policy.gates.auto_promote ? "on" : "off"}` : null}
-              </span>
+            <div key={entry.policy.policy_id} className="mt-2 flex min-w-0 flex-wrap items-start gap-2">
+              <details className="min-w-0 flex-1 text-sm">
+                <summary className="cursor-pointer">Review policy from {entry.runner_ids?.join(", ") ?? entry.runner_id}</summary>
+                <p className="mt-2">Reported at {entry.observed_at}</p>
+                <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-sm">{JSON.stringify(entry.policy, null, 2)}</pre>
+              </details>
               {entry.previously_approved ? <span>Previously approved configuration</span> : null}
               {canManage && !conflict ? (
                 <Button
@@ -217,10 +223,10 @@ export function PolicyRow({
                   aria-label={`Approve updated policy ${entry.policy.policy_id}`}
                   onClick={() => onApprove(entry.policy.policy_id)}
                 >
-                  {approving ? "Approving…" : "Approve updated policy"}
+                  {approving ? "Approving…" : "Approve"}
                 </Button>
               ) : null}
-            </span>
+            </div>
           ))}
         </>
       }
@@ -228,14 +234,12 @@ export function PolicyRow({
         canManage ? (
           <div className="flex flex-col items-end gap-1.5">
             <Button size="sm" variant="ghost-muted" onClick={() => setPasting((open) => !open)}>
-              {pasting ? "Cancel pasting" : "Paste a descriptor"}
+              {pasting ? "Cancel" : "Paste policy"}
             </Button>
             <ControlError message={error} />
           </div>
         ) : (
-          <span className="text-sm text-muted-foreground">
-            {observed.length > 0 ? "Waiting for approval" : policy === null ? "Not approved" : "Approved"}
-          </span>
+          <ControlError message={error} />
         )
       }
     >
@@ -259,7 +263,7 @@ export function PolicyRow({
               disabled={approving || pasted.trim() === ""}
               onClick={() => onApprovePasted(pasted)}
             >
-              Approve pasted descriptor
+              Approve policy
             </Button>
           </div>
         </div>
@@ -360,13 +364,11 @@ export function ProjectSettingsView({
             </>
           ) : observedPolicies.length > 0 ? (
             <>
-              <b className="font-semibold">A runner is waiting for a new policy.</b> Repository settings or a runner
-              upgrade changed the resolved policy. Approve the updated policy to resume work.
+              <b className="font-semibold">A runner is waiting for a new policy.</b> Approve the updated policy to resume work.
             </>
           ) : (
             <>
-              <b className="font-semibold">No policy is approved for this project.</b> Detent will not
-              dispatch work until a runner reports the policy it resolved and somebody approves it.
+              <b className="font-semibold">No policy is approved for this project.</b> Work is blocked until an owner or admin approves a policy.
             </>
           )}
         </SettingsWarning>
@@ -432,7 +434,8 @@ export function ProjectSettingsView({
             label: "Projection",
             text: "Summary sends a work-item summary from Detent to the linked GitHub issue. Disabled stops new summary writes and leaves existing GitHub content in place. Summary requires native authority; it does not transfer field ownership to GitHub.",
           }}
-          description="Write work-item summaries back to GitHub."
+          description="Write work summaries to GitHub."
+          status={integration.profile === "github_compatible" ? "Summary projection requires Detent authority." : undefined}
           control={
             <NativeSelect
               aria-label="Projection"
@@ -449,15 +452,21 @@ export function ProjectSettingsView({
             label: "Authority",
             text: "The native profile gives Detent ownership of issue title, body, discussion, dependencies, authors, workflow, labels, assignees and priority; the github_compatible profile gives GitHub ownership of those fields. Detent always owns scheduling, progress and native approval. Source timestamps retain their source, repository policy comes from the trusted repository revision, and GitHub controls merge protections. Intake and projection do not change these owners.",
           }}
-          description="Which side owns each field. Set by the project's profile, not by this page."
+          description="Who manages this project’s issue fields."
           status={
-            <span className="font-mono text-[11px]">
-              {Object.entries(integration.authority ?? {})
-                .map(([field, owner]) => `${field}: ${owner}`)
-                .join(" · ")}
-            </span>
+            <details className="text-sm">
+              <summary className="cursor-pointer">Field ownership</summary>
+              <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+                {Object.entries(integration.authority ?? {}).map(([field, owner]) => (
+                  <React.Fragment key={field}>
+                    <dt className="break-words">{field.replaceAll("_", " ")}</dt>
+                    <dd className="break-words">{owner}</dd>
+                  </React.Fragment>
+                ))}
+              </dl>
+            </details>
           }
-          control={<span className="text-sm capitalize text-muted-foreground">{integration.profile}</span>}
+          control={<span className="text-sm text-muted-foreground">{integration.profile === "native" ? "Detent" : "GitHub compatible"}</span>}
         />
       </SettingsSection>
 
@@ -476,10 +485,10 @@ export function ProjectSettingsView({
         <SettingsRow
           title="Runner routing"
           help={{ label: "Runner routing", text: RUNNER_HELP.routing }}
-          description="Select authorized runners that can take this project’s work."
+          description="Choose which runners handle this project."
           control={
             <Button size="sm" variant="outline" onClick={onOpenFleet}>
-              Open the fleet
+              Open fleet
             </Button>
           }
         />
