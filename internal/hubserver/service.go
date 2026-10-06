@@ -138,9 +138,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.startSpritePoolForQueue = func(scope nativeScope) {
 		service.scheduleSpritePoolForQueue(workerContext, scope)
 	}
-	if cfg.OutboxBackend != nil {
-		service.outbox = newOutboxWorker(service)
-	}
+	service.outbox = newOutboxWorker(service)
 	if cfg.Hosted != nil {
 		service.hostedSessions, err = auth.NewSessionService(auth.SessionConfig{SessionTTL: 30 * 24 * time.Hour, PublicURL: cfg.Hosted.PublicURL}, service)
 		if err != nil {

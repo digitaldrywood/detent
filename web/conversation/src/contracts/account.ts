@@ -892,3 +892,13 @@ export const OrganizationProjectRank = Schema.Struct({
   project_ids: Schema.Array(Schema.String),
 });
 export type OrganizationProjectRank = typeof OrganizationProjectRank.Type;
+
+export const SlackIntegrationStatus = Schema.Struct({
+  webhook: Schema.String,
+  channel_name: Schema.String,
+  last_success_at: Schema.NullOr(Schema.String),
+  last_failure_at: Schema.NullOr(Schema.String),
+  last_delivery_failed: Schema.Boolean,
+  last_status_code: Schema.Number,
+});
+export type SlackIntegrationStatus = typeof SlackIntegrationStatus.Type;

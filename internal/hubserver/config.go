@@ -44,6 +44,7 @@ var (
 type Config struct {
 	SecretKeys            *hubsecrets.Keyring
 	SpritesHTTPClient     *http.Client
+	SlackHTTPClient       *http.Client
 	CredentialMaintenance bool
 	Hosted                *HostedConfig
 	Conversation          *ConversationConfig

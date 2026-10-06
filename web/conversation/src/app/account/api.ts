@@ -28,6 +28,7 @@ import {
   PolicyApproval,
   ProjectIntegration,
   ProjectSecretStatus,
+  SlackIntegrationStatus,
   SpritePool,
   ProjectsResponse,
   OrganizationProjectRank,
@@ -185,6 +186,9 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(CloudModelSelection, "PUT", `${input.projectId === undefined ? base : project(input.projectId)}/model-selection`, {
         expected_revision: input.revision, selection: input.selection, idempotency_key: input.key,
       }),
+    slackIntegration: () => send(SlackIntegrationStatus, "GET", `${base}/integrations/slack`),
+    saveSlackIntegration: (input: { webhook?: string; channel_name: string }) => send(SlackIntegrationStatus, "PUT", `${base}/integrations/slack`, input),
+    testSlackIntegration: () => send(SlackIntegrationStatus, "POST", `${base}/integrations/slack/test`, {}),
     members: () => send(MembersResponse, "GET", `${base}/members`),
     invite: (input: { email: string; role: string; key: string; grants?: readonly ProjectGrant[] }) =>
       send(Schema.Unknown, "POST", `${base}/members/invitations`, {
