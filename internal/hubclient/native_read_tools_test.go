@@ -1,6 +1,7 @@
 package hubclient
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -134,6 +136,22 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := foreign.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Another foreign item", State: "Backlog"}); err != nil {
+		t.Fatal(err)
+	}
+	foreignPage, err := foreign.Issues(t.Context(), operatortool.WorkReadRequest{Limit: 1}.NativeWorkQuery())
+	if err != nil || foreignPage.NextCursor == "" {
+		t.Fatalf("foreign page = %#v, %v", foreignPage, err)
+	}
+	discovered := make(map[tracker.NativeWorkItemID]string)
+	for i, fingerprint := range []string{"native-search-existing-one", "native-search-existing-two"} {
+		body := issueorigin.Stamp("Authoritative existing problem", issueorigin.Origin{Kind: "worker", Source: "existing-owner", Fingerprint: fingerprint})
+		item, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Search fixture " + strconv.Itoa(i), Body: body, State: "Todo", Priority: new(0), Labels: []string{"search-fixture"}, Assignees: []string{"operator"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		discovered[item.WorkItemID] = fingerprint
+	}
 	execution := h.scheduler.RunExecution(issue.ID)
 	owner := execution.(*nativeExecution)
 	if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}); err != nil {
@@ -144,8 +162,47 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		t.Fatal("native execution omitted its read tools")
 	}
 	tools, handler := source.AgentTools()
-	if len(tools) != 11 {
-		t.Fatalf("native tools = %d, want 11", len(tools))
+	if len(tools) != 12 {
+		t.Fatalf("native tools = %d, want 12", len(tools))
+	}
+	listArgs, err := json.Marshal(map[string]any{"project_id": h.project, "query": "native-search-existing", "limit": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[tracker.NativeWorkItemID]bool)
+	var cursor string
+	for range 2 {
+		args, err := json.Marshal(map[string]any{"project_id": h.project, "query": "native-search-existing", "limit": 1, "cursor": cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkList, Arguments: args})
+		var page operatortool.WorkReadResult[operatortool.NativeWorkPage]
+		if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &page) != nil || page.ProjectID != string(h.project) || page.GeneratedAt.IsZero() || page.Freshness != "available" || len(page.Data.Items) != 1 {
+			t.Fatalf("bounded project search = %s, %v", result.Content, err)
+		}
+		item := page.Data.Items[0]
+		if discovered[item.WorkItemID] == "" || seen[item.WorkItemID] || item.ProjectID != h.project || item.Body != "" || !strings.Contains(result.Content, `"omitted_fields":["body"`) {
+			t.Fatalf("search returned an unscoped, repeated or unbounded item: %s", result.Content)
+		}
+		seen[item.WorkItemID] = true
+		cursor = page.Data.NextCursor
+		if (cursor != "") != (len(seen) == 1) {
+			t.Fatalf("search cursor lost page boundary: %s", result.Content)
+		}
+		args, err = json.Marshal(map[string]any{"project_id": h.project, "reference": item.WorkItemID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err = handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkItem, Arguments: args})
+		var detail operatortool.WorkReadResult[operatortool.NativeItem]
+		if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &detail) != nil {
+			t.Fatalf("discovered work item = %s, %v", result.Content, err)
+		}
+		origin, ok := issueorigin.Parse(detail.Data.Body)
+		if !ok || origin.Fingerprint != discovered[item.WorkItemID] || origin.Kind != "worker" || origin.Source != "existing-owner" {
+			t.Fatalf("discovery lost authoritative fingerprint: %#v", origin)
+		}
 	}
 	receiptArgs, err := json.Marshal(map[string]any{"project_id": h.project, "reference": issue.ID, "native_attempt_id": owner.data.AttemptID})
 	if err != nil {
@@ -171,6 +228,9 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tool := range tools {
+		if tool.Name == operatortool.WorkList && (!strings.Contains(tool.Description, "Use cursor, not offset") || strings.Contains(tool.Description, "reference must")) {
+			t.Fatal("project search advertised an unsupported paging or reference contract")
+		}
 		if tool.Name == operatortool.WorkItem && !strings.Contains(tool.Description, "canonical native work-item ID") {
 			t.Fatal("read tool advertised an unsupported reference contract")
 		}
@@ -180,6 +240,10 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		extra map[string]any
 		want  string
 	}{
+		{operatortool.WorkList, map[string]any{"query": "native-search-existing", "state": "Todo", "label": "search-fixture", "assignee": "operator", "priority": 0, "limit": 1}, "Search fixture"},
+		{operatortool.WorkList, map[string]any{"query": "Search fixture", "states": []string{"In Review", "Todo"}, "labels": []string{"search-fixture", "absent"}, "assignees": []string{"operator", "absent"}, "priorities": []int{0, 3}, "archived": "all", "include": []string{"work", "workspace"}, "limit": 1}, `"lanes"`},
+		{operatortool.WorkList, map[string]any{"archived": "true", "limit": 1}, selected.Title},
+		{operatortool.WorkList, map[string]any{"query": "no-matching-work-item", "limit": 1}, `"items":[]`},
 		{operatortool.WorkItem, map[string]any{"reference": issue.ID}, issue.Title},
 		{operatortool.WorkComments, map[string]any{"reference": issue.ID, "limit": 1}, "Genuine native discussion"},
 		{operatortool.WorkHistory, map[string]any{"reference": issue.ID, "limit": 1}, "next_cursor"},
@@ -220,6 +284,15 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		args map[string]any
 		want error
 	}{
+		{operatortool.WorkList, map[string]any{"project_id": foreignProject.ID}, operatortool.ErrAccessDenied},
+		{operatortool.WorkList, map[string]any{"project_id": h.project, "cursor": foreignPage.NextCursor}, operatortool.ErrInvalidArguments},
+		{operatortool.WorkList, map[string]any{"project_id": h.project, "cursor": "unsupported-cursor"}, operatortool.ErrInvalidArguments},
+		{operatortool.WorkList, map[string]any{"project_id": h.project, "offset": 1}, operatortool.ErrInvalidArguments},
+		{operatortool.WorkList, map[string]any{"project_id": h.project, "limit": 201}, operatortool.ErrInvalidArguments},
+		{operatortool.WorkList, map[string]any{"project_id": h.project, "fingerprint": "unsupported-filter"}, operatortool.ErrInvalidArguments},
+		{operatortool.WorkList, map[string]any{"project_id": h.project, "include": []string{"credentials"}}, operatortool.ErrInvalidArguments},
+		{operatortool.WorkList, map[string]any{"project_id": h.project, "organization_id": "org_foreign"}, operatortool.ErrInvalidArguments},
+		{operatortool.WorkList, map[string]any{"project_id": h.project, "reference": issue.ID}, operatortool.ErrInvalidArguments},
 		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": "195"}, operatortool.ErrInvalidArguments},
 		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": "Read current native evidence"}, operatortool.ErrInvalidArguments},
 		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": "https://cloud.detent.build/work/195"}, operatortool.ErrInvalidArguments},
@@ -245,8 +318,18 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 			t.Fatalf("refusal %s: success=%t error=%v, want %v", test.name, result.Success, err, test.want)
 		}
 	}
-	if err := h.native.Release(t.Context(), owner.claim.lease, "released"); err != nil {
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	result, err = handler(cancelled, runner.AgentToolCall{Name: operatortool.WorkList, Arguments: listArgs})
+	if !errors.Is(err, context.Canceled) || result.Success {
+		t.Fatalf("cancelled search authority: success=%t error=%v", result.Success, err)
+	}
+	if err := h.native.Release(t.Context(), owner.claim.lease, "cancelled"); err != nil {
 		t.Fatal(err)
+	}
+	result, err = handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkList, Arguments: listArgs})
+	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || result.Success {
+		t.Fatalf("lost search authority: success=%t error=%v", result.Success, err)
 	}
 	result, err = handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkAttemptReceipt, Arguments: receiptArgs})
 	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || result.Success {
