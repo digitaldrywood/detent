@@ -189,6 +189,9 @@ func TestChangeCIRejectsForgedAndReplayedResults(t *testing.T) {
 func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	t.Parallel()
 	f := newChangeFixture(t, nil)
+	snapshot := linkedSnapshot()
+	snapshot.URL = "https://github.com/digitaldrywood/detent/issues/12"
+	f.service.config.ImportBackend = linkedTestImporter{snapshot: snapshot}
 	other := newNativeFixture(t, f.service, "", "other")
 	repositoryID, _ := seedProjection(t, f.service.database.db)
 	for _, statement := range []struct {
