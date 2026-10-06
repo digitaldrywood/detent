@@ -123,7 +123,7 @@ app-dev:
 check-app:
 	@set -e; if [ -f "$(APP_DIR)/package.json" ]; then \
 		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
-		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run --maxWorkers=$(TEST_PROCS) && npm run build); \
+		(cd "$(APP_DIR)" && npm run typecheck && npm run design:tokens:check && npm run design:catalog:check && npx vitest run --maxWorkers=$(TEST_PROCS) && npm run build); \
 		grep -q "MIT" static/app/conversation/app.js || { \
 			echo "static/app/conversation/app.js is missing the MIT attribution banner."; \
 			exit 1; \

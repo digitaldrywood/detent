@@ -10,11 +10,15 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  lazyRouteComponent,
+  Outlet,
   redirect,
   useParams,
+  useRouterState,
   type AnyRoute,
   type RouterHistory,
 } from "@tanstack/react-router";
+import type { ReactElement } from "react";
 
 import { ConversationRoute, NewChat, ProjectNewChat, Shell } from "./App.tsx";
 import { accountRoutes } from "./routes.account.tsx";
@@ -23,9 +27,45 @@ import { ChangeRequestPage } from "./work/ChangeRequestPage.tsx";
 import { ChangesPage } from "./work/ChangesPage.tsx";
 import { IssuePage } from "./work/IssuePage.tsx";
 import { WorkBoard } from "./work/WorkBoard.tsx";
-import { routerBasePath } from "../runtime/basePath.ts";
+import { routerBasePath, withoutBasePath } from "../runtime/basePath.ts";
 
-const rootRoute = createRootRoute({ component: Shell });
+// --- Design system (dev builds only) ----------------------------------------
+//
+// `/design-system` is the component gallery (`src/design-system/gallery`). It
+// exists only when `import.meta.env.DEV` is true: production builds replace
+// that with `false`, so the routes, the lazy import and the gallery chunk are
+// dropped from the bundle. It renders outside the Shell — no sidebar, no
+// conversation list — because it is a viewer of components, not a screen of
+// the app, and each specimen frame is a page of its own.
+
+/** True for the gallery and its specimen frames. */
+export function isDesignSystemPath(pathname: string): boolean {
+  return pathname === "/design-system" || pathname.startsWith("/design-system/");
+}
+
+/** The gallery routes, or none outside a dev build. */
+export function designSystemRoutes(parent: AnyRoute, dev: boolean): AnyRoute[] {
+  if (!dev) return [];
+  const gallery = lazyRouteComponent(() => import("../design-system/gallery/Gallery.tsx"), "GalleryRoute");
+  const frame = lazyRouteComponent(() => import("../design-system/gallery/Gallery.tsx"), "FrameRoute");
+  return [
+    createRoute({ getParentRoute: () => parent, path: "/design-system", component: gallery }),
+    createRoute({ getParentRoute: () => parent, path: "/design-system/$entryId", component: gallery }),
+    createRoute({
+      getParentRoute: () => parent,
+      path: "/design-system/frame/$entryId/$specimenId",
+      component: frame,
+    }),
+  ] as unknown as AnyRoute[];
+}
+
+/** The Shell everywhere except the dev-only gallery, which brings its own chrome. */
+function DevRoot(): ReactElement {
+  const pathname: string = useRouterState({ select: (state) => withoutBasePath(state.location.pathname) });
+  return isDesignSystemPath(pathname) ? <Outlet /> : <Shell />;
+}
+
+const rootRoute = createRootRoute({ component: import.meta.env.DEV ? DevRoot : Shell });
 
 /** Reads the project out of the path so the board stays a pure component. */
 function WorkProjectBoard() {
@@ -154,6 +194,9 @@ const routeTree = rootRoute.addChildren([
   supportRoute,
   supportOrganizationRoute,
   ...accountRoutes(rootRoute),
+  // The literal guard (not just the parameter) is what lets the production
+  // build drop `designSystemRoutes` and its dynamic import entirely.
+  ...(import.meta.env.DEV ? designSystemRoutes(rootRoute as unknown as AnyRoute, true) : []),
 ] as unknown as AnyRoute[]);
 
 /** `history` is for tests, which have no browser location to navigate. */

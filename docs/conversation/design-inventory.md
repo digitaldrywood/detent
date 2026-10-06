@@ -1,6 +1,6 @@
 # Conversation product design inventory (D01 and D03)
 
-Use the [Detent design system](design-system.md) for shared visual rules and
+Use the [Detent design system](../design-system/README.md) for shared visual rules and
 component selection. This inventory retains screen coverage and product
 contracts; its historical styling examples do not override the design system.
 

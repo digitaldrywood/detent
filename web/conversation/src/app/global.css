@@ -10,29 +10,29 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(root) {
   animation: none;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-composer) {
+html[data-mobile-composer-route-transition="true"]::view-transition-group(mobile-composer) {
   animation-duration: 180ms;
   animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-image-pair(t3-mobile-composer) {
+html[data-mobile-composer-route-transition="true"]::view-transition-image-pair(mobile-composer) {
   isolation: isolate;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobile-composer) {
-  animation: t3-mobile-composer-old 180ms linear both;
+html[data-mobile-composer-route-transition="true"]::view-transition-old(mobile-composer) {
+  animation: mobile-composer-old 180ms linear both;
   mix-blend-mode: normal;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobile-composer) {
-  animation: t3-mobile-composer-new 180ms linear both;
+html[data-mobile-composer-route-transition="true"]::view-transition-new(mobile-composer) {
+  animation: mobile-composer-new 180ms linear both;
   mix-blend-mode: normal;
 }
 
 /* The expanded and compact composers have different internal layouts. Use a
    brief crossfade while their shared wrapper moves so the layout change does
    not read as a single-frame cut. */
-@keyframes t3-mobile-composer-old {
+@keyframes mobile-composer-old {
   0%,
   35% {
     opacity: 1;
@@ -43,7 +43,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobil
   }
 }
 
-@keyframes t3-mobile-composer-new {
+@keyframes mobile-composer-new {
   0%,
   35% {
     opacity: 0;
@@ -54,16 +54,16 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobil
   }
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-draft-headline) {
+html[data-mobile-composer-route-transition="true"]::view-transition-group(mobile-draft-headline) {
   animation-duration: 130ms;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobile-draft-headline) {
-  animation: t3-mobile-draft-headline-exit 130ms cubic-bezier(0.4, 0, 1, 1) both;
+html[data-mobile-composer-route-transition="true"]::view-transition-old(mobile-draft-headline) {
+  animation: mobile-draft-headline-exit 130ms cubic-bezier(0.4, 0, 1, 1) both;
   mix-blend-mode: normal;
 }
 
-@keyframes t3-mobile-draft-headline-exit {
+@keyframes mobile-draft-headline-exit {
   from {
     opacity: 1;
     transform: translateY(0);
@@ -1225,3 +1225,12 @@ code {
 
 /* Let the sortable rows open label clearance before painting the dividers.
    This runs once per pickup; rows retain dnd-kit's normal 200ms transitions. */
+
+/* --- collapsible-section-header ---
+   SectionHeaderStatus uses text-3xs (10px), a dense-UI font size for status
+   counters beside section headers. */
+@theme inline {
+  --text-3xs: 0.625rem;
+  --text-3xs--line-height: calc(0.875 / 0.625);
+}
+/* --- End collapsible-section-header --- */
