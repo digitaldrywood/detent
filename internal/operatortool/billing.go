@@ -30,7 +30,7 @@ func BillingCatalog() []Definition {
 		{BillingUsage, "Read owner-only billing metadata, entitlement usage and cost drivers.", "", "", false, false},
 		{BillingExport, "Export owner-only subscription, allowance, usage and safe audit data with an export identifier and freshness.", "", "", false, false},
 		{HostedPlan, "Read the current organization plan and allowances with owner/admin dashboard authority.", "", "", false, false},
-		{HostedUsage, "Read usage for currently granted projects in a bounded time window.", `"project_id":{"type":"string","maxLength":256},"range":{"type":"string","enum":["24h","7d","30d","90d"]}`, "", false, false},
+		{HostedUsage, "Read usage and monthly infrastructure costs for currently granted projects. Use range month:YYYY-MM for a UTC calendar month.", `"project_id":{"type":"string","maxLength":256},"range":{"type":"string","pattern":"^(24h|7d|30d|90d|month:[0-9]{4}-[0-9]{2})$"}`, "", false, false},
 		{BillingCheckout, "Create or resume an approved subscription checkout. Executes directly with current authority.", `"price":{"type":"string","minLength":1,"maxLength":256}`, `,"price"`, true, true},
 		{CreditCheckout, "Create or resume checkout for a configured AI credit pack. Executes directly with current authority.", `"price":{"type":"string","minLength":1,"maxLength":256}`, `,"price"`, true, true},
 		{CreditAutoFund, "Configure AI credit auto-funding with a configured pack and threshold in USD cents. Changes execute directly with current billing authority.", `"enabled":{"type":"boolean"},"threshold_cents":{"type":"integer","minimum":0},"price":{"type":"string","maxLength":256}`, `,"enabled","threshold_cents","price"`, true, true},

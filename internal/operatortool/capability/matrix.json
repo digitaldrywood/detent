@@ -37412,6 +37412,191 @@
       "status": "excluded",
       "coverage": "TestCoordinatorProjectActions; isolated Chrome inline confirmation and per-user preference verification.",
       "decision": "Inline chat is a client affordance, not a new MCP authority or confirmation gate."
+    },
+    {
+      "id": "hubserver.import_sprite_usage",
+      "summary": "Import sanitized Sprite infrastructure usage",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/sprite_usage_api.go",
+          "kind": "route",
+          "definition": "e.POST(nativeBase+\"/usage/sprites\", s.ingestSpriteUsage, s.requireNativeScope(apiScopeOperator, apiScopeAdmin)) [route=\"/api/v2/organizations/:organization/projects/:project/usage/sprites\"]",
+          "occurrence": 1,
+          "line": 41,
+          "method": "POST",
+          "path": "nativeBase + \"/usage/sprites\"",
+          "handler": "s.ingestSpriteUsage",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/usage/sprites"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "Hub usage application owner"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "Hub usage application owner"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "Hub usage application owner"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "Hub usage application owner",
+          "unsupported": "Usage routes are not registered in credential maintenance deployments."
+        }
+      ],
+      "authority": {
+        "role": "Project reader for project totals; administrator for organization totals and imports",
+        "credential_scope": "Current API or MCP credential with read authority for reports and admin authority for import",
+        "project_grant": "Current project grant is rechecked by the application; organization reports require all current project grants",
+        "ownership": "Current organization; original project and provider resource attribution retained in source revisions"
+      },
+      "preconditions": [
+        "Administrator ingestion through the shared Hub usage transaction. Provider credentials and invoices are not tool inputs. Source-period revisions and native business receipts make API and MCP retries idempotent; overlapping sources are rejected.",
+        "No visible UI or provider credential access. UTC calendar month and explicit evidence, coverage and freshness."
+      ],
+      "confirmation": [
+        {
+          "when": "Current authorized call; confirmation is owned by the client",
+          "class": "none"
+        }
+      ],
+      "application": "Service.importSpriteUsageCommand; recordCostObservation",
+      "extraction": "Shared application owner used directly by API and typed MCP adapters.",
+      "tool": {
+        "set": "projects",
+        "name": "import_sprite_usage",
+        "arguments": "Typed bounded arguments in internal/operatortool/projects.go; organization and principal come from current connection authority.",
+        "result": "Native import receipt with recorded observation count; MCP wraps the receipt in the existing action result.",
+        "annotations": {
+          "readOnly": false,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
+      "owner": "digitaldrywood/detent#3345",
+      "status": "implemented",
+      "coverage": "TestSpriteUsageAPI; TestHostedMonthlyCostsAccess; TestCostLedgerReplay; TestCostLedgerScopeIsolation",
+      "decision": "Administrator ingestion through the shared Hub usage transaction. Provider credentials and invoices are not tool inputs. Source-period revisions and native business receipts make API and MCP retries idempotent; overlapping sources are rejected."
+    },
+    {
+      "id": "hubserver.monthly_usage_costs",
+      "summary": "Monthly usage cost ledger reads",
+      "audience": "operator",
+      "sources": [
+        {
+          "source": "internal/hubserver/sprite_usage_api.go",
+          "kind": "route",
+          "definition": "e.GET(\"/api/v2/organizations/:organization/usage/monthly\", s.organizationMonthlyCosts, s.requireInstanceAdmin()) [route=\"/api/v2/organizations/:organization/usage/monthly\"]",
+          "occurrence": 1,
+          "line": 40,
+          "method": "GET",
+          "path": "\"/api/v2/organizations/:organization/usage/monthly\"",
+          "handler": "s.organizationMonthlyCosts",
+          "resolved_path": "/api/v2/organizations/:organization/usage/monthly"
+        },
+        {
+          "source": "internal/hubserver/sprite_usage_api.go",
+          "kind": "route",
+          "definition": "e.GET(nativeBase+\"/usage/monthly\", s.projectMonthlyCosts, s.requireNativeScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin)) [route=\"/api/v2/organizations/:organization/projects/:project/usage/monthly\"]",
+          "occurrence": 1,
+          "line": 39,
+          "method": "GET",
+          "path": "nativeBase + \"/usage/monthly\"",
+          "handler": "s.projectMonthlyCosts",
+          "resolved_path": "/api/v2/organizations/:organization/projects/:project/usage/monthly"
+        }
+      ],
+      "availability": [
+        {
+          "deployment": "self_hosted",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "Hub usage application owner"
+        },
+        {
+          "deployment": "hosted_dedicated",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "Hub usage application owner"
+        },
+        {
+          "deployment": "hosted_shared",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "Hub usage application owner"
+        },
+        {
+          "deployment": "credential_maintenance",
+          "trackers": [
+            "github",
+            "native"
+          ],
+          "service": "Hub usage application owner",
+          "unsupported": "Usage routes are not registered in credential maintenance deployments."
+        }
+      ],
+      "authority": {
+        "role": "Project reader for project totals; administrator for organization totals and imports",
+        "credential_scope": "Current API or MCP credential with read authority for reports and admin authority for import",
+        "project_grant": "Current project grant is rechecked by the application; organization reports require all current project grants",
+        "ownership": "Current organization; original project and provider resource attribution retained in source revisions"
+      },
+      "preconditions": [
+        "Scope project requires its current read grant. Scope organization requires administrator access and grants to every current project. Reads preserve historical project attribution and use the same UTC monthly contract.",
+        "No visible UI or provider credential access. UTC calendar month and explicit evidence, coverage and freshness."
+      ],
+      "confirmation": [
+        {
+          "when": "Current authorized call; confirmation is owned by the client",
+          "class": "none"
+        }
+      ],
+      "application": "database.monthlyCosts; buildMonthlyCostReport",
+      "extraction": "Shared application owner used directly by API and typed MCP adapters.",
+      "tool": {
+        "set": "projects",
+        "name": "monthly_usage_costs",
+        "arguments": "Typed bounded arguments in internal/operatortool/projects.go; organization and principal come from current connection authority.",
+        "result": "Monthly report with original sources, project breakdown, separate estimated/billed currency totals and coverage gaps.",
+        "annotations": {
+          "readOnly": true,
+          "destructive": false,
+          "idempotent": true,
+          "openWorld": false
+        }
+      },
+      "owner": "digitaldrywood/detent#3345",
+      "status": "implemented",
+      "coverage": "TestSpriteUsageAPI; TestHostedMonthlyCostsAccess; TestCostLedgerReplay; TestCostLedgerScopeIsolation",
+      "decision": "Scope project requires its current read grant. Scope organization requires administrator access and grants to every current project. Reads preserve historical project attribution and use the same UTC monthly contract."
     }
   ]
 }

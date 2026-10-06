@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/usagecost"
 )
 
 // ProjectRequest keeps business retry identity separate from protocol IDs and
@@ -36,6 +38,9 @@ type HostedProjectCreateInput struct {
 }
 type OnboardingInput struct {
 	Progress onboarding.Progress `json:"progress"`
+}
+type SpriteUsageInput struct {
+	Observations []usagecost.Observation `json:"observations"`
 }
 type IntegrationInput struct {
 	WorkflowMarkdown  *string                `json:"workflow_markdown,omitempty"`
@@ -114,6 +119,7 @@ func ProjectCatalog() []Definition {
 		out = append(out, Definition{Name: name, Description: "Read authorized project application data: " + strings.ReplaceAll(name, "_", " ") + ". Setup returns the existing browser flow and requirements.", InputSchema: raw, Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}})
 	}
 	out = append(out,
+		Definition{Name: "monthly_usage_costs", Description: "Read UTC monthly infrastructure cost totals and coverage. Project totals are a breakdown of organization totals, never an additional charge.", InputSchema: json.RawMessage(`{"type":"object","properties":{"project_id":{"type":"string","maxLength":256},"month":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}$"},"scope":{"type":"string","enum":["project","organization"]}},"additionalProperties":false}`), Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}},
 		projectWrite[ProjectCreateInput]("create_native_project", false, false),
 		projectWrite[HostedProjectCreateInput]("create_hosted_project", true, false),
 		projectWrite[OnboardingInput]("save_onboarding", false, false),
@@ -127,12 +133,25 @@ func ProjectCatalog() []Definition {
 		projectWrite[PolicyRevokeInput]("revoke_project_policy", true, false),
 		projectWrite[SummaryInput]("project_native_summary", true, true),
 		projectWrite[struct{}]("remove_project_secret", true, false),
+		projectWrite[SpriteUsageInput]("import_sprite_usage", false, false),
 	)
 	return out
 }
 func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 	schema := projectSchema(reflect.TypeFor[ProjectRequest[T]]())
 	schema["required"] = []string{"project_id", "request_id", "input"}
+	if name == "import_sprite_usage" {
+		input := schema["properties"].(map[string]any)["input"].(map[string]any)
+		observations := input["properties"].(map[string]any)["observations"].(map[string]any)
+		observations["minItems"], observations["maxItems"] = 1, 128
+		properties := observations["items"].(map[string]any)["properties"].(map[string]any)
+		properties["quantity"] = map[string]any{"type": []string{"number", "null"}, "minimum": 0}
+		properties["amount_micros"] = map[string]any{"type": []string{"integer", "null"}, "minimum": -1e15, "maximum": 1e15}
+		properties["unit_price_micros"] = map[string]any{"type": []string{"integer", "null"}, "minimum": 0, "maximum": 1e15}
+		for _, field := range []string{"rate_source", "evidence_source", "resource_name"} {
+			properties[field] = map[string]any{"type": "string", "maxLength": 512}
+		}
+	}
 	if name == "create_native_project" || name == "create_hosted_project" {
 		schema["required"] = []string{"request_id", "input"}
 	}
@@ -146,6 +165,9 @@ func projectSchema(t reflect.Type) map[string]any {
 	}
 	if t == reflect.TypeFor[json.RawMessage]() {
 		return map[string]any{}
+	}
+	if t == reflect.TypeFor[time.Time]() {
+		return map[string]any{"type": "string", "format": "date-time", "maxLength": 64}
 	}
 	switch t.Kind() {
 	case reflect.Struct:
@@ -199,6 +221,9 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 	var bounded func(any, string, reflect.Type) bool
 	bounded = func(v any, key string, t reflect.Type) bool {
 		if t.Kind() == reflect.Pointer {
+			if v == nil && (key == "quantity" || key == "amount_micros" || key == "unit_price_micros") {
+				return true
+			}
 			t = t.Elem()
 		}
 		if t == reflect.TypeFor[json.RawMessage]() {
@@ -226,6 +251,12 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 				}
 			}
 		case float64:
+			if key == "amount_micros" {
+				return x >= -1e15 && x <= 1e15
+			}
+			if key == "unit_price_micros" || key == "quantity" {
+				return x >= 0 && x <= 1e15
+			}
 			if key == "limit" {
 				return x >= 1 && x <= 200
 			}
@@ -243,6 +274,8 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 
 func projectStringLimit(key string) int {
 	switch key {
+	case "rate_source", "evidence_source", "resource_name":
+		return 512
 	case "prompt", "shared_prompt", "agents_prompt":
 		return MaxArgumentBytes
 	case "source":

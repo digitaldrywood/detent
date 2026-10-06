@@ -195,16 +195,17 @@ type usageRunner struct {
 }
 
 type usageReport struct {
-	Chat      chatUsageSummary      `json:"chat"`
-	Range     usageWindow           `json:"range"`
-	Total     usageTotal            `json:"total"`
-	Providers []usageProvider       `json:"providers"`
-	Daily     []usageDay            `json:"daily"`
-	Totals    usageTotals           `json:"totals"`
-	Breakdown usageBreakdown        `json:"breakdown"`
-	Limits    map[string]usageLimit `json:"limits"`
-	Runners   []usageRunner         `json:"runners"`
-	Currency  string                `json:"currency"`
+	MonthlyCosts *monthlyCostReport    `json:"monthly_costs,omitempty"`
+	Chat         chatUsageSummary      `json:"chat"`
+	Range        usageWindow           `json:"range"`
+	Total        usageTotal            `json:"total"`
+	Providers    []usageProvider       `json:"providers"`
+	Daily        []usageDay            `json:"daily"`
+	Totals       usageTotals           `json:"totals"`
+	Breakdown    usageBreakdown        `json:"breakdown"`
+	Limits       map[string]usageLimit `json:"limits"`
+	Runners      []usageRunner         `json:"runners"`
+	Currency     string                `json:"currency"`
 }
 
 // usageRow is one stored attempt_usage row joined with what the report needs
@@ -251,12 +252,18 @@ func (s *Service) hostedUsageReport(c echo.Context) error {
 // visible instead of showing the wrong week.
 func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 	name := strings.TrimSpace(value)
+	if strings.HasPrefix(name, "month:") {
+		if name == "month:" {
+			return usageWindow{}, nativeInvalid("Month must be YYYY-MM in UTC")
+		}
+		return costMonth(strings.TrimPrefix(name, "month:"), now)
+	}
 	if name == "" {
 		name = defaultUsageRange
 	}
 	span, known := usageRanges[name]
 	if !known {
-		return usageWindow{}, nativeInvalid("Range must be one of 24h, 7d, 30d or 90d")
+		return usageWindow{}, nativeInvalid("Range must be 24h, 7d, 30d, 90d or month:YYYY-MM in UTC")
 	}
 	// Usage is stored per UTC hour, so the window starts on an hour boundary:
 	// the current partial hour plus the full hours before it, span in all.
@@ -634,5 +641,21 @@ func (s *Service) readHostedUsage(ctx context.Context, credential apiCredential,
 	if err != nil {
 		return usageReport{}, err
 	}
+	month, err := costMonth("", s.config.now())
+	if strings.HasPrefix(strings.TrimSpace(rangeName), "month:") {
+		month = window
+	}
+	if err != nil {
+		return usageReport{}, err
+	}
+	costScope := "readable_projects"
+	if strings.TrimSpace(project) != "" {
+		costScope = "project"
+	}
+	costs, err := s.database.monthlyCosts(ctx, s.config.Hosted.OrganizationID, costScope, projects, month, s.config.now())
+	if err != nil {
+		return usageReport{}, err
+	}
+	report.MonthlyCosts = &costs
 	return report, nil
 }
