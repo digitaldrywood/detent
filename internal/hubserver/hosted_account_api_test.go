@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -191,7 +192,7 @@ func TestHostedAccountContractFixtures(t *testing.T) {
 	}
 }
 
-var accountClientCall = regexp.MustCompile("send\\(\\s*[\\w.]+,\\s*\"([A-Z]+)\",\\s*(?:`([^`]+)`|hubPath\\(\"([^\"]+)\"\\))")
+var accountClientCall = regexp.MustCompile("send\\(\\s*[\\w.]+,\\s*\"([A-Z]+)\",\\s*(?:`((?:\\$\\{(?:[^{}]|\\{[^{}]*\\})*\\}|[^`$])+)`|hubPath\\(\"([^\"]+)\"\\))")
 
 var accountClientParameter = regexp.MustCompile(`\$\{encodeURIComponent\([^}]*\)\}`)
 
@@ -216,35 +217,100 @@ func TestHostedAccountClientRoutesMounted(t *testing.T) {
 		"POST " + hostedOrganizationBase + "/projects/:project/attachments":                true,
 		"GET " + hostedOrganizationBase + "/projects/:project/attachments/:param/metadata": true,
 	}
-	calls := accountClientCall.FindAllStringSubmatch(string(raw), -1)
-	if len(calls) < 20 {
-		t.Fatalf("found %d account client calls; the call pattern no longer matches api.ts", len(calls))
+	callCount := len(accountClientCall.FindAllStringIndex(string(raw), -1))
+	if callCount < 20 {
+		t.Fatalf("found %d account client calls; the call pattern no longer matches api.ts", callCount)
 	}
-	for _, call := range calls {
+	for _, key := range accountClientRoutes(string(raw)) {
+		if entryOwned[key] {
+			continue
+		}
+		t.Run(key, func(t *testing.T) {
+			if strings.Contains(key, "${") {
+				t.Fatalf("unresolved account client route: %s", key)
+			}
+			if mounted[key] {
+				return
+			}
+			for route := range mounted {
+				if accountClientRouteMatches(route, key) {
+					return
+				}
+			}
+			t.Fatalf("the account client calls %s, which the hosted Hub does not mount", key)
+		})
+	}
+}
+
+func accountClientRoutes(source string) []string {
+	var routes []string
+	for _, call := range accountClientCall.FindAllStringSubmatch(source, -1) {
 		path := call[2]
 		if call[3] != "" {
 			path = call[3]
 		}
-		path = strings.ReplaceAll(path, "${project(projectId)}", "${base}/projects/:project")
-		path = strings.ReplaceAll(path, "${project(input.projectId)}", "${base}/projects/:project")
-		path = strings.ReplaceAll(path, "${base}", hostedOrganizationBase)
-		path = accountClientParameter.ReplaceAllString(path, ":param")
 		for _, key := range accountClientVariants(call[1] + " " + path) {
-			if entryOwned[key] {
-				continue
+			key = strings.ReplaceAll(key, "${project(projectId)}", "${base}/projects/:project")
+			key = strings.ReplaceAll(key, "${project(input.projectId)}", "${base}/projects/:project")
+			key = strings.ReplaceAll(key, "${base}", hostedOrganizationBase)
+			key = accountClientParameter.ReplaceAllString(key, ":param")
+			if !strings.Contains(key, "${") {
+				key, _, _ = strings.Cut(key, "?")
 			}
-			t.Run(key, func(t *testing.T) {
-				if mounted[key] {
-					return
-				}
-				for route := range mounted {
-					if accountClientRouteMatches(route, key) {
-						return
-					}
-				}
-				t.Fatalf("the account client calls %s, which the hosted Hub does not mount", key)
-			})
+			routes = append(routes, key)
 		}
+	}
+	return routes
+}
+
+func TestAccountClientRoutes(t *testing.T) {
+	t.Parallel()
+	const project = hostedOrganizationBase + "/projects/:project"
+	for _, test := range []struct {
+		name, source string
+		want         []string
+	}{
+		{
+			name:   "model selection reads both scopes",
+			source: "send(CloudModelSelection, \"GET\", `${projectId === undefined ? base : project(projectId)}/model-selection`)",
+			want:   []string{"GET " + hostedOrganizationBase + "/model-selection", "GET " + project + "/model-selection"},
+		},
+		{
+			name:   "model selection writes both scopes",
+			source: "send(CloudModelSelection, \"PUT\", `${input.projectId === undefined ? base : project(input.projectId)}/model-selection`, {})",
+			want:   []string{"PUT " + hostedOrganizationBase + "/model-selection", "PUT " + project + "/model-selection"},
+		},
+		{
+			name:   "policy query followed by another call",
+			source: "send(PolicyApproval, \"GET\", `${project(projectId)}/policy${after ? `?after=${encodeURIComponent(after)}` : \"\"}`); send(null, \"DELETE\", `${base}/members/${encodeURIComponent(id)}`)",
+			want:   []string{"GET " + project + "/policy", "DELETE " + hostedOrganizationBase + "/members/:param"},
+		},
+		{
+			name:   "optional onboarding path",
+			source: "send(PolicyApproval, \"PUT\", `${project(input.projectId)}${input.onboarding === true ? \"/onboarding\" : \"\"}/policy`, {})",
+			want:   []string{"PUT " + project + "/onboarding/policy", "PUT " + project + "/policy"},
+		},
+		{
+			name:   "literal query",
+			source: "send(PolicyApproval, \"GET\", `${project(projectId)}/policy?after=${encodeURIComponent(after)}`)",
+			want:   []string{"GET " + project + "/policy"},
+		},
+		{
+			name:   "hub path",
+			source: "send(null, \"POST\", hubPath(\"/logout\"), {})",
+			want:   []string{"POST /logout"},
+		},
+		{
+			name:   "unknown expression remains unresolved",
+			source: "send(null, \"GET\", `${base}/projects/${unknown(projectId)}`)",
+			want:   []string{"GET " + hostedOrganizationBase + "/projects/${unknown(projectId)}"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := accountClientRoutes(test.source); !slices.Equal(got, test.want) {
+				t.Fatalf("accountClientRoutes(%q) = %q, want %q", test.source, got, test.want)
+			}
+		})
 	}
 }
 
@@ -284,14 +350,20 @@ func TestAccountClientRouteMatches(t *testing.T) {
 
 var accountClientOptionalSegment = regexp.MustCompile(`\$\{[^}]*\? "([^"]*)" : ""\}`)
 
-// accountClientVariants expands a conditional path segment into the path with
-// and without it.
+var accountClientScope = regexp.MustCompile(`\$\{[\w.]+ === undefined \? base : project\([\w.]+\)\}`)
+
+var accountClientQuery = regexp.MustCompile("\\$\\{[\\w.]+ \\? `\\?[^`]*` : \"\"\\}")
+
 func accountClientVariants(key string) []string {
+	key = accountClientQuery.ReplaceAllString(key, "")
+	if match := accountClientScope.FindString(key); match != "" {
+		return append(accountClientVariants(strings.Replace(key, match, "${base}", 1)), accountClientVariants(strings.Replace(key, match, "${base}/projects/:project", 1))...)
+	}
 	match := accountClientOptionalSegment.FindStringSubmatch(key)
 	if match == nil {
 		return []string{key}
 	}
-	return []string{strings.Replace(key, match[0], match[1], 1), strings.Replace(key, match[0], "", 1)}
+	return append(accountClientVariants(strings.Replace(key, match[0], match[1], 1)), accountClientVariants(strings.Replace(key, match[0], "", 1))...)
 }
 
 func TestAppBootstrapRefusalCarriesSupportCSRF(t *testing.T) {
