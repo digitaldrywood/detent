@@ -26,7 +26,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		forge                                                                                 string
 		nilConfiguration                                                                      bool
 	}{
-		{name: "first release retains external legacy approval without source", initial: true, canonical: true, fromLegacy: true, local: true, active: true, status: http.StatusNoContent},
+		{name: "external authored definition stays pending against legacy approval", initial: true, canonical: true, fromLegacy: true, local: true, active: true, status: http.StatusNoContent},
 		{name: "first release carries existing default branch approval", initial: true, canonical: true, fromLegacy: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "nil configuration projection carries only authored policy", initial: true, canonical: true, active: true, nilConfiguration: true, forge: "gate", status: http.StatusNoContent, applied: true},
 		{name: "nil configuration invented digest is refused", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "digest", status: http.StatusUnprocessableEntity},
@@ -297,6 +297,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				local.Definition.Revision = candidate.Workflow.Revision
 				local.Config.Hooks.BeforeRun = "private-isolation.sh"
 				client, err := hubclient.New(hubclient.Config{URL: "https://legacy-policy.example.test", TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
 				if err != nil {
@@ -311,13 +312,13 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					t.Fatal(err)
 				}
 				actual, err := workflowconfig.ResolvePolicy(loaded)
-				if err != nil || !reflect.DeepEqual(actual, original) || loaded.Config.Hooks != local.Config.Hooks {
-					t.Fatalf("legacy load lost authoritative configuration: %+v %v", actual, err)
+				if err != nil || actual.Match(candidate) != nil || loaded.Config.Hooks != local.Config.Hooks {
+					t.Fatalf("legacy approval hid supplied authored candidate: %+v %v", actual, err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_second", "hostname": "second", "capacity": 1, "version": "test"}), http.StatusOK)
 				fresh := f.create(t, "Claim retained legacy approval after upgrade")
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: "machine_second", SessionID: "unapproved", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusConflict)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: actual.ID, MachineID: "machine_second", SessionID: "second", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: original.ID, MachineID: "machine_second", SessionID: "second", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
 				current, err := native.ProjectPolicy(t.Context())
 				if err != nil || current.Policy.ID != original.ID || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || !reflect.DeepEqual(current.History, approval.History) {

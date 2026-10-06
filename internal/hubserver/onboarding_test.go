@@ -477,7 +477,8 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		selected bool
-	}{{"default project", false}, {"selected project", true}} {
+		legacy   bool
+	}{{"default project", false, false}, {"selected project", true, false}, {"legacy approval default project", false, true}, {"legacy approval selected project", true, true}} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "default project")
@@ -500,8 +501,34 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 			}
 			original := resolvedWorkflowPolicy(t, nativeFixtureStates(), strings.Repeat("a", 40), false)
 			candidate := resolvedWorkflowPolicy(t, append(nativeFixtureStates(), policy.State{Name: "Merging", Dispatchable: true}, policy.State{Name: "Blocked"}), strings.Repeat("b", 40), false)
+			if test.legacy {
+				legacy, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacy.Authored, legacy.DefinitionSources = nil, nil
+				original, err = workflowconfig.ResolvePolicy(legacy)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			approveHubTestPolicy(t, f.service, target.base+"/policy", original)
-			if err := scheduler.CheckProjectPolicy(t.Context(), "selected", "", candidate); err == nil {
+			local, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func() error {
+				resolved, err := scheduler.ResolveProjectWorkflow(t.Context(), "selected", local, nil)
+				if err != nil {
+					return err
+				}
+				descriptor, err := workflowconfig.ResolvePolicy(resolved)
+				if err != nil {
+					return err
+				}
+				return scheduler.CheckProjectPolicy(t.Context(), "selected", "", descriptor)
+			}
+			if err := check(); err == nil {
 				t.Fatal("runner loaded an unapproved policy")
 			}
 			read := func(base, token string) onboarding.Project {
@@ -524,7 +551,7 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 				t.Fatal("selected project's candidate leaked into the default project")
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, target.base+"/onboarding/policy", testHubAdminToken, policy.Change{ExpectedID: setup.Policy.Policy.ID, Policy: pending.Policy}), http.StatusOK)
-			if err := scheduler.CheckProjectPolicy(t.Context(), "selected", "", candidate); err != nil {
+			if err := check(); err != nil {
 				t.Fatalf("same runner cannot load the approved candidate: %v", err)
 			}
 			applied := read(target.base, target.token)
