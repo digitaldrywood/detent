@@ -61,6 +61,68 @@ func (b *importFixtureBackend) FetchImportPage(_ context.Context, request GitHub
 	}
 }
 
+func TestProjectIntegrationGitHubAppInstallation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		profile    string
+		repository string
+		installed  bool
+		disabled   bool
+		fail       bool
+		wantRead   bool
+	}{
+		{"installed", "native", "acme/orders", true, false, false, true},
+		{"not installed", "native", "acme/orders", false, false, false, true},
+		{"lookup failure", "native", "acme/orders", false, false, true, true},
+		{"unassociated", "native", "", false, false, false, false},
+		{"compatibility", "github_compatible", "acme/orders", false, false, false, false},
+		{"transport disabled", "native", "acme/orders", false, true, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			reads := 0
+			service := openTestService(t, Config{
+				DatabasePath:     filepath.Join(t.TempDir(), "hub.db"),
+				GitHubDisabled:   test.disabled,
+				ReconcileBackend: &scriptedReconcileBackend{},
+				GitHubAppInstallation: func(_ context.Context, repository string) (GitHubAppInstallation, error) {
+					reads++
+					if repository != test.repository {
+						t.Errorf("repository = %q", repository)
+					}
+					if test.fail {
+						return GitHubAppInstallation{}, errors.New("App lookup unavailable")
+					}
+					return GitHubAppInstallation{Slug: "detent-cloud", InstallURL: "https://github.com/apps/detent-cloud/installations/new", Installed: test.installed}, nil
+				},
+			})
+			f := newNativeFixture(t, service, "", "app-installation")
+			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET profile=?, checkout_repository=? WHERE id=?", test.profile, test.repository, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			r := performHubAPIRequest(t, service, http.MethodGet, f.base+"/integration", testHubAdminToken, nil)
+			if test.fail {
+				requireNativeStatus(t, r, http.StatusInternalServerError)
+			} else {
+				requireNativeStatus(t, r, http.StatusOK)
+				var integration ProjectIntegration
+				decodeHubResponse(t, r, &integration)
+				if test.wantRead {
+					if integration.GitHubAppInstalled == nil || *integration.GitHubAppInstalled != test.installed || integration.GitHubAppSlug != "detent-cloud" || integration.GitHubAppInstallURL != "https://github.com/apps/detent-cloud/installations/new" {
+						t.Fatalf("installation = %+v", integration)
+					}
+				} else if integration.GitHubAppInstalled != nil || integration.GitHubAppSlug != "" || integration.GitHubAppInstallURL != "" {
+					t.Fatalf("unexpected installation = %+v", integration)
+				}
+			}
+			if (reads == 1) != test.wantRead {
+				t.Fatalf("installation reads = %d", reads)
+			}
+		})
+	}
+}
+
 func TestNativeProjectRepositoryBindingAndIntake(t *testing.T) {
 	t.Parallel()
 	backend := &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_repo", Owner: "digitaldrywood", Name: "detent", UpdatedAt: time.Now().UTC()}}}}}

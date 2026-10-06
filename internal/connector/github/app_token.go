@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -308,6 +309,10 @@ func normalizePrivateKey(privateKey string) string {
 }
 
 func installationTokenURL(endpoint string, installationID string) (string, error) {
+	return appRESTURL(endpoint, "/app/installations/"+url.PathEscape(installationID)+"/access_tokens")
+}
+
+func appRESTURL(endpoint, path string) (string, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
@@ -322,7 +327,7 @@ func installationTokenURL(endpoint string, installationID string) (string, error
 		basePath = before
 	}
 
-	parsed.Path = strings.TrimRight(basePath, "/") + "/app/installations/" + url.PathEscape(installationID) + "/access_tokens"
+	parsed.Path = strings.TrimRight(basePath, "/") + path
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
@@ -377,11 +382,60 @@ func (s *InstallationTokenSource) resolveRepositoryInstallation(ctx context.Cont
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(s.repository, "?#%") {
 		return ErrMissingAppConfig
 	}
-	endpoint, err := installationTokenURL(s.endpoint, "repository")
+	endpoint, err := appRESTURL(s.endpoint, "/repos/"+url.PathEscape(parts[0])+"/"+url.PathEscape(parts[1])+"/installation")
 	if err != nil {
 		return err
 	}
-	endpoint = strings.TrimSuffix(endpoint, "/app/installations/repository/access_tokens") + "/repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/installation"
+	var installation struct {
+		ID int64 `json:"id"`
+	}
+	if err := s.appREST(ctx, jwt, endpoint, &installation); err != nil {
+		return err
+	}
+	if installation.ID <= 0 {
+		return ErrInvalidResponse
+	}
+	s.installationID = strconv.FormatInt(installation.ID, 10)
+	return nil
+}
+
+func (s *InstallationTokenSource) AppSlug(ctx context.Context) (string, error) {
+	jwt, err := s.jwt(s.now())
+	if err != nil {
+		return "", err
+	}
+	endpoint, err := appRESTURL(s.endpoint, "/app")
+	if err != nil {
+		return "", err
+	}
+	var app struct {
+		Slug string `json:"slug"`
+	}
+	if err := s.appREST(ctx, jwt, endpoint, &app); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(app.Slug) == "" {
+		return "", ErrInvalidResponse
+	}
+	return app.Slug, nil
+}
+
+func (s *InstallationTokenSource) RepositoryInstalled(ctx context.Context) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	jwt, err := s.jwt(s.now())
+	if err != nil {
+		return false, err
+	}
+	err = s.resolveRepositoryInstallation(ctx, jwt)
+	var status *StatusError
+	if errors.As(err, &status) && status.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *InstallationTokenSource) appREST(ctx context.Context, jwt, endpoint string, output any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
@@ -404,15 +458,5 @@ func (s *InstallationTokenSource) resolveRepositoryInstallation(ctx context.Cont
 	if response.StatusCode != http.StatusOK {
 		return classifyStatus(response.StatusCode, response.Header, body)
 	}
-	var installation struct {
-		ID int64 `json:"id"`
-	}
-	if err := json.Unmarshal(body, &installation); err != nil {
-		return err
-	}
-	if installation.ID <= 0 {
-		return ErrInvalidResponse
-	}
-	s.installationID = strconv.FormatInt(installation.ID, 10)
-	return nil
+	return json.Unmarshal(body, output)
 }

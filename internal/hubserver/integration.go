@@ -24,10 +24,19 @@ type ProjectIntegration struct {
 	Projection               string                `json:"projection"`
 	RepositoryEnabled        bool                  `json:"repository_enabled"`
 	GitHubTransportAvailable *bool                 `json:"github_transport_available,omitempty"`
+	GitHubAppSlug            string                `json:"github_app_slug,omitempty"`
+	GitHubAppInstallURL      string                `json:"github_app_install_url,omitempty"`
+	GitHubAppInstalled       *bool                 `json:"github_app_installed,omitempty"`
 	Repository               string                `json:"repository,omitempty"`
 	CheckoutRepository       string                `json:"checkout_repository,omitempty"`
 	Authority                map[string]string     `json:"authority"`
 	RepositoryID             int64                 `json:"-"`
+}
+
+type GitHubAppInstallation struct {
+	Slug       string
+	InstallURL string
+	Installed  bool
 }
 
 type GitHubRequestCount struct {
@@ -91,8 +100,23 @@ func (s *Service) getCutoverReceipt(c echo.Context) error {
 
 func (s *Service) projectIntegration(ctx context.Context, query nativeQueryer, scope nativeScope) (ProjectIntegration, error) {
 	result, err := readProjectIntegration(ctx, query, scope)
+	if err != nil {
+		return result, err
+	}
 	available := !s.config.GitHubDisabled && s.config.ReconcileBackend != nil
 	result.GitHubTransportAvailable = &available
+	repository := result.CheckoutRepository
+	if repository == "" {
+		repository = result.Repository
+	}
+	if available && result.Profile == "native" && repository != "" && s.config.GitHubAppInstallation != nil {
+		app, err := s.config.GitHubAppInstallation(ctx, repository)
+		if err != nil {
+			return result, err
+		}
+		result.GitHubAppSlug, result.GitHubAppInstallURL = app.Slug, app.InstallURL
+		result.GitHubAppInstalled = &app.Installed
+	}
 	return result, err
 }
 

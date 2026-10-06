@@ -52,6 +52,7 @@ type Config struct {
 	// 18.1). Nil means the surfaces stay disabled with their reason.
 	Workspace                  *WorkspaceConfig
 	GitHubRequestCounts        func() []GitHubRequestCount
+	GitHubAppInstallation      func(context.Context, string) (GitHubAppInstallation, error)
 	GitHubDisabled             bool
 	ImportBackend              ImportBackend
 	DatabasePath               string
@@ -102,6 +103,7 @@ func (c Config) normalized() Config {
 	if c.GitHubDisabled {
 		c.ImportBackend, c.OutboxBackend, c.ReconcileBackend = nil, nil, nil
 		c.GitHubWebhookSecret, c.GitHubRequestCounts = nil, nil
+		c.GitHubAppInstallation = nil
 	}
 	if c.ListenAddress == "" {
 		c.ListenAddress = DefaultListenAddress

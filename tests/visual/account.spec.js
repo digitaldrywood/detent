@@ -339,6 +339,47 @@ test("pending invitations can be resent and revoked from their row", async ({ pa
   await expect(page.getByRole("button", { name: "Resend", exact: true })).toHaveCount(0);
 });
 
+for (const state of [
+  { name: "installed", installed: true, profile: "native", repository: "acme/orders", transport: true, visible: true },
+  { name: "not installed", installed: false, profile: "native", repository: "acme/orders", transport: true, visible: true },
+  { name: "compatibility project", installed: true, profile: "github_compatible", repository: "acme/orders", transport: true, visible: false },
+  { name: "unassociated repository", installed: false, profile: "native", repository: "", transport: true, visible: false },
+  { name: "unavailable transport", installed: false, profile: "native", repository: "acme/orders", transport: false, visible: false },
+]) {
+  test(`setup GitHub App installation: ${state.name}`, async ({ page }) => {
+    let reads = 0;
+    await page.route("**/projects/*/integration", async (route) => {
+      const response = await route.fetch();
+      const integration = await response.json();
+      reads++;
+      await route.fulfill({ response, json: {
+        ...integration,
+        profile: state.profile,
+        repository: state.repository,
+        checkout_repository: state.repository,
+        github_transport_available: state.transport,
+        github_app_slug: "detent-cloud",
+        github_app_install_url: "https://github.com/apps/detent-cloud/installations/new",
+        github_app_installed: state.installed,
+      } });
+    });
+    await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
+    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Repository configuration/ }).click();
+    const install = page.getByRole("link", { name: "Install the Detent Cloud GitHub App" });
+    if (state.visible) {
+      await expect(install).toHaveAttribute("href", "https://github.com/apps/detent-cloud/installations/new");
+      await expect(install).toHaveAttribute("rel", "noopener noreferrer");
+      await expect(page.getByText(`Detent Cloud is ${state.installed ? "installed" : "not installed"} on acme/orders`, { exact: true })).toBeVisible();
+      await expect(page.getByText(/New GitHub issues enter Triage automatically once/)).toBeVisible();
+      await expectNoSeriousAxeViolations(page, `GitHub App ${state.name}`);
+    } else {
+      await expect(install).toHaveCount(0);
+      await expect(page.getByText(/Detent Cloud is (not )?installed on/)).toHaveCount(0);
+    }
+    expect(reads).toBe(1);
+  });
+}
+
 test("the first-run wizard reports the hub's four onboarding steps", async ({ page }) => {
   const errors = watchConsole(page);
   await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);

@@ -35,13 +35,23 @@ preserves the native project identity. A repository can belong to only one proje
 for an existing compatibility binding, import/cut over that project instead.
 Bindings are immutable. Native issue intake is automatic; repository execution
 capabilities remain independently configured.
+
+After associating the repository in Project setup,
+[install the Detent Cloud GitHub App](https://github.com/apps/detent-cloud/installations/new)
+on the repository or organization. You can choose all repositories or selected
+repositories; include the repository associated with this project. The App
+requests Issues and Pull requests read/write, and Contents, Checks, Commit
+statuses and Metadata read permissions. Reopen Project setup to see whether
+Detent Cloud is installed on `owner/name`. Installing the App enables new GitHub
+issues to enter Triage automatically for native projects.
+
 Hub's scoped v2 APIs accept its existing operator or enrolled runner
 credentials. Configuration and cutover require administrator authority.
 
 ## Native GitHub intake
 
 Every native project with an attached GitHub repository receives new GitHub issues
-through the product GitHub App webhook. Intake is always on; the integration read
+through the installed Detent Cloud GitHub App webhook. Intake is always on; the integration read
 reports `intake: automatic`. Triage is the first holding lane, with dispatch and
 terminal flags both false. Existing bound projects gain it through migration;
 unbound projects keep their workflows. Repository workflow approval retains this

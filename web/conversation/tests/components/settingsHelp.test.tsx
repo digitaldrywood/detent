@@ -161,14 +161,15 @@ describe("project settings help", () => {
 
   it.each([
     ["Repository and pull request integration", /Disabling it.*immutable repository binding/],
-    ["Intake", /Manual intake.*when you request it.*Disabled prevents new manual imports/],
+    ["Intake", /New GitHub issues enter Triage automatically.*App is installed.*existing issues.*manually/],
+    ["Intake", /Compatibility projects import selected GitHub issues.*manual intake.*Disabled prevents new manual imports/, "github_compatible"],
     ["Projection", /from Detent to the linked GitHub issue.*Disabled stops new summary writes/],
     ["Authority", /native profile.*Detent ownership.*github_compatible profile.*GitHub ownership/],
     ["Repository policy", /runner upgrade.*stale.*Execution is blocked/],
     ["Runner routing", /matching a tag never grants project access/],
-  ])("explains %s even for a reader", async (label, copy) => {
+  ])("explains %s even for a reader", async (label, copy, profile = "native") => {
     const user = userEvent.setup();
-    renderProject(false);
+    renderProject(false, { integration: { ...integration, profile } });
     await user.click(await screen.findByRole("button", { name: `About ${label}` }));
     expect((await screen.findByRole("dialog", { name: label })).textContent).toMatch(copy);
     expect(screen.queryByRole("button", { name: "About Repository" })).toBeNull();
