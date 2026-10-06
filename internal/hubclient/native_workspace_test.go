@@ -3,12 +3,17 @@ package hubclient
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
@@ -620,6 +625,132 @@ func TestReportWorkspaceActionRunMapsAFencedRefusalOntoTheStaleSentinel(t *testi
 			}
 			if !errors.Is(err, test.want) {
 				t.Fatalf("error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkspaceClaimerLocalExclusions(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ name, reason string }{
+		{"policy reload", "policy_mismatch"},
+		{"approval reload", "policy_mismatch"},
+		{"host slot released", "host_capacity"},
+		{"runner slot released", "runner_capacity"},
+		{"drain cleared", "runner_draining"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "private", "runner.json")
+			file, err := runnerauth.Initialize(path, "https://hub.example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = "org_test"
+			file.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			claims := 0
+			var claimedPolicy string
+			snapshot := runnerauth.RoutingSnapshot{
+				RunnerID: file.Identity.RunnerID, Revision: 1,
+				Routing:    runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2}.Normalized(),
+				ClaimState: &runnerauth.ClaimState{HostCapacity: 2, RunnerCapacity: 2, PolicyIDs: map[tracker.ProjectID]string{"prj_test": "policy_current"}},
+			}
+			switch test.reason {
+			case "policy_mismatch":
+				snapshot.ClaimState.PolicyIDs["prj_test"] = "policy_new"
+			case "host_capacity":
+				snapshot.ClaimState.HostCapacity = 1
+				snapshot.ClaimState.Slots = []runnerauth.ClaimSlot{{ID: "lease_held", RunnerID: "other"}}
+			case "runner_capacity":
+				snapshot.ClaimState.RunnerCapacity = 1
+				snapshot.ClaimState.Slots = []runnerauth.ClaimSlot{{ID: "lease_held", RunnerID: file.Identity.RunnerID}}
+			case "runner_draining":
+				snapshot.Routing.State = "draining"
+			}
+			transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				body := `{}`
+				switch {
+				case strings.HasSuffix(request.URL.Path, "/heartbeat"):
+					raw, err := json.Marshal(snapshot)
+					if err != nil {
+						return nil, err
+					}
+					body = string(raw)
+				case request.URL.Path == "/api/v2/capabilities":
+					body = `{"features":["` + tracker.NativeWorkspaceCapability + `"]}`
+				case strings.HasSuffix(request.URL.Path, "/policy"):
+					body = `{"policy":{"policy_id":"policy_current"}}`
+				case strings.HasSuffix(request.URL.Path, "/claims"):
+					claims++
+					var claim tracker.NativeClaim
+					if err := json.NewDecoder(request.Body).Decode(&claim); err != nil {
+						return nil, err
+					}
+					claimedPolicy = claim.PolicyID
+					body = `{"lease_id":"lease_new","isolation_policy":{"tier":"sandbox"}}`
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+			})
+			client, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			machine := Machine{ID: file.Identity.MachineID, Capacity: 2, Version: "test"}
+			if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+				t.Fatal(err)
+			}
+			claimer, err := NewWorkspaceClaimer(native, WorkspaceLaneConfig{PolicyID: "policy_current", MachineID: machine.ID, SessionID: func() (string, error) { return "workspace", nil }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := claimer.ClaimState()
+			if !reflect.DeepEqual(state.Reasons, []string{test.reason}) {
+				t.Fatalf("reasons = %v", state.Reasons)
+			}
+			if _, err := claimer.ClaimWorkspace(t.Context()); !errors.Is(err, ErrNoClaimableWork) || claims != 0 {
+				t.Fatalf("excluded claim: calls=%d error=%v", claims, err)
+			}
+			if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-state.Changed:
+				t.Fatal("unchanged facts woke the lane")
+			default:
+			}
+			wantPolicy := "policy_current"
+			switch test.name {
+			case "policy reload":
+				client.runner.setLocalPolicy(native.project, "policy_new")
+				wantPolicy = "policy_new"
+			case "approval reload":
+				if _, err := native.ProjectPolicy(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			case "host slot released", "runner slot released":
+				if err := native.Release(t.Context(), tracker.NativeLease{ID: "lease_held"}, "completed"); err != nil {
+					t.Fatal(err)
+				}
+			case "drain cleared":
+				snapshot.Routing.State = "active"
+				if err := native.HeartbeatMachine(t.Context(), machine); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-state.Changed:
+			default:
+				t.Fatal("changed fact did not wake the lane")
+			}
+			if _, err := claimer.ClaimWorkspace(t.Context()); err != nil || claims != 1 || claimedPolicy != wantPolicy {
+				t.Fatalf("resumed claim: calls=%d policy=%s error=%v", claims, claimedPolicy, err)
 			}
 		})
 	}

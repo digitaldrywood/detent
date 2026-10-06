@@ -84,6 +84,16 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			if leases != wantLeases {
 				t.Fatalf("leases = %d, want %d", leases, wantLeases)
 			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "Build runner", "capacity": 2, "version": "test"})
+			requireNativeStatus(t, response, http.StatusOK)
+			var snapshot runnerauth.RoutingSnapshot
+			decodeHubResponse(t, response, &snapshot)
+			if snapshot.ClaimState == nil || snapshot.ClaimState.PolicyIDs[f.project.ID] != descriptor.ID || len(snapshot.ClaimState.Slots) != wantLeases || snapshot.ClaimState.RunnerCapacity != 2 {
+				t.Fatalf("heartbeat claim facts = %#v", snapshot.ClaimState)
+			}
+			if wantLeases > 0 && snapshot.ClaimState.Slots[0].RunnerID != r.binding.RunnerID {
+				t.Fatalf("heartbeat slot owner = %#v", snapshot.ClaimState.Slots)
+			}
 			runtimePath := f.base + "/work-items/" + string(issue.WorkItemID) + "/runtime"
 			var evidence tracker.NativeRuntimeEvidence
 			readDecision := func() {
@@ -373,6 +383,15 @@ func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 	}
 	if len(winners) != 2 {
 		t.Fatalf("shared host allocated %d leases, want 2", len(winners))
+	}
+	for _, runner := range []runnerFixture{first, second} {
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"capacity": 8, "version": "test"})
+		requireNativeStatus(t, response, http.StatusOK)
+		var snapshot runnerauth.RoutingSnapshot
+		decodeHubResponse(t, response, &snapshot)
+		if snapshot.ClaimState == nil || snapshot.ClaimState.HostCapacity != 2 || len(snapshot.ClaimState.Slots) != 2 {
+			t.Fatalf("shared host heartbeat facts = %#v", snapshot.ClaimState)
+		}
 	}
 	for _, winner := range winners {
 		other := first

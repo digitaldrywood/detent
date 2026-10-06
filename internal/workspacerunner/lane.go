@@ -157,7 +157,21 @@ func (l *Lane) Run(ctx context.Context) error {
 	defer timer.Stop()
 	for {
 		wait := l.config.Poll
-		if l.openCount() < l.config.MaxOpen {
+		var changes <-chan struct{}
+		blocked := false
+		if source, ok := l.config.Claimer.(interface {
+			ClaimState() hubclient.WorkspaceClaimState
+		}); ok {
+			state := source.ClaimState()
+			changes = state.Changed
+			blocked = len(state.Reasons) > 0
+			if blocked {
+				for _, reason := range state.Reasons {
+					l.logger.Info("workspace.claim_skipped", "project_id", state.ProjectID, "reason", reason)
+				}
+			}
+		}
+		if !blocked && l.openCount() < l.config.MaxOpen {
 			if claimed, err := l.claimOnce(ctx); err != nil {
 				if ctx.Err() != nil {
 					break
@@ -175,11 +189,16 @@ func (l *Lane) Run(ctx context.Context) error {
 				continue
 			}
 		}
-		timer.Reset(wait)
+		var poll <-chan time.Time
+		if !blocked {
+			timer.Reset(wait)
+			poll = timer.C
+		}
 		select {
 		case <-ctx.Done():
 			return l.drain()
-		case <-timer.C:
+		case <-changes:
+		case <-poll:
 		}
 	}
 	return l.drain()

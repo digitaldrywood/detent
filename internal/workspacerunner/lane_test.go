@@ -1,6 +1,7 @@
 package workspacerunner_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
@@ -360,6 +362,53 @@ func TestLaneIdlesOnAHubWithoutWorkspaceSessions(t *testing.T) {
 			if !test.wantMany && calls != 1 {
 				t.Fatalf("the lane asked %d times, want once before the idle interval", calls)
 			}
+		})
+	}
+}
+
+type locallyExcludedClaimer struct {
+	countingClaimer
+	state hubclient.WorkspaceClaimState
+}
+
+func (c *locallyExcludedClaimer) ClaimState() hubclient.WorkspaceClaimState { return c.state }
+
+func TestLaneWaitsForLocalClaimFacts(t *testing.T) {
+	for _, reasons := range [][]string{{"policy_mismatch"}, {"host_capacity"}, {"runner_capacity"}, {"runner_draining"}, {"policy_mismatch", "host_capacity", "runner_draining"}} {
+		t.Run(strings.Join(reasons, "+"), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				changed := make(chan struct{})
+				claimer := &locallyExcludedClaimer{countingClaimer: countingClaimer{err: hubclient.ErrNoClaimableWork}, state: hubclient.WorkspaceClaimState{Reasons: reasons, Changed: changed}}
+				var logs bytes.Buffer
+				lane, err := workspacerunner.NewLane(workspacerunner.LaneConfig{Claimer: claimer, Hub: &scriptedHub{}, Worktree: &fixedWorktree{}, Logger: slog.New(slog.NewTextHandler(&logs, nil)), Poll: time.Hour})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				done := make(chan error, 1)
+				go func() { done <- lane.Run(ctx) }()
+				synctest.Wait()
+				time.Sleep(2 * time.Hour)
+				synctest.Wait()
+				if claimer.count() != 0 {
+					t.Fatalf("excluded claim calls = %d", claimer.count())
+				}
+				for _, reason := range reasons {
+					if count := strings.Count(logs.String(), "reason="+reason); count != 1 {
+						t.Fatalf("%s skip records = %d: %s", reason, count, logs.String())
+					}
+				}
+				claimer.state = hubclient.WorkspaceClaimState{Changed: make(chan struct{})}
+				close(changed)
+				synctest.Wait()
+				if claimer.count() != 1 {
+					t.Fatalf("next cycle calls = %d", claimer.count())
+				}
+				cancel()
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+			})
 		})
 	}
 }

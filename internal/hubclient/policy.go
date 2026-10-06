@@ -47,6 +47,10 @@ func (c *Client) ApproveProjectPolicy(ctx context.Context, repository string, ch
 func (c *NativeClient) ProjectPolicy(ctx context.Context) (policy.Approval, error) {
 	var approval policy.Approval
 	err := c.client.request(ctx, http.MethodGet, c.base()+"/policy", nil, &approval)
+	var failure *APIError
+	if c.client.runner != nil && (err == nil || errors.As(err, &failure) && failure.Code == "policy_mismatch") {
+		c.client.runner.setApprovedPolicy(c.project, approval.Policy.ID)
+	}
 	return approval, err
 }
 
@@ -78,6 +82,9 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 }
 
 func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, repository string, descriptor policy.Descriptor, provenance *policy.RepositorySource) error {
+	if source := s.nativeProjects[project]; source != nil && s.client.runner != nil {
+		s.client.runner.setLocalPolicy(source.client.project, descriptor.ID)
+	}
 	if err := descriptor.Validate(); err != nil {
 		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -571,4 +572,40 @@ func runnerOwnedBy(ctx context.Context, db nativeQueryer, organization tracker.O
  LEFT JOIN hosted_members m ON m.principal_id = e.created_by
  WHERE r.id = ? AND r.organization_id = ? AND (e.created_by = ? OR (? <> '' AND (t.hosted_user_id = ? OR m.user_id = ?))))`, runner, organization, credential.ID, user, user, user).Scan(&owned)
 	return owned, err
+}
+
+func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeScope, snapshot *runnerauth.RoutingSnapshot, now time.Time) error {
+	var state runnerauth.ClaimState
+	if err := db.QueryRowContext(ctx, `SELECT m.capacity, min(r.capacity_limit, r.reported_capacity) FROM runner_identities r JOIN machines m ON m.id = r.machine_id WHERE r.id = ? AND r.organization_id = ?`, snapshot.RunnerID, scope.organization).Scan(&state.HostCapacity, &state.RunnerCapacity); err != nil {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT l.lease_id, coalesce(lr.runner_id, ''), l.expires_at FROM leases l LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id WHERE l.machine_id = ? AND l.released_at IS NULL ORDER BY l.lease_id`, scope.credential.Runner.MachineID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var slot runnerauth.ClaimSlot
+		var expiry string
+		if err := rows.Scan(&slot.ID, &slot.RunnerID, &expiry); err != nil {
+			return errors.Join(err, rows.Close())
+		}
+		end, err := parseTimeValue(expiry)
+		if err != nil {
+			return errors.Join(err, rows.Close())
+		}
+		if end.After(now) {
+			state.Slots = append(state.Slots, slot)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	var approved string
+	err = db.QueryRowContext(ctx, "SELECT policy_id FROM project_policies WHERE scope = ?", string(scope.organization)+"/"+string(scope.project)).Scan(&approved)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	state.PolicyIDs = map[tracker.ProjectID]string{scope.project: approved}
+	snapshot.ClaimState = &state
+	return nil
 }
