@@ -226,7 +226,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			r.logger.Warn("native runtime observation unavailable", "issue_id", req.Issue.ID, "error", err)
 		}
 	}
-	if landing, ok := req.Execution.(LandingRuntimeExecution); ok && result.NativeLanding != nil && (result.NativeLanding.Landed || result.NativeLanding.RefusalKind != "") {
+	if landing, ok := req.Execution.(LandingRuntimeExecution); ok && result.NativeLanding != nil && (result.NativeLanding.Landed || result.NativeLanding.RefusalKind != "" || result.NativeLanding.GateFailed) {
 		if err := landing.ObserveLanding(finishCtx, *result.NativeLanding); err != nil {
 			runErr = errors.Join(runErr, err)
 		}

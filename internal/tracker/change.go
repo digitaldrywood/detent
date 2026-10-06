@@ -103,6 +103,7 @@ type ChangeCheckExpectation struct {
 
 type ChangeVersion struct {
 	ChangeVersionInput
+	Landing      *NativeLandingReceipt    `json:"landing,omitempty"`
 	ID           string                   `json:"version_id"`
 	ChangeID     string                   `json:"change_id"`
 	Number       int64                    `json:"number,string"`

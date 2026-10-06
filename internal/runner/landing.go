@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
@@ -14,6 +15,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+func NativeLandingIdentity(at time.Time) agentidentity.Identity {
+	identity := agentidentity.RuntimeUpdate("none", "none", "none", "", at)
+	identity.Role, identity.BackendID, identity.BackendKind = RoleMerge, "git", "git"
+	return identity
+}
 
 // landNativeChange is a hub-native landing run. There is no agent in it: the
 // reviewed head is combined with the base branch by the runner's own git and

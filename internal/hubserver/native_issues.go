@@ -479,6 +479,11 @@ WHERE organization_id = ? AND project_id = ? AND native_id = ?`, issue.Title, is
 		}
 	}
 	data.Revision = issue.Revision
+	if eventType == "workflow.transitioned" {
+		if err := recordLandingTransition(ctx, tx, scope, issue, data.FromState); err != nil {
+			return issue, err
+		}
+	}
 	issue, _, err = readNativeIssue(ctx, tx, scope, string(issue.WorkItemID))
 	if err != nil {
 		return issue, err
