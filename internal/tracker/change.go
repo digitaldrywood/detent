@@ -27,6 +27,7 @@ type ChangeRequest struct {
 // commit the runner pushed there, the branch, and the merge method it used.
 // A landed Change Request is finished; no later version is published on it.
 type ChangeLanding struct {
+	Rebased   bool      `json:"rebased,omitempty"`
 	VersionID string    `json:"version_id"`
 	HeadSHA   string    `json:"head_sha"`
 	MergeSHA  string    `json:"merge_sha"`
@@ -41,6 +42,7 @@ type ChangeLanding struct {
 // Hub records it and finishes the primary issue in the same transaction.
 type LandChangeVersion struct {
 	Mutation
+	Rebased  bool   `json:"rebased,omitempty"`
 	MergeSHA string `json:"merge_sha"`
 	BaseRef  string `json:"base_ref"`
 	Method   string `json:"method"`

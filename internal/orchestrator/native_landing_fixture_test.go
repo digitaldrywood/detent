@@ -24,15 +24,16 @@ import (
 )
 
 type nativeLandingJourney struct {
-	runner    *runpkg.Runner
-	execution *nativeLandingJourneyExecution
-	provider  *mergeFastPathAgentBackend
-	issue     connector.Issue
-	target    runpkg.NativeLandingTarget
-	base      string
-	remote    string
-	merge     string
-	info      workspace.Info
+	runner     *runpkg.Runner
+	execution  *nativeLandingJourneyExecution
+	provider   *mergeFastPathAgentBackend
+	issue      connector.Issue
+	target     runpkg.NativeLandingTarget
+	base       string
+	remote     string
+	merge      string
+	mergeCalls *atomic.Int64
+	info       workspace.Info
 }
 
 func nativeLandingGit(t *testing.T, ctx context.Context, dir string, args ...string) string {
@@ -150,7 +151,8 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 			fmt.Fprintf(w, `{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/repo"}},"base":{"sha":%q,"ref":"main","repo":{"full_name":"example/repo"}}}`, head, publishedBranch, base)
 		case request.Method == http.MethodPut && request.URL.Path == "/repos/example/repo/pulls/7/merge":
 			body, err := io.ReadAll(request.Body)
-			if err != nil || !strings.Contains(string(body), head) || !strings.Contains(string(body), "squash") {
+			published := nativeLandingGit(t, request.Context(), remote, "rev-parse", "refs/heads/"+publishedBranch)
+			if err != nil || !strings.Contains(string(body), published) || !strings.Contains(string(body), "squash") {
 				t.Errorf("atomic merge lost reviewed head or policy: %s, %v", body, err)
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -198,7 +200,7 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	}
 	target := runpkg.NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Repository: repository, Method: "squash", GitHubPullRequest: true}
 	execution := &nativeLandingJourneyExecution{target: target}
-	return &nativeLandingJourney{runner: agent, execution: execution, provider: provider, issue: issue, target: target, base: base, remote: remote, merge: merge, info: info}
+	return &nativeLandingJourney{runner: agent, execution: execution, provider: provider, issue: issue, target: target, base: base, remote: remote, merge: merge, info: info, mergeCalls: &puts}
 }
 
 type nativeLandingTransport func(*http.Request) (*http.Response, error)

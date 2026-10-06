@@ -58,7 +58,7 @@ func (e *nativeExecution) RecordLanding(ctx context.Context, landing runner.Nati
 	}
 	_, err := e.claim.source.client.LandChangeVersion(ctx, e.claim.lease.WorkItemID, landing.ChangeID, landing.VersionID, tracker.LandChangeVersion{
 		Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":landing", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
-		MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method,
+		MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased,
 	})
 	return err
 }

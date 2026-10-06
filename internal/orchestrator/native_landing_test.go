@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,6 +89,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		mergeStatus        int
 		sourceConflict     bool
 		currentBase        bool
+		wantRecovered      bool
 		wantLandingWait    bool
 		priorOutage        string
 	}{
@@ -113,9 +115,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "proven conflict clears only old synthetic outage", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "was not landed", wantMoves: 1, priorOutage: "projection"},
 		{name: "responsive clean projection preserves genuine server outage", currentBase: true, mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: forgeavailability.ClassServer},
 		{name: "responsive clean projection preserves genuine transport outage", currentBase: true, mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: forgeavailability.ClassTransport},
-		{name: "stale base refreshes without human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
-		{name: "stale base refreshes with human review", mergeMessage: "Base branch was modified. Review and try the merge again.", landing: unproven, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
-		{name: "clean stale projection enters hosted source refresh", mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: hosted, noHumanReview: true, wantState: "In Progress", wantComment: "requires refresh", wantMoves: 1},
+		{name: "stale base lands without rework or human review", mergeMessage: "Base branch was modified. Review and try the merge again.", hubState: "Done", states: workflow, noHumanReview: true, wantState: "Done", wantComment: "Landed", wantRecovered: true},
+		{name: "stale base lands without rework with human review", mergeMessage: "Base branch was modified. Review and try the merge again.", hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed", wantRecovered: true},
+		{name: "conflicted landing rebases cleanly without a rework session", mergeMessage: "Pull Request has merge conflicts", hubState: "Done", states: hosted, noHumanReview: true, wantState: "Done", wantComment: "Landed", wantRecovered: true},
 		{name: "genuine server outage retains native version and host backoff", mergeMessage: "Service Unavailable", mergeStatus: http.StatusServiceUnavailable, landing: unproven, hubState: "Merging", states: workflow, wantInfrastructure: true},
 		{name: "strict head protection returns to review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
 		{name: "strict head protection blocks without human review", mergeMessage: "Head branch is out of date. Review and try the merge again.", hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Human Review", wantComment: "Head branch is out of date", wantMoves: 1},
@@ -147,7 +149,12 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				result, runErr = journey.run(t)
 				branch, landingHead = result.WorkspaceBranch, journey.target.HeadSHA
 				landed.HeadSHA = landingHead
-				if test.wantInfrastructure {
+				if test.wantRecovered {
+					if runErr != nil || !result.NativeLanding.Landed || !result.NativeLanding.Rebased || len(journey.execution.recorded) != 1 || journey.provider.calls.Load() != 0 || journey.execution.started != 1 || journey.mergeCalls.Load() != 2 {
+						t.Fatalf("clean rebase did not land in one merge run: %#v, %v", result, runErr)
+					}
+					test.landing = result.NativeLanding
+				} else if test.wantInfrastructure {
 					var status *github.StatusError
 					wantError := connector.ErrPullRequestBaseOutOfDate
 					base := journey.base
@@ -191,7 +198,8 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			hubIssue := cloneIssue(issue)
 			hubIssue.State = test.hubState
 			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{hubIssue}, updateErr: test.updateErr}
-			var tracker connector.Connector = &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: test.states, statesErr: test.statesErr}
+			nativeTracker := &nativeLandingReasonConnector{nativeWorkflowConnector: &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: test.states, statesErr: test.statesErr}}
+			var tracker connector.Connector = nativeTracker
 			if test.plain {
 				tracker = tick
 			}
@@ -368,11 +376,18 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				}
 				return
 			}
-			if journey != nil && (retried || len(state.ForgeUnavailable) != 0 || nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") == journey.merge) {
+			if journey != nil && !test.wantRecovered && (retried || len(state.ForgeUnavailable) != 0 || nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") == journey.merge) {
 				t.Fatalf("strict protection retained a base wait or landed without a receipt: retry %#v, state %#v", retry, state)
 			}
 			if len(tick.updates) != test.wantMoves || test.wantMoves == 1 && tick.updates[0].state != test.wantState {
 				t.Fatalf("lane updates = %#v, want %d to %s", tick.updates, test.wantMoves, test.wantState)
+			}
+			if test.sourceConflict {
+				for _, file := range []string{"internal/web/templates/work_templ.go", "internal/store/sqlc/db.go"} {
+					if !strings.Contains(nativeTracker.reasonDetail, file) {
+						t.Fatalf("transition reason_detail lost conflicting file %s: %s", file, nativeTracker.reasonDetail)
+					}
+				}
 			}
 			if len(tick.comments) != 1 || !strings.Contains(tick.comments[0].body, test.wantComment) {
 				t.Fatalf("comments = %#v, want one containing %q", tick.comments, test.wantComment)
@@ -396,6 +411,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			}
 			if journey != nil && metadata["native_head_sha"] != landingHead {
 				t.Fatalf("protection refusal lost reviewed head: %#v", metadata)
+			}
+			if test.wantRecovered && metadata["rebased"] != true {
+				t.Fatalf("retry evidence missing: %#v", metadata)
 			}
 			if test.landing.GateFailed && metadata["native_gate_failed"] != true {
 				t.Fatalf("missing gate failure evidence: %#v", metadata)
@@ -703,4 +721,14 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 			}
 		})
 	}
+}
+
+type nativeLandingReasonConnector struct {
+	*nativeWorkflowConnector
+	reasonDetail string
+}
+
+func (c *nativeLandingReasonConnector) UpdateIssueState(ctx context.Context, id, state string) error {
+	c.reasonDetail = connector.LaneTransitionReason(ctx)
+	return c.nativeWorkflowConnector.UpdateIssueState(ctx, id, state)
 }
