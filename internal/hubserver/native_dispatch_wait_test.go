@@ -333,8 +333,11 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 }
 
 func TestNativeCandidateQueryBound(t *testing.T) {
-	for _, size := range []int{16, 256, 2048} {
-		t.Run(fmt.Sprintf("queue_%d", size), func(t *testing.T) {
+	for _, test := range []struct {
+		size        int
+		unpublished bool
+	}{{size: 16}, {size: 256}, {size: 2048}, {size: 256, unpublished: true}} {
+		t.Run(fmt.Sprintf("queue_%d_unpublished_%t", test.size, test.unpublished), func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "candidate-bound")
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -343,9 +346,9 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			}
 			defer tx.Rollback()
 			var tail tracker.NativeIssue
-			for index := range size {
+			for index := range test.size {
 				request := tracker.CreateIssue{Title: fmt.Sprintf("candidate-%d", index), State: "Todo"}
-				if index == size-1 {
+				if index == test.size-1 {
 					request.Priority = new(1)
 					request.Labels = []string{"hotfix"}
 				}
@@ -356,6 +359,25 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
+			}
+			if test.unpublished {
+				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+				worker := f.worker(t, "source-worker")
+				lease := claimNativeAttempt(t, f, worker, "source-machine", "source-session", tail.WorkItemID)
+				event := nativeStartedEvent(lease)
+				path := f.base + "/work-items/" + string(tail.WorkItemID) + "/events"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
+				event.Data.Handoff = nativeTestCheckpoint()
+				event.Data.Handoff.WorktreeState = "unpushed"
+				event.Data.Handoff.HeadSHA = strings.Repeat("b", 40)
+				event.Data.Handoff.WorkspaceDigest = strings.Repeat("d", 64)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.finished", "finish", 3
+				event.Data.Handoff, event.Data.Outcome = nil, "succeeded"
+				event.Data.CompletionBody = "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			}
 			probe := measureDispatchQueries(t, f.service)
 			tx, err = f.service.database.db.BeginTx(t.Context(), nil)
@@ -374,7 +396,11 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 				t.Fatal(err)
 			}
 			elapsed := time.Since(began)
-			if len(ids) != 9 || ids[0] != tailID || probe.rows.Load() != 9 {
+			wantRows := int64(9)
+			if test.unpublished {
+				wantRows++
+			}
+			if len(ids) != 9 || ids[0] != tailID || probe.rows.Load() != wantRows {
 				t.Fatalf("ids=%v tail=%d returned_rows=%d", ids, tailID, probe.rows.Load())
 			}
 			captured := probe.query.Load()
@@ -406,7 +432,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			if _, err := claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil); err == nil {
 				t.Fatal("removed cursor did not request a fresh preview")
 			}
-			t.Logf("queue=%d page_rows=9 select_duration=%s", size, elapsed)
+			t.Logf("queue=%d page_rows=9 select_duration=%s", test.size, elapsed)
 		})
 	}
 }

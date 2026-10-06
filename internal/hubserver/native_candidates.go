@@ -141,8 +141,6 @@ WHERE i.organization_id = `,
 		notWorkspaceItemClause,
 		`)
  AND `,
-		notAlreadyAnsweredClause,
-		` AND `,
 		nativeCandidateDependenciesSatisfied,
 		` AND `,
 		nativeCandidateRecordedDependenciesSatisfied}, "")
@@ -192,6 +190,14 @@ WHERE i.organization_id = `,
 	if len(excluded) > 0 {
 		statement += ` AND NOT EXISTS (SELECT 1 FROM json_each(i.labels_json) l WHERE lower(trim(l.value)) IN (SELECT value FROM json_each(` + jsonList(excluded) + `)))`
 	}
+	if encodingErr != nil {
+		return nil, encodingErr
+	}
+	unpublished, err := unpublishedNativeCompletionIDs(ctx, tx, statement+")", args)
+	if err != nil {
+		return nil, err
+	}
+	statement += ` AND ` + fmt.Sprintf(notAlreadyAnsweredClause, jsonList(unpublished))
 	statement += `), ranked AS NOT MATERIALIZED (SELECT *, CASE WHEN label_rank < ` + bind(len(labelRanks)) + ` THEN 0 ELSE unblockers END AS unblocker_rank FROM candidates)`
 	order := "merging, priority, label_rank, state_rank, unblocker_rank, unranked, queue_rank, created, identifier, id"
 	statement += ` SELECT id FROM ranked WHERE 1 = 1`
