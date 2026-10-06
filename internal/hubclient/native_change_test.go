@@ -987,6 +987,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
+		largeOutput    bool
+		dependencyOnly bool
+		failedCheck    bool
 		absorbed       bool
 		hold           bool
 		lowScore       bool
@@ -1020,6 +1023,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "absorbed Rework preserves formal human rejection", absorbed: true, rework: true, formal: true, land: true, wantState: "Human Review", wantChanges: 1},
 		{name: "absorbed Rework preserves a reported human hold", absorbed: true, hold: true, rework: true, land: true, wantState: "Human Review", wantChanges: 1},
 		{name: "SSH native validator pass after publication", ssh: true, validator: "pass", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "dependency validation with large output", dependencyOnly: true, largeOutput: true, validator: "pass", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "dependency-only native validation evidence", dependencyOnly: true, validator: "pass", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "SSH dependency-only native validation evidence", ssh: true, dependencyOnly: true, validator: "pass", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "failed dependency check cannot pass review", dependencyOnly: true, failedCheck: true, validator: "pass", wantVerdict: "wait", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "native validator pass after publication", validator: "pass", staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "native validator low score requests rework", lowScore: true, validator: "pass", wantVerdict: "rework", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
 		{name: "native validator rework retains version", validator: "rework", staged: true, wantChanged: true, wantState: "In Review", wantChanges: 1},
@@ -1127,6 +1134,28 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				issue = h.createInProgress(t, "Update the README")
 			}
 			source := nativeChangeSourceRepo(t)
+			if test.dependencyOnly {
+				for name, content := range map[string]string{
+					"frontend/package.json": `{"dependencies":{"@radix-ui/themes":"1"}}`,
+					".gitignore":            "frontend/.generated/\n.generated/\n",
+					".test-bin/pnpm":        "#!/bin/sh\ntest \"$(cat package.json)\" = '{\"dependencies\":{}}' || exit 2\nmkdir -p .generated\nprintf 'pnpm %s passed\\n' \"$1\" | tee .generated/result\n",
+					".test-bin/make":        "#!/bin/sh\ntest \"$(cat frontend/package.json)\" = '{\"dependencies\":{}}' || exit 2\nmkdir -p .generated\nprintf 'make %s passed\\n' \"$1\" | tee .generated/result\n",
+				} {
+					if test.largeOutput && name == ".test-bin/make" {
+						content += "printf '%070000d\\n' 0\n"
+					}
+					path := filepath.Join(source, name)
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				nativeChangeGit(t, source, "add", ".")
+				nativeChangeGit(t, source, "commit", "-m", "dependency fixture")
+			}
+
 			remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
 			nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
 			nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
@@ -1355,7 +1384,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				nativeChangeGit(t, source, "config", "commit.gpgsign", "true")
 				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
 			}
-			provider := &committingAgent{commit: test.commit, dirty: test.dirty, staged: test.staged, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed, hold: test.hold, inProgress: test.lateConflict}
+			provider := &committingAgent{dependencyOnly: test.dependencyOnly, failedCheck: test.failedCheck, commit: test.commit, dirty: test.dirty, staged: test.staged, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed, hold: test.hold, inProgress: test.lateConflict}
 			var targetHead string
 			if test.advanceTarget {
 				provider.duringTurn = func() {
@@ -1380,10 +1409,15 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 				t.Cleanup(func() { _ = runtimeStore.Close() })
 			}
+			validationCommand := "true"
+			if test.dependencyOnly {
+				validationCommand = `PATH="$PWD/.test-bin:$PATH" make check-fast`
+				candidate.Description = "Remove the unused direct @radix-ui/themes dependency. Required validation: frontend pnpm build, frontend pnpm check, root make check-fast."
+			}
 			agent, err := runner.NewRunner(runner.Dependencies{
 				Store:        runtimeStore,
 				ProjectID:    "local",
-				Workflow:     config.Workflow{Config: config.Config{Gate: gate.Config{Run: "true", Validator: gate.ValidatorConfig{Enabled: test.validator != ""}}}, Prompt: "Complete the issue"},
+				Workflow:     config.Workflow{Config: config.Config{Gate: gate.Config{Run: validationCommand, Validator: gate.ValidatorConfig{Enabled: test.validator != ""}}}, Prompt: "Complete the issue"},
 				Workspace:    backend,
 				AgentBackend: provider,
 			})
@@ -1643,6 +1677,28 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err != nil || len(detail.Reviews) != 1 || detail.Reviews[0].Validator == nil || detail.Reviews[0].VersionID != change.VersionID || change.Validator.HeadSHA != change.HeadSHA {
 					t.Fatalf("validator verdict was not pinned to the immutable version: %+v, %v", detail, err)
 				}
+				if test.dependencyOnly {
+					receipts := detail.Reviews[0].Validator.Commands
+					if len(receipts) != 3 {
+						t.Fatalf("command evidence missing from native review: %+v", receipts)
+					}
+					for index, receipt := range receipts {
+						wantExit := 0
+						if test.failedCheck && index == 2 {
+							wantExit = 7
+						}
+						if receipt.HeadSHA != change.HeadSHA || receipt.TreeSHA == "" || receipt.TreeSHA != receipts[0].TreeSHA || receipt.ExitCode != wantExit || receipt.Output == "" {
+							t.Fatalf("unverified native command receipt: %+v", receipt)
+						}
+					}
+					if receipts[0].OutputTruncated != test.largeOutput {
+						t.Fatalf("large output evidence not preserved: truncated=%t", receipts[0].OutputTruncated)
+					}
+					if change.Reviewed == test.failedCheck {
+						t.Fatalf("review readiness ignored actual validation: %+v", change)
+					}
+				}
+
 			}
 			if test.failVersion {
 				if change == nil || change.ChangeID != expected.Change.ID || change.VersionID != "" || change.Reviewed || change.Error != "" || change.VersionCode != "invalid_request" || !strings.Contains(change.VersionError, "version publication refused") {
@@ -1691,7 +1747,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/attempts/"+attempt+"/diff", nil, &stored); err != nil {
 					t.Fatalf("read stored diff: %v", err)
 				}
-				if stored.HeadSHA != change.HeadSHA || !test.land && stored.BaseSHA != change.BaseSHA || !nativeDiffHas(stored.Files, map[bool]string{false: "CHANGE.md", true: "PRESERVED.md"}[test.land && test.rework && !test.lateConflict]) {
+				expectedPath := map[bool]string{false: "CHANGE.md", true: "PRESERVED.md"}[test.land && test.rework && !test.lateConflict]
+				if test.dependencyOnly {
+					expectedPath = "frontend/package.json"
+				}
+				if stored.HeadSHA != change.HeadSHA || !test.land && stored.BaseSHA != change.BaseSHA || !nativeDiffHas(stored.Files, expectedPath) {
 					t.Fatalf("stored diff = %#v, reported %#v", stored, change)
 				}
 				head, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "rev-parse", "HEAD").Output()
@@ -1850,6 +1910,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatalf("landed version was reclaimed: %+v", candidates)
 				}
 				path, expectedContent := "CHANGE.md", "changed\n"
+				if test.dependencyOnly {
+					path, expectedContent = "frontend/package.json", `{"dependencies":{}}`
+				}
 				if test.rework && !test.lateConflict {
 					path, expectedContent = "PRESERVED.md", "reviewed source\n"
 				}
@@ -1899,19 +1962,40 @@ func nativeDiffHas(files []tracker.AttemptDiffFile, path string) bool {
 // committingAgent is a fake provider: it completes one turn, committing a
 // file in the worktree first when commit is set.
 type committingAgent struct {
-	complete   bool
-	inProgress bool
-	hold       bool
-	lowScore   bool
-	validator  string
-	commit     bool
-	dirty      bool
-	staged     bool
-	prompt     string
-	workspace  string
-	calls      int
-	bound      bool
-	duringTurn func()
+	dependencyOnly bool
+	failedCheck    bool
+	complete       bool
+	inProgress     bool
+	hold           bool
+	lowScore       bool
+	validator      string
+	commit         bool
+	dirty          bool
+	staged         bool
+	prompt         string
+	workspace      string
+	calls          int
+	bound          bool
+	duringTurn     func()
+}
+
+func (a *committingAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, tools []runner.AgentTool, handler runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if a.dependencyOnly && strings.Contains(request.Prompt, "Detent validator-agent") {
+		if !request.ReadOnly || !request.SupplementalTools || !strings.Contains(request.Prompt, "make check-fast passed") {
+			return runner.AgentTurnResult{}, errors.New("native review lacks configured command evidence")
+		}
+		for _, command := range []string{`cd frontend && PATH="$PWD/../.test-bin:$PATH" pnpm build`, `cd frontend && PATH="$PWD/../.test-bin:$PATH" pnpm check`} {
+			if a.failedCheck && strings.HasSuffix(command, "pnpm check") {
+				command += " && exit 7"
+			}
+			arguments, _ := json.Marshal(map[string]string{"command": command})
+			result, err := handler(ctx, runner.AgentToolCall{Name: "detent_run_validation", Arguments: arguments})
+			if err != nil || !strings.Contains(result.Content, "passed") {
+				return runner.AgentTurnResult{}, errors.Join(fmt.Errorf("missing host command output: %+v", result), err)
+			}
+		}
+	}
+	return a.RunTurn(ctx, request, update)
 }
 
 func (*committingAgent) SupportsLiveControl() bool { return true }
@@ -1950,6 +2034,16 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 			return runner.AgentTurnResult{}, err
 		}
 		commands := [][]string{{"add", "CHANGE.md"}}
+		if a.dependencyOnly {
+			if err := os.Remove(filepath.Join(request.Workspace, "CHANGE.md")); err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			if err := os.WriteFile(filepath.Join(request.Workspace, "frontend/package.json"), []byte(`{"dependencies":{}}`), 0o600); err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			commands = [][]string{{"add", "frontend/package.json"}}
+		}
+
 		if a.commit {
 			commands = append(commands, []string{"commit", "-m", "change"})
 		}

@@ -3294,8 +3294,32 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 	}
 
+	var commands *validatorCommands
+	var validationTools []AgentTool
+	var validationHandler AgentToolHandler
+	if req.NativeVersion != nil {
+		commandRunner, ok := r.workspace.(workspace.ReviewCommandRunner)
+		if !ok {
+			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires host command execution", ErrValidatorInfrastructure)
+		}
+		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue}
+		configured := gate.Effective(workflow.Config.Gate)
+		if configured.Kind == gate.KindCommand {
+			if _, err := commands.execute(ctx, configured.Run); err != nil {
+				return gate.ValidatorResult{}, err
+			}
+		}
+		validationTools, validationHandler = commands.tools()
+	}
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	promptOptions := validatorPromptOptionsForPR(info, *req.Diff, validatorMaxInlineDiffBytes(validator))
+	if commands != nil {
+		var commandErr error
+		promptOptions.Commands, commandErr = commands.evidence()
+		if commandErr != nil {
+			return gate.ValidatorResult{}, commandErr
+		}
+	}
 	if req.NativeVersion != nil {
 		promptOptions.VersionID = req.NativeVersion.ID
 		promptOptions.DiffTruncated = promptOptions.DiffTruncated || req.Diff.Patch == ""
@@ -3402,6 +3426,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	stopCompute := r.meterCompute(runReq.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
 		ReadOnly:            req.NativeVersion != nil,
+		SupplementalTools:   req.NativeVersion != nil,
 		AllowLocalBinding:   workflow.Config.Worker.EffectiveAllowLocalBinding(),
 		ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains,
 		Workspace:           info.Path,
@@ -3419,7 +3444,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		RSSPollInterval:     r.rssPollInterval,
 		workerGitHub:        workerGitHub,
 		processRSS:          r.processRSS,
-	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
+	}, validationTools, validationHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		activityProfile.observe(update, eventAt, workspaceIssue.PullRequestHeadSHA, runStartedAt)
 		if update.Type == AgentUpdateTokenUsage {
@@ -3557,6 +3582,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
 	}
+	if commands != nil {
+		_, commandErr := commands.evidence()
+		treeErr = errors.Join(treeErr, commandErr)
+	}
 	if treeErr != nil {
 		return gate.ValidatorResult{}, errors.Join(treeErr,
 			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0))
@@ -3589,6 +3618,18 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	if err := r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0); err != nil {
 		return gate.ValidatorResult{}, err
+	}
+	if commands != nil {
+		validation.Commands, err = commands.evidence()
+		if err != nil {
+			return gate.ValidatorResult{}, err
+		}
+		for _, command := range validation.Commands {
+			if command.ExitCode != 0 && validation.Verdict == gate.ValidatorVerdictPass {
+				validation.Verdict = gate.ValidatorVerdictWait
+				validation.Summary += "\nHost validation command failed; passing test evidence is required."
+			}
+		}
 	}
 	if req.NativeVersion != nil {
 		validation.VersionID = req.NativeVersion.ID

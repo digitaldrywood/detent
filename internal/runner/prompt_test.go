@@ -1098,6 +1098,11 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 		forbidden []string
 	}{
 		{
+			name: "native host command evidence",
+			opts: ValidatorPromptOptions{VersionID: "version", HeadSHA: "head", Commands: []gate.CommandResult{{Command: "cd frontend && pnpm build", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "build passed"}}},
+			want: []string{"host", "pnpm build", "build passed", "head=", "tree=", "exit=", "detent_run_validation", "Worker prose and human approval do not replace test evidence"},
+		},
+		{
 			name:      "clean physical observation",
 			opts:      ValidatorPromptOptions{DiffStat: &clean},
 			want:      []string{"Stat: 0 files changed", "Full diff: no workspace changes detected."},

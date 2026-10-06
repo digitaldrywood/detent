@@ -116,9 +116,19 @@ type Finding struct {
 	Line     int
 }
 
+type CommandResult struct {
+	Command         string `json:"command"`
+	HeadSHA         string `json:"head_sha"`
+	TreeSHA         string `json:"tree_sha"`
+	ExitCode        int    `json:"exit_code"`
+	Output          string `json:"output"`
+	OutputTruncated bool   `json:"output_truncated,omitempty"`
+}
+
 type ValidatorResult struct {
-	VersionID  string `json:"version_id,omitempty"`
-	SessionID  int64  `json:"session_id,string,omitempty"`
+	Commands   []CommandResult `json:"commands,omitempty"`
+	VersionID  string          `json:"version_id,omitempty"`
+	SessionID  int64           `json:"session_id,string,omitempty"`
 	Submitted  bool
 	Verdict    string
 	Score      float64
