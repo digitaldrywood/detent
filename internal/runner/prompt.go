@@ -707,9 +707,9 @@ func appendSkillCreationBlock(prompt string, cfg config.Skills) string {
 
 	var b strings.Builder
 	b.WriteString("## Skill creation loop\n\n")
-	b.WriteString("Only reusable multi-step methods, debugging recipes or learned conventions; no routine edits, secrets or issue restatements. ")
-	b.WriteString("Draft at most " + pluralizeCount(cfg.Creation.MaxDraftsPerRun, "skill file", "skill files") + " under `" + path + "`; YAML name/description/when_to_use, concise Markdown. Revalidate; PR review approves.\n")
-	b.WriteString("One line: `Skill draft: yes — <path and purpose>` or `Skill draft: no — <reason>`.\n")
+	b.WriteString("Reusable multi-step methods/conventions only; no routine edits/secrets/issue restatements. ")
+	b.WriteString("Draft at most " + pluralizeCount(cfg.Creation.MaxDraftsPerRun, "skill file", "skill files") + " under `" + path + "`; YAML name/description/when_to_use + concise Markdown. Revalidate; PR review approves.\n")
+	b.WriteString("One line: `Skill draft: yes — <path/purpose>` or `Skill draft: no — <reason>`.\n")
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimRight(b.String(), "\n")
 }
