@@ -144,6 +144,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		validationErr error
 		wantRecovery  bool
 	}{
+		{name: "completed checkpoint ownership deadline is instance owned with human review", states: workflow, humanReview: &yes, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)},
+		{name: "completed checkpoint ownership deadline is instance owned without human review", states: workflow, humanReview: &no, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)},
 		{name: "checkpoint mismatch leaves dispatch without human review", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Human Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "checkpoint mismatch prefers Blocked without human review", states: workflow, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "Blocked", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "checkpoint mismatch optout prefers review over Blocked", states: workflow, humanReview: &no, optout: true, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
@@ -173,7 +175,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "reason only report settles without acceptance", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", wantSettled: true},
 		{name: "human action comment retains agent reason and summary", change: accepted, states: workflow, finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true, wantReason: "permission_wait", wantSummary: "The operator must approve the migration."},
 		{name: "untyped instance limitation settles without acceptance", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\nblockers: []\nhuman_action: null\n```", wantSettled: true},
-		{name: "deferred cleanup deadline retains instance attribution", states: workflow, runErr: errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded), wantState: "In Review", wantTerminal: store.WorkAttemptTerminalTimedOut, roundTrip: true},
+		{name: "deferred cleanup deadline retains instance attribution", states: workflow, runErr: errors.Join(runpkg.ErrWorkerProcessReap, context.DeadlineExceeded), roundTrip: true},
 		{name: "deferred provider cancellation retains its outcome", states: workflow, runErr: context.Canceled, wantState: "In Review", wantTerminal: store.WorkAttemptTerminalCancelled, roundTrip: true},
 		{name: "failed native stale authority is rejected", states: workflow, runErr: errors.New("provider failed"), updateErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, errors.New("final diff unavailable")), wantAbandoned: true},
 		{name: "failed provider without native change settles for review", states: workflow, runErr: errors.New("provider failed"), wantState: "In Review"},
@@ -723,7 +725,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 						t.Fatal("unresolved model conflict escaped genuine failure accounting")
 					}
 				}
-				if errors.Is(test.runErr, runpkg.ErrWorkerProcessReap) {
+				if errors.Is(test.runErr, runpkg.ErrWorkerProcessReap) || errors.Is(test.runErr, runpkg.ErrWorkspacePreparation) {
 					receipt := attempts.completions[0]
 					if receipt.ErrorClass != workAttemptErrorWorkspace || !allowanceInfrastructureAttempt(store.WorkAttempt{TerminalState: receipt.TerminalState, ErrorClass: receipt.ErrorClass, MetricsJSON: receipt.MetricsJSON}) {
 						t.Fatal("native cleanup failure consumed issue failure allowance")
