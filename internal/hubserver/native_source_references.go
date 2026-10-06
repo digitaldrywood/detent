@@ -11,14 +11,14 @@ import (
 )
 
 func readNativeSourceReferences(ctx context.Context, query nativeQueryer, scope nativeScope, id string) ([]tracker.ExternalReference, error) {
-	var nodeID, owner, repository, sourceURL string
+	var nodeID, owner, repository, sourceURL, importedURL string
 	var number int
 	var provenance sql.NullString
 	err := query.QueryRowContext(ctx, `SELECT COALESCE(i.github_node_id, ''), COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''),
-COALESCE(i.github_number, 0), COALESCE(l.source_url, ''), i.provenance_json
+COALESCE(i.github_number, 0), COALESCE(l.source_url, ''), i.url, i.provenance_json
 FROM issues i LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN linked_issue_sources l ON l.work_item_id = i.native_id
-WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, id).Scan(&nodeID, &owner, &repository, &number, &sourceURL, &provenance)
+WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, id).Scan(&nodeID, &owner, &repository, &number, &sourceURL, &importedURL, &provenance)
 	if err != nil {
 		return nil, err
 	}
@@ -28,16 +28,18 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 			return nil, err
 		}
 	}
-	return nativeSourceReferences(nodeID, owner, repository, number, sourceURL, source), nil
+	return nativeSourceReferences(nodeID, owner, repository, number, sourceURL, importedURL, source), nil
 }
 
-func nativeSourceReferences(nodeID, owner, repository string, number int, sourceURL string, source *tracker.Provenance) []tracker.ExternalReference {
+func nativeSourceReferences(nodeID, owner, repository string, number int, sourceURL, importedURL string, source *tracker.Provenance) []tracker.ExternalReference {
 	references := []tracker.ExternalReference{}
 	if sourceURL != "" {
 		references = append(references, tracker.GitHubIssueSourceReference(sourceURL, sourceURL))
 	}
 	if number > 0 && owner != "" && repository != "" {
 		sourceURL = "https://github.com/" + owner + "/" + repository + "/issues/" + strconv.Itoa(number)
+	} else if sourceURL == "" {
+		sourceURL = importedURL
 	}
 	if source != nil {
 		if source.Provider == "github" {
