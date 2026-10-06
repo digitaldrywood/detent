@@ -35,6 +35,7 @@ type HostedPageData struct {
 	OrganizationID       string
 	CSRF                 string
 	Error                string
+	RetryURL             string
 	Notice               string
 	Mode                 string
 	CanManage            bool

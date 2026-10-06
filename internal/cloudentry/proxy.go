@@ -62,8 +62,18 @@ func (s *Service) claims(organization Organization, kind, method, path string, b
 	}, nil
 }
 
-func (s *Service) browserDenied(c echo.Context, organization string, status int) error {
+func (s *Service) browserFailure(c echo.Context, organization string, status int) error {
 	request := c.Request()
+	if status == http.StatusServiceUnavailable {
+		if strings.HasPrefix(request.URL.Path, "/api/") || request.Header.Get("Accept") == "application/json" {
+			return c.JSON(status, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
+		}
+		retry := "/organizations/" + organization + "/work"
+		if (request.Method == http.MethodGet || request.Method == http.MethodHead) && validReturnPath(request.URL.Path, organization) {
+			retry = request.URL.RequestURI()
+		}
+		return s.browserUnavailable(c, retry)
+	}
 	if (request.Method == http.MethodGet || request.Method == http.MethodHead) && !strings.HasPrefix(request.URL.Path, "/api/") && status == http.StatusUnauthorized {
 		query := url.Values{"organization": {organization}}
 		if validReturnPath(request.URL.Path, organization) {
@@ -247,7 +257,7 @@ func (s *Service) proxy(c echo.Context) error {
 		verification = verified
 		if err != nil {
 			defer s.logProxied(c, organization.ID, verification, started)
-			return s.browserDenied(c, organization.ID, status)
+			return s.browserFailure(c, organization.ID, status)
 		}
 	}
 	authorized := time.Since(started)
