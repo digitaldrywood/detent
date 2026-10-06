@@ -267,8 +267,6 @@ func TestDispatchPlannerFindsReadyTailBeyondKnownWaits(t *testing.T) {
 				switch mode {
 				case "refreshed CI", "operator rejection":
 					want = []string{"00", "01", "02", "03", "04", "05"}
-				case "ready merge":
-					want = []string{"29", "24", "25", "26", "27", "28"}
 				}
 				var dispatched []string
 				for _, decision := range plan.Dispatches {

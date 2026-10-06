@@ -145,7 +145,11 @@ func (o *ConfigurationOwner) applyLocalBinding(ctx context.Context, cfg globalco
 		return view
 	}
 	temporary := file.Name()
-	defer os.Remove(temporary)
+	defer func() {
+		if err := os.Remove(temporary); err != nil && !errors.Is(err, os.ErrNotExist) {
+			p.logger.WarnContext(ctx, "remove project configuration temporary file", "error", err)
+		}
+	}()
 	_, writeErr := file.Write(raw)
 	closeErr := file.Close()
 	if writeErr != nil || closeErr != nil || os.Chmod(temporary, 0600) != nil || os.Rename(temporary, path) != nil {

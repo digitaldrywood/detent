@@ -93,7 +93,8 @@ func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tra
 	if err := applyUrgentRunnerRouting(ctx, db, &r); err != nil {
 		return r, err
 	}
-	if err := applyRunnerProjectRanks(ctx, db, &r); err != nil {
+	r.ProjectRanks, err = readRunnerProjectRanks(ctx, db, r.RunnerID, r.OrganizationID)
+	if err != nil {
 		return r, err
 	}
 	r.Leases = []runnerauth.RunnerLease{}
@@ -191,7 +192,7 @@ func readRunnerRoutingSnapshot(ctx context.Context, db nativeQueryer, organizati
 		err = applyUrgentRunnerRouting(ctx, db, &runner)
 	}
 	if err == nil {
-		err = applyRunnerProjectRanks(ctx, db, &runner)
+		runner.ProjectRanks, err = readRunnerProjectRanks(ctx, db, runner.RunnerID, runner.OrganizationID)
 	}
 	return runnerauth.RoutingSnapshot{RunnerID: id, Revision: runner.Revision, Routing: runner.Routing}, err
 }
@@ -541,22 +542,22 @@ func validateRunnerLeaseTx(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 	return r, nil
 }
 
-func applyRunnerProjectRanks(ctx context.Context, db nativeQueryer, r *runnerauth.Runner) error {
-	rows, err := db.QueryContext(ctx, "SELECT p.id, p.scheduling_rank FROM projects p JOIN token_grants g ON g.project_id = p.id AND g.organization_id = p.organization_id WHERE g.token_id = (SELECT token_id FROM runner_identities WHERE id = ?) AND p.organization_id = ?", r.RunnerID, r.OrganizationID)
+func readRunnerProjectRanks(ctx context.Context, db nativeQueryer, runnerID string, organization tracker.OrganizationID) (map[tracker.ProjectID]int, error) {
+	rows, err := db.QueryContext(ctx, "SELECT p.id, p.scheduling_rank FROM projects p JOIN token_grants g ON g.project_id = p.id AND g.organization_id = p.organization_id WHERE g.token_id = (SELECT token_id FROM runner_identities WHERE id = ?) AND p.organization_id = ?", runnerID, organization)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
-	r.ProjectRanks = map[tracker.ProjectID]int{}
+	ranks := map[tracker.ProjectID]int{}
 	for rows.Next() {
 		var id tracker.ProjectID
 		var rank int
 		if err := rows.Scan(&id, &rank); err != nil {
-			return err
+			return nil, err
 		}
-		r.ProjectRanks[id] = rank
+		ranks[id] = rank
 	}
-	return rows.Err()
+	return ranks, rows.Err()
 }
 
 func runnerOwnedBy(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, runner string, credential apiCredential) (bool, error) {

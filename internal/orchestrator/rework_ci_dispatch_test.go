@@ -55,6 +55,7 @@ func TestReworkCurrentHeadCIDispatch(t *testing.T) {
 					lane = "Rework"
 				}
 				issue := dispatchTestIssue("rework", lane)
+				issue.Priority = new(1)
 				issue.PullRequest = tt.pr
 				next := dispatchTestIssue("next", "Todo")
 				if retry {

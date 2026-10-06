@@ -478,9 +478,10 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			} else if test.paused && test.foreign != "" {
 				gitDir := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "--absolute-git-dir"))
 				value := "foreign\n"
-				if test.foreign == "git-rebase-todo" {
+				switch test.foreign {
+				case "git-rebase-todo":
 					value = "pick " + local.HeadSHA + " preserved feature\n"
-				} else if test.foreign == "onto" {
+				case "onto":
 					value = local.HeadSHA + "\n"
 				}
 				if err := os.WriteFile(filepath.Join(gitDir, "rebase-merge", test.foreign), []byte(value), 0o600); err != nil {

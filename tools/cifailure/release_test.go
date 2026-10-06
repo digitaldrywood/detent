@@ -2,10 +2,11 @@ package main
 
 import (
 	"bytes"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestReleaseFailureReportsNativeHighAndReusesOccurrence(t *testing.T) {

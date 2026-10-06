@@ -51,7 +51,7 @@ func TestHeartbeatWriteRetryErrors(t *testing.T) {
 			}
 			now := time.Now().UTC()
 			manager := newHeartbeatManager(Config{}, nil, backend, func() time.Time { return now }, nil)
-			got, err := manager.persistHeartbeat(ctx, heartbeatTarget{workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 6004}}, manager.settingsSnapshot(), now)
+			got, err := manager.persistHeartbeat(ctx, heartbeatTarget{workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 6004}}, manager.settingsSnapshot())
 			if !errors.Is(err, tc.wantErr) || backend.calls != tc.wantCalls {
 				t.Fatalf("calls=%d err=%v", backend.calls, err)
 			}

@@ -35,9 +35,10 @@ type GitHubRESTClient interface {
 }
 
 type LandOptions struct {
-	SourceIssues []tracker.ExternalReference
-	GitHubClient GitHubRESTClient
-	External     *tracker.ChangeExternalReference
+	ValidationCommand string
+	SourceIssues      []tracker.ExternalReference
+	GitHubClient      GitHubRESTClient
+	External          *tracker.ChangeExternalReference
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
 	// a branch that moved past its review is not landed.
 	HeadSHA string
@@ -299,6 +300,11 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 
 	mergeSHA, err := combine(ctx, staging, method, head, targetHead, opts.Message)
 	if err != nil {
+		return LandResult{}, err
+	}
+	validationInfo := normalized
+	validationInfo.Path = staging
+	if err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, mergeSHA); err != nil {
 		return LandResult{}, err
 	}
 	result := LandResult{MergeSHA: mergeSHA, BaseRef: target, BaseBefore: targetHead, Method: method}
@@ -578,4 +584,21 @@ func forgetStale(path string) bool {
 		return false
 	}
 	return false
+}
+
+func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, command, head string) error {
+	if err := l.validateMergeResolution(ctx, info, issue, command); err != nil {
+		return err
+	}
+	current, err := runGitAt(ctx, info.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(current) != head {
+		return refuse(LandRefusalHeadMoved, "validation changed the reviewed landing head")
+	}
+	if _, err := runGitAt(ctx, info.Path, "diff", "--quiet", "HEAD", "--"); err != nil {
+		return refuse(LandRefusalHeadMoved, "validation left tracked source changes")
+	}
+	return nil
 }

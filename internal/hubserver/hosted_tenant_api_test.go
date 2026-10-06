@@ -396,12 +396,13 @@ func TestHostedTenantContractFixtures(t *testing.T) {
 		fixture  string
 		target   func() any
 		optional []string
+		extra    []string
 	}{
 		{fixture: "account-members.json", target: func() any { return &hostedMembersResponse{} }},
 		{fixture: "account-member.json", target: func() any { return &hostedMemberView{} }},
 		{fixture: "account-invitation.json", target: func() any { return &hostedInvitationView{} }},
 		{fixture: "account-projects.json", target: func() any { return &[]hostedProjectView{} }},
-		{fixture: "account-fleet.json", target: func() any { return &hostedFleetResponse{} }, optional: []string{"runners[].provider_capacity[].reason"}},
+		{fixture: "account-fleet.json", target: func() any { return &hostedFleetResponse{} }, optional: []string{"runners[].provider_capacity[].reason"}, extra: []string{"runners[].can_edit_projects"}},
 		{fixture: "account-fleet-empty.json", target: func() any { return &hostedFleetResponse{} }},
 	} {
 		t.Run(test.fixture, func(t *testing.T) {
@@ -425,7 +426,7 @@ func TestHostedTenantContractFixtures(t *testing.T) {
 			if err := json.Unmarshal(encoded, &got); err != nil {
 				t.Fatal(err)
 			}
-			compareConversationShape(t, "", want, got, conversationPathSet(nil), conversationPathSet(test.optional))
+			compareConversationShape(t, "", want, got, conversationPathSet(test.extra), conversationPathSet(test.optional))
 		})
 	}
 }

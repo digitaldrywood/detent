@@ -15,9 +15,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"

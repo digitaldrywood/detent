@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -232,7 +232,7 @@ func TestHostedProjectTools(t *testing.T) {
 				{ExpectedRevision: 2, Intake: "disabled", Projection: "disabled", States: &states},
 				{ExpectedRevision: 2, Intake: "disabled", Projection: "disabled", WorkflowMarkdown: &markdown},
 			} {
-				call := projectCall(t, "update_project_integration", string(newProject.ID), "repository-override-"+fmt.Sprint(input.WorkflowMarkdown != nil), input)
+				call := projectCall(t, "update_project_integration", string(newProject.ID), "repository-override-"+strconv.FormatBool(input.WorkflowMarkdown != nil), input)
 				result, err := e.Execute(ctx, call)
 				if err == nil && !strings.Contains(string(result.Content), "controlled by the repository") {
 					t.Fatalf("MCP accepted repository workflow override: %s", result.Content)

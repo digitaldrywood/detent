@@ -180,7 +180,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 			return handoff(fmt.Errorf("move native item to %s: %w", target, err))
 		}
 	}
-	comment := ""
+	var comment string
 	if needsReview {
 		disposition := "no valid complete detent-status disposition"
 		if report != nil && report.Invalid == nil {

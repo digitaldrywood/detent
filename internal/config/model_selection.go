@@ -73,7 +73,7 @@ func (p ModelSelection) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	var fields map[string]json.RawMessage
+	fields := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, err
 	}

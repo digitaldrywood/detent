@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -351,17 +350,16 @@ func TestAnnotateUnblockerCountsIsInputOrderIndependent(t *testing.T) {
 	}
 }
 
-func TestDispatchPlannerRecordsUnblockerSelectionReason(t *testing.T) {
+func TestDispatchPlannerPreservesUnblockerCountsWithoutChangingOrder(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range []struct {
 		name              string
 		count             int
 		otherPrerequisite bool
-		wantReason        string
 	}{
-		{name: "single remaining prerequisite", count: 1, wantReason: "prerequisite_for_1_blocked_issue"},
-		{name: "three dependents with unfinished prerequisites", count: 3, otherPrerequisite: true, wantReason: "prerequisite_for_3_blocked_issues"},
+		{name: "single remaining prerequisite", count: 1},
+		{name: "three dependents with unfinished prerequisites", count: 3, otherPrerequisite: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
@@ -394,14 +392,10 @@ func TestDispatchPlannerRecordsUnblockerSelectionReason(t *testing.T) {
 			if len(decisions) != 2 {
 				t.Fatalf("decisions = %d, want 2", len(decisions))
 			}
-			if !decisions[0].Selected || decisions[0].Issue.ID != blocker.ID || decisions[0].UnblockerCount != tt.count {
-				t.Fatalf("first decision = %#v, want selected blocker with expected dependent count", decisions[0])
+			if !decisions[0].Selected || decisions[0].Issue.ID != peer.ID || decisions[0].UnblockerCount != 0 || decisions[1].Selected || decisions[1].Issue.ID != blocker.ID || decisions[1].UnblockerCount != tt.count {
+				t.Fatalf("decisions = %#v, want older peer selected and blocker count preserved", decisions)
 			}
-			orch := Orchestrator{cfg: cfg}
-			orch.logDispatchPlanDecision(context.Background(), &state, now, decisions[0])
-			if len(state.SchedulerDecisions) != 1 || state.SchedulerDecisions[0].Reason != tt.wantReason {
-				t.Fatalf("scheduler decisions = %#v, want unblocker reason", state.SchedulerDecisions)
-			}
+
 		})
 	}
 }

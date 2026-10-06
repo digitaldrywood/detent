@@ -47,7 +47,7 @@ func TestServicePersistsConversationAndProviderThreadPerSession(t *testing.T) {
 	if tools.calls != 2 {
 		t.Fatalf("tool calls = %d, want 2", tools.calls)
 	}
-	for index := 0; index < service.sessionLimit-1; index++ {
+	for index := range service.sessionLimit - 1 {
 		if _, err := service.Send(t.Context(), fmt.Sprintf("other-%d", index), "hello"); err != nil {
 			t.Fatal(err)
 		}

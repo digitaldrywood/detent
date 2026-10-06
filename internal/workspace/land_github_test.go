@@ -241,6 +241,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		sourceIssues   bool
 		existingBody   string
 		wantPatch      bool
+		gateFailure    bool
 	}{
 		{name: "creates the exact source closing payload", method: "squash", sourceIssues: true},
 		{name: "reuse preserves human delivery attribution", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses example/repo#44", wantPatch: true},
@@ -249,6 +250,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "merged PR attribution is historical", method: "squash", pullState: "merged", sourceIssues: true, existingBody: "Historical attribution"},
 		{name: "source attribution refuses a stale PR head", method: "squash", pullState: "stale", sourceIssues: true, existingBody: "Human attribution", wantRefusal: LandRefusalHeadMoved},
 		{name: "merges the reviewed head", method: "merge"},
+		{name: "red gate never publishes the source or calls the forge", method: "squash", gateFailure: true},
 		{name: "uses the policy squash method", method: "squash"},
 		{name: "uses the policy rebase method", method: "rebase"},
 		{name: "reuses an open PR", method: "merge", pullState: "open"},
@@ -516,7 +518,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				return client
 			}
 			client := newClient(false)
-			opts := LandOptions{HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client}
+			opts := LandOptions{HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client, ValidationCommand: "test -f feature.txt"}
+			if test.gateFailure {
+				opts.ValidationCommand = "echo short-test-failure-sentinel; exit 1"
+			}
 			if test.sourceIssues {
 				source := tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410")
 				opts.SourceIssues = []tracker.ExternalReference{source, source}
@@ -538,6 +543,16 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				}
 			}
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), landingInfo, landingIssue, opts)
+			if test.gateFailure {
+				var validation *ValidationError
+				if !errors.As(err, &validation) || !strings.Contains(validation.Output, "short-test-failure-sentinel") || len(methods) != 0 || fixture.remoteMain(t) != base || result.MergeSHA != "" {
+					t.Fatalf("red gate wrote to forge or lost evidence: %v, %v", methods, err)
+				}
+				if _, exists, lookupErr := remoteBranchHead(t.Context(), fixture.info.Path, "origin", fixture.info.Branch); lookupErr != nil || exists {
+					t.Fatalf("red gate published source: %v", lookupErr)
+				}
+				return
+			}
 			if test.gitReadFailure != "" {
 				availability, ok := forgeavailability.As(err)
 				if !ok || availability.Class != test.gitReadClass || availability.Scope.Operation != "git fetch" || !strings.Contains(err.Error(), test.message) || result.MergeSHA != "" || fixture.remoteMain(t) != base {

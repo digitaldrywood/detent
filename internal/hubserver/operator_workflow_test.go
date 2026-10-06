@@ -90,7 +90,8 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 			var call operatortool.Call
 			var issue tracker.NativeIssue
 			var descriptor policy.Descriptor
-			if test.tool == operatortool.MoveItem {
+			switch test.tool {
+			case operatortool.MoveItem:
 				raw, _ := json.Marshal(map[string]any{"project_id": f.project, "request_id": "create", "title": "Terminal move", "state": "Todo"})
 				result, err := executor.Execute(human, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw})
 				var created struct {
@@ -102,14 +103,14 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				issue = created.Data
 				raw, _ = json.Marshal(operatortool.MoveItemArguments{ProjectID: string(f.project), RequestID: "move", Identifier: string(issue.WorkItemID), TargetState: test.target, ExpectedRevision: int64(issue.Revision)})
 				call = operatortool.Call{Name: test.tool, Arguments: raw}
-			} else if test.tool == operatortool.FileIssue {
+			case operatortool.FileIssue:
 				ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead})
 				if err != nil {
 					t.Fatal(err)
 				}
 				raw, _ := json.Marshal(map[string]any{"project_id": f.project, "request_id": "create-terminal", "title": "Terminal creation", "state": test.target})
 				call = operatortool.Call{Name: test.tool, Arguments: raw}
-			} else {
+			default:
 				current, err := readProjectPolicy(t.Context(), f.service.database.db, "org_security/"+string(f.project))
 				if err != nil {
 					var failure *nativeError
@@ -143,7 +144,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				connection := operatortool.CurrentConnection(ctx)
 				storedAt := f.service.config.now().Add(-5 * time.Minute).UTC().Format("2006-01-02T15:04:05.000000000Z")
 				operatorSQL(t, f.hostedSecurityFixture, "UPDATE operator_chat_sessions SET last_used_at=? WHERE connection_id=?", storedAt, connection.ID)
-				for index := 0; index < 256; index++ {
+				for index := range 256 {
 					if _, err := f.service.operatorChat.Send(t.Context(), fmt.Sprintf("pressure-%d", index), "hello"); !errors.Is(err, chat.ErrUnavailable) {
 						t.Fatal(err)
 					}

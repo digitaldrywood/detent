@@ -1,5 +1,5 @@
 {
-  "source": "Original Elixir orchestrator dispatch helpers; source-lane urgency updated by operator-approved #3298",
+  "source": "Original Elixir orchestrator dispatch helpers adapted to current priority ordering",
   "cases": [
     {
       "name": "mixed active candidates honor rank, slots, blocked dependencies, claims, and budget cooldowns",
@@ -155,7 +155,7 @@
           "identifier": "digitaldrywood/detent#105",
           "title": "Budget cooldown expired",
           "state": "Todo",
-          "priority": 1,
+          "priority": 5,
           "created_at": "2026-05-31T05:30:00Z"
         },
         {
@@ -168,9 +168,9 @@
         }
       ],
       "want": {
-        "dispatch_order": ["merging-ready", "todo-ready"],
+        "dispatch_order": ["todo-ready", "rework-ready"],
         "blocked": ["blocked-dependency", "blocked-existing"],
-        "claimed": ["claimed-existing", "merging-ready", "running-todo", "todo-ready"],
+        "claimed": ["claimed-existing", "rework-ready", "running-todo", "todo-ready"],
         "refusals": ["budget-active"]
       }
     },

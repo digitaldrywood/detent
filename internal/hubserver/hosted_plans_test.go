@@ -1399,6 +1399,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					defer rows.Close()
 					for rows.Next() {
 						var id, parent, unused int
 						var detail string

@@ -145,7 +145,7 @@ agents:
   model_selection: {}
 gate:
   kind: command
-  run: "true"
+  run: "make check-land"
   approval_label: human-approved
   automated_review: "off"
   require_automated_review: false

@@ -104,17 +104,17 @@ func (w *workspaceService) start(ctx context.Context) error {
 
 // Stop ends the maintenance loop and closes every live relay connection.
 func (w *workspaceService) Stop() {
+	w.StopContext(context.Background())
+}
+
+func (w *workspaceService) StopContext(ctx context.Context) {
 	w.stopOnce.Do(func() {
 		close(w.stop)
 		if w.cancelSweep != nil {
 			w.cancelSweep()
 		}
 		<-w.stopped
-		// The hub is going away, so there is no request or sweep whose context
-		// this belongs to: the relay's last writes -- the action runs that were
-		// still streaming -- are the process's own work, and a context of its
-		// own is the honest description of that.
-		w.relay.stop(context.Background())
+		w.relay.stop(ctx)
 	})
 }
 

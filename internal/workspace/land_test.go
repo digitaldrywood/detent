@@ -375,7 +375,7 @@ func TestLocalGitLandChangeMethods(t *testing.T) {
 			f := newLandingFixture(t)
 			f.advanceMain(t, "main.txt", "main\n")
 			before := f.remoteMain(t)
-			result, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: test.method, Message: "Land the feature", PushAttemptBranch: true})
+			result, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: test.method, Message: "Land the feature", PushAttemptBranch: true, ValidationCommand: "test -f main.txt && test -f feature.txt"})
 			if err != nil {
 				t.Fatalf("LandChange() error = %v", err)
 			}
@@ -421,6 +421,7 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 		name        string
 		arrange     func(*testing.T, landingFixture) LandOptions
 		wantKind    string
+		gateFailure bool
 	}{
 		{name: "absorbed source verifies without another merge", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
 			f.absorb(t)
@@ -454,6 +455,9 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 			f.absorb(t)
 			return LandOptions{HeadSHA: strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD^")), Method: "squash"}
 		}, wantKind: LandRefusalNothing},
+		{name: "gate failure preserves reviewed source and remote base", gateFailure: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			return LandOptions{HeadSHA: f.head, Method: "squash", ValidationCommand: "echo lint-failure-sentinel; exit 1"}
+		}},
 		{name: "worktree moved past the reviewed head", arrange: func(t *testing.T, f landingFixture) LandOptions {
 			t.Helper()
 			if err := os.WriteFile(filepath.Join(f.info.Path, "late.txt"), []byte("late\n"), 0o600); err != nil {
@@ -508,6 +512,13 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 				}
 			} else {
 				_, err = f.backend.LandChange(context.Background(), f.info, f.issue, opts)
+			}
+			if test.gateFailure {
+				var validation *ValidationError
+				if !errors.As(err, &validation) || !strings.Contains(validation.Output, "lint-failure-sentinel") || f.remoteMain(t) != before || strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")) != f.head {
+					t.Fatalf("failed gate changed source or base: %v", err)
+				}
+				return
 			}
 			var refusal *LandRefusal
 			if !errors.As(err, &refusal) || refusal.Kind != test.wantKind {

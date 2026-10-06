@@ -38,7 +38,10 @@ func WithLaneTransitionReason(ctx context.Context, reason string) context.Contex
 }
 
 func LaneTransitionReason(ctx context.Context) string {
-	reason, _ := ctx.Value(laneTransitionReasonContextKey{}).(string)
+	reason, ok := ctx.Value(laneTransitionReasonContextKey{}).(string)
+	if !ok {
+		return ""
+	}
 	return reason
 }
 
