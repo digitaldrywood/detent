@@ -62,13 +62,15 @@ test("an issue split renders Markdown and grouped dependencies, cancels without 
   await expect(page.getByTestId("operator-action-card")).toHaveCount(0);
   expect((await workItems()).length).toBe(initial.length);
 
-  await askLuna(page, "Split this issue into six children.");
+  await askLuna(page, "Split this issue into six children in Todo.");
   const cancelled = page.getByTestId("operator-action-card").last();
   await expect(cancelled.getByTestId("issue-split-proposal")).toBeVisible();
   await expect(cancelled.getByRole("heading", { name: "1. Split storage", exact: true })).toBeVisible();
   await expect(cancelled.getByRole("heading", { name: "2. Split API", exact: true })).toBeVisible();
   await expect(cancelled.getByRole("heading", { name: "3. Split UI", exact: true })).toBeVisible();
+  await expect(page.getByText("All 6 children will be created in Todo, as requested; work starts as soon as a runner is free.").first()).toBeVisible();
   const proposal = cancelled.getByTestId("issue-split-proposal");
+  await expect(proposal.getByTestId("issue-split-lane-summary")).toHaveText("Children will be created in Todo · work starts as soon as a runner is free");
   await expect(proposal.getByRole("heading", { level: 3 })).toHaveCount(6);
   await expect(proposal.locator("strong")).toHaveText("storage layer");
   await expect(proposal.getByRole("listitem")).toHaveText(["Preserve existing records.", "Add the migration."]);
@@ -92,7 +94,7 @@ test("an issue split renders Markdown and grouped dependencies, cancels without 
   await expect(page.getByText(/Cancelled\./).first()).toBeVisible();
   expect((await workItems()).length).toBe(initial.length);
 
-  await askLuna(page, "Split this issue now, with the same six children.");
+  await askLuna(page, "Split this issue now, with the same six children in Todo.");
   const confirmed = page.getByTestId("operator-action-card").last();
   await expect(confirmed.getByTestId("issue-split-proposal").last()).toBeVisible();
   await confirmed.getByRole("button", { name: "Approve", exact: true }).click();

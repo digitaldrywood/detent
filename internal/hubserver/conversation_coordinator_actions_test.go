@@ -569,11 +569,11 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 		}
 		call := runner.AgentToolCall{Name: "update_project_integration", Arguments: json.RawMessage(`{"repository_enabled":true}`)}
 		if strings.Contains(prompt, "split this issue") || strings.Contains(prompt, "cyclic split") {
-			result, err := f.proposeBrowserIssueSplit(ctx, handle, strings.Contains(prompt, "cyclic split"), strings.Contains(prompt, "six children"))
+			result, err := f.proposeBrowserIssueSplit(ctx, handle, strings.Contains(prompt, "cyclic split"), strings.Contains(prompt, "six children"), "Todo")
 			if err != nil {
 				return runner.AgentTurnResult{}, err
 			}
-			text := "Review the exact change below and confirm it to continue."
+			text := "All 6 children will be created in Todo, as requested; work starts as soon as a runner is free."
 			if !result.Success {
 				text = "The change was refused: " + result.Content
 			}
@@ -618,11 +618,11 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 	})
 }
 
-func (f *browserHostedFixture) proposeBrowserIssueSplit(ctx context.Context, handle runner.AgentToolHandler, cyclic, sixChildren bool) (runner.AgentToolResult, error) {
-	children := []chat.IssueSplitChild{{Title: "Split storage", Description: "Create the **storage layer**.\n\n- Preserve existing records.\n- Add the migration.\n\n```detent-agent\nschema: 1\neffort: high\n```", State: "Todo"}, {Title: "Split API", Description: "Use the storage layer.", State: "Todo"}, {Title: "Split UI", Description: "Render the approved UI.", State: "Todo"}}
+func (f *browserHostedFixture) proposeBrowserIssueSplit(ctx context.Context, handle runner.AgentToolHandler, cyclic, sixChildren bool, childState string) (runner.AgentToolResult, error) {
+	children := []chat.IssueSplitChild{{Title: "Split storage", Description: "Create the **storage layer**.\n\n- Preserve existing records.\n- Add the migration.\n\n```detent-agent\nschema: 1\neffort: high\n```", State: childState}, {Title: "Split API", Description: "Use the storage layer.", State: childState}, {Title: "Split UI", Description: "Render the approved UI.", State: childState}}
 	edges := []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}, {Dependent: 0, Blocker: 1}, {Dependent: 0, Blocker: 2}, {Dependent: 0, Blocker: 3}}
 	if sixChildren {
-		children = append(children, chat.IssueSplitChild{Title: "Split runner", Description: "Run the approved work.", State: "Todo"}, chat.IssueSplitChild{Title: "Split reporting", Description: "Report the saved results.", State: "Todo"}, chat.IssueSplitChild{Title: "Split integration", Description: "Integrate the completed children.", State: "Todo"})
+		children = append(children, chat.IssueSplitChild{Title: "Split runner", Description: "Run the approved work.", State: childState}, chat.IssueSplitChild{Title: "Split reporting", Description: "Report the saved results.", State: childState}, chat.IssueSplitChild{Title: "Split integration", Description: "Integrate the completed children.", State: childState})
 		edges = append(edges, chat.IssueSplitEdge{Dependent: 3, Blocker: 1}, chat.IssueSplitEdge{Dependent: 3, Blocker: 2}, chat.IssueSplitEdge{Dependent: 5, Blocker: 4}, chat.IssueSplitEdge{Dependent: 6, Blocker: 3}, chat.IssueSplitEdge{Dependent: 6, Blocker: 5}, chat.IssueSplitEdge{Dependent: 0, Blocker: 4}, chat.IssueSplitEdge{Dependent: 0, Blocker: 5}, chat.IssueSplitEdge{Dependent: 0, Blocker: 6})
 	}
 	if cyclic {

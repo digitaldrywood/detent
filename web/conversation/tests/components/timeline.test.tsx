@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 
 import { readTimelineCards } from "../../src/app/adapters/timelineEntries.ts";
+import { OperatorActionPreview } from "../../src/app/components/OperatorActionPreview.tsx";
 import { Timeline } from "../../src/app/components/Timeline.tsx";
 import type { Message } from "../../src/contracts/index.ts";
 import {
@@ -43,6 +44,27 @@ function renderTimeline(
 }
 
 describe("Timeline", () => {
+  it.each([
+    [["Blocked", "Blocked"], "Children will be created in Blocked"],
+    [["Todo", "Todo"], "Children will be created in Todo · work starts as soon as a runner is free"],
+    [["Backlog", "Backlog"], "Children will be created in Backlog"],
+    [["Backlog", "Todo"], "Mixed lanes"],
+  ])("states the split lanes before the children: %j", (lanes, summary) => {
+    render(<OperatorActionPreview action={{
+      kind: "propose_issue_split",
+      arguments: {
+        parent_work_item_id: "wi_parent",
+        children: lanes.map((state, index) => ({ title: `Child ${index + 1}`, description: "Scoped work", state })),
+        edges: [],
+      },
+    }} />);
+    const proposal = screen.getByTestId("issue-split-proposal");
+    expect(proposal.firstElementChild).toBe(screen.getByTestId("issue-split-lane-summary"));
+    expect(proposal.firstElementChild?.textContent).toBe(summary);
+    expect([...proposal.querySelectorAll("section > p")].map((label) => label.textContent))
+      .toEqual(lanes.map((lane) => `${lane} · No priority`));
+  });
+
   it.each([
     [{ action: { kind: "propose_issue_split" }, conversation_id: "conv_reply" }, true],
     [{ action: null, conversation_id: "conv_reply" }, false],

@@ -11,6 +11,7 @@ when_to_use: "Use when an issue spans several packages or surfaces, would produc
 
 Decide whether to split at all:
 
+- Do not split a Done or Cancelled parent, even when the user names a child lane. Explain that the parent is terminal and has no remaining work to split. Do not propose or file children.
 - Leave the issue whole if it fits in one focused PR that touches one package or surface. Splitting adds dispatch, review and merge overhead to every piece.
 - Split when the work crosses packages, layers (store, API, MCP, UI) or products (Hub, runner, local board), or when parts of it can be built without waiting on each other.
 
@@ -18,6 +19,23 @@ Read before you cut:
 
 - Read the issue body, comments and the latest Workpad, plus the code it touches. Name the files and packages each piece will change.
 - Check the tracker for open issues that already cover a piece. Comment on the match instead of filing a duplicate.
+
+Choose the child lane:
+
+- Read the parent's current lane from the tracker before proposing the split.
+- A child lane the user names in the prompt wins over the default, for example "Put them in Backlog" means Backlog children regardless of the nonterminal parent's lane. Apply any explicitly named lanes to the specified children.
+- Otherwise use this mapping, and supply the resulting lane as each child's `state`:
+
+  | Parent lane | Default child lane |
+  | --- | --- |
+  | Backlog | Backlog |
+  | Todo | Todo |
+  | Blocked | Blocked |
+  | In Progress | Todo |
+  | Rework | Todo |
+  | Done or Cancelled | Refuse the split with a reason |
+
+- Do not assume Todo when the prompt leaves the lane unspecified. Blocked children stay Blocked; Backlog children stay Backlog.
 
 Shape each child issue:
 
@@ -49,6 +67,7 @@ Respect the scope rules:
 Propose in Luna:
 
 - Load this skill with `load_split_issue_skill`, then read the parent with `explain_issue`. Luna cannot read source files or execute commands; make missing code context explicit in the proposal.
+- Open the reply with one sentence naming the children's lane and why before showing the approval proposal. For example, "All 6 children will be created in Blocked, matching #32." For an explicit override, say "All 6 children will be created in Backlog, as you requested." For Todo, include "work starts as soon as a runner is free", and explain whether it matches the parent or starts the smaller work from In Progress or Rework. If the children use different lanes, open with "Mixed lanes", name the lanes and why, and include the work-starts wording for any Todo children. Keep each child's lane explicit in the proposal.
 - Use `propose_issue_split` once for the whole split. Supply `parent_work_item_id`, every child's title, description, priority (0 urgent through 3 low, omitted when unset), target `state`, and all dependency `edges`. Children use one-based positions; 0 is the parent. Each edge has a `dependent` and a `blocker`.
 - Include edges blocking the parent on the children for its remaining end-to-end acceptance. Show the entire split for one browser confirmation. Nothing is filed on proposal or cancellation; confirmation creates all children, links and the parent comment atomically. Never use individual filing tools or treat chat text as approval.
 
