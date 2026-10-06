@@ -446,14 +446,19 @@ func (w nativeIntakeWorker) Run(ctx context.Context, request runner.RunRequest) 
 	return runner.RunResult{}, ctx.Err()
 }
 
-type intakeRepositoryBackend struct{}
+type intakeRepositoryBackend struct {
+	snapshot func(hubserver.GitHubImportRequest) tracker.GitHubIssueSnapshot
+}
 
 func (intakeRepositoryBackend) Reconcile(context.Context, hubserver.ReconcileRequest) (hubserver.ReconcileSnapshot, error) {
 	return hubserver.ReconcileSnapshot{Repository: hubserver.RepositorySource{NodeID: "R_source", Owner: "acme", Name: "orders", UpdatedAt: time.Now().UTC()}}, nil
 }
 
-func (intakeRepositoryBackend) FetchImportPage(_ context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+func (b intakeRepositoryBackend) FetchImportPage(_ context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
 	snapshot := intakeSnapshot()
+	if b.snapshot != nil {
+		snapshot = b.snapshot(request)
+	}
 	if request.Stage == "issue" {
 		return hubserver.GitHubImportPage{Issue: &hubserver.IssueSource{NodeID: snapshot.Provenance.ExternalID, Number: request.IssueNumber, URL: snapshot.URL, Title: snapshot.Title, Body: snapshot.Body, AuthorID: snapshot.Provenance.AuthorID, CreatedAt: snapshot.Provenance.CreatedAt, UpdatedAt: snapshot.Provenance.UpdatedAt}}, nil
 	}

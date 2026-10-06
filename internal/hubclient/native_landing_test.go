@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -85,6 +86,15 @@ func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 
 func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantRework bool) {
 	t.Helper()
+	intakeCalls := 0
+	backend := intakeRepositoryBackend{snapshot: func(request hubserver.GitHubImportRequest) tracker.GitHubIssueSnapshot {
+		if request.Stage == "issue" {
+			intakeCalls++
+		}
+		snapshot := intakeSnapshot()
+		snapshot.Title = "Land me"
+		return snapshot
+	}}
 	h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
@@ -92,7 +102,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "Rework"}},
 		{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-	}, true, intakeRepositoryBackend{})
+	}, true, backend)
 	if batch {
 		h.scheduler.machine.Capacity = 6
 	}
@@ -324,8 +334,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatalf("landing target = %#v", target)
 	}
 	if linked {
-		if len(target.SourceIssues) != 1 || target.SourceIssues[0].Repository != "acme/orders" || target.SourceIssues[0].Number != 12 || sourceCalls != 0 {
-			t.Fatalf("landing lost durable source identity or polled GitHub: sources=%+v calls=%d", target.SourceIssues, sourceCalls)
+		if len(target.SourceIssues) != 1 || target.SourceIssues[0].Repository != "acme/orders" || target.SourceIssues[0].Number != 12 || intakeCalls != 1 || sourceCalls != 0 {
+			t.Fatalf("landing lost durable source identity or polled GitHub: sources=%+v intake=%d calls=%d", target.SourceIssues, intakeCalls, sourceCalls)
 		}
 	} else if len(target.SourceIssues) != 0 {
 		t.Fatalf("native item acquired source issues: %+v", target.SourceIssues)
@@ -424,8 +434,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if _, err := execution.LandingTarget(guarded); !errors.Is(err, runner.ErrLandingNotReviewed) {
 		t.Fatalf("landing target after landing = %v, want %v", err, runner.ErrLandingNotReviewed)
 	}
-	if linked && sourceCalls != 0 {
-		t.Fatalf("source calls across implementation and native landing = %d, want 0", sourceCalls)
+	if linked && (intakeCalls != 1 || sourceCalls != 0) {
+		t.Fatalf("source calls across implementation and native landing: intake=%d, runner=%d; want 1 and 0", intakeCalls, sourceCalls)
 	}
 }
 
