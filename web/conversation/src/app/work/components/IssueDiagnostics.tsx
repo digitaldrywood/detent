@@ -1,5 +1,6 @@
 import React from "react";
 import { Tabs } from "@base-ui/react/tabs";
+import { useSearch } from "@tanstack/react-router";
 import { Badge } from "../../../components/ui/badge.tsx";
 import { Button } from "../../../components/ui/button.tsx";
 import { toggleVariants } from "../../../components/ui/toggle.tsx";
@@ -10,7 +11,11 @@ import { attemptIdentityLabel, attemptStage, diagnosticsVerdict, durationLabel, 
 import { useWorkHttp } from "../lib/useWork.ts";
 
 export function IssueDetailTabs({ native, diagnostics, children }: { readonly native: boolean; readonly diagnostics: React.ReactNode; readonly children: React.ReactNode }) {
-  const [value, setValue] = React.useState("timeline");
+  const search = useSearch({ strict: false }) as { tab?: string };
+  const [value, setValue] = React.useState(search.tab === "diagnostics" ? "diagnostics" : "timeline");
+  React.useEffect(() => {
+    setValue(search.tab === "diagnostics" ? "diagnostics" : "timeline");
+  }, [search.tab]);
   if (!native) return <>{children}</>;
   return <Tabs.Root value={value} onValueChange={setValue} className="min-w-0 space-y-5">
     <Tabs.List aria-label="Issue detail tabs" className="flex w-fit gap-0.5 rounded-lg bg-input/40 p-0.5">
