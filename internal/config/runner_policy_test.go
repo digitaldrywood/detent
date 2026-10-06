@@ -8,8 +8,36 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/digitaldrywood/detent/internal/policy"
 )
+
+func TestCanonicalAuthoredEmptyDocument(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		node yaml.Node
+		want string
+	}{
+		{"empty", yaml.Node{}, "null"},
+		{"commented", yaml.Node{HeadComment: "Operator guidance"}, `{"Head":"Operator guidance","Line":"","Foot":"","Value":null}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value, err := canonicalAuthoredNode(&test.node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(raw) != test.want {
+				t.Fatalf("canonical empty document = %s, want %s", raw, test.want)
+			}
+		})
+	}
+}
 
 func TestRunnerPolicyCanonicalInputs(t *testing.T) {
 	t.Parallel()

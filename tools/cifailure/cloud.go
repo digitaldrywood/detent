@@ -212,7 +212,11 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 	if result.ResourceID == "" {
 		return errors.New("scheduled Cloud creation returned no native identity")
 	}
-	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, State: state, Priority: &priority, Labels: labels}, bodies: []string{args["description"].(string)}})
+	retainedBody, ok := args["description"].(string)
+	if !ok {
+		return errors.New("scheduled Cloud description is not a string")
+	}
+	c.issues = append(c.issues, &cloudIssue{item: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(result.ResourceID), Revision: result.Revision}, State: state, Priority: &priority, Labels: labels}, bodies: []string{retainedBody}})
 	return nil
 }
 
@@ -321,28 +325,40 @@ func boundCloudEvidence(args map[string]any) error {
 	suffix := evidence[end:]
 	evidence = evidence[:end]
 	const notice = "\n[remaining evidence omitted; complete evidence is retained in the linked logs and scheduled reporting artifact]"
-	setExcerpt := func(size int) bool {
+	setExcerpt := func(size int) (bool, error) {
 		for size > 0 && size < len(evidence) && !utf8.RuneStart(evidence[size]) {
 			size--
 		}
-		args[field] = prefix + "\n\n```text\n" + evidence[:size] + notice + suffix
-		encoded, _ := json.Marshal(args)
-		return len(encoded) <= operatortool.MaxArgumentBytes && len(args[field].(string)) <= bodyLimit
+		excerpt := prefix + "\n\n```text\n" + evidence[:size] + notice + suffix
+		args[field] = excerpt
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			return false, errors.New("scheduled Cloud arguments could not be encoded")
+		}
+		return len(encoded) <= operatortool.MaxArgumentBytes && len(excerpt) <= bodyLimit, nil
 	}
-	if !setExcerpt(0) {
+	fits, err := setExcerpt(0)
+	if err != nil {
+		return err
+	}
+	if !fits {
 		return errors.New("scheduled Cloud metadata exceeds the MCP argument byte limit")
 	}
 	low, high := 0, len(evidence)
 	for low < high {
 		mid := low + (high-low+1)/2
-		if setExcerpt(mid) {
+		fits, err := setExcerpt(mid)
+		if err != nil {
+			return err
+		}
+		if fits {
 			low = mid
 		} else {
 			high = mid - 1
 		}
 	}
-	setExcerpt(low)
-	return nil
+	_, err = setExcerpt(low)
+	return err
 }
 
 func (c *cloudDestination) comment(ctx context.Context, issue *cloudIssue, body, key string) error {
@@ -351,7 +367,11 @@ func (c *cloudDestination) comment(ctx context.Context, issue *cloudIssue, body,
 	if err := c.publish(ctx, "add_comment", args, &result); err != nil {
 		return err
 	}
-	issue.bodies = append(issue.bodies, args["body"].(string))
+	retainedBody, ok := args["body"].(string)
+	if !ok {
+		return errors.New("scheduled Cloud comment body is not a string")
+	}
+	issue.bodies = append(issue.bodies, retainedBody)
 	return nil
 }
 
