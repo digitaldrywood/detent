@@ -244,12 +244,12 @@ func TestScheduledCIValidatesPinnedDevelopmentSHA(t *testing.T) {
 	}
 }
 
-func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
+func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 	t.Parallel()
 
 	workflow := readNormalizedFile(t, ".github/workflows/deploy-staging.yml")
 	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	if want := "on:\n  push:\n    branches: [develop]\n  workflow_dispatch:\n"; triggers != want {
+	if want := "on:\n  workflow_call:\n    inputs:\n      version:\n        required: true\n        type: string\n"; triggers != want {
 		t.Fatalf("deploy-staging triggers = %q, want exactly %q", triggers, want)
 	}
 	for _, test := range []struct {
@@ -258,16 +258,13 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 		present bool
 	}{
 		{name: "hosted runner", want: "    runs-on: ubuntu-latest\n", present: true},
-		{name: "dispatch limited to develop", want: "    if: github.ref == 'refs/heads/develop'\n", present: true},
 		{name: "staging environment", want: "    environment:\n      name: staging\n      url: https://staging.cloud.detent.build\n", present: true},
-		{name: "single deploy at a time", want: "concurrency:\n  group: deploy-staging\n  cancel-in-progress: true\n", present: true},
 		{name: "read-only token", want: "permissions:\n  contents: read\n", present: true},
-		{name: "strict host key", want: "-o StrictHostKeyChecking=yes", present: true},
-		{name: "existing host key pin survives rename", want: "-o HostKeyAlias=staging.hub.detent.build", present: true},
-		{name: "canonical SSH destination", want: "apprunner@staging.cloud.detent.build", present: true},
-		{name: "canonical and legacy deployment smoke", want: "run: python3 scripts/cloud-origin-smoke.py --environment staging", present: true},
-		{name: "stale run skips deploy", want: `if [ "$head" != "$GITHUB_SHA" ]; then`, present: true},
-		{name: "only pre-key-exchange failures retry", want: `grep -qE '^(kex_exchange_identification:|ssh: connect to host )'`, present: true},
+		{name: "release artifact", want: "          name: release-hub-binary\n", present: true},
+		{name: "release version", want: "          RELEASE_VERSION: ${{ inputs.version }}\n", present: true},
+		{name: "release commit", want: "          RELEASE_COMMIT: ${{ steps.source.outputs.commit }}\n", present: true},
+		{name: "shared release deployment", want: `bash scripts/deploy-release.sh staging "$RELEASE_COMMIT" "$RELEASE_VERSION"`, present: true},
+		{name: "release identity smoke", want: `python3 scripts/cloud-origin-smoke.py --environment staging --expected-version "$RELEASE_VERSION" --expected-commit "$RELEASE_COMMIT"`, present: true},
 		{name: "self-hosted runner", want: "self-hosted"},
 		{name: "pull request trigger", want: "pull_request"},
 		{name: "secrets inherited from repository", want: "secrets: inherit"},
@@ -281,6 +278,28 @@ func TestDeployStagingRunsOnlyFromDevelopOnHostedRunner(t *testing.T) {
 	}
 	if count := strings.Count(workflow, "runs-on:"); count != 1 {
 		t.Fatalf("deploy-staging has %d runs-on entries, want 1", count)
+	}
+
+	release := readNormalizedFile(t, ".github/workflows/release.yml")
+	for _, test := range []struct {
+		name, dependency, end string
+	}{
+		{name: "staging", dependency: "release", end: "\n  production:"},
+		{name: "production", dependency: "staging"},
+	} {
+		t.Run(test.name+" release dependency", func(t *testing.T) {
+			t.Parallel()
+			job := workflowBetween(t, release, "\n  "+test.name+":\n", test.end)
+			for _, want := range []string{
+				"    needs: " + test.dependency + "\n",
+				"    uses: ./.github/workflows/deploy-" + test.name + ".yml\n",
+				"    with:\n      version: ${{ github.ref_name }}\n",
+			} {
+				if !strings.Contains(job, want) {
+					t.Fatalf("release %s job missing %q", test.name, want)
+				}
+			}
+		})
 	}
 }
 
