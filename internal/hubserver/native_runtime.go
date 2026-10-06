@@ -232,7 +232,7 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		e.Unavailable = append(e.Unavailable, "host_issue_acceptance")
 	}
 	for _, kind := range []string{"workflow.transitioned", "scheduler.decision"} {
-		event, err := latestNativeRuntimeEvent(ctx, query, scope, item, kind)
+		event, err := latestNativeRuntimeEvent(ctx, query, scope, item, kind, "")
 		if err != nil {
 			return e, err
 		}
@@ -247,6 +247,13 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 	}
 	if e.LatestDecision == nil {
 		e.Unavailable = append(e.Unavailable, "historical_scheduler_decision")
+	}
+	refusal, err := latestNativeRuntimeEvent(ctx, query, scope, item, "scheduler.decision", "skipped")
+	if err != nil {
+		return e, err
+	}
+	if refusal.ID != "" {
+		e.NativeCandidateExclusion = &refusal
 	}
 	change, found, err := readLatestNativeChangeRequest(ctx, query, scope, item)
 	if err != nil {
@@ -328,10 +335,16 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 	return e, nil
 }
 
-func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope nativeScope, item, kind string) (tracker.CollaborationEvent, error) {
+func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope nativeScope, item, kind, outcome string) (tracker.CollaborationEvent, error) {
 	e := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: tracker.NativeWorkItemID(item), AggregateType: "work_item"}
 	var actor, data, at string
-	err := q.QueryRowContext(ctx, "SELECT id, sequence, type, schema_version, actor_json, data_json, recorded_at FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type=? ORDER BY sequence DESC LIMIT 1", scope.organization, scope.project, item, kind).Scan(&e.ID, &e.AggregateSequence, &e.Type, &e.SchemaVersion, &actor, &data, &at)
+	statement := "SELECT id, sequence, type, schema_version, actor_json, data_json, recorded_at FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type=?"
+	args := []any{scope.organization, scope.project, item, kind}
+	if outcome != "" {
+		statement += " AND json_extract(data_json, '$.decision.outcome')=?"
+		args = append(args, outcome)
+	}
+	err := q.QueryRowContext(ctx, statement+" ORDER BY sequence DESC LIMIT 1", args...).Scan(&e.ID, &e.AggregateSequence, &e.Type, &e.SchemaVersion, &actor, &data, &at)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tracker.CollaborationEvent{}, nil
 	}
@@ -355,6 +368,36 @@ func recordNativeSchedulingDecision(ctx context.Context, tx *sql.Tx, scope *nati
 		decision.Reason = "Current Change version is not ready for native landing"
 	}
 	return recordNativeSchedulingOutcome(ctx, tx, scope, id, decision, now)
+}
+
+func recordNativeClaimRefusal(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, id tracker.WorkItemID, source string, refusal error, now time.Time) error {
+	var failure *nativeError
+	if errors.Is(refusal, ErrNoClaimableWork) {
+		failure = &nativeError{Code: "no_claimable_work", status: http.StatusConflict}
+	} else if !errors.As(refusal, &failure) {
+		return refusal
+	}
+	if query.NativeScope == nil || failure.status != http.StatusConflict {
+		return refusal
+	}
+	ids := []tracker.WorkItemID{id}
+	if id == 0 {
+		query.AvailableAt = now
+		var err error
+		ids, err = nativeCandidateIDs(ctx, tx, query, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), normalizedQueryStrings(query.WorkflowStates), normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude))
+		if err != nil {
+			return err
+		}
+	}
+	for _, id := range ids {
+		if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: source, Outcome: "skipped", Reason: failure.Code}, now); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return refusal
 }
 
 func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativeScope, id tracker.WorkItemID, decision tracker.NativeSchedulerDecision, now time.Time) error {
@@ -381,7 +424,15 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 	}
 	if decision.Outcome != "claimed" {
 		var raw string
-		err := tx.QueryRowContext(ctx, "SELECT data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision' AND json_extract(data_json, '$.decision.source')=? AND coalesce(json_extract(data_json, '$.decision.runner_id'), '')=? ORDER BY sequence DESC LIMIT 1", scope.organization, scope.project, item, decision.Source, decision.RunnerID).Scan(&raw)
+		err := tx.QueryRowContext(ctx, `SELECT data_json FROM collaboration_events
+WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision'
+AND coalesce(json_extract(data_json, '$.decision.runner_id'), '')=?
+AND ((?='skipped' AND json_extract(data_json, '$.decision.outcome')='skipped' AND json_extract(data_json, '$.decision.reason')=?)
+ OR (?<>'skipped' AND json_extract(data_json, '$.decision.source')=?))
+AND sequence > coalesce((SELECT max(sequence) FROM collaboration_events
+ WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision'
+ AND json_extract(data_json, '$.decision.outcome')='claimed'), 0)
+ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, item, decision.RunnerID, decision.Outcome, decision.Reason, decision.Outcome, decision.Source, scope.organization, scope.project, item).Scan(&raw)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -393,6 +444,9 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 			if previous.Decision != nil {
 				before, after := *previous.Decision, decision
 				before.At, after.At = time.Time{}, time.Time{}
+				if decision.Outcome == "skipped" {
+					before.Source = after.Source
+				}
 				if before == after && reflect.DeepEqual(previous.Change, data.Change) {
 					return nil
 				}

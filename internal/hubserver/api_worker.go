@@ -310,7 +310,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	if query.RequirePolicy {
 		policyScope, err = validateClaimPolicy(ctx, tx, query, request.MachineID)
 		if err != nil {
-			return tracker.Lease{}, err
+			return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_policy", err, now)
 		}
 	}
 	if existing, found, err := readLeaseBySession(ctx, tx, request.SessionID); err != nil {
@@ -346,7 +346,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		return tracker.Lease{}, err
 	}
 	if err := runnerVersionError(query.MinimumRunnerVersion, version); err != nil {
-		return tracker.Lease{}, err
+		return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 	}
 	if request.WorkItemID > 0 {
 		if err := requireWorkItem(ctx, tx, request.WorkItemID); err != nil {
@@ -358,35 +358,22 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		return tracker.Lease{}, err
 	}
 	if capacity <= 0 {
-		if query.NativeScope != nil && request.WorkItemID > 0 {
-			if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, request.WorkItemID, tracker.NativeSchedulerDecision{Source: "native_host_capacity", Outcome: "skipped", Reason: "Shared host capacity is full or paused"}, now); err != nil {
-				return tracker.Lease{}, err
+		if query.NativeScope != nil {
+			refusal := &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
+			recorded := recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_host_capacity", refusal, now)
+			if query.NativeScope.credential.Runner.RunnerID != "" || recorded != refusal {
+				return tracker.Lease{}, recorded
 			}
-			if err := tx.Commit(); err != nil {
-				return tracker.Lease{}, err
-			}
-		}
-		if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
-			return tracker.Lease{}, &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
 		}
 		return tracker.Lease{}, ErrNoClaimableWork
 	}
 	if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
 		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now); err != nil {
-			var refusal *nativeError
-			if request.WorkItemID > 0 && errors.As(err, &refusal) {
-				if recordErr := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, request.WorkItemID, tracker.NativeSchedulerDecision{Source: "native_runner_routing", Outcome: "skipped", Reason: refusal.Code}, now); recordErr != nil {
-					return tracker.Lease{}, recordErr
-				}
-				if commitErr := tx.Commit(); commitErr != nil {
-					return tracker.Lease{}, commitErr
-				}
-			}
-			return tracker.Lease{}, err
+			return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 		}
 		if !query.WorkspaceLane {
 			if err := validateRunnerIsolation(ctx, tx, *query.NativeScope, now); err != nil {
-				return tracker.Lease{}, err
+				return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 			}
 		}
 	}
@@ -426,6 +413,9 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 	ids, err := claimCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude, claimableRepositories)
 	if err != nil {
 		return tracker.Lease{}, err
+	}
+	if len(ids) == 0 && request.WorkItemID > 0 {
+		return tracker.Lease{}, recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_eligibility", ErrNoClaimableWork, now)
 	}
 	// Workspace items are gated per candidate rather than per credential
 	// (decisions section 18.1): eligibility depends on the surfaces the
