@@ -521,7 +521,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			client := newClient(false)
 			opts := LandOptions{HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client, ValidationCommand: "test -f feature.txt"}
 			if test.gateFailure {
-				opts.ValidationCommand = "echo short-test-failure-sentinel; exit 1"
+				opts.ValidationCommand = "git cat-file -e short-test-failure-sentinel"
 			}
 			if test.sourceIssues {
 				source := tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410")

@@ -456,7 +456,7 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 			return LandOptions{HeadSHA: strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD^")), Method: "squash"}
 		}, wantKind: LandRefusalNothing},
 		{name: "gate failure preserves reviewed source and remote base", gateFailure: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
-			return LandOptions{HeadSHA: f.head, Method: "squash", ValidationCommand: "echo lint-failure-sentinel; exit 1"}
+			return LandOptions{HeadSHA: f.head, Method: "squash", ValidationCommand: "git cat-file -e lint-failure-sentinel"}
 		}},
 		{name: "worktree moved past the reviewed head", arrange: func(t *testing.T, f landingFixture) LandOptions {
 			t.Helper()
