@@ -285,6 +285,10 @@ func nativeRequestScope(c echo.Context) nativeScope {
 	return scope
 }
 
+func nativeIntegrationActor(principalID string) *tracker.Actor {
+	return &tracker.Actor{Kind: "integration", PrincipalID: principalID}
+}
+
 func (scope nativeScope) actor() tracker.Actor {
 	if scope.sourceActor != nil {
 		return *scope.sourceActor

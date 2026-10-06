@@ -29,6 +29,7 @@ import {
 } from "./account.ts";
 
 import {
+  NativeActor,
   AttemptDiff,
   AttemptPage,
   ChangeDetail,
@@ -135,6 +136,7 @@ export const FIXTURE_SCHEMAS: Readonly<Record<string, FixtureSchema>> = {
   "work-item-create-request.json": CreateIssueRequest,
   "work-item-list.json": WorkItemPage,
   "work-item-patch-request.json": UpdateIssueRequest,
+  "native-actors.json": Schema.Array(NativeActor),
   "work-item.json": NativeIssue,
   "work-project.json": NativeProject,
   "work-transition-request.json": TransitionRequest,

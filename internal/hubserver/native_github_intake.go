@@ -160,7 +160,7 @@ func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWeb
 	for rows.Next() {
 		var scope nativeScope
 		scope.credential.Scope = apiScopeWorker
-		scope.sourceActor = &tracker.Actor{Kind: "integration", PrincipalID: "github"}
+		scope.sourceActor = nativeIntegrationActor("github")
 		if err := rows.Scan(&scope.organization, &scope.project); err != nil {
 			return webhookProcessResult{}, false, err
 		}
