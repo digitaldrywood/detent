@@ -7,7 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func nativeTerminalFailure(err error, at time.Time) *tracker.NativeTerminalFailure {
+func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *tracker.NativeTerminalFailure {
 	if err == nil {
 		return nil
 	}
@@ -19,6 +19,7 @@ func nativeTerminalFailure(err error, at time.Time) *tracker.NativeTerminalFailu
 		failure = provider.NativeTerminalFailure()
 	}
 	failure.ObservedAt = at
+	failure.TurnStartRefused = turnStartRefused
 	public := failure.Public()
 	return &public
 }

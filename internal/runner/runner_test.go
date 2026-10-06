@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -7101,46 +7102,64 @@ func TestRunnerRunRoutesAtMeSelectorsWithContext(t *testing.T) {
 func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	t.Parallel()
 
-	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: t.TempDir(), Key: "issue-22", Branch: "detent/issue-22"},
-	}
-	codexClient := &fakeCodexClient{err: errors.New("codex failed")}
-	sessionStore := &fakeSessionStore{sessionID: 7}
-	now := newFakeClock(time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC))
+	for _, test := range []struct {
+		name    string
+		err     error
+		updates []AgentUpdate
+		refused bool
+	}{
+		{name: "unknown failure", err: errors.New("codex failed")},
+		{name: "refused start", err: &testProviderResponseError{operation: "turn/start"}, refused: true},
+		{name: "failed started turn", err: &testProviderResponseError{operation: "turn/start"}, updates: []AgentUpdate{{Type: AgentUpdateTurnStarted, TurnID: "accepted"}}},
+		{name: "startup response", err: &testProviderResponseError{operation: "thread/start"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: t.TempDir(), Key: "issue-22", Branch: "detent/issue-22"},
+			}
+			codexClient := &fakeCodexClient{err: test.err, updates: test.updates}
+			sessionStore := &fakeSessionStore{sessionID: 7}
+			now := newFakeClock(time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC))
 
-	runner, err := NewRunner(Dependencies{
-		Workflow:     config.Workflow{Config: config.Config{}},
-		Workspace:    workspaceBackend,
-		AgentBackend: codexClient,
-		Store:        sessionStore,
-		Now:          now.Now,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: config.Config{}},
+				Workspace:    workspaceBackend,
+				AgentBackend: codexClient,
+				Store:        sessionStore,
+				Now:          now.Now,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			result, err := runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-22",
+					Identifier: "digitaldrywood/detent#22",
+					Title:      "Add runner",
+				},
+			})
+			if err == nil {
+				t.Fatal("Run() error = nil, want codex failure")
+			}
+			if !errors.Is(err, test.err) {
+				t.Fatalf("Run() error = %v, want codex failure", err)
+			}
+			if !workspaceBackend.afterRun {
+				t.Fatal("AfterRun was not called after codex failure")
+			}
+			if workspaceBackend.diffed {
+				t.Fatal("DiffStat was called after codex failure")
+			}
+			if sessionStore.finished.FinalState != FinalStateFailed {
+				t.Fatalf("SessionFinish.FinalState = %q, want %q", sessionStore.finished.FinalState, FinalStateFailed)
+			}
+			if result.TurnStartRefused != test.refused || sessionStore.finished.TurnStartRefused != test.refused {
+				t.Fatalf("refusal accounting: result=%v stored=%v want=%v", result.TurnStartRefused, sessionStore.finished.TurnStartRefused, test.refused)
+			}
+		})
 	}
 
-	_, err = runner.Run(context.Background(), RunRequest{
-		Issue: connector.Issue{
-			ID:         "issue-22",
-			Identifier: "digitaldrywood/detent#22",
-			Title:      "Add runner",
-		},
-	})
-	if err == nil {
-		t.Fatal("Run() error = nil, want codex failure")
-	}
-	if !strings.Contains(err.Error(), "codex failed") {
-		t.Fatalf("Run() error = %v, want codex failure", err)
-	}
-	if !workspaceBackend.afterRun {
-		t.Fatal("AfterRun was not called after codex failure")
-	}
-	if workspaceBackend.diffed {
-		t.Fatal("DiffStat was called after codex failure")
-	}
-	if sessionStore.finished.FinalState != FinalStateFailed {
-		t.Fatalf("SessionFinish.FinalState = %q, want %q", sessionStore.finished.FinalState, FinalStateFailed)
-	}
 }
 
 func TestRunnerFailureKeepsSessionDiagnosticsWithoutNotes(t *testing.T) {
@@ -8284,4 +8303,15 @@ func TestRunnerMergeFastPathValidatesTheHeadForALocalStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+type testProviderResponseError struct {
+	operation string
+}
+
+func (e *testProviderResponseError) Error() string { return "provider request refused" }
+
+func (e *testProviderResponseError) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	code := -32602
+	return tracker.NativeTerminalFailure{Provider: "codex", Operation: e.operation, RPCCode: &code}
 }

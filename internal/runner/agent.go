@@ -1324,6 +1324,8 @@ func (r *Runner) runAgentTurn(
 		result.FinalState = finalStateForTurnError(turnErr)
 	}
 	result.TurnStarted = turnStarted
+	failure := nativeTerminalFailure(turnErr, time.Time{}, false)
+	result.TurnStartRefused = !turnStarted && turnResult.TurnID == "" && failure != nil && failure.Provider == "codex" && failure.Operation == "turn/start" && failure.RPCCode != nil
 	result.ReportedCostMicros, result.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 	reportTurnUsage(ctx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
 	return agentTurnExecution{
@@ -2146,9 +2148,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if targetRefObserver != nil {
 			initialDeliverableState = r.observeWorkspaceDeliverableState(runWorkspace, sessionCtx, info, workspaceIssue, "resume_fallback_initial")
 		}
+		resumeRefused := execution.result.TurnStartRefused
 		resumeCompute := execution.result.Compute
 		execution = runWithCheckpoint(turnRequest, req, runtimeIdentity, 0)
 		execution.result.Compute = compute.Add(resumeCompute, execution.result.Compute)
+		execution.result.TurnStartRefused = resumeRefused && execution.result.TurnStartRefused
 		r.rememberPrompt(promptKey, prompt, execution)
 		execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
 		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
@@ -2242,6 +2246,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	result := execution.result
 	result.TokenUSD = r.usageCostUSD(effectiveModel(result.RuntimeIdentity.ResolvedModel.Value, result.Model, sessionModel), result.Tokens.InputTokens, result.Tokens.CachedInputTokens, result.Tokens.OutputTokens, backendConfig.Kind)
 	result.TurnCount = execution.turnCount
+	result.TurnStarted = execution.turnStarted
+	result.TurnStartRefused = result.TurnStartRefused && !execution.turnStarted && turns == 0
 	result.WorkspaceBranch = strings.TrimSpace(info.Branch)
 	if mergeFallback && turnErr == nil {
 		targetBranch := ""
@@ -2837,6 +2843,7 @@ func mergeAgentTurnExecutions(initial agentTurnExecution, recovery agentTurnExec
 	result.RuntimeIdentity = initial.result.RuntimeIdentity.Merge(recovery.result.RuntimeIdentity)
 	result.Tokens = addAgentTokenTotals(initial.result.Tokens, recovery.result.Tokens)
 	result.Compute = compute.Add(initial.result.Compute, recovery.result.Compute)
+	result.TurnStartRefused = initial.result.TurnStartRefused && recovery.result.TurnStartRefused
 	result.RateLimits = mergeAgentRateLimits(initial.result.RateLimits, recovery.result.RateLimits)
 	result.SkillDraftProposed = initial.result.SkillDraftProposed || recovery.result.SkillDraftProposed
 	result.PullRequestUpdated = initial.result.PullRequestUpdated || recovery.result.PullRequestUpdated
@@ -4148,6 +4155,7 @@ func (r *Runner) finishSession(
 	if err := r.store.FinishSession(ctx, sessionID, store.SessionFinish{
 		CompletedAt:           finishedAt,
 		Turns:                 turns,
+		TurnStartRefused:      result.TurnStartRefused,
 		InputTokens:           result.Tokens.InputTokens,
 		CachedInputTokens:     result.Tokens.CachedInputTokens,
 		OutputTokens:          result.Tokens.OutputTokens,
@@ -4172,6 +4180,7 @@ func (r *Runner) finishSession(
 		"provider_session_id", turnResult.SessionID,
 		"final_state", result.FinalState,
 		"turns", turns,
+		"turn_start_refused", result.TurnStartRefused,
 		"skill_draft_proposed", result.SkillDraftProposed,
 	}
 	attrs = append(attrs, runtimeIdentityLogAttrs(result.RuntimeIdentity)...)

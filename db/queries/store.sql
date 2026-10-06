@@ -90,6 +90,7 @@ WHERE id = ?;
 UPDATE codex_sessions
 SET completed_at = sqlc.arg(completed_at),
     turns = sqlc.arg(turns),
+    turn_start_refused = sqlc.arg(turn_start_refused),
     input_tokens = sqlc.arg(input_tokens),
     cached_input_tokens = sqlc.narg(cached_input_tokens),
     output_tokens = sqlc.arg(output_tokens),
@@ -544,7 +545,8 @@ SELECT
   CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
   CAST(COALESCE(SUM(reasoning_output_tokens), 0) AS INTEGER) AS reasoning_output_tokens,
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
-  CAST(COUNT(*) AS INTEGER) AS sessions
+  CAST(SUM(CASE WHEN completed_at IS NOT NULL AND turns = 0 AND turn_start_refused = 1
+    THEN 0 ELSE 1 END) AS INTEGER) AS sessions
 FROM codex_sessions NOT INDEXED
 WHERE codex_sessions.project_id = sqlc.arg(project_id)
   AND codex_sessions.id IN (
