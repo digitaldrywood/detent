@@ -251,6 +251,142 @@ func TestHubTimestampMigrations(t *testing.T) {
 	}
 }
 
+func TestHubCollidingMigrationsPreserveHistory(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, branch string
+		crlf         bool
+	}{
+		{"shared prior schema", "", false},
+		{"GitHub references branch", "github", false},
+		{"sprite placement branch", "sprite", false},
+		{"sprite placement branch CRLF", "sprite", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			db, err := sql.Open("sqlite", sqliteDSN(filepath.Join(t.TempDir(), "hub.db"), defaultBusyTimeout))
+			if err != nil {
+				t.Fatal(err)
+			}
+			db.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = db.Close() })
+			entries, err := migrationFiles.ReadDir("migrations")
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := fstest.MapFS{}
+			for _, entry := range entries {
+				version, err := goose.NumericComponent(entry.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if version > 20261006001500 {
+					continue
+				}
+				data, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				files[entry.Name()] = &fstest.MapFile{Data: data}
+			}
+			var goMigrations []*goose.Migration
+			for _, migration := range hubGoMigrations(discardLogger()) {
+				if migration.Version <= 20261006001500 || (test.branch == "github" && migration.Version == 20261006023000) {
+					goMigrations = append(goMigrations, migration)
+				}
+			}
+			if test.branch == "sprite" {
+				data, err := migrationFiles.ReadFile("migration_steps/20261006023000_sprite_placement.sql")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.crlf {
+					data = []byte(strings.ReplaceAll(string(data), "\n", "\r\n"))
+				}
+				files["20261006023000_sprite_placement.sql"] = &fstest.MapFile{Data: data}
+			}
+			provider, err := goose.NewProvider(goose.DialectSQLite3, db, files,
+				goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable),
+				goose.WithSlog(discardLogger()), goose.WithGoMigrations(goMigrations...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.UpTo(t.Context(), 7); err != nil {
+				t.Fatal(err)
+			}
+			_, issueID := seedProjection(t, db)
+			if _, err := provider.UpTo(t.Context(), 20261006001500); err != nil {
+				t.Fatal(err)
+			}
+			const sourceURL = "https://github.com/digitaldrywood/detent/issues/2199"
+			if _, err := db.ExecContext(t.Context(), "UPDATE issues SET url = '', github_number = NULL, body = ? WHERE id = ?", "## Migration context\nImported from "+sourceURL, issueID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO api_tokens(id,name,scope,token_hash,token_fingerprint,created_at,updated_at,native_only)
+VALUES ('migration-key','retained key','operator','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','migration-fingerprint','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z',1);
+INSERT INTO project_sprite_pools(organization_id,project_id,configured_by,bootstrap)
+SELECT organization_id,project_id,'migration-key','retained bootstrap' FROM issues`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.Up(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			wantPlacement := `{"mode":"blended"}`
+			if test.branch == "sprite" {
+				wantPlacement = `{"mode":"local_first","todo_threshold":3,"overflow_slots":2}`
+				if _, err := db.ExecContext(t.Context(), "UPDATE project_sprite_pools SET placement_json = ?", wantPlacement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var originalHistory string
+			var lastID int64
+			const historyQuery = "SELECT json_group_array(json_object('id',id,'version',version_id,'applied',is_applied,'timestamp',tstamp)) FROM hub_schema_version WHERE id <= ?"
+			if err := db.QueryRowContext(t.Context(), "SELECT MAX(id) FROM hub_schema_version").Scan(&lastID); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRowContext(t.Context(), historyQuery, lastID).Scan(&originalHistory); err != nil {
+				t.Fatal(err)
+			}
+			var originalIssue string
+			const issueQuery = "SELECT json_object('native_id',native_id,'project_id',project_id,'title',title,'body',body,'revision',revision,'updated_at',updated_at,'workflow_state_id',workflow_state_id) FROM issues WHERE id = ?"
+			if err := db.QueryRowContext(t.Context(), issueQuery, issueID).Scan(&originalIssue); err != nil {
+				t.Fatal(err)
+			}
+			if version, err := runMigrations(t.Context(), db, discardLogger()); err != nil || version != supportedSchemaVersion(t) {
+				t.Fatalf("repair migration version=%d error=%v", version, err)
+			}
+			var history, issue, url, placement, bootstrap string
+			var number int
+			if err := db.QueryRowContext(t.Context(), historyQuery, lastID).Scan(&history); err != nil || history != originalHistory {
+				t.Fatalf("repair rewrote migration history: %s error=%v", history, err)
+			}
+			if err := db.QueryRowContext(t.Context(), issueQuery, issueID).Scan(&issue); err != nil || issue != originalIssue {
+				t.Fatalf("repair changed native issue: %s error=%v", issue, err)
+			}
+			if err := db.QueryRowContext(t.Context(), "SELECT url,github_number FROM issues WHERE id = ?", issueID).Scan(&url, &number); err != nil || url != sourceURL || number != 2199 {
+				t.Fatalf("backfilled reference=%q number=%d error=%v", url, number, err)
+			}
+			if err := db.QueryRowContext(t.Context(), "SELECT placement_json,bootstrap FROM project_sprite_pools").Scan(&placement, &bootstrap); err != nil || placement != wantPlacement || bootstrap != "retained bootstrap" {
+				t.Fatalf("placement=%q bootstrap=%q error=%v", placement, bootstrap, err)
+			}
+			var violations int
+			if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM pragma_foreign_key_check").Scan(&violations); err != nil || violations != 0 {
+				t.Fatalf("foreign key violations=%d error=%v", violations, err)
+			}
+			var integrity string
+			if err := db.QueryRowContext(t.Context(), "PRAGMA integrity_check").Scan(&integrity); err != nil || integrity != "ok" {
+				t.Fatalf("integrity=%q error=%v", integrity, err)
+			}
+			if _, err := db.ExecContext(t.Context(), "CREATE TEMP VIEW pragma_foreign_key_check AS SELECT * FROM missing_scan_probe"); err != nil {
+				t.Fatal(err)
+			}
+			if version, err := runMigrations(t.Context(), db, discardLogger()); err != nil || version != supportedSchemaVersion(t) {
+				t.Fatalf("restart repeated migrations: version=%d error=%v", version, err)
+			}
+		})
+	}
+}
+
 func supportedSchemaVersion(t *testing.T) int64 {
 	t.Helper()
 	version, err := latestHubSchemaVersion()
