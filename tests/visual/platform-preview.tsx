@@ -5,6 +5,7 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { makeEntryRouter } from "../../web/conversation/src/app/entry/router.tsx";
 import { makeEntryApi } from "../../web/conversation/src/app/entry/api.ts";
 import fixture from "./platform-preview-data.json";
+import audit from "./platform-audit-data.json";
 
 const params = new URLSearchParams(location.search);
 
@@ -39,6 +40,8 @@ if (location.protocol === "file:") {
         ...fixture.account, platform_role: params.get("role") ?? "admin",
         organizations: params.has("no-organizations") ? [] : fixture.account.organizations,
       };
+    } else if (path.startsWith("/api/cloud/platform/audit")) {
+      value = audit;
     } else if (path.endsWith("/organizations")) {
       value = { ...fixture.organizations, can_grant: !location.search.includes("staff") };
     } else if (path.endsWith("/allowlist")) {

@@ -63,6 +63,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     platformAllowlist: vi.fn(async () => ({ self_service: false, allowed_emails: [], allowed_domains: [], source: { file: "", keys: [] } })),
     platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@detent.build", role: "admin" } })),
     changePlatformMember: vi.fn(async () => ({ email: "new@example.test", role: "viewer", revision: 2 })),
+    platformAudit: vi.fn(async () => ({ rows: [], events: [], tenants: [], next_cursor: "" })),
     platformHealth: vi.fn(async () => ({ registry: { ok: true } })),
     platformEntitlements: vi.fn(async () => ({
       organization_id: "", base: { id: "", version: 1 }, effective_base: { id: "", version: 1 }, source: "base", revision: 1, grants: [], plans: [],

@@ -28,6 +28,7 @@ import {
   PlatformTenantsPage,
 } from "./PlatformConsole.tsx";
 import { usePageTitle } from "../pageTitle.ts";
+import { PlatformAuditPage } from "./PlatformAudit.tsx";
 
 function useGo(): (to: string) => void {
   const navigate = useNavigate();
@@ -88,7 +89,7 @@ const platformRoutes = platformRoute.addChildren([
   createRoute({
     getParentRoute: () => platformRoute,
     path: "/audit",
-    component: () => <PlatformSectionPage section="audit" />,
+    component: PlatformAuditPage,
   }),
   createRoute({ getParentRoute: () => platformRoute, path: "/health", component: PlatformHealthPage }),
   createRoute({ getParentRoute: () => platformRoute, path: "/allowlist", component: PlatformAllowlistPage }),

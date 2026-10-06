@@ -78,6 +78,27 @@ export const PlatformOrganizations = Schema.Struct({
 });
 export type PlatformOrganizations = typeof PlatformOrganizations.Type;
 
+export const PlatformAuditRow = Schema.Struct({
+  at: Schema.String,
+  actor: Schema.String,
+  event: Schema.String,
+  organization_id: Schema.String,
+  organization_name: Schema.String,
+  organization_deleted: Schema.Boolean,
+  detail: Schema.String,
+  source: Schema.String,
+  id: Schema.String,
+});
+export type PlatformAuditRow = typeof PlatformAuditRow.Type;
+
+export const PlatformAudit = Schema.Struct({
+  rows: Schema.Array(PlatformAuditRow),
+  events: Schema.Array(Schema.String),
+  tenants: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, deleted: Schema.Boolean })),
+  next_cursor: Schema.String,
+});
+export type PlatformAudit = typeof PlatformAudit.Type;
+
 export const PlanReference = Schema.Struct({ id: Schema.String, version: Schema.Number });
 export type PlanReference = typeof PlanReference.Type;
 
@@ -314,6 +335,7 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
         action === "add" ? "POST" : action === "change" ? "PATCH" : "DELETE");
     },
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
+    platformAudit: (query: string) => read(PlatformAudit, `/api/cloud/platform/audit${query === "" ? "" : `?${query}`}`),
     platformEntitlements: (organization: string) => read(OrganizationEntitlements, entitlementsPath(organization)),
     changePlatformEntitlement: (input: { organization: string; csrf: string; change: EntitlementChange }) =>
       post(EntitlementChangeResult, entitlementsPath(input.organization), input.csrf, input.change),
