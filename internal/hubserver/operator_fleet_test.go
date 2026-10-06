@@ -98,17 +98,37 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 							map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "Runner", "capacity": 8, "version": "test", "provider_reports": []providercapacity.Report{report}}), http.StatusOK)
 						workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
 							WorkflowPath: "WORKFLOW.md",
-							Workflow:     []byte("---\ntracker:\n  kind: hub_native\n  api_key: fixture\ngate:\n  run: true\n---\n" + strings.Repeat("Use the assigned isolated worktree. Preserve pinned policy and native tracker authority. ", policyCase.promptSize/80)),
+							Workflow: []byte(fmt.Sprintf(`---
+tracker:
+  kind: hub_native
+  api_key: fixture
+  active_states: [Todo, In Progress]
+  terminal_states: [Done]
+gate:
+  run: true
+runners:
+  profile: audit
+  profiles:
+    audit:
+      required_tags: [audit]
+      runner_id: %s
+      machine_id: %s
+server:
+  kanban:
+    allowed_transitions:
+      Todo: [In Progress, Done]
+      In Progress: [Todo, Done]
+      Done: [Todo]
+---
+Run focused diagnostics with an explicit timeout.
+%s
+`, r.binding.RunnerID, r.binding.MachineID, strings.Repeat("Use the assigned isolated worktree. Preserve pinned policy and native tracker authority. ", policyCase.promptSize/80))),
+							AgentsPath: "AGENTS.md", HasAgents: true,
+							Agents: []byte("Stage finished source changes for the registered runner."),
 						})
 						if err != nil {
 							t.Fatal(err)
 						}
-						workflow.Config.Runners = config.Runners{Profile: "audit", Profiles: map[string]policy.Requirements{"audit": {RequiredTags: []string{"audit"}, RunnerID: r.binding.RunnerID, MachineID: string(r.binding.MachineID)}}}
-						workflow.Config.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-						workflow.Config.Tracker.TerminalStates = []string{"Done"}
-						workflow.Config.Server.Kanban.AllowedTransitions = map[string][]string{"Todo": {"In Progress", "Done"}, "In Progress": {"Todo", "Done"}, "Done": {"Todo"}}
-						workflow.SharedPrompt = "Run focused diagnostics with an explicit timeout."
-						workflow.AgentsPrompt = "Stage finished source changes for the registered runner."
 						descriptor, err := config.ResolvePolicy(workflow)
 						if err != nil {
 							t.Fatal(err)
@@ -201,6 +221,7 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 								}
 								want.Leases[i].Policy.Configuration = nil
 								want.Leases[i].Policy.Workflow = nil
+								want.Leases[i].Policy.Authored = nil
 							}
 							if !reflect.DeepEqual(got, want) {
 								t.Fatalf("%s lost routing audit facts", name)
@@ -259,6 +280,7 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 							}
 							want.Leases[i].Policy.Configuration = nil
 							want.Leases[i].Policy.Workflow = nil
+							want.Leases[i].Policy.Authored = nil
 						}
 						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken,
 							map[string]any{"expected_revision": committed.Revision, "display_name": committed.DisplayName, "tags": committed.Tags,
