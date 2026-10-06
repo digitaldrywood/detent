@@ -85,6 +85,11 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		seedHealthRateAttempt(t, tx, scope, storm, string(r.binding.MachineID), "failed", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: fmt.Sprintf("protocol count %d failed", i)}}, now.Add(-time.Duration(i+1)*time.Minute), 1.25)
 	}
+	conflict := create("single landing conflict", now.Add(-time.Hour))
+	seedHealthRateAttempt(t, tx, scope, conflict, string(r.binding.MachineID), "interrupted", tracker.NativeRunData{}, now.Add(-33*time.Minute), 0)
+	seedHealthRateAttempt(t, tx, scope, conflict, string(r.binding.MachineID), "succeeded", tracker.NativeRunData{}, now.Add(-2*time.Minute), 6.00108)
+	seedHealthRateAttempt(t, tx, scope, conflict, string(r.binding.MachineID), "succeeded", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{FromState: "Merging", TargetState: "Rework", RefusalKind: "conflict", ObservedAt: now.Add(-time.Minute)}}}, now.Add(-time.Minute), 0)
+	seedHealthRateAttempt(t, tx, scope, conflict, string(r.binding.MachineID), "running", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{HeartbeatAt: now.Add(-time.Second)}}, now.Add(-time.Second), 0)
 	recovery := create("recovery", now.Add(-4*time.Hour))
 	for i := 0; i < 3; i++ {
 		seedHealthRateAttempt(t, tx, scope, recovery, string(r.binding.MachineID), "interrupted", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "native checkpoint requires recovery: checkpoint_unavailable"}}, now.Add(-time.Duration(i+1)*time.Minute), 0.5)

@@ -285,12 +285,17 @@ func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaselin
 				}
 			}
 		}
-		repeated := false
+		repeated := 0
 		for _, n := range signatures {
-			repeated = repeated || n >= healthRetryCount && float64(n) > healthQuantile(b.RetryCounts, healthBaselineQuantile)
+			if float64(n) > healthQuantile(b.RetryCounts, healthBaselineQuantile) {
+				repeated = max(repeated, n)
+			}
 		}
 		short, long := float64(failures[0])/float64(max(1, successes[0])), float64(failures[1])/float64(max(1, successes[1]))
-		if !repeated && !(successes[0] > 0 && successes[1] > 0 && short > max(healthRetryRatio, healthQuantile(b.RetryShort, healthBaselineQuantile)) && long > max(healthRetryRatio, healthQuantile(b.RetryLong, healthBaselineQuantile))) {
+		if successes[0] > 0 && successes[1] > 0 && short > max(healthRetryRatio, healthQuantile(b.RetryShort, healthBaselineQuantile)) && long > max(healthRetryRatio, healthQuantile(b.RetryLong, healthBaselineQuantile)) {
+			repeated = max(repeated, failures[0])
+		}
+		if repeated < healthRetryCount {
 			continue
 		}
 		slices.Sort(evidence.Signatures)
