@@ -500,11 +500,15 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
-	data := e.data
 	at := e.scheduler.now().UTC()
 	if kind == "run.started" {
 		e.usageStartedAt = at
+		e.activityBoundary(at, "")
 	}
+	if kind == "run.finished" {
+		e.activityBoundary(at, outcome)
+	}
+	data := e.data
 	if kind == "run.finished" {
 		data.Usage = slices.Clone(data.Usage)
 		for i := range data.Usage {
