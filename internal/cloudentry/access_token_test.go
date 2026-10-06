@@ -2,9 +2,11 @@ package cloudentry
 
 import (
 	"bytes"
+	"html"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -117,17 +119,47 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			}
 		}},
 		{"unreachable key set keeps the authorization", func(t *testing.T, f entryFixture, alice *browser) {
+			const chosen = "/organizations/org_alpha/organization?tab=work&view=board"
+			if response, body := alice.get("/organizations"); response.StatusCode != http.StatusOK || !strings.Contains(body, `/organizations/org_alpha/organization`) {
+				t.Fatalf("chooser before the outage = %d: %s", response.StatusCode, body)
+			}
+			before := f.provider.sequence
 			f.provider.mu.Lock()
 			f.provider.keysDown = true
 			f.provider.mu.Unlock()
-			if response, _ := alice.get(target); response.StatusCode != http.StatusServiceUnavailable {
-				t.Fatalf("status with the key set down = %d", response.StatusCode)
+			if response, body := alice.get(target); response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"unavailable"`) {
+				t.Fatalf("API with the key set down = %d: %s", response.StatusCode, body)
+			}
+			response, body := alice.get(chosen)
+			if response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, "Temporarily unavailable") {
+				t.Fatalf("browser outage = %d: %s", response.StatusCode, body)
+			}
+			for _, denial := range []string{"Access unavailable", "unavailable to your account", "access may have changed", "Sign in again"} {
+				if strings.Contains(body, denial) {
+					t.Fatalf("browser outage claims access was lost: %s", body)
+				}
+			}
+			link := regexp.MustCompile(`href="([^"]+)"[^>]*>Try again</a>`).FindStringSubmatch(body)
+			if len(link) != 2 || html.UnescapeString(link[1]) != chosen {
+				t.Fatalf("retry link = %v, want %s", link, chosen)
 			}
 			f.provider.mu.Lock()
 			f.provider.keysDown = false
 			f.provider.mu.Unlock()
 			if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
 				t.Fatalf("status after the key set recovered = %d, want 200", response.StatusCode)
+			}
+			if response, body := alice.get(html.UnescapeString(link[1])); response.StatusCode != http.StatusOK {
+				t.Fatalf("browser retry = %d: %s", response.StatusCode, body)
+			}
+			if response, body := alice.get("/organizations"); response.StatusCode != http.StatusOK || !strings.Contains(body, `/organizations/org_alpha/organization`) {
+				t.Fatalf("return to chooser = %d: %s", response.StatusCode, body)
+			}
+			if response, body := alice.get("/organizations/org_alpha/organization"); response.StatusCode != http.StatusOK {
+				t.Fatalf("reselect organization = %d: %s", response.StatusCode, body)
+			}
+			if issued := f.provider.sequence - before; issued != 0 || f.provider.refreshes != 0 {
+				t.Fatalf("outage recovery issued tokens = %d, refreshes = %d", issued, f.provider.refreshes)
 			}
 		}},
 		{"concurrent requests on an expired token refresh once", func(t *testing.T, f entryFixture, alice *browser) {
