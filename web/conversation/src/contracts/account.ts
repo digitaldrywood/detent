@@ -327,8 +327,24 @@ export const PolicyDescriptor = Schema.Struct({
 });
 export type PolicyDescriptor = typeof PolicyDescriptor.Type;
 
+export const WorkflowApply = Schema.Struct({
+  id: Schema.String,
+  repository: Schema.String,
+  commit: Schema.String,
+  previous_definition_digest: Schema.String,
+  definition_digest: Schema.String,
+  runner_id: Schema.String,
+  applied_by: Schema.String,
+  applied_at: Schema.String,
+  previous_definition: Schema.optional(PolicyDescriptor),
+  definition: Schema.optional(PolicyDescriptor),
+});
+export type WorkflowApply = typeof WorkflowApply.Type;
+
 /** `GET {nativeBase}/policy` (`policy.Approval`). */
 export const PolicyApproval = Schema.Struct({
+  history: Schema.optional(Schema.Array(WorkflowApply)),
+  history_next: Schema.optional(Schema.String),
   policy: PolicyDescriptor,
   approved_by: Schema.String,
   approved_at: Schema.String,
@@ -435,6 +451,13 @@ export type RunnerEligibility = typeof RunnerEligibility.Type;
  * could not run because it differs from the approved policy.
  */
 export const ObservedPolicy = Schema.Struct({
+  repository_source: Schema.optional(Schema.Struct({
+    repository: Schema.String,
+    commit: Schema.String,
+    default_branch: Schema.optional(Schema.String),
+    default_branch_head: Schema.optional(Schema.String),
+    default_branch_reachable: Schema.Boolean,
+  })),
   policy: PolicyDescriptor,
   runner_id: Schema.String,
   runner_ids: Schema.optional(Schema.Array(Schema.String)),

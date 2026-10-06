@@ -109,14 +109,16 @@ type Observation struct {
 }
 
 type WorkflowApply struct {
-	ID                       int64  `json:"id,string"`
-	Repository               string `json:"repository"`
-	Commit                   string `json:"commit"`
-	PreviousDefinitionDigest string `json:"previous_definition_digest"`
-	DefinitionDigest         string `json:"definition_digest"`
-	RunnerID                 string `json:"runner_id"`
-	AppliedBy                string `json:"applied_by"`
-	AppliedAt                string `json:"applied_at"`
+	PreviousDefinition       *Descriptor `json:"previous_definition,omitempty"`
+	Definition               *Descriptor `json:"definition,omitempty"`
+	ID                       int64       `json:"id,string"`
+	Repository               string      `json:"repository"`
+	Commit                   string      `json:"commit"`
+	PreviousDefinitionDigest string      `json:"previous_definition_digest"`
+	DefinitionDigest         string      `json:"definition_digest"`
+	RunnerID                 string      `json:"runner_id"`
+	AppliedBy                string      `json:"applied_by"`
+	AppliedAt                string      `json:"applied_at"`
 }
 
 type Approval struct {

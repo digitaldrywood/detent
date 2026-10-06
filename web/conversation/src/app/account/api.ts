@@ -299,7 +299,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         ...(input.workflowMarkdown !== undefined ? { workflow_markdown: input.workflowMarkdown } : {}),
         idempotency_key: input.key,
       }),
-    policy: (projectId: string) => send(PolicyApproval, "GET", `${project(projectId)}/policy`),
+    policy: (projectId: string, after?: string) => send(PolicyApproval, "GET", `${project(projectId)}/policy${after ? `?after=${encodeURIComponent(after)}` : ""}`),
     /**
      * Approval is by identity: the descriptor the reader was shown goes back
      * verbatim, and `expected_policy_id` is the approval it replaces (empty on
