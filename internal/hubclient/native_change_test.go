@@ -355,6 +355,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		worktree       string
 		source         runner.AttemptDiffSource
 		loseLease      bool
+		validationErr  error
 		restart        bool
 		legacyRestart  bool
 		restoreRefusal string
@@ -383,6 +384,8 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
 	}{
+		{name: "canceled deferred validation preserves authority", validationErr: context.Canceled, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "timed out deferred validation preserves authority", validationErr: context.DeadlineExceeded, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "deferred publication survives restart", restart: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "installed deferred publication restores tracker authority", restart: true, legacyRestart: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "restart refuses released authority", restart: true, restoreRefusal: "released", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
@@ -626,6 +629,22 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					t.Fatal("failed preparation changed the issue lane")
 				}
 				if test.failCreate || test.failDiff || test.failDetail || test.failVersion || test.dropVersion {
+					if test.validationErr != nil {
+						native := execution.(*nativeExecution)
+						saved := native.CompletionState()
+						interrupted, cancel := context.WithCancelCause(guarded)
+						cancel(test.validationErr)
+						_, err := h.scheduler.RestoreCompletion(interrupted, orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved)
+						if !errors.Is(err, test.validationErr) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+							t.Fatalf("operation interruption revoked deferred authority: %v", err)
+						}
+						if guarded.Err() != nil || string(native.CompletionState()) != string(saved) || h.scheduler.RunExecution(issue.ID) != execution {
+							t.Fatal("interrupted validation replaced authority or lost deferred completion")
+						}
+						if _, err := h.native.ValidateLease(t.Context(), native.claim.lease); err != nil {
+							t.Fatalf("interrupted validation released original lease: %v", err)
+						}
+					}
 					h.failChanges.fail.Store(false)
 					h.failChanges.failDiffs.Store(false)
 					h.failChanges.failDetails.Store(false)

@@ -208,32 +208,37 @@ func (e *nativeExecution) executionError(err error) error {
 
 func (e *nativeExecution) Validate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		if deadline := e.AvailabilityDeadline(); errors.Is(context.Cause(ctx), context.Canceled) && !deadline.IsZero() && !e.scheduler.now().Before(deadline) {
-			return err
-		}
-		return e.unavailable(err)
+		return e.validationError(errors.Join(err, context.Cause(ctx)))
 	}
 	if e.remaining() <= 0 {
 		return e.unavailable(nil)
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.PolicyID); err != nil {
-		err = e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
-		err = e.executionError(err)
-		if !nativeTransportUnavailable(err) {
-			return e.unavailable(err)
-		}
-		slog.Default().Warn("native validation unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
-		return nil
+		return e.validationError(err)
 	}
 	if e.scheduler.client.runner == nil {
-		if _, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease); err != nil {
-			err = e.executionError(err)
-			if !nativeTransportUnavailable(err) {
-				return e.unavailable(err)
-			}
-			slog.Default().Warn("native validation unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
-		}
+		_, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease)
+		return e.validationError(err)
 	}
+	return nil
+}
+
+func (e *nativeExecution) validationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	err = e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
+	err = e.executionError(err)
+	if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		return e.unavailable(err)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if !nativeTransportUnavailable(err) {
+		return e.unavailable(err)
+	}
+	slog.Default().Warn("native validation unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
 	return nil
 }
 

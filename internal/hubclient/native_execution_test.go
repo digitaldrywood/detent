@@ -660,12 +660,22 @@ func TestNativeAvailabilityDeadlineRefresh(t *testing.T) {
 func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name   string
-		path   string
-		status int
-		body   string
-		fatal  bool
+		name         string
+		path         string
+		status       int
+		body         string
+		fatal        bool
+		interruption error
+		expired      bool
 	}{
+		{name: "already canceled", interruption: context.Canceled},
+		{name: "already timed out", interruption: context.DeadlineExceeded},
+		{name: "canceled policy request", path: "/policy", interruption: context.Canceled},
+		{name: "timed out policy request", path: "/policy", interruption: context.DeadlineExceeded},
+		{name: "canceled lease request", path: "/validate", interruption: context.Canceled},
+		{name: "timed out lease request", path: "/validate", interruption: context.DeadlineExceeded},
+		{name: "canceled expired lease", interruption: context.Canceled, expired: true, fatal: true},
+		{name: "canceled revoked authority", interruption: runner.ErrExecutionAuthorityUnavailable, fatal: true},
 		{name: "transport"},
 		{name: "server", status: http.StatusServiceUnavailable, body: `{"code":"tenant_unavailable"}`},
 		{name: "unauthorized policy", path: "/policy", status: http.StatusUnauthorized, body: `{"code":"unauthorized"}`, fatal: true},
@@ -673,6 +683,7 @@ func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
 		{name: "malformed unauthorized", path: "/policy", status: http.StatusUnauthorized, body: "unauthorized", fatal: true},
 		{name: "permanent protocol", path: "/policy", status: http.StatusBadRequest, body: `{"code":"invalid_request"}`, fatal: true},
 		{name: "stale fencing", path: "/validate", status: http.StatusConflict, body: `{"code":"stale_fencing_token"}`, fatal: true},
+		{name: "policy mismatch", path: "/policy", status: http.StatusConflict, body: `{"code":"policy_mismatch"}`, fatal: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -694,22 +705,58 @@ func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := execution.data
+			validationCtx := guarded
+			if test.interruption != nil && test.path == "" {
+				if errors.Is(test.interruption, context.DeadlineExceeded) {
+					var cancel context.CancelFunc
+					validationCtx, cancel = context.WithDeadline(guarded, time.Now().Add(-time.Second))
+					defer cancel()
+				} else {
+					var cancel context.CancelCauseFunc
+					validationCtx, cancel = context.WithCancelCause(guarded)
+					cancel(test.interruption)
+				}
+			}
+			if test.expired {
+				h.scheduler.mu.Lock()
+				claim := h.scheduler.nativeClaims[issue.ID]
+				claim.deadline = time.Now().Add(-time.Second)
+				h.scheduler.nativeClaims[issue.ID] = claim
+				h.scheduler.mu.Unlock()
+			}
 			original := h.native.client.httpClient.Transport
 			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				if test.path != "" && !strings.HasSuffix(request.URL.Path, test.path) {
 					return original.RoundTrip(request)
+				}
+				if test.interruption != nil {
+					return nil, test.interruption
 				}
 				if test.status == 0 {
 					return nil, errors.New("bounded disconnect")
 				}
 				return &http.Response{StatusCode: test.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(test.body)), Request: request}, nil
 			})
-			if err := execution.Validate(guarded); test.fatal != errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || !test.fatal && err != nil {
+			err = execution.Validate(validationCtx)
+			if test.fatal != errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || !test.fatal && test.interruption == nil && err != nil {
 				t.Fatalf("validation=%v, fatal=%t", err, test.fatal)
+			}
+			if test.interruption != nil && !errors.Is(err, test.interruption) {
+				t.Fatalf("validation=%v, want interruption %v", err, test.interruption)
 			}
 			if test.fatal {
 				if !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) {
 					t.Fatal("real refusal retained worker authority")
+				}
+				return
+			}
+			if test.interruption != nil {
+				h.native.client.httpClient.Transport = original
+				if guarded.Err() != nil || execution.data.LeaseID != before.LeaseID || execution.data.FencingToken != before.FencingToken || h.scheduler.RunExecution(issue.ID) != execution {
+					t.Fatal("interruption replaced current worker authority")
+				}
+				if err := execution.Validate(guarded); err != nil {
+					t.Fatalf("interruption prevented validation with original lease: %v", err)
 				}
 				return
 			}
