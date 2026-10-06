@@ -37,6 +37,8 @@ type tenantBilling struct {
 	Mode            string    `json:"mode"`
 	CustomerID      string    `json:"customer_id"`
 	Status          string    `json:"status"`
+	Plan            string    `json:"plan"`
+	PriceLabel      string    `json:"price_label"`
 	AccessUntil     time.Time `json:"access_until"`
 	CheckoutPending bool      `json:"checkout_pending"`
 }

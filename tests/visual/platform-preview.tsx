@@ -29,6 +29,11 @@ if (location.protocol === "file:") {
       } else {
         value = { ...fixture.entitlements, revision, features, grants };
       }
+    } else if (path.startsWith("/api/cloud/platform/organizations/")) {
+      const role = params.get("role") ?? "admin";
+      value = { ...fixture.detail, can_grant: ["admin", "billing"].includes(role),
+        organization: { ...fixture.detail.organization, can_support: ["admin", "support"].includes(role) },
+        entitlements: { ...fixture.entitlements, revision, features, grants } };
     } else if (path === "/api/cloud/session" || path === "/api/cloud/organizations") {
       value = {
         ...fixture.account, platform_role: params.get("role") ?? "admin",

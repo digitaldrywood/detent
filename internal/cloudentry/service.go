@@ -242,6 +242,8 @@ func (s *Service) routes() {
 	e.GET(platformPath, s.platformPage)
 	e.GET(platformPath+"/*", s.platformPage)
 	e.GET("/api/cloud/platform/organizations", s.platformOrganizationsJSON)
+	e.GET("/api/cloud/platform/organizations/:organization", s.platformOrganizationJSON)
+	e.POST("/api/cloud/platform/organizations/:organization/resume", s.resumePlatformProvisioning)
 	e.GET("/api/cloud/platform/allowlist", s.platformAllowlistJSON)
 	e.GET("/api/cloud/platform/health", s.platformHealthJSON)
 	e.GET("/api/cloud/platform/organizations/:organization/entitlements", s.platformEntitlementsJSON)

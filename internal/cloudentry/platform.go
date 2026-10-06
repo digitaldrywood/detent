@@ -59,8 +59,11 @@ func (s *Service) platformPage(c echo.Context) error {
 }
 
 type platformBilling struct {
-	Available bool   `json:"available"`
-	Status    string `json:"status,omitempty"`
+	Available  bool   `json:"available"`
+	Status     string `json:"status,omitempty"`
+	CustomerID string `json:"customer_id,omitempty"`
+	Plan       string `json:"plan,omitempty"`
+	PriceLabel string `json:"price_label,omitempty"`
 }
 
 type platformOrganization struct {
@@ -159,13 +162,22 @@ func (s *Service) platformOrganizationsJSON(c echo.Context) error {
 		organizations[index].CanSupport = canSupport && organization.State == "ready"
 	}
 	s.eachReadyTenant(ctx, ids, func(call context.Context, index int, organization Organization) {
-		if state, err := s.tenantBillingState(call, organization, false); err == nil {
-			organizations[index].Billing = platformBilling{Available: true, Status: state.Status}
-		}
+		sections, billing := s.platformTenantSections(call, organization, false)
+		organizations[index].applySections(sections, billing)
 	})
+	unavailable := []string{}
+	for _, field := range platformUnavailable {
+		for _, organization := range organizations {
+			missing := field == "plan" && organization.Plan == nil || field == "grants" && organization.Grants == nil || field == "member_count" && organization.MemberCount == nil || field == "runner_count" && organization.RunnerCount == nil
+			if missing {
+				unavailable = append(unavailable, field)
+				break
+			}
+		}
+	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"email": session.Email, "csrf": cloudassert.CSRFToken(session.CSRFSecret, ""), "can_support": canSupport, "can_grant": s.entitlementAdministrator(ctx, session),
-		"organizations": organizations, "unavailable": platformUnavailable,
+		"organizations": organizations, "unavailable": unavailable,
 	})
 }
 

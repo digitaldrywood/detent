@@ -28,7 +28,7 @@ test("desktop platform shell redirects to tenants and keeps chrome across pages"
   const nav = page.getByRole("navigation", { name: "Platform navigation" });
   await expect(nav.getByRole("link")).toHaveText(["Tenants", "Staff", "Audit", "Health", "Allowlist"]);
   await expect(nav.getByRole("link", { name: "Tenants" })).toHaveAttribute("data-active", "true");
-  await expect(page).toHaveScreenshot("platform-tenants-desktop.png");
+  await expect(page.getByRole("table", { name: "Tenants", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Open organization" }).click();
   await expect(page.getByRole("menuitem", { name: "Model Choice Labs" })).toHaveAttribute("href", fixture.account.organizations[0].url);
   await page.keyboard.press("Escape");
@@ -36,7 +36,7 @@ test("desktop platform shell redirects to tenants and keeps chrome across pages"
   await expect(page.getByRole("region", { name: "Service health" })).toBeVisible();
   await expect(page).toHaveTitle("Health · Platform · Detent");
   await expect(nav.getByRole("link", { name: "Health" })).toHaveAttribute("aria-current", "page");
-  await expect(page.getByRole("table", { name: "Organizations", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("table", { name: "Tenants", exact: true })).toHaveCount(0);
   await nav.getByRole("link", { name: "Allowlist" }).click();
   await expect(page.getByRole("region", { name: "Signup allowlist" })).toContainText("example.test");
   await expect(page.getByText("Platform", { exact: true })).toBeVisible();

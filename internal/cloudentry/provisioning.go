@@ -538,6 +538,10 @@ func (s *Service) resumeProvisioningFor(ctx context.Context, session accountSess
 	if err != nil {
 		return Organization{}, err
 	}
+	return s.resumeOrganization(ctx, organization)
+}
+
+func (s *Service) resumeOrganization(ctx context.Context, organization Organization) (Organization, error) {
 	if !provisioningRetryable(organization) {
 		return organization, nil
 	}
@@ -549,7 +553,7 @@ func (s *Service) resumeProvisioningFor(ctx context.Context, session accountSess
 		return Organization{}, err
 	}
 	s.wakeAllocator()
-	return s.creatorOrganizationFor(ctx, session, id)
+	return s.registry.Organization(ctx, organization.ID)
 }
 
 func provisioningRetryable(organization Organization) bool {
