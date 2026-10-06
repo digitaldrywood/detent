@@ -6,11 +6,14 @@
 // rendered
 // on its own with plain props, so what is under test is the screen's own
 // behaviour rather than the client it would otherwise be wired to.
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Member, OnboardingStep } from "../../src/contracts/account.ts";
+import { WorkspacePicker } from "../../src/components/sidebar/SidebarWorkspacePicker.tsx";
+import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import {
   LoginCard,
   loginErrorMessage,
@@ -34,6 +37,92 @@ import approval from "../../src/contracts/fixtures/account-policy.json";
 import { WorkflowRevisions } from "../../src/app/account/WorkflowRevisions.tsx";
 
 afterEach(cleanup);
+
+describe("the footer workspace picker", () => {
+  const current = { id: "org_a", name: "Threefold Solutions" };
+  const other = { id: "org_b", name: "Another workspace with a long name" };
+
+  function mount() {
+    const onSelect = vi.fn();
+    const onManage = vi.fn();
+    const picker = (error: string | null = null) => (
+      <SidebarProvider>
+        <ul>
+          <WorkspacePicker
+            current={current}
+            organizations={[current, other]}
+            onSelect={onSelect}
+            onManage={onManage}
+            addHref="/organizations/new"
+            error={error}
+          />
+        </ul>
+        <button>Outside</button>
+      </SidebarProvider>
+    );
+    const view = render(picker());
+    return {
+      onSelect,
+      onManage,
+      user: userEvent.setup(),
+      reportError: (error: string) => view.rerender(picker(error)),
+    };
+  }
+
+  it("filters complete names and selects another workspace with the keyboard", async () => {
+    const { onSelect, user } = mount();
+    const trigger = screen.getByRole("button", { name: /Switch workspace/ });
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    const input = await screen.findByRole("searchbox", { name: "Search workspaces" });
+    await user.type(input, "  LONG name");
+    expect(screen.queryByRole("menuitem", { name: current.name })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: other.name }).title).toBe(other.name);
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith(other.id);
+    expect(screen.queryByRole("menu", { name: "Workspaces" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it("marks the current workspace and closes it without switching", async () => {
+    const { onSelect, user } = mount();
+    const trigger = screen.getByRole("button", { name: /Switch workspace/ });
+    await user.click(trigger);
+    const row = await screen.findByRole("menuitem", { name: current.name });
+    expect(row.getAttribute("aria-current")).toBe("true");
+    await user.click(row);
+    expect(onSelect).not.toHaveBeenCalled();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it("reopens a failed switch so the authenticated owner's refusal is visible", async () => {
+    const { user, reportError } = mount();
+    await user.click(screen.getByRole("button", { name: /Switch workspace/ }));
+    await user.click(await screen.findByRole("menuitem", { name: other.name }));
+    reportError("You no longer have access to this organization.");
+    expect((await screen.findByRole("alert")).textContent).toBe("You no longer have access to this organization.");
+    expect(screen.getByRole("menuitem", { name: current.name }).getAttribute("aria-current")).toBe("true");
+  });
+
+  it("dismisses search with Escape or an outside click and retains the organization actions", async () => {
+    const { onManage, user } = mount();
+    const trigger = screen.getByRole("button", { name: /Switch workspace/ });
+    await user.click(trigger);
+    await user.type(await screen.findByRole("searchbox"), "missing");
+    expect(screen.getByRole("status").textContent).toBe("No workspaces found.");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    await user.click(trigger);
+    expect((await screen.findByRole("searchbox") as HTMLInputElement).value).toBe("");
+    expect(screen.getByRole("menuitem", { name: "Add a workspace" }).getAttribute("href")).toBe("/organizations/new");
+    await user.click(screen.getByRole("menuitem", { name: "Manage current workspace" }));
+    expect(onManage).toHaveBeenCalledOnce();
+    await user.click(trigger);
+    await screen.findByRole("menu");
+    await user.click(screen.getByRole("button", { name: "Outside" }));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  });
+});
 
 // Base UI dispatches a synthetic click through `PointerEvent`, which jsdom
 // does not implement. The event's own behaviour is not what these tests are
