@@ -137,7 +137,7 @@ test.describe("the work board", () => {
     await expect(page.getByTestId("work-stats")).toBeVisible();
     await expect(page.getByTestId("work-stats")).toHaveCount(1);
     await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
-    await expect(page.getByTestId("work-stats")).toContainText(/\d+ running.*\d+ queued.*\d+ open.*\d+ closed inventory/);
+    await expect(page.getByTestId("work-stats")).toContainText(/\d+ running.*\d+ queued.*\d+ open.*\d+ completed/);
     await expect(page.getByTestId("work-stats").getByRole("button", { name: /^Load / })).toHaveCount(0);
     await expect(page.getByTestId("stat-coverage")).toHaveCount(0);
 
