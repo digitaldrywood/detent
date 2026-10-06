@@ -107,16 +107,16 @@ func TestHostedProjectTools(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+			sources := workflowconfig.ProjectDefinitionSources{
 				ConfigPath: "detent.yaml", HasConfig: true,
 				Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: true\n  required_status_checks: []\n"),
-				WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", 100)),
+				WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Review the material policy.\nImplement the assigned issue.\n", 100)),
 				AgentsPath: "AGENTS.md", HasAgents: true, Agents: []byte(strings.Repeat("Preserve policy authority.\n", 100)),
-			})
+			}
+			workflow, err := workflowconfig.ParseProjectDefinition(sources)
 			if err != nil {
 				t.Fatal(err)
 			}
-			workflow.SharedPrompt = strings.Repeat("Review the material policy.\n", 100)
 			candidate, err := workflowconfig.ResolvePolicy(workflow)
 			if err != nil {
 				t.Fatal(err)
@@ -172,11 +172,18 @@ func TestHostedProjectTools(t *testing.T) {
 			if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read("get_change_review_policy")); err != nil {
 				t.Fatal(err)
 			}
-			workflow.Prompt += "Changed policy.\n"
-			workflow.Definition.ConfigPath = "stale-detent.yaml"
+			sources.Workflow = append(sources.Workflow, []byte("Changed policy.\n")...)
+			sources.ConfigPath = "stale-detent.yaml"
+			workflow, err = workflowconfig.ParseProjectDefinition(sources)
+			if err != nil {
+				t.Fatal(err)
+			}
 			updated, err := workflowconfig.ResolvePolicy(workflow)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if updated.ID == candidate.ID {
+				t.Fatal("stale approval fixture must change the authored policy")
 			}
 			stalePolicy := projectCall(t, "approve_project_policy", id, "stale-policy", operatortool.PolicyApprovalInput{ExpectedID: previous.Policy.ID, Policy: updated})
 			if _, err := e.Execute(ctx, stalePolicy); !errors.Is(err, mutation.ErrConflict) {
