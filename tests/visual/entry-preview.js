@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-async function startEntryPreview() {
+async function startEntryPreview(options = {}) {
   const scratch = process.env.TMPDIR || process.env.TMP || process.env.TEMP;
   if (!scratch) throw new Error("The shared-entry preview requires a scratch directory");
   const directory = fs.mkdtempSync(path.join(scratch, "entry-login-"));
@@ -11,7 +11,8 @@ async function startEntryPreview() {
   const child = spawn(binary || "go", binary
     ? ["-test.run=^TestSharedOriginClientPreview$", "-test.v", "-test.timeout=25m"]
     : ["test", "-p", "4", "./internal/cloudentry", "-run", "^TestSharedOriginClientPreview$", "-count=1", "-v", "-timeout", "25m"], {
-    env: { ...process.env, DETENT_SHARED_ORIGIN_CLIENT_PREVIEW: directory },
+    env: { ...process.env, DETENT_SHARED_ORIGIN_CLIENT_PREVIEW: directory,
+      DETENT_ENTRY_FALLBACK_PREVIEW: options.fallback ? "1" : "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";

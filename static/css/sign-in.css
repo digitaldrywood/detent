@@ -1,0 +1,34 @@
+.detent-sign-in {
+  font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --contrast-border: var(--border);
+  --contrast-muted-foreground: var(--muted-foreground);
+  --contrast-foreground: var(--foreground);
+  --contrast-card-foreground: var(--card-foreground);
+  --background: #f7f8fa;
+  --foreground: #1a1f27;
+  --card: #ffffff;
+  --card-foreground: #1a1f27;
+  --border: #e4e7ec;
+  --muted-foreground: #5d6b80;
+  --primary: #0f766e;
+  --primary-foreground: #ffffff;
+  --accent: #eef2f6;
+  --accent-foreground: #1a1f27;
+}
+
+.dark .detent-sign-in {
+  --background: #0b0d10;
+  --foreground: #edf0f4;
+  --card: #11151b;
+  --card-foreground: #edf0f4;
+  --border: #262b33;
+  --muted-foreground: #8a93a2;
+  --primary: #2dd4bf;
+  --primary-foreground: #0b0d10;
+  --accent: #1b2028;
+  --accent-foreground: #edf0f4;
+}
+
+.detent-sign-in .font-mono {
+  font-family: "Geist Mono", ui-monospace, monospace;
+}

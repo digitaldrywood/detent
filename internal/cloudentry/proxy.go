@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,11 +70,7 @@ func (s *Service) browserFailure(c echo.Context, organization string, status int
 		if strings.HasPrefix(request.URL.Path, "/api/") || request.Header.Get("Accept") == "application/json" {
 			return c.JSON(status, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
 		}
-		retry := "/organizations/" + organization + "/work"
-		if (request.Method == http.MethodGet || request.Method == http.MethodHead) && validReturnPath(request.URL.Path, organization) {
-			retry = request.URL.RequestURI()
-		}
-		return s.browserUnavailable(c, retry)
+		return s.browserUnavailable(c, status)
 	}
 	if (request.Method == http.MethodGet || request.Method == http.MethodHead) && !strings.HasPrefix(request.URL.Path, "/api/") && status == http.StatusUnauthorized {
 		query := url.Values{"organization": {organization}}
@@ -88,6 +86,27 @@ func (s *Service) browserFailure(c echo.Context, organization string, status int
 		return s.denied(c, status, "Sign in again to continue")
 	}
 	return s.denied(c, status, "This organization is unavailable to your account. Choose another organization.")
+}
+
+func wantsHTMLNavigation(c echo.Context) bool {
+	request := c.Request()
+	if (request.Method != http.MethodGet && request.Method != http.MethodHead) || strings.Contains(request.URL.Path, "/api/") || request.Header.Get(echo.HeaderAuthorization) != "" || wantsJSON(c) {
+		return false
+	}
+	for value := range strings.SplitSeq(request.Header.Get(echo.HeaderAccept), ",") {
+		mediaType, params, err := mime.ParseMediaType(value)
+		if err != nil || mediaType != echo.MIMETextHTML {
+			continue
+		}
+		if quality, ok := params["q"]; ok {
+			q, err := strconv.ParseFloat(quality, 64)
+			if err != nil || !(q > 0 && q <= 1) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
 }
 
 const (
@@ -271,6 +290,9 @@ func (s *Service) proxy(c echo.Context) error {
 	}
 	transport, err := s.config.transport(organization)
 	if err != nil {
+		if wantsHTMLNavigation(c) {
+			return s.browserUnavailable(c, http.StatusBadGateway)
+		}
 		return c.JSON(http.StatusBadGateway, map[string]string{"code": "tenant_unavailable", "message": "The organization is temporarily unavailable"})
 	}
 	proxy := &httputil.ReverseProxy{
@@ -300,6 +322,12 @@ func (s *Service) proxy(c echo.Context) error {
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			if wantsHTMLNavigation(c) {
+				if err := s.browserUnavailable(c, http.StatusBadGateway); err != nil {
+					c.Error(err)
+				}
+				return
+			}
 			w.Header().Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte(`{"code":"tenant_unavailable","message":"The organization is temporarily unavailable"}`))

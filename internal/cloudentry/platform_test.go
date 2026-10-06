@@ -109,6 +109,14 @@ func TestPlatformAuthorization(t *testing.T) {
 				if response.StatusCode != test.status || response.Header.Get("Location") != test.location {
 					t.Fatalf("GET %s = %d %q: %s", route, response.StatusCode, response.Header.Get("Location"), body)
 				}
+				if page && test.status == http.StatusForbidden {
+					assertEntryFallback(t, test.browser, body)
+					for _, action := range []string{`href="/organizations" class="entry-button entry-primary">Return to organization`, `href="/organizations" class="entry-button">Sign in again`} {
+						if !strings.Contains(body, action) {
+							t.Fatalf("denied page lost action %s: %s", action, body)
+						}
+					}
+				}
 				if !page && test.status != http.StatusOK && strings.Contains(body, "org_alpha") {
 					t.Fatalf("refused platform response leaked registry data: %s", body)
 				}
