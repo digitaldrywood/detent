@@ -361,7 +361,7 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 		if query.NativeScope != nil {
 			refusal := &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
 			recorded := recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_host_capacity", refusal, now)
-			if query.NativeScope.credential.Runner.RunnerID != "" || recorded != refusal {
+			if query.NativeScope.credential.Runner.RunnerID != "" || !errors.Is(recorded, refusal) {
 				return tracker.Lease{}, recorded
 			}
 		}

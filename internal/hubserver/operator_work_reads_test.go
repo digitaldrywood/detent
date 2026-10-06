@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/displayorder"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -534,6 +535,12 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 		{"older heartbeat", func(r *tracker.NativeRuntimeObservation) { r.HeartbeatAt = at.Add(-time.Second) }, http.StatusConflict},
 		{"worker supplied landing destination", func(r *tracker.NativeRuntimeObservation) {
 			r.Landing = &tracker.NativeLandingReceipt{RefusalKind: "conflict", TargetState: "Done", ObservedAt: at}
+		}, http.StatusUnprocessableEntity},
+		{"negative landing gate duration", func(r *tracker.NativeRuntimeObservation) {
+			r.Landing = &tracker.NativeLandingReceipt{GateFailed: true, Gate: &gate.CommandResult{Command: "make check-land", ExitCode: 1, DurationNS: -1, HeadSHA: strings.Repeat("c", 40), TreeSHA: strings.Repeat("d", 40)}, ObservedAt: at}
+		}, http.StatusUnprocessableEntity},
+		{"failed landing with a passing command receipt", func(r *tracker.NativeRuntimeObservation) {
+			r.Landing = &tracker.NativeLandingReceipt{GateFailed: true, Gate: &gate.CommandResult{Command: "make check-land", ExitCode: 0, DurationNS: 1, HeadSHA: strings.Repeat("c", 40), TreeSHA: strings.Repeat("d", 40)}, ObservedAt: at}
 		}, http.StatusUnprocessableEntity},
 		{"free text landing refusal", func(r *tracker.NativeRuntimeObservation) {
 			r.Landing = &tracker.NativeLandingReceipt{RefusalKind: "conflict", Refusal: "private command and credentials", ObservedAt: at}

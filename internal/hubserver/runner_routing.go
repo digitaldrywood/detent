@@ -583,6 +583,7 @@ func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeSco
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var slot runnerauth.ClaimSlot
 		var expiry string

@@ -84,18 +84,19 @@ func failureFirstLine(value string) string {
 func normalizeFailureSignature(value string) string {
 	value = failureFirstLine(value)
 	for _, replacement := range failureSignatureReplacements {
-		if replacement.value == "<path>" {
+		switch replacement.value {
+		case "<path>":
 			value = replacement.pattern.ReplaceAllStringFunc(value, func(match string) string {
 				return failurePathDigits.ReplaceAllString(match, "<n>")
 			})
-		} else if replacement.value == "<hash>" {
+		case "<hash>":
 			value = replacement.pattern.ReplaceAllStringFunc(value, func(match string) string {
 				if strings.ContainsAny(match, "abcdefABCDEF") || len(match) == 40 || len(match) == 64 {
 					return replacement.value
 				}
 				return match
 			})
-		} else {
+		default:
 			value = replacement.pattern.ReplaceAllString(value, replacement.value)
 		}
 	}

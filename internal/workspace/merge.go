@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -427,7 +428,9 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)
 	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
+	started := time.Now()
 	output, err := cmd.CombinedOutput()
+	result.DurationNS = time.Since(started).Nanoseconds()
 	result.Output = string(output)
 	if ctx.Err() != nil {
 		return result, ctx.Err()

@@ -918,7 +918,14 @@ recorded profile.
 A landing observation names Change/version/head and either actual landed
 merge SHA/base/method or a bounded refusal kind. The Hub verifies actual landing
 against recorded Change authority; terminal attempt success alone cannot prove
-a ship. REST data projects existing operation-header observations and attribution
+a ship. Configured command gates also record `landing.gate`: `command`,
+`exit_code`, `duration_ns`, validated `head_sha` and `tree_sha`, and up to 64 KiB
+of `output` with `output_truncated` when needed. The same receipt is available
+on the attempt and Change version. Historical receipts without `gate` do not
+establish that a command ran or passed. Duration measures command execution,
+excluding worktree preparation and scratch cleanup.
+
+REST data projects existing operation-header observations and attribution
 windows, with credential digests, resource, timestamp, HTTP status and the
 presence of a Used header. Selected-client counts exclude worker subprocesses,
 other clients and hosts; an unaccounted delta does not identify its consumer.
@@ -1268,6 +1275,15 @@ approved repository policy. For a github.com origin and an authenticated `gh`
 on the project runner, landing then publishes the reviewed attempt branch,
 finds or opens a pull request against the remote default branch, and asks
 GitHub to merge the exact reviewed head using the policy's `merge_method`.
+Before publication, the configured command gate runs on a detached combination
+of that head and the fetched base. Nonzero exits retain command evidence and
+failing output and return to configured Rework through the existing landing
+refusal owner. Initial and retry preparation share the same executor. The base
+is refreshed before the merge request; an observed advance refuses the request.
+GitHub's merge API pins the head, but provides no atomic expected-base field,
+so concurrent external base writes still depend on the repository's protection
+and serialized landing policy.
+
 GitHub's branch protection, required checks, and required reviews decide
 whether the merge succeeds. The runner verifies that the returned merge commit
 is on the base branch before reporting it to the Hub. A refused merge returns

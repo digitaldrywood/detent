@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -213,39 +214,42 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
-		name             string
-		method           string
-		pullState        string
-		reworked         bool
-		failureMethod    string
-		status           int
-		message          string
-		failureBody      string
-		emptyBody        bool
-		rate             bool
-		retryAfter       string
-		wantRefusal      string
-		moved            bool
-		external         bool
-		isolated         bool
-		pullError        string
-		sourceConflict   bool
-		advanceOnMerge   bool
-		projection       string
-		wantDeferred     bool
-		wantRetry        bool
-		retrySuccess     bool
-		retryGateFailure bool
-		retryHeadMoved   bool
-		refreshQuota     bool
-		refreshStatus    int
-		wantOutage       bool
-		gitReadFailure   string
-		gitReadClass     string
-		sourceIssues     bool
-		existingBody     string
-		wantPatch        bool
-		gateFailure      bool
+		name                string
+		method              string
+		pullState           string
+		reworked            bool
+		failureMethod       string
+		status              int
+		message             string
+		failureBody         string
+		emptyBody           bool
+		rate                bool
+		retryAfter          string
+		wantRefusal         string
+		moved               bool
+		external            bool
+		isolated            bool
+		pullError           string
+		sourceConflict      bool
+		advanceOnMerge      bool
+		projection          string
+		wantDeferred        bool
+		wantRetry           bool
+		retrySuccess        bool
+		retryGateFailure    bool
+		retryHeadMoved      bool
+		refreshQuota        bool
+		refreshStatus       int
+		wantOutage          bool
+		gitReadFailure      string
+		gitReadClass        string
+		sourceIssues        bool
+		existingBody        string
+		wantPatch           bool
+		gateFailure         bool
+		combinedGateFailure bool
+		baseMovesDuringGate bool
+		advanceParallel     bool
 	}{
 		{name: "creates the exact source closing payload", method: "squash", sourceIssues: true},
 		{name: "reuse preserves human delivery attribution", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses example/repo#44", wantPatch: true},
@@ -255,6 +259,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "source attribution refuses a stale PR head", method: "squash", pullState: "stale", sourceIssues: true, existingBody: "Human attribution", wantRefusal: LandRefusalHeadMoved},
 		{name: "merges the reviewed head", method: "merge"},
 		{name: "red gate never publishes the source or calls the forge", method: "squash", gateFailure: true},
+		{name: "gate rejects only the combined tree before delivery", method: "squash", projection: "base", combinedGateFailure: true},
+		{name: "base advance during validation refuses merge", method: "squash", baseMovesDuringGate: true},
 		{name: "uses the policy squash method", method: "squash"},
 		{name: "uses the policy rebase method", method: "rebase"},
 		{name: "reuses an open PR", method: "merge", pullState: "open"},
@@ -301,7 +307,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "conflict rebases cleanly and lands once", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retrySuccess: true, wantRetry: true},
 		{name: "isolated external conflict rebases cleanly", method: "squash", external: true, isolated: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retrySuccess: true, wantRetry: true},
 		{name: "retry refuses a branch moved after source verification", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retryHeadMoved: true},
-		{name: "rebased landing reruns the gate before retry", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retryGateFailure: true},
+		{name: "rebased landing reruns the gate before retry", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retryGateFailure: true},
 		{name: "stale base projection with current clean base refreshes", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", wantDeferred: true, wantRetry: true},
 		{name: "moved published head cannot prove reviewed conflict", method: "squash", reworked: true, pullState: "stale", moved: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, wantDeferred: true},
 		{name: "different PR branch cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "branch", wantDeferred: true},
@@ -413,6 +419,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						pull = strings.Replace(pull, `"number":7,`, fmt.Sprintf(`"number":7,"body":%q,`, test.existingBody), 1)
 						if !healthy && req.Method == test.failureMethod && (!test.retrySuccess || mergeCalls == 1) {
 							status = test.status
+							if test.advanceParallel {
+								fixture.advanceMain(t, "parallel.txt", "parallel landing\n")
+								base = fixture.remoteMain(t)
+							}
 							if test.advanceOnMerge {
 								fixture.advanceMain(t, "feature.txt", "base conflict\n")
 								base = fixture.remoteMain(t)
@@ -539,6 +549,12 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if test.retryGateFailure {
 				opts.ValidationCommand = "test -f feature.txt && test ! -f parallel.txt"
 			}
+			if test.baseMovesDuringGate {
+				opts.ValidationCommand = "test -f feature.txt && git push origin " + shellQuote(fixture.head+":refs/heads/main")
+			}
+			if test.combinedGateFailure {
+				opts.ValidationCommand = "test -f feature.txt && if test -f parallel.txt; then printf combined-tree-lint-error; exit 7; fi"
+			}
 			if test.gateFailure {
 				opts.ValidationCommand = "git cat-file -e short-test-failure-sentinel"
 			}
@@ -563,6 +579,27 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				}
 			}
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), landingInfo, landingIssue, opts)
+			if test.baseMovesDuringGate {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || refusal.BaseSHA != fixture.head || slices.Contains(methods, http.MethodPut) || result.Gate.ExitCode != 0 || result.Gate.Command != opts.ValidationCommand {
+					t.Fatalf("merge accepted a base changed during its gate: result=%#v err=%v methods=%v", result, err, methods)
+				}
+				return
+			}
+			if test.sourceConflict && !test.advanceOnMerge {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalConflict || slices.Contains(methods, http.MethodPut) || slices.Contains(methods, http.MethodPost) || fixture.remoteMain(t) != base {
+					t.Fatalf("combined source conflict reached the forge: result=%#v err=%v methods=%v", result, err, methods)
+				}
+				return
+			}
+			if test.combinedGateFailure {
+				var validation *ValidationError
+				if !errors.As(err, &validation) || !strings.Contains(validation.Output, "combined-tree-lint-error") || result.Gate.Command != opts.ValidationCommand || result.Gate.ExitCode != 7 || result.Gate.DurationNS <= 0 || result.Gate.HeadSHA == fixture.head || !validLandingHead(result.Gate.TreeSHA) || len(methods) != 0 || fixture.remoteMain(t) != base {
+					t.Fatalf("combined gate evidence = %#v, err=%v methods=%v", result, err, methods)
+				}
+				return
+			}
 			if test.wantRetry || test.retryGateFailure || test.retryHeadMoved {
 				wantCalls := 2
 				if test.retryGateFailure || test.retryHeadMoved {
@@ -591,6 +628,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				return
 			}
 			if test.gateFailure {
+				if result.Gate.Command != opts.ValidationCommand || result.Gate.ExitCode == 0 || result.Gate.DurationNS <= 0 {
+					t.Fatalf("failed gate lost receipt: %#v", result)
+				}
 				var validation *ValidationError
 				if !errors.As(err, &validation) || !strings.Contains(validation.Output, "short-test-failure-sentinel") || len(methods) != 0 || fixture.remoteMain(t) != base || result.MergeSHA != "" {
 					t.Fatalf("red gate wrote to forge or lost evidence: %v, %v", methods, err)
@@ -698,6 +738,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if result.Gate.Command != opts.ValidationCommand || result.Gate.ExitCode != 0 || result.Gate.DurationNS <= 0 || !validLandingHead(result.Gate.HeadSHA) || !validLandingHead(result.Gate.TreeSHA) {
+				t.Fatalf("successful gate lost receipt: %#v", result)
+			}
 			wantHead := fixture.head
 			if test.retrySuccess {
 				wantHead = strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
@@ -705,7 +748,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					t.Fatal("retry did not combine reviewed source with the current base")
 				}
 				wantTree := strings.TrimSpace(runGit(t, fixture.source, "merge-tree", "--write-tree", base, fixture.head))
-				if gotTree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", wantHead+"^{tree}")); gotTree != wantTree {
+				if gotTree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", wantHead+"^{tree}")); gotTree != wantTree || result.Gate.TreeSHA != gotTree {
 					t.Fatalf("retry changed reviewed source delta: tree=%s want=%s", gotTree, wantTree)
 				}
 				if test.method == "rebase" && strings.TrimSpace(runGit(t, fixture.source, "rev-list", "--min-parents=2", base+".."+wantHead)) != "" {

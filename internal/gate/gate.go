@@ -117,6 +117,7 @@ type Finding struct {
 }
 
 type CommandResult struct {
+	DurationNS      int64  `json:"duration_ns,omitempty"`
 	Command         string `json:"command"`
 	HeadSHA         string `json:"head_sha"`
 	TreeSHA         string `json:"tree_sha"`
