@@ -26,9 +26,13 @@ type healthSubject struct {
 }
 
 type healthEvidence struct {
-	EventIDs   []string       `json:"event_ids,omitempty"`
-	AttemptIDs []string       `json:"attempt_ids,omitempty"`
-	Counts     map[string]int `json:"counts,omitempty"`
+	EventIDs   []string                       `json:"event_ids,omitempty"`
+	AttemptIDs []string                       `json:"attempt_ids,omitempty"`
+	Counts     map[string]int                 `json:"counts,omitempty"`
+	Values     map[string]float64             `json:"values,omitempty"`
+	Queues     map[string]healthQueueEvidence `json:"queues,omitempty"`
+	Signatures []string                       `json:"signatures,omitempty"`
+	Reason     string                         `json:"reason,omitempty"`
 }
 
 type healthFinding struct {
@@ -87,14 +91,17 @@ type healthLimit struct {
 }
 
 type healthSnapshot struct {
-	Runners  []healthRunner
-	Projects []healthProject
-	Waits    []healthWait
-	Limits   []healthLimit
+	Runners             []healthRunner
+	Projects            []healthProject
+	Waits               []healthWait
+	Rates               []healthRateProject
+	BaselineUnavailable []healthBaselineUnavailable
+	Limits              []healthLimit
 }
 
 func newHealthFinding(signal, class, kind, id, summary, action string, projects []string, evidence healthEvidence) healthFinding {
 	sum := sha256.Sum256([]byte(signal + "\x00" + kind + "\x00" + id))
+	evidence.Signatures = slices.Clone(evidence.Signatures[:min(len(evidence.Signatures), healthEvidenceLimit)])
 	evidence.EventIDs = slices.Clone(evidence.EventIDs[:min(len(evidence.EventIDs), healthEvidenceLimit)])
 	evidence.AttemptIDs = slices.Clone(evidence.AttemptIDs[:min(len(evidence.AttemptIDs), healthEvidenceLimit)])
 	return healthFinding{Fingerprint: hex.EncodeToString(sum[:]), Signal: signal, Class: class, Subject: healthSubject{kind, id}, Projects: slices.Clone(projects), Severity: "attention", Summary: summary, NextAction: action, Evidence: evidence}
@@ -175,6 +182,7 @@ func evaluateHealth(now time.Time, snapshot healthSnapshot) []healthFinding {
 	for _, l := range snapshot.Limits {
 		add(lifetimeFinding(l))
 	}
+	findings = append(findings, evaluateHealthRates(now, snapshot.Rates)...)
 	slices.SortFunc(findings, func(a, b healthFinding) int {
 		if a.Fingerprint < b.Fingerprint {
 			return -1

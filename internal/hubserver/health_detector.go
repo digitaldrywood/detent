@@ -83,6 +83,17 @@ func (s *Service) evaluateOrganizationHealth(ctx context.Context, organization t
 	if err := writeHealthEvaluation(ctx, tx, organization, now, evaluateHealth(now, snapshot)); err != nil {
 		return err
 	}
+	unavailable := snapshot.BaselineUnavailable
+	if unavailable == nil {
+		unavailable = []healthBaselineUnavailable{}
+	}
+	raw, err := json.Marshal(unavailable)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE health_detector_ticks SET baseline_unavailable_json=? WHERE organization_id=?", string(raw), organization); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
