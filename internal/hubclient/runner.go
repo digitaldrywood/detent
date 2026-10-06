@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -29,6 +31,7 @@ type runnerCredentialSource struct {
 	routingMu        sync.Mutex
 	routing          *runnerauth.RoutingSnapshot
 	routingChanged   chan struct{}
+	localPolicies    map[tracker.ProjectID]string
 	mu               sync.Mutex
 	path             string
 }
@@ -384,11 +387,23 @@ func (r *runnerCredentialSource) setRouting(snapshot runnerauth.RoutingSnapshot)
 	r.routingMu.Lock()
 	defer r.routingMu.Unlock()
 	previous := r.routing
-	if previous != nil && (previous.Routing.Availability.Timezone != snapshot.Routing.Availability.Timezone || previous.Routing.Availability.HardDeadline != snapshot.Routing.Availability.HardDeadline || !slices.Equal(previous.Routing.Availability.Windows, snapshot.Routing.Availability.Windows)) {
-		if r.routingChanged != nil {
-			close(r.routingChanged)
+	if snapshot.ClaimState != nil {
+		state := *snapshot.ClaimState
+		state.Slots = slices.Clone(state.Slots)
+		slices.SortFunc(state.Slots, func(a, b runnerauth.ClaimSlot) int { return strings.Compare(string(a.ID), string(b.ID)) })
+		state.PolicyIDs = maps.Clone(state.PolicyIDs)
+		snapshot.ClaimState = &state
+	}
+	if previous != nil && previous.ClaimState != nil && snapshot.ClaimState != nil {
+		policies := maps.Clone(previous.ClaimState.PolicyIDs)
+		if policies == nil {
+			policies = make(map[tracker.ProjectID]string)
 		}
-		r.routingChanged = make(chan struct{})
+		maps.Copy(policies, snapshot.ClaimState.PolicyIDs)
+		snapshot.ClaimState.PolicyIDs = policies
+	}
+	if previous != nil && (previous.Routing.State != snapshot.Routing.State || !reflect.DeepEqual(previous.ClaimState, snapshot.ClaimState) || previous.Routing.Availability.Timezone != snapshot.Routing.Availability.Timezone || previous.Routing.Availability.HardDeadline != snapshot.Routing.Availability.HardDeadline || !slices.Equal(previous.Routing.Availability.Windows, snapshot.Routing.Availability.Windows)) {
+		r.notifyClaimChange()
 	}
 	r.routing = &snapshot
 }
@@ -442,4 +457,63 @@ func (r *runnerCredentialSource) projectConfigurationRequest() *runnerauth.Proje
 	}
 	copy := *r.routing.ProjectConfigurationRequest
 	return &copy
+}
+
+func (r *runnerCredentialSource) notifyClaimChange() {
+	if r.routingChanged != nil {
+		close(r.routingChanged)
+	}
+	r.routingChanged = make(chan struct{})
+}
+
+func (r *runnerCredentialSource) setLocalPolicy(project tracker.ProjectID, id string) {
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	if r.localPolicies == nil {
+		r.localPolicies = make(map[tracker.ProjectID]string)
+	}
+	if r.localPolicies[project] != id {
+		r.localPolicies[project] = id
+		r.notifyClaimChange()
+	}
+}
+
+func (r *runnerCredentialSource) claimSlot(lease tracker.NativeLease, acquired bool) {
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	if r.routing == nil || r.routing.ClaimState == nil {
+		return
+	}
+	state := *r.routing.ClaimState
+	slots := slices.Clone(state.Slots)
+	index := slices.IndexFunc(slots, func(slot runnerauth.ClaimSlot) bool { return slot.ID == lease.ID })
+	if acquired && index < 0 {
+		state.Slots = append(slots, runnerauth.ClaimSlot{ID: lease.ID, RunnerID: r.routing.RunnerID})
+		slices.SortFunc(state.Slots, func(a, b runnerauth.ClaimSlot) int { return strings.Compare(string(a.ID), string(b.ID)) })
+		r.routing.ClaimState = &state
+		r.notifyClaimChange()
+	} else if !acquired && index >= 0 {
+		state.Slots = slices.Delete(slots, index, index+1)
+		r.routing.ClaimState = &state
+		r.notifyClaimChange()
+	}
+}
+
+func (r *runnerCredentialSource) setApprovedPolicy(project tracker.ProjectID, id string) {
+	r.routingMu.Lock()
+	defer r.routingMu.Unlock()
+	if r.routing == nil || r.routing.ClaimState == nil {
+		return
+	}
+	state := *r.routing.ClaimState
+	if current, ok := state.PolicyIDs[project]; ok && current == id {
+		return
+	}
+	state.PolicyIDs = maps.Clone(state.PolicyIDs)
+	if state.PolicyIDs == nil {
+		state.PolicyIDs = make(map[tracker.ProjectID]string)
+	}
+	state.PolicyIDs[project] = id
+	r.routing.ClaimState = &state
+	r.notifyClaimChange()
 }

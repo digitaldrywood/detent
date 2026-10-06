@@ -233,7 +233,12 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
 				return nil, err
 			}
-			return readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+			if err != nil {
+				return nil, err
+			}
+			err = readRunnerClaimState(ctx, tx, scope, &snapshot, now)
+			return snapshot, err
 		})
 	}
 	if request.WorkspaceCapabilities != nil {

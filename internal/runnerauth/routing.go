@@ -39,7 +39,20 @@ type Availability struct {
 	HardDeadline string   `json:"hard_deadline"`
 }
 
+type ClaimSlot struct {
+	ID       tracker.LeaseID `json:"lease_id"`
+	RunnerID string          `json:"runner_id"`
+}
+
+type ClaimState struct {
+	HostCapacity   int                          `json:"host_capacity"`
+	RunnerCapacity int                          `json:"runner_capacity"`
+	Slots          []ClaimSlot                  `json:"slots"`
+	PolicyIDs      map[tracker.ProjectID]string `json:"policy_ids"`
+}
+
 type RoutingSnapshot struct {
+	ClaimState                  *ClaimState                  `json:"claim_state,omitempty"`
 	ProjectConfigurationRequest *ProjectConfigurationRequest `json:"project_configuration_request,omitempty"`
 	GitHubIntake                *tracker.GitHubBatchTask     `json:"github_intake,omitempty"`
 	RunnerID                    string                       `json:"runner_id"`

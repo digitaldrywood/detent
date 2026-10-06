@@ -266,6 +266,9 @@ func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (
 	}
 	if err == nil {
 		c.client.nativeLeases.Store(c.base()+"/"+string(result.WorkItemID), result)
+		if c.client.runner != nil {
+			c.client.runner.claimSlot(result, true)
+		}
 	}
 	return result, err
 }
@@ -277,7 +280,11 @@ func (c *NativeClient) Renew(ctx context.Context, lease tracker.NativeLease, ttl
 }
 
 func (c *NativeClient) Release(ctx context.Context, lease tracker.NativeLease, reason string) error {
-	return c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason}, nil)
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/release", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: reason}, nil)
+	if (err == nil || claimLost(err)) && c.client.runner != nil {
+		c.client.runner.claimSlot(lease, false)
+	}
+	return err
 }
 
 // SetArchived calls the existing native archive/restore command with its revision.

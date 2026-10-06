@@ -327,6 +327,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err != nil {
 				return nil, err
 			}
+			if err := readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
+				return nil, err
+			}
 			configurationRequest, err := s.runnerProjectConfiguration(ctx, tx, scope, request.ProjectConfiguration, now)
 			if err != nil {
 				return nil, err
