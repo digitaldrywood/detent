@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"slices"
 	"strconv"
@@ -14,19 +13,36 @@ import (
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
-func (d *database) hostedPlanUsage(ctx context.Context, now time.Time) (HostedEntitlement, error) {
+func (d *database) hostedPlanUsage(ctx context.Context, now time.Time, allowanceNames ...string) (HostedEntitlement, error) {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return HostedEntitlement{}, err
 	}
 	defer tx.Rollback()
-	entitlement, err := d.hostedEntitlement(ctx, tx, now)
+	entitlement, err := d.readHostedPlanUsage(ctx, tx, now, allowanceNames...)
 	if err != nil {
 		return entitlement, err
 	}
-	entitlement.Usage, err = d.hostedConsumption(ctx, tx, now)
+	return entitlement, tx.Commit()
+}
+
+func (d *database) readHostedPlanUsage(ctx context.Context, query nativeQueryer, now time.Time, allowanceNames ...string) (HostedEntitlement, error) {
+	entitlement, err := d.hostedEntitlement(ctx, query, now)
+	if err != nil {
+		return entitlement, err
+	}
+	var metrics []string
+	if len(allowanceNames) > 0 {
+		metrics = append(metrics, "usage_windows")
+		for _, name := range allowanceNames {
+			if _, limited := entitlement.Allowances[name]; limited {
+				metrics = append(metrics, name)
+			}
+		}
+	}
+	entitlement.Usage, err = d.hostedConsumption(ctx, query, now, metrics...)
 	delete(entitlement.Usage, "events_total")
-	return entitlement, errors.Join(err, tx.Commit())
+	return entitlement, err
 }
 
 func (s *Service) hostedPlanPage(c echo.Context) error {

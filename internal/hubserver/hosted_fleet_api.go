@@ -283,7 +283,7 @@ func (s *Service) hostedFleetUsage(ctx context.Context) (hostedFleetUsage, error
 	if s.database.hostedPlans == nil {
 		return usage, nil
 	}
-	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now())
+	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now(), hostedAllowanceNames()...)
 	if err != nil {
 		return usage, err
 	}

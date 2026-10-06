@@ -190,6 +190,19 @@ func TestHostedPlanResolutionBoundaries(t *testing.T) {
 			if got.Usage["projects"] != 1 {
 				t.Fatal("plan change deleted existing project")
 			}
+			f.service.config.now = func() time.Time { return now.Add(test.at) }
+			fleet, err := f.service.hostedFleetUsage(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fleet.WindowEndsAt != got.WindowEndsAt.UTC().Format(time.RFC3339) || len(fleet.Allowances) != len(got.Allowances) {
+				t.Fatalf("Fleet projection window or allowances differ: %#v", fleet)
+			}
+			for name, limit := range got.Allowances {
+				if fleet.Allowances[name] != (hostedFleetAllowance{Used: got.Usage[name], Limit: limit}) {
+					t.Fatalf("Fleet %s=%+v full usage=%d limit=%d", name, fleet.Allowances[name], got.Usage[name], limit)
+				}
+			}
 		})
 	}
 }
@@ -882,6 +895,9 @@ func TestCapacityCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"members", "repositories", "registered_runners", "connected_runners", "concurrent_work"} {
+		if _, present := entitlement.Usage[name]; !present {
+			t.Fatalf("full plan usage omitted unrestricted metric %s", name)
+		}
 		if _, limited := fleetUsage.Allowances[name]; limited {
 			t.Fatalf("unrestricted fleet allowance %s reported a limit", name)
 		}
@@ -1133,6 +1149,85 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 		}
 		if len(fullQueries.statements) != 14 || full["collaboration_bytes"] < int64(retained*3*32768) {
 			t.Fatalf("full queries=%d bytes=%d", len(fullQueries.statements), full["collaboration_bytes"])
+		}
+		for index, test := range []struct {
+			name       string
+			allowances map[string]int64
+			at         time.Duration
+			queries    int
+		}{
+			{"limited retained data", map[string]int64{"collaboration_bytes": 1 << 30, "history_records": 10000, "api_mutations": 10000, "ingested_events": 10000}, 0, 7},
+			{"unlimited retained data", map[string]int64{"api_mutations": 0, "ingested_events": 0, "members": 10, "concurrent_work": 5}, 0, 5},
+			{"next usage window", map[string]int64{"api_mutations": 0, "ingested_events": 0}, time.Duration(plans.WindowSeconds) * time.Second, 5},
+			{"window overrides gauge", map[string]int64{"projects": 10}, 0, 6},
+		} {
+			t.Run(fmt.Sprintf("%d retained/Fleet %s", retained, test.name), func(t *testing.T) {
+				tx, err := d.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				plan := HostedPlan{PlanReference: PlanReference{ID: "fleet_projection", Version: int64(index + 1)}, Allowances: test.allowances}
+				raw, err := json.Marshal(plan)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "INSERT INTO hosted_plans(id,version,record_json) VALUES(?,?,?)", plan.ID, plan.Version, string(raw)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id=?,base_version=?", plan.ID, plan.Version); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "INSERT INTO hosted_usage_windows(window_start,metric,amount) VALUES(?,'projects',99)", window); err != nil {
+					t.Fatal(err)
+				}
+				at := now.Add(test.at)
+				queries := &hostedConsumptionQueries{nativeQueryer: tx}
+				selected, err := d.readHostedPlanUsage(t.Context(), queries, at, hostedAllowanceNames()...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				authoritative, err := d.readHostedPlanUsage(t.Context(), tx, at)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !maps.Equal(selected.Allowances, authoritative.Allowances) || !selected.WindowEndsAt.Equal(authoritative.WindowEndsAt) {
+					t.Fatalf("projection changed entitlement: %#v", selected)
+				}
+				for name := range authoritative.Allowances {
+					if selected.Usage[name] != authoritative.Usage[name] {
+						t.Fatalf("%s=%d full=%d", name, selected.Usage[name], authoritative.Usage[name])
+					}
+				}
+				if len(queries.statements) != test.queries {
+					t.Fatalf("Fleet queries=%d want=%d: %v", len(queries.statements), test.queries, queries.statements)
+				}
+				for _, statement := range queries.statements {
+					if strings.Contains(statement, "hosted_members") || strings.Contains(statement, "hosted_member_reservations") || strings.Contains(statement, "FROM leases") || strings.Contains(statement, "runner_identities") || strings.Contains(statement, "repositories") || strings.Contains(statement, "hosted_artifact_usage") || statement == "SELECT count(*) FROM collaboration_events" {
+						t.Fatalf("Fleet read unused metric: %s", statement)
+					}
+					if _, limited := selected.Allowances["collaboration_bytes"]; !limited && strings.Contains(statement, "CAST(") {
+						t.Fatalf("Fleet summed unlimited retained content: %s", statement)
+					}
+					if _, limited := selected.Allowances["history_records"]; !limited && strings.Contains(statement, "native_attempt_events") {
+						t.Fatalf("Fleet counted unlimited history: %s", statement)
+					}
+				}
+				if authoritative.Usage["collaboration_bytes"] != full["collaboration_bytes"] || authoritative.Usage["history_records"] != full["history_records"] {
+					t.Fatal("full plan reader omitted unlimited retained usage")
+				}
+				wantMutations, wantEvents := int64(7), int64(3)
+				if test.at > 0 {
+					wantMutations, wantEvents = 0, 0
+				}
+				if selected.Usage["api_mutations"] != wantMutations || selected.Usage["ingested_events"] != wantEvents {
+					t.Fatalf("Fleet window usage=%v want mutations=%d events=%d", selected.Usage, wantMutations, wantEvents)
+				}
+				if test.name == "window overrides gauge" && selected.Usage["projects"] != 99 {
+					t.Fatalf("Fleet discarded window gauge override: %v", selected.Usage)
+				}
+				t.Logf("retained_issue_comment_attempt_rows=%d Fleet_queries=%d result_rows=%d allowances=%v window=%s", retained*3, len(queries.statements), queries.resultRows, selected.Allowances, selected.WindowEndsAt)
+			})
 		}
 		for _, test := range []struct {
 			name    string
