@@ -9,9 +9,9 @@ async function orderedRuntime(name, refreshed) {
   const now = Date.now();
   const at = (hours) => new Date(now - hours * 3_600_000).toISOString();
   const issues = [
-    { issue_id: "todo-urgent", identifier: "DD-1", title: "Urgent older card", state: "Todo", priority: 1, updated_at: at(5) },
-    { issue_id: "todo-new", identifier: "DD-2", title: "Newest normal card", state: "Todo", priority: 3, updated_at: at(1) },
-    { issue_id: "todo-label", identifier: "DD-3", title: "Older labelled normal card", state: "Todo", priority: 3, labels: ["hotfix"], unblocker_count: 8, updated_at: at(refreshed ? 0 : 3) },
+    { issue_id: "todo-urgent", identifier: "DD-1", title: "Urgent older card", state: "Backlog", priority: 1, updated_at: at(5) },
+    { issue_id: "todo-new", identifier: "DD-2", title: "Newest normal card", state: "Backlog", priority: 3, updated_at: at(1) },
+    { issue_id: "todo-label", identifier: "DD-3", title: "Older labelled normal card", state: "Backlog", priority: 3, labels: ["hotfix"], unblocker_count: 8, updated_at: at(refreshed ? 0 : 3) },
     { issue_id: "done-urgent", identifier: "DD-4", title: "Older urgent completion", state: "Done", priority: 1, updated_at: at(refreshed ? 0 : 4) },
     { issue_id: "done-new", identifier: "DD-5", title: "Newest completion without priority", state: "Done", updated_at: at(1) },
   ].map((issue) => ({ ...issue, project_id: "dogfood", stage_updated_at: at(6) }));
@@ -64,7 +64,7 @@ test("fleet and project lanes keep priority and newest activity order through SS
       await page.goto(`${initial.url}${route}`, { waitUntil: "domcontentloaded" });
       const snapshot = page.locator("#snapshot");
       await expect(snapshot).toHaveAttribute("hx-swap", "morph:innerHTML");
-      const todo = page.locator('[data-board-lane="todo"] [data-work-representation="board"]');
+      const todo = page.locator('[data-board-lane="backlog"] [data-work-representation="board"]');
       const done = page.locator('[data-board-lane="done"] [data-work-representation="board"]');
       await expect(todo.locator("[data-board-card-title]")).toHaveText([
         "Urgent older card", "Newest normal card", "Older labelled normal card",
