@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
+import { spriteBootstrapPin } from "../../src/app/fleet/EnrollRunner.tsx";
 import type { FleetResponse, RunnerRouting } from "../../src/contracts/account.ts";
 import { AccountError, makeAccountApi } from "../../src/app/account/api.ts";
 import { ClientContext } from "../../src/app/client.ts";
@@ -29,6 +30,19 @@ const PROJECTS = [{ id: "prj_known", name: "Known project" }, { id: "prj_second"
 function renderSection(fleet: FleetResponse = FLEET) {
   render(<RunnersSectionView fleet={fleet} now={NOW} />);
 }
+
+describe("Sprite bootstrap pin", () => {
+  it.each([
+    ["v1.2.3", { ref: "v1.2.3", release: "v1.2.3" }],
+    ["1.2.3", { ref: "v1.2.3", release: "v1.2.3" }],
+    ["operator-landed-3c51987c563b", { ref: "3c51987c563b", release: null }],
+    ["3c51987c563b", { ref: "3c51987c563b", release: null }],
+    ["", { ref: "latest", release: null }],
+    ["dev", { ref: "latest", release: null }],
+  ])("resolves %s", (version, expected) => {
+    expect(spriteBootstrapPin(version)).toEqual(expected);
+  });
+});
 
 describe("runner rows", () => {
   it.each([

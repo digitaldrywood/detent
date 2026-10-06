@@ -34,7 +34,7 @@ function projectBox(id: string): HTMLElement {
   return box;
 }
 
-async function mountDialog(projectIds?: readonly string[], settings = false, initialRunners: readonly FleetRunner[] = [], initialFleetRead?: Promise<Response>, spritesPresent = false) {
+async function mountDialog(projectIds?: readonly string[], settings = false, initialRunners: readonly FleetRunner[] = [], initialFleetRead?: Promise<Response>, spritesPresent = false, version = "v1.2.3") {
   let runners = initialRunners;
   const fleetReads = vi.fn();
   const enrollmentRequests = vi.fn();
@@ -48,7 +48,7 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
     }
     fleetReads();
     if (fleetReads.mock.calls.length === 1 && initialFleetRead !== undefined) return initialFleetRead;
-    return new Response(JSON.stringify({ runners, usage: { window_ends_at: "", allowances: {} }, spend: null }), { status: 200 });
+    return new Response(JSON.stringify({ current: version, runners, usage: { window_ends_at: "", allowances: {} }, spend: null }), { status: 200 });
   }));
   client = {
     account: {
@@ -131,16 +131,23 @@ describe("the Enroll dialog", () => {
     expect(enrollmentRequests).toHaveBeenCalledOnce();
   });
 
-  it.each([false, true])("guides Sprite setup with token presence %s and keeps copied credentials masked", async (present) => {
+  it.each([
+    [false, "v1.2.3", "v1.2.3"],
+    [true, "v1.2.3", "v1.2.3"],
+    [true, "operator-landed-3c51987c563b", "3c51987c563b"],
+    [true, "", "${detent_release}"],
+  ] as const)("guides Sprite setup with token presence %s and Hub version %s, keeping credentials masked", async (present, version, ref) => {
     userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
-    await mountDialog(["project_build"], false, [], undefined, present);
+    await mountDialog(["project_build"], false, [], undefined, present, version);
     fireEvent.click(screen.getByLabelText("A Fly Sprite"));
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toMatch(/^detent-[a-z0-9]+$/);
     expect(screen.getByText(/The Sprite gets the same name/)).toBeTruthy();
     await waitFor(() => expect(screen.queryByText("Checking Sprites tokens…")).toBeNull());
     if (!present) {
       expect(screen.getByText(/No Sprites token is set/)).toBeTruthy();
+      expect(screen.getByText(/No Sprites token is set/).textContent).toContain("for Build");
+      expect(screen.getByText(/No Sprites token is set/).textContent).toContain("uncheck the project");
       expect(screen.getByRole("link", { name: "Set a Sprites token" }).getAttribute("href")).toBe("/settings/integrations?project=project_build#sprites");
     } else {
       expect(screen.queryByRole("link", { name: "Set a Sprites token" })).toBeNull();
@@ -148,14 +155,22 @@ describe("the Enroll dialog", () => {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build host" } });
     expect((screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "build-host" } });
+    expect((screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByLabelText("Install it as a background service")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Create command" }));
     const instructions = await screen.findByRole("list", { name: "Sprite setup instructions" });
     expect(within(instructions).getAllByRole("listitem")).toHaveLength(8);
     expect(instructions.textContent).toContain("sprite create build-host");
     expect(instructions.textContent).toContain("sprite console -s build-host");
-    expect(instructions.textContent).toContain("/v1.2.3/scripts/sprite-runner-bootstrap.sh");
-    expect(instructions.textContent).toContain("bash sprite-runner-bootstrap.sh --version v1.2.3");
+    expect(instructions.textContent).toContain(`/${ref}/scripts/sprite-runner-bootstrap.sh`);
+    if (version === "v1.2.3") {
+      expect(instructions.textContent).toContain("bash sprite-runner-bootstrap.sh --version v1.2.3");
+      expect(instructions.textContent).not.toContain("releases/latest");
+    } else {
+      expect(instructions.textContent).toContain("https://github.com/digitaldrywood/detent/releases/latest");
+      expect(instructions.textContent).toContain('bash sprite-runner-bootstrap.sh --version "$detent_release"');
+      expect(instructions.textContent).toContain(`Upgrade the installed runner to ${version || "the Hub’s build"} afterwards.`);
+    }
     expect(instructions.textContent).toContain("claude auth login");
     expect(instructions.textContent).toContain("codex login --device-auth");
     expect(instructions.textContent).toContain("Approve the repository policy");
