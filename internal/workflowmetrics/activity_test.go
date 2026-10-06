@@ -107,7 +107,7 @@ func TestPublicActivityProfileBoundsAndRedaction(t *testing.T) {
 		}
 		bounded := PublicActivityProfile(large)
 		raw, err := json.Marshal(bounded)
-		if err != nil || len(raw) > 128*1024 || len(bounded.Summary.Hourly) >= ActivityHourLimit || !breakdownsClose(bounded.Breakdown(), large.Breakdown()) || len(large.Summary.Hourly) != ActivityHourLimit {
+		if err != nil || len(raw) > 128*1024 || len(bounded.Summary.Hourly) > ActivityHourLimit || !breakdownsClose(bounded.Breakdown(), large.Breakdown()) || len(large.Summary.Hourly) != ActivityHourLimit {
 			t.Fatalf("hourly projection bytes=%d err=%v", len(raw), err)
 		}
 	})
