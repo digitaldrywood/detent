@@ -271,7 +271,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			var expectedDependencies []tracker.NativeDependency
 			if test.dependency && !test.ignoreDependencies && !test.privateDependency {
 				for _, blocker := range blockers {
-					expectedDependencies = append(expectedDependencies, tracker.NativeDependency{ID: blocker.WorkItemID, ProjectID: blocker.ProjectID, State: blocker.State, Terminal: false})
+					expectedDependencies = append(expectedDependencies, tracker.NativeDependency{Identifier: string(blocker.ProjectID) + "#" + strconv.Itoa(blocker.Number), ID: blocker.WorkItemID, ProjectID: blocker.ProjectID, State: blocker.State, Terminal: false})
 				}
 				slices.SortFunc(expectedDependencies, func(a, b tracker.NativeDependency) int { return strings.Compare(string(a.ID), string(b.ID)) })
 				expectedDependencies = expectedDependencies[:min(100, len(expectedDependencies))]
