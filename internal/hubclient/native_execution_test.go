@@ -55,8 +55,8 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 		t.Fatal(err)
 	}
 	defer stop()
-	if len(execution.Recovery().Discussion) != 23 {
-		t.Fatal("native recovery omitted discussion")
+	if len(execution.Recovery().Discussion) != 1 {
+		t.Fatal("native recovery replayed historical worker discussion")
 	}
 	identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
 	// The stored attempt diff rides every checkpoint and the finish

@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -13,60 +14,13 @@ func (c *NativeClient) Attempts(ctx context.Context, id tracker.NativeWorkItemID
 
 func (c *NativeClient) Recovery(ctx context.Context, id tracker.NativeWorkItemID) (tracker.NativeRecovery, error) {
 	var result tracker.NativeRecovery
-	var err error
-	result.Issue, err = c.Issue(ctx, id)
+	path, err := nativeItemPath(id)
 	if err != nil {
 		return result, err
 	}
-	for cursor := ""; ; {
-		page, err := c.Comments(ctx, id, cursor)
-		if err != nil {
-			return result, err
-		}
-		result.Discussion = append(result.Discussion, page.Items...)
-		if page.NextCursor == "" {
-			break
-		}
-		cursor = page.NextCursor
+	err = c.client.request(ctx, http.MethodGet, c.base()+path+"?view=recovery", nil, &result)
+	if err == nil && (result.Issue.OrganizationID != c.organization || result.Issue.ProjectID != c.project || result.Issue.WorkItemID != id) {
+		return result, fmt.Errorf("read recovery: scoped work item is missing")
 	}
-	for cursor := ""; ; {
-		page, err := c.Attempts(ctx, id, cursor)
-		if err != nil {
-			return result, err
-		}
-		result.Attempts = append(result.Attempts, page.Items...)
-		if page.NextCursor == "" {
-			break
-		}
-		cursor = page.NextCursor
-	}
-	for cursor := ""; ; {
-		page, err := c.History(ctx, id, cursor)
-		if err != nil {
-			return result, err
-		}
-		result.History = append(result.History, page.Items...)
-		if page.NextCursor == "" {
-			break
-		}
-		cursor = page.NextCursor
-	}
-	detail, err := c.currentChange(ctx, id)
-	if err != nil {
-		return result, err
-	}
-	if detail.Change.ID == "" {
-		return result, nil
-	}
-	result.ChangeDetail = &detail
-	if detail.Change.CurrentVersion == "" {
-		return result, nil
-	}
-	for _, version := range result.ChangeDetail.Versions {
-		if version.ID == result.ChangeDetail.Change.CurrentVersion {
-			result.Change = &tracker.NativeChangeReference{ChangeID: result.ChangeDetail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
-			return result, nil
-		}
-	}
-	return result, fmt.Errorf("read change: current version %s is missing", result.ChangeDetail.Change.CurrentVersion)
+	return result, err
 }

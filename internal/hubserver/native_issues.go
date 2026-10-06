@@ -152,6 +152,17 @@ ORDER BY i.native_id`, args...)
 func (s *Service) getNativeIssue(c echo.Context) error {
 	ctx := c.Request().Context()
 	scope := nativeRequestScope(c)
+	if view := c.QueryParam("view"); view != "" {
+		if view != "recovery" || len(c.QueryParams()) != 1 || len(c.QueryParams()["view"]) != 1 {
+			return s.nativeAPIError(c, nativeInvalid("view supports recovery"))
+		}
+		result, err := s.readNativeRecovery(ctx, scope, c.Param("item"))
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		result.Issue = s.nativeIssueResponse(result.Issue)
+		return c.JSON(http.StatusOK, result)
+	}
 	issue, _, err := readNativeIssue(ctx, s.database.db, scope, c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)

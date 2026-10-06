@@ -102,19 +102,17 @@ func TestChangeClientFencingAndConnectorRead(t *testing.T) {
 func TestNativeRecoveryUsesPublishedVersion(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name           string
-		noChange       bool
-		draft          bool
-		failList       bool
-		failDetail     bool
-		missingVersion bool
+		name        string
+		noChange    bool
+		draft       bool
+		unavailable bool
+		unscoped    bool
 	}{
 		{name: "current detail supersedes stale history and checkpoint"},
 		{name: "no Change", noChange: true},
 		{name: "draft Change", draft: true},
-		{name: "Change list unavailable", failList: true},
-		{name: "scoped Change unavailable", failDetail: true},
-		{name: "current version missing", missingVersion: true},
+		{name: "current recovery unavailable", unavailable: true},
+		{name: "missing scoped recovery on older Hub", unscoped: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			previous := &tracker.NativeChangeReference{ChangeID: "change_example", VersionID: "version_old", HeadSHA: strings.Repeat("a", 40)}
@@ -122,53 +120,46 @@ func TestNativeRecoveryUsesPublishedVersion(t *testing.T) {
 			detail := tracker.ChangeDetail{
 				Change: tracker.ChangeRequest{ID: current.ChangeID, WorkItemID: "wi_item", CurrentVersion: current.VersionID},
 				Versions: []tracker.ChangeVersion{
-					{ID: previous.VersionID, ChangeID: previous.ChangeID, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: previous.HeadSHA}},
 					{ID: current.VersionID, ChangeID: current.ChangeID, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: current.HeadSHA}},
 				},
 				Discussion: []tracker.ChangeDiscussion{
 					{ID: "cmt_current", VersionID: current.VersionID, Body: "Global config loses concurrent updates", Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, Provenance: &tracker.Provenance{Provider: "native", ExternalID: "original"}},
-					{ID: "cmt_old", VersionID: previous.VersionID, Body: "Historical finding"},
 					{ID: "cmt_general", Body: "General discussion"},
 				},
 				Reviews: []tracker.ChangeReview{
 					{ID: "review_current", VersionID: current.VersionID, Decision: "changes_requested", Body: "Serialize config updates", Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}},
-					{ID: "review_old", VersionID: previous.VersionID, Decision: "approved", Body: "Old approval"},
 				},
 			}
 			if test.draft {
 				detail.Change.CurrentVersion, detail.Versions = "", nil
 			}
-			if test.missingVersion {
-				detail.Versions = detail.Versions[:1]
-			}
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				switch {
-				case strings.HasSuffix(r.URL.Path, "/comments"):
-					json.NewEncoder(w).Encode(tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{{Body: "Issue discussion"}}})
-				case strings.HasSuffix(r.URL.Path, "/attempts"):
-					json.NewEncoder(w).Encode(tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{{Checkpoint: &tracker.NativeCheckpoint{Change: previous}}}})
-				case strings.HasSuffix(r.URL.Path, "/history"):
-					json.NewEncoder(w).Encode(tracker.Page[tracker.CollaborationEvent]{Items: []tracker.CollaborationEvent{{Data: tracker.CollaborationData{Change: previous}}, {Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: "change_draft"}}}}})
-				case strings.HasSuffix(r.URL.Path, "/changes"):
-					if test.failList {
-						http.Error(w, "unavailable", http.StatusForbidden)
-						return
-					}
-					changes := []tracker.ChangeRequest{{ID: detail.Change.ID, CurrentVersion: previous.VersionID}}
-					if test.noChange {
-						changes = nil
-					}
-					json.NewEncoder(w).Encode(changes)
-				case strings.HasSuffix(r.URL.Path, "/changes/change_example"):
-					if test.failDetail {
-						http.Error(w, "unavailable", http.StatusForbidden)
-						return
-					}
-					json.NewEncoder(w).Encode(detail)
-				default:
-					json.NewEncoder(w).Encode(tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_item"}})
+				if !strings.HasSuffix(r.URL.Path, "/work-items/wi_item") || r.URL.Query().Get("view") != "recovery" {
+					t.Errorf("recovery fetched historical resource: %s", r.URL)
+					http.Error(w, "unexpected historical read", http.StatusBadRequest)
+					return
 				}
+				if test.unavailable {
+					http.Error(w, "current recovery unavailable", http.StatusForbidden)
+					return
+				}
+				result := tracker.NativeRecovery{
+					Issue:      tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_item"}},
+					Discussion: []tracker.NativeComment{{Body: "Issue discussion"}},
+					Attempts:   []tracker.NativeAttempt{{Checkpoint: &tracker.NativeCheckpoint{Change: previous}}},
+				}
+				if !test.noChange {
+					result.ChangeDetail = &detail
+					if !test.draft {
+						result.Change = current
+					}
+				}
+				if test.unscoped {
+					json.NewEncoder(w).Encode(result.Issue)
+					return
+				}
+				json.NewEncoder(w).Encode(result)
 			})
 			client, err := New(Config{URL: "http://native-hub.test", TokenSource: func() string { return "token" }, HTTPClient: providerHandlerClient(handler)})
 			if err != nil {
@@ -179,7 +170,7 @@ func TestNativeRecoveryUsesPublishedVersion(t *testing.T) {
 				t.Fatal(err)
 			}
 			recovery, err := native.Recovery(t.Context(), "wi_item")
-			if test.failList || test.failDetail || test.missingVersion {
+			if test.unavailable || test.unscoped {
 				if err == nil {
 					t.Fatal("missing scoped Change evidence allowed recovery")
 				}
@@ -204,7 +195,7 @@ func TestNativeRecoveryUsesPublishedVersion(t *testing.T) {
 					t.Fatalf("recovered current change = %#v", recovery.Change)
 				}
 			}
-			if len(recovery.Discussion) != 1 || len(recovery.History) != 2 || len(recovery.Attempts) != 1 {
+			if len(recovery.Discussion) != 1 || len(recovery.History) != 0 || len(recovery.Attempts) != 1 {
 				t.Fatal("existing issue recovery context lost")
 			}
 		})
