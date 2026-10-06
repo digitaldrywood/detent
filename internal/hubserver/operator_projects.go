@@ -178,7 +178,7 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 		if err != nil {
 			return result, err
 		}
-		return hubProjectResult(chatpkg.Action{Kind: chatpkg.ActionKind(call.Name), OrganizationID: connection.Identity.OrganizationID, ProjectID: selector.ProjectID, RequestID: selector.RequestID, Status: chatpkg.ActionSucceeded, Result: string(replay)})
+		return e.actionResult(chatpkg.Action{Kind: chatpkg.ActionKind(call.Name), OrganizationID: connection.Identity.OrganizationID, ProjectID: selector.ProjectID, RequestID: selector.RequestID, Status: chatpkg.ActionSucceeded, Result: string(replay)})
 	}
 	action, err := e.service.operatorChat.Submit(ctx, chatpkg.Action{Kind: chatpkg.ActionKind(call.Name), ProjectID: selector.ProjectID, RequestID: selector.RequestID, Arguments: call.Arguments, Title: strings.ReplaceAll(call.Name, "_", " "), Mutation: m})
 	if err != nil {
@@ -187,6 +187,16 @@ func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call)
 	return e.actionResult(action)
 }
 func (e hubProjectExecutor) actionResult(action chatpkg.Action) (operatortool.Result, error) {
+	if action.Kind == "approve_project_policy" {
+		action.Arguments = nil
+		if action.Status == chatpkg.ActionSucceeded {
+			raw, err := safeProjectCommandResult(string(action.Kind), json.RawMessage(action.Result))
+			if err != nil {
+				return operatortool.Result{}, err
+			}
+			action.Result = string(raw)
+		}
+	}
 	return hubProjectResult(struct {
 		chatpkg.Action
 		ResultTool string `json:"result_tool"`
@@ -571,6 +581,14 @@ func projectOperationID(scope nativeScope, method, suffix string) string {
 }
 
 func safeProjectCommandResult(name string, raw json.RawMessage) (json.RawMessage, error) {
+	if name == "approve_project_policy" {
+		var approval policy.Approval
+		if json.Unmarshal(raw, &approval) != nil {
+			return nil, errProjectServiceUnavailable
+		}
+		approval.History, approval.HistoryNext = nil, ""
+		return json.Marshal(approval)
+	}
 	if name == "command_git_hub_batch" {
 		var view githubBatchView
 		if json.Unmarshal(raw, &view) != nil {
