@@ -1388,6 +1388,12 @@ export function createWorkMock(options: {
         return true;
       }
       const action = segments[3];
+      // Pull requests (§18.6): the hub answers a list, empty when the issue
+      // has none. The mock issues have no pull requests.
+      if (action === "pull-requests" && segments.length === 4 && method === "GET") {
+        json(response, 200, []);
+        return true;
+      }
       if (pagination && issue.number === 3303 && action === "changes" && segments.length === 5 && method === "GET") {
         json(response, 503, { code: "unavailable", message: "Change detail unavailable" });
         return true;
