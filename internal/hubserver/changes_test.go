@@ -211,9 +211,6 @@ func TestChangeDiscussionLinksAndProjectIsolation(t *testing.T) {
 	if migrated.Number == 3410 || !reflect.DeepEqual(migrated.ExternalReferences, []tracker.ExternalReference{wantImported}) {
 		t.Fatalf("migration lost source identity: %+v", migrated)
 	}
-	snapshot := linkedSnapshot()
-	snapshot.URL = "https://github.com/digitaldrywood/detent/issues/12"
-	f.service.config.ImportBackend = linkedTestImporter{snapshot: snapshot}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "linked-source"}, GitHubIssueURL: "https://github.com/digitaldrywood/detent/issues/12", Title: "linked", State: f.issue.State})
 	requireNativeStatus(t, response, http.StatusOK)
 	var linked tracker.NativeIssue
