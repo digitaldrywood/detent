@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -999,13 +1000,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 			address := f.server.Listener.Addr().String()
 			ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 			defer cancel()
-			if err := f.service.Shutdown(ctx); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			f.server.CloseClientConnections()
-			f.server.Close()
-			if err := f.service.CloseContext(ctx); err != nil {
+			if err := f.shutdownForRestart(ctx); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -1079,6 +1074,93 @@ func TestHostedBrowserPreview(t *testing.T) {
 	case <-f.stop:
 	case <-timer.C:
 	case <-t.Context().Done():
+	}
+}
+
+func (f *browserHostedFixture) shutdownForRestart(ctx context.Context) error {
+	if err := f.service.Shutdown(ctx); err != nil {
+		return err
+	}
+	if err := f.server.Config.Shutdown(ctx); err != nil {
+		return err
+	}
+	f.server.Close()
+	return f.service.CloseContext(ctx)
+}
+
+type browserShutdownFrameWriter struct {
+	http.ResponseWriter
+	ctx      context.Context
+	draining <-chan struct{}
+}
+
+func (w browserShutdownFrameWriter) Write(data []byte) (int, error) {
+	if strings.Contains(string(data), `"reason":"server_shutdown"`) {
+		select {
+		case <-w.draining:
+		case <-w.ctx.Done():
+			return 0, w.ctx.Err()
+		}
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w browserShutdownFrameWriter) Flush() {
+	w.ResponseWriter.(http.Flusher).Flush()
+}
+
+func TestHostedBrowserPreviewRestartDrainsStreams(t *testing.T) {
+	heartbeat := conversationStreamHeartbeat
+	conversationStreamHeartbeat = time.Millisecond
+	t.Cleanup(func() { conversationStreamHeartbeat = heartbeat })
+	f := newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", browserPreviewConfig)
+	f.seedConversation(t)
+	draining := make(chan struct{})
+	f.server.Config.RegisterOnShutdown(func() { close(draining) })
+	handler := f.server.Config.Handler
+	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(browserShutdownFrameWriter{ResponseWriter: w, ctx: r.Context(), draining: draining}, r)
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/projects/"+f.project+"/conversations/"+f.conversation+"/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(f.cookies["owner"])
+	response, err := f.server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d", response.StatusCode)
+	}
+	reader := bufio.NewReader(response.Body)
+	for {
+		frame, err := readSSEFrame(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if frame.Event == "heartbeat" {
+			break
+		}
+	}
+	if err := f.shutdownForRestart(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		frame, err := readSSEFrame(reader)
+		if err != nil {
+			t.Fatalf("stream ended before shutdown frame: %v", err)
+		}
+		if frame.Event == "closed" {
+			requireClosed(t, frame, conversationClosedShutdown)
+			break
+		}
+	}
+	if _, err := readSSEFrame(reader); err != io.EOF {
+		t.Fatalf("stream end = %v, want EOF", err)
 	}
 }
 

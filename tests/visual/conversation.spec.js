@@ -421,7 +421,7 @@ test("keeps an open chat visible when its session cookie expires and reconnects"
 test("open chat reconnects after a Hub restart and replays the gap once", async ({ page }) => {
   await page.addInitScript(() => {
     const NativeEventSource = window.EventSource;
-    window.restartStreams = { urls: [], closed: [], hold: false, held: [] };
+    window.restartStreams = { urls: [], closed: [], hold: false, held: [], source: null };
     window.EventSource = class extends NativeEventSource {
       constructor(url, options) {
         const conversation = String(url).includes("/conversations/");
@@ -434,6 +434,7 @@ test("open chat reconnects after a Hub restart and replays the gap once", async 
         }
         super(url, options);
         if (!conversation) return;
+        window.restartStreams.source = this;
         window.restartStreams.urls.push(String(url));
         this.addEventListener("closed", (event) => {
           const reason = JSON.parse(event.data).reason;
@@ -452,6 +453,7 @@ test("open chat reconnects after a Hub restart and replays the gap once", async 
   const before = await hubAPI(page, "GET", conversationPath(conversation));
   const cursor = before.payload.cursor;
   await composer(page).fill("Unsent draft survives restart");
+  await expect.poll(() => page.evaluate(() => window.restartStreams.source?.readyState === EventSource.OPEN)).toBe(true);
   const url = page.url();
   const response = await fetch(hub.fixture.restart, { method: "POST", signal: AbortSignal.timeout(20_000) });
   expect(response.status).toBe(204);
