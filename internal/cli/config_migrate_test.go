@@ -47,12 +47,16 @@ func TestConfigMigrateCommand(t *testing.T) {
 			if err := os.WriteFile(target, []byte(test.raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
 			cmd := NewRootCommand(context.Background())
 			var output bytes.Buffer
 			cmd.SetOut(&output)
 			cmd.SetErr(&output)
 			cmd.SetArgs([]string{"config", "migrate", path})
-			err := cmd.Execute()
+			err = cmd.Execute()
 			if (err != nil) != test.fails {
 				t.Fatalf("error = %v, output = %s", err, &output)
 			}
@@ -71,8 +75,8 @@ func TestConfigMigrateCommand(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if info.Mode().Perm() != 0o600 {
-				t.Fatal("migration changed file permissions")
+			if info.Mode().Perm() != before.Mode().Perm() {
+				t.Fatalf("migration changed file permissions from %v to %v", before.Mode().Perm(), info.Mode().Perm())
 			}
 		})
 	}

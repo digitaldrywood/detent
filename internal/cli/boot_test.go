@@ -1388,7 +1388,7 @@ func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T)
 	}
 }
 
-func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
+func TestStartRunningHotReloadsLocalConfigProjects(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
@@ -1425,21 +1425,21 @@ func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 		return strings.Contains(body, "alpha")
 	})
 
-	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+	writeBootLocalProjects(t, configPath, []globalconfig.Project{
 		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
 		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
 	})
-	body := waitForDashboardCondition(t, settingsURL, done, "bravo added", func(body string) bool {
+	body := waitForDashboardConditionWithin(t, settingsURL, done, "bravo added", globalConfigReconcileInterval+15*time.Second, func(body string) bool {
 		return strings.Contains(body, "bravo")
 	})
 	if !strings.Contains(body, "alpha") {
 		t.Fatalf("settings body missing alpha after reload:\n%s", body)
 	}
 
-	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+	writeBootLocalProjects(t, configPath, []globalconfig.Project{
 		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
 	})
-	body = waitForDashboardCondition(t, settingsURL, done, "alpha removed", func(body string) bool {
+	body = waitForDashboardConditionWithin(t, settingsURL, done, "alpha removed", globalConfigReconcileInterval+15*time.Second, func(body string) bool {
 		return strings.Contains(body, "bravo") && !strings.Contains(body, "alpha")
 	})
 	if strings.Contains(body, "alpha") {
@@ -1457,7 +1457,7 @@ func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 	}
 }
 
-func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing.T) {
+func TestStartRunningReconcilesLocalConfigChangedBeforeWatcherStarts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
@@ -1517,13 +1517,13 @@ func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing
 		t.Fatalf("settings body missing alpha:\n%s", body)
 	}
 
-	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+	writeBootLocalProjects(t, configPath, []globalconfig.Project{
 		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
 		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
 	})
 	close(provisionRelease)
 
-	body = waitForDashboardCondition(t, settingsURL, done, "bravo added after startup write", func(body string) bool {
+	body = waitForDashboardConditionWithin(t, settingsURL, done, "bravo added after startup write", globalConfigReconcileInterval+15*time.Second, func(body string) bool {
 		return strings.Contains(body, "bravo")
 	})
 	if !strings.Contains(body, "alpha") {
@@ -1987,8 +1987,13 @@ func dashboardExitError(err error) error {
 
 func waitForDashboardCondition(t *testing.T, url string, done <-chan error, name string, ok func(string) bool) string {
 	t.Helper()
+	return waitForDashboardConditionWithin(t, url, done, name, 15*time.Second, ok)
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+func waitForDashboardConditionWithin(t *testing.T, url string, done <-chan error, name string, timeout time.Duration, ok func(string) bool) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	lastBody := ""
@@ -2195,6 +2200,19 @@ func writeBootGlobalConfig(t *testing.T, path string, projects []globalconfig.Pr
 	}
 	if err := globalconfig.Write(path, cfg); err != nil {
 		t.Fatalf("Write() error = %v", err)
+	}
+}
+
+func writeBootLocalProjects(t *testing.T, path string, projects []globalconfig.Project) {
+	t.Helper()
+
+	cfg, err := readLocalConfigurationFile(path)
+	if err != nil {
+		t.Fatalf("readLocalConfigurationFile() error = %v", err)
+	}
+	cfg.Projects = projects
+	if err := writeLocalConfigurationFile(path, cfg); err != nil {
+		t.Fatalf("writeLocalConfigurationFile() error = %v", err)
 	}
 }
 
