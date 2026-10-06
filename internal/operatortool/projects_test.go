@@ -48,6 +48,12 @@ func TestProjectArgumentBounds(t *testing.T) {
 			if (err != nil) != tt.invalid || err != nil && !errors.Is(err, ErrInvalidArguments) {
 				t.Fatalf("decode=%v want invalid=%v", err, tt.invalid)
 			}
+			if tt.invalid {
+				var request *RequestError
+				if !errors.As(err, &request) || request.Code != "invalid_request" || request.Message == "" || strings.Contains(request.Message, "secret") {
+					t.Fatalf("decode must return a specific safe refusal: %v", err)
+				}
+			}
 		})
 	}
 	t.Run("policy discovery", func(t *testing.T) {

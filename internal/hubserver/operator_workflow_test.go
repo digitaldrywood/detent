@@ -6,20 +6,307 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestHostedPolicyApprovalMCP(t *testing.T) {
+	for _, scenario := range []struct{ deployment, role string }{
+		{"dedicated", "owner"}, {"dedicated", "admin"}, {"shared", "owner"}, {"shared", "admin"},
+	} {
+		t.Run(scenario.deployment+"/"+scenario.role, func(t *testing.T) {
+			var f hostedSecurityFixture
+			var shared hostedSharedFixture
+			var user hostedSecurityUser
+			if scenario.deployment == "shared" {
+				shared = newHostedSharedFixture(t)
+				f = shared.hostedSecurityFixture
+				user = shared.member(t, "operator", scenario.role, "write")
+			} else {
+				f = newHostedSecurityFixture(t)
+				user = f.user(t, "operator", scenario.role, "operator@example.test", "write", "")
+			}
+			operatorSQL(t, f, "UPDATE projects SET checkout_repository='digitaldrywood/detent' WHERE id=?", f.project)
+			previous := hubTestPolicy()
+			policyScope := "org_security/" + string(f.project)
+			if _, err := f.service.database.approvePolicy(t.Context(), policyScope, "previous-admin", policy.Change{Policy: previous}); err != nil {
+				t.Fatal(err)
+			}
+			issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: user.identity.Hosted, Email: user.identity.Email}, apikey.HashToken(user.token))
+			if err != nil {
+				t.Fatal(err)
+			}
+			expires := time.Now().Add(time.Hour)
+			key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "policy-client", Scope: apiScopeAdmin, KeyScope: apikey.ScopeAdmin, Issuer: &issuer, ProjectAccess: hostedProjectsAll, ExpiresAt: &expires})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sessionID string
+			send := func(body any) *httptest.ResponseRecorder {
+				t.Helper()
+				raw, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if scenario.deployment == "shared" {
+					headers := map[string]string{}
+					if sessionID != "" {
+						headers["Mcp-Session-Id"] = sessionID
+						headers["Mcp-Protocol-Version"] = "2025-11-25"
+					}
+					return shared.serve(t, hostedSharedRequest{kind: cloudassert.KindMachine, method: http.MethodPost, target: "/organizations/org_security/api/v2/organizations/org_security/mcp", bearer: key.Token, body: string(raw), headers: headers})
+				}
+				request := httptest.NewRequest(http.MethodPost, "/api/v2/organizations/org_security/mcp", strings.NewReader(string(raw)))
+				request.Header.Set("Authorization", "Bearer "+key.Token)
+				request.Header.Set("Content-Type", "application/json")
+				if sessionID != "" {
+					request.Header.Set("Mcp-Session-Id", sessionID)
+					request.Header.Set("Mcp-Protocol-Version", "2025-11-25")
+				}
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, request)
+				return response
+			}
+			initialized := send(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "policy-client", "version": "1"}}})
+			requireNativeStatus(t, initialized, http.StatusOK)
+			sessionID = initialized.Header().Get("Mcp-Session-Id")
+			if sessionID == "" {
+				t.Fatal("missing MCP session")
+			}
+			requireNativeStatus(t, send(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}), http.StatusAccepted)
+			listed := send(map[string]any{"jsonrpc": "2.0", "id": 6, "method": "tools/list", "params": map[string]any{"_meta": map[string]any{"detent/toolsets": []string{"projects"}}}})
+			requireNativeStatus(t, listed, http.StatusOK)
+			var catalog struct {
+				Result struct {
+					Tools []operatortool.Definition `json:"tools"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(listed.Body.Bytes(), &catalog); err != nil {
+				t.Fatal(err)
+			}
+			var approvalSchema map[string]any
+			for _, definition := range catalog.Result.Tools {
+				if definition.Name == "approve_project_policy" {
+					if err := json.Unmarshal(definition.InputSchema, &approvalSchema); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if approvalSchema == nil {
+				t.Fatal("policy approval missing from tools/list")
+			}
+			workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+				ConfigPath: "detent.yaml", HasConfig: true,
+				Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ngate:\n  run: true\n  required_status_checks: []\n"),
+				WorkflowPath: "WORKFLOW.md", Workflow: []byte(strings.Repeat("Implement the assigned issue.\n", 500)),
+				AgentsPath: "AGENTS.md", HasAgents: true, Agents: []byte(strings.Repeat("Preserve policy authority.\n", 50)),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor, err := workflowconfig.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if descriptor.Configuration == nil || descriptor.Workflow == nil || string(descriptor.Configuration.Behavior) != "null" {
+				t.Fatal("fixture must report the full authored policy without a runtime Gate block")
+			}
+			invalid := descriptor
+			invalid.ID = "policy_invalid"
+			invalidConfiguration := descriptor
+			authored := *descriptor.Authored
+			authored.Files = maps.Clone(authored.Files)
+			authored.Files["WORKFLOW.md"] += "unapproved-private-prompt"
+			invalidConfiguration.Authored = &authored
+			invalidConfiguration = invalidConfiguration.WithID()
+			for _, test := range []struct {
+				name, expected, want string
+				policy               policy.Descriptor
+				field                string
+			}{
+				{"unknown argument", "", "is not an allowed field", descriptor, "argument"},
+				{"missing retry key", "", "request_id:", descriptor, "request_id"},
+				{"missing input", "", "input:", descriptor, "input"},
+				{"missing project", "", "project_id:", descriptor, "project_id"},
+				{"unknown authored field", "", "is not an allowed field", descriptor, "unknown_field"},
+				{"authored version type", "", "must have type int", descriptor, "version"},
+				{"authored file type", "", "must have type string", descriptor, "files"},
+				{"identity", "", "identity digest", invalid, ""},
+				{"configuration", "", "configuration", invalidConfiguration, ""},
+				{"stale", "policy_stale", "expected_policy_id", descriptor, ""},
+				{"approve", previous.ID, "", descriptor, ""},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					call := projectCall(t, "approve_project_policy", string(f.project), test.name, operatortool.PolicyApprovalInput{ExpectedID: test.expected, Policy: test.policy, RepositoryPolicy: true})
+					var arguments map[string]any
+					if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
+						t.Fatal(err)
+					}
+					if test.field == "" {
+						assertPolicyInputSchema(t, approvalSchema, arguments, "arguments")
+					} else {
+						authored := arguments["input"].(map[string]any)["policy"].(map[string]any)["authored"].(map[string]any)
+						switch test.field {
+						case "argument":
+							arguments["unknown_field"] = "unapproved-private-prompt"
+						case "request_id", "project_id":
+							arguments[test.field] = ""
+						case "input":
+							delete(arguments, "input")
+						case "files":
+							authored["files"] = map[string]any{"WORKFLOW.md": 42}
+						default:
+							authored[test.field] = "unapproved-private-prompt"
+						}
+						var err error
+						call.Arguments, err = json.Marshal(arguments)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					response := send(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{"name": call.Name, "arguments": call.Arguments}})
+					requireNativeStatus(t, response, http.StatusOK)
+					var reply struct {
+						Result struct {
+							IsError bool `json:"isError"`
+							Content []struct {
+								Text string `json:"text"`
+							} `json:"content"`
+						} `json:"result"`
+					}
+					if err := json.Unmarshal(response.Body.Bytes(), &reply); err != nil || len(reply.Result.Content) != 1 {
+						t.Fatalf("response=%s error=%v", response.Body, err)
+					}
+					if reply.Result.IsError != (test.want != "") || !strings.Contains(reply.Result.Content[0].Text, test.want) || strings.Contains(reply.Result.Content[0].Text, "Operator tool is unavailable") || strings.Contains(reply.Result.Content[0].Text, "unapproved-private-prompt") {
+						t.Fatalf("response=%s", response.Body)
+					}
+					if test.field != "" && !strings.Contains(reply.Result.Content[0].Text, "invalid_request") {
+						t.Fatalf("decoder refusal must be structured: %s", response.Body)
+					}
+				})
+			}
+			approved, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+			if err != nil || !reflect.DeepEqual(approved.Policy, descriptor) || approved.ApprovedBy != key.ID {
+				t.Fatalf("approval=%+v error=%v", approved, err)
+			}
+			read := send(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": map[string]any{"name": "get_project_policy", "arguments": operatortool.ProjectReadRequest{ProjectID: string(f.project), RepositoryPolicy: true}}})
+			requireNativeStatus(t, read, http.StatusOK)
+			if strings.Contains(read.Body.String(), `"isError":true`) || !strings.Contains(read.Body.String(), descriptor.ID) {
+				t.Fatalf("approved policy read=%s", read.Body)
+			}
+			operatorSQL(t, f, "UPDATE projects SET checkout_repository='' WHERE id=?", f.project)
+			missing := projectCall(t, "approve_project_policy", string(f.project), "missing-binding", operatortool.PolicyApprovalInput{ExpectedID: descriptor.ID, Policy: descriptor, RepositoryPolicy: true})
+			refused := send(map[string]any{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": map[string]any{"name": missing.Name, "arguments": missing.Arguments}})
+			requireNativeStatus(t, refused, http.StatusOK)
+			if !strings.Contains(refused.Body.String(), `"isError":true`) || !strings.Contains(refused.Body.String(), "Project has no linked repository policy") {
+				t.Fatalf("missing binding refusal=%s", refused.Body)
+			}
+			operatorSQL(t, f, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(time.Now()), key.ID)
+			denied := send(map[string]any{"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": map[string]any{"name": missing.Name, "arguments": missing.Arguments}})
+			requireNativeStatus(t, denied, http.StatusUnauthorized)
+			if !strings.Contains(denied.Body.String(), `"code":"access_denied"`) {
+				t.Fatalf("revoked key refusal=%s", denied.Body)
+			}
+		})
+	}
+}
+
+func assertPolicyInputSchema(t *testing.T, schema map[string]any, value any, path string) {
+	t.Helper()
+	if len(schema) == 0 {
+		return
+	}
+	switch schema["type"] {
+	case "object":
+		object, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("%s does not match the advertised object schema", path)
+		}
+		if maximum, ok := schema["maxProperties"].(float64); ok && len(object) > int(maximum) {
+			t.Fatalf("%s exceeds advertised property limit", path)
+		}
+		if required, ok := schema["required"].([]any); ok {
+			for _, field := range required {
+				if _, found := object[field.(string)]; !found {
+					t.Fatalf("%s is missing advertised required field %s", path, field)
+				}
+			}
+		}
+		properties, _ := schema["properties"].(map[string]any)
+		for field, child := range object {
+			if names, ok := schema["propertyNames"].(map[string]any); ok {
+				if maximum, ok := names["maxLength"].(float64); ok && utf8.RuneCountInString(field) > int(maximum) {
+					t.Fatalf("%s exceeds advertised property-name limit", path)
+				}
+			}
+			childSchema, found := properties[field]
+			if !found {
+				childSchema = schema["additionalProperties"]
+			}
+			if childSchema == true || childSchema == nil {
+				continue
+			}
+			if childSchema == false {
+				t.Fatalf("%s.%s is forbidden by the advertised schema", path, field)
+			}
+			assertPolicyInputSchema(t, childSchema.(map[string]any), child, path+"."+field)
+		}
+	case "array":
+		array, ok := value.([]any)
+		if !ok {
+			t.Fatalf("%s does not match the advertised array schema", path)
+		}
+		if maximum, ok := schema["maxItems"].(float64); ok && len(array) > int(maximum) {
+			t.Fatalf("%s exceeds advertised item limit", path)
+		}
+		for index, child := range array {
+			assertPolicyInputSchema(t, schema["items"].(map[string]any), child, fmt.Sprintf("%s[%d]", path, index))
+		}
+	case "string":
+		text, ok := value.(string)
+		if !ok {
+			t.Fatalf("%s does not match the advertised string schema", path)
+		}
+		if maximum, ok := schema["maxLength"].(float64); ok && utf8.RuneCountInString(text) > int(maximum) {
+			t.Fatalf("%s exceeds advertised string limit", path)
+		}
+		if pattern, ok := schema["pattern"].(string); ok && !regexp.MustCompile(pattern).MatchString(text) {
+			t.Fatalf("%s does not match the advertised pattern", path)
+		}
+	case "integer":
+		number, ok := value.(float64)
+		if !ok || number != float64(int64(number)) {
+			t.Fatalf("%s does not match the advertised integer schema", path)
+		}
+		if minimum, ok := schema["minimum"].(float64); ok && number < minimum {
+			t.Fatalf("%s falls below the advertised minimum", path)
+		}
+		if maximum, ok := schema["maximum"].(float64); ok && number > maximum {
+			t.Fatalf("%s exceeds the advertised maximum", path)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			t.Fatalf("%s does not match the advertised boolean schema", path)
+		}
+	default:
+		t.Fatalf("%s has an unsupported schema type %v", path, schema["type"])
+	}
+}
 
 func TestWorkflowExecutionFailureProjection(t *testing.T) {
 	for _, test := range []struct {

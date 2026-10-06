@@ -2,6 +2,7 @@ package operatortool
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -223,75 +224,80 @@ func projectSchema(t reflect.Type) map[string]any {
 // are reached, including recursive fields that JSON schema cannot enforce alone.
 func DecodeProjectArguments(raw json.RawMessage, target any) error {
 	if err := DecodeArguments(raw, target); err != nil {
-		return ErrInvalidArguments
+		return err
 	}
 	var value any
 	if json.Unmarshal(raw, &value) != nil {
-		return ErrInvalidArguments
+		return invalidArgument("arguments", "must be valid JSON")
 	}
-	var bounded func(any, string, reflect.Type) bool
-	bounded = func(v any, key string, t reflect.Type) bool {
+	var bounded func(any, string, reflect.Type) error
+	bounded = func(v any, key string, t reflect.Type) error {
 		if t.Kind() == reflect.Pointer {
 			if v == nil && (key == "quantity" || key == "amount_micros" || key == "unit_price_micros") {
-				return true
+				return nil
 			}
 			t = t.Elem()
 		}
 		if t == reflect.TypeFor[json.RawMessage]() {
-			return true
+			return nil
 		}
 		switch x := v.(type) {
 		case string:
 			maximum := projectStringLimit(key)
-			return len(x) <= maximum
+			if len(x) > maximum {
+				return invalidArgument(key, fmt.Sprintf("must not exceed %d bytes", maximum))
+			}
 		case []any:
 			if len(x) > 200 {
-				return false
+				return invalidArgument(key, "must contain at most 200 items")
 			}
 			for _, item := range x {
-				if !bounded(item, key, t.Elem()) {
-					return false
+				if err := bounded(item, key, t.Elem()); err != nil {
+					return err
 				}
 			}
 		case map[string]any:
 			if t.Kind() == reflect.Map {
 				if len(x) > 200 {
-					return false
+					return invalidArgument(key, "must contain at most 200 properties")
 				}
 				for name, item := range x {
-					if len(name) > 256 || !bounded(item, key, t.Elem()) {
-						return false
+					if len(name) > 256 {
+						return invalidArgument(key, "property names must not exceed 256 bytes")
+					}
+					if err := bounded(item, key, t.Elem()); err != nil {
+						return err
 					}
 				}
-				return true
+				return nil
 			}
 			for i := range t.NumField() {
 				field := t.Field(i)
 				name := strings.Split(field.Tag.Get("json"), ",")[0]
-				if item, present := x[name]; present && !bounded(item, name, field.Type) {
-					return false
+				if item, present := x[name]; present {
+					if err := bounded(item, name, field.Type); err != nil {
+						return err
+					}
 				}
 			}
 		case float64:
+			minimum, maximum := float64(0), float64(2147483647)
 			if key == "amount_micros" {
-				return x >= -1e15 && x <= 1e15
+				minimum, maximum = -1e15, 1e15
+			} else if key == "unit_price_micros" || key == "quantity" {
+				maximum = 1e15
+			} else if key == "limit" {
+				minimum, maximum = 1, 200
 			}
-			if key == "unit_price_micros" || key == "quantity" {
-				return x >= 0 && x <= 1e15
+			if x < minimum || x > maximum {
+				return invalidArgument(key, fmt.Sprintf("must be between %g and %g", minimum, maximum))
 			}
-			if key == "limit" {
-				return x >= 1 && x <= 200
-			}
-			return x >= 0 && x <= 2147483647
 		case nil:
-			return false
+			return invalidArgument(key, "must not be null")
 		}
-		return true
+		return nil
 	}
-	if !bounded(value, "", reflect.TypeOf(target)) {
-		return ErrInvalidArguments
-	}
-	return nil
+	return bounded(value, "arguments", reflect.TypeOf(target))
 }
 
 func projectStringLimit(key string) int {
