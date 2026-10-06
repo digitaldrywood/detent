@@ -198,8 +198,8 @@ func (e *sshNativeExecution) PublishValidationEvidence(ctx context.Context, file
 	return e.peer.Call(ctx, "execution.PublishValidationEvidence", nil, files)
 }
 
-func (e *sshNativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string) error {
-	return e.peer.Call(ctx, "execution.PrepareFinish", nil, outcome, finalMessage)
+func (e *sshNativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) error {
+	return e.peer.Call(ctx, "execution.PrepareFinish", nil, outcome, finalMessage, failure)
 }
 
 func (e *sshNativeExecution) ValidatorVersion(ctx context.Context) (NativeValidation, error) {

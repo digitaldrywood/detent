@@ -45,18 +45,19 @@ type NativeChangeReference struct {
 
 type NativeAttempt struct {
 	NativeRunData
-	FinalizationAvailability string            `json:"finalization_availability"`
-	ClaimReleasedAt          *time.Time        `json:"claim_released_at,omitempty"`
-	Status                   string            `json:"status"`
-	StartedAt                time.Time         `json:"started_at"`
-	UpdatedAt                time.Time         `json:"updated_at"`
-	Checkpoint               *NativeCheckpoint `json:"checkpoint,omitempty"`
-	WorkItemRevision         Revision          `json:"work_item_revision,string"`
-	DispatchGeneration       int64             `json:"dispatch_generation,string"`
-	LeaseRenewedAt           time.Time         `json:"lease_renewed_at"`
-	LeaseExpiresAt           time.Time         `json:"lease_expires_at"`
-	Current                  bool              `json:"current"`
-	RuntimeFreshness         string            `json:"runtime_freshness"`
+	TerminalFailureAvailability string            `json:"terminal_failure_availability"`
+	FinalizationAvailability    string            `json:"finalization_availability"`
+	ClaimReleasedAt             *time.Time        `json:"claim_released_at,omitempty"`
+	Status                      string            `json:"status"`
+	StartedAt                   time.Time         `json:"started_at"`
+	UpdatedAt                   time.Time         `json:"updated_at"`
+	Checkpoint                  *NativeCheckpoint `json:"checkpoint,omitempty"`
+	WorkItemRevision            Revision          `json:"work_item_revision,string"`
+	DispatchGeneration          int64             `json:"dispatch_generation,string"`
+	LeaseRenewedAt              time.Time         `json:"lease_renewed_at"`
+	LeaseExpiresAt              time.Time         `json:"lease_expires_at"`
+	Current                     bool              `json:"current"`
+	RuntimeFreshness            string            `json:"runtime_freshness"`
 }
 
 type NativePhase struct {

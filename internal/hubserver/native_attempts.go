@@ -97,6 +97,12 @@ func validCommitID(value string) bool {
 }
 
 func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
+	if f := data.TerminalFailure; f != nil {
+		if eventType != "run.finished" || data.Sequence <= 0 || f.ObservedAt.IsZero() || data.Outcome == "succeeded" {
+			return nativeInvalid("Execution failures require an ordered failed or interrupted terminal event")
+		}
+		*f = f.Public()
+	}
 	if f := data.Finalization; f != nil {
 		if eventType != "run.finished" || data.Sequence <= 0 || f.ObservedAt.IsZero() || f.Files < 0 ||
 			f.ChangeID != "" && !validNativeID(f.ChangeID, "change") || f.VersionID != "" && !validNativeID(f.VersionID, "version") ||
@@ -409,6 +415,12 @@ func scanNativeAttempt(rows *sql.Rows, now time.Time) (tracker.NativeAttempt, er
 		attempt.ClaimReleasedAt = &at
 	}
 	attempt.FinalizationAvailability = "unavailable"
+	attempt.TerminalFailureAvailability = "unavailable"
+	if attempt.TerminalFailure != nil {
+		public := attempt.TerminalFailure.Public()
+		attempt.TerminalFailure = &public
+		attempt.TerminalFailureAvailability = "available"
+	}
 	if attempt.Finalization != nil {
 		public := attempt.Finalization.Public()
 		attempt.Finalization = &public

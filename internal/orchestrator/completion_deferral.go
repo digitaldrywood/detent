@@ -571,7 +571,7 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 				if publisher, ok := execution.(runpkg.CompletionExecution); ok {
 					err := execution.Validate(ctx)
 					if err == nil {
-						err = publisher.PrepareFinish(ctx, "succeeded", completion.Result.FinalMessage)
+						err = publisher.PrepareFinish(ctx, "succeeded", completion.Result.FinalMessage, nil)
 					}
 					if err != nil {
 						o.deferTrackerUnavailableCompletion(ctx, state, completion, record.Running, err)

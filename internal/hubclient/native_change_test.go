@@ -569,7 +569,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			finish := execution.Finish
 			if test.wantDiagnostic != "" || test.finalMessage != "" {
 				finish = func(ctx context.Context, outcome string) error {
-					return execution.(runner.CompletionExecution).PrepareFinish(ctx, outcome, test.finalMessage)
+					return execution.(runner.CompletionExecution).PrepareFinish(ctx, outcome, test.finalMessage, nil)
 				}
 			}
 			finishErr := finish(guarded, test.outcome)
@@ -620,7 +620,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				if execution.(*nativeExecution).settled {
 					before := *change
 					for range 3 {
-						if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, test.finalMessage); err != nil {
+						if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, test.finalMessage, nil); err != nil {
 							t.Fatal(err)
 						}
 						if got := execution.(runner.ChangeExecution).NativeChange(); !reflect.DeepEqual(got, &before) {
@@ -745,10 +745,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, ""); err != nil {
+					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, "", nil); err != nil {
 						t.Fatal(err)
 					}
-					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, ""); err != nil {
+					if err := execution.(runner.CompletionExecution).PrepareFinish(guarded, test.outcome, "", nil); err != nil {
 						t.Fatal(err)
 					}
 					republished := execution.(runner.ChangeExecution).NativeChange()

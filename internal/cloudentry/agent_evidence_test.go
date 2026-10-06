@@ -254,7 +254,7 @@ func TestNativeAgentEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			if completion != "" {
-				if err := execution.(runner.CompletionExecution).PrepareFinish(t.Context(), "failed", completion); err != nil {
+				if err := execution.(runner.CompletionExecution).PrepareFinish(t.Context(), "failed", completion, nil); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -874,7 +874,7 @@ func (*nativeCompletionPublisher) FlushRuntime(context.Context) error { return n
 
 func (p *nativeCompletionPublisher) Validate(context.Context) error { return p.validationErr }
 
-func (p *nativeCompletionPublisher) PrepareFinish(context.Context, string, string) error {
+func (p *nativeCompletionPublisher) PrepareFinish(context.Context, string, string, *tracker.NativeTerminalFailure) error {
 	p.prepared++
 	if p.prepare != nil {
 		p.prepare()

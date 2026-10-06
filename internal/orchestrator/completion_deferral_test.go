@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestCompletionFenceDeferralOutcomes(t *testing.T) {
@@ -409,7 +410,7 @@ func (e *completionRestartExecution) CompletionState() json.RawMessage {
 	return json.RawMessage(`{"attempt":"native-attempt","checkpoint":"final","diff_sequence":3}`)
 }
 
-func (e *completionRestartExecution) PrepareFinish(ctx context.Context, _, _ string) error {
+func (e *completionRestartExecution) PrepareFinish(ctx context.Context, _, _ string, _ *tracker.NativeTerminalFailure) error {
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}

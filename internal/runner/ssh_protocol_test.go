@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestSSHErrorRoundTrip(t *testing.T) {
@@ -76,7 +77,12 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 	t.Parallel()
 	a, b := net.Pipe()
 	t.Cleanup(func() { a.Close(); b.Close() })
+	execution := &readToolTestExecution{}
+	callback := NewSSHCallbackHandler(RunRequest{Execution: execution}, nil, nil, nil)
 	central := NewSSHPeer(t.Context(), a, a, func(ctx context.Context, method string, args []json.RawMessage) (any, error) {
+		if method == "execution.PrepareFinish" {
+			return callback(ctx, method, args)
+		}
 		if method != "echo" {
 			return nil, errors.New("unexpected callback")
 		}
@@ -107,6 +113,15 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 		})
 	}
 	wg.Wait()
+	code, maxChars, actualChars := -32602, int64(1048576), int64(2927066)
+	failure := tracker.NativeTerminalFailure{ObservedAt: time.Now().UTC(), Provider: "codex", Operation: "turn/start", RPCCode: &code, ProviderCode: "input_too_large", MaxChars: &maxChars, ActualChars: &actualChars}
+	if err := (&sshNativeExecution{sshExecution: &sshExecution{peer: remote}}).PrepareFinish(t.Context(), "failed", "failed request", &failure); err != nil {
+		t.Fatal(err)
+	}
+	got := execution.completionFailure
+	if execution.completionBody != "failed request" || got == nil || got.Operation != failure.Operation || got.RPCCode == nil || *got.RPCCode != code || got.MaxChars == nil || *got.MaxChars != maxChars || got.ActualChars == nil || *got.ActualChars != actualChars || !got.ObservedAt.Equal(failure.ObservedAt) {
+		t.Fatalf("SSH completion dropped provider failure: %+v", got)
+	}
 	b.Close()
 	<-central.Context().Done()
 	if err := central.Call(t.Context(), "closed", nil); err == nil {

@@ -225,6 +225,9 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 	if e.Attempt == nil || e.Attempt.Finalization == nil {
 		e.Unavailable = append(e.Unavailable, "host_finalization")
 	}
+	if e.Attempt == nil || e.Attempt.TerminalFailure == nil {
+		e.Unavailable = append(e.Unavailable, "terminal_failure")
+	}
 	if e.Attempt == nil || e.Attempt.Runtime == nil || e.Attempt.Runtime.Completion == nil {
 		e.Unavailable = append(e.Unavailable, "host_issue_acceptance")
 	}

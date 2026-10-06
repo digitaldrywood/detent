@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -285,6 +286,45 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 		if err != nil || len(current.Attempts) != 1 || current.Attempts[0].Status != "failed" {
 			t.Fatalf("native failed outcome = %+v, error=%v", current.Attempts, err)
 		}
+		attempt := current.Attempts[0]
+		if failure == "provider" {
+			terminal := attempt.TerminalFailure
+			if terminal == nil || attempt.TerminalFailureAvailability != "available" || terminal.Provider != "codex" || terminal.Operation != "turn/start" || terminal.RPCCode == nil || *terminal.RPCCode != -32602 || terminal.ProviderCode != "input_too_large" || terminal.MaxChars == nil || *terminal.MaxChars != 1048576 || terminal.ActualChars == nil || *terminal.ActualChars != 2927066 || terminal.ObservedAt.IsZero() || terminal.Source != "host_runner_completion" {
+				t.Fatalf("provider failure lost recorded metadata: %+v", terminal)
+			}
+			if attempt.Finalization != nil || attempt.ClaimReleasedAt == nil || attempt.Runtime.Completion != nil {
+				t.Fatalf("provider failure fabricated Change or acceptance evidence: %+v", attempt)
+			}
+			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), attempt.AttemptID)
+			if err != nil || evidence.Attempt == nil || evidence.Attempt.AttemptID != attempt.AttemptID || evidence.Attempt.FencingToken != attempt.FencingToken || evidence.Attempt.TerminalFailure == nil {
+				t.Fatalf("runtime read lost fenced failure: %+v, %v", evidence.Attempt, err)
+			}
+			history, err := h.admin.History(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, event := range history.Items {
+				if event.Type == "run.finished" && event.Data.Run.AttemptID == attempt.AttemptID {
+					found = true
+					if event.Data.Run.FencingToken != attempt.FencingToken || event.Data.Run.TerminalFailure == nil || event.Data.Run.TerminalFailure.ProviderCode != "input_too_large" {
+						t.Fatalf("immutable terminal event lost fenced failure: %+v", event.Data.Run)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("provider failure omitted terminal event")
+			}
+			raw, err := json.Marshal([]any{current, history, evidence})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, private := range []string{"private-prompt", "private-secret", "/private/source", "private-rpc-data"} {
+				if strings.Contains(string(raw), private) {
+					t.Fatalf("supported native reads exposed %q", private)
+				}
+			}
+		}
 		return
 	}
 	if len(changes) != 1 || changes[0].CurrentVersion == "" {
@@ -341,7 +381,7 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 	}
 	result, err := (&committingAgent{staged: !plan}).RunTurn(ctx, req, update)
 	if a.failure == "provider" {
-		return result, errors.Join(err, errors.New("provider task failed"))
+		return result, errors.Join(err, &codex.ResponseError{Request: "turn/start", Code: -32602, Message: "private-prompt /private/source token=private-secret", Body: `{"error":{"code":-32602,"message":"private-prompt","data":{"code":"input_too_large","max_chars":1048576,"actual_chars":2927066,"prompt":"private-prompt","token":"private-secret","path":"/private/source","other":"private-rpc-data"}}}`})
 	}
 	return result, err
 }
