@@ -1270,7 +1270,7 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 
 func (o *Orchestrator) publishedState() State {
 	completion := o.completionState.Load()
-	state := State{}
+	var state State
 	if completion != nil {
 		state = completion.clone()
 	} else {

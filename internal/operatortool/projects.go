@@ -282,11 +282,12 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 			}
 		case float64:
 			minimum, maximum := float64(0), float64(2147483647)
-			if key == "amount_micros" {
+			switch key {
+			case "amount_micros":
 				minimum, maximum = -1e15, 1e15
-			} else if key == "unit_price_micros" || key == "quantity" {
+			case "unit_price_micros", "quantity":
 				maximum = 1e15
-			} else if key == "limit" {
+			case "limit":
 				minimum, maximum = 1, 200
 			}
 			if x < minimum || x > maximum {

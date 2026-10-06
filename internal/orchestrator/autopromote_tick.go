@@ -2989,7 +2989,7 @@ func validatorResultComment(result gate.ValidatorResult, contextDigests ...strin
 	}
 	if result.Score > 0 {
 		b.WriteString("\n- score: ")
-		b.WriteString(fmt.Sprintf("%.2f", result.Score))
+		fmt.Fprintf(&b, "%.2f", result.Score)
 	}
 	if strings.TrimSpace(result.Summary) != "" {
 		b.WriteString("\n- summary: ")

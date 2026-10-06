@@ -1545,7 +1545,7 @@ func dependencyAutoUnblockComment(sourceState string, targetState string, blocke
 			b.WriteString(")")
 		}
 		if pullRequest := dependencyBlockerPullRequest(blocker); pullRequest != nil && pullRequestMerged(pullRequest) {
-			b.WriteString(fmt.Sprintf(" (merged PR: #%d)", pullRequest.Number))
+			fmt.Fprintf(&b, " (merged PR: #%d)", pullRequest.Number)
 		}
 	}
 	return b.String()

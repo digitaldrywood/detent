@@ -92,7 +92,7 @@ if git -C "$1" update-ref "$(git -C "$1" symbolic-ref HEAD)" "$target" 2>/dev/nu
 			profile := fmt.Sprintf("(version 1)(allow default)(deny file-write*)(deny file-read* (literal %q))(allow file-write* (literal %q) (subpath %q) (subpath %q)", signerPath, os.DevNull, req.Workspace, req.TempDir)
 			var allowedRoots strings.Builder
 			for _, root := range roots {
-				allowedRoots.WriteString(fmt.Sprintf(" (subpath %q)", root))
+				fmt.Fprintf(&allowedRoots, " (subpath %q)", root)
 			}
 			profile += allowedRoots.String()
 			profile += ")"

@@ -13955,7 +13955,7 @@ func kanbanPendingMutationCount(t *testing.T, server *web.Server, field string) 
 	t.Helper()
 
 	serverValue := reflect.ValueOf(server)
-	if serverValue.Kind() != reflect.Ptr || serverValue.IsNil() {
+	if serverValue.Kind() != reflect.Pointer || serverValue.IsNil() {
 		t.Fatalf("server value = %v, want non-nil pointer", serverValue.Kind())
 	}
 	mutations := serverValue.Elem().FieldByName("kanbanMutations")
