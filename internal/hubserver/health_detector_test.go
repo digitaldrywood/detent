@@ -13,10 +13,11 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func applyTestHealth(t *testing.T, f nativeFixture, now time.Time, findings []healthFinding) {

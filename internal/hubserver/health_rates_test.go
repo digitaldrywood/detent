@@ -11,7 +11,7 @@ import (
 func healthRateFixture(now time.Time) healthRateProject {
 	p := healthRateProject{ID: "project", Costs: map[string]healthItemCost{}}
 	p.BaselineCosts = p.Costs
-	for i := 0; i < 24; i++ {
+	for i := range 24 {
 		at := now.Add(-time.Duration(7+6*i) * time.Hour)
 		p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("baseline-", i), Item: fmt.Sprint("done-", i), Status: "succeeded", At: at, Landing: true, Landed: true, LandingAt: at})
 		t := analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: fmt.Sprint("done-", i)}, state: "Done", done: []time.Time{at}}
@@ -21,7 +21,7 @@ func healthRateFixture(now time.Time) healthRateProject {
 		p.Timelines = append(p.Timelines, t)
 		p.Costs[t.issue.id] = healthItemCost{Cost: 4, Known: true}
 	}
-	for i := 0; i < 24; i++ {
+	for i := range 24 {
 		at := now.Add(-healthBaselineWindow - time.Duration(1+i*10)*time.Minute)
 		p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("last-week-", i), Item: fmt.Sprint("prior-", i), Status: "succeeded", At: at, Landing: true, Landed: true, LandingAt: at})
 	}
@@ -41,18 +41,18 @@ func TestHealthRateSignals(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	retry := func(p *healthRateProject, age time.Duration, n int) {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("fail-", age, "-", i), Item: "active", Status: "failed", Signature: "protocol error", At: now.Add(-age), Cost: 2})
 		}
 	}
 	mixedRetry := func(p *healthRateProject) {
 		retry(p, 10*time.Minute, 5)
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			p.Attempts[len(p.Attempts)-5+i].Signature = fmt.Sprint("failure-", i)
 		}
 	}
 	conflict := func(p *healthRateProject, age time.Duration, n, failed int) {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("landing-", age, "-", i), Item: fmt.Sprint("item-", age, "-", i), At: now.Add(-age), Landing: true, Conflict: i < failed, Landed: i >= failed, LandingAt: now.Add(-age)})
 		}
 	}
@@ -60,7 +60,7 @@ func TestHealthRateSignals(t *testing.T) {
 		p.Candidates = 1
 		p.Runners = []healthRunner{{ID: "runner", Leases: 4, Heartbeat: now}}
 		p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "queued"}, state: "Todo", entered: now.Add(-short), spans: []analyticsResidenceSpan{{lane: "Todo", from: now.Add(-short), to: now}}})
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: fmt.Sprint("old-queue-", i)}, state: "Done", spans: []analyticsResidenceSpan{{lane: "Todo", from: now.Add(-2*time.Hour - long), to: now.Add(-2 * time.Hour)}}})
 		}
 	}
@@ -74,17 +74,17 @@ func TestHealthRateSignals(t *testing.T) {
 			p.Attempts = append(p.Attempts, healthRateAttempt{ID: "success", Item: "active", Status: "succeeded", At: now.Add(-5 * time.Minute)})
 		}, func(p *healthRateProject) {
 			mixedRetry(p)
-			for i := 0; i < 20; i++ {
+			for range 20 {
 				p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Status: "succeeded", At: now.Add(-2 * time.Hour)})
 			}
 			p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Status: "succeeded", At: now.Add(-5 * time.Minute)})
 		}},
 		{"recovery reason count", "recovery_loop", "attention", func(p *healthRateProject) {
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("recovery-", i), Item: "active", Recovery: "checkpoint_unavailable", At: now.Add(-10 * time.Minute)})
 			}
 		}, func(p *healthRateProject) {
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Recovery: fmt.Sprint("reason-", i), At: now.Add(-10 * time.Minute)})
 			}
 		}},
@@ -105,7 +105,7 @@ func TestHealthRateSignals(t *testing.T) {
 		}},
 		{"throughput same weekday hours", "throughput_collapse", "watch", func(p *healthRateProject) { p.Candidates = 1 }, func(p *healthRateProject) {
 			p.Candidates = 1
-			for i := 0; i < 24; i++ {
+			for range 24 {
 				p.Attempts = append(p.Attempts, healthRateAttempt{Landed: true, LandingAt: now.Add(-2 * time.Hour)})
 			}
 		}},
@@ -157,22 +157,22 @@ func TestHealthRateIncidentReplay(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	p := healthRateFixture(now)
-	for i := 0; i < 116; i++ {
+	for i := range 116 {
 		item := fmt.Sprint("storm-", i%2)
 		p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("failure-", i), Item: item, Status: "failed", Signature: "protocol error", At: now.Add(-time.Duration(i*75/116+1) * time.Minute), Cost: 0.25})
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("recovery-", i), Item: "recovery", Recovery: "checkpoint_unavailable", At: now.Add(-time.Duration(i+1) * 5 * time.Minute)})
 	}
 	for _, lane := range []string{"In Progress", "Rework", "Merging"} {
 		p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "stalled-" + lane}, state: lane, entered: now.Add(-4 * time.Hour)})
 	}
-	for i := 0; i < 116; i++ {
+	for i := range 116 {
 		p.Attempts = append(p.Attempts, healthRateAttempt{ID: fmt.Sprint("landing-", i), Item: fmt.Sprint("landing-item-", i), Landing: true, Conflict: i < 34, Landed: i >= 34, LandingAt: now.Add(-time.Duration(i*75/116+1) * time.Minute)})
 	}
 	p.Candidates = 12
 	p.Runners = []healthRunner{{ID: "runner", Leases: 4, Heartbeat: now}}
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: fmt.Sprint("queue-", i)}, state: "Todo", entered: now.Add(-3 * time.Hour), spans: []analyticsResidenceSpan{{lane: "Todo", from: now.Add(-3 * time.Hour), to: now}}})
 	}
 	p.Timelines = append(p.Timelines, analyticsResidenceTimeline{issue: analyticsResidenceIssue{id: "costly"}, state: "Todo"})
@@ -195,12 +195,12 @@ func TestHealthRateBoundaries(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	failing := func(p *healthRateProject, at time.Time, n int) {
-		for i := 0; i < n; i++ {
+		for range n {
 			p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Status: "failed", Signature: "failure", At: at})
 		}
 	}
 	landing := func(p *healthRateProject, at time.Time, n, bad int) {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			p.Attempts = append(p.Attempts, healthRateAttempt{Landing: true, Landed: i >= bad, Conflict: i < bad, LandingAt: at})
 		}
 	}
@@ -225,19 +225,19 @@ func TestHealthRateBoundaries(t *testing.T) {
 		}, false},
 		{"retry usual repeated failures", "retry_storm", func(p *healthRateProject) {
 			for _, a := range slices.Clone(p.Attempts[:24]) {
-				for i := 0; i < 5; i++ {
+				for range 5 {
 					p.Attempts = append(p.Attempts, healthRateAttempt{Item: a.Item, Status: "failed", Signature: "failure", At: a.At})
 				}
 			}
 			failing(p, now.Add(-time.Minute), 5)
 		}, false},
 		{"recovery exact thirty minutes", "recovery_loop", func(p *healthRateProject) {
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Recovery: "checkpoint_unavailable", At: now.Add(-30 * time.Minute)})
 			}
 		}, true},
 		{"recovery expired", "recovery_loop", func(p *healthRateProject) {
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				p.Attempts = append(p.Attempts, healthRateAttempt{Item: "active", Recovery: "checkpoint_unavailable", At: now.Add(-30*time.Minute - time.Nanosecond)})
 			}
 		}, false},

@@ -35,7 +35,7 @@ func slackText(value string) string {
 func renderSlackFinding(publicURL string, basePath string, finding healthFinding, event string, at time.Time) (string, error) {
 	base, err := url.Parse(publicURL)
 	if err != nil || base.Scheme != "https" && base.Scheme != "http" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
-		return "", errors.New("Slack app link is unavailable")
+		return "", errors.New("slack app link is unavailable")
 	}
 	path := "/diagnostics"
 	safeSubject := !slackPrivateText.MatchString(finding.Subject.ID)

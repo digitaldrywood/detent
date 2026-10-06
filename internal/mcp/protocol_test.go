@@ -583,7 +583,7 @@ func TestProtocolWorkReadParity(t *testing.T) {
 				fixture.application.reads = operatortool.NewAuthorizedExecutor(operatortool.NewExecutor(operatortool.Dependencies{WorkReads: protocolWorkReader{}}))
 				for _, definition := range operatortool.WorkReadCatalog() {
 					arguments := map[string]any{"project_id": "project"}
-					if definition.Name != operatortool.WorkList && definition.Name != operatortool.WorkConfig {
+					if definition.Name != operatortool.WorkList && definition.Name != operatortool.WorkConfig && definition.Name != operatortool.HealthFindings {
 						arguments["reference"] = "#1"
 					}
 					if definition.Name == operatortool.WorkVersion {

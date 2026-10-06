@@ -10,8 +10,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type healthFindingsPage struct {
@@ -69,14 +70,11 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	if _, err := readNativeProject(ctx, s.database.db, scope); err != nil {
 		return page, err
 	}
-	resolved := "IS NULL"
-	if state == "resolved" {
-		resolved = "IS NOT NULL"
-	}
+	resolved := state == "resolved"
 	rows, err := s.database.db.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
  COALESCE((SELECT work_item_id FROM health_finding_issues WHERE finding_id=health_findings.id AND project_id=?), '') FROM health_findings
- WHERE organization_id=? AND resolved_at `+resolved+` AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
- AND (?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>? ORDER BY rowid LIMIT ?`, scope.project, scope.organization, scope.project, since, since, since, after, limit+1)
+ WHERE organization_id=? AND (resolved_at IS NOT NULL)=? AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
+ AND (?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>? ORDER BY rowid LIMIT ?`, scope.project, scope.organization, resolved, scope.project, since, since, since, after, limit+1)
 	if err != nil {
 		return page, err
 	}

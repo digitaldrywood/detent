@@ -122,8 +122,7 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 		"GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)",
 		"lint: $(GOLANGCI_LINT)",
 		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m`,
-		`GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" GOBIN="$(GOLANGCI_LINT_DIR)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)`,
-		"setup: $(GOLANGCI_LINT)",
+		`@bash scripts/runner-setup.sh go-tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint $(GOLANGCI_LINT_VERSION) "$(GOLANGCI_LINT)" "$(GOLANGCI_LINT_TOOLCHAIN)"`,
 	} {
 		if !strings.Contains(makefile, want) {
 			t.Fatalf("Makefile missing pinned golangci-lint contract %q", want)
@@ -137,7 +136,7 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 	for _, want := range []string{
 		"path: tmp/tools/golangci-lint",
 		"hashFiles('.golangci-version')",
-		"run: make lint",
+		"check_with_evidence lint make lint",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("CI lint job missing pinned golangci-lint contract %q", want)

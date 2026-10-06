@@ -62,6 +62,7 @@ import {
   Question,
   Receipt,
 } from "./conversation.ts";
+import { DiagnosticsReport, HealthFindingsRead } from "./diagnostics.ts";
 import { UsageReport } from "./usage.ts";
 
 /** Any schema that decodes from JSON with no services. */
@@ -69,6 +70,8 @@ export type FixtureSchema = Schema.Codec<any, any, never, never>;
 
 export const FIXTURE_SCHEMAS: Readonly<Record<string, FixtureSchema>> = {
   "account-billing.json": BillingReport,
+  "diagnostics.json": DiagnosticsReport,
+  "health-findings.json": HealthFindingsRead,
   "account-bootstrap.json": AccountBootstrap,
   "account-bootstrap-support.json": AccountBootstrap,
   "account-checkout.json": CheckoutResponse,

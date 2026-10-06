@@ -233,9 +233,15 @@ func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFi
 			out = append(out, f)
 		}
 		for _, f := range healthCapacityFindings(now, p, b) {
-			if index, ok := capacity[f.Fingerprint]; ok {
+			if index, ok := capacity[f.Fingerprint]; ok && index < len(out) {
 				existing := &out[index]
 				existing.Projects = append(existing.Projects, p.ID)
+				if existing.Evidence.Queues == nil {
+					existing.Evidence.Queues = map[string]healthQueueEvidence{}
+				}
+				if existing.Evidence.Counts == nil {
+					existing.Evidence.Counts = map[string]int{}
+				}
 				existing.Evidence.Queues[p.ID] = f.Evidence.Queues[p.ID]
 				existing.Evidence.Counts["queue_depth"] += f.Evidence.Counts["queue_depth"]
 			} else {

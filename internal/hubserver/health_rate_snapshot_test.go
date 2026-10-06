@@ -68,7 +68,7 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 		}
 		return issue
 	}
-	for i := 0; i < 24; i++ {
+	for i := range 24 {
 		at := now.Add(-time.Duration(7+6*i) * time.Hour)
 		issue := create(fmt.Sprint("baseline-", i), at.Add(-40*time.Minute))
 		for j, lane := range []string{"In Progress", "Rework", "Merging", "Done"} {
@@ -82,7 +82,7 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 		seedHealthRateAttempt(t, tx, scope, issue, string(r.binding.MachineID), "succeeded", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{HeartbeatAt: at, Landing: &tracker.NativeLandingReceipt{Landed: true, ObservedAt: at}}}, at, 4)
 	}
 	storm := create("storm", now.Add(-4*time.Hour))
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		seedHealthRateAttempt(t, tx, scope, storm, string(r.binding.MachineID), "failed", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: fmt.Sprintf("protocol count %d failed", i)}}, now.Add(-time.Duration(i+1)*time.Minute), 1.25)
 	}
 	conflict := create("single landing conflict", now.Add(-time.Hour))
@@ -91,7 +91,7 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 	seedHealthRateAttempt(t, tx, scope, conflict, string(r.binding.MachineID), "succeeded", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{FromState: "Merging", TargetState: "Rework", RefusalKind: "conflict", ObservedAt: now.Add(-time.Minute)}}}, now.Add(-time.Minute), 0)
 	seedHealthRateAttempt(t, tx, scope, conflict, string(r.binding.MachineID), "running", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{HeartbeatAt: now.Add(-time.Second)}}, now.Add(-time.Second), 0)
 	recovery := create("recovery", now.Add(-4*time.Hour))
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		seedHealthRateAttempt(t, tx, scope, recovery, string(r.binding.MachineID), "interrupted", tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: "native checkpoint requires recovery: checkpoint_unavailable"}}, now.Add(-time.Duration(i+1)*time.Minute), 0.5)
 	}
 	stalled := create("stalled", now.Add(-4*time.Hour))
