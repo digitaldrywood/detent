@@ -140,8 +140,8 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		t.Fatal("native execution omitted its read tools")
 	}
 	tools, handler := source.AgentTools()
-	if len(tools) != 9 {
-		t.Fatalf("native tools = %d, want 9", len(tools))
+	if len(tools) != 11 {
+		t.Fatalf("native tools = %d, want 11", len(tools))
 	}
 	receiptArgs, err := json.Marshal(map[string]any{"project_id": h.project, "reference": issue.ID, "native_attempt_id": owner.data.AttemptID})
 	if err != nil {
@@ -247,5 +247,15 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	result, err = handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkAttemptReceipt, Arguments: receiptArgs})
 	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || result.Success {
 		t.Fatalf("lost execution authority: success=%t error=%v", result.Success, err)
+	}
+	for _, name := range []string{operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment} {
+		arguments, err := json.Marshal(map[string]string{"project_id": string(h.project), "attachment_id": "att_" + strings.Repeat("0", 32)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := handler(t.Context(), runner.AgentToolCall{Name: name, Arguments: arguments})
+		if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || result.Success {
+			t.Fatalf("lost attachment read authority: success=%t error=%v", result.Success, err)
+		}
 	}
 }

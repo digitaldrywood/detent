@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 var errAttachmentReadAudit = errors.New("attachment read audit unavailable")
@@ -340,6 +341,26 @@ func (s *Service) readAttachmentMetadata(c echo.Context) error {
 }
 
 func (s *Service) readAttachment(c echo.Context) error {
+	if c.QueryParams().Has("offset") || c.QueryParams().Has("length") {
+		input := map[string]any{"project_id": c.Param("project"), "attachment_id": c.Param("attachment")}
+		for _, field := range []string{"offset", "length"} {
+			if values, present := c.QueryParams()[field]; present {
+				if len(values) != 1 {
+					return attachmentError(c, http.StatusBadRequest, "invalid_request", "Invalid attachment read bounds")
+				}
+				input[field] = json.Number(values[0])
+			}
+		}
+		raw, err := json.Marshal(input)
+		if err != nil {
+			return attachmentError(c, http.StatusBadRequest, "invalid_request", "Invalid attachment read bounds")
+		}
+		bounds, err := operatortool.DecodeAttachmentOperation(operatortool.ReadAttachment, raw)
+		if err != nil {
+			return attachmentError(c, http.StatusBadRequest, "invalid_request", "Invalid attachment read bounds")
+		}
+		return s.readAttachmentContent(c, bounds)
+	}
 	if s.attachments == nil {
 		return attachmentNotFound(c)
 	}
