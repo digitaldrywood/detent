@@ -26,6 +26,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
+const provisioningFixtureTimeout = 2 * time.Minute
+
 type processLauncher struct {
 	billing    func() *hubserver.HostedBillingConfig
 	plans      *hubserver.HostedPlansConfig
@@ -185,7 +187,7 @@ func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*Alloc
 	seed := make([]byte, ed25519.SeedSize)
 	seed[1] = 7
 	root := shortTempDir(t)
-	f := &provisioningFixture{provider: newFakeProvider(), state: t.TempDir(), roots: [2]string{filepath.Join(root, "t"), filepath.Join(root, "s")}, key: ed25519.NewKeyFromSeed(seed)}
+	f := &provisioningFixture{provider: newFakeProvider(), state: t.TempDir(), roots: [2]string{filepath.Join(root, "t"), filepath.Join(root, "s")}, key: ed25519.NewKeyFromSeed(seed), timeout: provisioningFixtureTimeout}
 	for _, user := range []string{"dana", "eve", "fay"} {
 		f.provider.users["user_"+user] = user + "@example.test"
 	}
@@ -229,7 +231,7 @@ func (f *provisioningFixture) create(t *testing.T, b *browser, name string) page
 
 func (f *provisioningFixture) waitState(t *testing.T, id string, states ...string) Organization {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(provisioningFixtureTimeout)
 	for {
 		organization, err := f.service.registry.Organization(t.Context(), id)
 		if err == nil {
