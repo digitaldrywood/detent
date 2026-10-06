@@ -541,16 +541,16 @@ describe("the stats row", () => {
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
 
-  it("keeps scoped counts while refreshing and offers continuation only for incomplete results", () => {
-    const totals = { lanes: {}, running: 2, queued: 3, open: 17, completed: 126, total: 143, asOf: "2026-10-02T17:17:00Z", truncated: true };
+  it.each([{ loadedCount: 100, total: 143 }, { loadedCount: 108, total: 569 }])("keeps scoped counts while refreshing and offers continuation only for incomplete results ($loadedCount of $total)", ({ loadedCount, total }) => {
+    const totals = { lanes: {}, running: 2, queued: 3, open: 17, completed: total - 17, total, asOf: "2026-10-02T17:17:00Z", truncated: true };
     const onLoadMore = vi.fn();
     const stats = boardStats([item({ state: "Done", sourceProvider: "github" })], LANES);
-    const props = { stats, totals, hasMore: true, loadedCount: 100, loading: false, onLoadMore };
+    const props = { stats, totals, hasMore: true, loadedCount, loading: false, onLoadMore };
     const mounted = render(<StatsRow {...props} />);
     const counts = screen.getByTestId("work-stats");
-    expect(counts.textContent).toContain("2 running·3 queued inventory·17 open·126 closed inventory (1 imported history loaded)");
+    expect(counts.textContent).toContain(`2 running·3 queued inventory·17 open·${totals.completed} closed inventory (1 imported history loaded)`);
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 1 of 1 loaded closed items");
-    const more = screen.getByRole("button", { name: "Load 43 more · 100 of 143" });
+    const more = screen.getByRole("button", { name: `Load more · ${loadedCount} of ${total}` });
     expect(counts.contains(more)).toBe(true);
     fireEvent.click(more);
     expect(onLoadMore).toHaveBeenCalledTimes(1);
@@ -559,7 +559,7 @@ describe("the stats row", () => {
     expect(screen.getByTestId("stat-queued").parentElement!.className).toContain("opacity-50");
     expect(screen.getByTestId("stat-queued").textContent).toBe("3 queued inventory");
     expect((more as HTMLButtonElement).disabled).toBe(true);
-    mounted.rerender(<StatsRow {...props} hasMore={false} loadedCount={143} />);
+    mounted.rerender(<StatsRow {...props} hasMore={false} loadedCount={total} />);
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
 });
@@ -1050,7 +1050,7 @@ describe("the filter-first Work surface", () => {
     expect(screen.getByTestId("lane-count-Done").textContent).toBe("131");
     expect(screen.getByTestId("stat-completed").textContent).toBe("131 closed inventory");
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 0 of");
-    expect(within(screen.getByTestId("work-stats")).getByRole("button", { name: /^Load \d+ more · \d+ of 141$/ })).not.toBeNull();
+    expect(within(screen.getByTestId("work-stats")).getByRole("button", { name: /^Load more · \d+ of 141$/ })).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /^Load / }));
     await waitFor(() => expect(screen.queryByRole("button", { name: /^Load / })).toBeNull());
     await settledWork();
@@ -1169,7 +1169,7 @@ describe("the filter-first Work surface", () => {
     await fixture.control({ openOverflow: true });
     fireEvent.click(screen.getByRole("button", { name: "Reload" }));
     await settledWork();
-    expect(screen.getByRole("button", { name: /^Load \d+ more · \d+ of 134$/ })).not.toBeNull();
+    expect(screen.getByRole("button", { name: /^Load more · \d+ of 134$/ })).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /^Load / }));
     await waitFor(() => expect(screen.queryByRole("button", { name: /^Load / })).toBeNull());
     await settledWork();
