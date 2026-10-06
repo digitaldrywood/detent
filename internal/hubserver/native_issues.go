@@ -275,13 +275,32 @@ func createNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, req
 	return createNativeIssue(ctx, tx, scope, request, now, false)
 }
 
+func defaultNativeIssueState(states []tracker.NativeState) string {
+	for _, state := range states {
+		if state.Name != "Triage" {
+			return state.Name
+		}
+	}
+	return ""
+}
+
 func createNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machineIntake bool) (tracker.NativeIssue, error) {
 	if request.GitHubIssueURL != "" {
 		return createLinkedIssueTx(ctx, tx, scope, request, now)
 	}
+	if request.State == "Triage" {
+		return tracker.NativeIssue{}, nativeInvalid("Triage is reserved for linked GitHub issue intake")
+	}
+	return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake)
+}
+
+func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machineIntake bool) (tracker.NativeIssue, error) {
 	project, err := validateNativeIssueDraft(ctx, tx, scope, request)
 	if err != nil {
 		return tracker.NativeIssue{}, err
+	}
+	if request.State == "" {
+		request.State = defaultNativeIssueState(project.States)
 	}
 	var sourceKey any
 	if request.Provenance != nil {
