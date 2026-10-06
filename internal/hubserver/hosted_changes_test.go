@@ -116,7 +116,6 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			}{
 				{"review floor", func(p *tracker.ChangeReviewPolicy) { p.RequireReview = false }},
 				{"check floor", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks = nil }},
-				{"validator floor", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks[0].Source = "customer" }},
 				{"unpinned workflow", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks[0].WorkflowSHA256 = "" }},
 				{"ungranted principal", func(p *tracker.ChangeReviewPolicy) { p.RequiredChecks[0].PrincipalID = "ungranted-ci" }},
 				{"stale repository policy", func(p *tracker.ChangeReviewPolicy) { p.PolicyID = hubTestPolicy().ID }},
@@ -159,12 +158,13 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var version tracker.ChangeVersion
 			decodeHubResponse(t, response, &version)
-			if version.PolicyID != descriptor.ID || version.ReviewPolicy.ID != rules.ID || len(version.Checks) != 1 || version.Checks[0].PrincipalID != principal {
+			if version.PolicyID != descriptor.ID || !version.Policy.Gates.Validator || version.ReviewPolicy.ID != rules.ID || len(version.Checks) != 1 || version.Checks[0].PrincipalID != principal {
 				t.Fatalf("published policy snapshot = %+v", version)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/checks", "credential-"+project, changeTestResult(version)), http.StatusOK)
 			approve.IdempotencyKey, approve.ExpectedID = "update", rules.ID
 			approve.Policy.RequiredChecks[0].MaxAgeSeconds = 7200
+			approve.Policy.RequiredChecks[0].Source = "customer"
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", approve), http.StatusOK)
 			response = f.setupRequest(t, "owner", http.MethodGet, path, nil)
 			requireNativeStatus(t, response, http.StatusOK)
