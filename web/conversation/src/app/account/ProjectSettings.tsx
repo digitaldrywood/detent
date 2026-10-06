@@ -42,6 +42,10 @@ export function draftOf(integration: ProjectIntegration): IntegrationDraft {
   };
 }
 
+function hasAutomaticIntake(integration: ProjectIntegration): boolean {
+  return integration.profile === "native" && Boolean(integration.repository || integration.checkout_repository);
+}
+
 export function draftChanged(a: IntegrationDraft, b: IntegrationDraft): boolean {
   return (
     a.intake !== b.intake ||
@@ -89,6 +93,7 @@ const INTAKE_OPTIONS = INTAKE_CHOICES.map((value) => ({
   value,
   label: value === "manual" ? "Manual" : "Disabled",
 }));
+const AUTOMATIC_INTAKE_OPTIONS = [{ value: "automatic", label: "Automatic" }];
 const PROJECTION_OPTIONS = PROJECTION_CHOICES.map((value) => ({
   value,
   label: value === "summary" ? "Summary" : "Disabled",
@@ -335,6 +340,7 @@ export function ProjectSettingsView({
   const unbound = (integration.repository ?? "").length === 0;
   const repository = integration.checkout_repository || integration.repository || "";
   const transportAvailable = integration.github_transport_available !== false;
+  const automaticIntake = hasAutomaticIntake(integration);
   const dirty = draftChanged(draft, draftOf(integration));
   const conflict = conflictingPolicies(observedPolicies);
 
@@ -448,9 +454,9 @@ export function ProjectSettingsView({
           control={
             <NativeSelect
               aria-label="Intake"
-              value={draft.intake}
-              options={INTAKE_OPTIONS}
-              disabled={!canManage || unbound}
+              value={automaticIntake ? "automatic" : draft.intake}
+              options={automaticIntake ? AUTOMATIC_INTAKE_OPTIONS : INTAKE_OPTIONS}
+              disabled={automaticIntake || !canManage || unbound}
               onValueChange={(intake) => onDraftChange({ ...draft, intake })}
             />
           }
@@ -597,7 +603,7 @@ export function ProjectSettingsRoute({
         projectId,
         key: newKey(),
         revision: current.revision,
-        intake: next.intake,
+        ...(hasAutomaticIntake(current) ? {} : { intake: next.intake }),
         projection: next.projection,
         repositoryEnabled: next.repositoryEnabled,
         archiveCompletedAfterDays: next.archiveCompletedAfterDays,
@@ -622,7 +628,7 @@ export function ProjectSettingsRoute({
         projectId,
         key: newKey(),
         revision: current.revision,
-        intake: current.intake,
+        ...(hasAutomaticIntake(current) ? {} : { intake: current.intake }),
         projection: current.projection,
         repositoryEnabled: current.repository_enabled,
         workflowMarkdown: markdown,

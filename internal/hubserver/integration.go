@@ -155,7 +155,9 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 		if current.Revision != request.ExpectedRevision {
 			return nil, nativeConflict(current.Revision)
 		}
-		if current.Profile == "native" && (current.Repository != "" || current.CheckoutRepository != "") && request.Intake == "automatic" {
+		automaticIntake := current.Profile == "native" && (current.Repository != "" || current.CheckoutRepository != "")
+		preserveIntake := automaticIntake && request.Intake == ""
+		if automaticIntake && request.Intake == "automatic" {
 			request.Intake = "manual"
 		}
 		completed, err := archivePeriod(request.ArchiveCompletedAfterDays, current.ArchiveCompletedAfterDays)
@@ -171,17 +173,17 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 			currentIntake = "manual"
 		}
 		archiveSettingsSupplied := len(request.ArchiveCompletedAfterDays) != 0 || len(request.ArchiveCancelledAfterDays) != 0
-		integrationChanged := request.States != nil || request.WorkflowMarkdown != nil || request.Intake != currentIntake || request.Projection != current.Projection || request.RepositoryEnabled != current.RepositoryEnabled
+		integrationChanged := request.States != nil || request.WorkflowMarkdown != nil || (!preserveIntake && request.Intake != currentIntake) || request.Projection != current.Projection || request.RepositoryEnabled != current.RepositoryEnabled
 		if archiveSettingsSupplied && !integrationChanged {
 			if _, err := tx.ExecContext(ctx, "UPDATE projects SET integration_revision=integration_revision+1, archive_completed_after_days=?, archive_cancelled_after_days=? WHERE organization_id=? AND id=?", completed, cancelled, scope.organization, scope.project); err != nil {
 				return nil, err
 			}
 			return readProjectIntegration(ctx, tx, scope)
 		}
-		if (request.Intake != "disabled" && request.Intake != "manual") || (request.Projection != "disabled" && request.Projection != "summary") {
+		if (!preserveIntake && request.Intake != "disabled" && request.Intake != "manual") || (request.Projection != "disabled" && request.Projection != "summary") {
 			return nil, nativeInvalid("Intake must be disabled or manual; projection must be disabled or summary")
 		}
-		if current.RepositoryID == 0 && (request.Intake != "disabled" || request.Projection != "disabled" || request.RepositoryEnabled) {
+		if current.RepositoryID == 0 && ((!preserveIntake && request.Intake != "disabled") || request.Projection != "disabled" || request.RepositoryEnabled) {
 			return nil, nativeInvalid("Attach a GitHub repository before enabling intake, summaries or repository integration")
 		}
 		if current.Profile == "github_compatible" && request.Projection != "disabled" {
@@ -228,7 +230,7 @@ func (s *Service) updateProjectIntegrationOperation(request updateProjectIntegra
 				return nil, err
 			}
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE projects SET integration_revision = integration_revision + 1, github_intake = ?, github_projection = ?, github_repository_enabled = ?, archive_completed_after_days = ?, archive_cancelled_after_days = ? WHERE id = ?`, request.Intake, request.Projection, request.RepositoryEnabled, completed, cancelled, scope.project)
+		_, err = tx.ExecContext(ctx, `UPDATE projects SET integration_revision = integration_revision + 1, github_intake = COALESCE(NULLIF(?, ''), github_intake), github_projection = ?, github_repository_enabled = ?, archive_completed_after_days = ?, archive_cancelled_after_days = ? WHERE id = ?`, request.Intake, request.Projection, request.RepositoryEnabled, completed, cancelled, scope.project)
 		if err != nil {
 			return nil, err
 		}

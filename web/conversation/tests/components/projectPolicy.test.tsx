@@ -52,6 +52,9 @@ async function mount(): Promise<{ base: string; approvedId: string }> {
 }
 
 Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
+if (typeof globalThis.PointerEvent === "undefined") {
+  globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
+}
 
 async function renderSettings(): Promise<void> {
   const router = makeRouter(createMemoryHistory({ initialEntries: ["/settings/integrations?project=proj_alpha"] }));
@@ -68,6 +71,52 @@ async function renderSettings(): Promise<void> {
 }
 
 describe("repository policy after setup", () => {
+  it.each([
+    { name: "native bound settings", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", workflow: false, expectedIntake: undefined },
+    { name: "native bound workflow", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", workflow: true, expectedIntake: undefined },
+    { name: "native checkout workflow", profile: "native", repository: "", checkout_repository: "acme/orders", intake: "automatic", workflow: true, expectedIntake: undefined },
+    { name: "native unbound workflow", profile: "native", repository: "", checkout_repository: "", intake: "disabled", workflow: true, expectedIntake: "disabled" },
+    { name: "compatibility settings", profile: "github_compatible", repository: "acme/orders", checkout_repository: "", intake: "manual", workflow: false, expectedIntake: "disabled" },
+  ])("saves $name with only editable intake", async ({ name: _name, workflow, expectedIntake, ...fields }) => {
+    const { base } = await mount();
+    const realFetch = globalThis.fetch;
+    const requests = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const response = await realFetch(input, init);
+      if ((init?.method ?? "GET") === "GET" && String(input) === `${base}/integration`) {
+        return Response.json({ ...await response.json(), ...fields });
+      }
+      return response;
+    });
+    await renderSettings();
+    const intake = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Intake" }, httpWait);
+    expect(intake.value).toBe(fields.intake);
+    if (workflow) {
+      const definition = await screen.findByRole("textbox", { name: "Workflow definition" }, httpWait);
+      fireEvent.change(definition, { target: { value: `${(definition as HTMLTextAreaElement).value}\nUpdated instructions.` } });
+      fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
+    } else {
+      if (fields.profile === "github_compatible") {
+        fireEvent.change(intake, { target: { value: "disabled" } });
+      } else {
+        fireEvent.click(screen.getByRole("switch", { name: "Repository and pull request integration" }));
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    }
+    await waitFor(() => {
+      const save = requests.mock.calls.find(([url, init]) => init?.method === "PUT" && String(url).endsWith("/onboarding/integration"));
+      expect(save).toBeDefined();
+      const body = JSON.parse(String(save![1]?.body));
+      if (expectedIntake === undefined) expect(body).not.toHaveProperty("intake");
+      else expect(body.intake).toBe(expectedIntake);
+      expect(body).toHaveProperty("expected_revision");
+      expect(body).toHaveProperty(workflow ? "workflow_markdown" : "repository_enabled");
+    }, httpWait);
+    await waitFor(async () => {
+      const saved = await (await realFetch(`${base}/integration`)).json() as { revision: string };
+      expect(saved.revision).toBe("8");
+    }, httpWait);
+  });
+
   it.each(["immediate", "deferred"] as const)("approves the policy a runner reported with one click (%s onboarding)", async (delivery) => {
     const { base, approvedId } = await mount();
     const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
