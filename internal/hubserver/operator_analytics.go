@@ -11,17 +11,20 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 const maxAnalyticsPopulation = 1000
 
 type nativeAnalyticsBucket struct {
-	From     time.Time `json:"from"`
-	To       time.Time `json:"to"`
-	Shipped  int       `json:"shipped"`
-	Sessions int       `json:"sessions"`
-	Tokens   int64     `json:"tokens"`
-	Cost     float64   `json:"cost_usd"`
+	From         time.Time                     `json:"from"`
+	To           time.Time                     `json:"to"`
+	Shipped      int                           `json:"shipped"`
+	Sessions     int                           `json:"sessions"`
+	Tokens       int64                         `json:"tokens"`
+	Cost         float64                       `json:"cost_usd"`
+	Activity     nativeAnalyticsActivityTiming `json:"activity"`
+	QueueSeconds float64                       `json:"queue_seconds"`
 }
 type nativeAnalyticsLanding struct {
 	ChangeID   string                   `json:"change_id"`
@@ -35,12 +38,14 @@ type nativeAnalyticsPhase struct {
 	AverageSeconds float64 `json:"average_seconds"`
 }
 type nativeAnalyticsAttempt struct {
-	AttemptID  string                `json:"attempt_id"`
-	WorkItemID string                `json:"work_item_id"`
-	Status     string                `json:"status"`
-	StartedAt  time.Time             `json:"started_at"`
-	ObservedAt time.Time             `json:"observed_at"`
-	Phases     []tracker.NativePhase `json:"phases"`
+	AttemptID           string                           `json:"attempt_id"`
+	WorkItemID          string                           `json:"work_item_id"`
+	Status              string                           `json:"status"`
+	StartedAt           time.Time                        `json:"started_at"`
+	ObservedAt          time.Time                        `json:"observed_at"`
+	Phases              []tracker.NativePhase            `json:"phases"`
+	Activity            *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
+	ActivityUnavailable string                           `json:"activity_unavailable,omitempty"`
 }
 type nativeAnalyticsSkip struct {
 	Source string `json:"source"`
@@ -62,6 +67,8 @@ type nativeAnalyticsProject struct {
 	CostPerOutcome    nativeAnalyticsOutcome                        `json:"cost_per_outcome"`
 	Landings          operatortool.ReadPage[nativeAnalyticsLanding] `json:"landings"`
 	Attempts          operatortool.ReadPage[nativeAnalyticsAttempt] `json:"attempts"`
+	Activity          nativeAnalyticsActivity                       `json:"activity"`
+	QueueTime         nativeAnalyticsQueue                          `json:"queue_time"`
 	SkipReasons       []nativeAnalyticsSkip                         `json:"skip_reasons"`
 	PopulationLimit   int                                           `json:"population_limit"`
 	AttemptsObserved  int                                           `json:"attempts_observed"`
@@ -190,7 +197,7 @@ func nativeAnalyticsBucketIndex(at time.Time, w operatortool.AnalyticsWindow) in
 }
 
 func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
-	out := nativeAnalyticsProject{ProjectID: string(scope.project), Source: "native_change_landing_and_recorded_runtime", Window: w, PopulationLimit: maxAnalyticsPopulation, Unavailable: []string{"queue_time", "private_instruction_causality", "receipt_efficiency_quantiles"}, Digest: []nativeAnalyticsBucket{}, Efficiency: []nativeAnalyticsPhase{}, SkipReasons: []nativeAnalyticsSkip{}}
+	out := nativeAnalyticsProject{ProjectID: string(scope.project), Source: "native_change_landing_and_recorded_runtime", Window: w, PopulationLimit: maxAnalyticsPopulation, Unavailable: []string{"private_instruction_causality", "receipt_efficiency_quantiles"}, Digest: []nativeAnalyticsBucket{}, Efficiency: []nativeAnalyticsPhase{}, SkipReasons: []nativeAnalyticsSkip{}}
 	for from := w.From; from.Before(w.To); from = from.Add(w.Bucket) {
 		to := from.Add(w.Bucket)
 		if to.After(w.To) {
@@ -216,7 +223,7 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		}
 	}
 	out.Landings = operatortool.OffsetPage(landings, r.RowOffset, r.Limit)
-	rows, err := q.QueryContext(ctx, `SELECT id, work_item_id, status, started_at, updated_at, coalesce(json_extract(data_json,'$.runtime.phases'),'[]'), coalesce(json_extract(data_json,'$.runtime.phases_dropped'),0)
+	rows, err := q.QueryContext(ctx, `SELECT id, work_item_id, status, started_at, updated_at, coalesce(json_extract(data_json,'$.runtime.phases'),'[]'), coalesce(json_extract(data_json,'$.runtime.phases_dropped'),0), coalesce(json_extract(data_json,'$.runtime.activity'),'null')
 FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(started_at)<julianday(?) AND julianday(updated_at)>=julianday(?) ORDER BY started_at,id LIMIT ?`, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), maxAnalyticsPopulation+1)
 	if err != nil {
 		return out, err
@@ -226,13 +233,17 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(star
 	phases := map[string]nativeAnalyticsPhase{}
 	for rows.Next() {
 		var a nativeAnalyticsAttempt
-		var from, to, raw string
+		var from, to, raw, activityRaw string
 		var dropped int
-		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Status, &from, &to, &raw, &dropped); err != nil {
+		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Status, &from, &to, &raw, &dropped, &activityRaw); err != nil {
 			return out, err
 		}
 		if len(attempts) == maxAnalyticsPopulation {
 			out.Partial = true
+			out.Activity.Partial = true
+			for i := range out.Digest {
+				out.Digest[i].Activity.Partial = true
+			}
 			break
 		}
 		a.StartedAt, err = parseTimeValue(from)
@@ -244,7 +255,11 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(star
 			return out, err
 		}
 		if err = json.Unmarshal([]byte(raw), &a.Phases); err != nil {
-			return out, err
+			a.Phases = nil
+			out.Partial = true
+			if !slices.Contains(out.Unavailable, "recorded_phases_malformed") {
+				out.Unavailable = append(out.Unavailable, "recorded_phases_malformed")
+			}
 		}
 		if len(a.Phases) == 0 {
 			out.Partial = true
@@ -266,6 +281,7 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(star
 		if a.ObservedAt.After(out.SourceAt) {
 			out.SourceAt = a.ObservedAt
 		}
+		projectNativeAnalyticsActivity(&out, &a, activityRaw)
 		attempts = append(attempts, a)
 	}
 	if err := rows.Err(); err != nil {
@@ -280,7 +296,14 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND julianday(star
 			out.Digest[i].Sessions++
 		}
 	}
-	out.Attempts = operatortool.OffsetPage(attempts, r.RowOffset, r.Limit)
+	out.Attempts = nativeAnalyticsAttemptPage(attempts, r.RowOffset, r.Limit)
+	if out.Activity.ProfilesObserved == 0 {
+		out.Unavailable = append(out.Unavailable, "instruction_activity")
+	}
+	if out.Activity.Partial {
+		out.Unavailable = append(out.Unavailable, "activity_complete_window")
+	}
+
 	for _, p := range phases {
 		out.Efficiency = append(out.Efficiency, p)
 	}
@@ -335,6 +358,12 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 	})
 	if out.DecisionsObserved == 0 {
 		out.Unavailable = append(out.Unavailable, "recorded_skip_reasons")
+	}
+	if err := rows.Close(); err != nil {
+		return out, err
+	}
+	if err := projectNativeAnalyticsQueue(ctx, q, scope, &out); err != nil {
+		return out, err
 	}
 	return out, nil
 }
