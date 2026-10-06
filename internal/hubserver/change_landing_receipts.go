@@ -49,7 +49,7 @@ func recordAttemptLanding(ctx context.Context, tx *sql.Tx, scope nativeScope, it
 		}
 		receipt.FromState = issue.State
 		if receipt.Landed {
-			transition, err := latestNativeRuntimeEvent(ctx, tx, scope, string(item), "workflow.transitioned")
+			transition, err := latestNativeRuntimeEvent(ctx, tx, scope, string(item), "workflow.transitioned", "")
 			if err != nil {
 				return err
 			}
