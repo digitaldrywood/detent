@@ -160,6 +160,7 @@ export const NativeIssue = Schema.Struct({
 export type NativeIssue = typeof NativeIssue.Type;
 
 export const NativeWorkSummary = Schema.Struct({
+  completed: Schema.optional(Schema.Number),
   items: Schema.Array(NativeIssue),
   lanes: Schema.Array(Schema.Struct({ state: Schema.String, total: Schema.Number, running: Schema.Number })),
   truncated: Schema.Boolean,

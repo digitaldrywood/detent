@@ -378,8 +378,6 @@ describe("a lane", () => {
         onDragStart={vi.fn()}
         onDragEnd={vi.fn()}
         onDrop={onDrop}
-        collapsed={false}
-        onToggleCollapsed={vi.fn()}
         {...overrides}
       />,
     );
@@ -397,9 +395,9 @@ describe("a lane", () => {
     expect(screen.getByText("Nothing is merging.")).not.toBeNull();
   });
 
-  it("hides its cards when collapsed but keeps its count", () => {
-    renderLane({ collapsed: true });
-    expect(screen.queryByTestId("issue-card")).toBeNull();
+  it("renders an explicitly selected terminal lane at full width with its cards", () => {
+    renderLane({ lane: { ...LANES.find((lane) => lane.name === "Todo")!, terminal: true } });
+    expect(screen.queryByTestId("issue-card")).not.toBeNull();
     expect(screen.getByTestId("lane-count-Todo").textContent).toBe("1");
   });
 
@@ -530,13 +528,13 @@ describe("the stats row", () => {
     const stats = boardStats(items, lanes);
     expect(stats.completed).toBe(4);
     expect(stats.importedClosed).toBe(2);
-    render(<StatsRow stats={stats} hasMore={false} loadedCount={12} loading={false} onLoadMore={vi.fn()} />);
+    render(<StatsRow stats={stats} completedWindow="all" hasMore={false} loadedCount={12} loading={false} onLoadMore={vi.fn()} />);
     expect(screen.getByTestId("stat-running").textContent).toBe("2 running");
-    expect(screen.getByTestId("stat-queued").textContent).toBe("4 queued inventory");
+    expect(screen.getByTestId("stat-queued").textContent).toBe("5 queued inventory");
     expect(screen.getByTestId("stat-open").textContent).toBe("8 open");
     expect(screen.queryByTestId("stat-ready")).toBeNull();
     expect(screen.getByTestId("stat-queued").getAttribute("title")).toContain("Human ownership, dependencies");
-    expect(screen.getByTestId("stat-completed").textContent).toBe("4 closed inventory (2 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("4 completed · all (2 imported history loaded)");
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("including cancelled and custom terminal states");
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
@@ -548,7 +546,7 @@ describe("the stats row", () => {
     const props = { stats, totals, hasMore: true, loadedCount, loading: false, onLoadMore };
     const mounted = render(<StatsRow {...props} />);
     const counts = screen.getByTestId("work-stats");
-    expect(counts.textContent).toContain(`2 running·3 queued inventory·17 open·${totals.completed} closed inventory (1 imported history loaded)`);
+    expect(counts.textContent).toContain(`2 running·3 queued inventory·17 open·${totals.completed} completed · 48h (1 imported history loaded)`);
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 1 of 1 loaded closed items");
     const more = screen.getByRole("button", { name: `Load more · ${loadedCount} of ${total}` });
     expect(counts.contains(more)).toBe(true);
@@ -1024,6 +1022,17 @@ describe("the live Work continuation intent", () => {
 });
 
 describe("the filter-first Work surface", () => {
+  it("opens the completed window menu and requests a fresh count for the selection", async () => {
+    const { requests, router } = await pagedWork();
+    await settledWork();
+    fireEvent.click(screen.getByTestId("completed-window-trigger"));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^7d$/ }));
+    await settledWork();
+    expect(parseViewState(router.state.location.searchStr).completedWindow).toBe("7d");
+    expect(requests.filter((request) => request.url.pathname.endsWith("/work-items")).some((request) => request.url.searchParams.get("completed_window") === "7d")).toBe(true);
+    expect(screen.getByTestId("stat-completed").textContent).toContain("completed · 7d");
+  });
+
   it.each(["Todo", ""])("shares the %s lane scope between Board and List", async (lanes) => {
     await pagedWork(`/work?lanes=${lanes}`);
     await settledWork();
@@ -1047,15 +1056,15 @@ describe("the filter-first Work surface", () => {
     expect(screen.queryByRole("button", { name: /First page|Previous|Next page/ })).toBeNull();
     expect(screen.getByTestId("lane-count-Todo").textContent).toBe("8");
     expect(screen.getByTestId("lane-count-In Progress").textContent).toBe("2");
-    expect(screen.getByTestId("lane-count-Done").textContent).toBe("131");
-    expect(screen.getByTestId("stat-completed").textContent).toBe("131 closed inventory");
+    expect(screen.queryByTestId("lane-count-Done")).toBeNull();
+    expect(screen.getByTestId("stat-completed").textContent).toBe("131 completed · 48h");
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 0 of");
     expect(within(screen.getByTestId("work-stats")).getByRole("button", { name: /^Load more · \d+ of 141$/ })).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /^Load / }));
     await waitFor(() => expect(screen.queryByRole("button", { name: /^Load / })).toBeNull());
     await settledWork();
     expect(router.state.location.searchStr).toBe("");
-    expect(screen.getByTestId("stat-completed").textContent).toBe("131 closed inventory (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("131 completed · 48h (1 imported history loaded)");
     const before = requests.length;
     fireEvent.click(screen.getByRole("radio", { name: "List" }));
     await screen.findByTestId("work-list");
@@ -1077,13 +1086,13 @@ describe("the filter-first Work surface", () => {
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.queryByText("Observed later-page worker")).toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" ? "1 closed inventory (1 imported history loaded)" : "2 closed inventory (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" ? "1 completed · 48h (1 imported history loaded)" : "2 completed · 48h (1 imported history loaded)");
     expect(parseViewState(fixture.router.state.location.searchStr).q).toBe(q);
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(q);
     if (q === "Older title needle") {
       fireEvent.change(screen.getByTestId("work-search"), { target: { value: "Older title needle b" } });
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("1 closed inventory");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
       expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 0 of 1 loaded closed items");
     }
   });
@@ -1094,15 +1103,15 @@ describe("the filter-first Work surface", () => {
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.getByText("Older title needle b")).not.toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 closed inventory (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h (1 imported history loaded)");
     fireEvent.click(screen.getByTestId("filters-trigger"));
     for (const filter of ["label-choice-b", "assignee-operator-b", "priority-High"]) {
       fireEvent.click(await screen.findByTestId(`filter-${filter}`));
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("1 closed inventory (1 imported history loaded)");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h (1 imported history loaded)");
       fireEvent.click(await screen.findByTestId(`filter-${filter}`));
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("2 closed inventory (1 imported history loaded)");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h (1 imported history loaded)");
     }
     fireEvent.keyDown(document, { key: "Escape" });
     const reads = fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items"));
@@ -1125,10 +1134,10 @@ describe("the filter-first Work surface", () => {
     fireEvent.click(screen.getByTestId("filters-trigger"));
     fireEvent.click(await screen.findByTestId("filter-label-choice-a"));
     await settledWork();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("1 closed inventory (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h (1 imported history loaded)");
     fireEvent.click(await screen.findByTestId("filter-label-choice-b"));
     await settledWork();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 closed inventory (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h (1 imported history loaded)");
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/work-items"))!.url.searchParams.getAll("label"))
       .toEqual(["choice-a", "choice-b"]);
   });
@@ -1184,7 +1193,7 @@ describe("the filter-first Work surface", () => {
     const fixture = await pagedWork('/work?view=list&q=older-label&pages=legacy-cursor');
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 closed inventory (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h (1 imported history loaded)");
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) =>
       !request.url.searchParams.has("cursor"))).toBe(true);
   });
@@ -1294,7 +1303,7 @@ describe("the filter-first Work surface", () => {
     expect(alphaReads[0]!.url.searchParams.has("cursor")).toBe(false);
     expect(alphaReads[1]!.url.searchParams.has("cursor")).toBe(true);
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("1 closed inventory (1 imported history loaded)");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h (1 imported history loaded)");
     expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Imported terminal history: 1 of 1 loaded closed items");
     expect(refreshed.filter((request) => request.url.pathname.endsWith("/attempts"))).toHaveLength(24);
     expect(refreshed.filter((request) => request.url.pathname.endsWith("/changes"))).toHaveLength(24);

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   activeFilterCount,
   DEFAULT_VIEW_STATE,
+  defaultLaneNames,
   isDefaultViewState,
   laneVisible,
   parseViewState,
@@ -15,7 +16,7 @@ import {
   writeStoredViewState,
 } from "../../src/app/work/lib/viewState.ts";
 
-const LANES = ["Backlog", "Todo", "In progress", "Review", "Done"];
+const LANES = ["Backlog", "Todo", "In progress", "Review", "Done"].map((name) => ({ id: name, name, terminal: name === "Done", category: "" }));
 
 describe("the board's view state", () => {
   it("defaults an empty query string", () => {
@@ -82,8 +83,31 @@ describe("the board's view state", () => {
   it("distinguishes every lane from no lane", () => {
     expect(parseViewState("").lanes).toBeNull();
     expect(parseViewState("lanes=").lanes).toEqual([]);
-    expect(laneVisible(parseViewState(""), "Todo")).toBe(true);
-    expect(laneVisible(parseViewState("lanes="), "Todo")).toBe(false);
+    expect(laneVisible(parseViewState(""), LANES[1]!)).toBe(true);
+    expect(laneVisible(parseViewState("lanes="), LANES[1]!)).toBe(false);
+  });
+
+  it("derives default lanes from the current workflow, including empty active and custom lanes", () => {
+    const lanes = [...LANES, { id: "Merging", name: "Merging", terminal: false, category: "" }, { id: "Retired", name: "Retired", terminal: true, category: "" }];
+    expect(defaultLaneNames(lanes)).toEqual(["Todo", "In progress", "Review", "Merging"]);
+    expect(lanes.filter((lane) => laneVisible(DEFAULT_VIEW_STATE, lane)).map((lane) => lane.name)).toEqual(defaultLaneNames(lanes));
+    expect(laneVisible(parseViewState("lanes=Done"), LANES[4]!)).toBe(true);
+    const shown = toggleLane(DEFAULT_VIEW_STATE, "Backlog", lanes);
+    writeStoredViewState("default-roundtrip", shown);
+    const restored = toggleLane(shown, "Backlog", lanes);
+    writeStoredViewState("default-roundtrip", restored);
+    expect(restored.lanes).toBeNull();
+    expect(serializeViewState(restored)).toBe("");
+    expect(readStoredViewState("default-roundtrip")).toBeNull();
+  });
+
+  it.each(["48h", "7d", "14d", "all"])("persists the %s completed window in the URL and remembered view", (window) => {
+    const state = parseViewState(`completed=${window}`);
+    expect(state.completedWindow).toBe(window);
+    expect(parseViewState(serializeViewState(state))).toEqual(state);
+    writeStoredViewState("window", { ...state, view: "list" });
+    expect(readStoredViewState("window")?.completedWindow).toBe(window);
+    expect(parseViewState("completed=invalid").completedWindow).toBe("48h");
   });
 
   it("toggles a filter value on and off and counts what is active", () => {
@@ -95,9 +119,9 @@ describe("the board's view state", () => {
     expect(activeFilterCount(state)).toBe(1);
   });
 
-  it("returns to null once every lane is back on", () => {
+  it("returns to null once the default lanes are restored", () => {
     const hidden = toggleLane(DEFAULT_VIEW_STATE, "Done", LANES);
-    expect(hidden.lanes).toEqual(["Backlog", "Todo", "In progress", "Review"]);
+    expect(hidden.lanes).toEqual(["Todo", "In progress", "Review", "Done"]);
     expect(toggleLane(hidden, "Done", LANES).lanes).toBeNull();
   });
 
@@ -105,7 +129,7 @@ describe("the board's view state", () => {
     let state = toggleLane(DEFAULT_VIEW_STATE, "Backlog", LANES);
     state = toggleLane(state, "Review", LANES);
     state = toggleLane(state, "Backlog", LANES);
-    expect(state.lanes).toEqual(["Backlog", "Todo", "In progress", "Done"]);
+    expect(state.lanes).toEqual(["Todo", "In progress"]);
   });
 });
 

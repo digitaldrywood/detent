@@ -13,10 +13,6 @@ import type { WorkSort } from "./viewState.ts";
 export interface Lane {
   readonly id: string;
   readonly name: string;
-  /**
-   * A terminal state closes work. The artifact dims those lanes and collapses
-   * them by default: they are evidence, not a queue.
-   */
   readonly terminal: boolean;
   /** `backlog`, `unstarted`, `started`, `completed`, `cancelled`, or "". */
   readonly category: string;
@@ -213,7 +209,7 @@ export interface ScopedWorkStats {
   readonly running: number;
   readonly queued: number;
   readonly open: number;
-  readonly completed: number;
+  readonly completed: number | null;
   readonly total: number;
   readonly asOf: string;
   readonly truncated: boolean;
@@ -225,7 +221,7 @@ export function boardStats(
 ): BoardStats {
   const terminal = new Set(lanes.filter((lane) => lane.terminal).map((lane) => lane.name));
   const dispatchable = new Set(
-    lanes.filter((lane) => lane.category === "unstarted").map((lane) => lane.name),
+    lanes.filter((lane) => lane.category === "unstarted" || lane.name.toLowerCase() === "backlog").map((lane) => lane.name),
   );
   let running = 0;
   let queued = 0;

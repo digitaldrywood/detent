@@ -1,0 +1,107 @@
+const { test, expect } = require("@playwright/test");
+const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
+
+test.describe.configure({ mode: "serial" });
+
+let hub;
+
+test.beforeAll(async () => {
+  test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
+  hub = await startHostedHub("work-defaults", {
+    env: { DETENT_HOSTED_BROWSER_BOARD_DEFAULTS: "1" },
+  });
+});
+
+test.afterAll(async () => { await hub?.stop(); });
+
+async function openWork(page, route) {
+  await page.goto(hub.fixture.accounts.owner);
+  await page.goto(new URL(route, hub.fixture.url).toString());
+  await expect(page.getByTestId("work-board")).toBeVisible();
+  await expect(page.getByTestId("work-stats")).toHaveAttribute("aria-busy", "false");
+}
+
+const active = ["Todo", "In Progress", "Rework", "Merging", "Blocked", "Human Review", "Triage"];
+
+for (const scope of ["all", "project"]) {
+  test(`${scope} board hides inventory lanes, keeps empty lanes and exposes totals in the picker`, async ({ page }) => {
+    const route = scope === "all" ? "/work" : `/work/p/${hub.fixture.project_id}`;
+    await openWork(page, route);
+    await expect(page.getByTestId("board-lane")).toHaveCount(7);
+    expect(await page.getByTestId("board-lane").evaluateAll((lanes) => lanes.map((lane) => lane.dataset.lane))).toEqual(active);
+    await expect(page.getByTestId("lane-count-Merging")).toHaveText("0");
+    await expect(page.getByTestId("lane-body-Merging")).toContainText("Nothing is in merging.");
+    const copies = scope === "all" ? 2 : 1;
+    const queuedTotal = await page.evaluate(async (projectId) => {
+      const bootstrap = await (await fetch("/chat/bootstrap")).json();
+      const projects = projectId === null ? bootstrap.projects.map((project) => project.id) : [projectId];
+      const counts = await Promise.all(projects.map(async (id) => {
+        const base = `${bootstrap.api_base}/projects/${id}`;
+        const [project, page] = await Promise.all([fetch(base).then((response) => response.json()), fetch(`${base}/work-items?include=work`).then((response) => response.json())]);
+        return page.work.lanes.reduce((total, lane) => total + (!project.states.find((state) => state.name === lane.state)?.terminal && (lane.state === "Backlog" || project.states.find((state) => state.name === lane.state)?.dispatchable) ? lane.total - lane.running : 0), 0);
+      }));
+      return counts.reduce((total, count) => total + count, 0);
+    }, scope === "all" ? null : hub.fixture.project_id);
+    expect(queuedTotal).toBeGreaterThanOrEqual(130 * copies);
+    await expect(page.getByTestId("stat-queued")).toHaveText(`${queuedTotal} queued inventory`);
+    const queued = await page.getByTestId("stat-queued").innerText();
+    await page.getByTestId("lanes-trigger").click();
+    await expect(page.getByTestId("lanes-trigger")).toHaveText("Lanes7/10");
+    for (const [lane, total] of [["Backlog", 130], ["Done", 3], ["Cancelled", 1]]) {
+      await expect(page.getByTestId(`lane-toggle-${lane}`)).toHaveAttribute("aria-checked", "false");
+      await expect(page.getByTestId(`lane-toggle-${lane}`)).toContainText(String(total * copies));
+    }
+    await page.getByTestId("lane-toggle-Done").click();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("lane-body-Done")).toBeVisible();
+    expect(await page.getByRole("region", { name: "Done", exact: true }).evaluate((lane) => lane.getBoundingClientRect().width)).toBe(300);
+    await expect(page.getByTestId("stat-queued")).toHaveText(queued);
+    await page.reload();
+    await expect(page.getByTestId("lane-body-Done")).toBeVisible();
+    await page.getByTestId("lanes-trigger").click();
+    await page.getByTestId("lane-toggle-Done").click();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("board-lane")).toHaveCount(7);
+    expect(new URL(page.url()).searchParams.has("lanes")).toBe(false);
+    expect(await page.evaluate((key) => localStorage.getItem(`detent.work.view:${key}`), scope === "all" ? "" : hub.fixture.project_id)).toBeNull();
+    await page.getByTestId("view-list").click();
+    await expect(page.getByTestId("work-list")).toContainText("Backlog");
+  });
+
+  test(`${scope} completed window reads the Hub total and survives reload and remembered navigation`, async ({ page }) => {
+    const route = scope === "all" ? "/work" : `/work/p/${hub.fixture.project_id}`;
+    await openWork(page, route);
+    const copies = scope === "all" ? 2 : 1;
+    await expect(page.getByTestId("stat-completed")).toHaveText(`${2 * copies} completed · 48h`);
+    for (const [window, count] of [["7d", 3], ["14d", 3], ["all", 4]]) {
+      await page.getByTestId("completed-window-trigger").click();
+      await page.getByRole("menuitemradio", { name: window === "all" ? "All time" : window, exact: true }).click();
+      await page.keyboard.press("Escape");
+      await expect(page.getByTestId("stat-completed")).toHaveText(`${count * copies} completed · ${window}`);
+      await expect(page).toHaveURL(new RegExp(`completed=${window}`));
+    }
+    await page.reload();
+    await expect(page.getByTestId("stat-completed")).toHaveText(`${4 * copies} completed · all`);
+    await page.goto(new URL(route, hub.fixture.url).toString());
+    await expect(page).toHaveURL(/completed=all/);
+    await expect(page.getByTestId("stat-completed")).toHaveText(`${4 * copies} completed · all`);
+    await page.getByTestId("completed-window-trigger").click();
+    await page.getByRole("menuitemradio", { name: "48h", exact: true }).click();
+    await expect(page.getByTestId("stat-completed")).toHaveText(`${2 * copies} completed · 48h`);
+    expect(new URL(page.url()).searchParams.has("completed")).toBe(false);
+  });
+}
+
+test("explicit URL and stored lane selections remain exact", async ({ page }) => {
+  const route = `/work/p/${hub.fixture.project_id}`;
+  await openWork(page, `${route}?lanes=Done`);
+  await expect(page.getByTestId("board-lane")).toHaveCount(1);
+  await expect(page.getByTestId("lane-body-Done")).toBeVisible();
+  await page.evaluate((project) => localStorage.setItem(`detent.work.view:${project}`, "lanes=Cancelled"), hub.fixture.project_id);
+  await page.goto(new URL(route, hub.fixture.url).toString());
+  await expect(page.getByTestId("board-lane")).toHaveCount(1);
+  await expect(page.getByTestId("lane-body-Cancelled")).toBeVisible();
+  await page.goto(new URL(`${route}?lanes=Done`, hub.fixture.url).toString());
+  await expect(page.getByTestId("board-lane")).toHaveCount(1);
+  await expect(page.getByTestId("lane-body-Done")).toBeVisible();
+});
