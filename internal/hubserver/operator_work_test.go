@@ -110,9 +110,14 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 		args := map[string]any{"github_issue_url": "github.com/Acme/Orders/issues/13", "state": "Backlog"}
+		snapshot := linkedSnapshot()
+		snapshot.URL = "https://github.com/acme/orders/issues/13"
+		snapshot.Provenance.ExternalID = "I_checkout"
+		snapshot.Comments[0].Provenance.ExternalID = "C_checkout"
+		f.service.config.ImportBackend = linkedTestImporter{snapshot: snapshot}
 		raw, failed = call("file_issue", "checkout-link", args)
 		var item tracker.NativeIssue
-		if err := json.Unmarshal(raw, &item); err != nil || failed || item.State != "Backlog" || item.LinkedSource == nil || item.LinkedSource.Status != "pending" {
+		if err := json.Unmarshal(raw, &item); err != nil || failed || item.State != "Triage" || item.LinkedSource == nil || item.LinkedSource.Status != "complete" {
 			t.Fatalf("checkout link=%s failed=%t err=%v", raw, failed, err)
 		}
 		for _, key := range []string{"checkout-link", "checkout-duplicate"} {

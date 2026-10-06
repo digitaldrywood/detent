@@ -96,8 +96,8 @@ func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope nativeScope, so
 	if err != nil {
 		return nil, err
 	}
-	if integration.Profile != "native" || !strings.EqualFold(repository, integration.Repository) && !strings.EqualFold(repository, integration.CheckoutRepository) {
-		return nil, nativeInvalid(linkedIssueRepositoryMismatch)
+	if err := validateLinkedIssueRepository(integration, repository); err != nil {
+		return nil, err
 	}
 	if s.config.ImportBackend == nil {
 		return nil, nativeInvalid("GitHub App transport is unavailable for linked issue intake")
