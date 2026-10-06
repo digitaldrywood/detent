@@ -71,6 +71,8 @@ func TestCancellationDoesNotInventFailureOrExposeCause(t *testing.T) {
 		{"ordinary error", errors.New("failure"), false},
 		{"cleanup deadline", errors.Join(ErrWorkerProcessReap, context.DeadlineExceeded), false},
 		{"cleanup cancellation", errors.Join(ErrWorkerProcessReap, context.Canceled), false},
+		{"workspace ownership deadline", errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded), false},
+		{"workspace ownership cancellation", errors.Join(ErrWorkspacePreparation, context.Canceled), false},
 		{"backend cancellation", context.Canceled, true},
 		{"backend deadline", context.DeadlineExceeded, true},
 	} {

@@ -61,7 +61,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	humanReview := cfg.humanReviewEnabled() || autoPromoteOptoutLabel(issue, cfg)
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
 		recoveryRequired := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
-		if !humanReview && o.handlePreTurnFailure(ctx, state, event, running) {
+		if o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
 		}
 		if humanReview || recoveryRequired {

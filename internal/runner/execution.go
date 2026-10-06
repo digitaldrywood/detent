@@ -294,8 +294,6 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		backend.AfterRun(afterCtx, info, issue)
 		return nil
 	}
-	localCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-	defer cancel()
 	var finalizationErr error
 	if req.finalizeNativeWork && ctx.Err() == nil && !req.retainCheckpoint {
 		if finalizer, ok := backend.(workspace.NativeWorkFinalizer); ok {
@@ -318,22 +316,28 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
 	if deadlineExpired {
 		if publisher, ok := backend.(workspace.WorkInProgressPublisher); ok {
-			publicationErr = publisher.PublishWorkInProgress(localCtx, issue, req.Execution.Validate)
+			publicationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+			publicationErr = publisher.PublishWorkInProgress(publicationCtx, issue, req.Execution.Validate)
+			cancel()
 			if publicationErr != nil {
 				r.logger.Warn("unfinished runner work not published", "issue_id", req.Issue.ID, "error", publicationErr)
 			}
 		}
 	}
-	artifactCtx := ctx
-	if deadlineExpired {
-		artifactCtx = localCtx
-	}
-	state := r.workspaceRecoveryState(backend, localCtx, info, issue, "native_checkpoint")
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	state := r.workspaceRecoveryState(backend, recoveryCtx, info, issue, "native_checkpoint")
+	cancel()
 	checkpoint := executionCheckpoint(state)
 	if state != nil && !agentResumeEmpty(resume) {
 		checkpoint.Resume = "resume_session"
 	} else if turnStarted {
 		checkpoint.Resume = "manual_recovery"
+	}
+	artifactCtx := ctx
+	if deadlineExpired {
+		var cancel context.CancelFunc
+		artifactCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+		defer cancel()
 	}
 	var artifactErr error
 	if publisher, ok := req.Execution.(ValidationEvidenceExecution); ok && ctx.Err() == nil && req.validationEvidenceSource != nil {
@@ -341,33 +345,30 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		if available {
 			evidence, err := validationScreenshots(info.Path, diff.Files)
 			if err != nil {
-				return err
-			}
-			if err := publisher.PublishValidationEvidence(artifactCtx, evidence); err != nil {
-				return err
+				artifactErr = err
+			} else {
+				artifactErr = publisher.PublishValidationEvidence(artifactCtx, evidence)
 			}
 		}
 	}
-	if artifacts, ok := req.Execution.(ArtifactExecution); ok && finalizationErr == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
+	if artifacts, ok := req.Execution.(ArtifactExecution); ok && finalizationErr == nil && artifactErr == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
 		if err := artifacts.FinalizeArtifacts(artifactCtx, info.Path); err != nil {
-			if !deadlineExpired {
-				return err
-			}
 			artifactErr = err
 		}
 	}
 	completionErr := errors.Join(finalizationErr, publicationErr, artifactErr)
 
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
-		if _, err := r.PreserveWorkspace(localCtx, req.Issue); err != nil {
+		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+		_, err := r.PreserveWorkspace(preserveCtx, req.Issue)
+		cancel()
+		if err != nil {
 			r.logger.Warn("preserve native workspace failed", "issue_id", req.Issue.ID, "error", err)
-			return errors.Join(completionErr, ErrNativeRecoveryRequired, err)
+			return errors.Join(completionErr, ErrWorkspacePreparation, ErrNativeRecoveryRequired, err)
 		}
 	}
-	checkpointCtx := ctx
-	if deadlineExpired {
-		checkpointCtx = localCtx
-	}
+	checkpointCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	defer cancel()
 	if err := req.Execution.Validate(checkpointCtx); err != nil {
 		return errors.Join(completionErr, err)
 	}
@@ -375,7 +376,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		return errors.Join(completionErr, err)
 	}
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || req.retainCheckpoint || ctx.Err() != nil {
-		return completionErr
+		return errors.Join(completionErr, context.Cause(ctx))
 	}
 	afterCtx, stop := context.WithTimeout(ctx, r.afterRunTimeout)
 	defer stop()

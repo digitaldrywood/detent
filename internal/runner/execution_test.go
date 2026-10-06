@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
@@ -943,21 +945,42 @@ func TestNativeGuardPreventsRun(t *testing.T) {
 	}
 }
 
-type executionUnavailableBackend struct{}
+type executionUnavailableBackend struct{ failure error }
 
-func (executionUnavailableBackend) Run(context.Context, RunRequest) (RunResult, error) {
-	return RunResult{}, ErrExecutionAuthorityUnavailable
+func (b executionUnavailableBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	return RunResult{}, b.failure
 }
 
 func TestNativeOutagePreservesFailureBudget(t *testing.T) {
 	t.Parallel()
-	supervisor, err := NewSupervisor(executionUnavailableBackend{}, SupervisorConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	completion := supervisor.Run(t.Context(), RunRequest{Attempt: 4})
-	if !completion.Retryable || completion.RetryAttempt != 4 || completion.RetryDelay != supervisor.OverloadRetryDelay() {
-		t.Fatalf("outage consumed retry budget: %#v", completion)
+	for _, test := range []struct {
+		name            string
+		failure         error
+		parentCancelled bool
+	}{
+		{name: "authority unavailable", failure: ErrExecutionAuthorityUnavailable},
+		{name: "ownership stage deadline", failure: errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded)},
+		{name: "genuine parent deadline", failure: errors.Join(ErrWorkspacePreparation, context.DeadlineExceeded), parentCancelled: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			supervisor, err := NewSupervisor(executionUnavailableBackend{failure: test.failure}, SupervisorConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(context.Canceled)
+			if test.parentCancelled {
+				cancel(context.DeadlineExceeded)
+			}
+			completion := supervisor.Run(ctx, RunRequest{Attempt: 4})
+			if !completion.Retryable || completion.RetryAttempt != 4 || completion.RetryDelay != supervisor.OverloadRetryDelay() {
+				t.Fatalf("outage consumed retry budget: %#v", completion)
+			}
+			var cause *CancellationCause
+			if errors.As(completion.Err, &cause) != test.parentCancelled {
+				t.Fatalf("stage failure misattributed to parent: %v", completion.Err)
+			}
+		})
 	}
 }
 
@@ -1171,18 +1194,123 @@ type artifactExecutionProbe struct {
 	evidenceFailure error
 	finalized       bool
 	evidence        []ValidationEvidence
+	onFinalize      func(context.Context) error
 }
 
 func (*artifactExecutionProbe) PrepareArtifacts(context.Context, string) error { return nil }
 func (*artifactExecutionProbe) ArtifactLog(context.Context, string) error      { return nil }
-func (e *artifactExecutionProbe) FinalizeArtifacts(context.Context, string) error {
+func (e *artifactExecutionProbe) FinalizeArtifacts(ctx context.Context, _ string) error {
 	e.finalized = true
+	if e.onFinalize != nil {
+		return e.onFinalize(ctx)
+	}
 	return e.failure
 }
 
 func (e *artifactExecutionProbe) PublishValidationEvidence(_ context.Context, files []ValidationEvidence) error {
 	e.evidence = files
 	return e.evidenceFailure
+}
+
+type finalizingExecutionWorkspace struct {
+	retainedExecutionWorkspace
+	delay         time.Duration
+	failure       error
+	preserveErr   error
+	preserveDelay time.Duration
+	finalized     bool
+}
+
+func (w *finalizingExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
+	time.Sleep(w.delay)
+	if err := validate(ctx); err != nil {
+		return "", err
+	}
+	w.finalized = true
+	return "", w.failure
+}
+
+func (w *finalizingExecutionWorkspace) RecoveryState(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.RecoveryState, error) {
+	if err := ctx.Err(); err != nil {
+		return workspace.RecoveryState{}, err
+	}
+	return w.fakeWorkspaceBackend.RecoveryState(ctx, info, issue)
+}
+
+func (w *finalizingExecutionWorkspace) PreserveIssue(ctx context.Context, issue workspace.Issue) (workspace.Preservation, error) {
+	time.Sleep(w.preserveDelay)
+	if err := errors.Join(ctx.Err(), w.preserveErr); err != nil {
+		return workspace.Preservation{}, fmt.Errorf("resolve cleanup ownership source: %w", err)
+	}
+	return w.retainedExecutionWorkspace.PreserveIssue(ctx, issue)
+}
+
+func TestNativeEpilogueStageContexts(t *testing.T) {
+	t.Parallel()
+	uploadErr := errors.New("artifact upload unavailable")
+	for _, test := range []struct {
+		name           string
+		finalDelay     time.Duration
+		artifactDelay  time.Duration
+		cancel         bool
+		authorityErr   error
+		artifactErr    error
+		finalErr       error
+		preserveErr    error
+		preserveDelay  time.Duration
+		parentDeadline time.Duration
+		clean          bool
+		wantErr        error
+	}{
+		{name: "slow finalization", finalDelay: 2 * time.Second},
+		{name: "slow artifacts", artifactDelay: 2 * time.Second},
+		{name: "clean committed source cancelled during artifacts", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, clean: true, cancel: true, wantErr: context.Canceled},
+		{name: "genuine parent deadline retains source without success", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, parentDeadline: 3 * time.Second, clean: true, wantErr: context.DeadlineExceeded},
+		{name: "artifact failure retains checkpoint", artifactErr: uploadErr, wantErr: uploadErr},
+		{name: "expired authority retains source without checkpoint", authorityErr: ErrExecutionAuthorityUnavailable, wantErr: ErrExecutionAuthorityUnavailable},
+		{name: "source fence refusal", finalErr: workspace.ErrMergeResolutionInvalid, wantErr: workspace.ErrMergeResolutionInvalid},
+		{name: "ownership failure is instance owned", preserveDelay: 2 * time.Second, wantErr: ErrWorkspacePreparation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				state := workspace.RecoveryState{HeadSHA: "committed-head", WorkspaceFingerprint: "tested-source-digest", UnpushedCommits: 1}
+				if test.clean {
+					state.UnpushedCommits = 0
+				}
+				backend := &finalizingExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{state}}}, delay: test.finalDelay, failure: test.finalErr, preserveErr: test.preserveErr}
+				backend.preserveDelay = test.preserveDelay
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if test.parentDeadline > 0 {
+					var stop context.CancelFunc
+					ctx, stop = context.WithTimeout(ctx, test.parentDeadline)
+					defer stop()
+				}
+				execution := &artifactExecutionProbe{}
+				execution.onFinalize = func(ctx context.Context) error {
+					time.Sleep(test.artifactDelay)
+					if test.cancel {
+						cancel()
+					}
+					execution.validateErr = test.authorityErr
+					return errors.Join(ctx.Err(), test.artifactErr)
+				}
+				r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
+				err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, finalizeNativeWork: true}, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true)
+				preserved := test.preserveErr == nil && test.preserveDelay == 0
+				if !errors.Is(err, test.wantErr) || backend.afterRun || backend.retained != preserved {
+					t.Fatalf("error=%v retained=%t cleaned=%t", err, backend.retained, backend.afterRun)
+				}
+				if test.authorityErr != nil || !preserved {
+					if execution.checkpoint != nil {
+						t.Fatal("refused ownership or authority wrote checkpoint")
+					}
+				} else if execution.checkpoint == nil || execution.checkpoint.HeadSHA != state.HeadSHA || execution.checkpoint.WorkspaceDigest != state.WorkspaceFingerprint {
+					t.Fatalf("tested source identity lost: %+v", execution.checkpoint)
+				}
+			})
+		})
+	}
 }
 
 func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
