@@ -1388,7 +1388,7 @@ func TestStartRunningSurvivesTransientConnectorProvisioningFailure(t *testing.T)
 	}
 }
 
-func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
+func TestStartRunningHotReloadsMachineConfigWithoutReplacingStoredProjects(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
@@ -1425,25 +1425,34 @@ func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 		return strings.Contains(body, "alpha")
 	})
 
-	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+	updated := global
+	updated.InstanceName = "reloaded-runner"
+	updated.Projects = []globalconfig.Project{
 		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
 		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
+	}
+	if err := globalconfig.Write(configPath, updated); err != nil {
+		t.Fatal(err)
+	}
+	body := waitForDashboardCondition(t, settingsURL, done, "instance name reloaded", func(body string) bool {
+		return strings.Contains(body, "reloaded-runner")
 	})
-	body := waitForDashboardCondition(t, settingsURL, done, "bravo added", func(body string) bool {
-		return strings.Contains(body, "bravo")
-	})
-	if !strings.Contains(body, "alpha") {
-		t.Fatalf("settings body missing alpha after reload:\n%s", body)
+	if !strings.Contains(body, "alpha") || strings.Contains(body, "bravo") {
+		t.Fatalf("settings projects changed after legacy YAML addition:\n%s", body)
 	}
 
-	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+	updated.InstanceName = "renamed-runner"
+	updated.Projects = []globalconfig.Project{
 		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
+	}
+	if err := globalconfig.Write(configPath, updated); err != nil {
+		t.Fatal(err)
+	}
+	body = waitForDashboardCondition(t, settingsURL, done, "instance name reloaded again", func(body string) bool {
+		return strings.Contains(body, "renamed-runner")
 	})
-	body = waitForDashboardCondition(t, settingsURL, done, "alpha removed", func(body string) bool {
-		return strings.Contains(body, "bravo") && !strings.Contains(body, "alpha")
-	})
-	if strings.Contains(body, "alpha") {
-		t.Fatalf("settings body still contains alpha after removal:\n%s", body)
+	if !strings.Contains(body, "alpha") || strings.Contains(body, "bravo") {
+		t.Fatalf("settings projects changed after legacy YAML removal:\n%s", body)
 	}
 
 	cancel()
@@ -1517,17 +1526,22 @@ func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing
 		t.Fatalf("settings body missing alpha:\n%s", body)
 	}
 
-	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+	updated := global
+	updated.InstanceName = "startup-reloaded-runner"
+	updated.Projects = []globalconfig.Project{
 		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
 		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
-	})
+	}
+	if err := globalconfig.Write(configPath, updated); err != nil {
+		t.Fatal(err)
+	}
 	close(provisionRelease)
 
-	body = waitForDashboardCondition(t, settingsURL, done, "bravo added after startup write", func(body string) bool {
-		return strings.Contains(body, "bravo")
+	body = waitForDashboardCondition(t, settingsURL, done, "instance name reconciled after startup write", func(body string) bool {
+		return strings.Contains(body, "startup-reloaded-runner")
 	})
-	if !strings.Contains(body, "alpha") {
-		t.Fatalf("settings body missing alpha after startup write:\n%s", body)
+	if !strings.Contains(body, "alpha") || strings.Contains(body, "bravo") {
+		t.Fatalf("settings projects changed after startup YAML write:\n%s", body)
 	}
 
 	cancel()
