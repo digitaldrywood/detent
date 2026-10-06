@@ -300,8 +300,16 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 		if finalizer, ok := backend.(workspace.NativeWorkFinalizer); ok {
 			if err := req.Execution.Validate(ctx); err != nil {
 				finalizationErr = err
-			} else if err := finalizer.FinalizeNativeWork(ctx, info, issue, req.Execution.Validate); err != nil {
-				finalizationErr = nativeGitError("finalize native work", err)
+			} else {
+				base, err := finalizer.FinalizeNativeWork(ctx, info, issue, req.Execution.Validate)
+				if err != nil {
+					finalizationErr = nativeGitError("finalize native work", err)
+				} else if base != "" {
+					issue.BaseRef = base
+					if diffs, ok := req.Execution.(DiffExecution); ok {
+						diffs.SetDiffSource(r.attemptDiffSource(ctx, info, issue))
+					}
+				}
 			}
 		}
 	}

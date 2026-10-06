@@ -173,7 +173,7 @@ type ReworkPreparer interface {
 }
 
 type NativeWorkFinalizer interface {
-	FinalizeNativeWork(context.Context, Info, Issue, func(context.Context) error) error
+	FinalizeNativeWork(context.Context, Info, Issue, func(context.Context) error) (string, error)
 }
 
 type MergePreparer interface {
@@ -193,6 +193,7 @@ type MergePrepareOptions struct {
 
 type MergePrepareResult struct {
 	ConflictPaths []string
+	BaseSHA       string
 	HeadSHA       string
 	Status        MergePrepareStatus
 	DiffStat      DiffStat
