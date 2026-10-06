@@ -47,16 +47,18 @@ func TestTenantEnvironmentPassesOpenAIKeyOnlyWhenPresent(t *testing.T) {
 	}
 }
 
-func TestTenantEnvironmentPassesSecretKeysOnlyWhenPresent(t *testing.T) {
+func TestTenantEnvironmentPassesCredentialsOnlyWhenPresent(t *testing.T) {
 	config := cloudFileConfig{Allocation: &cloudAllocationFileConfig{}}
 	config.WorkOS.APIKeyEnv = "WORKOS_API_KEY"
 	for _, test := range []struct {
-		name string
-		keys string
-		want []string
+		name   string
+		keys   string
+		want   []string
+		github map[string]string
 	}{
 		{name: "missing", want: []string{"WORKOS_API_KEY=workos-test-key"}},
 		{name: "present", keys: `{"1":"a2V5"}`, want: []string{"WORKOS_API_KEY=workos-test-key", `DETENT_HUB_SECRET_KEYS={"1":"a2V5"}`, "DETENT_HUB_SECRET_KEY_VERSION=1"}},
+		{name: "GitHub App", github: map[string]string{"DETENT_HUB_GITHUB_APP_ID": "123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY": "private-key", "DETENT_HUB_GITHUB_WEBHOOK_SECRET": "webhook-secret"}, want: []string{"WORKOS_API_KEY=workos-test-key", "DETENT_HUB_GITHUB_APP_ID=123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY=private-key", "DETENT_HUB_GITHUB_WEBHOOK_SECRET=webhook-secret"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			env := tenantEnvironment(config, func(name string) string {
@@ -68,7 +70,7 @@ func TestTenantEnvironmentPassesSecretKeysOnlyWhenPresent(t *testing.T) {
 				case "DETENT_HUB_SECRET_KEY_VERSION":
 					return "1"
 				}
-				return ""
+				return test.github[name]
 			})
 			if strings.Join(env, "\n") != strings.Join(test.want, "\n") {
 				t.Fatalf("tenant environment = %q, want %q", env, test.want)
@@ -87,6 +89,7 @@ func TestReadCloudConfig(t *testing.T) {
 		wantError  bool
 	}{
 		{name: "valid", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}},
+		{name: "product App webhook", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed, "DETENT_HUB_GITHUB_WEBHOOK_SECRET": "webhook-secret"}},
 		{name: "missing signing key", body: base, env: map[string]string{"WORKOS_API_KEY": "sk_test"}, wantError: true},
 		{name: "literal secret rejected", body: base + "signing_key: " + seed + "\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
 		{name: "attachment secret in YAML rejected", body: base + "attachments:\n  endpoint: https://nyc3.digitaloceanspaces.com\n  region: nyc3\n  bucket: private\n  access_key_id: forbidden\n", env: map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": seed}, wantError: true},
@@ -104,6 +107,9 @@ func TestReadCloudConfig(t *testing.T) {
 			}
 			if err == nil && (config.ListenAddress != "127.0.0.1:8017" || config.Issuer != "detent-cloud" || config.Provider == nil || len(config.SigningKey) == 0) {
 				t.Fatalf("config = %+v", config)
+			}
+			if err == nil && string(config.GitHubWebhookSecret) != test.env["DETENT_HUB_GITHUB_WEBHOOK_SECRET"] {
+				t.Fatal("entry webhook secret was not read from the environment")
 			}
 			if err != nil && strings.Contains(err.Error(), seed) {
 				t.Fatal("error exposes the signing key")

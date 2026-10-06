@@ -72,13 +72,26 @@ uses its existing source-close path with a short link comment and GitHub's
 their existing owners; intake adds no polling loop. Targeted manual reads fail
 without creating a partial issue when App access or complete pagination fails.
 
-The hosted deployment supplies `DETENT_HUB_GITHUB_APP_ID`,
+The hosted entry (`detent cloud serve`) receives `DETENT_HUB_GITHUB_APP_ID`,
 `DETENT_HUB_GITHUB_APP_PRIVATE_KEY` and `DETENT_HUB_GITHUB_WEBHOOK_SECRET` from its
-secret store. Each repository's App installation is resolved with the App's signed
-identity and its existing installation-token source. Tenants mint no tokens.
-Configure the App webhook for `issues` and `issue_comment` events at
-`/api/v1/webhooks/github`, and install the App with issues read/write permission on
-the bound repositories. Credentials never enter issue or agent context.
+secret store and explicitly passes all three variables to tenant Hubs. Configure
+the product App's single webhook URL as the entry origin followed by
+`/api/v1/webhooks/github` (for example,
+`https://cloud.detent.build/api/v1/webhooks/github`), with the same webhook secret
+and subscriptions to `issues` and `issue_comment` events. The entry verifies the
+GitHub signature once and forwards a signed service request only to organizations
+whose native projects bind the payload's repository through an attached repository
+or `checkout_repository`. Unbound deliveries are acknowledged and dropped.
+Repository routing is loaded from tenant Hubs at entry startup and refreshed after
+tenant mutations; deliveries use the resulting repository index. Unavailable
+routing or failed tenant delivery returns an error for GitHub redelivery, which
+reuses the tenant inbox's delivery identity. There is no entry polling loop.
+
+Each repository's App installation is resolved with the App's signed identity and
+its existing installation-token source. Install the App with issues read/write
+permission on the bound repositories. There are no per-tenant App credentials or
+operator PATs. A self-hosted Hub uses the same webhook path on its own origin and
+verifies the signature itself. Credentials never enter issue or agent context.
 
 ## Import and inspect
 

@@ -89,6 +89,11 @@ type cloudAllocationFileConfig struct {
 
 func tenantEnvironment(config cloudFileConfig, lookupEnv func(string) string) []string {
 	names := []string{config.WorkOS.APIKeyEnv}
+	for _, name := range []string{"DETENT_HUB_GITHUB_APP_ID", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY", "DETENT_HUB_GITHUB_WEBHOOK_SECRET"} {
+		if lookupEnv(name) != "" {
+			names = append(names, name)
+		}
+	}
 	if lookupEnv("OPENAI_API_KEY") != "" {
 		names = append(names, "OPENAI_API_KEY")
 	}
@@ -275,7 +280,8 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 		}
 	}
 	result := cloudentry.Config{
-		PublicURL: config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
+		GitHubWebhookSecret: []byte(strings.TrimSpace(lookupEnv("DETENT_HUB_GITHUB_WEBHOOK_SECRET"))),
+		PublicURL:           config.PublicURL, Issuer: config.Assertion.Issuer, SigningKey: key, Provider: provider,
 		StaffEmails: config.StaffEmails, SupportActors: config.SupportActors, EntitlementAdministrators: config.EntitlementAdministrators, StateDir: config.StateDirectory, ListenAddress: config.Listen, Logger: slog.Default(), ConfigPath: path,
 	}
 	if config.Attachments != nil {
