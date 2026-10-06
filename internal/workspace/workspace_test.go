@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
@@ -1233,86 +1234,208 @@ func TestRunGitAtWithEnvCancellationReturnsPromptly(t *testing.T) {
 	}
 }
 
-func TestLocalGitHookCancellationReturnsPromptly(t *testing.T) {
+func TestHookCancellationReapsDescendants(t *testing.T) {
 	if testing.Short() {
-		t.Skip("real process or filesystem integration")
+		t.Skip("process lifecycle integration")
 	}
-
 	skipWindows(t)
 
-	workspacePath := t.TempDir()
-	startedPath := filepath.Join(workspacePath, "hook.started")
-	completedPath := filepath.Join(workspacePath, "hook.completed")
-	backend := &LocalGit{
-		hooks:  Hooks{Timeout: time.Minute},
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
+	for _, kind := range []string{KindLocalGit, KindFilesystem} {
+		for _, timeout := range []bool{false, true} {
+			for _, resist := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/timeout=%t/resist=%t", kind, timeout, resist), func(t *testing.T) {
+					root := t.TempDir()
+					workspacePath := filepath.Join(root, "workspace")
+					if err := os.Mkdir(workspacePath, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					neighbor := exec.CommandContext(t.Context(), "sleep", "30")
+					neighbor.Dir = workspacePath
+					procgroup.Configure(t.Context(), neighbor)
+					if err := neighbor.Start(); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						_ = neighbor.Process.Kill()
+						_ = neighbor.Wait()
+					})
+					neighborIdentity, err := procgroup.Inspect(neighbor)
+					if err != nil {
+						t.Fatal(err)
+					}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	hookDone := make(chan error, 1)
-	go func() {
-		hookDone <- backend.runHook(
-			ctx,
-			"before_run",
-			"(\n"+
-				": > "+shellQuote(startedPath)+"\n"+
-				"sleep 4\n"+
-				": > "+shellQuote(completedPath)+"\n"+
-				") &\n"+
-				"wait",
-			Info{Path: workspacePath, Key: "DD-HOOK", Branch: "detent/dd-hook"},
-			Issue{Identifier: "DD-HOOK"},
-		)
-	}()
-
-	waitForFile(t, startedPath, 10*time.Second)
-	cancel()
-	err := waitForError(t, hookDone, 10*time.Second)
-
-	if err == nil {
-		t.Fatal("runHook() error = nil, want cancellation error")
-	}
-	var hookErr *HookError
-	if !errors.As(err, &hookErr) {
-		t.Fatalf("runHook() error = %T, want *HookError", err)
-	}
-	if !errors.Is(hookErr.Err, context.Canceled) {
-		t.Fatalf("HookError.Err = %v, want context canceled", hookErr.Err)
-	}
-	if _, err := os.Stat(completedPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("hook workload completed before cancellation returned, stat error = %v", err)
+					trap := ""
+					if resist {
+						trap = "trap '' TERM; "
+					}
+					grandchild := trap + "echo $$ > grandchild.pid; printf 'hook stdout\n'; printf 'hook stderr\n' >&2; : > grandchild.ready; " +
+						"while [ ! -f release ]; do sleep 0.02; done; " +
+						"printf late > completed; printf late > " + shellQuote(filepath.Join(workspacePath, "completed"))
+					child := trap + "echo $$ > child.pid; sh -c " + shellQuote(grandchild) + "; wait"
+					command := trap + "echo $$ > shell.pid; sh -c " + shellQuote(child) + "; wait"
+					hooks := Hooks{Timeout: time.Minute}
+					wantErr := context.Canceled
+					if timeout {
+						hooks.Timeout = time.Second
+						wantErr = context.DeadlineExceeded
+					}
+					logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+					run := (&LocalGit{root: root, hooks: hooks, logger: logger}).runHook
+					if kind == KindFilesystem {
+						run = (&Filesystem{root: root, hooks: hooks, logger: logger}).runHook
+					}
+					ctx, cancel := context.WithCancel(t.Context())
+					t.Cleanup(cancel)
+					done := make(chan error, 1)
+					go func() {
+						done <- run(ctx, "before_run", command, Info{Path: workspacePath, Key: "DD-HOOK"}, Issue{Identifier: "DD-HOOK"})
+					}()
+					identities := make([]procgroup.Identity, 0, 3)
+					for _, role := range []string{"shell", "child", "grandchild"} {
+						pidPath := filepath.Join(workspacePath, role+".pid")
+						waitForFile(t, pidPath, 10*time.Second)
+						pid, err := strconv.Atoi(strings.TrimSpace(readFile(t, pidPath)))
+						if err != nil {
+							t.Fatal(err)
+						}
+						process, err := os.FindProcess(pid)
+						if err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() { _ = process.Kill() })
+						identity, err := procgroup.Inspect(&exec.Cmd{Process: process})
+						if err != nil {
+							t.Fatalf("inspect %s: %v", role, err)
+						}
+						identities = append(identities, identity)
+					}
+					waitForFile(t, filepath.Join(workspacePath, "grandchild.ready"), 10*time.Second)
+					started := time.Now()
+					if !timeout {
+						cancel()
+					}
+					err = waitForError(t, done, 5*time.Second)
+					if elapsed := time.Since(started); elapsed > 3*time.Second {
+						t.Fatalf("hook shutdown took %s", elapsed)
+					}
+					var hookErr *HookError
+					if !errors.As(err, &hookErr) || !errors.Is(err, wantErr) {
+						t.Fatalf("runHook() error = %v, want HookError wrapping %v", err, wantErr)
+					}
+					if hookErr.ExitCode != -1 {
+						t.Fatalf("hook exit code = %d, want signal exit", hookErr.ExitCode)
+					}
+					for _, want := range []string{"hook stdout", "hook stderr"} {
+						if !strings.Contains(hookErr.Output, want) || !strings.Contains(readFile(t, hookErr.LogPath), want) {
+							t.Fatalf("hook evidence missing %q: %v", want, hookErr)
+						}
+					}
+					observations, err := procgroup.Observe(identities)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, observation := range observations {
+						if observation.Alive {
+							t.Errorf("owned process group still running at hook return: %+v", observation)
+						}
+					}
+					if alive, err := procgroup.Alive(neighborIdentity); err != nil || !alive {
+						t.Fatalf("unrelated process alive = %t, error = %v", alive, err)
+					}
+					quarantinedPath := filepath.Join(root, "quarantined")
+					if err := os.Rename(workspacePath, quarantinedPath); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Mkdir(workspacePath, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					for _, path := range []string{workspacePath, quarantinedPath} {
+						if err := os.WriteFile(filepath.Join(path, "release"), nil, 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					<-time.After(100 * time.Millisecond)
+					for _, path := range []string{workspacePath, quarantinedPath} {
+						if _, err := os.Stat(filepath.Join(path, "completed")); !errors.Is(err, os.ErrNotExist) {
+							t.Errorf("hook wrote after workspace quarantine at %s: %v", path, err)
+						}
+					}
+				})
+			}
+		}
 	}
 }
 
-func TestLocalGitHookAllowsDaemonizedSuccess(t *testing.T) {
+func TestHookWithExitedShell(t *testing.T) {
 	if testing.Short() {
-		t.Skip("real process or filesystem integration")
+		t.Skip("process lifecycle integration")
 	}
-
 	skipWindows(t)
 
-	workspacePath := t.TempDir()
-	backend := &LocalGit{
-		hooks:  Hooks{Timeout: 3 * time.Second},
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-
-	started := time.Now()
-	err := backend.runHook(
-		context.Background(),
-		"before_run",
-		"sleep 4 &",
-		Info{Path: workspacePath, Key: "DD-HOOK", Branch: "detent/dd-hook"},
-		Issue{Identifier: "DD-HOOK"},
-	)
-	elapsed := time.Since(started)
-
-	if err != nil {
-		t.Fatalf("runHook() error = %v, want nil", err)
-	}
-	if elapsed > 2*time.Second {
-		t.Fatalf("runHook() elapsed = %s, want daemonized hook within wait delay", elapsed)
+	for _, kind := range []string{KindLocalGit, KindFilesystem} {
+		for _, mode := range []string{"success", "parent cancellation", "timeout"} {
+			t.Run(kind+"/"+mode, func(t *testing.T) {
+				root := t.TempDir()
+				hooks := Hooks{Timeout: time.Minute}
+				if mode == "timeout" {
+					hooks.Timeout = 500 * time.Millisecond
+				}
+				logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+				run := (&LocalGit{root: root, hooks: hooks, logger: logger}).runHook
+				if kind == KindFilesystem {
+					run = (&Filesystem{root: root, hooks: hooks, logger: logger}).runHook
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				t.Cleanup(cancel)
+				done := make(chan error, 1)
+				go func() {
+					done <- run(ctx, "before_run", "sleep 30 & echo $! > descendant.pid", Info{Path: root, Key: "DD-HOOK"}, Issue{Identifier: "DD-HOOK"})
+				}()
+				pidPath := filepath.Join(root, "descendant.pid")
+				waitForFile(t, pidPath, 10*time.Second)
+				pid, err := strconv.Atoi(strings.TrimSpace(readFile(t, pidPath)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				process, err := os.FindProcess(pid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = process.Kill() })
+				identity, err := procgroup.Inspect(&exec.Cmd{Process: process})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "parent cancellation" {
+					cancel()
+				}
+				err = waitForError(t, done, 3*time.Second)
+				if mode == "success" {
+					if err != nil {
+						t.Fatalf("daemonized hook error = %v", err)
+					}
+					if alive, err := procgroup.Alive(identity); err != nil || !alive {
+						t.Fatalf("successful background process alive = %t, error = %v", alive, err)
+					}
+					return
+				}
+				wantErr := context.Canceled
+				if mode == "timeout" {
+					wantErr = context.DeadlineExceeded
+				}
+				var hookErr *HookError
+				if !errors.As(err, &hookErr) || !errors.Is(err, wantErr) {
+					t.Fatalf("hook error = %v, want HookError wrapping %v", err, wantErr)
+				}
+				observations, err := procgroup.Observe([]procgroup.Identity{identity})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if observations[0].Alive {
+					t.Fatalf("descendant survived hook cancellation after shell exit: %+v", observations[0])
+				}
+			})
+		}
 	}
 }
 

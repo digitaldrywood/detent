@@ -2026,11 +2026,6 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 	}
 	defer cancel()
 
-	cmd := commandshell.Command(hookCtx, command, l.hooks.Shell)
-	cmd.Dir = info.Path
-	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
-	cmd.WaitDelay = workspaceCommandWaitDelay
-
 	l.logger.Info(
 		"running workspace hook",
 		slog.String("hook", name),
@@ -2038,11 +2033,8 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 		slog.String("command", command),
 	)
 
-	output, err := cmd.CombinedOutput()
+	output, err := runHookCommand(hookCtx, command, l.hooks, info, issue)
 	if err == nil {
-		return nil
-	}
-	if errors.Is(err, exec.ErrWaitDelay) && hookCtx.Err() == nil {
 		return nil
 	}
 
@@ -2050,9 +2042,6 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		exitCode = exitErr.ExitCode()
-	}
-	if hookCtx.Err() != nil {
-		err = hookCtx.Err()
 	}
 
 	logPath, logErr := l.writeHookLog(name, command, info, exitCode, err, output)

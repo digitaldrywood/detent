@@ -402,26 +402,16 @@ func (f *Filesystem) runHook(ctx context.Context, name string, command string, i
 	}
 	defer cancel()
 
-	cmd := commandshell.Command(hookCtx, command, f.hooks.Shell)
-	cmd.Dir = info.Path
-	cmd.Env = hookEnv(info, issue, f.hooks.StripGitHubTokens)
-	cmd.WaitDelay = workspaceCommandWaitDelay
 	f.logger.Info("running filesystem workspace hook", slog.String("hook", name), slog.String("path", info.Path), slog.String("command", command))
 
-	output, err := cmd.CombinedOutput()
+	output, err := runHookCommand(hookCtx, command, f.hooks, info, issue)
 	if err == nil {
-		return nil
-	}
-	if errors.Is(err, exec.ErrWaitDelay) && hookCtx.Err() == nil {
 		return nil
 	}
 	exitCode := -1
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		exitCode = exitErr.ExitCode()
-	}
-	if hookCtx.Err() != nil {
-		err = hookCtx.Err()
 	}
 	logPath, logErr := f.writeHookLog(name, command, info, exitCode, err, output)
 	hookErr := &HookError{
