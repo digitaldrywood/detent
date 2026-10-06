@@ -277,15 +277,28 @@ func TestRefreshPreservesUnreplacedCustomSections(t *testing.T) {
 
 func TestRefreshConfiguredLaneMigration(t *testing.T) {
 	t.Parallel()
-	for _, custom := range []bool{false, true} {
-		name := "standard"
+	for _, test := range []struct {
+		name          string
+		custom, lanes bool
+	}{
+		{"standard legacy states", false, false},
+		{"custom legacy states", true, false},
+		{"standard lanes", false, true},
+		{"custom lanes", true, true},
+	} {
 		states := []string{"Todo", "In Progress", "Rework", "Merging"}
-		if custom {
-			name = "custom"
+		if test.custom {
 			states = []string{"Research", "Draft", "Review", "Package"}
 		}
-		t.Run(name, func(t *testing.T) {
-			root, err := parseProjectRefreshYAML([]byte("tracker:\n  active_states: ["+strings.Join(states, ", ")+"]\n"), "test")
+		t.Run(test.name, func(t *testing.T) {
+			configured := "tracker:\n  active_states: [" + strings.Join(states, ", ") + "]\n"
+			if test.lanes {
+				configured = "tracker:\n  lanes:\n    - name: staging\n      role: holding\n    - name: Done\n      role: terminal\n"
+				for _, state := range states {
+					configured += "    - name: " + state + "\n      role: active\n"
+				}
+			}
+			root, err := parseProjectRefreshYAML([]byte(configured), "test")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -294,9 +307,9 @@ func TestRefreshConfiguredLaneMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 			outside := "## Deployment\n\n### For staging\n\nKeep staging policy.\n\n### For " + states[0] + "\n\nKeep shared policy.\n\n"
-			input := outside + "## Required Execution Flow\n\n### For " + states[0] + "\n\nKeep lane policy.\n\n### For staging\n\nKeep flow staging policy.\n"
+			input := outside + "## Required Execution Flow\n\n### For " + states[0] + "\n\nKeep lane policy.\n\n### For staging\n\nKeep flow staging policy.\n\n### For Done\n\nKeep terminal policy.\n"
 			got, changed := migrateProjectRefreshStateInstructions(input, root, desired)
-			if !changed || !strings.Contains(got, outside) || !strings.Contains(got, "### For staging\n\nKeep flow staging policy.") {
+			if !changed || !strings.Contains(got, outside) || !strings.Contains(got, "### For staging\n\nKeep flow staging policy.") || !strings.Contains(got, "### For Done\n\nKeep terminal policy.") {
 				t.Fatalf("shared policy changed: %s", got)
 			}
 			lane := projectRefreshYAMLPathNode(root, "agent.instructions_by_state."+states[0])
@@ -306,8 +319,11 @@ func TestRefreshConfiguredLaneMigration(t *testing.T) {
 			if projectRefreshYAMLPathNode(root, "agent.instructions_by_state.staging") != nil {
 				t.Fatal("created unrelated lane")
 			}
+			if projectRefreshYAMLPathNode(root, "agent.instructions_by_state.Done") != nil {
+				t.Fatal("created terminal lane instructions")
+			}
 			defaults := projectRefreshYAMLPathNode(desired, "agent.instructions_by_state")
-			if custom && len(defaults.Content) != 0 {
+			if test.custom && len(defaults.Content) != 0 {
 				t.Fatal("preset lanes survived custom state filtering")
 			}
 		})
