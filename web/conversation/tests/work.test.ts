@@ -24,6 +24,7 @@ const PROJECT = "proj_alpha";
 
 let hub: MockHub;
 let http: WorkHttp;
+const confirmed: NativeIssue[] = [];
 
 beforeAll(async () => {
   hub = await startMockHub({ port: 0 });
@@ -32,6 +33,7 @@ beforeAll(async () => {
     origin: hub.url,
     apiBase: bootstrap.api_base,
     csrfToken: bootstrap.csrf_token,
+    onConfirmed: (issue) => { confirmed.push(issue); },
   });
 });
 
@@ -40,6 +42,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  confirmed.length = 0;
   await fetch(`${hub.url}/__mock/work/reset`, { method: "POST" });
 });
 
@@ -350,6 +353,7 @@ describe("moving an issue", () => {
     });
     expect(moved.state).toBe("In Progress");
     expect(Number(moved.revision)).toBe(Number(issue.revision) + 1);
+    expect(confirmed).toEqual([moved]);
   });
 
   it("refuses a move the workflow does not allow", async () => {

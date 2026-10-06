@@ -488,7 +488,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     }
     try {
       const decoded = Schema.decodeUnknownSync(schema)(parsed);
-      if (MUTATIONS.has(method) && typeof decoded === "object" && decoded !== null && "work_item_id" in decoded && "revision" in decoded && "state" in decoded) {
+      if (MUTATIONS.has(method) && schema.ast === NativeIssue.ast) {
         options.onConfirmed?.(Schema.decodeUnknownSync(NativeIssue)(decoded));
       }
       return decoded;
