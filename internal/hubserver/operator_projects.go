@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -198,13 +199,19 @@ func projectToolError(err error) error {
 		return err
 	}
 	var failure *nativeError
-	if errors.As(err, &failure) && failure.Code == "invalid_request" && failure.publicMessage {
-		return err
+	if errors.As(err, &failure) && (failure.status == 401 || failure.status == 403 || failure.status == 404) {
+		return operatortool.ErrAccessDenied
 	}
-	if errors.As(err, &failure) && (failure.Code == "revision_conflict" || failure.Code == "policy_mismatch" || failure.Code == "idempotency_conflict") {
+	if errors.As(err, &failure) && failure.Code == "invalid_request" && failure.publicMessage {
+		return &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
+	}
+	if errors.As(err, &failure) && failure.Code == "policy_mismatch" {
+		return &operatortool.ConflictError{Code: failure.Code, Message: failure.Message}
+	}
+	if errors.As(err, &failure) && (failure.Code == "revision_conflict" || failure.Code == "idempotency_conflict") {
 		return mutation.ErrConflict
 	}
-	return errProjectServiceUnavailable
+	return err
 }
 func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Action) (chatpkg.ActionExecution, error) {
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(string(action.Kind), false), OrganizationID: action.OrganizationID, ProjectID: action.ProjectID})
@@ -432,7 +439,10 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
 		if r.Input.Policy.Validate() != nil {
-			return nil, operatortool.ErrInvalidArguments
+			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy descriptor is invalid or its identity digest does not match"}
+		}
+		if workflowconfig.ValidateSharedPolicy(r.Input.Policy) != nil {
+			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy configuration is invalid or its digest does not match the descriptor"}
 		}
 		input = r.Input
 		operation = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {

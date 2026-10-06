@@ -229,9 +229,6 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	if err := workflowconfig.ValidateSharedPolicy(change.Policy); err != nil {
 		return result, nativeInvalid(err.Error())
 	}
-	if strings.HasPrefix(scope, "repository:") && change.Policy.Configuration != nil {
-		return result, nativeInvalid("Shared project configuration requires a native project")
-	}
 	if err := validateWorkflowPolicy(ctx, tx, scope, change.Policy); err != nil {
 		return result, err
 	}

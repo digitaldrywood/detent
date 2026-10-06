@@ -47,6 +47,8 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 		scope                          apikey.Scope
 		revoked, expired, idle, denied bool
 		pressure                       bool
+		repository                     bool
+		role                           string
 	}{
 		{name: "write Done", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite},
 		{name: "write terminal creation", tool: operatortool.FileIssue, target: "Done", scope: apikey.ScopeWrite},
@@ -57,10 +59,16 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 		{name: "revoked write", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite, revoked: true, denied: true},
 		{name: "expired write", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite, expired: true, denied: true},
 		{name: "admin policy", tool: "approve_project_policy", scope: apikey.ScopeAdmin},
+		{name: "admin repository policy", tool: "approve_project_policy", scope: apikey.ScopeAdmin, repository: true},
+		{name: "organization admin repository policy", tool: "approve_project_policy", scope: apikey.ScopeAdmin, repository: true, role: "admin"},
 		{name: "write policy denied", tool: "approve_project_policy", scope: apikey.ScopeWrite, denied: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f, human := newHostedKeyMCPFixture(t, "dedicated", "owner")
+			role := test.role
+			if role == "" {
+				role = "owner"
+			}
+			f, human := newHostedKeyMCPFixture(t, "dedicated", role)
 			executor := hostedOperatorExecutor{f.service}
 			issuer, _, err := f.service.hostedSessionCredential(t.Context(), auth.Session{Identity: f.user.identity.Hosted, Email: f.user.identity.Email}, apikey.HashToken(f.user.token))
 			if err != nil {
@@ -71,7 +79,11 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 			if test.scope == apikey.ScopeAdmin {
 				scope = apiScopeAdmin
 			}
-			key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "client", Scope: scope, KeyScope: test.scope, Issuer: &issuer, ProjectIDs: []string{string(f.project)}, ProjectAccess: hostedProjectsSelected, ExpiresAt: &expires})
+			projectIDs, access := []string{string(f.project)}, hostedProjectsSelected
+			if test.repository {
+				projectIDs, access = nil, hostedProjectsAll
+			}
+			key, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "client", Scope: scope, KeyScope: test.scope, Issuer: &issuer, ProjectIDs: projectIDs, ProjectAccess: access, ExpiresAt: &expires})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -90,6 +102,16 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 			var call operatortool.Call
 			var issue tracker.NativeIssue
 			var descriptor policy.Descriptor
+			policyScope := "org_security/" + string(f.project)
+			if test.repository {
+				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO repositories(github_node_id,github_owner,github_name,created_at,updated_at) VALUES('repository-policy','digitaldrywood','detent',?,?)", testTimestamp, testTimestamp)
+				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET repository_id=NULL WHERE repository_id=(SELECT id FROM repositories WHERE github_node_id='repository-policy')")
+				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET repository_id=(SELECT id FROM repositories WHERE github_node_id='repository-policy') WHERE id=?", f.project)
+				policyScope = "repository:digitaldrywood/detent"
+				if _, err := f.service.database.approvePolicy(t.Context(), policyScope, "previous-admin", policy.Change{Policy: hubTestPolicy()}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.tool == operatortool.MoveItem {
 				raw, _ := json.Marshal(map[string]any{"project_id": f.project, "request_id": "create", "title": "Terminal move", "state": "Todo"})
 				result, err := executor.Execute(human, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw})
@@ -110,7 +132,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				raw, _ := json.Marshal(map[string]any{"project_id": f.project, "request_id": "create-terminal", "title": "Terminal creation", "state": test.target})
 				call = operatortool.Call{Name: test.tool, Arguments: raw}
 			} else {
-				current, err := readProjectPolicy(t.Context(), f.service.database.db, "org_security/"+string(f.project))
+				current, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 				if err != nil {
 					var failure *nativeError
 					if !errors.As(err, &failure) || failure.Code != "policy_mismatch" {
@@ -131,7 +153,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				call = projectCall(t, test.tool, string(f.project), "policy", operatortool.PolicyApprovalInput{ExpectedID: current.Policy.ID, Policy: descriptor})
+				call = projectCall(t, test.tool, string(f.project), "policy", operatortool.PolicyApprovalInput{ExpectedID: current.Policy.ID, Policy: descriptor, RepositoryPolicy: test.repository})
 			}
 			if test.revoked {
 				operatorSQL(t, f.hostedSecurityFixture, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(time.Now()), key.ID)
@@ -187,9 +209,54 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 						t.Fatalf("transition=%s", result.Content)
 					}
 				} else {
-					approval, err := readProjectPolicy(t.Context(), f.service.database.db, "org_security/"+string(f.project))
+					approval, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 					if err != nil || !reflect.DeepEqual(approval.Policy, descriptor) || approval.ApprovedBy != key.ID {
 						t.Fatalf("policy=%+v %v", approval, err)
+					}
+					if test.repository {
+						workflow, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, descriptor)
+						if err != nil {
+							t.Fatal(err)
+						}
+						workflow.Prompt += "Updated policy.\n"
+						updated, err := workflowconfig.ResolvePolicy(workflow)
+						if err != nil {
+							t.Fatal(err)
+						}
+						invalidIdentity := updated
+						invalidIdentity.ID = descriptor.ID
+						invalidConfiguration := updated
+						configuration := *updated.Configuration
+						configuration.Prompt += "unapproved-private-prompt"
+						invalidConfiguration.Configuration = &configuration
+						invalidConfiguration = invalidConfiguration.WithID()
+						for _, refusal := range []struct {
+							name, code, message string
+							policy              policy.Descriptor
+						}{
+							{"identity", "invalid_request", "identity digest", invalidIdentity},
+							{"configuration", "invalid_request", "configuration", invalidConfiguration},
+							{"stale", "policy_mismatch", "expected_policy_id", updated},
+						} {
+							refused := projectCall(t, test.tool, string(f.project), refusal.name, operatortool.PolicyApprovalInput{ExpectedID: "stale", Policy: refusal.policy, RepositoryPolicy: true})
+							_, err := executor.Execute(ctx, refused)
+							var request *operatortool.RequestError
+							var conflict *operatortool.ConflictError
+							var code, message string
+							switch {
+							case errors.As(err, &request):
+								code, message = request.Code, request.Message
+							case errors.As(err, &conflict):
+								code, message = conflict.Code, conflict.Message
+							}
+							if code != refusal.code || !strings.Contains(message, refusal.message) || strings.Contains(message, "unapproved-private-prompt") {
+								t.Fatalf("%s refusal = %v (%s, %s)", refusal.name, err, code, message)
+							}
+						}
+						unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+						if err != nil || !reflect.DeepEqual(unchanged.Policy, descriptor) {
+							t.Fatalf("refusal changed policy = %+v, %v", unchanged, err)
+						}
 					}
 				}
 				if _, err := executor.Execute(ctx, call); err != nil {
