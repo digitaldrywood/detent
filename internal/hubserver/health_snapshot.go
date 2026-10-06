@@ -52,25 +52,7 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 			if err != nil {
 				return snapshot, err
 			}
-			rows, err := q.QueryContext(ctx, "SELECT native_id, native_created_at FROM issues WHERE id IN (SELECT value FROM json_each(?))", string(raw))
-			if err != nil {
-				return snapshot, err
-			}
-			for rows.Next() {
-				var id, at string
-				if err := rows.Scan(&id, &at); err != nil {
-					return snapshot, errors.Join(err, rows.Close())
-				}
-				created, err := parseTimeValue(at)
-				if err != nil {
-					return snapshot, errors.Join(err, rows.Close())
-				}
-				p.CandidateIDs[id] = true
-				if p.CandidateSince.IsZero() || created.Before(p.CandidateSince) {
-					p.CandidateSince = created
-				}
-			}
-			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			if p.CandidateSince, err = readHealthCandidateCreation(ctx, q, string(raw), p.CandidateIDs); err != nil {
 				return snapshot, err
 			}
 		}
@@ -228,22 +210,13 @@ func readHealthRunners(ctx context.Context, q nativeQueryer, organization tracke
 		return nil, err
 	}
 	for i := range runners {
-		rows, err := q.QueryContext(ctx, `SELECT DISTINCT i.project_id FROM leases l INDEXED BY health_active_host JOIN lease_runners lr ON lr.lease_id=l.lease_id JOIN issues i ON i.id=l.issue_id WHERE l.machine_id=? AND lr.runner_id=? AND l.released_at IS NULL LIMIT ?`, runners[i].MachineID, runners[i].ID, healthReadLimit+1)
+		leased, err := readHealthRunnerLeasedProjects(ctx, q, runners[i].MachineID, runners[i].ID)
 		if err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var project string
-			if err := rows.Scan(&project); err != nil {
-				return nil, errors.Join(err, rows.Close())
-			}
-			runners[i].Projects = append(runners[i].Projects, project)
-			if len(runners[i].Projects) > healthReadLimit {
-				return nil, errors.Join(errHealthReadLimit, rows.Close())
-			}
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return nil, err
+		runners[i].Projects = append(runners[i].Projects, leased...)
+		if len(runners[i].Projects) > healthReadLimit {
+			return nil, errHealthReadLimit
 		}
 		slices.Sort(runners[i].Projects)
 		runners[i].Projects = slices.Compact(runners[i].Projects)
@@ -322,9 +295,10 @@ func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker
 		if !cycle.At.Equal(observed) {
 			cycle = healthCycle{At: observed, Reasons: map[string]string{}}
 		}
-		if data.Decision.Outcome == "claimed" {
+		switch data.Decision.Outcome {
+		case "claimed":
 			cycle.Claims++
-		} else if data.Decision.Outcome == "skipped" {
+		case "skipped":
 			cycle.Reasons[item] = data.Decision.Reason
 		}
 		cycle.Events = append(cycle.Events, id)
@@ -429,4 +403,48 @@ func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization t
 		snapshot.Waits = append(snapshot.Waits, w)
 	}
 	return rows.Err()
+}
+
+func readHealthCandidateCreation(ctx context.Context, q nativeQueryer, ids string, seen map[string]bool) (time.Time, error) {
+	var since time.Time
+	rows, err := q.QueryContext(ctx, "SELECT native_id, native_created_at FROM issues WHERE id IN (SELECT value FROM json_each(?))", ids)
+	if err != nil {
+		return since, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, at string
+		if err := rows.Scan(&id, &at); err != nil {
+			return since, err
+		}
+		created, err := parseTimeValue(at)
+		if err != nil {
+			return since, err
+		}
+		seen[id] = true
+		if since.IsZero() || created.Before(since) {
+			since = created
+		}
+	}
+	return since, errors.Join(rows.Err(), rows.Close())
+}
+
+func readHealthRunnerLeasedProjects(ctx context.Context, q nativeQueryer, machineID, runnerID any) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT DISTINCT i.project_id FROM leases l INDEXED BY health_active_host JOIN lease_runners lr ON lr.lease_id=l.lease_id JOIN issues i ON i.id=l.issue_id WHERE l.machine_id=? AND lr.runner_id=? AND l.released_at IS NULL LIMIT ?`, machineID, runnerID, healthReadLimit+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	projects := []string{}
+	for rows.Next() {
+		var project string
+		if err := rows.Scan(&project); err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+		if len(projects) > healthReadLimit {
+			return nil, errHealthReadLimit
+		}
+	}
+	return projects, errors.Join(rows.Err(), rows.Close())
 }

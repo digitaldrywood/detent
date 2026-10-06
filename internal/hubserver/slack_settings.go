@@ -9,9 +9,10 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 const slackWebhookSecret = "slack_webhook"
@@ -31,7 +32,10 @@ type slackIntegrationStatus struct {
 
 func validSlackWebhook(value string) bool {
 	u, err := url.Parse(value)
-	return err == nil && u.Scheme == "https" && (u.Host == "hooks.slack.com" || u.Host == "hooks.slack-gov.com") && u.User == nil && u.RawQuery == "" && u.Fragment == "" && u.RawPath == "" && slackWebhookPath.MatchString(u.Path)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "https" && (u.Host == "hooks.slack.com" || u.Host == "hooks.slack-gov.com") && u.User == nil && u.RawQuery == "" && u.Fragment == "" && u.RawPath == "" && slackWebhookPath.MatchString(u.Path)
 }
 
 func readSlackIntegration(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID) (slackIntegrationStatus, error) {

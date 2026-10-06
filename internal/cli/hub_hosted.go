@@ -54,7 +54,7 @@ type hostedSMTPFileConfig struct {
 
 func readHostedSMTPSender(config *hostedSMTPFileConfig, lookupEnv func(string) string) (auth.EmailSender, error) {
 	if config == nil {
-		return nil, nil
+		return nil, errors.New("SMTP is not configured")
 	}
 	var password string
 	if config.PasswordEnv != "" {
@@ -195,9 +195,12 @@ func parseHostedConfig(reader io.Reader, lookupEnv func(string) string) (*hubser
 			return nil, err
 		}
 	}
-	sender, err := readHostedSMTPSender(config.SMTP, lookupEnv)
-	if err != nil {
-		return nil, err
+	var sender auth.EmailSender
+	if config.SMTP != nil {
+		sender, err = readHostedSMTPSender(config.SMTP, lookupEnv)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &hubserver.HostedConfig{
 		EmailSender:              sender,

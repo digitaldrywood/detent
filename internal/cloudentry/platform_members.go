@@ -55,7 +55,10 @@ func platformEmail(email string) string { return strings.ToLower(strings.TrimSpa
 
 func validPlatformEmail(email string) bool {
 	address, err := mail.ParseAddress(email)
-	return err == nil && address.Address == email && len(email) <= 254
+	if err != nil {
+		return false
+	}
+	return address.Address == email && len(email) <= 254
 }
 
 func (s *Service) platformRole(ctx context.Context, email string) string {

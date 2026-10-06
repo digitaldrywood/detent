@@ -128,11 +128,11 @@ ORDER BY rowid LIMIT ?`, string(raw), organization, healthReadLimit+1)
 	}
 	unavailable := s.config.Hosted == nil || s.config.Hosted.EmailSender == nil
 	for _, f := range findings {
-		column := "email_open_attempted"
+		query := `UPDATE health_findings SET email_open_attempted=1,email_unavailable=MAX(email_unavailable,?) WHERE organization_id=? AND id=?`
 		if f.ResolvedAt != nil {
-			column = "email_resolve_attempted"
+			query = `UPDATE health_findings SET email_resolve_attempted=1,email_unavailable=MAX(email_unavailable,?) WHERE organization_id=? AND id=?`
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE health_findings SET `+column+`=1,email_unavailable=MAX(email_unavailable,?) WHERE organization_id=? AND id=?`, unavailable, organization, f.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, query, unavailable, organization, f.ID); err != nil {
 			return nil, err
 		}
 	}

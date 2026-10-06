@@ -49,15 +49,16 @@ func (s *Service) evaluateTenantHealth(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	organizations := []tracker.OrganizationID{}
 	for rows.Next() {
 		var id tracker.OrganizationID
 		if err := rows.Scan(&id); err != nil {
-			return errors.Join(err, rows.Close())
+			return err
 		}
 		organizations = append(organizations, id)
 		if len(organizations) > healthReadLimit {
-			return errors.Join(errHealthReadLimit, rows.Close())
+			return errHealthReadLimit
 		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
