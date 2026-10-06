@@ -17,11 +17,12 @@ import (
 // and move the item the ways a person or the orchestrator would.
 type dispatchGuardFixture struct {
 	*conversationWorkerFixture
+	worktreeState string
 }
 
 func newDispatchGuardFixture(t *testing.T) dispatchGuardFixture {
 	t.Helper()
-	f := dispatchGuardFixture{conversationWorkerFixture: newConversationWorkerFixture(t)}
+	f := dispatchGuardFixture{conversationWorkerFixture: newConversationWorkerFixture(t), worktreeState: "clean"}
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	return f
 }
@@ -76,7 +77,7 @@ func (f dispatchGuardFixture) finish(t *testing.T, disposition ...*tracker.Nativ
 	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", newNativeID("checkpoint"), ""
 	checkpoint.Data.Disposition = nil
 	checkpoint.Data.Handoff = nativeTestCheckpoint()
-	checkpoint.Data.Handoff.WorktreeState = "clean"
+	checkpoint.Data.Handoff.WorktreeState = f.worktreeState
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, checkpoint), http.StatusOK)
 	event.Data.Sequence++
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
@@ -127,16 +128,26 @@ func (f dispatchGuardFixture) continueConversation(t *testing.T, key string) {
 func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	t.Parallel()
 	instanceReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```"
+	definitionReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:tool\n    reason: approved portable project configuration and workflow prose unavailable\nhuman_action: null\n```"
 	for _, test := range []struct {
 		name          string
 		disposition   *tracker.NativeDisposition
 		finalMessage  string
+		worktreeState string
 		manualHold    bool
 		edited        bool
+		continued     bool
+		commented     bool
 		wantCandidate bool
 	}{
-		{name: "native272 instance report remains runnable", finalMessage: instanceReport, wantCandidate: true},
+		{name: "completed instance report is answered", finalMessage: instanceReport},
+		{name: "completed definition blocker is answered with clean source", finalMessage: definitionReport},
+		{name: "completed definition blocker is answered with dirty source", finalMessage: definitionReport, worktreeState: "dirty"},
+		{name: "ordinary comment does not resume dirty definition blocker", finalMessage: definitionReport, worktreeState: "dirty", commented: true},
 		{name: "instance report remains runnable after revision edit", finalMessage: instanceReport, edited: true, wantCandidate: true},
+		{name: "dirty definition blocker resumes after revision edit", finalMessage: definitionReport, worktreeState: "dirty", edited: true, wantCandidate: true},
+		{name: "definition blocker resumes after continuation", finalMessage: definitionReport, continued: true, wantCandidate: true},
+		{name: "dirty definition blocker resumes after continuation", finalMessage: definitionReport, worktreeState: "dirty", continued: true, wantCandidate: true},
 		{name: "recorded prerequisite survives revision edit without relation", finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '#42'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: null\n```", edited: true},
 		{name: "instance report respects manual workflow hold", finalMessage: instanceReport, manualHold: true},
 		{name: "instance and human action remain held", finalMessage: strings.Replace(instanceReport, "human_action: null", "human_action: Approve the exception", 1)},
@@ -145,8 +156,11 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "instance and reason code remain held", finalMessage: strings.Replace(instanceReport, "status: blocked", "status: blocked\nreason_code: permission_wait", 1)},
 		{name: "native273 malformed predicate remains held", finalMessage: strings.Replace(instanceReport, "    reason:", "    predicate: instance_available\n    reason:", 1)},
 		{name: "unfinished custom Rework remains runnable", disposition: &tracker.NativeDisposition{Status: "in_progress"}, wantCandidate: true},
+		{name: "unfinished dirty source remains runnable", disposition: &tracker.NativeDisposition{Status: "in_progress"}, worktreeState: "dirty", wantCandidate: true},
 		{name: "completed custom Rework is answered", disposition: &tracker.NativeDisposition{Status: "complete"}},
+		{name: "completed dirty source is answered", disposition: &tracker.NativeDisposition{Status: "complete"}, worktreeState: "dirty"},
 		{name: "explicit blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}},
+		{name: "dirty external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, worktreeState: "dirty"},
 		{name: "unfinished external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", Blockers: true}},
 		{name: "unfinished human action keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}},
 		{name: "missing legacy disposition keeps the answer"},
@@ -154,6 +168,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newDispatchGuardFixture(t)
+			if test.worktreeState != "" {
+				f.worktreeState = test.worktreeState
+			}
 			if test.finalMessage != "" {
 				if signal, reported := workpad.SignalFromComment(test.finalMessage, "", ""); reported && signal != nil && signal.Invalid == nil {
 					test.disposition = &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, BlockerEvidence: signal.Blockers}
@@ -173,8 +190,8 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var attempt tracker.NativeAttempt
 			decodeHubResponse(t, response, &attempt)
-			if attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != "clean" || attempt.WorkItemRevision != revision || attempt.DispatchGeneration != 0 {
-				t.Fatalf("completion lost clean successful current-revision evidence: %#v", attempt)
+			if attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != f.worktreeState || attempt.WorkItemRevision != revision || attempt.DispatchGeneration != 0 {
+				t.Fatalf("completion lost successful current-revision evidence: %#v", attempt)
 			}
 			claim := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
@@ -182,21 +199,46 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			if f.reload(t).Revision != revision {
 				t.Fatal("completion fabricated an item edit")
 			}
+			if (test.edited || test.continued) && f.candidate(t) {
+				t.Fatal("completed blocker was offered before fresh context")
+			}
 			if test.edited {
 				title := "Updated title"
 				response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(f.issue.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit-title"}, ExpectedRevision: revision, Title: &title})
 				requireNativeStatus(t, response, http.StatusOK)
+			}
+			if test.continued {
+				f.continueConversation(t, "continue-definition")
+				if f.reload(t).Revision != revision {
+					t.Fatal("continuation fabricated an item edit")
+				}
+			}
+			if test.commented {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "context-comment"}, Body: "Additional context for review."}), http.StatusOK)
+				if f.reload(t).Revision != revision {
+					t.Fatal("ordinary comment fabricated an item edit")
+				}
+			}
+			var generation int64
+			var wantGeneration int64
+			if test.continued {
+				wantGeneration = 1
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE native_id = ?", f.issue.WorkItemID).Scan(&generation); err != nil || generation != wantGeneration {
+				t.Fatalf("dispatch generation=%d, want %d, error=%v", generation, wantGeneration, err)
 			}
 			if got := f.candidate(t); got != test.wantCandidate {
 				t.Fatalf("candidate=%t, want %t", got, test.wantCandidate)
 			}
 			if test.wantCandidate {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.nativeFixture.worker(t, "other-worker"), claim), http.StatusNotFound)
-				var generation int64
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT dispatch_generation FROM issues WHERE native_id = ?", f.issue.WorkItemID).Scan(&generation); err != nil || generation != 0 {
-					t.Fatalf("completion manufactured dispatch request: generation=%d, error=%v", generation, err)
-				}
 				f.claim(t)
+				if test.edited || test.continued {
+					f.succeed(t, test.disposition)
+					if f.candidate(t) {
+						t.Fatal("fresh context's completed blocker was offered again")
+					}
+				}
 			} else {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
 			}
@@ -265,7 +307,7 @@ func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 		{name: "failed", outcome: "failed", candidate: true},
 		{name: "cancelled", outcome: "cancelled", candidate: true},
 		{name: "interrupted", outcome: "interrupted", candidate: true},
-		{name: "successful dirty source continuation", outcome: "succeeded", checkpoint: "dirty", candidate: true},
+		{name: "successful dirty source without disposition", outcome: "succeeded", checkpoint: "dirty"},
 		{name: "successful finalized unpushed source", outcome: "succeeded", checkpoint: "unpushed"},
 		{name: "successful clean source", outcome: "succeeded", checkpoint: "clean"},
 	} {

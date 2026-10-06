@@ -62,9 +62,13 @@ Valid native final reports use the existing instance blocker completion and
 evidence owner after execution and source publication fencing. Instance-only
 reports preserve successful provider accounting and typed evidence without
 recording issue acceptance or moving the issue to Blocked. The native claim
-owner treats that disposition as unanswered work, including clean checkpoints
-at the current revision and dispatch generation; actual instance eligibility,
-leases, authorization and human or external holds still govern dispatch.
+owner treats that completed blocked disposition as answered at the current
+revision and dispatch generation, including dirty checkpoints. Genuinely
+unfinished `in_progress` dispositions without blockers or human action remain
+eligible for continuation. A newer item revision or dispatch generation from
+the existing context and continuation owners permits resumption; actual
+instance eligibility, leases, authorization and human or external holds still
+govern dispatch.
 Invalid reports and explicit acceptance requirements retain their existing owners.
 
 Workspace preparation retains the actual failure attribution. A matching
