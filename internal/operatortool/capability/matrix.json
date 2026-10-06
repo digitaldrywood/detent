@@ -666,12 +666,12 @@
         {
           "source": "internal/cloudentry/service.go",
           "kind": "route",
-          "definition": "e.GET(\"/health\", func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\"}) }) [route=\"/health\"]",
+          "definition": "e.GET(\"/health\", func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\", \"version\": s.config.Build.Version, \"commit\": s.config.Build.Commit}) }) [route=\"/health\"]",
           "occurrence": 1,
-          "line": 215,
+          "line": 217,
           "method": "GET",
           "path": "\"/health\"",
-          "handler": "func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\"}) }",
+          "handler": "func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\", \"version\": s.config.Build.Version, \"commit\": s.config.Build.Commit}) }",
           "resolved_path": "/health"
         }
       ],
@@ -727,7 +727,7 @@
           "class": "not_applicable"
         }
       ],
-      "application": "func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\"}) }; handler-owned application validation/read/command",
+      "application": "func(c echo.Context) error { return c.JSON(http.StatusOK, map[string]string{\"status\": \"ok\", \"version\": s.config.Build.Version, \"commit\": s.config.Build.Commit}) }; anonymous transport liveness and build identity",
       "extraction": "No application extraction: this anonymous transport liveness route has no operator business data.",
       "tool": {
         "set": "",
@@ -738,7 +738,7 @@
       "owner": "digitaldrywood/detent#3339",
       "status": "excluded",
       "coverage": "Source-derived inventory; execution authorization and parity regressions belong to the owner child",
-      "decision": "Public HTTP liveness probe returning only status=ok. This is a transport boundary with no operator resource, organization data or command; MCP discovery already provides protocol liveness. No operator capability is excluded."
+      "decision": "Public HTTP liveness probe returning status=ok plus the entry build version and commit. Build identity is transport metadata with no operator resource, organization data or command; MCP discovery already provides protocol liveness. No operator capability is excluded."
     },
     {
       "id": "cloudentry.home",
