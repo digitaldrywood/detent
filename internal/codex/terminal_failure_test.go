@@ -20,8 +20,10 @@ func TestNativeTerminalFailureMetadata(t *testing.T) {
 		operation string
 		code      string
 		sizes     bool
+		maxOnly   bool
 	}{
 		{name: "wrapped RPC data", err: fmt.Errorf("private-prompt: %w", &ResponseError{Request: "turn/start", Code: -32602, Message: "private-prompt", Body: `{"error":{"data":{"code":"input_too_large","max_chars":1048576,"actual_chars":2927066,"prompt":"private-prompt","token":"private-secret"}}}`}), provider: "codex", operation: "turn/start", code: "input_too_large", sizes: true},
+		{name: "recorded input limit message", err: &ResponseError{Request: "turn/start", Code: -32602, Message: "Input exceeds the maximum length of 1048576"}, provider: "codex", operation: "turn/start", code: "input_too_large", maxOnly: true},
 		{name: "structured RPC message", err: &ResponseError{Request: "turn/start", Code: -32602, Message: `{"error":"input_too_large","max_chars":1048576,"actual_chars":2927066,"prompt":"private-prompt"}`}, provider: "codex", operation: "turn/start", code: "input_too_large", sizes: true},
 		{name: "missing metadata", err: &ResponseError{Request: "turn/start", Code: -32602, Message: "private-prompt", Body: `{"error":{"data":{"prompt":"private-prompt"}}}`}, provider: "codex", operation: "turn/start"},
 		{name: "malformed counts", err: &ResponseError{Request: "turn/start", Code: -32602, Body: `{"error":{"data":{"code":"input_too_large","max_chars":"private-secret","actual_chars":2.5}}}`}, provider: "codex", operation: "turn/start"},
@@ -42,6 +44,10 @@ func TestNativeTerminalFailureMetadata(t *testing.T) {
 			if test.sizes {
 				if got.MaxChars == nil || *got.MaxChars != 1048576 || got.ActualChars == nil || *got.ActualChars != 2927066 {
 					t.Fatalf("recorded request sizes=%+v", got)
+				}
+			} else if test.maxOnly {
+				if got.MaxChars == nil || *got.MaxChars != 1048576 || got.ActualChars != nil || !slices.Contains(got.Unavailable, "actual_chars") {
+					t.Fatalf("recorded request limit=%+v", got)
 				}
 			} else if got.MaxChars != nil || got.ActualChars != nil || !slices.Contains(got.Unavailable, "max_chars") || !slices.Contains(got.Unavailable, "actual_chars") {
 				t.Fatalf("invented request sizes=%+v", got)

@@ -2,6 +2,8 @@ package codex
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,6 +26,48 @@ import (
 
 // turnInputDirPrefix names the per-turn directory the copies live in.
 const turnInputDirPrefix = "detent-attachments-"
+
+const maxTurnInputBytes = 1 << 20
+
+func prepareTurnPrompt(prompt, tempDir string) (string, func(), error) {
+	cleanup := func() {}
+	if len(prompt) <= maxTurnInputBytes/2 {
+		encoded, err := json.Marshal(prompt)
+		if err != nil {
+			return "", cleanup, err
+		}
+		if len(encoded) <= maxTurnInputBytes/2 {
+			return prompt, cleanup, nil
+		}
+	}
+	if tempDir == "" {
+		for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+			if tempDir = os.Getenv(name); tempDir != "" {
+				break
+			}
+		}
+	}
+	if tempDir == "" {
+		return "", cleanup, &os.PathError{Op: "create Codex prompt input", Err: errors.New("attempt scratch directory is unavailable")}
+	}
+	file, err := os.CreateTemp(tempDir, "detent-turn-prompt-*.txt")
+	if err != nil {
+		return "", cleanup, fmt.Errorf("create Codex prompt input: %w", err)
+	}
+	path := file.Name()
+	cleanup = func() {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			slog.Warn("codex.prompt_cleanup_failed", "error", err)
+		}
+	}
+	_, writeErr := file.WriteString(prompt)
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		cleanup()
+		return "", func() {}, fmt.Errorf("write Codex prompt input: %w", errors.Join(writeErr, closeErr))
+	}
+	return fmt.Sprintf("Read the complete current Detent turn request from %q before acting. The file contains %d bytes and replaces this turn's inline request. Read it in chunks of at most 32768 bytes until every byte has been read; do not print the whole file in one tool result. Apply its instructions and preserve its untrusted-data boundaries. Current lease and completion values supersede earlier thread history. Preserve existing workspace changes and reconcile pending external effects as the request directs.", path, len(prompt)), cleanup, nil
+}
 
 // turnInputItems renders one turn's input. The returned cleanup removes the
 // temporary copies and must be called when the turn is over; it is safe to

@@ -779,8 +779,14 @@ func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 		saved, current      []DynamicTool
 		localBinding, fresh bool
 		metadata            string
+		prompt              string
+		fileBacked          bool
 	}{
 		{name: "unchanged no tools"},
+		{name: "inline input at encoded budget", prompt: strings.Repeat("x", maxTurnInputBytes/2-2)},
+		{name: "input above encoded budget", prompt: strings.Repeat("x", maxTurnInputBytes/2-1), fileBacked: true},
+		{name: "oversized resumed input", prompt: strings.Repeat("rework context\n", maxTurnInputBytes/10), fileBacked: true},
+		{name: "JSON escaping exceeds input budget", prompt: strings.Repeat("\x00", maxTurnInputBytes/4), fileBacked: true},
 		{name: "unchanged tools", saved: []DynamicTool{readTool}, current: []DynamicTool{readTool}},
 		{name: "catalog and schema order", saved: []DynamicTool{readTool, evidenceTool}, current: []DynamicTool{evidenceTool, reorderedSchema}},
 		{name: "current policy on resume", saved: []DynamicTool{readTool}, current: []DynamicTool{readTool}, localBinding: true},
@@ -833,6 +839,12 @@ func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			workspace := t.TempDir()
+			scratch := t.TempDir()
+			prompt := tt.prompt
+			if prompt == "" {
+				prompt = "Continue issue #18"
+			}
+			var promptPath string
 			checkpointPath := filepath.Join(workspace, "unfinished.txt")
 			if err := os.WriteFile(checkpointPath, []byte("preserved work"), 0o600); err != nil {
 				t.Fatal(err)
@@ -841,10 +853,24 @@ func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 			settings := map[string]any{"permissions": map[string]any{"detent-runner": map[string]any{"network": network}}}
 			var updates []Update
 			result, err := server.RunTurn(t.Context(), RunTurnRequest{
-				Workspace: workspace, Prompt: "Continue issue #18", ResumeThreadID: "thread-existing",
+				Workspace: workspace, Prompt: prompt, TempDir: scratch, ResumeThreadID: "thread-existing",
 				DeveloperInstructions: "Use current Detent tools.", Model: "gpt-5-codex",
 				Permissions: "detent-runner", RuntimeWorkspaceRoots: []string{workspace}, Config: settings, DynamicTools: tt.current,
-			}, func(update Update) error { updates = append(updates, update); return nil })
+			}, func(update Update) error {
+				updates = append(updates, update)
+				if tt.fileBacked && (update.Type == UpdateTurnStarted || update.Type == UpdateTurnCompleted) {
+					paths, err := filepath.Glob(filepath.Join(scratch, "detent-turn-prompt-*.txt"))
+					if err != nil || len(paths) != 1 {
+						t.Fatalf("prompt files during %s = %v, error = %v", update.Type, paths, err)
+					}
+					promptPath = paths[0]
+					data, err := os.ReadFile(promptPath)
+					if err != nil || string(data) != prompt {
+						t.Fatalf("file-backed prompt lost context: bytes = %d, error = %v", len(data), err)
+					}
+				}
+				return nil
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -881,7 +907,25 @@ func TestAppServerRunTurnResumesThreadBeforeStartingTurn(t *testing.T) {
 			assertJSONContains(t, sent[turnIndex].Params, "threadId", threadID)
 			assertJSONContains(t, sent[turnIndex].Params, "permissions", "detent-runner")
 			assertJSONContains(t, sent[turnIndex].Params, "runtimeWorkspaceRoots", []any{workspace})
-			assertJSONContains(t, sent[turnIndex].Params, "input.0.text", "Continue issue #18")
+			if len(sent[turnIndex].Params) >= maxTurnInputBytes {
+				t.Fatalf("turn/start input = %d bytes, exceeds backend limit %d", len(sent[turnIndex].Params), maxTurnInputBytes)
+			}
+			if tt.fileBacked {
+				var params struct {
+					Input []struct{ Text string } `json:"input"`
+				}
+				if err := json.Unmarshal(sent[turnIndex].Params, &params); err != nil {
+					t.Fatal(err)
+				}
+				if len(params.Input) != 1 || !strings.Contains(params.Input[0].Text, strconv.Quote(promptPath)) {
+					t.Fatal("bounded turn input omitted prompt file")
+				}
+				if _, err := os.Stat(promptPath); !os.IsNotExist(err) {
+					t.Fatalf("prompt file retained after turn: %v", err)
+				}
+			} else {
+				assertJSONContains(t, sent[turnIndex].Params, "input.0.text", prompt)
+			}
 			if len(updates) != 3 || updates[0].Model != model || updates[1].Type != UpdateTurnStarted || updates[1].ThreadID != threadID || updates[1].Model != model {
 				t.Fatalf("updates = %#v, want current thread identity and turn", updates)
 			}

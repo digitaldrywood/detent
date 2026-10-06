@@ -447,6 +447,13 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	if req.ConversationControl != nil {
 		ctx = WithConversationTurn(ctx)
 	}
+	prompt, cleanupPrompt, err := prepareTurnPrompt(req.Prompt, req.TempDir)
+	if err != nil {
+		now := s.now()
+		return RunTurnResult{}, startupStageError(err, "turn/start", now, now, 0)
+	}
+	defer cleanupPrompt()
+	req.Prompt = prompt
 	if threadID := strings.TrimSpace(req.ResumeThreadID); threadID != "" && s.prepareThread != nil {
 		if err := s.prepareThread(ctx, threadID); err != nil {
 			return RunTurnResult{}, fmt.Errorf("prepare Codex thread for resume: %w", err)

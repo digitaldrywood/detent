@@ -963,15 +963,48 @@ func TestNativeOutagePreservesFailureBudget(t *testing.T) {
 
 func TestNativeRecoveryPromptIncludesContext(t *testing.T) {
 	t.Parallel()
-	execution := &testExecution{recovery: tracker.NativeRecovery{Issue: tracker.NativeIssue{Title: "Native issue"}, Discussion: []tracker.NativeComment{{Body: "Prior discussion"}}, Attempts: []tracker.NativeAttempt{{Status: "interrupted"}}}}
-	prompt, err := nativeRecoveryPrompt(execution)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, content := range []string{"Native issue", "Prior discussion", "interrupted", "untrusted task content", "Do not fetch GitHub issue history"} {
-		if !strings.Contains(prompt, content) {
-			t.Errorf("prompt omitted %q", content)
-		}
+	for _, test := range []struct {
+		name         string
+		runtimeBytes int
+	}{
+		{name: "small recovery", runtimeBytes: 10},
+		{name: "oversized runtime evidence", runtimeBytes: 2 << 20},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			execution := &testExecution{recovery: tracker.NativeRecovery{
+				Issue:      tracker.NativeIssue{Title: "Native issue", Body: "Duplicated issue body"},
+				Discussion: []tracker.NativeComment{{Body: "Prior discussion"}},
+				Attempts: []tracker.NativeAttempt{{
+					Status:     "interrupted",
+					Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", WorktreeState: "dirty"},
+					NativeRunData: tracker.NativeRunData{
+						CompletionBody: "Preserved source handoff",
+						Runtime: &tracker.NativeRuntimeObservation{
+							Phase:   strings.Repeat("x", test.runtimeBytes),
+							Landing: &tracker.NativeLandingReceipt{VersionID: "reviewed-version", RefusalKind: "conflict"},
+						},
+					},
+				}},
+			}}
+			prompt, err := nativeRecoveryPrompt(execution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(prompt) > 16384 {
+				t.Fatalf("recovery prompt = %d bytes, runtime evidence was re-inlined", len(prompt))
+			}
+			for _, content := range []string{"Native issue", "Prior discussion", "interrupted", "resume_session", "dirty", "Preserved source handoff", "reviewed-version", "conflict", "untrusted task content", "Do not fetch GitHub issue history"} {
+				if !strings.Contains(prompt, content) {
+					t.Errorf("prompt omitted %q", content)
+				}
+			}
+			if strings.Contains(prompt, "Duplicated issue body") {
+				t.Fatal("recovery prompt repeated the issue body")
+			}
+			if len(execution.recovery.Attempts[0].Runtime.Phase) != test.runtimeBytes || execution.recovery.Issue.Body != "Duplicated issue body" {
+				t.Fatal("prompt projection mutated recovery authority")
+			}
+		})
 	}
 }
 

@@ -167,6 +167,24 @@ func TestAgentBackendClassifyCapacityError(t *testing.T) {
 			err:  &TurnFailedError{Status: "failed", Body: `{"error":{"type":"invalid_request_error"}}`},
 		},
 		{
+			name:     "recorded turn input limit refusal",
+			err:      startupStageError(&ResponseError{Request: "turn/start", Code: -32602, Message: "Input exceeds the maximum length of 1048576"}, "turn/start", now, now, time.Second),
+			want:     true,
+			wantType: backendcapacity.ErrorTypeTransientOverload,
+			wantKind: backendcapacity.StartupFailureKind,
+		},
+		{
+			name:     "structured turn input limit refusal",
+			err:      &ResponseError{Request: "turn/start", Code: -32602, Message: "input_too_large", Body: `{"error":{"data":{"code":"input_too_large","max_chars":1048576,"actual_chars":2927066}}}`},
+			want:     true,
+			wantType: backendcapacity.ErrorTypeTransientOverload,
+			wantKind: backendcapacity.StartupFailureKind,
+		},
+		{
+			name: "unrelated invalid turn parameter",
+			err:  &ResponseError{Request: "turn/start", Code: -32602, Message: "invalid model"},
+		},
+		{
 			name: "provider http 400",
 			err:  &TurnFailedError{Status: "failed", Body: `{"status":400,"message":"invalid request"}`},
 		},
