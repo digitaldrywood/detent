@@ -21,7 +21,7 @@ export const EntryOrganizations = Schema.Struct({
   organizations: Schema.Array(EntryOrganization),
   pending: Schema.optional(Schema.Array(EntryOrganization)),
   can_create: Schema.optional(Schema.Boolean),
-  staff: Schema.optional(Schema.Boolean),
+  platform_role: Schema.optional(Schema.String),
 });
 export type EntryOrganizations = typeof EntryOrganizations.Type;
 
@@ -29,7 +29,7 @@ export const EntrySession = Schema.Struct({
   email: Schema.String,
   csrf: Schema.String,
   can_create: Schema.optional(Schema.Boolean),
-  staff: Schema.optional(Schema.Boolean),
+  platform_role: Schema.optional(Schema.String),
 });
 export type EntrySession = typeof EntrySession.Type;
 
@@ -170,7 +170,7 @@ export const PlatformHealth = Schema.Struct({
 });
 export type PlatformHealth = typeof PlatformHealth.Type;
 
-export const PLATFORM = "/platform";
+export const PLATFORM = "/platform/tenants";
 export const SUPPORT_REASONS = ["customer-request", "account-recovery", "troubleshooting"] as const;
 
 export const CHOOSE_ORGANIZATION = "/organizations?switch=1";

@@ -20,7 +20,13 @@ import {
   OrganizationChooser,
   ProvisioningProgress,
 } from "./EntryScreens.tsx";
-import { PlatformConsole } from "./PlatformConsole.tsx";
+import {
+  PlatformAllowlistPage,
+  PlatformConsole,
+  PlatformHealthPage,
+  PlatformSectionPage,
+  PlatformTenantsPage,
+} from "./PlatformConsole.tsx";
 import { usePageTitle } from "../pageTitle.ts";
 
 function useGo(): (to: string) => void {
@@ -47,7 +53,41 @@ export const ENTRY_ROUTE_PATHS = [
   "/organizations/new",
   "/organizations/$organization/provisioning",
   "/platform",
+  "/platform/tenants",
+  "/platform/staff",
+  "/platform/audit",
+  "/platform/health",
+  "/platform/allowlist",
 ] as const;
+
+const platformRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/platform",
+  component: PlatformConsole,
+});
+
+const platformRoutes = platformRoute.addChildren([
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/",
+    beforeLoad: () => {
+      throw redirect({ to: "/platform/tenants", replace: true } as never);
+    },
+  }),
+  createRoute({ getParentRoute: () => platformRoute, path: "/tenants", component: PlatformTenantsPage }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/staff",
+    component: () => <PlatformSectionPage section="staff" />,
+  }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/audit",
+    component: () => <PlatformSectionPage section="audit" />,
+  }),
+  createRoute({ getParentRoute: () => platformRoute, path: "/health", component: PlatformHealthPage }),
+  createRoute({ getParentRoute: () => platformRoute, path: "/allowlist", component: PlatformAllowlistPage }),
+]);
 
 const routeTree = rootRoute.addChildren([
   createRoute({
@@ -90,14 +130,7 @@ const routeTree = rootRoute.addChildren([
       return <ProvisioningProgress organization={organization ?? ""} onNavigate={useGo()} />;
     },
   }),
-  createRoute({
-    getParentRoute: () => rootRoute,
-    path: "/platform",
-    component: function Platform() {
-      usePageTitle("Platform");
-      return <PlatformConsole />;
-    },
-  }),
+  platformRoutes,
 ]);
 
 export function makeEntryRouter(history?: RouterHistory) {

@@ -21,7 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 )
 
-var platformRoutes = []string{"/platform", "/api/cloud/platform/organizations", "/api/cloud/platform/allowlist", "/api/cloud/platform/health"}
+var platformRoutes = []string{"/platform", "/platform/tenants", "/platform/staff", "/platform/audit", "/platform/health", "/platform/allowlist", "/api/cloud/platform/organizations", "/api/cloud/platform/allowlist", "/api/cloud/platform/health"}
 
 var platformEvents = map[string]string{
 	"/platform":                         "platform_opened",
@@ -89,7 +89,7 @@ func TestPlatformAuthorization(t *testing.T) {
 	impersonation := supportIdentityBrowser(t, f)
 
 	for _, route := range platformRoutes {
-		page := route == "/platform"
+		page := strings.HasPrefix(route, "/platform")
 		for _, test := range []struct {
 			name     string
 			browser  *browser
@@ -124,8 +124,12 @@ func TestPlatformAuthorization(t *testing.T) {
 		}
 	}
 	for _, event := range platformEvents {
-		if got := platformAuditCount(t, f.service, "user_staff", event); got != 2 {
-			t.Errorf("staff audit %s = %d, want 2", event, got)
+		want := 2
+		if event == "platform_opened" {
+			want = 12
+		}
+		if got := platformAuditCount(t, f.service, "user_staff", event); got != want {
+			t.Errorf("staff audit %s = %d, want %d", event, got, want)
 		}
 		if got := platformAuditCount(t, f.service, "user_alice", event); got != 0 {
 			t.Errorf("customer audit %s = %d, want 0", event, got)

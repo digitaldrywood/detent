@@ -22,7 +22,7 @@ import {
   OrganizationChooser,
   ProvisioningProgress,
 } from "../../src/app/entry/EntryScreens.tsx";
-import { isEntrySurface, makeEntryRouter } from "../../src/app/entry/router.tsx";
+import { ENTRY_ROUTE_PATHS, isEntrySurface, makeEntryRouter } from "../../src/app/entry/router.tsx";
 
 if (typeof globalThis.PointerEvent === "undefined") {
   globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
@@ -88,6 +88,21 @@ describe("organization chooser", () => {
     expect((signOut?.querySelector('input[name="csrf"]') as HTMLInputElement).value).toBe("csrf-token");
   });
 
+  it.each(["admin", "support", "billing", "viewer", "", undefined])("shows the platform entry point only with a platform role (%s)", async (platform_role) => {
+    const navigate = vi.fn();
+    renderWith(fakeApi({ organizations: vi.fn(async () => ({ ...listing, platform_role })) }), <OrganizationChooser onNavigate={navigate} />);
+    await screen.findByRole("link", { name: "Open Alpha" });
+    const link = screen.queryByRole("link", { name: "Open Platform console" });
+    if (platform_role) {
+      expect(link?.getAttribute("href")).toBe("/platform/tenants");
+      expect(screen.getByText("Platform")).toBeTruthy();
+    } else {
+      expect(link).toBeNull();
+      expect(screen.queryByText("Platform console")).toBeNull();
+    }
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("directs an account with no organization to request an email invitation", async () => {
     renderWith(
       fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [], pending: [], can_create: false })) }),
@@ -136,14 +151,14 @@ describe("organization chooser auto-enter", () => {
     expect(replace).not.toHaveBeenCalled();
   });
 
-  it("never enters a customer organization for staff", async () => {
+  it("auto-enters a platform member's single organization", async () => {
     const navigate = vi.fn();
     renderWith(
-      fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [alpha], pending: [], staff: true })) }),
+      fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [alpha], pending: [], platform_role: "admin" })) }),
       <OrganizationChooser onNavigate={navigate} />,
     );
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/platform"));
-    expect(replace).not.toHaveBeenCalled();
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(alpha.url));
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("returns to the chooser without entering from the other entry screens", async () => {
@@ -270,16 +285,17 @@ describe("entry API", () => {
     const api = makeEntryApi({
       fetch: async (url, init) => {
         calls.push({ url, init });
-        return new Response(JSON.stringify(url.startsWith("/api") ? listing : { next: "/next" }), { status: 200 });
+        return new Response(JSON.stringify(url.startsWith("/api") ? { ...listing, platform_role: "admin" } : { next: "/next" }), { status: 200 });
       },
     });
-    await api.organizations();
+    expect((await api.organizations()).platform_role).toBe("admin");
+    expect((await api.session()).platform_role).toBe("admin");
     await api.createOrganization({ name: "Delta", key: "key_0123456789abcdef", csrf: "csrf-token" });
     expect(calls[0]!.url).toBe("/api/cloud/organizations");
     expect((calls[0]!.init!.headers as Record<string, string>).Accept).toBe("application/json");
-    expect(calls[1]!.url).toBe("/organizations");
-    expect((calls[1]!.init!.headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf-token");
-    const body = new URLSearchParams(calls[1]!.init!.body as string);
+    expect(calls[2]!.url).toBe("/organizations");
+    expect((calls[2]!.init!.headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf-token");
+    const body = new URLSearchParams(calls[2]!.init!.body as string);
     expect(body.get("name")).toBe("Delta");
     expect(body.get("creation_key")).toBe("key_0123456789abcdef");
     expect(body.get("csrf")).toBe("csrf-token");
@@ -298,7 +314,7 @@ describe("entry API", () => {
 });
 
 describe("entry router", () => {
-  it.each(["/organizations", "/organizations/new", "/organizations/org_b/provisioning", "/platform", "/"])(
+  it.each(ENTRY_ROUTE_PATHS.filter((path) => path !== "/platform").map((path) => path.replace("$organization", "org_b")))(
     "resolves %s",
     async (path) => {
       const router = makeEntryRouter(createMemoryHistory({ initialEntries: [path] }));
@@ -306,6 +322,12 @@ describe("entry router", () => {
       expect(router.state.location.pathname).toBe(path);
     },
   );
+
+  it("redirects the platform root to tenants", async () => {
+    const router = makeEntryRouter(createMemoryHistory({ initialEntries: ["/platform"] }));
+    await router.load();
+    expect(router.state.location.pathname).toBe("/platform/tenants");
+  });
 
   it("keeps the explicit switch flag when returning to the chooser", async () => {
     const router = makeEntryRouter(createMemoryHistory({ initialEntries: ["/organizations/new"] }));

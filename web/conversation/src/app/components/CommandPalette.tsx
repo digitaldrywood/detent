@@ -2,6 +2,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
+  Building2Icon,
   FileSearchIcon,
   FolderIcon,
   FolderPlusIcon,
@@ -72,6 +73,8 @@ import { conversationDestination } from "../lib/conversationDestination.ts";
 import { useSidebarData } from "../adapters/sidebarData.tsx";
 import { toEnvironmentProject } from "../adapters/shell.ts";
 import { toEnvironmentThreadShell } from "../adapters/sidebarThreads.ts";
+import { useAccountBootstrap } from "../account/context.ts";
+import { PLATFORM } from "../entry/api.ts";
 import { ProjectGlyph } from "./ProjectGlyph.tsx";
 import { useNewProject } from "../projects/NewProject.tsx";
 import { useNewIssue } from "../work/NewIssue.tsx";
@@ -231,6 +234,7 @@ function OpenCommandPaletteDialog(props: {
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
 
+  const account = useAccountBootstrap();
   const sidebar = useSidebarData();
   const conversationContext = usePaletteContext();
   const shell = usePaletteShell();
@@ -644,6 +648,19 @@ function OpenCommandPaletteDialog(props: {
       await navigateTo("/settings");
     },
   });
+
+  if (account?.actor.platform_role) {
+    actionItems.push({
+      kind: "action",
+      value: "action:platform",
+      searchTerms: ["platform", "console", "tenants"],
+      title: "Platform console",
+      icon: <Building2Icon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        globalThis.location?.assign(PLATFORM);
+      },
+    });
+  }
 
   if (activeProjectId !== null) {
     actionItems.push({

@@ -27,6 +27,7 @@ import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
 import type { BillingReport, PlanReport, ProjectsResponse } from "../../contracts/account.ts";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
+import { PLATFORM } from "../entry/api.ts";
 import { newKey } from "../account/idempotency.ts";
 import { OrganizationRoute } from "../account/Organization.tsx";
 import { ProjectSettingsRoute } from "../account/ProjectSettings.tsx";
@@ -132,14 +133,21 @@ export function GeneralSettings(): React.ReactElement {
           description={bootstrap?.actor.email ?? "This hub does not report an actor."}
           status={bootstrap === null ? undefined : `Role: ${bootstrap.actor.role}`}
           control={
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={signOut.pending}
-              onClick={() => void signOut.call()}
-            >
-              {signOut.pending ? "Signing out…" : "Sign out"}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {bootstrap?.actor.platform_role ? (
+                <Button size="sm" variant="outline" render={<a href={PLATFORM} />}>
+                  Platform console
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={signOut.pending}
+                onClick={() => void signOut.call()}
+              >
+                {signOut.pending ? "Signing out…" : "Sign out"}
+              </Button>
+            </div>
           }
         />
         {bootstrap?.actor.role === "owner" || bootstrap?.actor.role === "admin" ? <ProjectRankSettings /> : null}
