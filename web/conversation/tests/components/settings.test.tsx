@@ -106,8 +106,9 @@ describe("which sections an actor gets", () => {
     renderSidebarNav("/settings/general", {
       http: { origin: "", apiBase: "/api", csrfToken: "c" },
       account: {
-        actor: { email: "member@example.test", role: "member", platform_role, can_manage: false },
-        organization: { name: "Alpha" }, support: null, plan: null,
+        ...OWNER_ACCOUNT.account,
+        actor: { ...OWNER_ACCOUNT.account.actor, email: "member@example.test", role: "member", platform_role, can_manage: false },
+        support: null, plan: null,
       },
     }, <GeneralSettings />);
     await screen.findByRole("button", { name: "Sign out" });
@@ -157,7 +158,8 @@ function renderSidebarNav(pathname = "/settings/projects", account: unknown = OW
 }
 
 const OWNER_ACCOUNT = {
-  account: { actor: { can_manage: true }, support: null },
+  http: { origin: "", apiBase: accountFixture.api_base, csrfToken: accountFixture.csrf_token },
+  account: Schema.decodeUnknownSync(AccountBootstrap)(accountFixture),
 };
 
 describe("MCP setup", () => {
@@ -448,7 +450,13 @@ describe("the settings navigation in the sidebar", () => {
   });
 
   it("hides the sections an actor could only be refused", async () => {
-    renderSidebarNav("/settings/general", { account: { actor: { can_manage: false }, support: null } });
+    renderSidebarNav("/settings/general", {
+      ...OWNER_ACCOUNT,
+      account: {
+        ...OWNER_ACCOUNT.account,
+        actor: { ...OWNER_ACCOUNT.account.actor, can_manage: false },
+      },
+    });
     await waitFor(() => expect(screen.getByRole("button", { name: "General" })).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Plan" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Billing" })).toBeNull();
