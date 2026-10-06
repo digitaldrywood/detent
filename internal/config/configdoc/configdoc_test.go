@@ -2,16 +2,14 @@ package configdoc
 
 import (
 	"errors"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/config"
 )
 
 func TestConfigDocumentation(t *testing.T) {
@@ -25,7 +23,7 @@ func TestConfigDocumentation(t *testing.T) {
 	}
 
 	t.Run("covers config package YAML keys", func(t *testing.T) {
-		sourceKeys := configSourceYAMLKeys(t)
+		sourceKeys := configSourceYAMLKeys()
 		generatedKeys := make(map[string]struct{}, len(fields))
 		for _, field := range fields {
 			path := strings.TrimSuffix(field.Path, "[]")
@@ -230,39 +228,39 @@ func TestWriteGeneratedFileFailure(t *testing.T) {
 	}
 }
 
-func configSourceYAMLKeys(t *testing.T) map[string]struct{} {
-	t.Helper()
-
-	entries, err := os.ReadDir("..")
-	if err != nil {
-		t.Fatalf("ReadDir() error = %v", err)
-	}
+func configSourceYAMLKeys() map[string]struct{} {
+	configType := reflect.TypeFor[config.Config]()
 	keys := map[string]struct{}{}
-	files := token.NewFileSet()
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
+	visited := map[reflect.Type]bool{}
+	var visit func(reflect.Type)
+	visit = func(typ reflect.Type) {
+		for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array || typ.Kind() == reflect.Map {
+			typ = typ.Elem()
 		}
-		path := filepath.Join("..", entry.Name())
-		file, parseErr := parser.ParseFile(files, path, nil, 0)
-		if parseErr != nil {
-			t.Fatalf("ParseFile(%q) error = %v", path, parseErr)
+		if typ.Kind() != reflect.Struct || typ.PkgPath() != configType.PkgPath() || visited[typ] {
+			return
 		}
-		ast.Inspect(file, func(node ast.Node) bool {
-			field, ok := node.(*ast.Field)
-			if !ok || field.Tag == nil {
-				return true
+		visited[typ] = true
+		for index := range typ.NumField() {
+			field := typ.Field(index)
+			if !field.IsExported() {
+				continue
 			}
-			tag, unquoteErr := strconv.Unquote(field.Tag.Value)
-			if unquoteErr != nil {
-				t.Fatalf("Unquote(%q) error = %v", field.Tag.Value, unquoteErr)
+			key, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+			if key == "" || key == "-" {
+				continue
 			}
-			key, _, _ := strings.Cut(reflect.StructTag(tag).Get("yaml"), ",")
-			if key != "" && key != "-" {
-				keys[key] = struct{}{}
-			}
-			return true
-		})
+			keys[key] = struct{}{}
+			visit(field.Type)
+		}
+	}
+	for _, typ := range []reflect.Type{
+		configType,
+		reflect.TypeFor[config.CodexOptions](),
+		reflect.TypeFor[config.ClaudeCodeOptions](),
+		reflect.TypeFor[config.PiAgentOptions](),
+	} {
+		visit(typ)
 	}
 	return keys
 }
