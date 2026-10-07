@@ -83,6 +83,10 @@ for (const width of [1280, 390]) {
     await expect(intake).toBeVisible();
     expect(await enroll.evaluate(element => Boolean(element.compareDocumentPosition(document.querySelector('[aria-label="Import GitHub issues"]')) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
     await enroll.click();
+    const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
+    await expect(page.getByText("Reading runners before creating a command…", { exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Create command", exact: true })).toBeEnabled();
+    await dialog.evaluate((element) => Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished)));
     const capacity = page.getByLabel("Concurrency", { exact: true });
     await expect(capacity).toHaveValue("1");
     await capacity.fill("6");
@@ -94,7 +98,6 @@ for (const width of [1280, 390]) {
     const projectState = await projects.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-checked")));
     await help(page, "Projects", "access and routing scope", tap);
     expect(await projects.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-checked")))).toEqual(projectState);
-    const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
     const nameBounds = await dialog.getByLabel("Name", { exact: true }).boundingBox();
     const capacityBounds = await capacity.boundingBox();
     expect(nameBounds).not.toBeNull();

@@ -424,6 +424,7 @@ const SEED_FLEET = {
   runners: [
     {
       id: "rnr_mock",
+      machine_id: "mac_mock01",
       display_name: "Mock MacBook Pro",
       hostname: "mock-macbook.local",
       health: "online",
@@ -474,6 +475,7 @@ const SEED_FLEET = {
     },
     {
       id: "rnr_mock_mini",
+      machine_id: "mac_mock02",
       display_name: "mock-mini-1",
       hostname: "mock-mini-1.local",
       health: "stale",
