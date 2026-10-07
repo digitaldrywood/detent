@@ -20,6 +20,7 @@ import { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 
 import { createWorkMock } from "./mock-work.ts";
+import reportsFixture from "../src/contracts/fixtures/reports.json";
 import type {
   Conversation,
   ConversationEvent,
@@ -2652,6 +2653,12 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
+    if (segments[0] === "reports" && segments.length === 1 && method === "GET") {
+      const report = structuredClone(reportsFixture);
+      report.analytics.project_id = url.searchParams.get("project") ?? "proj_alpha";
+      json(response, 200, report);
+      return true;
+    }
     if (segments[0] === "usage" && segments.length === 1 && method === "GET") {
       // §17.5. Any member reads usage: it is a report, and there is nothing on
       // it a reader who can load the organization may not see. An unknown

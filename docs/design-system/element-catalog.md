@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 One row per catalogued element. The [component contracts](components.md) hold the full contract for each. Status *available* means the component ships in Detent; *proposed* means it is planned and has no source yet; *exception* means a deliberate, documented departure from the shared contract.
 
-Totals: 135 entries; by kind: 51 primitive, 78 composition, 6 surface; by status: 135 available, 0 proposed, 0 exception.
+Totals: 136 entries; by kind: 51 primitive, 79 composition, 6 surface; by status: 136 available, 0 proposed, 0 exception.
 
 | Element | Group | Kind | Status | Source |
 | --- | --- | --- | --- | --- |
@@ -118,6 +118,7 @@ Totals: 135 entries; by kind: 51 primitive, 78 composition, 6 surface; by status
 | [Context help](components.md#context-help) | Settings | composition | available | `src/app/components/ContextHelp.tsx` |
 | [Expandable text](components.md#expandable-text) | Settings | composition | available | `src/app/settings/ExpandableText.tsx` |
 | [Redacted sensitive text](components.md#redacted-sensitive-text) | Settings | composition | available | `src/components/settings/RedactedSensitiveText.tsx` |
+| [Reports page](components.md#reports-page) | Usage | composition | available | `src/app/reports/ReportsPage.tsx` |
 | [Usage page](components.md#usage-page) | Usage | composition | available | `src/app/usage/UsagePage.tsx` |
 | [Usage provider chart](components.md#usage-provider-chart) | Usage | composition | available | `src/app/usage/UsageProviderChart.tsx` |
 | [Usage limits](components.md#usage-limits) | Usage | composition | available | `src/components/usage/UsageLimits.tsx` |

@@ -18,6 +18,14 @@ describe("the sidebar's Work navigation", () => {
     expect(onNavigate).toHaveBeenCalledWith("/work/p/proj_alpha");
   });
 
+  it("opens Reports from Browse", async () => {
+    const { onNavigate } = await renderSidebar();
+    const reports = screen.getByTestId("nav-reports") as HTMLButtonElement;
+    expect(reports.disabled).toBe(false);
+    fireEvent.click(reports);
+    expect(onNavigate).toHaveBeenCalledWith("/reports");
+  });
+
   it("sends Work to the all-projects board when no project is chosen", async () => {
     const { onNavigate } = await renderSidebar({ activeProjectId: null });
     fireEvent.click(screen.getByTestId("nav-work"));
@@ -45,7 +53,7 @@ describe("the sidebar's Work navigation", () => {
 
   it("disables the destinations this client does not serve", async () => {
     const { onNavigate } = await renderSidebar();
-    for (const id of ["activity", "reports", "library"]) {
+    for (const id of ["activity", "library"]) {
       const row = screen.getByTestId(`nav-${id}`) as HTMLButtonElement;
       expect(row.disabled, id).toBe(true);
       fireEvent.click(row);

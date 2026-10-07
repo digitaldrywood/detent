@@ -1755,6 +1755,21 @@
       "related": ["settings-layout"]
     },
     {
+      "id": "reports-page",
+      "name": "Reports page",
+      "kind": "composition",
+      "group": "Usage",
+      "status": "available",
+      "source": "src/app/reports/ReportsPage.tsx",
+      "exports": ["ReportsRoute", "ReportsView"],
+      "variants": {},
+      "states": ["loading", "empty", "error", "partial", "unavailable"],
+      "keyboard": "Time and range controls, refresh and issue Diagnostics links in reading order.",
+      "use": "Project flow, throughput, stage and cost reports from recorded analytics, with source coverage.",
+      "avoid": "Point-in-time snapshots as historical flow metrics or unrecorded values as zeroes.",
+      "related": ["usage-page", "table", "toggle-group", "workspace-page-header", "workspace-page-container"]
+    },
+    {
       "id": "usage-page",
       "name": "Usage page",
       "kind": "composition",

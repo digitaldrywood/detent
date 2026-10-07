@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 135 entries; by kind: 51 primitive, 78 composition, 6 surface; by status: 135 available, 0 proposed, 0 exception.
+Catalog totals: 136 entries; by kind: 51 primitive, 79 composition, 6 surface; by status: 136 available, 0 proposed, 0 exception.
 
 ## Actions
 
@@ -1460,6 +1460,19 @@ Showing a secret such as an API key redacted until revealed.
 - Related: [Settings layout](#settings-layout).
 
 ## Usage
+
+### Reports page
+
+Project flow, throughput, stage and cost reports from recorded analytics, with source coverage.
+
+- Kind: Composition; status: available; id: `reports-page`.
+- Import: `import { ReportsRoute, ReportsView } from "~/app/reports/ReportsPage";`
+- Source: [src/app/reports/ReportsPage.tsx](../../web/conversation/src/app/reports/ReportsPage.tsx).
+- Variants: none.
+- States: loading, empty, error, partial, unavailable.
+- Keyboard: Time and range controls, refresh and issue Diagnostics links in reading order.
+- Avoid: Point-in-time snapshots as historical flow metrics or unrecorded values as zeroes.
+- Related: [Usage page](#usage-page), [Table](#table), [Toggle group](#toggle-group), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
 
 ### Usage page
 

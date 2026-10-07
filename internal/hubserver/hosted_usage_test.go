@@ -362,6 +362,28 @@ func TestHostedUsageReportAccess(t *testing.T) {
 	f.usage(t, "owner", browserHostedOrganizationBase+"/usage?range=1y", http.StatusUnprocessableEntity)
 	f.usage(t, "owner", browserHostedOrganizationBase+"/usage?project=proj_missing", http.StatusNotFound)
 	f.usage(t, "", browserHostedOrganizationBase+"/usage", http.StatusUnauthorized)
+	t.Run("reports", func(t *testing.T) {
+		for _, account := range []string{"owner", "viewer"} {
+			for _, window := range []string{"24h", "48h", "7d", "30d"} {
+				var report hostedReportsReport
+				usageDecode(t, f.usage(t, account, browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+window, http.StatusOK), &report)
+				if report.Analytics.ProjectID != f.project || len(report.Throughput) == 0 || len(report.Coverage) == 0 {
+					t.Fatalf("reports scope or coverage = %+v", report)
+				}
+			}
+		}
+		for _, request := range []struct {
+			account, query string
+			status         int
+		}{
+			{"", "?project=" + f.project + "&range=24h", http.StatusUnauthorized},
+			{"staff", "?project=" + f.project + "&range=24h", http.StatusForbidden},
+			{"owner", "?project=other&range=24h", http.StatusNotFound},
+			{"owner", "?project=" + f.project + "&range=1y", http.StatusUnprocessableEntity},
+		} {
+			f.usage(t, request.account, browserHostedOrganizationBase+"/reports"+request.query, request.status)
+		}
+	})
 	t.Run("diagnostics", func(t *testing.T) {
 		for _, account := range []string{"owner", "viewer"} {
 			var report diagnosticsReport
