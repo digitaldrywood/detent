@@ -32,6 +32,7 @@ type testExecution struct {
 	recovery     tracker.NativeRecovery
 	validateErr  error
 	checkpoint   *tracker.NativeCheckpoint
+	runtime      tracker.NativeRuntimeObservation
 	finish       string
 	started      bool
 	onCheckpoint func(tracker.NativeCheckpoint)
@@ -58,6 +59,13 @@ func (e *testExecution) Finish(_ context.Context, outcome string) error {
 	return nil
 }
 func (e *testExecution) Recovery() tracker.NativeRecovery { return e.recovery }
+
+func (e *testExecution) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
+	if observation.Recovery != nil {
+		e.runtime.Recovery = observation.Recovery
+	}
+	return nil
+}
 
 type readToolTestExecution struct {
 	testExecution
@@ -188,6 +196,8 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		blocked                 bool
 		changedPolicy           bool
 		fresh                   bool
+		restartSession          bool
+		missingWorktree         bool
 		published               bool
 		providerNotStarted      bool
 		providerHadTurns        bool
@@ -233,8 +243,8 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "already paused unavailable checkpoint", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
 		}},
-		{name: "already paused unavailable session", rework: true, paused: true, blocked: true, edit: func(_ *testExecution, a *fakeCodexClient) { a.verifyErr = errors.New("session unavailable") }},
-		{name: "already paused missing session", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
+		{name: "already paused unavailable session", rework: true, paused: true, restartSession: true, startupFailsAgain: true, edit: func(_ *testExecution, a *fakeCodexClient) { a.verifyErr = errors.New("session unavailable") }},
+		{name: "already paused missing session", rework: true, paused: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
 		{name: "already paused ambiguous publication", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
 			e.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
@@ -255,7 +265,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "rework unavailable checkpoint", rework: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
 		}},
-		{name: "rework unavailable session", rework: true, blocked: true, edit: func(_ *testExecution, a *fakeCodexClient) { a.verifyErr = errors.New("session unavailable") }},
+		{name: "rework unavailable session", rework: true, restartSession: true, startupFailsAgain: true, edit: func(_ *testExecution, a *fakeCodexClient) { a.verifyErr = errors.New("session unavailable") }},
 		{name: "clean 94"},
 		{name: "clean provider never started", providerNotStarted: true},
 		{name: "provider startup fails again", providerNotStarted: true, startupFailsAgain: true},
@@ -272,7 +282,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			e.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
 		}},
 		{name: "provider start identity retained", providerNotStarted: true, startupFailsAgain: true, observedProvider: true},
-		{name: "provider identity missing after turn", providerNotStarted: true, providerHadTurns: true, blocked: true},
+		{name: "provider identity missing after turn without external effect", providerNotStarted: true, providerHadTurns: true, restartSession: true, startupFailsAgain: true},
 		{name: "dirty provider never started", providerNotStarted: true, dirty: true, blocked: true},
 		{name: "startup policy changed", providerNotStarted: true, changedPolicy: true, fresh: true},
 		{name: "startup host changed", providerNotStarted: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
@@ -280,16 +290,18 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "other-digest"
 		}},
 		{name: "dirty 181", dirty: true},
-		{name: "provider unavailable", dirty: true, blocked: true, edit: func(_ *testExecution, agent *fakeCodexClient) { agent.verifyErr = errors.New("session missing") }},
-		{name: "clean provider unavailable", blocked: true, edit: func(_ *testExecution, agent *fakeCodexClient) { agent.verifyErr = errors.New("session missing") }},
-		{name: "clean persisted session missing", blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
+		{name: "provider unavailable", dirty: true, restartSession: true, startupFailsAgain: true, edit: func(_ *testExecution, agent *fakeCodexClient) { agent.verifyErr = errors.New("session missing") }},
+		{name: "clean provider unavailable", restartSession: true, startupFailsAgain: true, edit: func(_ *testExecution, agent *fakeCodexClient) { agent.verifyErr = errors.New("session missing") }},
+		{name: "clean persisted session missing", restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
+		{name: "clean session and worktree missing", restartSession: true, startupFailsAgain: true, missingWorktree: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
+		{name: "rework persisted session missing", rework: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
 		{name: "persisted policy differs", dirty: true, blocked: true, changedPolicy: true},
 		{name: "policy changed", dirty: true, changedPolicy: true, fresh: true},
 		{name: "model authority changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Identity.Model = "other-model" }},
 		{name: "clean checkpoint unavailable", blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
 		}},
-		{name: "local attempt missing", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID++ }},
+		{name: "local attempt missing", dirty: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID++ }},
 		{name: "workspace changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "other-digest"
 		}},
@@ -524,6 +536,12 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				t.Fatal(err)
 			}
 			backend.beforePreparation = func() {
+				if test.restartSession {
+					if !execution.started || execution.checkpoint == nil || execution.checkpoint.HeadSHA != beforeRun.HeadSHA || execution.checkpoint.WorkspaceDigest != beforeRun.WorkspaceFingerprint || execution.checkpoint.Resume != "fresh_checkout" {
+						t.Fatalf("fresh turn lost retained source before preparation: %+v", execution.checkpoint)
+					}
+					return
+				}
 				if test.fresh {
 					return
 				}
@@ -565,6 +583,9 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: worker, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.missingWorktree {
+				runRunnerGit(t, source, "worktree", "remove", info.Path)
 			}
 			result, err := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: execution, WorkAttemptID: currentAttemptID, Issue: issue, Mode: RunModeImplement})
 			if test.fresh && !test.blocked {
@@ -625,10 +646,14 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				}
 			} else {
 				want := AgentResume{ThreadID: "original-thread", SessionID: "original-session"}
-				if test.providerNotStarted {
+				verified := want
+				if test.providerNotStarted || test.restartSession {
 					want = AgentResume{}
 				}
-				if !errors.Is(err, overload) || agent.calls != 1 || agent.request.Resume != want || agent.verifiedResume != want || (!test.providerNotStarted && (agent.request.Model != model || agent.request.ReasoningEffort != "high")) || agent.request.Workspace != info.Path {
+				if test.providerNotStarted || test.restartSession && agent.verifyErr == nil {
+					verified = AgentResume{}
+				}
+				if !errors.Is(err, overload) || agent.calls != 1 || agent.request.Resume != want || agent.verifiedResume != verified || (!test.providerNotStarted && !test.restartSession && (agent.request.Model != model || agent.request.ReasoningEffort != "high")) || agent.request.Workspace != info.Path {
 					t.Fatalf("recovery: error=%v turns=%d resume=%+v verified=%+v model=%s", err, agent.calls, agent.request.Resume, agent.verifiedResume, agent.request.Model)
 				}
 				if result.NativeChange != nil || result.FinalState != FinalStateFailed {
@@ -658,7 +683,17 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 					t.Fatalf("checkpoint changed: %+v", execution.checkpoint)
 				}
 
-				if test.startupFailsAgain && !test.observedProvider {
+				if test.restartSession {
+					decision := execution.runtime.Recovery
+					if decision == nil || decision.Action != "fresh_checkout" || decision.Reason != "session_restart_required" {
+						t.Fatalf("fallback missing from receipt: %+v", decision)
+					}
+					stored, readErr := db.Queries().GetCodexSession(ctx, sessionID+1)
+					if readErr != nil || stored.ResumedFromSessionID.Int64 != 0 || stored.WorkAttemptID.Int64 != currentAttemptID {
+						t.Fatalf("fresh session inherited lost-session provenance: %+v error=%v", stored, readErr)
+					}
+				}
+				if test.startupFailsAgain && !test.observedProvider && !test.restartSession {
 					if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: currentAttemptID, CompletedAt: started.Add(2 * time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, WorkerMetadataJSON: string(metadata)}); err != nil {
 						t.Fatal(err)
 					}
@@ -859,6 +894,20 @@ func TestNativeRecoveryDecision(t *testing.T) {
 			r.Attempts[0].Checkpoint.WorktreeState = "clean"
 		}, "fresh_checkout", "checkpoint_unavailable", nil},
 		{"provider session missing", func(_ *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) { *available = false }, "fresh_checkout", "session_restart_required", nil},
+		{"interrupted session missing", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) {
+			r.Attempts[0].Status = "interrupted"
+			*available = false
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"interrupted clean workspace and session missing", func(r *tracker.NativeRecovery, local **workspace.RecoveryState, available *bool) {
+			r.Attempts[0].Status = "interrupted"
+			r.Attempts[0].Checkpoint.WorktreeState = "clean"
+			*local, *available = nil, false
+		}, "fresh_checkout", "session_restart_required", nil},
+		{"interrupted provider activity without session identity", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) {
+			r.Attempts[0].Status = "interrupted"
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "provider_turn", "pending"
+			*available = false
+		}, "manual_recovery", "session_restart_required", nil},
 		{"policy changed", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Lease.PolicyID = "new-policy"
 			r.Attempts[0].Status = "interrupted"
@@ -920,7 +969,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 				test.edit(&recovery, &local, &available)
 				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh, test.current)
 				wantAction, wantReason := test.action, test.reason
-				if mode == RetryModeFresh && wantAction == "resume_session" {
+				if mode == RetryModeFresh && (wantAction == "resume_session" || wantReason == "session_restart_required") {
 					wantAction, wantReason = "fresh_checkout", "session_restart_required"
 				}
 				if action != wantAction || reason != wantReason {

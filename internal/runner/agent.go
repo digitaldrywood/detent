@@ -1511,6 +1511,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			req.ResumeState = resume
 			if !agentResumeStateEmpty(resume) {
 				req.RetryMode = RetryModeResume
+			} else {
+				req.RetryMode = RetryModeFresh
 			}
 		}
 		req.retainCheckpoint = true
