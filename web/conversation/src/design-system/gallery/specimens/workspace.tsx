@@ -256,6 +256,8 @@ function BoardSpecimen() {
     workItem({ id: "wi_ds_3", identifier: "detent#131", title: "Usage table rounding", state: progress.name, blockedBy: ["detent#128"] }),
   ];
   const laneProps = {
+    collapsed: false,
+    onToggleCollapsed: noop,
     showProject: true,
     now: NOW,
     onOpen: noop,

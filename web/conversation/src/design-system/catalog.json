@@ -1868,8 +1868,8 @@
       "source": "src/app/work/components/BoardLane.tsx",
       "exports": ["BoardLane", "BoardLaneProps"],
       "variants": {},
-      "states": ["populated", "empty", "drop target"],
-      "keyboard": "The lane is a labelled region; the new-issue button is labelled with the lane name; each card's menu lists the moves.",
+      "states": ["populated", "empty", "collapsed", "drop target"],
+      "keyboard": "The lane is a labelled region; its collapse button toggles with Enter or Space; the new-issue button is labelled with the lane name; each card's menu lists the moves.",
       "use": "One workflow lane of the board with its cards.",
       "avoid": "Writing lane state from the client; the orchestrator owns lanes.",
       "related": ["issue-card", "work-board"]

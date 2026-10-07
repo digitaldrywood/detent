@@ -13,6 +13,7 @@ import {
   serializeViewState,
   toggleFilter,
   toggleLane,
+  toggleCollapsed,
   writeStoredViewState,
 } from "../../src/app/work/lib/viewState.ts";
 
@@ -22,6 +23,7 @@ describe("the board's view state", () => {
   it("defaults an empty query string", () => {
     expect(parseViewState("")).toEqual(DEFAULT_VIEW_STATE);
     expect(isDefaultViewState(DEFAULT_VIEW_STATE)).toBe(true);
+    expect(DEFAULT_VIEW_STATE.collapsed).toEqual(["Backlog"]);
   });
 
   it("links archived lists and preserves their filter on reload", () => {
@@ -89,9 +91,10 @@ describe("the board's view state", () => {
 
   it("derives default lanes from the current workflow, including empty active and custom lanes", () => {
     const lanes = [...LANES, { id: "Merging", name: "Merging", terminal: false, category: "" }, { id: "Retired", name: "Retired", terminal: true, category: "" }];
-    expect(defaultLaneNames(lanes)).toEqual(["Todo", "In progress", "Review", "Merging"]);
+    expect(defaultLaneNames(lanes)).toEqual(["Backlog", "Todo", "In progress", "Review", "Merging"]);
     expect(lanes.filter((lane) => laneVisible(DEFAULT_VIEW_STATE, lane)).map((lane) => lane.name)).toEqual(defaultLaneNames(lanes));
-    expect(laneVisible(parseViewState("lanes=Done"), LANES[4]!)).toBe(true);
+    expect(laneVisible(parseViewState("lanes=Done"), LANES[4]!)).toBe(false);
+    expect(lanes.filter((lane) => laneVisible(parseViewState("lanes=Todo,Done,Retired"), lane)).map((lane) => lane.name)).toEqual(["Todo"]);
     const shown = toggleLane(DEFAULT_VIEW_STATE, "Backlog", lanes);
     writeStoredViewState("default-roundtrip", shown);
     const restored = toggleLane(shown, "Backlog", lanes);
@@ -120,16 +123,35 @@ describe("the board's view state", () => {
   });
 
   it("returns to null once the default lanes are restored", () => {
-    const hidden = toggleLane(DEFAULT_VIEW_STATE, "Done", LANES);
-    expect(hidden.lanes).toEqual(["Todo", "In progress", "Review", "Done"]);
-    expect(toggleLane(hidden, "Done", LANES).lanes).toBeNull();
+    const hidden = toggleLane(DEFAULT_VIEW_STATE, "Backlog", LANES);
+    expect(hidden.lanes).toEqual(["Todo", "In progress", "Review"]);
+    expect(toggleLane(hidden, "Backlog", LANES).lanes).toBeNull();
+    expect(toggleLane(DEFAULT_VIEW_STATE, "Done", LANES)).toBe(DEFAULT_VIEW_STATE);
   });
 
   it("keeps the workflow's lane order when lanes are toggled out of order", () => {
     let state = toggleLane(DEFAULT_VIEW_STATE, "Backlog", LANES);
     state = toggleLane(state, "Review", LANES);
     state = toggleLane(state, "Backlog", LANES);
-    expect(state.lanes).toEqual(["Todo", "In progress"]);
+    expect(state.lanes).toEqual(["Backlog", "Todo", "In progress"]);
+  });
+
+  it("persists collapse independently of filters, including every lane expanded", () => {
+    const expanded = toggleCollapsed(DEFAULT_VIEW_STATE, "Backlog");
+    expect(expanded.collapsed).toEqual([]);
+    expect(serializeViewState(expanded)).toBe("collapsed=");
+    expect(parseViewState(serializeViewState(expanded))).toEqual(expanded);
+    const collapsed = toggleCollapsed(DEFAULT_VIEW_STATE, "Todo");
+    expect(collapsed.collapsed).toEqual(["Backlog", "Todo"]);
+    expect(serializeViewState(collapsed)).toBe("collapsed=Backlog%2CTodo");
+    expect(parseViewState("collapsed=Todo,Backlog,Todo")).toEqual(collapsed);
+    expect(activeFilterCount(collapsed)).toBe(0);
+    expect(laneVisible(collapsed, LANES[0]!)).toBe(true);
+    writeStoredViewState("collapse", collapsed);
+    expect(readStoredViewState("collapse")).toEqual(collapsed);
+    writeStoredViewState("collapse", expanded);
+    expect(readStoredViewState("collapse")).toEqual(expanded);
+    expect(toggleCollapsed(collapsed, "Todo")).toEqual(DEFAULT_VIEW_STATE);
   });
 });
 

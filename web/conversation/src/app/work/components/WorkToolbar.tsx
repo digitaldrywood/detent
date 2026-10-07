@@ -63,8 +63,8 @@ export function WorkToolbar({
   searchRef,
 }: WorkToolbarProps): React.ReactElement {
   const filters = activeFilterCount(view);
-  const laneNames = React.useMemo(() => lanes.map((lane) => lane.name), [lanes]);
-  const visibleLanes = lanes.filter((lane) => laneVisible(view, lane)).length;
+  const boardLanes = React.useMemo(() => lanes.filter((lane) => !lane.terminal), [lanes]);
+  const visibleLanes = boardLanes.filter((lane) => laneVisible(view, lane)).length;
 
   const values = (key: FilterKey): readonly string[] => [...new Set([...facets[key], ...view[key]])].toSorted();
 
@@ -224,13 +224,13 @@ export function WorkToolbar({
         <MenuTrigger className={TRIGGER} data-testid="lanes-trigger">
           Lanes
           <span className="text-muted-foreground tabular-nums">
-            {visibleLanes}/{laneNames.length}
+            {visibleLanes}/{boardLanes.length}
           </span>
         </MenuTrigger>
         <MenuPopup align="end" className="w-52">
           <MenuGroup>
             <MenuGroupLabel>Show lanes</MenuGroupLabel>
-            {lanes.map((lane) => (
+            {boardLanes.map((lane) => (
               <MenuCheckboxItem
                 key={lane.name}
                 checked={laneVisible(view, lane)}

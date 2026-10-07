@@ -1562,8 +1562,8 @@ One workflow lane of the board with its cards.
 - Import: `import { BoardLane, BoardLaneProps } from "~/app/work/components/BoardLane";`
 - Source: [src/app/work/components/BoardLane.tsx](../../web/conversation/src/app/work/components/BoardLane.tsx).
 - Variants: none.
-- States: populated, empty, drop target.
-- Keyboard: The lane is a labelled region; the new-issue button is labelled with the lane name; each card's menu lists the moves.
+- States: populated, empty, collapsed, drop target.
+- Keyboard: The lane is a labelled region; its collapse button toggles with Enter or Space; the new-issue button is labelled with the lane name; each card's menu lists the moves.
 - Avoid: Writing lane state from the client; the orchestrator owns lanes.
 - Related: [Issue card](#issue-card), [Work board](#work-board).
 

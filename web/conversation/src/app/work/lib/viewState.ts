@@ -41,6 +41,7 @@ export interface WorkViewState {
   readonly priority: readonly string[];
   readonly sort: WorkSort;
   readonly lanes: readonly string[] | null;
+  readonly collapsed: readonly string[];
 }
 
 export const DEFAULT_VIEW_STATE: WorkViewState = {
@@ -52,6 +53,7 @@ export const DEFAULT_VIEW_STATE: WorkViewState = {
   priority: [],
   sort: "default",
   lanes: null,
+  collapsed: ["Backlog"],
   completedWindow: "48h",
 };
 
@@ -96,6 +98,7 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
     priority: readList(params.get("priority")),
     sort: WORK_SORTS.find((candidate) => candidate === sort) ?? DEFAULT_VIEW_STATE.sort,
     lanes: lanes === null ? null : readList(lanes),
+    collapsed: params.has("collapsed") ? readList(params.get("collapsed")) : DEFAULT_VIEW_STATE.collapsed,
     completedWindow: COMPLETED_WINDOWS.find((window) => window === params.get("completed")) ?? "48h",
   };
 }
@@ -115,6 +118,7 @@ export function serializeViewState(state: WorkViewState): string {
   }
   if (state.sort !== DEFAULT_VIEW_STATE.sort) params.set("sort", state.sort);
   if (state.lanes !== null) params.set("lanes", writeList(state.lanes));
+  if (writeList(state.collapsed) !== writeList(DEFAULT_VIEW_STATE.collapsed)) params.set("collapsed", writeList(state.collapsed));
   if (state.completedWindow !== "48h") params.set("completed", state.completedWindow);
   return params.toString();
 }
@@ -143,19 +147,27 @@ export function toggleFilter(
 }
 
 export function defaultLaneNames(lanes: readonly Lane[]): readonly string[] {
-  return lanes.filter((lane) => !lane.terminal && lane.name.toLowerCase() !== "backlog").map((lane) => lane.name);
+  return lanes.filter((lane) => !lane.terminal).map((lane) => lane.name);
 }
 
 export function toggleLane(state: WorkViewState, lane: string, lanes: readonly Lane[]): WorkViewState {
   const defaults = defaultLaneNames(lanes);
+  if (!defaults.includes(lane)) return state;
   const current = state.lanes ?? defaults;
   const next = current.includes(lane) ? current.filter((candidate) => candidate !== lane) : [...current, lane];
-  const ordered = lanes.map((candidate) => candidate.name).filter((name) => next.includes(name));
+  const ordered = defaults.filter((name) => next.includes(name));
   return { ...state, lanes: ordered.length === defaults.length && defaults.every((name) => ordered.includes(name)) ? null : ordered };
 }
 
 export function laneVisible(state: WorkViewState, lane: Lane): boolean {
-  return state.lanes === null ? !lane.terminal && lane.name.toLowerCase() !== "backlog" : state.lanes.includes(lane.name);
+  return !lane.terminal && (state.lanes === null || state.lanes.includes(lane.name));
+}
+
+export function toggleCollapsed(state: WorkViewState, lane: string): WorkViewState {
+  const collapsed = state.collapsed.includes(lane)
+    ? state.collapsed.filter((name) => name !== lane)
+    : [...state.collapsed, lane].toSorted();
+  return { ...state, collapsed };
 }
 
 const STORAGE_PREFIX = "detent.work.view:";

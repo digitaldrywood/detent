@@ -24,7 +24,7 @@ import { transitionsFrom } from "./lib/fromWire.ts";
 import { boardStats, sortItems, type WorkItemView } from "./lib/model.ts";
 import { moveItem, useBoard, useWorkHttp } from "./lib/useWork.ts";
 import { useViewState } from "./lib/useViewState.ts";
-import { laneVisible, type WorkViewState } from "./lib/viewState.ts";
+import { laneVisible, toggleCollapsed, type WorkViewState } from "./lib/viewState.ts";
 import { BoardLane } from "./components/BoardLane.tsx";
 import { FirstRunPanel } from "./components/FirstRun.tsx";
 import {
@@ -355,6 +355,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                 <BoardLane
                   key={lane.name}
                   lane={lane}
+                  collapsed={view.collapsed.includes(lane.name)}
+                  onToggleCollapsed={() => setView(toggleCollapsed(view, lane.name))}
                   items={items.filter((item) => item.state === lane.name)}
                   total={board.totals?.lanes[lane.name] ?? (board.totals === null ? undefined : 0)}
                   showProject={projectId === null}
