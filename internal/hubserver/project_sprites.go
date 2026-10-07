@@ -149,6 +149,7 @@ type spriteWakeKey struct {
 }
 
 type spriteLifecyclePass struct {
+	cancel       context.CancelFunc
 	done         chan struct{}
 	pendingState string
 }
@@ -174,6 +175,16 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 	if s.config.SecretKeys == nil {
 		return
 	}
+	if state != "" {
+		allowed, err := monthlySpriteAllowed(ctx, s.database.db, scope, s.config.now())
+		if err != nil {
+			s.config.Logger.Warn("Check Sprite lifecycle monthly budget", "error", err)
+			return
+		}
+		if !allowed {
+			return
+		}
+	}
 	key := spriteWakeKey{organization: scope.organization, project: scope.project}
 	s.spriteWakeMu.Lock()
 	defer s.spriteWakeMu.Unlock()
@@ -186,7 +197,8 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 		}
 		return
 	}
-	pass := &spriteLifecyclePass{done: make(chan struct{})}
+	wakeContext, cancel := context.WithTimeout(ctx, runnerauth.MaxEnrollmentTTL)
+	pass := &spriteLifecyclePass{done: make(chan struct{}), cancel: cancel}
 	s.spriteWakes[key] = pass
 	s.spriteWakeWork.Add(1)
 	go func() {
@@ -204,7 +216,6 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 				}
 			}
 		}()
-		wakeContext, cancel := context.WithTimeout(ctx, runnerauth.MaxEnrollmentTTL)
 		defer cancel()
 		if state != "" {
 			if _, err := s.wakeSpriteRunners(wakeContext, scope, state); err != nil {
@@ -334,6 +345,10 @@ ORDER BY m.hostname LIMIT 1`, scope.project, flySpritesToken, scope.organization
 }
 
 func (s *Service) wakeSpriteRunner(ctx context.Context, scope nativeScope, client *http.Client, name string, envelope hubsecrets.Envelope) (bool, error) {
+	allowed, err := monthlySpriteAllowed(ctx, s.database.db, scope, s.config.now())
+	if err != nil || !allowed {
+		return false, err
+	}
 	if err := s.auditSecretUse(ctx, scope, envelope.Version); err != nil {
 		return false, err
 	}

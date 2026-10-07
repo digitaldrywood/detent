@@ -441,7 +441,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	s.notifyNativeDispatch(scope, input)
+	s.notifyNativeDispatch(ctx, scope, input)
 	return json.RawMessage(response), nil
 }
 func (s *Service) requireCompatibilityResource(c echo.Context) error {

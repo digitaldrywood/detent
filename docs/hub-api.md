@@ -1,5 +1,8 @@
 # Detent Hub API
 
+See [monthly budget enforcement](monthly-budgets.md) for organization/project caps,
+full-issue drain, hard-stop recovery and delayed-cost exposure.
+
 See [monthly infrastructure usage](sprite-usage.md) for Sprite observation
 imports, shared UTC aggregation, corrections, scoped API/MCP reads and provider
 metering limits through the existing usage owner.

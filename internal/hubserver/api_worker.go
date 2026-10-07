@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -337,6 +338,9 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 				return tracker.Lease{}, policyMismatch("Existing claim is pinned to a different policy; release it before requesting a new attempt")
 			}
 		}
+		if err := checkMonthlyLease(ctx, tx, existing, now); err != nil {
+			return tracker.Lease{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit idempotent hub claim next: %w", err)
 		}
@@ -498,8 +502,22 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 				return tracker.Lease{}, err
 			}
 		}
+		var exposure budget.CostExposure
+		if query.NativeScope != nil {
+			decision, currentExposure, err := checkMonthlyClaim(ctx, tx, *query.NativeScope, request.MachineID, id, workspaceGate.skipsProviderReservation(id), now)
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			exposure = currentExposure
+			if !decision.Allowed {
+				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_provider_capacity", Outcome: "skipped", Reason: monthlyBudgetRefusal(decision)}, now); err != nil {
+					return tracker.Lease{}, err
+				}
+				continue
+			}
+		}
 		request.WorkItemID = id
-		lease, err = d.claimInTransaction(ctx, tx, request, now)
+		lease, err = d.claimInTransaction(ctx, tx, request, now, exposure)
 		if err != nil {
 			return tracker.Lease{}, err
 		}

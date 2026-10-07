@@ -16,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -55,6 +56,15 @@ func (s *Service) spritePoolClient() *http.Client {
 }
 
 func (s *Service) poolSpriteRequest(ctx context.Context, scope nativeScope, name, method, path string, body []byte) (*http.Response, error) {
+	if method != http.MethodDelete && method != http.MethodGet {
+		allowed, err := monthlySpriteAllowed(ctx, s.database.db, scope, s.config.now())
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, providerWait("provider_capacity", "Monthly Sprite budget is exhausted")
+		}
+	}
 	token, err := s.poolSpriteToken(ctx, scope, name)
 	if err != nil {
 		return nil, err
@@ -101,11 +111,22 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 		return nil
 	}
 	now := s.config.now()
+	allowed, err := monthlySpriteAllowed(ctx, tx, scope, now)
+	if err != nil || !allowed {
+		return err
+	}
 	placement, err := readPlacementSnapshot(ctx, tx, scope, now, nil)
 	if err != nil {
 		return err
 	}
 	input := spriteScaleInput{Depth: placement.SpriteTarget, Free: placement.SpriteFree, Pending: placement.Pending, Floor: settings.MinRunners, Ceiling: ceiling, Count: count, CreateLimit: placement.ProviderFree}
+	decision, err := checkMonthlyBudget(ctx, tx, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
+	if err != nil {
+		return err
+	}
+	if !decision.Allowed {
+		input.CreateLimit = new(placement.Provisionable)
+	}
 	if placement.Policy.Mode == "local_first" {
 		input.Floor = min(input.Floor, placement.Policy.OverflowSlots)
 	}

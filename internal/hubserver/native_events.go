@@ -84,6 +84,11 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		if err := requireCurrentLease(lease, request.Data.FencingToken, now); err != nil {
 			return nil, err
 		}
+		if request.Type == "run.started" {
+			if err := checkMonthlyLease(ctx, tx, lease, now); err != nil {
+				return nil, err
+			}
+		}
 		if err := requireApprovedLeasePolicy(ctx, tx, request.Data.LeaseID, true); err != nil {
 			return nil, err
 		}

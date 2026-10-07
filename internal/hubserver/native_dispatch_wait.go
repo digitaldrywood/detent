@@ -72,11 +72,23 @@ func (b *notificationBroker) dispatchCursor(key string) string {
 	return fmt.Sprintf("%s:%d", b.epoch, revision)
 }
 
-func (s *Service) notifyNativeDispatch(scope nativeScope, input any) {
+func (s *Service) notifyNativeDispatch(ctx context.Context, scope nativeScope, input any) {
 	if event, ok := input.(tracker.NativeRunEvent); ok && event.Type != "run.finished" {
 		return
 	}
 	s.notifications.notify(dispatchNotificationKey(scope.organization))
+	s.stopMonthlyBudgetTurns(ctx, scope.organization)
+	s.stopMonthlyBudgetSpritePasses(ctx, scope.organization)
+	switch input.(type) {
+	case monthlyBudgetRequest, spriteUsageRequest:
+		s.resumeMonthlyBudgetWork(ctx, scope)
+	case tracker.NativeRunEvent:
+		if s.conversations != nil {
+			if err := s.conversations.wakePending(ctx); err != nil {
+				s.config.Logger.Warn("Resume cost-corrected conversations", "error", err)
+			}
+		}
+	}
 	if event, ok := input.(tracker.NativeRunEvent); ok && event.Type == "run.finished" && scope.project != "" {
 		s.startSpritePoolForQueue(scope)
 	}
