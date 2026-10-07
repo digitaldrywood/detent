@@ -474,7 +474,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     // --- Fleet, plan and billing --------------------------------------------
     fleet: () => send(FleetResponse, "GET", `${base}/fleet`),
     diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
-    reports: (project: string, range: ReportsRange) => send(ReportsReport, "GET", `${base}/reports?project=${encodeURIComponent(project)}&range=${range}`),
+    reports: (project: string, range: ReportsRange) => send(ReportsReport, "GET", `${base}/reports?project=${encodeURIComponent(project)}&range=${encodeURIComponent(range)}`),
     healthFindings: async (projects: readonly string[]): Promise<HealthFindingsRead> => {
       const reads = await Promise.all(projects.map(async (project) => {
         const items: HealthFindingsRead["items"][number][] = [];
