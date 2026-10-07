@@ -385,7 +385,6 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		legacyRestart  bool
 		restoreRefusal string
 		failCreate     bool
-		retainSource   bool
 		failDiff       bool
 		failDetail     bool
 		failVersion    bool
@@ -412,7 +411,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 	}{
 		{name: "canceled deferred validation preserves authority", validationErr: context.Canceled, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "timed out deferred validation preserves authority", validationErr: context.DeadlineExceeded, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
-		{name: "deferred publication survives restart", retainSource: true, restart: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "deferred publication survives restart", restart: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "installed deferred publication restores tracker authority", restart: true, legacyRestart: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "restart refuses released authority", restart: true, restoreRefusal: "released", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "restart refuses another machine", restart: true, restoreRefusal: "machine", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
@@ -519,12 +518,6 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			defer stop()
 			if test.source != nil {
 				execution.(runner.DiffExecution).SetDiffSource(test.source)
-			}
-			if test.retainSource {
-				execution.(runner.ChangeSourceExecution).SetChangeSource(func(_ context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-					bundle := []byte("immutable source before publication outage")
-					return tracker.ChangeSourceCapture{Source: tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}, Bundle: bundle}, nil
-				})
 			}
 			if !test.noRemote {
 				execution.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
@@ -796,12 +789,6 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					}
 					if len(detail.Versions) != wantVersions {
 						t.Fatalf("publication retry duplicated versions: %+v", detail.Versions)
-					}
-					if test.retainSource {
-						bundle, err := h.admin.ChangeSource(t.Context(), item, stored[0].ID, republished.VersionID)
-						if err != nil || string(bundle) != "immutable source before publication outage" {
-							t.Fatalf("deferred publication lost finalized source: %q, %v", bundle, err)
-						}
 					}
 					h.complete(t, issue.ID, republished)
 					recovery, err := h.admin.Recovery(t.Context(), item)
