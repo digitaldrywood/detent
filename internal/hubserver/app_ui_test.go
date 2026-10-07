@@ -168,6 +168,7 @@ func TestAppSharedEntry(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
 	f := newHostedSharedFixture(t)
 	owner := f.member(t, "owner", "owner", "write")
+	member := f.member(t, "member", "member", "write")
 	viewer := f.member(t, "viewer", "viewer", "read")
 	revoked := f.member(t, "revoked", "member", "read")
 	revocation := `{"bindings":["` + cloudassert.AuthorizationBinding("shared-user_revoked", "org_security", "session_revoked") + `"]}`
@@ -247,13 +248,12 @@ func TestAppSharedEntry(t *testing.T) {
 		}
 	})
 	t.Run("updates", func(t *testing.T) {
-		if response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + "/app/updates"}); response.Code != http.StatusNotFound {
+		if response := f.serve(t, hostedSharedRequest{user: &member, target: prefix + "/app/updates"}); response.Code != http.StatusNotFound {
 			t.Fatalf("ungranted status = %d: %s", response.Code, response.Body.String())
 		}
 		if response := f.serve(t, hostedSharedRequest{user: &revoked, target: prefix + "/app/updates"}); response.Code != http.StatusUnauthorized {
 			t.Fatalf("revoked status = %d: %s", response.Code, response.Body.String())
 		}
-		f.grant(t, owner, true, true)
 		response := f.serve(t, hostedSharedRequest{user: &owner, target: prefix + "/app/updates"})
 		if response.Code != http.StatusOK {
 			t.Fatalf("status = %d: %s", response.Code, response.Body.String())

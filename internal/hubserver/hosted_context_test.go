@@ -153,7 +153,7 @@ func TestHostedContextMCP(t *testing.T) {
 		for _, transport := range []string{"stdio", "http"} {
 			for _, scenario := range []string{"content", "move revision contract", "disabled services", "viewer", "runner grant removed", "project grant removed", "role downgraded", "membership removed", "session revoked", "foreign identifiers", "unavailable read", "oversized read", "project bound", "runner bound", "workspace observation"} {
 				t.Run(deployment+"/"+transport+"/"+scenario, func(t *testing.T) {
-					role := "owner"
+					role := "member"
 					if scenario == "viewer" {
 						role = "viewer"
 					}
@@ -355,7 +355,7 @@ func TestHostedContextMCP(t *testing.T) {
 						for range operatortool.MaxItemLimit {
 							id := newNativeID("prj")
 							operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO projects(id,organization_id,name,profile,created_at) VALUES(?,'org_security',?,'native',?)", id, id, testTimestamp)
-							operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id) VALUES(?,'org_security',?)", f.user.identity.Subject, id)
+							operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id) VALUES(?,'org_security',?) ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner", f.user.identity.Subject, id)
 						}
 						call(operatortool.AppBootstrapPayload, map[string]any{}, true)
 						call(operatortool.AppUpdates, map[string]any{}, true)
@@ -451,8 +451,8 @@ func TestHostedContextKeyProjection(t *testing.T) {
 				f, mcpCtx := newHostedKeyMCPFixture(t, deployment, "owner")
 				f.grant(t, f.user, true, true)
 				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO projects(id,organization_id,name,profile,created_at) VALUES('prj_private','org_security','hidden-project-sentinel','native',?)", testTimestamp)
-				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES(?,'org_security','prj_private',1,1)", f.user.identity.Subject)
-				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO token_grants(token_id,organization_id,project_id) SELECT principal_id,'org_security','prj_private' FROM hosted_members WHERE user_id=?", f.user.identity.Subject)
+				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES(?,'org_security','prj_private',1,1) ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner", f.user.identity.Subject)
+				operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO token_grants(token_id,organization_id,project_id) SELECT principal_id,'org_security','prj_private' FROM hosted_members WHERE user_id=? ON CONFLICT DO NOTHING", f.user.identity.Subject)
 				credential, err := (hubAdministration{f.service}).credential(mcpCtx)
 				if err != nil {
 					t.Fatal(err)
