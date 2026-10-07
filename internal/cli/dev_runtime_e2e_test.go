@@ -8,12 +8,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/boardsnapshot"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/devruntime"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -355,6 +357,14 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 				cfg.Global.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", TokenEnvironment: "DETENT_TEST_STARTUP_TOKEN"}
 			}
 			registry := project.NewRegistry()
+			boardCache, err := boardsnapshot.New(boardsnapshot.Config{Path: filepath.Join(t.TempDir(), "board-snapshot.json"), MaxAge: time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cachedIssue := telemetry.Issue{ID: "cached-card", State: "Todo"}
+			if err := boardCache.Save(ctx, telemetry.Snapshot{GeneratedAt: time.Now().Add(-time.Minute), BoardIssues: []telemetry.Issue{cachedIssue}}); err != nil {
+				t.Fatal(err)
+			}
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			canceled := make(chan struct{})
@@ -367,6 +377,7 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			go func() {
 				done <- startRunningWithDependencies(ctx, cfg, startRunningDependencies{
 					managerDependencies: project.ManagerDependencies{Registry: registry},
+					boardSnapshotStore:  boardCache,
 					startupMaintenance: func(ctx context.Context, _ globalconfig.Config, _ store.Store) {
 						close(entered)
 						select {
@@ -421,12 +432,20 @@ func TestStartRunningServesWhileMaintenanceBlocked(t *testing.T) {
 			var snapshot struct {
 				Refresh        telemetry.Refresh        `json:"refresh"`
 				LifetimeTotals telemetry.LifetimeTotals `json:"lifetime_totals"`
+				Board          struct {
+					Cards []struct {
+						IssueID string `json:"issue_id"`
+					} `json:"cards"`
+				} `json:"board"`
 			}
 			if err := json.Unmarshal([]byte(state), &snapshot); err != nil {
 				t.Fatal(err)
 			}
-			if snapshot.Refresh.ReadinessStatus() != telemetry.RefreshStatusInitializing || snapshot.LifetimeTotals.Available {
+			if snapshot.Refresh.ReadinessStatus() != telemetry.RefreshStatusInitializing || snapshot.Refresh.NextRefreshAt != nil || snapshot.LifetimeTotals.Available {
 				t.Fatalf("startup state manufactured observations: %s", state)
+			}
+			if len(snapshot.Board.Cards) != 1 || snapshot.Board.Cards[0].IssueID != cachedIssue.ID {
+				t.Fatalf("last-known board not served during maintenance: %s", state)
 			}
 			if got := registry.List(); len(got) != 0 {
 				t.Fatalf("projects started before setup completed: %v", got)

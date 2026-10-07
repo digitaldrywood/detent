@@ -507,6 +507,15 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return fmt.Errorf("verify startup listener: %w", err)
 		}
 		logger.Info("web server responding", "addr", listener.Addr().String(), "lifecycle", startupLifecycle.State())
+		cachedSnapshot, cached, loadErr := boardSnapshotStore.Load(ctx)
+		if loadErr != nil {
+			logger.Warn("load board snapshot failed", "error", loadErr)
+		}
+		if cached {
+			if err := stalenessAcknowledgements.Publish(cachedSnapshot); err != nil {
+				return fmt.Errorf("publish cached board snapshot: %w", err)
+			}
+		}
 		if err := reapWorkerProcesses(ctx, runtimeStore, logger, "startup", procgroup.DefaultTerminationGrace, time.Now, nil); err != nil {
 			var cleanupOnly *workerArtifactCleanupError
 			if !errors.As(err, &cleanupOnly) {
@@ -588,15 +597,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			ConnectorFactory:   cfg.ConnectorFactory,
 			Runner:             cfg.Runner,
 		}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), runtimeGitHubToken.get)
-		cachedSnapshot, cached, loadErr := boardSnapshotStore.Load(ctx)
-		if loadErr != nil {
-			logger.Warn("load board snapshot failed", "error", loadErr)
-		}
-		if cached {
-			if err := stalenessAcknowledgements.Publish(cachedSnapshot); err != nil {
-				return fmt.Errorf("publish cached board snapshot: %w", err)
-			}
-		}
 		resourceWorkers.Go(func() {
 			runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)
 		})
