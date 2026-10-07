@@ -1290,6 +1290,7 @@ func TestHookCancellationReapsDescendants(t *testing.T) {
 					go func() {
 						done <- run(ctx, "before_run", command, Info{Path: workspacePath, Key: "DD-HOOK"}, Issue{Identifier: "DD-HOOK"})
 					}()
+					waitForFile(t, filepath.Join(workspacePath, "grandchild.ready"), 10*time.Second)
 					identities := make([]procgroup.Identity, 0, 3)
 					for _, role := range []string{"shell", "child", "grandchild"} {
 						pidPath := filepath.Join(workspacePath, role+".pid")
@@ -1309,7 +1310,6 @@ func TestHookCancellationReapsDescendants(t *testing.T) {
 						}
 						identities = append(identities, identity)
 					}
-					waitForFile(t, filepath.Join(workspacePath, "grandchild.ready"), 10*time.Second)
 					started := time.Now()
 					if !timeout {
 						cancel()

@@ -260,6 +260,17 @@ func TestSSHNativePublication(t *testing.T) {
 			if err != nil || len(detail.Versions) != 1 || detail.Versions[0].HeadSHA != head || detail.Versions[0].Repository != nativeChangeRepository {
 				t.Fatalf("wrong remote version: %#v %v", detail, err)
 			}
+			version := detail.Versions[0]
+			if version.Source == nil || version.Source.BaseSHA != base || version.Source.HeadSHA != head || version.Source.Bytes == 0 {
+				t.Fatalf("remote Change source was not retained: %#v", version.Source)
+			}
+			source, err := h.native.ChangeSource(ctx, tracker.NativeWorkItemID(issue.ID), change.ChangeID, change.VersionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := version.Source.Validate(base, head, source); err != nil {
+				t.Fatalf("remote Change source lost its immutable identity: %v", err)
+			}
 			if e.lastDiff == nil || e.lastDiff.HeadSHA != head || len(e.lastDiff.Files) != 1 || !strings.Contains(e.lastDiff.Files[0].Patch, "exact remote bytes") {
 				t.Fatalf("wrong stored remote diff: %#v", e.lastDiff)
 			}

@@ -15,18 +15,21 @@ import (
 )
 
 type nativeCompletionState struct {
-	Lease                    tracker.NativeLease         `json:"lease"`
-	Data                     tracker.NativeRunData       `json:"data"`
-	Pending                  *tracker.NativeRunEvent     `json:"pending,omitempty"`
-	Diff                     *tracker.AttemptDiffRequest `json:"diff,omitempty"`
-	StoredSeq                int64                       `json:"stored_seq"`
-	WorktreeState            string                      `json:"worktree_state"`
-	WorktreeHead             string                      `json:"worktree_head"`
-	Repository               string                      `json:"repository"`
-	ConversationContinuation bool                        `json:"conversation_continuation"`
-	PreparedOutcome          string                      `json:"prepared_outcome"`
-	PreparedMessage          string                      `json:"prepared_message"`
-	PreparedDisposition      *tracker.NativeDisposition  `json:"prepared_disposition,omitempty"`
+	Lease                    tracker.NativeLease            `json:"lease"`
+	Data                     tracker.NativeRunData          `json:"data"`
+	Pending                  *tracker.NativeRunEvent        `json:"pending,omitempty"`
+	Diff                     *tracker.AttemptDiffRequest    `json:"diff,omitempty"`
+	StoredSeq                int64                          `json:"stored_seq"`
+	WorktreeState            string                         `json:"worktree_state"`
+	WorktreeHead             string                         `json:"worktree_head"`
+	Repository               string                         `json:"repository"`
+	SourceRequired           bool                           `json:"source_required,omitempty"`
+	RetainedSource           *tracker.ChangeSourceCapture   `json:"retained_source,omitempty"`
+	RecoveredSource          *tracker.NativeChangeReference `json:"recovered_source,omitempty"`
+	ConversationContinuation bool                           `json:"conversation_continuation"`
+	PreparedOutcome          string                         `json:"prepared_outcome"`
+	PreparedMessage          string                         `json:"prepared_message"`
+	PreparedDisposition      *tracker.NativeDisposition     `json:"prepared_disposition,omitempty"`
 }
 
 func (e *nativeExecution) CompletionState() json.RawMessage {
@@ -37,6 +40,8 @@ func (e *nativeExecution) CompletionState() json.RawMessage {
 		Diff: e.lastDiff, StoredSeq: e.storedSeq,
 		WorktreeState: e.worktreeState, WorktreeHead: e.worktreeHead,
 		Repository: e.repository, ConversationContinuation: e.conversationContinuation,
+		SourceRequired: e.sourceRequired, RetainedSource: e.retainedSource,
+		RecoveredSource: e.recoveredSource,
 		PreparedOutcome: e.preparedOutcome, PreparedMessage: e.preparedMessage,
 		PreparedDisposition: e.preparedDisposition,
 	})
@@ -153,7 +158,9 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 		scheduler: s, claim: claim, data: state.Data, pending: state.Pending,
 		lastDiff: state.Diff, storedSeq: state.StoredSeq,
 		worktreeState: state.WorktreeState, worktreeHead: state.WorktreeHead,
-		repository: state.Repository, conversationContinuation: state.ConversationContinuation,
+		sourceRequired: state.SourceRequired, retainedSource: state.RetainedSource,
+		recoveredSource: state.RecoveredSource,
+		repository:      state.Repository, conversationContinuation: state.ConversationContinuation,
 		role: state.Data.Identity.Role, preparedOutcome: state.PreparedOutcome,
 		preparedMessage: state.PreparedMessage, preparedDisposition: state.PreparedDisposition,
 	}
