@@ -303,40 +303,41 @@ export class BoardRead {
       (this.view.state.length === 0 || this.view.state.includes(state.name)));
     const active = states.filter((state) => state.name.toLowerCase() !== "backlog").map((state) => state.name);
     const backlog = states.find((state) => state.name.toLowerCase() === "backlog");
-    const readPage = (state: readonly string[], cursor?: string, includeWork = false) => this.http.listWorkItems({
-      projectId: id, limit: 200, includeWork, open: true,
-      completedWindow: this.view.completedWindow, q: this.view.q, state,
+    const filters = {
+      projectId: id, completedWindow: this.view.completedWindow, q: this.view.q,
       archived: this.view.archived === true, label: this.view.label, assignee: this.view.assignee,
-      priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)), cursor, signal,
-    });
+      priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)), signal,
+    };
+    const readPage = (state: readonly string[], cursor?: string) =>
+      this.http.listWorkItems({ ...filters, limit: 200, open: true, state, cursor });
     if (continuing) {
       if (previous?.backlogCursor === undefined || backlog === undefined) return previous!;
       const page = await readPage([backlog.name], previous.backlogCursor);
       return { ...previous, issues: [...previous.issues, ...page.items], backlogCursor: page.next_cursor,
         backlogPageCount: previous.backlogPageCount + 1 };
     }
+    const totals = this.http.listWorkItems({ ...filters, limit: 1, includeWork: true });
+    totals.catch(() => undefined);
     const issues: NativeIssue[] = [];
-    let work: Loaded["work"];
     let cursor: string | undefined;
     let pageCount = 0;
     if (active.length > 0) {
       do {
         signal.throwIfAborted();
-        const page = await readPage(active, cursor, pageCount === 0);
-        work ??= page.work;
+        const page = await readPage(active, cursor);
         issues.push(...page.items);
         cursor = page.next_cursor;
         pageCount++;
       } while (cursor !== undefined);
     }
+    const work = (await totals).work;
     let backlogCursor: string | undefined;
     let backlogPageCount = 0;
     let backlogTotal = 0;
     if (backlog !== undefined) {
       do {
         signal.throwIfAborted();
-        const page = await readPage([backlog.name], backlogCursor, backlogPageCount === 0 && pageCount === 0);
-        work ??= page.work;
+        const page = await readPage([backlog.name], backlogCursor);
         backlogTotal = page.total ?? work?.lanes.find((lane) => lane.state === backlog.name)?.total ?? backlogTotal;
         issues.push(...page.items);
         backlogCursor = page.next_cursor;
