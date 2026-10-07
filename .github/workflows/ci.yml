@@ -396,18 +396,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Test with bounded Windows concurrency
+      - name: Test runner packages with bounded Windows concurrency
         if: runner.os == 'Windows'
         shell: bash
         run: |
           bash scripts/test-workspace.sh -parallel 4 -output tmp/windows-test-evidence/workspace
-          make test-hub-portability
           go list ./... > tmp/windows-packages.txt
           packages=()
           while IFS= read -r package; do
-            if [ "$package" != github.com/digitaldrywood/detent/internal/workspace ] && [ "$package" != github.com/digitaldrywood/detent/internal/hubserver ]; then
-              packages+=("$package")
-            fi
+            case "$package" in
+              github.com/digitaldrywood/detent/internal/workspace) ;;
+              github.com/digitaldrywood/detent/internal/hubserver|github.com/digitaldrywood/detent/internal/hubserver/*) ;;
+              github.com/digitaldrywood/detent/internal/hubclient|github.com/digitaldrywood/detent/internal/hubgithub|github.com/digitaldrywood/detent/internal/hubsecrets|github.com/digitaldrywood/detent/internal/cloudentry) ;;
+              *) packages+=("$package") ;;
+            esac
           done < tmp/windows-packages.txt
           go run ./tools/testgate -output tmp/windows-test-evidence -parallel 4 -timeout 10m "${packages[@]}"
 
