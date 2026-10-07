@@ -148,7 +148,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 		availableVersion = loadedState.AvailableVersion
 		critical = loadedState.Critical
 	}
-	return &Scheduler{
+	scheduler := &Scheduler{
 		cfg:             cfg,
 		enrolledReceipt: loadedState.EnrolledReceipt, enrolledStateValid: err == nil, enrolledDiscovery: discovery,
 		status: AutoStatus{
@@ -163,7 +163,13 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 			PendingSince:       pendingSince,
 			Critical:           critical,
 		},
-	}, nil
+	}
+	observation := scheduler.enrolledObservation(cfg.RunningBuild)
+	cfg.Logger.Info("enrolled runner update support", "supported", observation.Supported,
+		"state_valid", err == nil, "updater_available", cfg.Updater != nil,
+		"drain_available", cfg.ReserveDrain != nil, "restart_available", cfg.RequestRestart != nil,
+		"state_path_configured", strings.TrimSpace(cfg.StatePath) != "", "running_version", cfg.RunningBuild.Version)
+	return scheduler, nil
 }
 
 func (s *Scheduler) Run(ctx context.Context) {

@@ -308,11 +308,15 @@ func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCred
 }
 
 func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope nativeScope) error {
+	return s.recheckHostedAuthority(ctx, tx, scope, apikey.ScopeWrite)
+}
+
+func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope nativeScope, required apikey.Scope) error {
 	if scope.credential.Hosted == nil {
 		return nil
 	}
 	identity, membership, err := s.hostedMutationIdentity(ctx, scope.credential)
-	if err != nil || membership.Role.Slug == "viewer" {
+	if err != nil || required != apikey.ScopeRead && membership.Role.Slug == "viewer" {
 		return auth.ErrHostedIdentity
 	}
 	if scope.requireHostedAdmin && membership.Role.Slug != "owner" && membership.Role.Slug != "admin" {
@@ -320,7 +324,6 @@ func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope n
 	}
 	var count int
 	if scope.credential.HostedKeyScope != "" {
-		required := apikey.ScopeWrite
 		if scope.requireHostedAdmin {
 			required = apikey.ScopeAdmin
 		}
@@ -343,7 +346,7 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 		}
 	}
 	if scope.project != "" {
-		if err := s.requireHostedProject(ctx, tx, scope, true); err != nil {
+		if err := s.requireHostedProject(ctx, tx, scope, required != apikey.ScopeRead); err != nil {
 			return err
 		}
 		condition, args := scope.credential.projectGrantSQL("p.organization_id", "p.id")
@@ -358,7 +361,19 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 	}
 	if scope.credential.ManageRunners {
 		scope.credential.HostedRole = lesserHostedRole(scope.credential.HostedRole, membership.Role.Slug)
-		return s.requireHostedRunnerAdministration(ctx, tx, scope.credential)
+		if err := s.requireHostedRunnerAdministration(ctx, tx, scope.credential); err != nil {
+			return err
+		}
+		if scope.credential.HostedKeyScope != "" {
+			condition, args := scope.credential.projectGrantSQL("p.organization_id", "p.id")
+			args = append(args, scope.organization)
+			var projects, granted int
+			err := tx.QueryRowContext(ctx, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.organization_id=?", args...).Scan(&projects, &granted)
+			if err != nil || projects == 0 || projects != granted {
+				return auth.ErrHostedIdentity
+			}
+		}
+		return nil
 	}
 	if membership.Role.Slug != "owner" && membership.Role.Slug != "admin" {
 		return auth.ErrHostedIdentity

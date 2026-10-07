@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
@@ -54,7 +55,7 @@ func (s *Service) readRunnerUpdate(ctx context.Context, scope nativeScope, resou
 	if err != nil {
 		return nil, err
 	}
-	if err := s.requireRunnerAdministration(ctx, tx, scope, now); err != nil {
+	if err := s.requireRunnerAccess(ctx, tx, scope, now, apikey.ScopeRead); err != nil {
 		return nil, err
 	}
 	runner, err := readRunner(ctx, tx, scope.organization, resource, now)

@@ -392,12 +392,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if err != nil {
 		return err
 	}
-	if reporter, ok := hubScheduling.(interface {
-		SetUpdateOwner(func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation)
-	}); ok {
-		running := updateScheduler.RunningBuild()
-		reporter.SetUpdateOwner(enrolledUpdateOwner(runCtx, updateScheduler, running))
-	}
 	kanbanWorkflow, err := bootKanbanWorkflow(runCtx, cfg)
 	if err != nil {
 		return err
@@ -556,6 +550,12 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			if err != nil {
 				return err
 			}
+		}
+		if reporter, ok := hubScheduling.(interface {
+			SetUpdateOwner(func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation)
+		}); ok {
+			running := updateScheduler.RunningBuild()
+			reporter.SetUpdateOwner(enrolledUpdateOwner(runCtx, updateScheduler, running))
 		}
 		if reporter, ok := hubScheduling.(interface {
 			SetProjectConfigurationOwner(func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration)
