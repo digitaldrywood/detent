@@ -77,7 +77,6 @@ func (s *Service) registerChangeRoutes(e *echo.Echo) {
 	e.POST(changeBase, s.createChange, write)
 	e.GET(changeBase+"/:change", s.getChange, read)
 	e.POST(changeBase+"/:change/versions", s.publishChangeVersion, write)
-	e.GET(changeBase+"/:change/versions/:version/source", s.changeSource, read)
 	e.POST(changeBase+"/:change/discussion", s.discussChange, write)
 	e.POST(changeBase+"/:change/versions/:version/reviews", s.reviewChange, s.requireChangeReviewer())
 	e.GET(changeBase+"/:change/versions/:version/viewed-files", s.changeViewedFiles, operator)

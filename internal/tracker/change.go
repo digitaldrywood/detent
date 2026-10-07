@@ -100,7 +100,6 @@ type ChangeVersionInput struct {
 	AttemptID    string                   `json:"attempt_id,omitempty"`
 	PolicyID     string                   `json:"policy_id"`
 	External     *ChangeExternalReference `json:"external,omitempty"`
-	Source       *ChangeSource            `json:"source,omitempty"`
 }
 
 type ChangeCheckExpectation struct {
@@ -131,7 +130,6 @@ type CreateChange struct {
 type PublishChangeVersion struct {
 	Mutation
 	ExpectedVersionID string `json:"expected_version_id"`
-	SourceBundle      []byte `json:"source_bundle,omitempty"`
 	ChangeVersionInput
 }
 

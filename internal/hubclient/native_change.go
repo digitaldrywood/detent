@@ -73,9 +73,6 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 			e.settled = true
 			return nil
 		}
-		if err := e.requireRecoveredSource(detail, diff); err != nil {
-			return err
-		}
 		for _, version := range detail.Versions {
 			if version.ID != detail.Change.CurrentVersion {
 				continue
@@ -179,21 +176,12 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	if err != nil {
 		return "", false, fmt.Errorf("read change: %w", err)
 	}
-	if err := e.requireRecoveredSource(detail, diff); err != nil {
-		return "", false, err
-	}
 	for _, version := range detail.Versions {
 		if version.ID != detail.Change.CurrentVersion || version.HeadSHA != diff.HeadSHA {
 			continue
 		}
 		if version.PolicyID != e.data.PolicyID || detail.Summary.Status == "stale_policy" {
-			if !e.sourceRequired {
-				return "", false, &APIError{Status: 409, Code: "policy_mismatch", Message: "the current head's version no longer matches the approved policy"}
-			}
-			break
-		}
-		if e.sourceRequired && version.Source == nil {
-			break
+			return "", false, &APIError{Status: 409, Code: "policy_mismatch", Message: "the current head's version no longer matches the approved policy"}
 		}
 		return version.ID, detail.Summary.Status == "reviewed", nil
 	}
@@ -204,25 +192,15 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		return "", false, errors.New("the checkout's origin remote is not an https repository the version can name")
 	}
 	digest := sha256.Sum256([]byte(diff.HeadSHA))
-	var source *tracker.ChangeSource
-	var bundle []byte
-	if err := e.retainChangeSource(ctx, diff); err != nil {
-		return "", false, fmt.Errorf("retain finalized Change source: %w", err)
-	}
-	if e.sourceRequired {
-		source, bundle = &e.retainedSource.Source, e.retainedSource.Bundle
-	}
 	version, err := client.PublishChangeVersion(ctx, item, changeID, tracker.PublishChangeVersion{
 		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":version", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		ExpectedVersionID: detail.Change.CurrentVersion,
-		SourceBundle:      bundle,
 		ChangeVersionInput: tracker.ChangeVersionInput{
 			BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, MergeBaseSHA: diff.BaseSHA,
 			Repository: e.repository,
 			Code:       tracker.ChangeArtifact{Kind: "code", URI: e.repository + "/commit/" + diff.HeadSHA, SHA256: hex.EncodeToString(digest[:]), Availability: "unverified"},
 			Artifacts:  []tracker.ChangeArtifact{},
 			RunID:      e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.data.PolicyID,
-			Source: source,
 		},
 	})
 	if err != nil {
