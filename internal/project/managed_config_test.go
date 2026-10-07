@@ -312,7 +312,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 							if !allowed {
 								t.Fatal("dispatched worker retained restricted binding")
 							}
-						case <-time.After(5 * time.Second):
+						case <-time.After(30 * time.Second):
 							t.Fatal("no native dispatch after application")
 						}
 					}

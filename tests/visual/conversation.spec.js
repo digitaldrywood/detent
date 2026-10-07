@@ -1408,7 +1408,7 @@ test.describe("decisions.md §10 corrections", () => {
     await page.goto(`${hub.fixture.url}/settings/organization`, { waitUntil: "domcontentloaded" });
 
     const appSidebar = page.locator("[data-app-sidebar]");
-    await expect(appSidebar.getByRole("button", { name: "Organization" })).toBeVisible();
+    await expect(appSidebar.getByRole("button", { name: "Organization", exact: true })).toBeVisible();
     await expect(page.getByRole("complementary", { name: "Conversations" })).toHaveCount(0);
     await expect(appSidebar.getByRole("button", { name: "Back" })).toBeVisible();
 

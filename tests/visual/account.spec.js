@@ -228,7 +228,7 @@ test("the settings navigation is the sidebar, not a second column", async ({ pag
 
   const sidebar = page.locator("[data-app-sidebar]");
   await expect(sidebar.getByRole("button", { name: "General" })).toBeVisible();
-  await expect(sidebar.getByRole("button", { name: "Organization" })).toBeVisible();
+  await expect(sidebar.getByRole("button", { name: "Organization", exact: true })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Settings", exact: true })).toHaveCount(0);
 
   // §17.2: one brand row. It used to be drawn twice on a settings route — once
