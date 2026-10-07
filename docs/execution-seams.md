@@ -143,7 +143,7 @@ diagnostic filing.
 
 Portability stress remains manual only. The scheduled full suite includes
 invariant checks, lint, build, vet, tests, race shards, coverage, security,
-browser visual shards, macOS portability, installer smoke, and a
+browser visual shards, installer smoke, and a
 GoReleaser snapshot.
 
 ## Still Git/PR Coupled

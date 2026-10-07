@@ -377,10 +377,12 @@ test.describe("the work board", () => {
     const sidebar = page.locator("aside.dc-side");
     await expect(sidebar.getByTestId("nav-work")).toHaveAttribute("aria-current", "page");
 
-    for (const id of ["activity", "reports", "library"]) {
+    for (const id of ["activity", "library"]) {
       await expect(sidebar.getByTestId(`nav-${id}`)).toBeDisabled();
     }
-    await expect(sidebar.getByTestId("nav-diagnostics")).toBeEnabled();
+    for (const id of ["reports", "diagnostics"]) {
+      await expect(sidebar.getByTestId(`nav-${id}`)).toBeEnabled();
+    }
     for (const id of ["changes", "usage", "settings"]) {
       await expect(sidebar.getByTestId(`nav-${id}`)).toHaveCount(0);
     }

@@ -336,7 +336,7 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 func TestBrowserVisualGateCoversBoardInteractions(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	visual := workflowBetween(t, workflow, "  browser-visual-shard:", "\n  portability-verify:")
+	visual := workflowBetween(t, workflow, "  browser-visual-shard:", "\n  installer-smoke:")
 	for _, want := range []string{"npm run test:visual", "--shard=${{ matrix.shard }}/4", "name: Upload browser visual evidence", "name: Upload browser visual failure artifacts"} {
 		if !strings.Contains(visual, want) {
 			t.Errorf("browser visual job missing %q", want)
@@ -375,7 +375,7 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 func TestScheduledCIJobDependencies(t *testing.T) {
 	t.Parallel()
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, name := range []string{"invariants", "lint", "verify-fast", "generated", "app", "verify-race", "test-cover", "security", "browser-visual-shard", "portability-verify", "installer-smoke", "goreleaser-snapshot"} {
+	for _, name := range []string{"invariants", "lint", "verify-fast", "generated", "app", "verify-race", "test-cover", "security", "browser-visual-shard", "installer-smoke", "goreleaser-snapshot"} {
 		if !strings.Contains(workflow, "  "+name+":\n    needs: preflight\n    if: needs.preflight.outputs.should_run == 'true'") {
 			t.Errorf("%s must depend on preflight", name)
 		}
