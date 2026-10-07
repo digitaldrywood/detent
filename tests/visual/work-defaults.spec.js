@@ -14,10 +14,10 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => { await hub?.stop(); });
 
-async function openWork(page, route) {
-  await page.goto(hub.fixture.accounts.owner);
+async function openWork(page, route, instance = hub) {
+  await page.goto(instance.fixture.accounts.owner);
   await resetSavedWorkViews(page);
-  await page.goto(new URL(route, hub.fixture.url).toString());
+  await page.goto(new URL(route, instance.fixture.url).toString());
   await expect(page.getByTestId("work-board")).toBeVisible();
   await expect(page.getByTestId("work-stats")).toHaveAttribute("aria-busy", "false");
 }
@@ -189,14 +189,24 @@ test("terminal URL and stored lane names never produce board lanes", async ({ pa
 });
 
 test("a terminal move removes the card and refreshes the completed count", async ({ page }) => {
-  await openWork(page, `/work/p/${hub.fixture.project_id}?collapsed=Backlog`);
-  const completed = Number((await page.getByTestId("stat-completed").innerText()).split(" ")[0]);
-  const title = "Review the invitation flow";
-  await page.getByRole("button", { name: `Move ${title}`, exact: true }).click();
-  await page.getByRole("menuitem", { name: "Done", exact: true }).click();
-  await expect(page.getByRole("button", { name: title, exact: true })).toHaveCount(0);
-  await page.reload();
-  await expect(page.getByTestId("stat-completed")).toHaveText(`${completed + 1} completed · 48h`);
-  await expect(page.getByRole("button", { name: title, exact: true })).toHaveCount(0);
-  await expect(page.locator('[data-testid="board-lane"][data-terminal="true"]')).toHaveCount(0);
+  test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
+  const instance = await startHostedHub("work-terminal-move");
+  try {
+    await openWork(page, `/work/p/${instance.fixture.project_id}?collapsed=Backlog`, instance);
+    const completed = Number((await page.getByTestId("stat-completed").innerText()).split(" ")[0]);
+    const title = "Renew the lease before the handoff completes";
+    const saved = page.waitForResponse((response) =>
+      response.url().endsWith(`/work-items/${instance.fixture.work_item}/workflow`) && response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: `Move ${title}`, exact: true }).click();
+    await page.getByRole("menuitem", { name: "Done", exact: true }).click();
+    expect((await saved).ok()).toBe(true);
+    await expect(page.getByRole("button", { name: title, exact: true })).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByTestId("stat-completed")).toHaveText(`${completed + 1} completed · 48h`);
+    await expect(page.getByRole("button", { name: title, exact: true })).toHaveCount(0);
+    await expect(page.locator('[data-testid="board-lane"][data-terminal="true"]')).toHaveCount(0);
+  } finally {
+    await instance.stop();
+  }
 });
