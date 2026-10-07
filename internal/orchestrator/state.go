@@ -792,6 +792,11 @@ func cloneStatusDrift(drift connector.StatusDrift) connector.StatusDrift {
 func cloneIssue(issue connector.Issue) connector.Issue {
 	issue.DependencyNotes = append([]string(nil), issue.DependencyNotes...)
 	cloned := issue
+	if issue.IssueContract != nil {
+		contract := *issue.IssueContract
+		contract.ConfirmedSections = maps.Clone(issue.IssueContract.ConfirmedSections)
+		cloned.IssueContract = &contract
+	}
 	cloned.PRHeadCommittedAt = cloneTimePointer(issue.PRHeadCommittedAt)
 	if issue.Priority != nil {
 		priority := *issue.Priority

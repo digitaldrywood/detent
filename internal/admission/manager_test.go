@@ -237,6 +237,50 @@ func TestManagerDeclinesNonDeliverableCandidatesBeforeRunningAgent(t *testing.T)
 	}
 }
 
+func TestManagerIssueContractBeforeEvaluation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+	t.Parallel()
+	for _, test := range []struct {
+		name, body string
+		accepted   bool
+	}{
+		{"missing", "Fix the endpoint.", false},
+		{"partial", "## Acceptance criteria\nFix the endpoint.", false},
+		{"complete", "## Acceptance criteria\nFix the endpoint.\n## Must not break\nExisting callers.\n## How we know it worked\nRun regression tests.", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 7, 20, 0, 0, 0, time.UTC)
+			issue := admissionIssueFixture("contract", "PA-1", 1, now)
+			issue.Description = test.body
+			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
+			settings := admissionTestSettings(tracker, agent)
+			contract, err := config.ResolveIssueContract("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			checks := 0
+			settings.ContractCheck = func(_ context.Context, id, target string) (bool, error) {
+				checks++
+				if id != issue.ID || target != settings.Config.TargetState {
+					t.Fatalf("wrong contract candidate: %s to %s", id, target)
+				}
+				return contract.Evaluate(issue).Satisfied(), nil
+			}
+			manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
+			result, err := manager.RunOnce(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if checks == 0 || (agent.calls > 0) != test.accepted || (!test.accepted && result.Skipped["human_action"] != 1) {
+				t.Fatalf("checks %d, runner calls %d, result %+v", checks, agent.calls, result)
+			}
+		})
+	}
+}
+
 func TestManagerAppliesCandidateCapBeforeDeclineSideEffects(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
@@ -5060,14 +5104,16 @@ func TestClassifyNonDeliverable(t *testing.T) {
 			body:  "## Deliverable\n\nGenerate and publish one dependency inventory.",
 		},
 		{
-			name:  "inline deliverable fails open",
-			title: "Research (study)",
-			body:  "Deliverable: publish one bounded comparison.",
+			name:       "inline deliverable is not the project contract",
+			wantReason: admissionDeclineStudy,
+			title:      "Research (study)",
+			body:       "Deliverable: publish one bounded comparison.",
 		},
 		{
-			name:  "linked checklist under acceptance criteria fails open",
-			title: "Bounded cleanup",
-			body:  "## Acceptance criteria\n\n- [ ] Close #1\n- [ ] Close #2\n- [ ] Close #3",
+			name:       "linked checklist with partial contract",
+			wantReason: admissionDeclineLinkedChecklist,
+			title:      "Bounded cleanup",
+			body:       "## Acceptance criteria\n\n- [ ] Close #1\n- [ ] Close #2\n- [ ] Close #3",
 		},
 		{
 			name:  "actionable research implementation",

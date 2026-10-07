@@ -732,6 +732,16 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			if o.now != nil {
 				now = o.now()
 			}
+			if o.issueContractApplies(issue) && strings.EqualFold(issue.State, firstNonBlank(o.cfg.AdmissionTargetState, "Todo")) {
+				allowed, err := o.enforceIssueContract(ctx, state, issue, issue.State, now)
+				if err != nil && o.logger != nil {
+					o.logger.Warn("issue contract placement failed", "issue_id", issue.ID, "error", err)
+				}
+				if err != nil || !allowed {
+					return false
+				}
+			}
+
 			if state.MemoryPressure.DispatchHeld || state.IOPressure.DispatchHeld || state.CPUPressure.DispatchHeld {
 				// The dispatch stage would refuse this candidate under the host
 				// pressure hold, so a Hub lease taken now would only be released

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -199,6 +201,25 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 		}
 		if request.Body != nil {
 			issue.Body = *request.Body
+			if issue.IssueContract == nil {
+				issue.IssueContract = &issuecontract.State{}
+			}
+			if scope.actor().Kind == "human" {
+				issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
+				issue.IssueContract.RecordedAt = now
+			}
+			if issue.IssueContract.ReturnState != "" {
+				contract, err := nativeIssueContract(ctx, tx, scope)
+				if err != nil {
+					return nil, err
+				}
+				evaluation := contract.Evaluate(nativeContractIssue(issue))
+				if evaluation.Satisfied() {
+					issue.IssueContract.HumanAction = ""
+				} else {
+					issue.IssueContract.HumanAction = contract.HumanAction(nativeContractIssue(issue), evaluation)
+				}
+			}
 			fields = append(fields, "body")
 		}
 		if request.Labels != nil {

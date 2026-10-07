@@ -77,6 +77,8 @@ var (
 )
 
 type Config struct {
+	IssueContract                 *workflowconfig.IssueContract
+	IssueContractRolloutAt        time.Time
 	LocalIntakeDisabled           bool
 	Policy                        policy.Descriptor
 	PollInterval                  time.Duration
@@ -496,6 +498,15 @@ type failureBreakerCanaryRequest struct {
 
 func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	cfg = normalizeConfig(cfg)
+	if rollout, ok := deps.WorkflowMetrics.(interface {
+		IssueContractRolloutAt(context.Context) (time.Time, error)
+	}); ok && cfg.IssueContract != nil {
+		var err error
+		cfg.IssueContractRolloutAt, err = rollout.IssueContractRolloutAt(context.Background())
+		if err != nil {
+			return nil, err
+		}
+	}
 	if deps.Connector == nil {
 		return nil, ErrMissingConnector
 	}
@@ -1528,6 +1539,7 @@ func (o *Orchestrator) dispatchQuiesced() bool {
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
 	cfg := normalizeConfig(update.Config)
 	previousCfg := o.cfg
+	cfg.IssueContractRolloutAt = previousCfg.IssueContractRolloutAt
 	if o.cfg.Claiming.OwnershipMode != cfg.Claiming.OwnershipMode ||
 		o.cfg.Claiming.AssigneeRequired != cfg.Claiming.AssigneeRequired {
 		o.ownershipStartupLogged = false

@@ -188,7 +188,7 @@ func (o *Orchestrator) recoverBlockedIssues(
 	transitioned := map[string]struct{}{}
 	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
-	sourceStates := mergeStateLists([]string{blockedStatusState}, recoveryCfg.SourceStates)
+	sourceStates := mergeStateLists([]string{blockedStatusState, o.cfg.StopRunTargetState}, recoveryCfg.SourceStates)
 	issues = issuesInStates(issues, sourceStates)
 	dependencies := o.resolveBlockedRecoveryDependencies(ctx, state, issues)
 	for _, issue := range issues {
@@ -196,7 +196,7 @@ func (o *Orchestrator) recoverBlockedIssues(
 		if issueID == "" {
 			continue
 		}
-		if normalizeState(issue.State) == normalizeState(blockedStatusState) &&
+		if (normalizeState(issue.State) == normalizeState(blockedStatusState) || issue.IssueContract != nil && issue.IssueContract.ReturnState != "") &&
 			o.recoverCauseBlockedIssue(ctx, state, issue, now, dependencies[issue.ID]) {
 			transitioned[issueID] = struct{}{}
 			dependencies = nil

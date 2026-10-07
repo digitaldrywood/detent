@@ -425,7 +425,12 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 			}
 		}
 	}
+	issueContract, err := workflowconfig.ResolveIssueContract(workflow.SharedPrompt)
+	if err != nil {
+		return nil, err
+	}
 	projectAdmission, err := admission.New(admission.Settings{
+		IssueContract:       issueContract,
 		ProjectID:           string(id),
 		Config:              workflow.Config.BacklogAdmission,
 		Criteria:            admissionCriteria,
@@ -439,6 +444,7 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 		Runner:              deps.Runner,
 		Issues:              admissionIssueStore(projectConnector),
 		LaneWriter:          admissionLaneWriter(laneOwner),
+		ContractCheck:       admissionContractCheck(laneOwner),
 		Scheduler:           projectScheduler,
 		GlobalDispatchGate:  deps.GlobalDispatchGate,
 		ProjectCandidate:    projectSchedulerCandidate(cfg.Project, workflow.Config),
@@ -1701,7 +1707,12 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 		}
 	}
 	if projectAdmission != nil {
+		issueContract, err := workflowconfig.ResolveIssueContract(workflow.SharedPrompt)
+		if err != nil {
+			return err
+		}
 		if err := projectAdmission.Update(admission.Settings{
+			IssueContract:       issueContract,
 			ProjectID:           string(p.id),
 			Config:              workflow.Config.BacklogAdmission,
 			Criteria:            admissionCriteria,
@@ -1715,6 +1726,7 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 			Runner:              runner,
 			Issues:              admissionIssueStore(projectConnector),
 			LaneWriter:          admissionLaneWriter(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
+			ContractCheck:       admissionContractCheck(func() *orchestrator.Orchestrator { return p.Orchestrator() }),
 			Scheduler:           projectScheduler,
 			GlobalDispatchGate:  globalDispatchGate,
 			ProjectCandidate:    projectSchedulerCandidate(projectConfig, workflow.Config),

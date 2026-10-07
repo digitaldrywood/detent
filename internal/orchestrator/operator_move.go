@@ -14,21 +14,23 @@ import (
 var ErrMissingOperatorMoveIssueID = errors.New("operator move issue id is required")
 
 type OperatorMoveRequest struct {
-	Tracker         connector.Connector
-	Attribution     provenance.Attribution
-	Remove          bool
-	WriteTracker    bool
-	Reason          string
-	StateFieldID    int
-	StateFieldValue string
-	ProjectID       string
-	IssueID         string
-	Identifier      string
-	FromState       string
-	ToState         string
+	CheckIssueContract bool
+	Tracker            connector.Connector
+	Attribution        provenance.Attribution
+	Remove             bool
+	WriteTracker       bool
+	Reason             string
+	StateFieldID       int
+	StateFieldValue    string
+	ProjectID          string
+	IssueID            string
+	Identifier         string
+	FromState          string
+	ToState            string
 }
 
 type OperatorMoveResult struct {
+	ContractSatisfied    bool
 	err                  error
 	Reconciled           bool
 	BlockedCleared       bool
@@ -80,6 +82,19 @@ func (o *Orchestrator) ReconcileOperatorMove(ctx context.Context, request Operat
 }
 
 func (o *Orchestrator) applyOperatorMove(ctx context.Context, state *State, request OperatorMoveRequest, at time.Time) operatorMoveOutcome {
+	if request.CheckIssueContract {
+		issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{request.IssueID})
+		if err != nil {
+			return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: err}}
+		}
+		for _, issue := range issues {
+			if issue.ID == request.IssueID {
+				satisfied, err := o.enforceIssueContract(ctx, state, issue, request.ToState, at)
+				return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{ContractSatisfied: satisfied, err: err}}
+			}
+		}
+		return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: errors.New("admission issue is unavailable")}}
+	}
 	if request.Remove {
 		if !request.WriteTracker {
 			return operatorMoveOutcome{OperatorMoveResult: OperatorMoveResult{err: connector.ErrNotImplemented}}
