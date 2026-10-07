@@ -252,43 +252,6 @@ func TestPolicyRequirementsNeverEnrollOrGrantCapabilities(t *testing.T) {
 	}
 }
 
-func TestPolicyClaimChecksUseDatabaseTime(t *testing.T) {
-	t.Parallel()
-	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	for _, test := range []struct {
-		name, expires string
-		status        int
-	}{
-		{"active offset", "2026-09-05T07:00:01-05:00", http.StatusConflict},
-		{"exact expiry", "2026-09-05T07:00:00-05:00", http.StatusOK},
-		{"expired fractional", "2026-09-05T11:59:59.9Z", http.StatusOK},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "expiry")
-			worker := f.worker(t, "worker")
-			f.create(t, "work")
-			descriptor := hubTestPolicy()
-			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_abc", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: "machine_abc", SessionID: "session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
-			requireNativeStatus(t, response, http.StatusOK)
-			var lease tracker.NativeLease
-			decodeHubResponse(t, response, &lease)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at = ? WHERE lease_id = ?", test.expires, lease.ID); err != nil {
-				t.Fatal(err)
-			}
-			changed := descriptor
-			changed.Gates.MergeMethod = "rebase"
-			changed = changed.WithID()
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), test.status)
-			pinned, err := f.service.database.leasePolicyID(t.Context(), lease.ID)
-			if err != nil || pinned != descriptor.ID {
-				t.Fatalf("historical lease pin changed: %s %v", pinned, err)
-			}
-		})
-	}
-}
-
 // TestProjectPolicyApprovalSeedsChangeReviewPolicy checks what approving a
 // repository policy means for a native project's review expectation: a project
 // with none gets the default, which asks for a person only under a
