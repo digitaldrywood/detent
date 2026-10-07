@@ -3,6 +3,7 @@ package hubserver
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -474,20 +475,40 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 	other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	other.enroll(t)
 	for _, test := range []struct {
-		name   string
-		status int
+		name    string
+		status  int
+		unknown string
+		admin   bool
 	}{
-		{"", http.StatusOK},
-		{"another-host", http.StatusUnprocessableEntity},
-		{r.redemption.Hostname, http.StatusOK},
+		{name: "", status: http.StatusOK},
+		{name: "another-host", status: http.StatusUnprocessableEntity},
+		{name: r.redemption.Hostname, status: http.StatusOK},
+		{name: r.redemption.Hostname, unknown: "top-level", status: http.StatusOK},
+		{name: r.redemption.Hostname, unknown: "nested", status: http.StatusOK},
+		{unknown: "top-level", admin: true, status: http.StatusUnprocessableEntity},
+		{unknown: "nested", admin: true, status: http.StatusUnprocessableEntity},
 	} {
-		t.Run("Sprite heartbeat "+test.name, func(t *testing.T) {
-			body := map[string]any{"display_name": r.redemption.DisplayName, "capacity": r.redemption.Capacity, "version": "test", "sprite_name": test.name, "backend_isolation": r.redemption.BackendIsolation}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, body), test.status)
+		t.Run(fmt.Sprintf("Sprite heartbeat %s unknown=%s admin=%t", test.name, test.unknown, test.admin), func(t *testing.T) {
+			body := map[string]any{"display_name": r.redemption.DisplayName, "capacity": r.redemption.Capacity, "version": "develop-040e7195c", "sprite_name": test.name, "backend_isolation": r.redemption.BackendIsolation}
+			switch test.unknown {
+			case "top-level":
+				body["future_observation"] = map[string]any{"enabled": true}
+			case "nested":
+				body["project_configuration"] = map[string]any{
+					"project_id": string(f.project.ID), "authority": "local_global_configuration",
+					"source": "configured_committed_workflow", "observed_at": f.service.config.now(),
+					"future_observation": true,
+				}
+			}
+			token := r.redemption.Credential
+			if test.admin {
+				token = testHubAdminToken
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", token, body), test.status)
 			if test.status == http.StatusOK {
-				var name string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(json_extract(capabilities_json, '$.sprite_name'), '') FROM machines WHERE id=?", r.binding.MachineID).Scan(&name); err != nil || name != test.name {
-					t.Fatalf("heartbeat Sprite identity = %q, %v", name, err)
+				var name, version string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(json_extract(capabilities_json, '$.sprite_name'), ''), version FROM machines WHERE id=?", r.binding.MachineID).Scan(&name, &version); err != nil || name != test.name || version != "develop-040e7195c" {
+					t.Fatalf("heartbeat Sprite identity = %q, version = %q, %v", name, version, err)
 				}
 			}
 		})
@@ -563,6 +584,11 @@ func TestRunnerIdentityBindingAndOperations(t *testing.T) {
 			t.Fatal(err)
 		}
 		values[key] = "example-secret-do-not-store"
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", r.redemption.Credential, values), http.StatusUnprocessableEntity)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", r.redemption.Credential, values), http.StatusOK)
+		response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", r.redemption.Credential, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		if strings.Contains(response.Body.String(), key) || strings.Contains(response.Body.String(), "example-secret-do-not-store") {
+			t.Fatalf("unknown event field was stored: %s", response.Body.String())
+		}
 	}
 }
