@@ -385,7 +385,7 @@ jobs:
               *) packages+=("$package") ;;
             esac
           done < tmp/windows-packages.txt
-          go run ./tools/testgate -output tmp/windows-test-evidence -parallel 4 -timeout 10m "${packages[@]}"
+          GOFLAGS=-short go run ./tools/testgate -output tmp/windows-test-evidence -parallel 4 -timeout 10m "${packages[@]}"
 
       - name: Repeat Windows workflow overlay lifecycle
         if: runner.os == 'Windows'
