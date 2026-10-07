@@ -858,6 +858,16 @@ const SEED_SUPPORT: SupportRow = {
 /** The build the bootstrap's About row names. */
 const HOSTED_VERSION = "v0.0.0-mock";
 
+/** What the mock runner reports for a workspace (§18.1); see `dev/mock-work.ts`. */
+const WORKSPACE_CAPABILITIES = {
+  terminal: true,
+  files: true,
+  diff: false,
+  preview: false,
+  exec: true,
+  git: true,
+};
+
 /**
  * Everything the account endpoints mutate. It is a second store beside the
  * conversation one: the two share the read-only switch and the idempotency
@@ -884,6 +894,11 @@ interface AccountState {
   /** Runner identities already registered; re-enrolling one is a collision. */
   enrolled: Set<string>;
   workItems: number;
+  /**
+   * The organization's project rank (`GET/PUT .../project-rank`). The order
+   * saved last, which a read completes with any project it does not name.
+   */
+  projectRank: { revision: number; project_ids: string[] };
   /**
    * Stored non-GET responses, keyed by method, path and idempotency key. A
    * retry replays the stored response; the same key with a different payload
@@ -916,6 +931,10 @@ function initialAccountState(organization: OrganizationMode = "seeded"): Account
     runners: empty ? [] : clone(SEED_RUNNERS),
     enrolled: new Set(empty ? [] : SEED_RUNNERS.map((entry) => entry.runner.runner_id)),
     workItems: 0,
+    projectRank: {
+      revision: 1,
+      project_ids: empty ? [] : SEED_PROJECTS.map((project) => project.id),
+    },
     mutations: new Map(),
   };
 }
@@ -2275,13 +2294,18 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         ...(reader ? { can_write: false, can_manage_runners: false } : {}),
         states: WORKFLOW_STATES,
         coordinator,
+        // What the project's enrolled runner reports it can serve a workspace
+        // (§18.1). Diff and preview are never relayed, so they stay false.
+        capabilities: WORKSPACE_CAPABILITIES,
       })),
       support: account.support,
       csrf_token: CSRF_TOKEN,
       capabilities: { coordinator, attachments: false },
       api_base: API_BASE,
       preferences: PREFERENCE_CHOICES,
-      feature: { conversation: true },
+      // Workspace sessions are on: an issue's right panel opens Files, Diff and
+      // Terminal against the ready workspace `dev/mock-work.ts` seeds.
+      feature: { conversation: true, workspaces: true },
       plan: SEED_PLAN_SUMMARY,
       version: HOSTED_VERSION,
     };
@@ -2525,6 +2549,42 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         account.support = clone(SEED_SUPPORT);
         return { status: 200, payload: { support: clone(SEED_SUPPORT) } };
       });
+      return true;
+    }
+
+    // The organization's project rank (`internal/hubserver/project_rank.go`).
+    // Administrators only, both ways; the write carries `expected_revision`
+    // and no idempotency key, and must name every project exactly once.
+    if (tail === "project-rank" && (method === "GET" || method === "PUT")) {
+      const body = method === "PUT" ? await readBody(request) : {};
+      if (accountMode === "read_only") {
+        forbidden(response, "Only an administrator can rank projects.");
+        return true;
+      }
+      const ids = account.projects.map((project) => project.id);
+      if (method === "GET") {
+        const ranked = account.projectRank.project_ids.filter((id) => ids.includes(id));
+        json(response, 200, {
+          revision: account.projectRank.revision,
+          project_ids: [...ranked, ...ids.filter((id) => !ranked.includes(id))],
+        });
+        return true;
+      }
+      if (Number(body.expected_revision) !== account.projectRank.revision) {
+        json(response, 409, REVISION_CONFLICT);
+        return true;
+      }
+      const requested = Array.isArray(body.project_ids) ? body.project_ids.map(String) : [];
+      if (
+        requested.length !== ids.length ||
+        new Set(requested).size !== requested.length ||
+        requested.some((id) => !ids.includes(id))
+      ) {
+        invalidRequest(response, "Rank must include every organization project once");
+        return true;
+      }
+      account.projectRank = { revision: account.projectRank.revision + 1, project_ids: requested };
+      json(response, 200, clone(account.projectRank));
       return true;
     }
 
@@ -3305,6 +3365,25 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         return;
       }
 
+      // The sidebar footer's update check (`UpdatesReport`). Every runner
+      // reports the hub's own build, so nothing is behind.
+      if (path === "/app/updates" && method === "GET") {
+        json(response, 200, {
+          current: HOSTED_VERSION,
+          source: "hub",
+          runners: account.runners.map((entry) => ({
+            runner_id: entry.runner.runner_id,
+            display_name: entry.runner.display_name,
+            version: HOSTED_VERSION,
+            online: entry.runner.health === "online",
+            behind: false,
+          })),
+          behind_count: 0,
+          client: { version: HOSTED_VERSION, build: "mock", served_at: now() },
+        });
+        return;
+      }
+
       if (path === `${API_BASE}/conversations` && method === "GET") {
         json(response, 200, listConversations(null, url.searchParams));
         return;
@@ -3661,6 +3740,14 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     })().catch((cause: unknown) => {
       json(response, 500, { code: "invalid", message: String(cause) });
     });
+  });
+
+  // The workspace relay is the one WebSocket the client opens (§18.2). The
+  // work mock owns the workspaces, so it owns the upgrade; any other upgrade
+  // is refused rather than left hanging.
+  server.on("upgrade", (request, socket, head) => {
+    if (work.upgrade(request, socket, head)) return;
+    socket.end("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
   });
 
   return new Promise((resolve) => {

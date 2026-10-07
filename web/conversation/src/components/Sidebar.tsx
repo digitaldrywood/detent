@@ -454,24 +454,26 @@ function SnoozePopoverButton(props: {
         </TooltipTrigger>
         <TooltipPopup>Snooze thread</TooltipPopup>
       </Tooltip>
-      <PopoverPopup side="bottom" align="end" className="w-56" viewportClassName="p-1">
-        {presets.map((preset) => (
-          <button
-            key={preset.id}
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenChange(false);
-              onSnooze(preset);
-            }}
-            className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-accent hover:text-foreground"
-          >
-            <span className="flex-1">{preset.label}</span>
-            <span className="font-mono text-[10px] text-muted-foreground/60 tabular-nums">
-              {preset.whenLabel}
-            </span>
-          </button>
-        ))}
+      <PopoverPopup side="bottom" align="end" className="w-56" padding="none">
+        <div className="p-1">
+          {presets.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenChange(false);
+                onSnooze(preset);
+              }}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground/90 hover:bg-accent hover:text-foreground"
+            >
+              <span className="flex-1">{preset.label}</span>
+              <span className="font-mono text-[10px] text-muted-foreground/60 tabular-nums">
+                {preset.whenLabel}
+              </span>
+            </button>
+          ))}
+        </div>
       </PopoverPopup>
     </Popover>
   );
@@ -4464,7 +4466,6 @@ export default function Sidebar() {
                             hideIndicator
                             value={item}
                             className="h-8 min-h-8 py-0 font-medium"
-                            contentClassName="flex min-w-0 items-center gap-2"
                             onContextMenu={(event) => {
                               if (project) handleProjectSettings(event, project);
                             }}

@@ -3,10 +3,17 @@
 The React application the hub serves at `/chat`. It implements the client half
 of [`docs/conversation/decisions.md`](../../docs/conversation/decisions.md) and
 follows [`docs/conversation/design-inventory.md`](../../docs/conversation/design-inventory.md)
-for screen coverage. The [Detent design system](../../docs/conversation/design-system.md)
+for screen coverage. The [Detent design system](../../docs/design-system/README.md)
 defines shared visual rules, component selection, interaction states, and screen
-recipes. Its [grouped component catalog](../../docs/conversation/component-catalog.json)
-distinguishes available primitives from proposed patterns.
+recipes and is the source of truth for them. Its
+[component catalog](./src/design-system/catalog.json) records every primitive
+and shared component; `npm run design:catalog` validates it and regenerates the
+[component contracts](../../docs/design-system/components.md), and
+`npm run design:tokens` regenerates the token data and tables from the
+stylesheets. `make check-app` runs both in `--check` mode, so a stale catalog,
+token file or generated doc fails the client gate. The development gallery is at
+`/design-system` under `npm run dev` (no hub needed); `npm run build:gallery`
+writes a static copy to `dist-gallery/`.
 
 Third-party attribution is in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md);
 the upstream MIT license is in [LICENSE.t3code](./LICENSE.t3code).
@@ -137,8 +144,8 @@ an issue" makes the coordinator answer with a `data.proposal` status message.
 | `src/runtime/connection/` | The T3 connection supervisor and registry, unmodified |
 | `src/runtime/rpc/` | Detent adapters: same-origin HTTP, the SSE transport, and the session the supervisor manages |
 | `src/runtime/state/` | Conversation list and detail atoms, the pure reducer, and draft storage |
-| `src/components/ui/` | T3 Code's primitive set, byte-identical |
-| `src/components/` | T3's breadcrumb and composer surface, byte-identical |
+| `src/components/ui/` | Shared primitives, each catalogued in the [design catalog](./src/design-system/catalog.json) |
+| `src/components/` | Shared compositions (shell, sidebar, composer, timeline, panels) |
 | `src/lib/`, `src/hooks/` | T3's `cn`, visible-animation observer and media-query hooks, byte-identical |
 | `src/app/` | Router, shell, components, and the two stylesheets (`global.css` copied, `index.css` Detent's overrides) |
 | `src/app/account/` | Login, organization, project settings and the first-run wizard, with the account API client and its hooks |

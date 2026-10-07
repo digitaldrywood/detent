@@ -2,6 +2,17 @@
 
 @custom-variant dark (&:is(.dark, .dark *));
 @custom-variant light (&:not(.dark, .dark *));
+/* Window Controls Overlay: active when Electron exposes native titlebar control geometry. */
+@custom-variant wco (&:is(.wco, .wco *));
+
+/* Secondary hovering pointers reveal sidebar actions on touch-primary devices. */
+@custom-variant any-hover {
+  @media (any-hover: hover) {
+    &:hover {
+      @slot;
+    }
+  }
+}
 
 /* On mobile, morph the expanded hero composer into the compact docked
    composer while it moves; the rest of the app remains visually stationary. */
@@ -10,29 +21,29 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(root) {
   animation: none;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-composer) {
+html[data-mobile-composer-route-transition="true"]::view-transition-group(mobile-composer) {
   animation-duration: 180ms;
   animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-image-pair(t3-mobile-composer) {
+html[data-mobile-composer-route-transition="true"]::view-transition-image-pair(mobile-composer) {
   isolation: isolate;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobile-composer) {
-  animation: t3-mobile-composer-old 180ms linear both;
+html[data-mobile-composer-route-transition="true"]::view-transition-old(mobile-composer) {
+  animation: mobile-composer-old 180ms linear both;
   mix-blend-mode: normal;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobile-composer) {
-  animation: t3-mobile-composer-new 180ms linear both;
+html[data-mobile-composer-route-transition="true"]::view-transition-new(mobile-composer) {
+  animation: mobile-composer-new 180ms linear both;
   mix-blend-mode: normal;
 }
 
 /* The expanded and compact composers have different internal layouts. Use a
    brief crossfade while their shared wrapper moves so the layout change does
    not read as a single-frame cut. */
-@keyframes t3-mobile-composer-old {
+@keyframes mobile-composer-old {
   0%,
   35% {
     opacity: 1;
@@ -43,7 +54,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobil
   }
 }
 
-@keyframes t3-mobile-composer-new {
+@keyframes mobile-composer-new {
   0%,
   35% {
     opacity: 0;
@@ -54,16 +65,16 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobil
   }
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-group(t3-mobile-draft-headline) {
+html[data-mobile-composer-route-transition="true"]::view-transition-group(mobile-draft-headline) {
   animation-duration: 130ms;
 }
 
-html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobile-draft-headline) {
-  animation: t3-mobile-draft-headline-exit 130ms cubic-bezier(0.4, 0, 1, 1) both;
+html[data-mobile-composer-route-transition="true"]::view-transition-old(mobile-draft-headline) {
+  animation: mobile-draft-headline-exit 130ms cubic-bezier(0.4, 0, 1, 1) both;
   mix-blend-mode: normal;
 }
 
-@keyframes t3-mobile-draft-headline-exit {
+@keyframes mobile-draft-headline-exit {
   from {
     opacity: 1;
     transform: translateY(0);
@@ -98,6 +109,9 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --command-shell-inset: 0.5rem;
   --command-content-inset: 1rem;
   --floating-content-inset: 0.75rem;
+  /* App layer order: docked sheets, then the floating preview player (47–49),
+     then dialogs and popovers (50 and up). */
+  --z-sheet: 46;
   --glass-blur: 12px;
   --glass-opacity: 80%;
   --glass-saturation: 1.14;
@@ -110,6 +124,19 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --workspace-titlebar-control-size: 1.75rem;
   --workspace-titlebar-control-gap: 0.75rem;
   --workspace-titlebar-scroll-fade-height: 1.5rem;
+  --chat-content-max-width: 46rem;
+  --thread-details-panel-width: 17.5rem;
+  /* The prompt on phones: iOS zooms into any input under 16px on focus. */
+  --font-size-prompt-touch: max(var(--font-size-prompt, 1rem), 16px);
+  /* Horizontal gutter shared by the page header and the chat column, clear of
+     the device's safe area. */
+  --workspace-gutter: 0.75rem;
+  --workspace-gutter-start: calc(env(safe-area-inset-left) + var(--workspace-gutter));
+  --workspace-gutter-end: calc(env(safe-area-inset-right) + var(--workspace-gutter));
+
+  @variant sm {
+    --workspace-gutter: 1.25rem;
+  }
 
   @variant dark {
     --appearance-contrast-target: white;
@@ -120,6 +147,20 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
+.wco {
+  --workspace-topbar-height: max(40px, env(titlebar-area-height, 52px));
+  --workspace-controls-top: env(titlebar-area-y, 0px);
+  --workspace-controls-left: calc(env(titlebar-area-x, 0px) + 0.75rem);
+  --workspace-controls-right: calc(
+    100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 0.75rem
+  );
+  --workspace-native-controls-inset: calc(
+    100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px) + 0.75rem
+  );
+}
+
+/* The font tokens are declared outside the inline theme so utilities reference
+   the variables and Settings -> Appearance can override them at runtime. */
 @theme {
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono:
@@ -127,6 +168,48 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 }
 
 @theme inline {
+  /* Two steps below Tailwind's text-xs (12px) for dense UI: metadata rows,
+     badges, counters, keyboard hints and diagnostics tables. 2xs is 11px,
+     3xs is 10px. Provider icon overlays use 4xs (8px) and 5xs (7px) to fit
+     their smaller badges. Registered with tailwind-merge in
+     lib/utils.ts so cn() treats them as font sizes, not colours. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: calc(1 / 0.6875);
+  --text-3xs: 0.625rem;
+  --text-3xs--line-height: calc(0.875 / 0.625);
+  --text-4xs: 0.5rem;
+  --text-4xs--line-height: 1;
+  --text-5xs: 0.4375rem;
+  --text-5xs--line-height: 1;
+  /* Motion. drawer is the decelerating curve for surfaces that slide or pop in
+     (composer context, pills). */
+  --inset-shadow-control-highlight: 0 1px rgb(255 255 255 / 16%);
+  --inset-shadow-control-pressed: 0 1px rgb(0 0 0 / 8%);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  /* The composer's elevation: a soft drop pulled in under the surface, shared
+     by the composer, its context strip and attached banners. */
+  --shadow-composer: 0 12px 28px -18px rgb(0 0 0 / 40%);
+  --shadow-composer-dark: 0 14px 32px -18px rgb(0 0 0 / 75%);
+  /* Dark-mode shade where an attached surface meets the composer: 10px of
+     shadow fading away from the seam. Inline, so the offsets resolve on the
+     element. below: the context strip under the composer (1rem seam, faint
+     white fill). above: an attached banner over it (its tint on top). */
+  --background-image-composer-seam-below:
+    linear-gradient(
+      to bottom,
+      transparent 0 1rem,
+      rgb(0 0 0 / 18%) 1rem,
+      transparent calc(1rem + 10px)
+    ),
+    linear-gradient(rgb(255 255 255 / 1%), rgb(255 255 255 / 1%));
+  --background-image-composer-seam-above:
+    linear-gradient(var(--chat-composer-attached-tint), var(--chat-composer-attached-tint)),
+    linear-gradient(
+      to top,
+      transparent 0 var(--chat-composer-attachment-overlap),
+      rgb(0 0 0 / 18%) var(--chat-composer-attachment-overlap),
+      transparent calc(var(--chat-composer-attachment-overlap) + 10px)
+    );
   --color-zinc-25: oklch(99.2% 0 0);
   --animate-skeleton: skeleton 2.4s infinite;
   /* Duty-cycled indicator animations: long holds with stepped ramps, so the
@@ -145,6 +228,10 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --color-update-surface: var(--update-surface);
   --color-success-foreground: var(--success-foreground);
   --color-success: var(--success);
+  --color-diff-addition: var(--diff-addition);
+  --color-diff-deletion: var(--diff-deletion);
+  --color-diff-addition-foreground: var(--diff-addition-foreground);
+  --color-diff-deletion-foreground: var(--diff-deletion-foreground);
   --color-info-foreground: var(--info-foreground);
   --color-info: var(--info);
   --color-destructive-foreground: var(--destructive-foreground);
@@ -167,6 +254,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   --color-popover: var(--popover);
   --color-card-foreground: var(--contrast-card-foreground);
   --color-card: var(--card);
+  --color-code: var(--code-background);
+  --color-code-foreground: var(--code-foreground);
   --color-foreground: var(--contrast-foreground);
   --color-background: var(--background);
   --color-surface-raised: var(--surface-raised);
@@ -1225,3 +1314,20 @@ code {
 
 /* Let the sortable rows open label clearance before painting the dividers.
    This runs once per pickup; rows retain dnd-kit's normal 200ms transitions. */
+
+:root {
+  --diff-addition: var(--success);
+  --diff-deletion: var(--destructive);
+  --diff-addition-foreground: light-dark(var(--color-emerald-600), var(--color-emerald-400));
+  --diff-deletion-foreground: light-dark(var(--color-red-600), var(--color-red-400));
+}
+
+/* Chat width setting. Comfortable keeps the default --chat-content-max-width,
+   which sizes the timeline lane, the composer, and ChatCanvas's width probe. */
+:root[data-chat-width="wide"] {
+  --chat-content-max-width: 72rem;
+}
+
+:root[data-chat-width="full"] {
+  --chat-content-max-width: 100%;
+}

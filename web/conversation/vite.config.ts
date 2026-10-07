@@ -116,6 +116,36 @@ function thirdPartyLicenses(): Plugin {
   };
 }
 
+/**
+ * Serves the embedded fonts on the dev server.
+ *
+ * `index.css` names them as `../../fonts/…`, which is right for the built
+ * bundle (`static/app/conversation/app.css` → `static/fonts`). The dev server
+ * injects the stylesheet into the page, so the same URL resolves against
+ * whatever route is open (`/work/fonts/…`, `/design-system/frame/…/fonts/…`).
+ * Answer any `…/fonts/<file>.woff2` request from `static/fonts`.
+ */
+function devFonts(): Plugin {
+  const dir = fileURLToPath(new URL("../../static/fonts/", import.meta.url));
+  return {
+    name: "detent-dev-fonts",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const match = /\/fonts\/([\w-]+\.woff2)(?:\?.*)?$/.exec(request.url ?? "");
+        if (match === null) return next();
+        try {
+          const body = readFileSync(`${dir}${match[1]}`);
+          response.setHeader("Content-Type", "font/woff2");
+          response.end(body);
+        } catch {
+          next();
+        }
+      });
+    },
+  };
+}
+
 /** The hub the dev server proxies API and bootstrap requests to. */
 const hubUrl = process.env.DETENT_HUB_URL || "http://127.0.0.1:4100";
 
@@ -129,7 +159,7 @@ export default defineConfig({
     renderBuiltUrl: (filename, { hostType }) =>
       hostType === "html" ? `/static/app/conversation/${filename}` : { relative: true },
   },
-  plugins: [tailwindcss(), mitAttribution(), thirdPartyLicenses()],
+  plugins: [tailwindcss(), mitAttribution(), thirdPartyLicenses(), devFonts()],
   resolve: {
     alias: {
       "~": fileURLToPath(new URL("./src", import.meta.url)),
@@ -292,6 +322,11 @@ export default defineConfig({
       "lucide-react/dynamic": fileURLToPath(
         new URL("./src/browser/lucideDynamicIcon.tsx", import.meta.url),
       ),
+      // lucide 0.5x publishes `module: dist/esm/lucide.js`, but ships the ES
+      // entry at dist/esm/lucide/src/lucide.js. MorphIcon reads icon data from it.
+      lucide: fileURLToPath(
+        new URL("./node_modules/lucide/dist/esm/lucide/src/lucide.js", import.meta.url),
+      ),
     },
   },
   // `@pierre/diffs` tokenizes a diff off the main thread, and the copied
@@ -340,7 +375,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/api": { target: hubUrl, changeOrigin: true },
+      // `ws` carries the workspace relay socket under `/api`.
+      "/api": { target: hubUrl, changeOrigin: true, ws: true },
+      "/app/updates": { target: hubUrl, changeOrigin: true },
+      // The project event stream; `/projects/…` is otherwise an app route.
+      "^/projects/[^/]+/events": { target: hubUrl, changeOrigin: true },
       // `/app/bootstrap` is what the client asks for first (decisions.md §12);
       // `/chat/bootstrap` is the alias it falls back to.
       "/app/bootstrap": { target: hubUrl, changeOrigin: true },

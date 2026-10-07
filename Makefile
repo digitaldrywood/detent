@@ -123,7 +123,7 @@ app-dev:
 check-app:
 	@set -e; if [ -f "$(APP_DIR)/package.json" ]; then \
 		if [ ! -d "$(APP_DIR)/node_modules" ]; then (cd "$(APP_DIR)" && npm ci); fi; \
-		(cd "$(APP_DIR)" && npm run typecheck && npx vitest run --maxWorkers=$(TEST_PROCS) && npm run build); \
+		(cd "$(APP_DIR)" && npm run typecheck && npm run design:tokens:check && npm run design:catalog:check && npx vitest run --maxWorkers=$(TEST_PROCS) && npm run build); \
 		grep -q "MIT" static/app/conversation/app.js || { \
 			echo "static/app/conversation/app.js is missing the MIT attribution banner."; \
 			exit 1; \
@@ -316,7 +316,7 @@ help:
 	@echo "  app          Build the conversation client into static/app/conversation"
 	@echo "  app-dev      Run the conversation client dev server"
 	@echo "  app-test     Typecheck and test the conversation client"
-	@echo "  check-app    Client typecheck, tests, build and attribution"
+	@echo "  check-app    Client typecheck, design token and catalog checks, tests, build and attribution"
 	@echo "  build        Build $(BINARY_NAME)"
 	@echo "  test         Run Go tests"
 	@echo "  test-race    Run Go tests with the race detector"
