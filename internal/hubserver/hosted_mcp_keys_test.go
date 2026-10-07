@@ -230,8 +230,6 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								project = "prj_other"
 								operatorSQL(t, f, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,'other',profile,states_json,created_at FROM projects WHERE id=?", project, f.project)
 								operatorSQL(t, f, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) SELECT ?,source_name,detent_state,terminal,dispatchable,created_at,updated_at FROM workflow_states WHERE project_id=?", project, f.project)
-								operatorSQL(t, f, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write) VALUES (?,'org_security',?,1)", user.identity.Subject, project)
-								operatorSQL(t, f, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,'org_security',?)", credential.ID, project)
 								readDenied = access == hostedProjectsSelected
 								if scenario == "future project without user grant" {
 									operatorSQL(t, f, "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", user.identity.Subject, project)

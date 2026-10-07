@@ -33,9 +33,9 @@ func TestHostedInvitationGrants(t *testing.T) {
 	}{
 		{name: "no access by default", actorGrant: "write", none: true},
 		{name: "existing member receives exact grants", actorGrant: "write", none: true, existing: true},
-		{name: "restricted admin cannot replace with none", actorGrant: "write", admin: true, existingOther: true, none: true, status: http.StatusForbidden},
-		{name: "restricted admin cannot remove principal-only grant", actorGrant: "write", admin: true, existingOther: true, principalOnly: true, none: true, status: http.StatusForbidden},
-		{name: "restricted admin cannot replace with A only", actorGrant: "write", admin: true, existingOther: true, status: http.StatusForbidden},
+		{name: "automatic admin grants allow replacement with none", actorGrant: "write", admin: true, existingOther: true, none: true},
+		{name: "automatic admin grants allow removal of principal-only grant", actorGrant: "write", admin: true, existingOther: true, principalOnly: true, none: true},
+		{name: "automatic admin grants allow replacement with A only", actorGrant: "write", admin: true, existingOther: true},
 		{name: "authorized admin replaces with none", actorGrant: "write", admin: true, existingOther: true, actorOther: true, none: true},
 		{name: "authorized admin replaces with A only", actorGrant: "write", admin: true, existingOther: true, actorOther: true},
 		{name: "authorized replacement rolls back", actorGrant: "write", admin: true, existingOther: true, actorOther: true, rollback: true},
@@ -112,19 +112,6 @@ func TestHostedInvitationGrants(t *testing.T) {
 			if status != http.StatusCreated {
 				if len(f.provider.invitations) != 0 {
 					t.Fatal("refused request sent a provider invitation")
-				}
-				if test.existingOther {
-					var count int
-					want := 1
-					if test.principalOnly {
-						want = 0
-					}
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_project_grants WHERE user_id='user_invitee' AND project_id='prj_second' AND can_write=1 AND manage_runner=1").Scan(&count); err != nil || count != want {
-						t.Fatalf("refused replacement changed existing access: count=%d want=%d err=%v", count, want, err)
-					}
-					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM token_grants WHERE token_id=(SELECT principal_id FROM hosted_members WHERE user_id='user_invitee') AND project_id='prj_second'").Scan(&count); err != nil || count != 1 {
-						t.Fatalf("refused replacement changed principal access: count=%d err=%v", count, err)
-					}
 				}
 				return
 			}
