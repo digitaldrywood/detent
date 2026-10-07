@@ -78,6 +78,37 @@ describe("the Change Request page", () => {
     expect(screen.getAllByTestId("change-round").length).toBe(CHANGE.versions.length);
   });
 
+  it.each([true, false])("shows criterion evidence and disclosed gaps on its round (gap: %s)", (gap) => {
+    const version = currentVersion(CHANGE)!;
+    const change: ChangeDetail = {
+      ...CHANGE,
+      reviews: [{
+        review_id: "review_evidence", version_id: version.version_id, decision: "approved", body: "Reviewed",
+        actor: CHANGE.reviews[0]!.actor, created_at: "2026-09-09T11:00:00Z",
+        validator: {
+          criteria_evidence: [
+            { criterion: "Reject invalid input", kind: "receipt", reference: "make check", behavior: "Invalid input errors" },
+            { criterion: "Return valid input", kind: gap ? "not_verified" : "test", reference: gap ? "No behavioral assertion" : "input_test.go:TestValid", behavior: gap ? "Not exercised" : "Valid input is returned" },
+          ],
+          not_verified: gap ? ["Return valid input"] : [],
+        },
+      }],
+    };
+    renderView({ change });
+    const evidence = screen.getByRole("region", { name: "Acceptance evidence" });
+    expect(within(evidence).getByText("Reject invalid input")).toBeTruthy();
+    expect(within(evidence).getByText("make check")).toBeTruthy();
+    if (gap) {
+      expect(within(screen.getByRole("region", { name: "Not verified criteria" })).getByText("Return valid input")).toBeTruthy();
+    } else {
+      expect(within(evidence).getByText("input_test.go:TestValid")).toBeTruthy();
+      expect(screen.queryByRole("region", { name: "Not verified criteria" })).toBeNull();
+    }
+    cleanup();
+    renderView({ change, version: { ...version, version_id: "older_round" } });
+    expect(screen.queryByRole("region", { name: "Acceptance evidence" })).toBeNull();
+  });
+
   it("approves the current round with the note typed", async () => {
     const { onReview } = renderView();
     await userEvent.type(screen.getByLabelText("Review comment"), "Ship it");

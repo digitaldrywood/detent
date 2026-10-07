@@ -1236,6 +1236,18 @@ human approval and explicit checks remain separate requirements. Rework retains
 the findings on the version and returns the item to the existing Rework lane.
 No separately provisioned operator credential is required by this flag.
 
+Each validator review stores `criteria_evidence` and a derived `not_verified`
+list against its immutable version. Every acceptance criterion has a `criterion`,
+`kind` (`receipt`, `test`, or `not_verified`), and `reference`. Receipt entries
+name a successful host-observed command and its reviewed `head_sha` and `tree_sha`.
+Test entries name the file and test and describe the independent behavioral
+assertion in `behavior`; tests that restate the implementation are flagged and
+excluded. Missing, duplicate, or unsupported entries become `not_verified`.
+The Change review page shows this map and highlights the unverified list.
+`gate.validator.unverified_criteria` defaults to `rework`, naming every gap.
+Projects may select `pass-with-disclosure` to retain gaps while allowing a pass;
+the verdict, minimum score, and blocked severities still apply.
+
 These settings do not modify repository auto-promotion, opt-out, security audit,
 validator, external required review, or merge-method configuration.
 

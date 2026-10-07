@@ -2991,6 +2991,7 @@ gate:
     enabled: true
     model: gpt-5-validator
     min_score: 0.85
+    unverified_criteria: pass-with-disclosure
     max_attempts: 4
     turn_timeout_ms: 120000
     max_inline_diff_bytes: 32768
@@ -3008,6 +3009,9 @@ Prompt
 	}
 
 	validator := workflow.Config.Gate.Validator
+	if validator.UnverifiedCriteria != gate.UnverifiedCriteriaDisclose {
+		t.Fatalf("Gate.Validator.UnverifiedCriteria = %q", validator.UnverifiedCriteria)
+	}
 	if !validator.Enabled {
 		t.Fatal("Gate.Validator.Enabled = false, want true")
 	}
@@ -4304,6 +4308,7 @@ gate:
   validator:
     enabled: true
     min_score: 1.2
+    unverified_criteria: ignore
     turn_timeout_ms: -1
     max_inline_diff_bytes: -1
     block_on:
@@ -4313,6 +4318,7 @@ Prompt
 `,
 			want: []string{
 				"gate.validator.min_score must be greater than 0 and less than or equal to 1",
+				"gate.validator.unverified_criteria must be rework or pass-with-disclosure",
 				"gate.validator.turn_timeout_ms must be greater than or equal to 0",
 				"gate.validator.max_inline_diff_bytes must be greater than or equal to 0",
 			},

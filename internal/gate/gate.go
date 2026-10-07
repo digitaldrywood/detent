@@ -73,6 +73,7 @@ type ArtifactConfig struct {
 }
 
 type ValidatorConfig struct {
+	UnverifiedCriteria string   `yaml:"unverified_criteria"`
 	Enabled            bool     `yaml:"enabled"`
 	Model              string   `yaml:"model"`
 	MinScore           float64  `yaml:"min_score"`
@@ -132,20 +133,22 @@ type CommandResult struct {
 }
 
 type ValidatorResult struct {
-	Commands   []CommandResult `json:"commands,omitempty"`
-	VersionID  string          `json:"version_id,omitempty"`
-	SessionID  int64           `json:"session_id,string,omitempty"`
-	Submitted  bool
-	Verdict    string
-	Score      float64
-	Summary    string
-	Findings   []Finding
-	Repository string
-	PRNumber   int
-	BaseSHA    string
-	HeadSHA    string
-	DiffDigest string
-	DiffFiles  []string
+	CriteriaEvidence []CriterionEvidence `json:"criteria_evidence,omitempty"`
+	NotVerified      []string            `json:"not_verified,omitempty"`
+	Commands         []CommandResult     `json:"commands,omitempty"`
+	VersionID        string              `json:"version_id,omitempty"`
+	SessionID        int64               `json:"session_id,string,omitempty"`
+	Submitted        bool
+	Verdict          string
+	Score            float64
+	Summary          string
+	Findings         []Finding
+	Repository       string
+	PRNumber         int
+	BaseSHA          string
+	HeadSHA          string
+	DiffDigest       string
+	DiffFiles        []string
 }
 
 type EvaluationOptions struct {
@@ -764,6 +767,9 @@ func cloneFindings(findings []Finding) []Finding {
 }
 
 func effectiveValidatorConfig(cfg ValidatorConfig) ValidatorConfig {
+	if cfg.UnverifiedCriteria == "" {
+		cfg.UnverifiedCriteria = UnverifiedCriteriaRework
+	}
 	cfg.Model = strings.TrimSpace(cfg.Model)
 	if cfg.MinScore == 0 {
 		cfg.MinScore = DefaultValidatorMinScore
@@ -821,6 +827,9 @@ func effectiveArtifactConfig(cfg ArtifactConfig) ArtifactConfig {
 
 func validateValidator(prefix string, cfg ValidatorConfig) []string {
 	var problems []string
+	if cfg.UnverifiedCriteria != "" && cfg.UnverifiedCriteria != UnverifiedCriteriaRework && cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose {
+		problems = append(problems, prefix+".unverified_criteria must be rework or pass-with-disclosure")
+	}
 	invalidScore := false
 	if cfg.MinScore < 0 || cfg.MinScore > 1 {
 		problems = append(problems, prefix+".min_score must be greater than 0 and less than or equal to 1")
@@ -959,6 +968,11 @@ func EvaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, b
 	if validatorHasBlockedSeverity(cfg, findings) {
 		out := decision(ActionRework, ReasonValidatorBlockedSeverity)
 		out.Findings = findings
+		return out, true
+	}
+	if cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose && len(result.NotVerified) > 0 {
+		out := decision(ActionRework, ReasonValidatorRework)
+		out.Findings = append(findings, Finding{Severity: "p2", Body: "Acceptance criteria not verified: " + strings.Join(result.NotVerified, "; ")})
 		return out, true
 	}
 

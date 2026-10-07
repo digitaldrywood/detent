@@ -3278,6 +3278,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return gate.ValidatorResult{}, err
 	}
 	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
+	contract, contractErr := config.ResolveIssueContract(workflow.SharedPrompt)
+	if contractErr != nil {
+		return gate.ValidatorResult{}, fmt.Errorf("%w: resolve validator issue contract: %w", ErrValidatorInfrastructure, contractErr)
+	}
 	workerGitHub, err := r.workerGitHubPolicy(ctx, workflow.Config, req.Issue.Identifier)
 	if err != nil {
 		r.logWorkerGitHubPolicyError(req.Issue, err)
@@ -3694,6 +3698,12 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	validation.HeadSHA = req.Diff.HeadSHA
 	validation.DiffDigest = req.Diff.Digest
 	validation.DiffFiles = append([]string(nil), req.Diff.Files...)
+	tree := ""
+	if req.NativeVersion != nil && req.NativeVersion.Validation != nil {
+		tree = req.NativeVersion.Validation.TreeSHA
+	}
+	gate.NormalizeCriterionEvidence(&validation, contract.AcceptanceCriteria(req.Issue.Description), tree)
+	gate.ApplyCriterionPolicy(validator, &validation)
 	return validation, nil
 }
 
@@ -3761,12 +3771,13 @@ func validatorMaxInlineDiffBytes(cfg gate.ValidatorConfig) int {
 }
 
 type validatorJSONResult struct {
-	Verdict    string                 `json:"verdict"`
-	Score      float64                `json:"score"`
-	Confidence float64                `json:"confidence"`
-	TrustScore float64                `json:"trust_score"`
-	Summary    string                 `json:"summary"`
-	Findings   []validatorJSONFinding `json:"findings"`
+	CriteriaEvidence []gate.CriterionEvidence `json:"criteria_evidence"`
+	Verdict          string                   `json:"verdict"`
+	Score            float64                  `json:"score"`
+	Confidence       float64                  `json:"confidence"`
+	TrustScore       float64                  `json:"trust_score"`
+	Summary          string                   `json:"summary"`
+	Findings         []validatorJSONFinding   `json:"findings"`
 }
 
 type validatorJSONFinding struct {
@@ -3813,11 +3824,12 @@ func parseValidatorResult(output string) (gate.ValidatorResult, error) {
 	}
 
 	return gate.ValidatorResult{
-		Submitted: true,
-		Verdict:   strings.TrimSpace(decoded.Verdict),
-		Score:     score,
-		Summary:   strings.TrimSpace(decoded.Summary),
-		Findings:  findings,
+		CriteriaEvidence: decoded.CriteriaEvidence,
+		Submitted:        true,
+		Verdict:          strings.TrimSpace(decoded.Verdict),
+		Score:            score,
+		Summary:          strings.TrimSpace(decoded.Summary),
+		Findings:         findings,
 	}, nil
 }
 

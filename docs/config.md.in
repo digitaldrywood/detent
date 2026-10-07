@@ -860,6 +860,14 @@ item may leave its source state; the gate decides whether CI, automated review,
 human approval, a validator, or an artifact status is sufficient. `plan`
 optionally inserts a plan-review stop before implementation.
 
+The validator records evidence for each acceptance criterion on the immutable
+Change round. `gate.validator.unverified_criteria` defaults to `rework`: any gap
+returns the work for evidence, with the criterion named. Set it to
+`pass-with-disclosure` to allow a pass while retaining the unverified list for
+review. Minimum score and blocked finding severities still apply. Criteria come
+from the issue contract's `Acceptance criteria` section, or its first required
+section when a project uses a custom contract without that heading.
+
 ### Operations, budgets, and observability
 
 `active_hours` optionally limits new agent dispatches to recurring weekday and

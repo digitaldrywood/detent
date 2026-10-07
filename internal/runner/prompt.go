@@ -385,12 +385,25 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 	}
 
 	validator := gate.Effective(workflow.Config.Gate).Validator
+	contract, err := config.ResolveIssueContract(workflow.SharedPrompt)
+	if err != nil {
+		fmt.Fprintf(&b, "Cannot resolve acceptance criteria: %s\n", err)
+		return b.String()
+	}
+	b.WriteString("Acceptance criteria to map (use each exact criterion once, in this order):\n")
+	for _, criterion := range contract.AcceptanceCriteria(issue.Description) {
+		fmt.Fprintf(&b, "- %q\n", criterion)
+	}
+	fmt.Fprintf(&b, "Unverified criterion policy: %s\n", validator.UnverifiedCriteria)
 	b.WriteString("Review instructions:\n")
 	b.WriteString("- Review only the PR diff identified above. If the inline patch is omitted, use the named GitHub PR diff at the stated head; do not use workspace git diff.\n")
 	b.WriteString("- Do not modify files, commit, push, change labels, or transition issue state.\n")
 	b.WriteString("- Use severities p1, p2, p3, or p4 for findings; p1 means the work must not merge.\n")
 	b.WriteString("- Score is a confidence/trust score from 0 to 1 that the implementation satisfies the acceptance criteria.\n")
-	b.WriteString("- Return only JSON with this shape: {\"verdict\":\"pass|wait|rework\",\"score\":0.0,\"summary\":\"...\",\"findings\":[{\"severity\":\"p1|p2|p3|p4\",\"body\":\"...\",\"path\":\"optional\",\"line\":0}]}.\n")
+	b.WriteString("- Map every acceptance criterion to receipt, test, or not_verified. A receipt reference is the exact host-observed command and must include its head_sha and tree_sha; missing, failed, mismatched, or no-op commands are not evidence. Explain which observed result proves the criterion in behavior.\n")
+	b.WriteString("- For test evidence, inspect the named test's source and assertions. Reference the file and test name and explain in behavior how its inputs and assertions exercise the criterion independently of the implementation. Tests that mirror implementation logic, compute expectations with the code under test, or compare a result to itself do not qualify: set restates_implementation=true, kind=not_verified, and add a finding naming the test and criterion. Apply this assessment even when a command receipt runs the test. Do not infer coverage from a green suite or worker prose.\n")
+	b.WriteString("- Under rework policy, any not_verified criterion forces rework and must be named in the summary. Under pass-with-disclosure, gaps may pass but must remain not_verified; min_score and block_on still apply.\n")
+	b.WriteString("- Return only JSON with this shape: {\"verdict\":\"pass|wait|rework\",\"score\":0.0,\"summary\":\"...\",\"criteria_evidence\":[{\"criterion\":\"exact criterion\",\"kind\":\"receipt|test|not_verified\",\"reference\":\"command or file:test name or gap reason\",\"head_sha\":\"receipt head\",\"tree_sha\":\"receipt tree\",\"behavior\":\"independent assertion or observed outcome\",\"restates_implementation\":false}],\"findings\":[{\"severity\":\"p1|p2|p3|p4\",\"body\":\"...\",\"path\":\"optional\",\"line\":0}]}.\n")
 	if validator.MinScore > 0 {
 		b.WriteString("- The configured minimum score is ")
 		b.WriteString(strconv.FormatFloat(validator.MinScore, 'f', -1, 64))
@@ -1057,6 +1070,7 @@ func gateAssigns(cfg gate.Config) map[string]any {
 			"enabled":               effective.Validator.Enabled,
 			"model":                 effective.Validator.Model,
 			"min_score":             effective.Validator.MinScore,
+			"unverified_criteria":   effective.Validator.UnverifiedCriteria,
 			"block_on":              effective.Validator.BlockOn,
 			"max_attempts":          effective.Validator.MaxAttempts,
 			"max_inline_diff_bytes": validatorMaxInlineDiffBytes(effective.Validator),
