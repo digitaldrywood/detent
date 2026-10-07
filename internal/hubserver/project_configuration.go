@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -80,6 +81,24 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 		}
 		selected, view = r, candidate
 		view.RunnerID, view.RunnerRevision = r.RunnerID, r.Revision
+	}
+	if name == operatortool.LocalProjectConfiguration && selected.RunnerID != "" {
+		var raw, operation string
+		suffix := " " + selected.RunnerID + " " + args.ProjectID
+		err := tx.QueryRowContext(ctx, "SELECT response_json, operation FROM native_commands WHERE organization_id = ? AND operation IN (?, ?, ?) AND coalesce(json_extract(response_json, '$.pending'), 0) = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1", scope.organization, "apply_local_project_policy"+suffix, "drain_local_project"+suffix, "detach_local_project"+suffix).Scan(&raw, &operation)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return operatortool.Result{}, err
+		}
+		if err == nil {
+			var receipt runnerauth.ProjectConfiguration
+			if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
+				return operatortool.Result{}, err
+			}
+			view.LastOperation = &runnerauth.ProjectConfigurationReceipt{RequestID: receipt.RequestID, Operation: strings.TrimSuffix(operation, suffix), ConfigRevision: receipt.ConfigRevision, Applied: receipt.Applied, Saved: receipt.Saved, Constraint: receipt.Constraint, ObservedAt: receipt.ObservedAt}
+			if receipt.EffectivePolicy != nil {
+				view.LastOperation.PolicyID = receipt.EffectivePolicy.ID
+			}
+		}
 	}
 	if name == operatortool.LocalProjectConfiguration || selected.RunnerID == "" {
 		return hubProjectResult(view)
@@ -181,6 +200,7 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		observation.ObservedAt = now
 		observation.RunnerID, observation.RunnerRevision = "", 0
 		observation.Pending = false
+		observation.LastOperation = nil
 		raw, err := json.Marshal(observation)
 		if err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err

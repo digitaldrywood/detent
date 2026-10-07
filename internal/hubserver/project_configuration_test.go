@@ -17,7 +17,7 @@ import (
 )
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"apply", "running apply", "drained apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
@@ -129,7 +129,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				}
 			}
 			snapshot := heartbeat()
-			if scenario != "apply" && scenario != "drained apply" && scenario != "running apply" && scenario != "storage exhausted" {
+			if scenario != "apply" && scenario != "drained apply" && scenario != "running apply" && scenario != "refused apply" && scenario != "storage exhausted" {
 				if snapshot.ProjectConfigurationRequest != nil {
 					t.Fatal("revoked or stale request reached runner")
 				}
@@ -148,6 +148,11 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			view.RequestID, view.Saved, view.Applied, view.AllowLocalBinding = args.RequestID, true, true, true
 			view.EffectivePolicy, view.ConfigRevision = &candidate, strings.Repeat("d", 64)
+			if scenario == "refused apply" {
+				view.Applied, view.Saved, view.AllowLocalBinding = false, false, false
+				view.EffectivePolicy, view.ConfigRevision = &current, args.ExpectedConfigRevision
+				view.Constraint = "The configured definition cannot supply the approved policy revision."
+			}
 			if scenario == "storage exhausted" {
 				view.Constraint = strings.Repeat("x", 1120)
 				f.service.config.Hosted = &HostedConfig{}
@@ -158,6 +163,31 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			}
 			if heartbeat().ProjectConfigurationRequest != nil {
 				t.Fatal("acknowledged request repeated")
+			}
+			if scenario == "refused apply" {
+				view.RequestID, view.Constraint = "", ""
+				heartbeat()
+				result, err := call(operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: r.binding.RunnerID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var readback runnerauth.ProjectConfiguration
+				if err := json.Unmarshal(result.Content, &readback); err != nil {
+					t.Fatal(err)
+				}
+				if readback.LastOperation == nil || readback.LastOperation.RequestID != args.RequestID || readback.LastOperation.Constraint == "" || readback.LastOperation.Applied || readback.LastOperation.Saved {
+					t.Fatalf("refusal receipt lost after heartbeat: %s", result.Content)
+				}
+				if readback.Constraint != "" {
+					t.Fatal("historical refusal became a current configuration constraint")
+				}
+				args.RequestID = "retry-policy-application"
+				args.ExpectedRunnerRevision = readback.RunnerRevision
+				retry, err := call("apply_local_project_policy", args)
+				if err != nil || !strings.Contains(string(retry.Content), `"pending":true`) {
+					t.Fatalf("historical refusal blocked retry: %s %v", retry.Content, err)
+				}
+				return
 			}
 			completedReplay, err := call("apply_local_project_policy", args)
 			if scenario == "storage exhausted" {

@@ -198,7 +198,7 @@ export function PolicyRow({
       help={{
         label: shared ? "Shared project configuration" : "Repository policy",
         text: shared || observed.some((entry) => entry.policy.configuration)
-          ? "Native runners consume the shared configuration stored with the exact approved descriptor. Credentials, paths, capacity, isolation setup and runner routing stay on each host. Inspect the intended project definition and approve its descriptor to change shared behavior. Execution requires an exact match to that approval."
+          ? "Cloud stores the exact approved descriptor. Runners with a supplied definition must load matching shared files from their configured source, retaining detent.local.yaml and WORKFLOW.local.md. Preview selected_policy with local_project_configuration, then use apply_local_project_policy after current work settles. A configured workflow_ref requires committed shared files; source_revision is an authored digest, not a Git ref. Credentials, paths, capacity, isolation setup and runner routing stay on each host. Execution requires an exact match to approval."
           : "The runner reports the policy descriptor it resolves from the trusted repository revision, including detent.yaml and WORKFLOW.md. Repository changes or a runner upgrade can change that descriptor and make the prior approval stale. Execution is blocked when the runner’s resolved policy does not match an approved descriptor; an owner or admin must approve the current policy.",
       }}
       description={description}
