@@ -93,6 +93,19 @@ func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Respons
 	return response, err
 }
 
+const issueContractTestSections = "\n## Acceptance criteria\nComplete the requested work.\n## Must not break\nExisting behavior.\n## How we know it worked\nRun the project checks."
+
+func confirmIssueContract(t *testing.T, admin *NativeClient, id string) {
+	t.Helper()
+	issue, err := admin.Issue(t.Context(), tracker.NativeWorkItemID(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.UpdateIssue(t.Context(), issue.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: issue.Revision, Body: &issue.Body}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newNativeChangeHub(t *testing.T, inMemory ...bool) *nativeChangeHub {
 	t.Helper()
 	return newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{

@@ -81,7 +81,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true}}, true)
 			h.scheduler.machine.Capacity = 6
 			for i := range 8 {
-				if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), State: "Todo"}); err != nil {
+				if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), Body: issueContractTestSections, State: "Todo"}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -472,7 +472,7 @@ func TestNativeAdmissionCompetingRunners(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 8 {
-		if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), State: "Todo"}); err != nil {
+		if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), Body: issueContractTestSections, State: "Todo"}); err != nil {
 			t.Fatal(err)
 		}
 	}

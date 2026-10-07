@@ -194,7 +194,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		if strings.HasPrefix(title, "rework-") {
 			state = "Rework"
 		}
-		body := "```detent-agent\nschema: 1\nmodel: " + model + "\n```"
+		body := "```detent-agent\nschema: 1\nmodel: " + model + "\n```" + issueContractTestSections
 		if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: title}, Title: title, Body: body, State: state}); err != nil {
 			t.Fatal(err)
 		}

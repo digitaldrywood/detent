@@ -48,13 +48,14 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			descriptor := hubTestPolicy()
 			if test.name == "disclosed missing evidence" {
 				cfg := config.Default()
+				cfg.Tracker.Kind = config.TrackerHubNative
 				cfg.Gate.Validator.Enabled = true
 				cfg.Gate.Validator.UnverifiedCriteria = gate.UnverifiedCriteriaDisclose
 				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg})
 				if err != nil {
 					t.Fatal(err)
 				}
-				descriptor.Configuration = resolved.Configuration
+				descriptor = resolved
 			}
 			descriptor.Gates.Validator = true
 			humanReview := test.name == "separate session pass with human review"

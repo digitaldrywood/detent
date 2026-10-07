@@ -72,7 +72,7 @@ func TestNativeAgentEvidence(t *testing.T) {
 			descriptor := pilotPolicy()
 			pilotStatus(t, "policy", ownerJSON(http.MethodPut, o.projectAPI()+"/onboarding/policy", o.ownerCSRF, policy.Change{Policy: descriptor}), http.StatusOK)
 			var issue tracker.NativeIssue
-			response := ownerJSON(http.MethodPost, o.projectAPI()+"/work-items", o.ownerCSRF, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "evidence-work"}, Title: "Screenshot the page", State: "Todo"})
+			response := ownerJSON(http.MethodPost, o.projectAPI()+"/work-items", o.ownerCSRF, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "evidence-work"}, Title: "Screenshot the page", Body: issueContractTestSections, State: "Todo"})
 			pilotStatus(t, "issue", response, http.StatusOK)
 			pilotDecode(t, response, &issue)
 			inputContent := strings.Repeat("approved portable input\n", 1600)

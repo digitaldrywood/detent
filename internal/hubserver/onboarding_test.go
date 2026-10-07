@@ -337,7 +337,7 @@ func seedHostedOnboardingJourney(t *testing.T, f *browserHostedFixture) *browser
 	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "customer-build-host", DisplayName: "Customer build runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organization+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding", map[string]any{"idempotency_key": "ready", "progress": onboarding.Progress{Repository: "existing", Doctor: true, Provider: true, Artifacts: "local"}}), http.StatusOK)
-	response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first-run"}, Title: "First native run", State: "Todo"})
+	response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first-run"}, Title: "First native run", Body: issueContractTestSections, State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, response, &issue)

@@ -99,7 +99,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := strings.Repeat("Complete worker context.\n", 60)
+	body := strings.Repeat("Complete worker context.\n", 60) + issueContractTestSections
 	issue, err := conn.CreateIssue(t.Context(), connector.IssueDraft{Title: "Native work", Body: body, Labels: []string{"native"}})
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +158,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 	if err := conn.UpdateIssueState(t.Context(), blocker.ID, "Done"); err != nil {
 		t.Fatal(err)
 	}
+	confirmIssueContract(t, adminNative, issue.ID)
 	scheduler, err := NewScheduler(workerClient, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"local": project.ID},
 		Machine: Machine{ID: "machine-native", Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
 	if err != nil {

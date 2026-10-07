@@ -260,7 +260,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if batch {
 		want = 6
 		for range 5 {
-			if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Parallel coding", State: "Todo"}); err != nil {
+			if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Parallel coding", Body: issueContractTestSections, State: "Todo"}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -555,10 +555,11 @@ func TestNativeExecutionLandingTargetRefusesUnreviewed(t *testing.T) {
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Todo"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	})
-	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "No change", Body: "Nothing to land."})
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "No change", Body: "Nothing to land." + issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}
+	confirmIssueContract(t, h.admin, issue.ID)
 	if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Merging"); err != nil {
 		t.Fatal(err)
 	}

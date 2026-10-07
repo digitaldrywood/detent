@@ -61,7 +61,7 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 			pilotStatus(t, "policy", owner.json(http.MethodPut, o.projectAPI()+"/onboarding/policy", o.ownerCSRF, policy.Change{Policy: descriptor}), http.StatusOK)
 			var issue tracker.NativeIssue
 			if test.billing == nil {
-				issueResponse := owner.json(http.MethodPost, o.projectAPI()+"/work-items", o.ownerCSRF, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "runner-work"}, Title: "Runner work", State: "Todo"})
+				issueResponse := owner.json(http.MethodPost, o.projectAPI()+"/work-items", o.ownerCSRF, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "runner-work"}, Title: "Runner work", Body: issueContractTestSections, State: "Todo"})
 				pilotStatus(t, "issue", issueResponse, http.StatusOK)
 				pilotDecode(t, issueResponse, &issue)
 			} else {
@@ -73,7 +73,7 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 					} `json:"conversation"`
 				}
 				pilotDecode(t, chat, &started)
-				linked := owner.json(http.MethodPost, o.projectAPI()+"/conversations/"+started.Conversation.ID+"/link", o.ownerCSRF, map[string]any{"key": "link", "share_history": true, "issue": map[string]any{"title": "Runner work"}})
+				linked := owner.json(http.MethodPost, o.projectAPI()+"/conversations/"+started.Conversation.ID+"/link", o.ownerCSRF, map[string]any{"key": "link", "share_history": true, "issue": map[string]any{"title": "Runner work", "description": issueContractTestSections}})
 				pilotStatus(t, "link", linked, http.StatusOK)
 				var link struct {
 					Issue tracker.NativeIssue `json:"issue"`
