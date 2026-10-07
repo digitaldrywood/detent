@@ -236,7 +236,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go-cached
         with:
-          key: test-cover
+          key: test-cover-${{ matrix.shard }}
 
       - name: Check coverage
         shell: bash
@@ -248,8 +248,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: workspace-test-evidence-${{ runner.os }}-${{ matrix.shard }}
-          path: tmp/workspace-cover-evidence
+          name: test-cover-evidence-${{ matrix.shard }}
+          path: |
+            tmp/workspace-cover-evidence
+            tmp/coverage.out
           if-no-files-found: warn
           retention-days: 14
 
@@ -293,7 +295,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go-cached
         with:
-          key: browser-visual-shard
+          key: browser-visual-${{ matrix.shard }}
 
       - uses: actions/setup-node@v6
         with:
