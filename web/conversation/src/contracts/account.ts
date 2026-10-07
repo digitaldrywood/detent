@@ -273,6 +273,7 @@ export const ProjectIntegration = Schema.Struct({
   profile: Schema.String,
   revision: Schema.String,
   intake: Schema.String,
+  manual_import_enabled: Schema.optional(Schema.Boolean),
   projection: Schema.String,
   repository_enabled: Schema.Boolean,
   github_transport_available: Schema.optional(Schema.Boolean),

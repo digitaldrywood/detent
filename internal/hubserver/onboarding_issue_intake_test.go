@@ -31,7 +31,7 @@ func newBatchFixture(t *testing.T) *batchFixture {
 	t.Helper()
 	f := linkedFixture(t)
 	// Exercise the hosted runner-first association, without a GitHub backend.
-	_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=NULL, checkout_repository='acme/orders' WHERE id=?", f.project.ID)
+	_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=NULL, checkout_repository='acme/orders', github_intake='manual' WHERE id=?", f.project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,15 +126,30 @@ func batchSnapshot(number int) tracker.GitHubIssueSnapshot {
 func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name      string
-		closed    bool
-		rateLimit bool
-		mcp       bool
-	}{{name: "partial import and native edit"}, {name: "429 after first import", rateLimit: true}, {name: "explicit mixed open and closed history", closed: true}, {name: "MCP bounded intake receipts and authority", mcp: true}} {
+		name           string
+		closed         bool
+		rateLimit      bool
+		mcp            bool
+		importDisabled bool
+	}{{name: "partial import and native edit"}, {name: "429 after first import", rateLimit: true}, {name: "explicit mixed open and closed history", closed: true}, {name: "MCP bounded intake receipts and authority", mcp: true}, {name: "manual import disabled", importDisabled: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newBatchFixture(t)
 			f.preview(t, test.closed)
+			if test.importDisabled {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET github_intake='disabled' WHERE id=?", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Backlog"}, http.StatusUnprocessableEntity)
+				var linked int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM issues WHERE project_id=? AND github_number=12", f.project.ID).Scan(&linked); err != nil {
+					t.Fatal(err)
+				}
+				if linked != 0 || f.heartbeat(t) != nil {
+					t.Fatalf("disabled import created %d issues or scheduled runner intake", linked)
+				}
+				return
+			}
 			if test.mcp {
 				captureds := make(chan context.Context, 1)
 				f.service.echo.GET("/api/v2/organizations/:organization/mcp-batch-fixture", func(c echo.Context) error { captureds <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)

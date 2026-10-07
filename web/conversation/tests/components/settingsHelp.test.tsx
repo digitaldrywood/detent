@@ -15,12 +15,13 @@ import integrationFixture from "../../src/contracts/fixtures/account-integration
 // nwsapi in jsdom 26 recurses when Floating UI checks :fullscreen.
 // jsdom has no fullscreen mode; leave all other selector behavior intact.
 beforeEach(() => {
+  vi.stubGlobal("PointerEvent", MouseEvent);
   const matches = Element.prototype.matches;
   vi.spyOn(Element.prototype, "matches").mockImplementation(function (this: Element, selector) {
     return selector === ":fullscreen" ? false : matches.call(this, selector);
   });
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const integration = integrationFixture as ProjectIntegration;
 const fleet = fleetFixture as unknown as FleetResponse;
@@ -101,7 +102,7 @@ describe("settings help interactions", () => {
       onOpenSetup,
     });
     expect((await screen.findByText(/Hub GitHub integration is unavailable/)).textContent).toContain("runner’s approved repository policy");
-    expect(screen.queryByRole("switch", { name: "Repository and pull request integration" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Pull requests" })).toBeNull();
     expect(screen.queryByLabelText("Intake", { exact: true })).toBeNull();
     expect(screen.queryByLabelText("Projection", { exact: true })).toBeNull();
     if (repository) {
@@ -110,6 +111,43 @@ describe("settings help interactions", () => {
       await userEvent.setup().click(screen.getByRole("button", { name: "Associate runner checkout" }));
       expect(onOpenSetup).toHaveBeenCalledOnce();
     }
+  });
+
+  it.each([true, false])("renders new issues with App installed=%s and an unchanged draft", async (installed) => {
+    const current: ProjectIntegration = { ...integration, profile: "native", intake: "automatic", manual_import_enabled: false,
+      github_app_installed: installed, github_app_install_url: "https://github.com/apps/detent-cloud/installations/new",
+      projection: "summary", repository_enabled: true };
+    renderProject(true, { integration: current, draft: draftOf(current), intakeHref: "/projects/prj_example/setup" });
+    await screen.findByText("Automatic");
+    const expected = { importAllowed: false, projection: "summary", repositoryEnabled: true, archiveCompletedAfterDays: 30, archiveCancelledAfterDays: 7 };
+    expect(draftOf(current)).toEqual(expected);
+    expect(draftChanged(draftOf(current), expected)).toBe(false);
+    expect((screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("combobox", { name: "Intake" })).toBeNull();
+    for (const select of screen.getAllByRole("combobox") as HTMLSelectElement[]) {
+      expect(Array.from(select.options).map((option) => option.value)).toContain(select.value);
+    }
+    expect((screen.getByRole("switch", { name: "Existing issues" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("false");
+    const row = screen.getByRole("heading", { name: "New issues" }).closest('[data-slot="settings-row"]')!;
+    expect(row.textContent).toContain(installed ? "Every issue opened on getparable/parable enters Triage." : "Waiting for the GitHub App.");
+    expect(row.querySelector('span[aria-hidden="true"]')).toBeTruthy();
+    expect(screen.getByRole("link", { name: installed ? "Manage installation" : "Install the Detent Cloud GitHub App" }).getAttribute("href")).toContain("github.com/apps/detent-cloud");
+    expect(screen.getByRole("link", { name: "the project's Intake page" }).getAttribute("href")).toBe("/projects/prj_example/setup");
+    const headings = screen.getAllByRole("heading").map((heading) => heading.textContent).filter((text) =>
+      ["GitHub App", "New issues", "Existing issues", "Pull requests", "Work summaries", "Authority"].includes(text ?? ""));
+    expect(headings).toEqual(["GitHub App", "New issues", "Existing issues", "Pull requests", "Work summaries", "Authority"]);
+    expect(screen.queryByRole("heading", { name: "Issue flow" })).toBeNull();
+  });
+
+  it.each([
+    ["Pull requests", { repositoryEnabled: false }],
+    ["Work summaries", { projection: "disabled" }],
+  ] as const)("updates the draft for %s while preserving manual import", async (label, update) => {
+    const current = { ...integration, intake: "automatic", manual_import_enabled: true };
+    const onDraftChange = vi.fn();
+    renderProject(true, { integration: current, draft: draftOf(current), onDraftChange });
+    await userEvent.setup().click(await screen.findByRole("switch", { name: label }));
+    expect(onDraftChange).toHaveBeenCalledWith({ ...draftOf(current), ...update });
   });
 
   it("opens by keyboard, describes the dialog, dismisses with Escape and restores focus", async () => {
@@ -168,7 +206,7 @@ describe("project settings help", () => {
     await screen.findByRole("heading", { name: "Example settings" });
     if (state.visible) {
       expect(screen.getByRole("heading", { name: "GitHub App" })).toBeTruthy();
-      expect(screen.getByText(`Detent Cloud is ${state.installed ? "installed" : "not installed"} on ${state.checkout || state.repository}`, { exact: true })).toBeTruthy();
+      expect(screen.getByText(state.installed ? `Installed on ${state.checkout || state.repository}.` : "Not installed. New issues will not reach this project until it is.")).toBeTruthy();
       const link = screen.getByRole("link", { name: state.installed ? "Manage installation" : "Install the Detent Cloud GitHub App" });
       expect(link.getAttribute("href")).toBe(url);
       expect(link.getAttribute("target")).toBe("_blank");
@@ -181,21 +219,32 @@ describe("project settings help", () => {
   });
 
   it.each([
-    { name: "native bound", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", value: "automatic", options: ["Automatic"], disabled: true },
-    { name: "native checkout", profile: "native", repository: "", checkout_repository: "acme/orders", intake: "automatic", value: "automatic", options: ["Automatic"], disabled: true },
-    { name: "native unbound", profile: "native", repository: "", checkout_repository: "", intake: "disabled", value: "disabled", options: ["Disabled", "Manual"], disabled: true },
-    { name: "compatibility", profile: "github_compatible", repository: "acme/orders", checkout_repository: "", intake: "manual", value: "manual", options: ["Disabled", "Manual"], disabled: false },
-  ])("shows the effective intake for $name", async ({ name: _name, value, options, disabled, ...fields }) => {
-    const current = { ...integration, ...fields };
+    { name: "native bound", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", importAllowed: false, disabled: false },
+    { name: "native bound imports allowed", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", importAllowed: true, disabled: false },
+    { name: "native checkout", profile: "native", repository: "", checkout_repository: "acme/orders", intake: "automatic", importAllowed: false, disabled: false },
+    { name: "native unbound", profile: "native", repository: "", checkout_repository: "", intake: "disabled", importAllowed: false, disabled: true },
+    { name: "compatibility", profile: "github_compatible", repository: "acme/orders", checkout_repository: "", intake: "manual", importAllowed: true, disabled: false },
+  ])("shows only editable imports for $name", async ({ name: _name, importAllowed, disabled, ...fields }) => {
+    const current = { ...integration, ...fields, manual_import_enabled: importAllowed };
     const onDraftChange = vi.fn();
     renderProject(true, { integration: current, draft: draftOf(current), onDraftChange });
-    const intake = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Intake" });
-    expect(intake.value).toBe(value);
-    expect(intake.disabled).toBe(disabled);
-    expect(Array.from(intake.options, (option) => option.text)).toEqual(options);
+    await screen.findByRole("heading", { name: "Existing issues" });
+    expect(screen.queryByRole("combobox", { name: "Intake" })).toBeNull();
+    const control = screen.queryByRole("switch", { name: "Existing issues" });
+    if (!fields.repository && !fields.checkout_repository) {
+      expect(control).toBeNull();
+      expect(screen.getByText("Associate a runner checkout to configure repository integration.")).toBeTruthy();
+      return;
+    }
+    expect(control!.getAttribute("aria-checked")).toBe(String(importAllowed));
+    expect(control!.getAttribute("aria-disabled") === "true").toBe(disabled);
     if (!disabled) {
-      await userEvent.setup().selectOptions(intake, "disabled");
-      expect(onDraftChange).toHaveBeenCalledWith({ ...draftOf(current), intake: "disabled" });
+      await userEvent.setup().click(control!);
+      expect(onDraftChange).toHaveBeenCalledWith({ ...draftOf(current), importAllowed: !importAllowed });
+    }
+    if (fields.profile === "github_compatible") {
+      expect(screen.getByText("GitHub owns these issues until cutover.")).toBeTruthy();
+      expect(screen.getByRole("switch", { name: "Work summaries" }).getAttribute("aria-disabled")).toBe("true");
     }
   });
 
@@ -238,10 +287,10 @@ describe("project settings help", () => {
   });
 
   it.each([
-    ["Repository and pull request integration", /Disabling it.*immutable repository binding/],
-    ["Intake", /New GitHub issues enter Triage automatically.*App is installed.*existing issues.*manually/],
-    ["Intake", /Compatibility projects import selected GitHub issues.*manual intake.*Disabled prevents new manual imports/, "github_compatible"],
-    ["Projection", /from Detent to the linked GitHub issue.*Disabled stops new summary writes/],
+    ["Pull requests", /Disabling it.*immutable repository binding/],
+    ["New issues", /receives GitHub.*App.*nothing to turn on/],
+    ["Existing issues", /import older GitHub issues.*Turning this off prevents manual imports/, "github_compatible"],
+    ["Work summaries", /each work item.*linked GitHub issue.*Turning this off stops new summary writes/],
     ["Authority", /native profile.*Detent ownership.*github_compatible profile.*GitHub ownership/],
     ["Repository policy", /runner upgrade.*stale.*Execution is blocked/],
     ["Runner routing", /matching a tag never grants project access/],
