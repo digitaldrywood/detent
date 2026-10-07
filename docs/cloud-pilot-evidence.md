@@ -47,8 +47,7 @@ The recorded [verified evidence JSON](../.detent/validation/2199/verified-eviden
 58 passing required tests and their subtests. It is a local protocol sample;
 elapsed time is descriptive, never a cross-machine performance assertion.
 The local release gate is `make check`, including build, generated-file checks,
-lint, vet, NilAway, race tests, aggregate coverage and configured package/file
-coverage floors. Current-head CI is a separate PR gate. Earlier `evidence*` and
+lint, vet, NilAway, race tests and a coverage profile retained as evidence. Current-head CI is a separate PR gate. Earlier `evidence*` and
 `resumed-*` files remain historical records of navigation, policy and independent
 CI limitations before their fixes. Current captures use the `verified-` prefix.
 

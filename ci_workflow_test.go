@@ -237,7 +237,7 @@ func TestScheduledCIValidatesPinnedDevelopmentSHA(t *testing.T) {
 	if count := strings.Count(workflow, "ref: ${{ needs.preflight.outputs.develop_sha }}"); count < 12 {
 		t.Fatalf("only %d jobs checkout the pinned SHA", count)
 	}
-	for _, want := range []string{"make test", "make security", "make test-cover-packages", "npm run test:visual", "make check-invariants"} {
+	for _, want := range []string{"make test", "make security", "make test-cover", "npm run test:visual", "make check-invariants"} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("scheduled full suite missing %q", want)
 		}

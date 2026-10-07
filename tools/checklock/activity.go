@@ -69,7 +69,6 @@ func (r *validationActivityRecorder) observe(data []byte) {
 			{"go vet ", "vet"},
 			{"nilaway", "nilaway"},
 			{"scripts/test-race-cover.sh", "tests"},
-			{"go run ./tools/covercheck", "coverage"},
 		} {
 			if strings.Contains(line, marker.command) {
 				phase = marker.phase

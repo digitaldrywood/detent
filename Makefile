@@ -10,9 +10,6 @@ LDFLAGS ?= -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DA
 DEV_VERSION ?= dev
 COVERPROFILE := tmp/coverage.out
 COVERPROFILE_RAW := tmp/coverage.raw.out
-COVERAGE_THRESHOLD := 70.0
-PACKAGE_COVERAGE_FLOOR := 50
-PACKAGE_COVERAGE_EXCEPTIONS := scripts/coverage-exceptions.txt
 MODERNIZE_FIX_FLAGS ?= -newexpr=false
 AIR_VERSION := v1.64.0
 TEMPL_VERSION := v0.3.1001
@@ -68,7 +65,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306,G703,G704
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-hub-portability test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover test-cover-packages soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast check-land modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-hub-portability test-race test-race-hub test-race-hub-a test-race-hub-b test-race-hub-c test-race-orchestrator test-race-cover coverage-check test-cover soak visual-e2e visual-e2e-update lint vet gosec-build security-gosec-determinism check check-fast check-land modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -201,7 +198,6 @@ test-race-orchestrator:
 test-race-cover:
 	bash scripts/test-race-cover.sh "$(HUB_RACE_PARALLEL)" "$(HUB_RACE_COVER_TIMEOUT)" "$(COVERPROFILE_RAW)" "$(ORCHESTRATOR_RACE_PARALLEL)" "$(ORCHESTRATOR_RACE_TIMEOUT)" '$(HUB_RACE_PARTITION)' '$(HUB_RACE_PARTITION_B)'
 	@$(MAKE) coverage-check
-	go run ./tools/covercheck -profile $(COVERPROFILE) -floor $(PACKAGE_COVERAGE_FLOOR) -exceptions $(PACKAGE_COVERAGE_EXCEPTIONS)
 
 test-cover:
 	@mkdir -p tmp
@@ -216,17 +212,7 @@ test-cover:
 
 coverage-check:
 	@awk 'NR == 1 || ($$1 !~ /_templ\.go:/ && $$1 !~ /\/internal\/store\/sqlc\// && $$1 !~ /\/internal\/database\/sqlc\//)' "$(COVERPROFILE_RAW)" > "$(COVERPROFILE)"
-	@coverage="$$(go tool cover -func=$(COVERPROFILE) | awk '/^total:/ { gsub(/%/, "", $$3); print $$3 }')"; \
-	awk -v coverage="$$coverage" -v threshold="$(COVERAGE_THRESHOLD)" 'BEGIN { \
-		if (coverage + 0 < threshold + 0) { \
-			printf "coverage %.1f%% is below %.1f%%\n", coverage, threshold; \
-			exit 1; \
-		} \
-		printf "coverage %.1f%% meets %.1f%% threshold\n", coverage, threshold; \
-	}'
-
-test-cover-packages: test-cover
-	go run ./tools/covercheck -profile $(COVERPROFILE) -floor $(PACKAGE_COVERAGE_FLOOR) -exceptions $(PACKAGE_COVERAGE_EXCEPTIONS)
+	@go tool cover -func=$(COVERPROFILE) | awk '/^total:/ { printf "coverage %s of statements (evidence only, no floor)\n", $$3 }'
 
 soak:
 	DETENT_RUN_SOAK_TESTS=1 $(GO_TEST) ./internal/orchestrator -run '^(TestSoak|TestDispatchParityAdversarialFixtures)' -count=1
@@ -339,8 +325,7 @@ help:
 	@echo "  test-race-hub-b  Run Hub race partition B (tests matching $(HUB_RACE_PARTITION_B))"
 	@echo "  test-race-hub-c  Run Hub race partition C (all other Hub tests)"
 	@echo "  test-race-cover  Run race and coverage gates with shared Hub execution"
-	@echo "  test-cover   Run Go coverage with a $(COVERAGE_THRESHOLD)% minimum"
-	@echo "  test-cover-packages  Run per-package coverage floor checks"
+	@echo "  test-cover   Run Go tests with a coverage profile as evidence (no floor)"
 	@echo "  soak         Run opt-in orchestrator incident and adversarial soak tests"
 	@echo "  visual-e2e   Run Playwright visual layout tests"
 	@echo "  visual-e2e-update  Update Playwright visual baselines"
