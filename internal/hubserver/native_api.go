@@ -114,6 +114,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	s.registerOnboardingRoutes(e)
 	s.registerArtifactRoutes(e)
 	s.registerCloudAttachmentRoutes(e)
+	s.registerAttemptDiffBodyRoutes(e)
 	s.registerIntegrationRoutes(e)
 	s.registerChangeRoutes(e)
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
@@ -172,6 +173,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	// 18.5 and 18.6). The diff write is a worker endpoint fenced by the
 	// producer's lease; every read follows the issue's read rule.
 	e.POST(nativeBase+"/attempts/:attempt/diff", s.postAttemptDiff, worker)
+	e.POST(nativeBase+"/attempts/:attempt/diff/check", s.checkAttemptDiff, worker)
 	e.GET(nativeBase+"/attempts/:attempt/diff", s.getAttemptDiff, read)
 	e.GET(nativeBase+"/work-items/:item/diff", s.getWorkItemDiff, read)
 	e.GET(nativeBase+"/work-items/:item/pull-requests", s.listWorkItemPullRequests, read)

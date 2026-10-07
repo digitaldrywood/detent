@@ -104,6 +104,7 @@ type Service struct {
 	attachments       attachment.Storage
 	attachmentMu      sync.RWMutex
 	attachmentSweepAt time.Time
+	diffBodySweepAt   time.Time
 	githubRoutes      githubRoutes
 
 	stopAllocator     context.CancelFunc

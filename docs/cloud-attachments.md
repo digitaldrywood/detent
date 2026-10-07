@@ -24,6 +24,32 @@ present, startup must successfully write, read and delete a random `probe/`
 object. An anonymous GET must return 401, 403 or 404; an accessible object or
 an inconclusive response prevents startup.
 
+Attempt diff patches use the same private bucket and entry credentials, under
+`orgs/:org/attempt-diffs/:project/:diff/:position/:sha256`. The entry checks the
+producer's current authority with the tenant Hub before uploading, verifies the
+stored bytes, then submits file metadata and object references. Tenant Hubs keep
+paths, statuses, line counts, checksums and sizes in SQLite. Authorized diff API
+and MCP responses are hydrated by the entry; a missing or corrupt live object
+returns an unavailable response. Dedicated and local Hubs retain inline storage.
+
+On the existing entry maintenance tick, legacy inline patches move in batches
+of at most 32 files and 1 MiB of patch content. Network storage work runs outside
+SQLite transactions. Each row loses its inline patch only after the object is
+verified and its reference acknowledged; interrupted migration resumes from the
+remaining inline rows. Reads accept both representations during migration.
+After the final batch, the tenant Hub runs one VACUUM and logs
+`attempt_diff_files_bytes` and `inline_body_bytes`. VACUUM excludes other
+database work; the uploads and individual migration acknowledgements do not hold
+the database for the duration of the migration.
+
+Diff bodies older than 30 days may expire once superseded. Current Change version
+attempts, running attempts and the latest diff for each work item and source are
+retained. Expired files keep their metadata and line counts, return an empty
+patch with `patch_expired: true`, and no longer read the object store. Deletion
+acknowledgements and the existing attachment orphan sweep clean up expired and
+unreferenced diff objects. SQL downgrade is refused because it cannot restore
+the external bodies.
+
 Upload with `POST /organizations/:org/api/v2/projects/:project/attachments`.
 Send one multipart `file` part, or send the file body with `Content-Type` and
 `X-Attachment-Name`. Browser mutations need the organization CSRF token in
