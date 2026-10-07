@@ -27,7 +27,7 @@ builds:
       - arm64
     hooks:
       post:
-        - cmd: '{{ if and (eq .Os "darwin") (not .IsSnapshot) }}quill sign-and-notarize "{{ .Path }}" --identity build.detent.detent --ad-hoc=false --wait -vv{{ end }}'
+        - cmd: '{{ if and (eq .Os "darwin") (not .IsSnapshot) }}quill sign-and-notarize "{{ .Path }}" --identity build.detent.detent --ad-hoc=false --wait=false -vv{{ end }}'
           output: true
           env:
             - QUILL_LOG_FILE={{ if and (eq .Os "darwin") (not .IsSnapshot) }}{{ .Env.RUNNER_TEMP }}/quill-{{ .Target }}.log{{ end }}
