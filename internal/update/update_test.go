@@ -529,16 +529,19 @@ func (*contextBlockingBody) Close() error {
 
 func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 	for _, test := range []struct {
-		name        string
-		current     string
-		follow      bool
-		brew        bool
-		explicit    bool
-		fromRelease bool
-		hubTarget   string
-		hubError    error
+		name            string
+		current         string
+		follow          bool
+		brew            bool
+		explicit        bool
+		fromRelease     bool
+		hubTarget       string
+		hubError        error
+		invalidSelector string
 	}{
 		{name: "selected release", current: "1.2.3"},
+		{name: "explicit release refuses wrong lock selector", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060", invalidSelector: "DETENT_INSTALL_LOCK"},
+		{name: "explicit release refuses wrong state selector", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060", invalidSelector: "DETENT_STATE_DIR"},
 		{name: "explicit release with operator Hub build", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060"},
 		{name: "explicit from-release with operator Hub build", current: "1.2.3", explicit: true, fromRelease: true, hubTarget: "operator-landed-a69c4b1dd060"},
 		{name: "explicit release ignores older Hub pin", current: "1.2.3", explicit: true, hubTarget: "1.2.2"},
@@ -574,6 +577,20 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			}
 			if err := os.WriteFile(legacyLock, []byte(legacyReceipt), 0o600); err != nil {
 				t.Fatal(err)
+			}
+
+			installEnv := map[string]string{"DETENT_INSTALL_LOCK": lockPath}
+			if test.invalidSelector != "" {
+				if err := os.WriteFile(lockPath, []byte(legacyReceipt), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				legacyReceipt = "binary=" + binary + "\n"
+				if err := os.WriteFile(legacyLock, []byte(legacyReceipt), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if test.invalidSelector == "DETENT_STATE_DIR" {
+					installEnv = map[string]string{"DETENT_STATE_DIR": filepath.Dir(lockPath)}
+				}
 			}
 
 			archiveName := "detent_1.2.4_linux_amd64.tar.gz"
@@ -643,7 +660,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					APIBase:    releaseURL,
 					HTTPClient: httpClient,
 				}),
-				Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+				Env: installEnv,
 				BinaryVerifier: func(context.Context, string) (string, error) {
 					return "version: v1.2.4\ncommit: " + testUpdatedCommit + "\n", nil
 				},
@@ -709,6 +726,15 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					t.Fatal(schedulerErr)
 				}
 				status, err = scheduler.ApplyRelease(t.Context(), test.fromRelease)
+				if test.invalidSelector != "" {
+					selectedRaw, selectedErr := os.ReadFile(lockPath)
+					defaultRaw, defaultErr := os.ReadFile(legacyLock)
+					binaryRaw, binaryErr := os.ReadFile(binary)
+					if !errors.Is(err, ErrRefused) || status.Action != ActionRefused || drains != 1 || restarts != 0 || releases != 1 || selectedErr != nil || defaultErr != nil || binaryErr != nil || string(selectedRaw) != "binary=/other/install/detent\nversion=1.0.0\n" || string(defaultRaw) != legacyReceipt || string(binaryRaw) != "old" {
+						t.Fatalf("wrong selector update = %+v, error = %v, drains/restarts/releases = %d/%d/%d, selected receipt = %q, default receipt = %q, binary = %q", status, err, drains, restarts, releases, selectedRaw, defaultRaw, binaryRaw)
+					}
+					return
+				}
 				if err == nil && (drains != 1 || restarts != 1 || releases != 0) {
 					t.Fatalf("drains = %d, restarts = %d, releases = %d", drains, restarts, releases)
 				}
@@ -1774,4 +1800,54 @@ func stagedWindowsUpdateFiles(t *testing.T, dir string) (string, string) {
 		t.Fatal("update script was not created")
 	}
 	return stagedBinary, script
+}
+
+func TestExplicitInstallerReceiptDoesNotFallBackToOtherOwners(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		goos      string
+		goInstall bool
+	}{
+		{name: "Windows installer directory", goos: "windows"},
+		{name: "Go install directory", goos: "linux", goInstall: true},
+		{name: "macOS custom release directory", goos: "darwin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			tmp := t.TempDir()
+			home := filepath.Join(tmp, "home")
+			binDir := filepath.Join(home, ".detent", "bin")
+			name := "detent"
+			if test.goInstall {
+				binDir = filepath.Join(tmp, "gobin")
+			}
+			if test.goos == "windows" {
+				name = "detent.exe"
+			}
+			binary := filepath.Join(binDir, name)
+			defaultLock := filepath.Join(home, ".detent", "install.lock")
+			if err := os.MkdirAll(filepath.Dir(defaultLock), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			defaultOwner := binary
+			if test.goInstall || test.goos == "windows" {
+				defaultOwner = "/other/detent"
+			}
+			if err := os.WriteFile(defaultLock, []byte("binary="+defaultOwner+"\nversion=1.2.3\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			wrongLock := filepath.Join(tmp, "other-install.lock")
+			if err := os.WriteFile(wrongLock, []byte("binary=/other/detent\nversion=1.0.0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			opts := DetectionOptions{CurrentVersion: "1.2.3", ExecutablePath: binary, HomeDir: home, GOOS: test.goos, Env: map[string]string{"DETENT_INSTALL_LOCK": wrongLock, "DETENT_STATE_DIR": filepath.Dir(defaultLock), "GOBIN": binDir}}
+			if got := DetectInstallSource(opts); got.Source != InstallSourceUnknown {
+				t.Fatalf("explicit wrong receipt owner = %+v", got)
+			}
+			if got := InstalledReleaseVersion(opts); got != "" {
+				t.Fatalf("version from another receipt = %q", got)
+			}
+		})
+	}
 }

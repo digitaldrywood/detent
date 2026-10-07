@@ -266,13 +266,14 @@ func DetectInstallSource(opts DetectionOptions) InstallInfo {
 			Binary:  opts.ExecutablePath,
 		}
 	}
-	if releaseLockMatches(executable, realExecutable, goos, opts) || windowsInstallerPathMatches(executable, goos, opts) {
+	explicitLock := explicitInstallLockPath(opts)
+	if releaseLockMatches(executable, realExecutable, goos, opts) || explicitLock == "" && windowsInstallerPathMatches(executable, goos, opts) {
 		return InstallInfo{
 			Source: InstallSourceRelease,
 			Binary: opts.ExecutablePath,
 		}
 	}
-	if isGoInstallPath(executable, goos, opts.HomeDir, opts.Env) || isGoInstallPath(realExecutable, goos, opts.HomeDir, opts.Env) {
+	if explicitLock == "" && (isGoInstallPath(executable, goos, opts.HomeDir, opts.Env) || isGoInstallPath(realExecutable, goos, opts.HomeDir, opts.Env)) {
 		return InstallInfo{
 			Source:  InstallSourceGoInstall,
 			Command: sourceUpdateCommand,
@@ -1822,14 +1823,21 @@ func releaseLockMatches(executable string, realExecutable string, goos string, o
 	return false
 }
 
-func installLockCandidates(goos string, opts DetectionOptions) []string {
-	var candidates []string
+func explicitInstallLockPath(opts DetectionOptions) string {
 	if lockPath := envValue(opts.Env, "DETENT_INSTALL_LOCK"); lockPath != "" {
-		candidates = append(candidates, lockPath)
+		return lockPath
 	}
 	if stateDir := envValue(opts.Env, "DETENT_STATE_DIR"); stateDir != "" {
-		candidates = append(candidates, filepath.Join(stateDir, "install.lock"))
+		return filepath.Join(stateDir, "install.lock")
 	}
+	return ""
+}
+
+func installLockCandidates(goos string, opts DetectionOptions) []string {
+	if lockPath := explicitInstallLockPath(opts); lockPath != "" {
+		return []string{lockPath}
+	}
+	var candidates []string
 	home := homeDir(opts.HomeDir, opts.Env)
 	if home != "" {
 		candidates = append(candidates, filepath.Join(home, ".detent", "install.lock"))
@@ -1930,11 +1938,8 @@ func snapshotInstallLock(goos string, opts DetectionOptions) (installLockSnapsho
 }
 
 func installLockPath(goos string, opts DetectionOptions) (string, bool) {
-	if lockPath := envValue(opts.Env, "DETENT_INSTALL_LOCK"); lockPath != "" {
+	if lockPath := explicitInstallLockPath(opts); lockPath != "" {
 		return lockPath, true
-	}
-	if stateDir := envValue(opts.Env, "DETENT_STATE_DIR"); stateDir != "" {
-		return filepath.Join(stateDir, "install.lock"), true
 	}
 	if goos == "windows" {
 		if localAppData := envValue(opts.Env, "LOCALAPPDATA"); localAppData != "" {

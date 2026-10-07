@@ -507,7 +507,10 @@ it does not report the latest published runner release.
 For a release installation in a custom binary or state directory, set
 `DETENT_INSTALL_LOCK` to that installation's existing `install.lock`, or set
 `DETENT_STATE_DIR` to the directory containing it. `DETENT_INSTALL_LOCK` takes
-precedence. Set the environment in the running service as well as in shells
+precedence. An explicit receipt selector is exclusive: its receipt must match
+the executable. A missing or mismatched receipt cannot fall back to another
+installation's receipt or inferred Windows/Go installer ownership. Set the
+environment in the running service as well as in shells
 used for offline updates; a coordinated CLI command cannot change its owner's
 environment. The receipt's `binary` must identify the installed executable.
 These variables select installer metadata, not enrollment or the project
