@@ -278,6 +278,11 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		combinedGateFailure bool
 		baseMovesDuringGate bool
 		advanceParallel     bool
+		ownedHeadRetry      bool
+		repeatRun           bool
+		retryStatus         int
+		retryMoved          bool
+		baseMovesDuringRead bool
 	}{
 		{name: "creates the exact source closing payload", method: "squash", sourceIssues: true},
 		{name: "reuse preserves human delivery attribution", method: "squash", pullState: "open", sourceIssues: true, existingBody: "Human attribution\n\nCloses example/repo#44", wantPatch: true},
@@ -296,9 +301,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "ignores an older merged PR", method: "merge", pullState: "older"},
 		{name: "publishes a reworked branch despite a stale list head", method: "squash", reworked: true, pullState: "stale"},
 		{name: "atomic merge rejects a genuinely moved head", method: "squash", reworked: true, pullState: "stale", moved: true, wantRefusal: LandRefusalHeadMoved},
-		{name: "atomic 409 rejects the head without English text", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, message: "La branche a été modifiée", wantRefusal: LandRefusalHeadMoved},
-		{name: "atomic 409 rejects the head without a body", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, emptyBody: true, wantRefusal: LandRefusalHeadMoved},
-		{name: "atomic 409 rejects the head without JSON", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, failureBody: "upstream refused the merge", wantRefusal: LandRefusalHeadMoved},
+		{name: "atomic 409 rejects the head without English text", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, message: "La branche a été modifiée", projection: "head", moved: true, wantRefusal: LandRefusalHeadMoved},
+		{name: "atomic 409 rejects the head without a body", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, emptyBody: true, projection: "head", moved: true, wantRefusal: LandRefusalHeadMoved},
+		{name: "atomic 409 rejects the head without JSON", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, failureBody: "upstream refused the merge", projection: "head", moved: true, wantRefusal: LandRefusalHeadMoved},
 		{name: "base race retains item continuation", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Base branch was modified. Review and try the merge again.", wantRefusal: LandRefusalBaseMoved},
 		{name: "atomic merge rejects a closed PR", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull Request is closed", wantRefusal: LandRefusalHeadMoved},
 		{name: "atomic merge rejects a PR that is not open", method: "squash", pullState: "open", failureMethod: "PUT", status: 405, message: "Pull Request is not open", wantRefusal: LandRefusalHeadMoved},
@@ -330,17 +335,26 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "base advancing at refusal is inspected afresh", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, advanceOnMerge: true, wantRefusal: LandRefusalConflict},
 		{name: "earlier head projection cannot prove a conflict", method: "squash", reworked: true, pullState: "stale", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "head", wantDeferred: true},
 		{name: "stale base projection uses current conflicting base", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "base", wantRefusal: LandRefusalConflict},
-		{name: "clean conflict retry preserves merge delivery", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retrySuccess: true, wantRetry: true},
-		{name: "clean conflict retry preserves linear rebase delivery", method: "rebase", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retrySuccess: true, wantRetry: true},
-		{name: "conflict rebases cleanly and lands once", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retrySuccess: true, wantRetry: true},
-		{name: "isolated external conflict rebases cleanly", method: "squash", external: true, isolated: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retrySuccess: true, wantRetry: true},
-		{name: "retry refuses a branch moved after source verification", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", retryHeadMoved: true},
+		{name: "clean conflict retry preserves merge delivery", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
+		{name: "clean conflict retry preserves linear rebase delivery", method: "rebase", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
+		{name: "conflict rebases cleanly and lands once", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
+		{name: "isolated external conflict rebases cleanly", method: "squash", external: true, isolated: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
+		{name: "retry refuses a branch moved after source verification", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retryHeadMoved: true},
 		{name: "rebased landing reruns the gate before retry", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retryGateFailure: true},
-		{name: "stale base projection with current clean base refreshes", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", wantDeferred: true, wantRetry: true},
+		{name: "repeated 405 after a proven base move waits without further rewrites", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", projection: "base", advanceParallel: true, wantDeferred: true, wantRetry: true},
 		{name: "moved published head cannot prove reviewed conflict", method: "squash", reworked: true, pullState: "stale", moved: true, failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, wantDeferred: true},
 		{name: "different PR branch cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "branch", wantDeferred: true},
 		{name: "missing base evidence cannot prove conflict", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", sourceConflict: true, projection: "missing", wantDeferred: true},
-		{name: "unmergeable pull request", method: "merge", failureMethod: "PUT", status: 405, message: "Pull Request is not mergeable", wantDeferred: true},
+		{name: "unmergeable pull request with unchanged advanced base waits", method: "squash", projection: "base", repeatRun: true, failureMethod: "PUT", status: 405, message: "Pull Request is not mergeable", wantDeferred: true},
+		{name: "409 retries the head published by an earlier landing run", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, message: "Head branch was modified. Review and try the merge again.", repeatRun: true, ownedHeadRetry: true, retrySuccess: true},
+		{name: "409 retries the head restored over a prior landing rewrite", method: "squash", reworked: true, pullState: "stale", failureMethod: "PUT", status: 409, message: "Head branch was modified. Review and try the merge again.", ownedHeadRetry: true, retrySuccess: true},
+		{name: "repeated owned head 409 waits after one retry", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, message: "Head branch was modified", ownedHeadRetry: true, wantDeferred: true},
+		{name: "409 rejects a moved remote despite matching PR projection", method: "squash", reworked: true, pullState: "stale", moved: true, failureMethod: "PUT", status: 409, message: "Head branch was modified", wantRefusal: LandRefusalHeadMoved},
+		{name: "stale 409 projection waits while the published head is unchanged", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, message: "Head branch was modified", projection: "head", wantDeferred: true},
+		{name: "409 after Detents refresh waits against its pushed head", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request is not mergeable", advanceParallel: true, wantRetry: true, retryStatus: 409, wantDeferred: true},
+		{name: "409 after refresh refuses another actors head", method: "squash", failureMethod: "PUT", status: 405, message: "Pull Request is not mergeable", advanceParallel: true, wantRetry: true, retryStatus: 409, retryMoved: true, wantRefusal: LandRefusalHeadMoved},
+		{name: "405 after owned head retry waits without rewriting", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, message: "Pull Request is not mergeable", ownedHeadRetry: true, retryStatus: 405, wantDeferred: true},
+		{name: "base race during 409 verification retains landing wait", method: "squash", pullState: "open", failureMethod: "PUT", status: 409, message: "Head branch was modified", baseMovesDuringRead: true},
 		{name: "read refusal is not a merge conflict", method: "merge", failureMethod: "GET", status: 405, message: "Pull Request is not mergeable"},
 		{name: "create refusal is not a head refusal", method: "merge", failureMethod: "POST", status: 405, message: "Pull Request is closed"},
 		{name: "read primary quota 403", method: "merge", failureMethod: "GET", status: 403, message: "API rate limit exceeded for user585100", rate: true},
@@ -371,7 +385,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			originalBase := fixture.remoteMain(t)
 			if test.sourceConflict && !test.advanceOnMerge {
 				fixture.advanceMain(t, "feature.txt", "base conflict\n")
-			} else if test.projection == "base" {
+			} else if test.projection == "base" && !test.advanceParallel {
 				fixture.advanceMain(t, "parallel.txt", "parallel landing\n")
 			}
 			base := fixture.remoteMain(t)
@@ -391,6 +405,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				previous = strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Previous attempt"))
 				runGit(t, fixture.source, "push", "origin", previous+":refs/heads/"+fixture.info.Branch)
 			}
+			runGit(t, fixture.remote, "config", "core.logAllRefUpdates", "true")
+			previousRun := test.repeatRun
 			var methods []string
 			mergeCalls := 0
 			createdPull := false
@@ -429,6 +445,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						var response string
 						if test.external {
 							pullHead, headRef, baseRef, headRepo, baseRepo := externalHead, fixture.info.Branch, "main", "example/repo", "example/repo"
+							if mergeCalls > 1 {
+								pullHead = strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+headRef))
+							}
 							switch test.pullError {
 							case "branch":
 								headRef = "another-branch"
@@ -444,7 +463,13 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						pull = strings.Replace(pull, `"number":7,`, fmt.Sprintf(`"number":7,"body":%q,`, test.existingBody), 1)
 						if !healthy && req.Method == test.failureMethod && (!test.retrySuccess || mergeCalls == 1) {
 							status = test.status
-							if test.advanceParallel {
+							if test.moved && test.status == http.StatusConflict || test.retryMoved && mergeCalls > 1 {
+								runGit(t, fixture.remote, "update-ref", "refs/heads/"+fixture.info.Branch, previous)
+							}
+							if mergeCalls > 1 && test.retryStatus != 0 {
+								status = test.retryStatus
+							}
+							if test.advanceParallel && mergeCalls == 1 {
 								fixture.advanceMain(t, "parallel.txt", "parallel landing\n")
 								base = fixture.remoteMain(t)
 							}
@@ -453,6 +478,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 								base = fixture.remoteMain(t)
 							}
 							response = fmt.Sprintf(`{"message":%q}`, test.message)
+							if previousRun && test.ownedHeadRetry {
+								status, response = http.StatusMethodNotAllowed, `{"message":"Pull Request is not mergeable"}`
+							}
 							if test.failureBody != "" || test.emptyBody {
 								response = test.failureBody
 							}
@@ -472,7 +500,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 								}
 								switch {
 								case req.URL.Path == "/repos/example/repo/pulls/7" && !test.external:
-									pullHead, pullBase, pullBranch := fixture.head, fixture.remoteMain(t), fixture.info.Branch
+									pullHead, pullBase, pullBranch := published, fixture.remoteMain(t), fixture.info.Branch
 									switch test.projection {
 									case "head":
 										pullHead = previous
@@ -494,7 +522,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 										status = test.refreshStatus
 										response = `{"message":"refresh refused"}`
 									}
-									if test.gitReadFailure != "" && !healthy {
+									if (test.gitReadFailure != "" || test.baseMovesDuringRead) && !healthy {
 										realGit, err := exec.LookPath("git")
 										if err != nil {
 											t.Fatal(err)
@@ -504,6 +532,12 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 											"if [ \"$1\" = \"-C\" ] && [ \"$3\" = \"fetch\" ]; then\n" +
 											"printf '%s\\n' " + shellQuote("fatal: unable to access github.com: "+test.gitReadFailure) + " >&2\nexit 128\nfi\n" +
 											"exec " + shellQuote(realGit) + " \"$@\"\n"
+										if test.baseMovesDuringRead {
+											script = "#!/bin/sh\n" +
+												"if [ \"$1\" = \"-C\" ] && [ \"$3\" = \"ls-remote\" ]; then\n" +
+												shellQuote(realGit) + " -C " + shellQuote(fixture.remote) + " update-ref refs/heads/main " + shellQuote(fixture.head) + "\nfi\n" +
+												"exec " + shellQuote(realGit) + " \"$@\"\n"
+										}
 										if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); err != nil {
 											t.Fatal(err)
 										}
@@ -603,6 +637,15 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					t.Fatalf("landing ownership = %#v", landingInfo)
 				}
 			}
+			if test.repeatRun {
+				result, err := fixture.backend.LandChangeViaGitHub(t.Context(), landingInfo, landingIssue, opts)
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || refusal.BaseSHA != "" || result.Rebased || mergeCalls != 1 {
+					t.Fatalf("prior landing did not wait without rewriting: result=%#v err=%v calls=%d", result, err, mergeCalls)
+				}
+				previousRun, methods, mergeCalls = false, nil, 0
+				opts.GitHubClient = newClient(false)
+			}
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), landingInfo, landingIssue, opts)
 			if test.baseMovesDuringGate {
 				var refusal *LandRefusal
@@ -624,6 +667,16 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					t.Fatalf("combined gate evidence = %#v, err=%v methods=%v", result, err, methods)
 				}
 				return
+			}
+			if test.ownedHeadRetry || test.repeatRun {
+				updates := strings.Fields(runGit(t, fixture.remote, "reflog", "show", "--format=%H", "refs/heads/"+fixture.info.Branch))
+				wantCalls := 1
+				if test.ownedHeadRetry {
+					wantCalls = 2
+				}
+				if len(updates) != 1 || updates[0] != fixture.head || result.Rebased || mergeCalls != wantCalls {
+					t.Fatalf("projection refusal rewrote the published head: updates=%v result=%#v calls=%d", updates, result, mergeCalls)
+				}
 			}
 			if test.wantRetry || test.retryGateFailure || test.retryHeadMoved {
 				wantCalls := 2
@@ -672,6 +725,13 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				}
 				return
 			}
+			if test.baseMovesDuringRead {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || refusal.BaseSHA != "" || result.Rebased || mergeCalls != 1 || fixture.remoteMain(t) != fixture.head {
+					t.Fatalf("base race became a head refusal: result=%#v err=%v calls=%d", result, err, mergeCalls)
+				}
+				return
+			}
 			if test.wantOutage {
 				availability, ok := forgeavailability.As(err)
 				var status *github.StatusError
@@ -691,10 +751,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if test.wantDeferred {
 				var status *github.StatusError
 				var refusal *LandRefusal
-				if errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &status) || status.StatusCode != 405 || !strings.Contains(status.Body, test.message) || !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || refusal.BaseSHA != "" || result.MergeSHA != "" || fixture.remoteMain(t) != base {
+				wantStatus := test.status
+				if test.retryStatus != 0 {
+					wantStatus = test.retryStatus
+				}
+				if errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &status) || status.StatusCode != wantStatus || !strings.Contains(status.Body, test.message) || !errors.As(err, &refusal) || refusal.Kind != LandRefusalBaseMoved || refusal.BaseSHA != "" || result.MergeSHA != "" || fixture.remoteMain(t) != base {
 					t.Fatalf("unproven conflict = %#v, %v; base = %s", result, err, fixture.remoteMain(t))
 				}
-				if !test.wantRetry && strings.Join(methods, ",") != "GET,PUT,GET" && strings.Join(methods, ",") != "GET,POST,PUT,GET" {
+				if !test.wantRetry && !test.ownedHeadRetry && strings.Join(methods, ",") != "GET,PUT,GET" && strings.Join(methods, ",") != "GET,POST,PUT,GET" {
 					t.Fatalf("conflict refresh sequence = %v", methods)
 				}
 				return
@@ -767,7 +831,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				t.Fatalf("successful gate lost receipt: %#v", result)
 			}
 			wantHead := fixture.head
-			if test.retrySuccess {
+			if test.retrySuccess && !test.ownedHeadRetry {
 				wantHead = strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
 				if wantHead == fixture.head {
 					t.Fatal("retry did not combine reviewed source with the current base")
