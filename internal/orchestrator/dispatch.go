@@ -282,6 +282,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
 	issues = o.localIntakeIssues(state, issues)
 	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
+	issues = o.filterIssueContracts(ctx, state, issues, now)
 	issues = o.filterImplementDependencyDeferrals(ctx, issues)
 	o.retainUnacknowledgedRecoveryParks(ctx, state, issues)
 	o.enforceLifetimeLimits(ctx, state, issues, now)
@@ -616,6 +617,15 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	}
 	if err := o.prepareDispatchProject(ctx); err != nil {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable, waitReason: err.Error()}
+	}
+	if o.issueContractApplies(issue) && strings.EqualFold(issue.State, firstNonBlank(o.cfg.AdmissionTargetState, "Todo")) {
+		allowed, err := o.enforceIssueContract(ctx, state, issue, issue.State, now)
+		if err != nil {
+			return dispatchIssueOutcome{reason: dispatchIssueFailureTrackerUnavailable, waitReason: err.Error()}
+		}
+		if !allowed {
+			return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: "issue contract requires human action"}
+		}
 	}
 	if reason := connector.NonExecutableReason(issue); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: reason}

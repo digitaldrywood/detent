@@ -119,7 +119,16 @@ func (c *NativeConnector) FetchIssueStatesByIDs(ctx context.Context, ids []strin
 
 func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.NativeIssue) (connector.Issue, error) {
 	issue := issueFromNative(native)
-	if strings.EqualFold(native.State, "Blocked") {
+	if native.IssueContract != nil && native.IssueContract.ReturnState != "" {
+		status := workpad.StatusBlocked
+		if native.IssueContract.HumanAction == "" {
+			status = workpad.StatusInProgress
+		}
+		issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: status, HumanAction: native.IssueContract.HumanAction, RecordedAt: cloneTime(&native.IssueContract.RecordedAt)}
+		issue.BlockerReason = workpad.Reason(issue.WorkpadSignal)
+		issue.Metadata["hub_disposition_return_state"] = native.IssueContract.ReturnState
+	}
+	if strings.EqualFold(native.State, "Blocked") && (native.IssueContract == nil || native.IssueContract.ReturnState == "") {
 		attempts, history, err := c.recordedBlockerContext(ctx, native.WorkItemID)
 		if err != nil {
 			return connector.Issue{}, err
@@ -588,6 +597,7 @@ func nativeIssueIdentifier(native tracker.NativeIssue) string {
 
 func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue := connector.NewIssue()
+	issue.IssueContract = native.IssueContract
 	issue.ID = string(native.WorkItemID)
 	issue.Identifier = nativeIssueIdentifier(native)
 	issue.Number = native.Number

@@ -274,6 +274,10 @@ type HumanQuestion struct {
 	AskedAt           sql.NullString `json:"asked_at"`
 }
 
+type IssueContractRollout struct {
+	ActivatedAt string `json:"activated_at"`
+}
+
 type IssueParkAcknowledgement struct {
 	ProjectID      string         `json:"project_id"`
 	IssueKey       string         `json:"issue_key"`

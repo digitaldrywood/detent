@@ -7,6 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -49,6 +50,7 @@ type LaneSignalStatus struct {
 }
 
 type Issue struct {
+	IssueContract *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
 	// CleanupDeliveredHeadSHA is fresh delivery evidence for one cleanup call, never tracker state.
 	CleanupDeliveredHeadSHA string `json:"-" yaml:"-"`
 

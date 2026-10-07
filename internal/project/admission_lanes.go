@@ -35,3 +35,14 @@ func admissionIntakeEnabled(owner func() *orchestrator.Orchestrator) func() bool
 		return orch != nil && orch.LocalIntakeEnabled()
 	}
 }
+
+func admissionContractCheck(owner func() *orchestrator.Orchestrator) func(context.Context, string, string) (bool, error) {
+	return func(ctx context.Context, issueID, target string) (bool, error) {
+		orch := owner()
+		if orch == nil {
+			return false, errors.New("admission orchestrator is unavailable")
+		}
+		result, err := orch.ReconcileOperatorMove(ctx, orchestrator.OperatorMoveRequest{IssueID: issueID, ToState: target, CheckIssueContract: true})
+		return result.ContractSatisfied, err
+	}
+}

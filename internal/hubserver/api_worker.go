@@ -450,6 +450,15 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 			}
 			continue
 		}
+		if query.NativeScope != nil {
+			allowed, err := nativeIssueContractClaimable(ctx, tx, *query.NativeScope, id)
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			if !allowed {
+				continue
+			}
+		}
 		ready, evaluated, err := nativeLandingCandidateReady(ctx, tx, query.NativeScope, id, request.MachineID, now, true)
 		if err != nil {
 			return tracker.Lease{}, err

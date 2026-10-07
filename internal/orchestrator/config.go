@@ -23,7 +23,12 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		admissionTargetState = cfg.BacklogAdmission.TargetState
 	}
 
+	contract := workflowconfig.DefaultIssueContract()
+	if resolved, err := workflowconfig.ResolvePolicyIssueContract(cfg.Policy); err == nil {
+		contract = resolved
+	}
 	return Config{
+		IssueContract:              &contract,
 		Policy:                     cfg.Policy,
 		PollInterval:               durationFromMillis(cfg.Polling.IntervalMS),
 		RefreshFailureThreshold:    cfg.Polling.RefreshFailureThreshold,

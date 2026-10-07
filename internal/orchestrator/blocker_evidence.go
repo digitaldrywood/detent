@@ -167,6 +167,13 @@ func clearedHumanActionEvidence(issue connector.Issue, parkedAt, now time.Time) 
 }
 
 func clearedHumanActionRecordedAt(issue connector.Issue, parkedAt time.Time, preserveCompleted bool) *time.Time {
+	if issue.Metadata["hub_profile"] == "native" && issue.IssueContract != nil && issue.IssueContract.ReturnState != "" && issue.IssueContract.HumanAction == "" && issue.WorkpadSignal != nil && issue.WorkpadSignal.Status == workpad.StatusInProgress {
+		at := issue.IssueContract.RecordedAt
+		if at.After(parkedAt) {
+			return &at
+		}
+		return nil
+	}
 	comments := issue.Comments
 	if !preserveCompleted {
 		index := currentWorkpadCommentIndex(comments)

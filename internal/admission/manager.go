@@ -107,6 +107,8 @@ type IssueStore interface {
 }
 
 type Settings struct {
+	IssueContract       config.IssueContract
+	ContractCheck       func(context.Context, string, string) (bool, error)
 	IntakeEnabled       func() bool
 	LaneWriter          func(context.Context, string, string) error
 	DependencyReadiness string
@@ -842,7 +844,7 @@ func (m *Manager) reconcileOpenProposals(
 			}
 			commentsByIssue[proposal.IssueID] = comments
 		}
-		if classification, declined := classifyNonDeliverable(issue); declined {
+		if classification, declined := classifyNonDeliverable(issue, settings.IssueContract); declined {
 			decline, created, err := m.createAdmissionDecline(ctx, settings, issue, classification, at)
 			if err != nil {
 				return commentsRemaining, autoAdmitsRemaining, err
@@ -1104,6 +1106,16 @@ func (m *Manager) unproposedCandidates(
 	processed := 0
 	truncated := 0
 	for _, candidate := range candidates {
+		if settings.ContractCheck != nil && !strings.Contains(strings.ToLower(candidate.Description), admissionOptOutMarker) {
+			ok, err := settings.ContractCheck(ctx, candidate.ID, settings.Config.TargetState)
+			if err != nil {
+				return nil, commentsRemaining, truncated, err
+			}
+			if !ok {
+				skipped["human_action"]++
+				continue
+			}
+		}
 		if settings.dependencies[candidate.ID] == nil && len(admissionDependencyReferences(candidate)) > 0 {
 			settings.dependencies[candidate.ID] = resolveAdmissionDependencies(ctx, settings, candidate, at)
 		}
@@ -1151,7 +1163,7 @@ func (m *Manager) unproposedCandidates(
 		var classification admissionDeclineClassification
 		classified := false
 		if !found {
-			classification, classified = classifyNonDeliverable(candidate)
+			classification, classified = classifyNonDeliverable(candidate, settings.IssueContract)
 		}
 		if !found && !classified {
 			if processed >= candidateLimit {
@@ -1275,7 +1287,7 @@ func (m *Manager) ensureAdmissionDeclineComment(
 	return true, nil
 }
 
-func classifyNonDeliverable(issue connector.Issue) (admissionDeclineClassification, bool) {
+func classifyNonDeliverable(issue connector.Issue, contracts ...config.IssueContract) (admissionDeclineClassification, bool) {
 	body := strings.TrimSpace(issue.Description)
 	if strings.Contains(strings.ToLower(body), admissionOptOutMarker) {
 		return admissionDeclineClassification{
@@ -1283,7 +1295,11 @@ func classifyNonDeliverable(issue connector.Issue) (admissionDeclineClassificati
 			detail: "the issue contains the " + admissionOptOutMarker + " operator opt-out marker",
 		}, true
 	}
-	if hasCompletionContract(body) {
+	contract := config.DefaultIssueContract()
+	if len(contracts) > 0 && len(contracts[0].Sections) > 0 {
+		contract = contracts[0]
+	}
+	if contract.Evaluate(issue).Satisfied() {
 		return admissionDeclineClassification{}, false
 	}
 	if kind := selfIdentifiedArtifact(issue.Title, body); kind != "" {
@@ -1299,22 +1315,6 @@ func classifyNonDeliverable(issue connector.Issue) (admissionDeclineClassificati
 		}, true
 	}
 	return admissionDeclineClassification{}, false
-}
-
-func hasCompletionContract(body string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		heading := strings.TrimSpace(strings.TrimLeft(line, "#"))
-		heading = strings.TrimSuffix(strings.ToLower(heading), ":")
-		switch heading {
-		case "acceptance criteria", "completion criteria", "definition of done", "deliverable", "expected behavior", "what good looks like":
-			return true
-		}
-		if key, value, found := strings.Cut(line, ":"); found && strings.EqualFold(strings.TrimSpace(key), "deliverable") && strings.TrimSpace(value) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func selfIdentifiedArtifact(title string, body string) string {
@@ -1476,7 +1476,7 @@ func (m *Manager) executeEvaluations(
 		settings.dependencies[issueID] = dependencies
 		evaluation = admissionDependencyFindings(evaluation, dependencies)
 		var classification *admissionDeclineClassification
-		if declineClassification, declined := classifyNonDeliverable(current); declined {
+		if declineClassification, declined := classifyNonDeliverable(current, settings.IssueContract); declined {
 			classification = &declineClassification
 		} else if evaluation.Disposition == admissionDispositionDeclined {
 			failed := evaluation.Findings[0]
@@ -1722,6 +1722,15 @@ func (m *Manager) admitProposal(
 		return nil
 	}
 	issue := current
+	if settings.ContractCheck != nil {
+		ok, err := settings.ContractCheck(ctx, current.ID, proposal.TargetState)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+	}
 	if settings.IntakeEnabled != nil && !settings.IntakeEnabled() {
 		return nil
 	}
@@ -2708,6 +2717,7 @@ func normalizeSettings(settings Settings) Settings {
 }
 
 func cloneSettings(settings Settings) Settings {
+	settings.IssueContract.Sections = append([]string(nil), settings.IssueContract.Sections...)
 	settings.Config.Sources.States = append([]string(nil), settings.Config.Sources.States...)
 	settings.Config.Sources.Labels = append([]string(nil), settings.Config.Sources.Labels...)
 	settings.Config.ExcludeLabels = append([]string(nil), settings.Config.ExcludeLabels...)

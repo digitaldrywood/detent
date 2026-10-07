@@ -310,7 +310,19 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	now time.Time,
 	cohort ...*blockedRecoveryDependencyEvidence,
 ) bool {
-	if normalizeState(issue.State) != normalizeState(blockedStatusState) {
+	if normalizeState(issue.State) != normalizeState(blockedStatusState) && (issue.IssueContract == nil || issue.IssueContract.ReturnState == "" || normalizeState(issue.State) != normalizeState(o.cfg.StopRunTargetState)) {
+		return false
+	}
+	if issue.IssueContract != nil && issue.IssueContract.ReturnState != "" && o.cfg.IssueContract != nil {
+		if issue.IssueContract.HumanAction != "" || !o.cfg.IssueContract.Evaluate(issue).Satisfied() {
+			return false
+		}
+		parkedAt, found := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
+		if found {
+			if evidence := clearedHumanActionEvidence(issue, parkedAt, now); evidence != nil {
+				return o.applyRecordedBlockerRecovery(ctx, state, issue, nil, []telemetry.BlockerEvidence{*evidence}, now)
+			}
+		}
 		return false
 	}
 	dependencyCfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
@@ -1473,8 +1485,12 @@ func (o *Orchestrator) currentBlockedRecoveryParkedAt(
 	}
 	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
 	parkedAt := workflowLaneTransitionAt(entry.Event)
+	target := blockedStatusState
+	if issue.IssueContract != nil && issue.IssueContract.ReturnState != "" {
+		target = firstNonBlank(o.cfg.StopRunTargetState, blockedStatusState)
+	}
 	if ok &&
-		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
+		normalizeState(entry.Event.PhaseName) == normalizeState(target) &&
 		workflowLaneEntryMatchesCurrent(issue, entry.Event) &&
 		!parkedAt.IsZero() {
 		return parkedAt, true

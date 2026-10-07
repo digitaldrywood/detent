@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -69,9 +70,10 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
-	OmittedFields      []string           `json:"omitted_fields,omitempty"`
-	LinkedSource       *LinkedIssueSource `json:"linked_source,omitempty"`
-	IgnoreDependencies bool               `json:"ignore_dependencies,omitempty"`
+	IssueContract      *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
+	OmittedFields      []string             `json:"omitted_fields,omitempty"`
+	LinkedSource       *LinkedIssueSource   `json:"linked_source,omitempty"`
+	IgnoreDependencies bool                 `json:"ignore_dependencies,omitempty"`
 	NativeReference
 	WebURL             string              `json:"web_url"`
 	PublicationReused  bool                `json:"publication_reused,omitempty"`
