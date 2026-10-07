@@ -350,6 +350,12 @@ func TestNativeSharedPolicy(t *testing.T) {
 		match  bool
 	}{
 		{"other host", func(w *Workflow) { *w = air }, true},
+		{"machine instructions", func(w *Workflow) {
+			sources := *w.DefinitionSources
+			sources.HasLocalWorkflow = true
+			sources.LocalWorkflow = []byte("Machine bootstrap instructions.\n")
+			w.DefinitionSources = &sources
+		}, false},
 		{"runtime credential", func(w *Workflow) {
 			w.Config.Tracker.APIKey = "runtime-token"
 			w.Config.Worker.GitHubToken = "worker-token"
@@ -381,6 +387,12 @@ func TestNativeSharedPolicy(t *testing.T) {
 			resolved, err := ApplyNativePolicy(local, approved)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tt.name == "machine instructions" {
+				reapplied, err := ApplyNativePolicy(resolved, approved)
+				if err != nil || reapplied.Prompt != resolved.Prompt || !strings.HasSuffix(strings.TrimSpace(reapplied.Prompt), "Machine bootstrap instructions.") {
+					t.Fatalf("approved configuration discarded or duplicated machine instructions: %q, %v", reapplied.Prompt, err)
+				}
 			}
 			resolved.Config = resolved.Config.WithWorkerDefaults(WorkerDefaults{AllowLocalBinding: new(true)})
 			if resolved.Config.KanbanTransitionAllowed("Todo", "Done") || !resolved.Config.KanbanTransitionAllowed("Todo", "In Progress") {

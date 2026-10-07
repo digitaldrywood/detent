@@ -105,7 +105,7 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 			}
 			workflow, loadErr := p.loadManagedWorkflow(ctx, request.SourceRevision)
 			if loadErr != nil {
-				view.Constraint = "The configured definition cannot supply the approved policy revision. Keep detent.local.yaml and WORKFLOW.local.md, place the approved shared files in the configured workflow source, then preview selected_policy with local_project_configuration. For workflow_ref, commit those shared files to the configured ref; source_revision is an authored digest, not a Git ref."
+				view.Constraint = loadErr.Error()
 				return false
 			}
 			candidate := workflow
@@ -178,7 +178,11 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 		view.Constraint = "The selected local configuration could not be validated or written."
 		return view
 	}
-	if view.Applied && resume != nil {
+	if resume != nil {
+		applied, constraint := view.Applied, view.Constraint
+		if applied && request.AllowLocalBinding == nil {
+			draining = false
+		}
 		if err := o.manager.unpauseLocked(ctx, resume.ID(), draining); err != nil {
 			view.Applied = false
 			view.Constraint = "The selected policy was not applied; verify approval and supported workflow through the existing policy owner."
@@ -188,7 +192,10 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 		readErr := o.mutate(ctx, func(cfg *globalconfig.Config, revision string) bool {
 			view = o.observe(ctx, *cfg, revision, request.ProjectID)
 			view.Saved = savedBinding
-			view.Applied = view.Constraint == "" && view.EffectivePolicy != nil && view.EffectivePolicy.ID == request.PolicyID && view.EffectivePolicy.SourceRevision == request.SourceRevision
+			view.Applied = applied && view.Constraint == "" && view.EffectivePolicy != nil && view.EffectivePolicy.ID == request.PolicyID && view.EffectivePolicy.SourceRevision == request.SourceRevision
+			if constraint != "" {
+				view.Constraint = constraint
+			}
 			return false
 		})
 		if readErr != nil {
@@ -270,6 +277,16 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	if loaded, err := loadWorkflowForScheduling(ctx, current, p.policyScheduling); err == nil {
 		selected := loaded
 		selected.Config = WithMappedNativeTracker(selected.Config, p.policyScheduling, p.ID())
+		if source, ok := p.policyScheduling.(interface {
+			ResolveProjectWorkflow(context.Context, string, workflowconfig.Workflow, *policy.RepositorySource) (workflowconfig.Workflow, error)
+		}); ok && selected.Config.Tracker.Kind == workflowconfig.TrackerHubNative && selected.Definition.Layout != workflowconfig.ProjectDefinitionCloud {
+			resolved, err := source.ResolveProjectWorkflow(ctx, current.ID, selected, nil)
+			if err != nil {
+				view.Constraint = "The approved shared project configuration cannot be loaded; retry through the existing policy owner."
+				return view
+			}
+			selected = resolved
+		}
 		if descriptor, err := ResolvePolicy(current, selected); err == nil {
 			view.SelectedPolicy = &descriptor
 		}
@@ -322,7 +339,18 @@ func (p *Project) loadManagedWorkflow(ctx context.Context, revision string) (wor
 	cfg := p.Config()
 	workflow, err := loadWorkflowForScheduling(ctx, cfg, p.policyScheduling)
 	if err != nil {
-		return workflowconfig.Workflow{}, err
+		p.logger.WarnContext(ctx, "load managed project definition", "project_id", cfg.ID, "error", err)
+		return workflowconfig.Workflow{}, errors.New("the configured project definition cannot be read or validated; repair it through its configuration owner before retrying")
+	}
+	workflow.Config = WithMappedNativeTracker(workflow.Config, p.policyScheduling, p.ID())
+	if source, ok := p.policyScheduling.(interface {
+		ResolveProjectWorkflow(context.Context, string, workflowconfig.Workflow, *policy.RepositorySource) (workflowconfig.Workflow, error)
+	}); ok && workflow.Config.Tracker.Kind == workflowconfig.TrackerHubNative && workflow.Definition.Layout != workflowconfig.ProjectDefinitionCloud {
+		workflow, err = source.ResolveProjectWorkflow(ctx, cfg.ID, workflow, nil)
+		if err != nil {
+			p.logger.WarnContext(ctx, "load managed approved policy", "project_id", cfg.ID, "error", err)
+			return workflowconfig.Workflow{}, errors.New("the approved shared project configuration cannot be loaded; retry through the existing policy owner")
+		}
 	}
 	candidate := workflow
 	candidate.Config = WithMappedNativeTracker(candidate.Config, p.policyScheduling, p.ID())
@@ -331,8 +359,9 @@ func (p *Project) loadManagedWorkflow(ctx context.Context, revision string) (wor
 		return workflowconfig.Workflow{}, err
 	}
 	if revision != "" && descriptor.SourceRevision != revision {
-		return workflowconfig.Workflow{}, errors.New("configured workflow revision changed")
+		return workflowconfig.Workflow{}, errors.New("the selected source policy revision changed; read the approved policy and configuration before retrying")
 	}
+	workflow.Config.Policy = descriptor
 	return workflow, nil
 }
 

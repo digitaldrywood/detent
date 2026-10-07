@@ -29,7 +29,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, scenario := range []string{"detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
+	for _, scenario := range []string{"native policy git drained", "native policy plain drained", "native policy retry drained", "detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := initWorkflowSourceRepo(t)
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
@@ -38,6 +38,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			binding := strings.HasPrefix(scenario, "binding")
 			localPolicy := strings.HasPrefix(scenario, "local policy")
 			policyOverlay := localPolicy || scenario == "local overlay"
+			sharedPolicy := strings.HasPrefix(scenario, "native policy")
 			otherRoot := root
 			if binding || policyOverlay {
 				if err := os.WriteFile(workflowPath, []byte("Private workflow instructions\n"), 0600); err != nil {
@@ -51,6 +52,11 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(root, "detent.local.yaml"), []byte("schema: 1\nworker:\n  ssh_hosts: [local]\n  github_token: private-worker-credential\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
+				otherRoot = initWorkflowSourceRepo(t)
+				writeWorkflowSourceFile(t, filepath.Join(otherRoot, "WORKFLOW.md"), "unrelated")
+				commitWorkflowSourceRepo(t, otherRoot, "unrelated")
+			}
+			if sharedPolicy {
 				otherRoot = initWorkflowSourceRepo(t)
 				writeWorkflowSourceFile(t, filepath.Join(otherRoot, "WORKFLOW.md"), "unrelated")
 				commitWorkflowSourceRepo(t, otherRoot, "unrelated")
@@ -70,7 +76,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			if strings.HasSuffix(scenario, "drained") || strings.HasSuffix(scenario, "running") {
 				cfg.Projects[0].Paused = false
 			}
-			if scenario == "binding local source" || localPolicy {
+			if scenario == "binding local source" || localPolicy || scenario == "native policy plain drained" {
 				cfg.Projects[0].WorkflowRef = ""
 				cfg.Projects[0].Workflow = workflowPath
 			}
@@ -111,7 +117,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			native := strings.HasPrefix(scenario, "binding native") || strings.HasPrefix(scenario, "local policy native")
+			native := strings.HasPrefix(scenario, "binding native") || strings.HasPrefix(scenario, "local policy native") || sharedPolicy
 			if native {
 				if err := os.WriteFile(workflowPath, []byte("Shared native instructions\n"), 0600); err != nil {
 					t.Fatal(err)
@@ -123,6 +129,31 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				}
 				runWorkflowSourceGit(t, root, "add", "detent.yaml")
 				commitWorkflowSourceRepo(t, root, "native source")
+			}
+			if sharedPolicy {
+				local := "schema: 1\nworkspace:\n  root: " + root + "/workspaces\nhooks:\n  before_run: host-bootstrap\nagent:\n  max_concurrent_agents: 3\n"
+				if err := os.WriteFile(filepath.Join(root, "detent.local.yaml"), []byte(local), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "WORKFLOW.local.md"), []byte("Machine bootstrap instructions.\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if scenario == "native policy plain drained" {
+					definitionRoot := t.TempDir()
+					for _, name := range []string{"WORKFLOW.md", "detent.yaml", "WORKFLOW.local.md", "detent.local.yaml"} {
+						raw, err := os.ReadFile(filepath.Join(root, name))
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(filepath.Join(definitionRoot, name), raw, 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					cfg.Projects[0].Workflow = filepath.Join(definitionRoot, "WORKFLOW.md")
+					if err := globalconfig.Write(cfg.Path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			scheduling := &managedConfigScheduling{policyTestScheduling: policyTestScheduling{approved: map[string]policy.Descriptor{}}, native: native}
 			worker := &managedConfigRunner{started: make(chan orchestrator.RunRequest, 1)}
@@ -249,6 +280,60 @@ func TestManagedProjectConfiguration(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+			}
+			if sharedPolicy {
+				selected, _ := manager.Registry().Get("selected")
+				previous := selected.Workflow()
+				otherBefore := owner.Read(t.Context(), "unrelated")
+				drained := owner.Apply(t.Context(), "drain_local_project", request)
+				if !drained.Applied || !drained.Draining || drained.UnsettledAttempts != 0 {
+					t.Fatalf("drain=%+v", drained)
+				}
+				approvedWorkflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
+					Workflow:  []byte("Approved shared instructions.\n"),
+					Config:    []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example/project\ngate:\n  run: make check-land\n  validator:\n    enabled: true\nreview:\n  human: true\n"),
+					HasConfig: true, ConfigPath: "detent.yaml",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				approved, err := workflowconfig.ResolvePolicy(approvedWorkflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduling.approved["selected"] = approved
+				scheduling.resolveApproved = true
+				fresh := owner.Read(t.Context(), "selected")
+				request.ExpectedConfigRevision, request.PolicyID, request.SourceRevision = fresh.ConfigRevision, approved.ID, approved.SourceRevision
+				if scenario == "native policy retry drained" {
+					scheduling.failApplication = 2
+					failed := owner.Apply(t.Context(), "apply_local_project_policy", request)
+					if failed.Applied || failed.Constraint == "" || failed.Paused || !failed.Draining || !selected.Running() {
+						t.Fatalf("failed apply lost recoverable drain: %+v", failed)
+					}
+					scheduling.failApplication = 0
+					fresh = owner.Read(t.Context(), "selected")
+					request.ExpectedConfigRevision, request.ExpectedPolicyID = fresh.ConfigRevision, fresh.EffectivePolicy.ID
+				}
+				result := owner.Apply(t.Context(), "apply_local_project_policy", request)
+				if !result.Applied || result.Paused || result.Draining || !selected.Running() || result.SelectedPolicy.ID != approved.ID || result.EffectivePolicy.ID != approved.ID || result.EffectivePolicy.SourceRevision != approved.SourceRevision {
+					t.Fatalf("shared apply=%+v", result)
+				}
+				actual := selected.Workflow()
+				if actual.Config.Workspace.Root != previous.Config.Workspace.Root || actual.Config.Hooks != previous.Config.Hooks || actual.Config.Agent.MaxConcurrentAgents != previous.Config.Agent.MaxConcurrentAgents || !strings.HasSuffix(strings.TrimSpace(actual.Prompt), "Machine bootstrap instructions.") || !actual.Config.Gate.Validator.Enabled || !actual.Config.Review.Human || actual.Config.Gate.Run != "make check-land" {
+					t.Fatal("application discarded host settings or approved protections")
+				}
+				if err := selected.reconcileWorkflow(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if selected.Workflow().Config.Policy.ID != approved.ID {
+					t.Fatal("reload discarded approved configuration")
+				}
+				otherAfter := owner.Read(t.Context(), "unrelated")
+				if otherAfter.EffectivePolicy.ID != otherBefore.EffectivePolicy.ID || otherAfter.Paused != otherBefore.Paused || otherAfter.Draining != otherBefore.Draining {
+					t.Fatal("application changed unrelated project")
+				}
+				return
 			}
 			var originalLocal []byte
 			if binding {
@@ -460,14 +545,33 @@ func TestManagedProjectConfiguration(t *testing.T) {
 
 type managedConfigScheduling struct {
 	policyTestScheduling
-	mu             sync.Mutex
-	native         bool
-	dispatchPolicy string
-	dispatched     bool
+	mu              sync.Mutex
+	native          bool
+	dispatchPolicy  string
+	dispatched      bool
+	resolveApproved bool
+	failApplication int
 }
 
 func (s *managedConfigScheduling) ConnectorForProject(id string) (connector.Connector, bool) {
 	return memory.New(memory.Config{}), s.native && id == "selected"
+}
+
+func (s *managedConfigScheduling) ResolveProjectWorkflow(_ context.Context, id string, workflow workflowconfig.Workflow, _ *policy.RepositorySource) (workflowconfig.Workflow, error) {
+	if !s.resolveApproved || id != "selected" {
+		return workflow, nil
+	}
+	return workflowconfig.ApplyNativePolicy(workflow, s.approved[id])
+}
+
+func (s *managedConfigScheduling) CheckProjectPolicy(ctx context.Context, id, repository string, descriptor policy.Descriptor) error {
+	if s.failApplication > 0 {
+		s.failApplication--
+		if s.failApplication == 0 {
+			return errors.New("approved policy temporarily unavailable")
+		}
+	}
+	return s.policyTestScheduling.CheckProjectPolicy(ctx, id, repository, descriptor)
 }
 
 func (s *managedConfigScheduling) FetchCandidateIssues(_ context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {

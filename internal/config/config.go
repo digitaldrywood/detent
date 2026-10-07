@@ -136,6 +136,7 @@ const (
 )
 
 type Workflow struct {
+	machinePrompt     string
 	Authored          *policy.Authored
 	DefinitionSources *ProjectDefinitionSources
 	Config            Config
