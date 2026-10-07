@@ -529,12 +529,20 @@ func (*contextBlockingBody) Close() error {
 
 func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		current string
-		follow  bool
-		brew    bool
+		name        string
+		current     string
+		follow      bool
+		brew        bool
+		explicit    bool
+		fromRelease bool
+		hubTarget   string
+		hubError    error
 	}{
 		{name: "selected release", current: "1.2.3"},
+		{name: "explicit release with operator Hub build", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060"},
+		{name: "explicit from-release with operator Hub build", current: "1.2.3", explicit: true, fromRelease: true, hubTarget: "operator-landed-a69c4b1dd060"},
+		{name: "explicit release ignores older Hub pin", current: "1.2.3", explicit: true, hubTarget: "1.2.2"},
+		{name: "explicit release when Hub is unavailable", current: "1.2.3", explicit: true, hubError: errors.New("Hub unavailable")},
 		{name: "follow Hub below latest", current: "1.2.3", follow: true},
 		{name: "runner ahead of Hub", current: "1.2.5", follow: true},
 		{name: "installed development build", current: "operator-landed-abcdef123456", follow: true},
@@ -556,6 +564,16 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			}
 			if err := os.WriteFile(lockPath, []byte("binary="+binary+"\n"), 0o600); err != nil {
 				t.Fatalf("WriteFile(lock) error = %v", err)
+			}
+
+			legacyHome := filepath.Join(tmp, "home")
+			legacyLock := filepath.Join(legacyHome, ".detent", "install.lock")
+			legacyReceipt := "binary=/other/install/detent\nversion=1.0.0\n"
+			if err := os.MkdirAll(filepath.Dir(legacyLock), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(legacyLock, []byte(legacyReceipt), 0o600); err != nil {
+				t.Fatal(err)
 			}
 
 			archiveName := "detent_1.2.4_linux_amd64.tar.gz"
@@ -616,6 +634,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 
 			service := NewService(Config{
 				CurrentVersion: test.current,
+				HomeDir:        legacyHome,
 				CurrentCommit:  testPreviousCommit,
 				ExecutablePath: binary,
 				GOOS:           "linux",
@@ -643,14 +662,14 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			if !test.follow {
 				service.cfg.TargetVersion = func(context.Context) (string, error) { return "v1.2.4", nil }
 			}
-			if !test.follow {
+			if !test.follow && !test.explicit {
 				stale, staleErr := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.5"})
 				if !errors.Is(staleErr, ErrRefused) || stale.Action != ActionRefused {
 					t.Fatalf("changed selected release = %+v, %v", stale, staleErr)
 				}
 			}
 			var preflightPath string
-			status, err := service.Apply(context.Background(), ApplyOptions{
+			applyOptions := ApplyOptions{
 				AssumeYes:         true,
 				FollowHub:         test.follow,
 				FromRelease:       test.follow,
@@ -667,7 +686,35 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					}
 					return nil
 				},
-			})
+			}
+			var status Status
+			if test.explicit {
+				service.cfg.TargetVersion = func(context.Context) (string, error) { return test.hubTarget, test.hubError }
+				drains, restarts, releases := 0, 0, 0
+				scheduler, schedulerErr := NewScheduler(SchedulerConfig{
+					CheckInterval: time.Hour, Updater: service, ApplyOptions: applyOptions,
+					ReserveDrain: func(context.Context) (func(), error) {
+						drains++
+						return func() { releases++ }, nil
+					},
+					RequestRestart: func(path string) bool {
+						if path != binary || releases != 0 {
+							t.Errorf("restart path = %q, released drains = %d", path, releases)
+						}
+						restarts++
+						return true
+					},
+				})
+				if schedulerErr != nil {
+					t.Fatal(schedulerErr)
+				}
+				status, err = scheduler.ApplyRelease(t.Context(), test.fromRelease)
+				if err == nil && (drains != 1 || restarts != 1 || releases != 0) {
+					t.Fatalf("drains = %d, restarts = %d, releases = %d", drains, restarts, releases)
+				}
+			} else {
+				status, err = service.Apply(t.Context(), applyOptions)
+			}
 			if err != nil {
 				t.Fatalf("Apply() error = %v", err)
 			}
@@ -715,6 +762,10 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				Env:            map[string]string{"DETENT_INSTALL_LOCK": lockPath},
 			}); got != "1.2.4" {
 				t.Fatalf("InstalledReleaseVersion() = %q, want 1.2.4", got)
+			}
+			legacyRaw, legacyErr := os.ReadFile(legacyLock)
+			if legacyErr != nil || string(legacyRaw) != legacyReceipt {
+				t.Fatalf("other installation receipt = %q, error = %v", legacyRaw, legacyErr)
 			}
 			metadata, ok := readInstallLock(lockPath)
 			if !ok || metadata.commit != testUpdatedCommit {

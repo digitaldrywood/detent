@@ -80,6 +80,9 @@ func (s *Server) applyOperatorUpdate(ctx context.Context, release, fromRelease b
 			return detentupdate.Status{}, &controlProblem{http.StatusConflict, "update_not_pending", "No Detent update is pending"}
 		}
 		s.logger.Error("apply pending Detent update failed", "error", mutation.ErrorText(ctx, err))
+		if errors.Is(err, detentupdate.ErrRefused) && status.InstallSource == detentupdate.InstallSourceUnknown {
+			return detentupdate.Status{}, &controlProblem{http.StatusConflict, "update_apply_failed", "Detent cannot verify this installation's owner. Set DETENT_INSTALL_LOCK or DETENT_STATE_DIR in the running service to its existing installer receipt and retry"}
+		}
 		return detentupdate.Status{}, &controlProblem{http.StatusInternalServerError, "update_apply_failed", "Detent update apply failed"}
 	}
 	return status, nil

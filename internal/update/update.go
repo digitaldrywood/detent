@@ -325,6 +325,7 @@ type ApplyOptions struct {
 	ExpectedVersion       string
 	Urgent                bool
 	FollowHub             bool
+	PublishedRelease      bool
 	AssumeYes             bool
 	FromRelease           bool
 	Confirm               func(Status) (bool, error)
@@ -414,7 +415,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 		}
 		target = opts.ExpectedVersion
 	}
-	status, release, err := s.planForVersion(ctx, target, opts.FollowHub)
+	status, release, err := s.planForVersion(ctx, target, opts.FollowHub, opts.PublishedRelease)
 	if err != nil {
 		return status, err
 	}
@@ -653,10 +654,10 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 }
 
 func (s *Service) plan(ctx context.Context) (Status, Release, error) {
-	return s.planForVersion(ctx, "", false)
+	return s.planForVersion(ctx, "", false, false)
 }
 
-func (s *Service) planForVersion(ctx context.Context, target string, exact bool) (Status, Release, error) {
+func (s *Service) planForVersion(ctx context.Context, target string, exact bool, published bool) (Status, Release, error) {
 	info := DetectInstallSource(DetectionOptions{
 		CurrentVersion: s.cfg.CurrentVersion,
 		ExecutablePath: s.cfg.ExecutablePath,
@@ -684,7 +685,7 @@ func (s *Service) planForVersion(ctx context.Context, target string, exact bool)
 		return status, Release{}, ErrRefused
 	}
 
-	release, ok, err := s.targetRelease(ctx, target, exact)
+	release, ok, err := s.targetRelease(ctx, target, exact, published)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -716,8 +717,8 @@ func (s *Service) planForVersion(ctx context.Context, target string, exact bool)
 	return status, release, nil
 }
 
-func (s *Service) targetRelease(ctx context.Context, target string, exact bool) (Release, bool, error) {
-	if target == "" && s.cfg.TargetVersion == nil {
+func (s *Service) targetRelease(ctx context.Context, target string, exact bool, published bool) (Release, bool, error) {
+	if target == "" && (published || s.cfg.TargetVersion == nil) {
 		releases, err := s.cfg.Client.ListReleases(ctx)
 		if err != nil {
 			return Release{}, false, err

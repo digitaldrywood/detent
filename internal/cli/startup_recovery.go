@@ -72,7 +72,7 @@ func newRuntimeUpdater(cfg BootConfig, executable string, version string) (deten
 			Token: strings.TrimSpace(cfg.Runtime.GitHubToken.Value),
 		}),
 	}
-	if cfg.Global.Client.Configured() {
+	if cfg.Global.Client.Configured() && strings.TrimSpace(cfg.Global.Client.IdentityFile) == "" {
 		settings := cfg.Global.Client.Normalized()
 		client, err := hubclient.New(hubclient.Config{
 			URL:          settings.URL,

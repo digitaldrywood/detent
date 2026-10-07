@@ -530,6 +530,17 @@ func TestAppUpdates(t *testing.T) {
 		}
 	}
 
+	f.service.config.Version = "operator-landed-a69c4b1dd060"
+	operator := read(t, "owner")
+	if operator.Current != f.service.config.Version || operator.Source != "hub" || operator.MinimumRunnerVersion != "" || operator.BehindCount != 0 {
+		t.Fatalf("operator Hub build was reported as a runner release: %#v", operator)
+	}
+	browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/fleet", nil, http.StatusOK), &fleet)
+	if fleet.Current != operator.Current || fleet.MinimumRunnerVersion != "" {
+		t.Fatalf("fleet operator build = %#v", fleet)
+	}
+	f.service.config.Version = "v1.2.4"
+
 	heartbeat := "/api/v2/organizations/org_browser_preview/projects/" + f.project + "/machines/" + string(behind.MachineID) + "/heartbeat"
 	browserHostedStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, heartbeat, behind.Credential, map[string]any{"display_name": "Athens", "capacity": 1, "version": "v1.2.4"}), http.StatusOK)
 	payload = read(t, "owner")

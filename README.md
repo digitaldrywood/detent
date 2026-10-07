@@ -493,6 +493,27 @@ Native Linux packages are owned by the system package manager; install a newer
 `.rpm` with `sudo rpm -Uvh ./detent_<version>_linux_<arch>.rpm` or the distro
 wrapper you normally use. Legacy Go-installed binaries can switch to the
 checksum-verified release binary with `detent update --from-release`.
+
+When the selected configuration has a running instance, `detent update --yes`
+and `detent update --from-release --yes` ask that instance to drain its work,
+install a published release and restart. Enrolled runners discover published
+runner releases independently of the Hub's build identifier. The Hub can run an
+operator build such as `operator-landed-a69c4b1dd060`; that identifier is not an
+installable runner release. Automatic Hub-follow requests still select their
+explicit release version. Fleet/API `current` with `source: hub` identifies the
+Hub build, while `minimum_runner_version` is empty for a non-release Hub build;
+it does not report the latest published runner release.
+
+For a release installation in a custom binary or state directory, set
+`DETENT_INSTALL_LOCK` to that installation's existing `install.lock`, or set
+`DETENT_STATE_DIR` to the directory containing it. `DETENT_INSTALL_LOCK` takes
+precedence. Set the environment in the running service as well as in shells
+used for offline updates; a coordinated CLI command cannot change its owner's
+environment. The receipt's `binary` must identify the installed executable.
+These variables select installer metadata, not enrollment or the project
+configuration. Keep other installations' receipts intact. An unknown install
+source refuses binary replacement, even with `--from-release`.
+
 Go-only source users rebuild the prepared source archive for the selected
 release. `detent update --yes` no longer runs an incomplete module install.
 Source builds still print the recommended command instead of overwriting the binary.
