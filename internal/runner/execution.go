@@ -215,11 +215,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if runErr != nil || result.FinalState != FinalStateCompleted {
 		outcome = "failed"
 	}
-	if guarded.Err() != nil {
+	if guarded.Err() != nil && outcome != "succeeded" {
 		outcome = "interrupted"
 		runErr = errors.Join(runErr, context.Cause(guarded))
 	}
-	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
 	defer cancel()
 	if runtime, ok := req.Execution.(RuntimeExecution); ok {
 		observation := tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: "completed", HeartbeatAt: r.now(), Identity: result.RuntimeIdentity}
@@ -260,7 +260,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	_, prepared := req.Execution.(CompletionExecution)
 	if !req.DeferExecutionFinish || !prepared {
-		finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
 		defer finalCancel()
 		if err := req.Execution.Finish(finalCtx, outcome); err != nil {
 			runErr = errors.Join(runErr, err)
@@ -615,6 +615,8 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 	if !cfg.Enabled {
 		return nil
 	}
+	ctx, cancel := context.WithTimeoutCause(context.WithoutCancel(ctx), max(r.afterRunTimeout, durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS), durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	defer cancel()
 	input, err := execution.ValidatorVersion(ctx)
 	if err != nil || input.Version == nil {
 		return err
