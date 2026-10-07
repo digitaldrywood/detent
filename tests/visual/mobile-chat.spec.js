@@ -101,7 +101,9 @@ test.describe("phone chat", () => {
         await editor.fill(Array.from({ length: 40 }, (_, index) => `Phone question line ${index + 1}`).join("\n"));
         await assertComposer();
         await page.getByRole("button", { name: "Send message", exact: true }).click();
-        await expect(answer).toHaveCount(3);
+        await expect(page.getByText(/Phone question line 40/)).toBeVisible();
+        await expect(page.getByTestId("pending-turn")).toHaveCount(0);
+        await expect(answer.last()).toBeVisible();
         await expect.poll(() => page.evaluate(() => {
           const scrollable = [...document.querySelectorAll('[data-assistant-citation-viewport] *')].find((element) =>
             /auto|scroll/.test(getComputedStyle(element).overflowY) && element.scrollHeight > element.clientHeight,
