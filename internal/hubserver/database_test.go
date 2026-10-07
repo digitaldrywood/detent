@@ -383,6 +383,24 @@ func TestOpenRejectsUnrecognizedDatabase(t *testing.T) {
 	}
 }
 
+func TestOpenAcceptsLitestreamTablesOnNewDatabase(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "hub.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{"CREATE TABLE _litestream_seq (id INTEGER PRIMARY KEY, seq INTEGER)", "CREATE TABLE _litestream_lock (id INTEGER)"} {
+		if _, err := db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	openTestService(t, Config{DatabasePath: path})
+}
+
 func TestOpenRejectsNewerSchema(t *testing.T) {
 	t.Parallel()
 
