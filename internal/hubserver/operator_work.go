@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -319,5 +320,5 @@ func safeNativeWorkError(err error) error {
 	if safe := hubSafeChangeError(err); !errors.Is(safe, operatortool.ErrServiceUnavailable) {
 		return safe
 	}
-	return operatortool.ErrSnapshotUnavailable
+	return fmt.Errorf("%w: %w", operatortool.ErrSnapshotUnavailable, err)
 }

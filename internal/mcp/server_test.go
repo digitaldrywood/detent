@@ -273,13 +273,14 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 					IsError           bool            `json:"isError"`
 				}
 				decodeResult(t, response, &result)
-				if !result.IsError || len(result.Content) != 1 || result.Content[0].Text != test.want {
+				if !result.IsError || len(result.Content) != 1 {
 					t.Fatalf("tool error result = %#v", result)
 				}
 				if test.want == "Operator tool is unavailable" {
 					var entry struct {
 						Tool          string `json:"tool"`
 						CorrelationID string `json:"correlation_id"`
+						ErrorClass    string `json:"error_class"`
 						RequestID     string `json:"request_id"`
 						Error         string `json:"error"`
 					}
@@ -291,9 +292,14 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 					if errors.As(cause, &unavailable) {
 						cause = unavailable.Err
 					}
-					if entry.Tool != "fleet_health" || entry.CorrelationID == "" || entry.RequestID != "2" || !strings.Contains(entry.Error, cause.Error()) {
+					if entry.Tool != "fleet_health" || entry.CorrelationID == "" || entry.ErrorClass != "*errors.errorString" || entry.RequestID != "2" || !strings.Contains(entry.Error, cause.Error()) {
 						t.Fatalf("fault log=%s", logs.Bytes())
 					}
+					if want := test.want + " (correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
+						t.Fatalf("tool error text = %q, want %q", result.Content[0].Text, want)
+					}
+				} else if result.Content[0].Text != test.want {
+					t.Fatalf("tool error result = %#v", result)
 				} else if logs.Len() != 0 {
 					t.Fatalf("expected tool error logged as a fault: %s", logs.Bytes())
 				}
