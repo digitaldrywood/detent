@@ -169,8 +169,9 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	if !found {
 		return tracker.Lease{}, fmt.Errorf("%w: %s", tracker.ErrLeaseNotFound, request.LeaseID)
 	}
-	if err := requireCurrentLease(record, request.FencingToken, now); err != nil {
-		return tracker.Lease{}, err
+	if record.session.FencingToken != request.FencingToken || record.session.ReleasedAt != nil ||
+		!record.session.ExpiresAt.After(now) && (!policyRequired || len(scopes) == 0) {
+		return tracker.Lease{}, fmt.Errorf("%w: lease %s", tracker.ErrStaleFencingToken, record.session.ID)
 	}
 	if err := requireApprovedLeasePolicy(ctx, tx, request.LeaseID, policyRequired); err != nil {
 		return tracker.Lease{}, err

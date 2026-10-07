@@ -82,6 +82,29 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 	now = now.Add(91 * time.Second)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/native-machine/heartbeat", worker, map[string]any{"version": "v1.2.4", "capacity": 1}), http.StatusNoContent)
+	for _, test := range []struct {
+		name       string
+		credential string
+		fence      tracker.FencingToken
+		status     int
+	}{
+		{name: "another owner cannot renew expired lease", credential: otherWorker, fence: lease.FencingToken, status: http.StatusNotFound},
+		{name: "wrong token cannot renew expired lease", credential: worker, fence: lease.FencingToken + 1, status: http.StatusConflict},
+		{name: "original owner resumes expired lease", credential: worker, fence: lease.FencingToken, status: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", test.credential, tracker.NativeLeaseMutation{FencingToken: test.fence, TTLSeconds: 90})
+			requireNativeStatus(t, response, test.status)
+			if test.status == http.StatusOK {
+				var renewed tracker.NativeLease
+				decodeHubResponse(t, response, &renewed)
+				if renewed.ID != lease.ID || renewed.FencingToken != lease.FencingToken || renewed.SessionID != lease.SessionID || !renewed.ExpiresAt.After(now) {
+					t.Fatalf("reconnect replaced original authority: %+v", renewed)
+				}
+			}
+		})
+	}
+	now = now.Add(91 * time.Second)
 	request.SessionID = "replacement-session"
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -90,6 +113,7 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	if replacement.FencingToken <= lease.FencingToken {
 		t.Fatal("reclaim did not advance fencing")
 	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusConflict)
 	event.IdempotencyKey = "stale-new-event"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusConflict)
 	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", worker, nil)

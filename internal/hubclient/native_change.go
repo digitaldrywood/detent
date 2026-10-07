@@ -38,8 +38,13 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 	if e.worktreeState != "clean" && e.worktreeState != "unpushed" {
 		return errors.New("the run's final worktree checkpoint is unavailable")
 	}
-	if e.claim.source == nil || e.claim.source.client == nil || e.remaining() <= 0 {
+	if e.claim.source == nil || e.claim.source.client == nil {
 		return runner.ErrExecutionAuthorityUnavailable
+	}
+	if e.remaining() <= 0 {
+		if err := e.renew(ctx); err != nil {
+			return err
+		}
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
 		return e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -270,7 +271,7 @@ func (h *nativeChangeHub) complete(t *testing.T, issueID string, change *runner.
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, ok := connector.CompletionLane(states, current.State, h.review, change.Changed)
+	target, ok := connector.CompletionLane(states, current.State, h.review, change.Changed || change.VersionError != "")
 	if landing, allowed := connector.CompletionLane(states, current.State, "Merging", true); len(allowLanding) > 0 && allowLanding[0] && change.Changed && change.Reviewed && allowed {
 		for _, state := range states {
 			if state.Name == landing && state.Dispatchable {
@@ -386,6 +387,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		restoreRefusal string
 		failCreate     bool
 		retainSource   bool
+		sourceRefusal  bool
 		failDiff       bool
 		failDetail     bool
 		failVersion    bool
@@ -412,6 +414,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 	}{
 		{name: "canceled deferred validation preserves authority", validationErr: context.Canceled, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "timed out deferred validation preserves authority", validationErr: context.DeadlineExceeded, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "excluded checkpoint path is a permanent publication refusal", sourceRefusal: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantDiagnostic: `excluded source path ".detent/skills/split-issue.md"`},
 		{name: "deferred publication survives restart", retainSource: true, restart: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "installed deferred publication restores tracker authority", restart: true, legacyRestart: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "restart refuses released authority", restart: true, restoreRefusal: "released", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
@@ -546,6 +549,11 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					return tracker.AttemptDiffRequest{}, false
 				})
 			}
+			if test.sourceRefusal {
+				execution.(runner.ChangeSourceExecution).SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error) {
+					return tracker.ChangeSourceCapture{}, fmt.Errorf(`%w: excluded source path ".detent/skills/split-issue.md"`, workspace.ErrCheckpointUnsafe)
+				})
+			}
 			h.failChanges.fail.Store(test.failCreate)
 			h.failChanges.failDiffs.Store(test.failDiff)
 			h.failChanges.failDetails.Store(test.failDetail)
@@ -641,7 +649,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				if change == nil || !strings.Contains(change.Error+change.VersionError, test.wantDiagnostic) || change.Reviewed || change.VersionID != "" {
 					t.Fatalf("native result lost publication failure: %#v", change)
 				}
-				if change.VersionError != "" && change.VersionCode != test.versionCode && (!test.repolicy || change.VersionCode != "policy_mismatch") {
+				if change.VersionError != "" && change.VersionCode != test.versionCode && change.VersionCode != test.diffCode && (!test.repolicy || change.VersionCode != "policy_mismatch") {
 					t.Fatalf("native result lost publication code: %#v", change)
 				}
 				if execution.(*nativeExecution).settled {
@@ -930,61 +938,101 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 // expiry re-offers the item, and a retried finish publishes the outcome
 // without opening a second change.
 func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-	h := newNativeChangeHub(t, true)
-	issue := h.createInProgress(t, "Native change")
-	h.claim(t, issue.ID)
-	execution := h.scheduler.RunExecution(issue.ID)
-	if execution == nil {
-		t.Fatal("claimed issue has no native execution")
-	}
-	guarded, stop, err := execution.Guard(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stop()
-	execution.(runner.DiffExecution).SetDiffSource(nativeChangeDiff(strings.Repeat("c", 40), "README.md"))
-	execution.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
-	if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
-		t.Fatal(err)
-	}
-	checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", ExternalEffect: "none", EffectState: "none"}
-	if err := execution.Checkpoint(guarded, checkpoint); err != nil {
-		t.Fatal(err)
-	}
-	attemptStatus := func() string {
-		t.Helper()
-		recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-		if err != nil || len(recovery.Attempts) != 1 {
-			t.Fatalf("recovery = %#v, error = %v", recovery, err)
-		}
-		return recovery.Attempts[0].Status
-	}
-	h.failChanges.failEvents.Store(true)
-	if err := execution.Finish(guarded, "succeeded"); err == nil {
-		t.Fatal("the run.finished failure was not injected")
-	}
-	if changes := h.changes(t, issue.ID); len(changes) != 1 {
-		t.Fatalf("changes before run.finished = %#v, want the opened change", changes)
-	}
-	if status := attemptStatus(); status != "running" {
-		t.Fatalf("attempt status after an unpublished finish = %q, want running", status)
-	}
-	h.failChanges.failEvents.Store(false)
-	if err := execution.Finish(guarded, "succeeded"); err != nil {
-		t.Fatal(err)
-	}
-	if status := attemptStatus(); status != "succeeded" {
-		t.Fatalf("attempt status = %q, want succeeded", status)
-	}
-	changes := h.changes(t, issue.ID)
-	change := execution.(runner.ChangeExecution).NativeChange()
-	if len(changes) != 1 || change == nil || change.ChangeID != changes[0].ID || change.Error != "" {
-		t.Fatalf("change = %#v, changes = %#v", change, changes)
+	for _, test := range []struct {
+		name           string
+		outage         bool
+		completeDuring bool
+		version        bool
+	}{
+		{name: "finish event"},
+		{name: "version publication", version: true},
+		{name: "completion during four minute outage", outage: true, completeDuring: true},
+		{name: "completion after four minute outage", outage: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := newNativeChangeHub(t, true)
+				issue := h.createInProgress(t, "Native change")
+				h.claim(t, issue.ID)
+				execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				guarded, stop, err := execution.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stop()
+				execution.SetDiffSource(nativeChangeDiff(strings.Repeat("c", 40), "README.md"))
+				execution.SetRepository(nativeChangeRepository)
+				if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+					t.Fatal(err)
+				}
+				checkpoint := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", ExternalEffect: "none", EffectState: "none"}
+				if err := execution.Checkpoint(guarded, checkpoint); err != nil {
+					t.Fatal(err)
+				}
+				originalLease := execution.claim.lease
+				originalTransport := h.native.client.httpClient.Transport
+				var offline atomic.Bool
+				if test.outage {
+					h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						if offline.Load() {
+							return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"tenant_unavailable"}`)), Request: request}, nil
+						}
+						return originalTransport.RoundTrip(request)
+					})
+					offline.Store(true)
+					time.Sleep(2 * time.Minute)
+					synctest.Wait()
+				} else {
+					h.failChanges.failEvents.Store(!test.version)
+					h.failChanges.failVersions.Store(test.version)
+				}
+				if !test.outage || test.completeDuring {
+					if err := execution.Finish(guarded, "succeeded"); err == nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+						t.Fatalf("unpublished finish = %v", err)
+					}
+					recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+					if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Outcome != "" {
+						t.Fatalf("unpublished finish retired attempt: %+v, %v", recovery.Attempts, err)
+					}
+				}
+				if test.outage {
+					time.Sleep(2 * time.Minute)
+					synctest.Wait()
+					if guarded.Err() != nil {
+						t.Fatalf("outage canceled worker: %v", context.Cause(guarded))
+					}
+					offline.Store(false)
+					time.Sleep(30 * time.Second)
+					synctest.Wait()
+				} else {
+					h.failChanges.failEvents.Store(false)
+					h.failChanges.failVersions.Store(false)
+				}
+				if err := execution.Validate(guarded); err != nil {
+					t.Fatal(err)
+				}
+				if err := execution.PrepareFinish(guarded, "succeeded", "", nil); err != nil {
+					t.Fatal(err)
+				}
+				change := execution.NativeChange()
+				if change == nil || change.Error != "" || change.VersionError != "" || change.VersionID == "" {
+					t.Fatalf("reconnected publication = %+v", change)
+				}
+				h.complete(t, issue.ID, change)
+				recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "succeeded" || recovery.Attempts[0].LeaseID != originalLease.ID || recovery.Attempts[0].FencingToken != originalLease.FencingToken || h.state(t, issue.ID) != "In Review" || len(h.candidates(t)) != 0 {
+					t.Fatalf("reconnect lost outcome or restarted attempt: %+v, %v", recovery.Attempts, err)
+				}
+				changes := h.changes(t, issue.ID)
+				if len(changes) != 1 {
+					t.Fatalf("changes = %+v", changes)
+				}
+				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), changes[0].ID)
+				if err != nil || len(detail.Versions) != 1 {
+					t.Fatalf("replay duplicated version: %+v, %v", detail.Versions, err)
+				}
+			})
+		})
 	}
 }
 

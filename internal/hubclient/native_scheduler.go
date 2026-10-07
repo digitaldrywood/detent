@@ -392,7 +392,7 @@ func nativeAdmissionCapacityFull(err error) bool {
 }
 
 func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim nativeClaim) (orchestrator.Claimed, error) {
-	if err := s.checkClaimPolicy(ctx, issueID, claim.lease.PolicyID); err != nil {
+	if err := s.checkClaimPolicyApproval(ctx, issueID, claim.lease.PolicyID); err != nil {
 		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
 	}
 	if err := s.ensureNativeMachine(ctx, claim.source); err != nil {
@@ -414,6 +414,9 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 	s.nativeClaims[issueID] = claim
 	s.claims[issueID] = nativeTrackerLease(lease)
 	s.mu.Unlock()
+	if err := s.checkClaimRunner(ctx, issueID, claim.lease.PolicyID); err != nil {
+		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+	}
 	return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), nil
 }
 

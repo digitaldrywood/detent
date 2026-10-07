@@ -609,6 +609,11 @@ const notAlreadyAnsweredClause = `(p.profile <> 'native' OR lower(trim(ws.detent
    AND answered.project_id = i.project_id
    AND answered.work_item_id = i.native_id
    AND answered.status = 'succeeded'
+   AND (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') <> 'complete'
+     OR COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) <> 0
+     OR COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 0) <> 0
+     OR COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') <> ''
+     OR COALESCE(json_extract(answered.data_json, '$.runtime.completion.acceptance_recorded'), 0) = 1)
    AND NOT (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') = 'in_progress'
      AND COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 1) = 0
      AND COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 1) = 0

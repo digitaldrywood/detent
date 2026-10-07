@@ -154,7 +154,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if change != nil {
 		change = o.refreshNativeChangeReview(ctx, issueID, change)
 	}
-	needsReview := !changed && !accepted || reported && !accepted
+	needsReview := change != nil && change.VersionError != "" || !changed && !accepted || reported && !accepted
 	review := cfg.reviewTargetState()
 	if autoPromoteOptoutLabel(issue, cfg) {
 		review = cfg.SourceState
