@@ -4,6 +4,8 @@ import { Button } from "../../components/ui/button.tsx";
 import { Sheet, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetPopup, SheetTitle } from "../../components/ui/sheet.tsx";
 import type { FleetRunner, RunnerRouting } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
+import { PathValue } from "../account/controls.tsx";
+import { RUNNER_UPGRADE_COMMAND } from "../lib/detentUpdates.ts";
 import { AccountError } from "../account/api.ts";
 import { formatLocalTime, formatRelativeTime } from "./format.ts";
 import { parseRunnerWindow, serializeRunnerWindow, type RunnerHours } from "./runnerSchedule.ts";
@@ -116,6 +118,10 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
         </SheetHeader>
         <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => void submit(event)}>
           <div className="min-h-0 flex-1 space-y-7 overflow-y-auto p-6 text-sm">
+            {runner.claim_refusal_reason ? <div role="alert" data-testid="host-update" className="space-y-2 rounded-lg border border-warning/30 bg-warning/8 p-3">
+              <p>{runner.claim_refusal_reason}</p><PathValue value={RUNNER_UPGRADE_COMMAND} />
+            </div> : null}
+            {runner.sprite?.wake_failed || (runner.sprite && !runner.sprite.can_wake) ? <p role="alert" className="text-warning-foreground">{runner.sprite.wake_failed ? "The Hub could not wake this Sprite. Check the Sprite and its project’s Sprites token." : "No Sprites token is set for an accessible project; the Hub cannot wake this Sprite."}</p> : null}
             {runner.problems?.map((problem, index) => (
               <div key={`${problem.code}-${index}`} role="alert" className="space-y-2 rounded-lg border border-warning/30 bg-warning/8 p-3">
                 <p className="font-medium">{problem.message}</p><p>{problem.fix_hint}</p>

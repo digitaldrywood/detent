@@ -486,9 +486,12 @@ test("the fleet page redirects into settings and renders the hosts and providers
   if (await page.getByTestId("host-card").count()) {
     await expect(page.getByRole("heading", { name: "Runners", exact: true })).toBeVisible();
   } else {
-    await expect(page.getByText("No runners yet. Enroll a machine to start taking work.")).toBeVisible();
+    await expect(page.getByText("No runners yet. Add a runner manually or let Luna help you set one up.")).toBeVisible();
   }
-  await expect(page.getByRole("heading", { name: "Providers", exact: true })).toBeVisible();
+  if (await page.getByTestId("host-card").count()) {
+    await page.getByText("Fleet capacity and providers", { exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Providers", exact: true })).toBeVisible();
+  }
 
   const meters = page.getByRole("progressbar");
   if ((await meters.count()) > 0) {
@@ -551,9 +554,10 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await expect(page).toHaveURL(/\/settings\/runners$/);
 
   // The control is reachable from the keyboard and names itself.
-  const enroll = page.getByRole("button", { name: "Enroll a runner" });
+  const enroll = page.getByRole("button", { name: "Add runner", exact: true });
   await expect(enroll).toBeVisible();
   await enroll.click();
+  await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
 
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "Enroll a runner" })).toBeVisible();
@@ -605,6 +609,7 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
     expect(layout.x + layout.width).toBeLessThanOrEqual(width);
   }
   await enroll.click();
+  await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
   await dialog.getByLabel("Name").fill("Build host");
   await dialog.getByRole("button", { name: "Create command" }).click();
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("2. Run the command");
@@ -619,6 +624,17 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await expectNoSeriousAxeViolations(page, "the connected enrollment dialog");
   await dialog.getByRole("button", { name: "Done" }).click();
   await expect(dialog).toHaveCount(0);
+  await enroll.click();
+  await page.getByRole("menuitem", { name: "AI assisted", exact: true }).click();
+  const assistance = page.getByRole("dialog", { name: "Add runner with Luna" });
+  if (await assistance.count()) {
+    await assistance.getByLabel("Project", { exact: true }).selectOption(hub.fixture.project_id);
+    await assistance.getByRole("button", { name: "Open Luna" }).click();
+  }
+  await expect(page).toHaveURL(new RegExp(`/chat/p/${hub.fixture.project_id}$`));
+  await expect(page.getByRole("textbox", { name: "Message" })).toContainText("Help me add a runner for this project.");
+  await expect(page.getByRole("textbox", { name: "Message" })).toContainText("Fly Sprite or a machine I run");
+  await expectNoSeriousAxeViolations(page, "AI assisted runner draft");
   expect(errors, "console errors while enrolling a runner").toEqual([]);
 });
 

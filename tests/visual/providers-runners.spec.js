@@ -20,7 +20,7 @@ test.beforeAll(async () => { html = await providersRunnersPreview(); });
 async function openFleet(page, data = fleet, search = "", spritesPresent = false) {
   await page.clock.setFixedTime(new Date("2026-09-10T12:09:31Z"));
   await page.route(origin + "/**", (route) => {
-    if (new URL(route.request().url()).pathname === "/api/v2/organizations/org_preview/projects/proj_preview/sprite-pool") {
+    if (new URL(route.request().url()).pathname.endsWith("/sprite-pool")) {
       return route.fulfill({ json: spritePool });
     }
     if (new URL(route.request().url()).pathname.endsWith("/secrets/fly_sprites_token")) {
@@ -42,7 +42,8 @@ for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1100 });
       await context.grantPermissions(["clipboard-read", "clipboard-write"]);
       await openFleet(page, fleet, "", location === "sprite");
-      await page.getByRole("button", { name: "Enroll a runner", exact: true }).click();
+      await page.getByRole("button", { name: "Add runner", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
       const sprite = location.startsWith("sprite");
       if (sprite) {
@@ -105,6 +106,7 @@ for (const width of [1440, 390]) {
   test("capacity, attention, providers and URL filter at " + width + "px", async ({ page }) => {
     await page.setViewportSize({ width, height: 1100 });
     await openFleet(page);
+    await page.getByText("Fleet capacity and providers", { exact: true }).click();
     await expect(page.getByText("1 of 7 slots running work")).toBeVisible();
     await expect(page.getByText("5 slots can't take work")).toBeVisible();
     const groups = page.getByTestId("runner-capacity");
@@ -118,25 +120,28 @@ for (const width of [1440, 390]) {
       }
     }
     await expect(groups.nth(1).locator('[data-slot-state="unavailable"]')).toHaveCount(4);
-    await expect(page.getByRole("alert")).toHaveCount(1);
-    await expect(page.getByTestId("runner-attention")).toContainText("Build runner can't take work");
-    await expect(page.getByTestId("runner-attention")).toContainText(problem.message);
-    await expect(page.getByTestId("runner-attention")).toContainText(problem.fix_hint);
-    await expect(page.getByText(problem.message, { exact: true })).toHaveCount(1);
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await page.getByRole("button", { name: "Manage Build runner" }).click();
+    await expect(page.getByRole("dialog").getByRole("alert")).toContainText(problem.message);
+    await expect(page.getByRole("dialog").getByRole("alert")).toContainText(problem.fix_hint);
+    await page.keyboard.press("Escape");
     const providers = page.getByRole("region", { name: "Provider accounts" });
     await expect(providers.getByRole("columnheader")).toHaveText(["Provider", "Accounts", "In use", "Models", "Status"]);
     await expect(providers.getByText("Rate limited until Sep 10, 5:00 PM")).toBeVisible();
     await expect(page.getByTestId("host-card")).toHaveCount(3);
     await expect(page.getByText("Sprite pool · Preview project", { exact: true })).toBeVisible();
-    await expect(page.getByText("1 members", { exact: true })).toBeVisible();
-    await expect(page.getByText("Could not load the pool.", { exact: true })).toHaveCount(0);
-    await expect(page.getByLabel("Minimum runners", { exact: true })).toHaveValue(String(spritePool.min_runners));
-    await expect(page.getByLabel("Maximum runners", { exact: true })).toHaveValue(String(spritePool.max_runners));
-    await expect(page.getByLabel("Idle seconds", { exact: true })).toHaveValue(String(spritePool.idle_seconds));
-    await expect(page.getByLabel(/^Customer bootstrap/)).toHaveValue(spritePool.bootstrap);
-    await expect(page.getByText("preview-build-sprite · enrolled", { exact: true })).toBeVisible();
-    await page.getByText("Last bootstrap log", { exact: true }).click();
-    await expect(page.getByText(spritePool.members[0].bootstrap_log, { exact: true })).toBeVisible();
+    const poolRow = page.getByTestId("sprite-pool-row");
+    await expect(poolRow).toContainText(`Floor ${spritePool.min_runners} · Ceiling ${spritePool.max_runners} · Idle ${spritePool.idle_seconds}s · 1 members`);
+    await expect(page.getByLabel("Minimum runners", { exact: true })).toHaveCount(0);
+    await poolRow.getByRole("button", { name: /Configure pool/ }).click();
+    const poolDialog = page.getByRole("dialog", { name: "Sprite pool · Preview project" });
+    await expect(poolDialog.getByLabel("Minimum runners", { exact: true })).toHaveValue(String(spritePool.min_runners));
+    await expect(poolDialog.getByLabel("Maximum runners", { exact: true })).toHaveValue(String(spritePool.max_runners));
+    await expect(poolDialog.getByLabel("Idle seconds", { exact: true })).toHaveValue(String(spritePool.idle_seconds));
+    await expect(poolDialog.getByLabel(/^Customer bootstrap/)).toHaveValue(spritePool.bootstrap);
+    await poolDialog.getByText("Last bootstrap log", { exact: true }).click();
+    await expect(poolDialog.getByText(spritePool.members[0].bootstrap_log, { exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     expect(await page.locator("[data-settings-page-scroll]").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
     if (width === 390) {
@@ -151,7 +156,7 @@ for (const width of [1440, 390]) {
     const height = await scroll.evaluate((element) => Math.ceil(element.scrollHeight + element.getBoundingClientRect().top));
     await page.setViewportSize({ width, height: Math.max(2400, height) });
     await scroll.evaluate((element) => { element.scrollTop = 0; });
-    await expect(page.getByText(spritePool.members[0].bootstrap_log, { exact: true })).toBeInViewport();
+    await page.getByText("Fleet capacity and providers", { exact: true }).click();
     await expect(page.locator("[data-settings-page-scroll] > div")).toHaveScreenshot("providers-runners-" + width + ".png");
     await page.setViewportSize({ width, height: 1100 });
     await page.getByRole("link", { name: "Needs attention 1" }).click();
@@ -161,6 +166,7 @@ for (const width of [1440, 390]) {
     await page.reload();
     await expect(page.getByRole("link", { name: "Needs attention 1" })).toHaveAttribute("aria-current", "true");
     await expect(page.getByTestId("host-card")).toHaveCount(1);
+    await page.getByText("Fleet capacity and providers", { exact: true }).click();
     await page.getByRole("button", { name: "Open Michael's MacBook Pro", exact: true }).click();
     await expect(page.getByTestId("host-card")).toHaveCount(3);
     await expect(page.getByRole("dialog", { name: "Michael's MacBook Pro" })).toBeVisible();
@@ -176,7 +182,8 @@ for (const width of [1440, 390]) {
     await expect(details).toContainText("Sandbox");
     await expect(details).toContainText("michael@threefold.solutions");
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Enroll a runner", exact: true }).click();
+    await page.getByRole("button", { name: "Add runner", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
     await dialog.getByLabel("Name", { exact: true }).fill("New build runner");
     await dialog.getByRole("button", { name: "Create command" }).click();
@@ -234,7 +241,7 @@ for (const width of [1440, 390]) {
     await sheet.getByRole("button", { name: "Save runner" }).click();
     await expect(sheet).toHaveCount(0);
     await expect(row).toContainText("draining · Limit 2");
-    await page.getByTestId("runner-attention").getByRole("button", { name: "Open runner Build runner" }).click();
+    await page.getByRole("button", { name: "Manage Build runner" }).click();
     sheet = page.getByRole("dialog", { name: "Build runner" });
     await expect(sheet.getByRole("alert")).toContainText(problem.message);
     await expect(sheet.getByRole("alert")).toContainText(problem.fix_hint);
@@ -256,8 +263,8 @@ for (const width of [1440, 390]) {
 
 test("empty fleet invites enrollment and version refusals keep the upgrade command", async ({ page }) => {
   await openFleet(page, { ...fleet, runners: [] });
-  await expect(page.getByText("No runners yet. Enroll a machine to start taking work.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Enroll a runner", exact: true })).toHaveCount(1);
+  await expect(page.getByText("No runners yet. Add a runner manually or let Luna help you set one up.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Add runner", exact: true })).toHaveCount(1);
   await expect(page.getByTestId("runner-capacity")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Runners", exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Capacity right now", exact: true })).toHaveCount(0);
@@ -265,6 +272,7 @@ test("empty fleet invites enrollment and version refusals keep the upgrade comma
   await page.unroute("**/fleet");
   await page.route("**/fleet", (route) => route.fulfill({ json: { ...fleet, runners: [fleetFixture.runners[0]] } }));
   await page.reload();
+  await page.getByRole("button", { name: "Manage Michael's MacBook Pro" }).click();
   await expect(page.getByTestId("host-update")).toContainText("Too old to take work, needs v0.9.1");
   await expect(page.getByTestId("host-update")).toContainText("detent");
   await expect(page.getByTestId("runner-attention")).toHaveCount(0);
@@ -277,4 +285,74 @@ test("the attention link preserves unrelated search parameters", async ({ page }
   await expect(page).toHaveURL(/source=capacity$/);
   await page.getByRole("link", { name: "Needs attention 1" }).click();
   await expect(page).toHaveURL(/source=capacity&health=needs_attention$/);
+});
+
+for (const multiple of [false, true]) {
+  test(`AI assisted seeds the chosen project's Luna draft (multiple projects: ${multiple})`, async ({ page }) => {
+    const selected = multiple ? "proj_second" : "proj_preview";
+    await page.addInitScript(({ selected }) => {
+      localStorage.setItem(`detent.conversation.draft:org_preview:owner_preview:${selected}:new`, "Keep my existing draft.");
+    }, { selected });
+    await openFleet(page, fleet, multiple ? "?multipleProjects" : "");
+    await expect(page.getByRole("button", { name: "Add runner", exact: true })).toHaveCount(1);
+    await page.getByRole("button", { name: "Add runner", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("menuitem", { name: "AI assisted", exact: true }).click();
+    if (multiple) {
+      const dialog = page.getByRole("dialog", { name: "Add runner with Luna" });
+      await expect(dialog).toContainText("Fly Sprite or your own machine");
+      await expect(dialog.getByRole("option", { name: "Read-only project" })).toHaveCount(0);
+      await dialog.getByLabel("Project", { exact: true }).selectOption(selected);
+      await dialog.getByRole("button", { name: "Open Luna" }).click();
+    }
+    await expect(page).toHaveURL(new RegExp(`/chat/p/${selected}$`));
+    const draft = await page.evaluate((selected) => localStorage.getItem(`detent.conversation.draft:org_preview:owner_preview:${selected}:new`), selected);
+    expect(draft).toContain("Keep my existing draft.");
+    expect(draft).toContain("Help me add a runner for this project.");
+    expect(draft).toContain("Fly Sprite or a machine I run");
+    expect(draft).toContain("enrollment, the register command, provider login and the first connection");
+    if (multiple) {
+      expect(await page.evaluate(() => localStorage.getItem("detent.conversation.draft:org_preview:owner_preview:proj_preview:new"))).toBeNull();
+    }
+  });
+}
+
+for (const version of ["operator-landed-3c51987c563b", "dev"]) {
+  test(`manual Sprite setup remains actionable on Hub ${version}`, async ({ page }) => {
+    await openFleet(page, { ...fleet, current: version }, `?version=${version}`);
+    await page.getByRole("button", { name: "Add runner", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
+    await dialog.getByLabel("A Fly Sprite").check();
+    await expect(dialog.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations?project=proj_preview#sprites");
+    await expect(dialog.getByText(/latest tagged release/)).toBeVisible();
+    await dialog.getByRole("button", { name: "Create command" }).click();
+    const instructions = dialog.getByRole("list", { name: "Sprite setup instructions" });
+    await expect(instructions).toContainText("github.com/digitaldrywood/detent/releases/latest");
+    await expect(instructions).toContainText('bash sprite-runner-bootstrap.sh --version "$detent_release"');
+    await expect(dialog.getByRole("button", { name: "Copy the register command" })).toBeEnabled();
+  });
+}
+
+test("Sprite pool row saves its limits without exposing setup fields on the list", async ({ page }) => {
+  await openFleet(page);
+  let saved;
+  await page.route("**/sprite-pool", async (route) => {
+    if (route.request().method() === "PUT") {
+      saved = route.request().postDataJSON();
+      await route.fulfill({ json: { ...spritePool, ...saved, revision: spritePool.revision + 1 } });
+    } else await route.fulfill({ json: spritePool });
+  });
+  const row = page.getByTestId("sprite-pool-row");
+  await expect(row.getByRole("link", { name: "Set a Sprites token" })).toHaveAttribute("href", "/settings/integrations?project=proj_preview#sprites");
+  await row.getByRole("button", { name: /Configure pool/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Sprite pool · Preview project" });
+  await dialog.getByLabel("Minimum runners", { exact: true }).fill("2");
+  await dialog.getByLabel("Maximum runners", { exact: true }).fill("5");
+  await dialog.getByLabel("Idle seconds", { exact: true }).fill("600");
+  await dialog.getByRole("button", { name: "Save pool", exact: true }).click();
+  await expect(row).toContainText("Floor 2 · Ceiling 5 · Idle 600s");
+  expect(saved).toEqual({ min_runners: 2, max_runners: 5, idle_seconds: 600, bootstrap: spritePool.bootstrap, revision: spritePool.revision });
+  await page.keyboard.press("Escape");
+  await expect(page.getByLabel("Minimum runners", { exact: true })).toHaveCount(0);
 });
