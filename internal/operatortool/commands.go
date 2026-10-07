@@ -14,6 +14,8 @@ const (
 	FileIssue      = "file_issue"
 	ActionResult   = "action_result"
 	ConnectionInfo = "connection_info"
+
+	workRevisionProperty = `"expected_revision":{"type":"string","minLength":1,"maxLength":19,"pattern":"^[1-9][0-9]*$"}`
 )
 
 // CommandCatalog is separate from the five preserved shared read definitions.
@@ -22,8 +24,8 @@ const (
 // it is independent of JSON-RPC request IDs and is never an approval token.
 func CommandCatalog() []Definition {
 	return append(append(append([]Definition{
-		commandDefinition(MoveItem, "Request an item's configured workflow transition through the application owner. Read get_native_project for native states and allowed transitions; native requests require expected_revision. Authorized transitions execute directly, including terminal states.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1}`, `"identifier","target_state"`, true),
-		commandDefinition(SetPriority, "Set an item's configured priority directly through the dashboard command.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"priority":{"type":"string","minLength":1,"maxLength":256},"expected_revision":{"type":"integer","minimum":1}`, `"identifier","priority"`, false),
+		commandDefinition(MoveItem, "Request an item's configured workflow transition through the application owner. Read get_native_project for native states and allowed transitions; native requests require expected_revision. Authorized transitions execute directly, including terminal states.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},`+workRevisionProperty, `"identifier","target_state"`, true),
+		commandDefinition(SetPriority, "Set an item's configured priority directly through the dashboard command.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"priority":{"type":"string","minLength":1,"maxLength":256},`+workRevisionProperty, `"identifier","priority"`, false),
 		commandDefinition(StopRun, "Stop the exact active run and route its item. Executes directly with current write authority.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"destination":{"type":"string","enum":["Blocked","Backlog","Cancelled","Todo"]},"priority":{"type":"integer","minimum":1,"maximum":4},"reason":{"type":"string","maxLength":280}`, `"identifier","destination"`, true),
 		fileIssueDefinition(),
 		definition(ActionResult, "Read the outcome of this connection's exact action. This never approves an action.", `{"type":"object","required":["action_id"],"properties":{"action_id":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false}`),
@@ -88,7 +90,7 @@ type MoveItemArguments struct {
 	RequestID        string `json:"request_id,omitempty"`
 	Identifier       string `json:"identifier"`
 	TargetState      string `json:"target_state"`
-	ExpectedRevision int64  `json:"expected_revision"`
+	ExpectedRevision int64  `json:"expected_revision,string"`
 }
 
 func DecodeNativeMoveItem(raw json.RawMessage) (MoveItemArguments, error) {
