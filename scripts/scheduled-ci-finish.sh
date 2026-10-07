@@ -7,7 +7,18 @@ issues_file="$scratch_dir/scheduled-ci-issues.json"
 evidence_file="$scratch_dir/scheduled-ci-evidence.jsonl"
 run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
+run_conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --jq .conclusion)"
+if [ "$run_conclusion" = cancelled ]; then
+  echo "Scheduled validation was cancelled; skipping reporting and release."
+  exit 0
+fi
+
 gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' | jq -s . > "$jobs_file"
+if jq -e 'any(.[]; .conclusion == "cancelled")' "$jobs_file" > /dev/null; then
+  echo "Scheduled validation jobs were cancelled; skipping reporting and release."
+  exit 0
+fi
+
 report_failure() {
   go run ./tools/cifailure < "$jobs_file" >> "$evidence_file"
 }

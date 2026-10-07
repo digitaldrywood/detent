@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 
@@ -567,6 +568,42 @@ func (f *fakeCloud) Execute(ctx context.Context, call operatortool.Call) (operat
 
 func TestCloudTransport(t *testing.T) {
 	t.Parallel()
+	t.Run("requests share overall deadline", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			start := time.Now()
+			requests := 0
+			client := &http.Client{Transport: handlerTransport{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				timer := time.NewTimer(80 * time.Second)
+				defer timer.Stop()
+				select {
+				case <-r.Context().Done():
+					return
+				case <-timer.C:
+				}
+				var request struct {
+					ID int `json:"id"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				if err := json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{}}); err != nil {
+					t.Fatal(err)
+				}
+			})}}
+			transport := &cloudMCP{endpoint: "https://cloud.detent.build/mcp", client: client}
+			var result json.RawMessage
+			if err := transport.request(ctx, "tools/list", nil, false, &result); err != nil {
+				t.Fatal(err)
+			}
+			err := transport.request(ctx, "tools/list", nil, false, &result)
+			if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 2*time.Minute || requests != 2 {
+				t.Fatalf("requests = %d, error = %v after %s", requests, err, time.Since(start))
+			}
+		})
+	})
 	for _, tt := range []struct {
 		name, fail, badPage    string
 		status                 int

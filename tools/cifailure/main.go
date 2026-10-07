@@ -33,20 +33,27 @@ type openIssue struct {
 type ghCommand func(context.Context, string, ...string) ([]byte, error)
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	destination, err := reportingDestination(ctx, os.Getenv)
-	if err == nil {
-		if os.Getenv("DETENT_RELEASE_ENVIRONMENT") != "" {
-			err = reportReleaseFailure(ctx, os.Stdin, os.Getenv, destination)
-		} else {
-			err = reportTo(ctx, os.Stdin, runGH, os.Getenv, destination)
-		}
-	}
-	if err != nil {
+	if err := run(context.Background(), os.Stdin, runGH, os.Getenv, reportingDestination); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func run(ctx context.Context, input io.Reader, gh ghCommand, getenv func(string) string, connect func(context.Context, func(string) string) (issueDestination, error)) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	destination, err := connect(ctx, getenv)
+	if err == nil {
+		if getenv("DETENT_RELEASE_ENVIRONMENT") != "" {
+			err = reportReleaseFailure(ctx, input, getenv, destination)
+		} else {
+			err = reportTo(ctx, input, gh, getenv, destination)
+		}
+	}
+	if err != nil {
+		return errors.Join(err, ctx.Err())
+	}
+	return ctx.Err()
 }
 
 func runGH(ctx context.Context, input string, args ...string) ([]byte, error) {
@@ -120,22 +127,33 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 	if err := json.NewDecoder(input).Decode(&jobs); err != nil {
 		return fmt.Errorf("decode scheduled CI jobs: %w", err)
 	}
+	for _, j := range jobs {
+		if j.Conclusion == "cancelled" {
+			return nil
+		}
+	}
 	repository := getenv("GITHUB_REPOSITORY")
 	owner, name, ok := strings.Cut(repository, "/")
 	if !ok || owner == "" || name == "" {
 		return errors.New("GITHUB_REPOSITORY must be owner/repository")
 	}
 	if err := destination.load(ctx); err != nil {
-		return err
+		return errors.Join(err, incompleteReports(ctx, jobs))
 	}
 
 	var failures []error
 	runURL := fmt.Sprintf("%s/%s/actions/runs/%s/attempts/%s", getenv("GITHUB_SERVER_URL"), repository, getenv("GITHUB_RUN_ID"), getenv("GITHUB_RUN_ATTEMPT"))
-	for _, j := range jobs {
+	for i, j := range jobs {
 		if (j.Name == "Finalize scheduled validation" && j.Conclusion != "failure") || j.Conclusion == "success" {
 			continue
 		}
+		if ctx.Err() != nil {
+			return errors.Join(errors.Join(failures...), incompleteReports(ctx, jobs[i:]))
+		}
 		log, logErr := gh(ctx, "", "api", fmt.Sprintf("repos/%s/actions/jobs/%d/logs", repository, j.ID), "--allow-escape-sequences")
+		if ctx.Err() != nil {
+			return errors.Join(errors.Join(failures...), incompleteReports(ctx, jobs[i:]))
+		}
 		problems := parseProblems(string(log), getenv("GITHUB_WORKSPACE"))
 		sourceFailure := len(problems) > 0
 		labels := []string{"detent:todo", "hotfix", "ci-scheduled-failure"}
@@ -194,6 +212,9 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			}
 			if err := destination.file(ctx, fingerprint, p.Summary, body, occurrenceKey(getenv, j, fingerprint), labels, sourceFailure); err != nil {
 				err = fmt.Errorf("report %s (%s): %w", j.Name, p.Key, err)
+				if ctx.Err() != nil {
+					return errors.Join(err, errors.Join(failures...), incompleteReports(ctx, jobs[i:]))
+				}
 				if _, native := destination.(*cloudDestination); !native {
 					return err
 				}
@@ -205,6 +226,19 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 		return destination.success(ctx, getenv)
 	}
 	return errors.Join(failures...)
+}
+
+func incompleteReports(ctx context.Context, jobs []job) error {
+	if ctx.Err() == nil {
+		return nil
+	}
+	var names []string
+	for _, j := range jobs {
+		if (j.Name != "Finalize scheduled validation" || j.Conclusion == "failure") && j.Conclusion != "success" {
+			names = append(names, j.Name)
+		}
+	}
+	return fmt.Errorf("scheduled reporting incomplete for jobs [%s]; retained evidence requires retry: %w", strings.Join(names, ", "), ctx.Err())
 }
 
 func fileProblem(ctx context.Context, gh ghCommand, repository string, issues map[string]int, fingerprint, summary, body string, labels []string) error {

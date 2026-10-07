@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
@@ -169,6 +171,57 @@ func scheduledEnv(key string) string {
 
 func TestReport(t *testing.T) {
 	t.Parallel()
+	t.Run("overall deadline", func(t *testing.T) {
+		for _, tt := range []struct {
+			name         string
+			connectDelay time.Duration
+			commandDelay time.Duration
+			wantCalls    int
+		}{
+			{name: "connection stalls", connectDelay: 3 * time.Minute},
+			{name: "lookup stalls", commandDelay: 3 * time.Minute, wantCalls: 1},
+			{name: "sequential calls share budget", connectDelay: 10 * time.Second, commandDelay: 50 * time.Second, wantCalls: 3},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					start := time.Now()
+					backend := &fakeGH{}
+					calls := 0
+					wait := func(ctx context.Context, duration time.Duration) error {
+						timer := time.NewTimer(duration)
+						defer timer.Stop()
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case <-timer.C:
+							return nil
+						}
+					}
+					command := func(ctx context.Context, input string, args ...string) ([]byte, error) {
+						calls++
+						if err := wait(ctx, tt.commandDelay); err != nil {
+							return nil, err
+						}
+						return backend.command(ctx, input, args...)
+					}
+					connect := func(ctx context.Context, _ func(string) string) (issueDestination, error) {
+						if err := wait(ctx, tt.connectDelay); err != nil {
+							return nil, err
+						}
+						return &githubDestination{command: command, repository: scheduledEnv("GITHUB_REPOSITORY")}, nil
+					}
+					input := `[{"id":1,"name":"Coverage","conclusion":"failure"},{"id":2,"name":"Race","conclusion":"failure"}]`
+					err := run(t.Context(), strings.NewReader(input), command, scheduledEnv, connect)
+					if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 2*time.Minute || calls != tt.wantCalls || len(backend.created) != 0 {
+						t.Fatalf("report = %v after %s, %d calls, %d issues", err, time.Since(start), calls, len(backend.created))
+					}
+					if tt.wantCalls != 0 && !strings.Contains(err.Error(), "incomplete for jobs [Coverage, Race]") {
+						t.Fatalf("unfinished jobs missing from deadline diagnostic: %v", err)
+					}
+				})
+			})
+		}
+	})
 	const jobs = `[{"id":1,"name":"Test Coverage","conclusion":"failure","html_url":"coverage-job"},{"id":2,"name":"Verify race (1)","conclusion":"failure","html_url":"race-job"},{"id":3,"name":"Lint","conclusion":"success"},{"id":4,"name":"Finalize scheduled validation","conclusion":null}]`
 	const coloredProblem = "go-test:github.com/digitaldrywood/detent:TestScheduledCIFinalizerReportsAndTags"
 	for _, tt := range []struct {
@@ -304,6 +357,7 @@ func TestReportFailures(t *testing.T) {
 		{"long diagnostic title remains fileable", `[{"id":1,"name":"Lint","conclusion":"failure"}]`, fakeGH{logs: map[int64]string{1: "internal/one.go:12:3: " + strings.Repeat("diagnostic ", 100)}}, false, 1},
 		{"finalizer failure retains reporting", `[{"id":0,"name":"Finalize scheduled validation","conclusion":"failure"}]`, fakeGH{}, false, 1},
 		{"all green", `[{"id":1,"name":"Lint","conclusion":"success"}]`, fakeGH{}, false, 0},
+		{"cancelled run never loads or files", `[{"id":1,"name":"Lint","conclusion":"failure"},{"id":2,"name":"Coverage","conclusion":"cancelled"}]`, fakeGH{listErr: errors.New("cancelled run must not load issues")}, false, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
