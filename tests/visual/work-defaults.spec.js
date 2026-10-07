@@ -101,7 +101,9 @@ for (const scope of ["all", "project"]) {
     expect(new URL(page.url()).searchParams.has("lanes")).toBe(false);
     expect(await page.evaluate((key) => localStorage.getItem(`detent.work.view:${key}`), scope === "all" ? "" : hub.fixture.project_id)).toBeNull();
     await page.getByTestId("view-list").click();
-    await expect(page.getByTestId("work-list")).toContainText("Backlog");
+    await expect(page.getByTestId("work-list")).not.toContainText("Backlog");
+    await page.getByTestId("list-tab-backlog").click();
+    await expect(page.getByTestId("work-list-row")).toHaveCount(130 * copies);
   });
 
   test(`${scope} completed window reads the Hub total and survives reload and remembered navigation`, async ({ page }) => {

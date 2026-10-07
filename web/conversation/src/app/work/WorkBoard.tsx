@@ -1,10 +1,3 @@
-// The Work board and list (artifact screen 1, design inventory A.1, task W01).
-//
-// One surface, two shapes. The filters, the search, the sort and the result
-// set are shared; `?view=board|list` chooses whether they are stacked into
-// lanes or into rows. That is deliberate: a reader who switches views is
-// asking to see the same issues differently, not to run a different query.
-//
 // Moving a card is optimistic and conflict-aware. The card lands in the new
 // lane immediately, the transition goes to the hub with the revision the card
 // was rendered from, and a `409` puts the card back where it was, reloads, and
@@ -15,7 +8,8 @@ import React from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { LoaderCircleIcon, PlusIcon } from "lucide-react";
 
-import { Button } from "../../components/ui/button.tsx";
+import { ToggleGroup, ToggleGroupItem } from "../../components/ui/toggle-group.tsx";
+import { Button, InlineButton } from "../../components/ui/button.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useResource } from "../account/useResource.ts";
 import { useClient } from "../client.ts";
@@ -25,7 +19,7 @@ import { transitionsFrom } from "./lib/fromWire.ts";
 import { boardStats, sortItems, type WorkItemView } from "./lib/model.ts";
 import { moveItem, useBoard, useWorkHttp } from "./lib/useWork.ts";
 import { useViewState } from "./lib/useViewState.ts";
-import { laneVisible, toggleCollapsed, type WorkViewState } from "./lib/viewState.ts";
+import { effectiveSort, laneVisible, tabMatches, toggleCollapsed, WORK_TABS, type WorkTab, type WorkViewState } from "./lib/viewState.ts";
 import { BoardLane } from "./components/BoardLane.tsx";
 import { FirstRunPanel } from "./components/FirstRun.tsx";
 import {
@@ -48,8 +42,9 @@ function applyFilters(
   view: WorkViewState,
 ): readonly WorkItemView[] {
   return items.filter((item) => {
-    if (view.lanes !== null && !view.lanes.includes(item.state)) return false;
-    if (view.state.length > 0 && !view.state.includes(item.state)) return false;
+    if (view.view === "board" && view.lanes !== null && !view.lanes.includes(item.state)) return false;
+    if (view.view === "list" && !tabMatches(view.tab, item)) return false;
+    if (view.view === "board" && view.state.length > 0 && !view.state.includes(item.state)) return false;
     if (view.priority.length > 0 && (item.priority === null || !view.priority.includes(item.priority)))
       return false;
     if (view.label.length > 0 && !view.label.some((label) => item.labels.includes(label)))
@@ -144,7 +139,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         terminal: board.lanes.find((lane) => lane.name === state)?.terminal ?? item.terminal,
       };
     });
-    return sortItems(applyFilters(overridden, view), view.sort);
+    return sortItems(applyFilters(overridden, view), effectiveSort(view));
   }, [board.items, board.lanes, moved, view]);
 
   const stats = React.useMemo(() => boardStats(items, board.lanes), [items, board.lanes]);
@@ -267,7 +262,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const firstRun =
     noProjects ||
     (board.resolved && board.error === null && board.items.length === 0 && !narrowed(view) &&
-      !board.hasMore);
+      !board.hasMore && (board.totals?.total ?? 0) === 0);
   const firstRunPanel = firstRun ? (
     <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} />
   ) : null;
@@ -306,6 +301,16 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     );
   }
 
+  const backlog = Object.entries(board.totals?.lanes ?? {}).reduce(
+    (total, [lane, count]) => total + (lane.toLowerCase() === "backlog" ? count : 0), 0,
+  );
+  const tabCounts = board.totals === null ? null : {
+    active: board.totals.open - backlog,
+    backlog,
+    closed: board.totals.total - board.totals.open,
+    all: board.totals.total,
+  };
+
   return (
     <>
       {topBar}
@@ -328,11 +333,31 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         stats={stats}
         completedWindow={view.completedWindow}
         totals={board.totals}
-        hasMore={board.hasMore}
+        hasMore={view.view === "board" && board.hasMore}
         loadedCount={board.items.length}
         loading={board.loading}
         onLoadMore={board.loadMore}
       /> : null}
+
+      {view.view === "list" ? (
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 px-3 pb-3 sm:px-5">
+          <ToggleGroup size="segmented" aria-label="Issue list tabs" value={[view.tab]}
+            onValueChange={(values) => { if (values[0]) setView({ ...view, tab: values[0] as WorkTab }); }}>
+            {WORK_TABS.map((tab) => (
+              <ToggleGroupItem key={tab} value={tab} data-testid={`list-tab-${tab}`}>
+                {tab[0]!.toUpperCase() + tab.slice(1)} <span className="text-muted-foreground tabular-nums">{tabCounts?.[tab] ?? "—"}</span>
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-x-1 text-xs text-muted-foreground">
+            {archiveHint === null ? null : <span>{archiveHint}</span>}
+            <InlineButton className="shrink-0 text-xs" aria-pressed={view.archived === true}
+              onClick={() => setView({ ...view, archived: view.archived !== true })}>
+              {view.archived === true ? "Hide archived" : "Show archived"}
+            </InlineButton>
+          </div>
+        </div>
+      ) : null}
 
       {board.error === null ? null : (
         <div className="mx-5 mb-3 rounded-lg border border-error/32 bg-error-surface px-3 py-2 text-error-foreground text-sm">
@@ -350,16 +375,17 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
             Loading work…
           </div>
         ) : null) : firstRunPanel ?? (view.view === "list" ? (
-          <>
-            {archiveHint === null ? null : <p className="px-5 pb-3 text-sm text-muted-foreground">{archiveHint}</p>}
-            <WorkList
-              items={items}
-              showProject={projectId === null}
-              onOpen={open}
-              movesFor={movesFor}
-              onMove={move}
-            />
-          </>
+          <WorkList
+            items={items}
+            tab={view.tab}
+            hasMore={board.hasMore}
+            loading={board.loading}
+            onLoadMore={board.loadMore}
+            showProject={projectId === null}
+            onOpen={open}
+            movesFor={movesFor}
+            onMove={move}
+          />
         ) : (
           <div className="flex h-full items-start gap-3 px-5 pb-5" data-testid="work-board">
             {visible.length === 0 ? (

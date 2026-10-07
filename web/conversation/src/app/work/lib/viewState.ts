@@ -16,7 +16,10 @@ import type { Lane } from "./model.ts";
 export const WORK_VIEWS = ["board", "list"] as const;
 export type WorkViewMode = (typeof WORK_VIEWS)[number];
 
-export const WORK_SORTS = ["priority", "updated", "created", "title"] as const;
+export const WORK_TABS = ["active", "backlog", "closed", "all"] as const;
+export type WorkTab = (typeof WORK_TABS)[number];
+
+export const WORK_SORTS = ["priority", "updated", "created", "title", "closed"] as const;
 export type WorkSort = (typeof WORK_SORTS)[number] | "default";
 
 export const SORT_LABELS: Readonly<Record<WorkSort, string>> = {
@@ -25,6 +28,7 @@ export const SORT_LABELS: Readonly<Record<WorkSort, string>> = {
   updated: "Recently updated",
   created: "Newest",
   title: "Title",
+  closed: "Closed",
 };
 
 export const COMPLETED_WINDOWS = ["48h", "7d", "14d", "all"] as const;
@@ -33,6 +37,7 @@ export type CompletedWindow = (typeof COMPLETED_WINDOWS)[number];
 export interface WorkViewState {
   readonly completedWindow: CompletedWindow;
   readonly view: WorkViewMode;
+  readonly tab: WorkTab;
   readonly archived?: boolean;
   readonly q: string;
   readonly state: readonly string[];
@@ -46,6 +51,7 @@ export interface WorkViewState {
 
 export const DEFAULT_VIEW_STATE: WorkViewState = {
   view: "board",
+  tab: "active",
   q: "",
   state: [],
   label: [],
@@ -90,6 +96,7 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
   const lanes = params.get("lanes");
   return {
     view: WORK_VIEWS.includes(view as WorkViewMode) ? (view as WorkViewMode) : DEFAULT_VIEW_STATE.view,
+    tab: WORK_TABS.find((tab) => tab === params.get("tab")) ?? "active",
     ...(params.get("archived") === "true" ? { archived: true } : {}),
     q: params.get("q") ?? "",
     state: readList(params.get("state")),
@@ -111,6 +118,7 @@ export function serializeViewState(state: WorkViewState): string {
   const params = new URLSearchParams();
   if (state.archived === true) params.set("archived", "true");
   if (state.view !== DEFAULT_VIEW_STATE.view) params.set("view", state.view);
+  if (state.tab !== DEFAULT_VIEW_STATE.tab) params.set("tab", state.tab);
   if (state.q.trim().length > 0) params.set("q", state.q.trim());
   for (const key of FILTER_KEYS) {
     const values = state[key];
@@ -198,4 +206,27 @@ export function writeStoredViewState(projectId: string, state: WorkViewState): v
 /** The scope key a view is remembered under. `""` is the all-projects board. */
 export function viewScopeKey(projectId: string | null): string {
   return projectId ?? "";
+}
+
+export function tabQuery(view: WorkViewState, lanes: readonly Lane[]): { open?: boolean; state: readonly string[] } {
+  if (view.view === "board") return { state: view.state };
+  switch (view.tab) {
+    case "active": return { open: true, state: lanes.filter((lane) => !lane.terminal && lane.name.toLowerCase() !== "backlog").map((lane) => lane.name) };
+    case "backlog": return { state: lanes.filter((lane) => lane.name.toLowerCase() === "backlog").map((lane) => lane.name) };
+    case "closed": return { open: false, state: [] };
+    case "all": return { state: [] };
+  }
+}
+
+export function effectiveSort(view: WorkViewState): WorkSort {
+  return view.view === "list" && view.tab === "closed" && view.sort === "default" ? "closed" : view.sort;
+}
+
+export function tabMatches(tab: WorkTab, item: { readonly state: string; readonly terminal: boolean }): boolean {
+  switch (tab) {
+    case "active": return !item.terminal && item.state.toLowerCase() !== "backlog";
+    case "backlog": return item.state.toLowerCase() === "backlog";
+    case "closed": return item.terminal;
+    case "all": return true;
+  }
 }

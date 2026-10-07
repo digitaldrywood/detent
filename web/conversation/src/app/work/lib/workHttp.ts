@@ -147,6 +147,8 @@ export interface ListWorkItemsInput {
   readonly includeCoordinator?: boolean;
   readonly includeWork?: boolean;
   readonly completedWindow?: string;
+  readonly open?: boolean;
+  readonly sort?: "closed";
   readonly archived?: boolean | "all";
 }
 
@@ -554,6 +556,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         url(`${projectBase(input.projectId)}/work-items`, {
           q: input.q?.trim() || undefined,
           state: input.state,
+          open: input.open === undefined ? undefined : String(input.open),
+          sort: input.sort,
           archived: input.archived === "all" ? "all" : input.archived === true ? "true" : undefined,
           label: input.label,
           assignee: input.assignee,

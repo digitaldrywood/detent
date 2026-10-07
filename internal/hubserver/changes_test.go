@@ -453,6 +453,14 @@ func TestChangeLanding(t *testing.T) {
 		t.Fatalf("landed change = %#v", landed.Landed)
 	}
 
+	projected, _, err := readNativeIssueProjection(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projected.ListChange == nil || projected.ListChange.Branch != land.BaseRef || projected.ListChange.HeadSHA != land.MergeSHA {
+		t.Fatalf("list change = %#v", projected.ListChange)
+	}
+
 	for _, test := range []struct {
 		name     string
 		scope    nativeScope

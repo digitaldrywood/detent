@@ -128,7 +128,7 @@ func validateNativeIssueQuery(params url.Values) error {
 			single[key] = values
 		}
 	}
-	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window")
+	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "sort")
 }
 
 // parseNativeIssueIncludes reads the include query and reports whether it asks
@@ -168,6 +168,9 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 	}
 	if _, err := nativeCompletedWindow(params.Get("completed_window")); err != nil {
 		return tracker.NativeIssuePage{}, err
+	}
+	if sort := params.Get("sort"); sort != "" && sort != "closed" {
+		return tracker.NativeIssuePage{}, nativeInvalid("sort supports closed")
 	}
 	includeWorkspace, err := parseNativeIssueIncludes(params.Get("include"))
 	if err != nil {
@@ -267,7 +270,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		}
 	}
 	newPage := cursor.Issues == nil
-	items, err := s.readIssuePageItems(ctx, query, args, limit, &cursor)
+	items, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, params.Get("sort"))
 	if err != nil {
 		return tracker.NativeIssuePage{}, err
 	}

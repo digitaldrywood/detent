@@ -14,6 +14,8 @@ import {
   toggleFilter,
   toggleLane,
   toggleCollapsed,
+  tabQuery,
+  effectiveSort,
   writeStoredViewState,
 } from "../../src/app/work/lib/viewState.ts";
 
@@ -37,6 +39,22 @@ describe("the board's view state", () => {
     expect(serializeViewState({ ...DEFAULT_VIEW_STATE, archived: false })).toBe("");
   });
 
+  it.each([
+    { tab: "active", query: { open: true, state: ["Todo", "In progress", "Review"] }, sort: "default" },
+    { tab: "backlog", query: { state: ["Backlog"] }, sort: "default" },
+    { tab: "closed", query: { open: false, state: [] }, sort: "closed" },
+    { tab: "all", query: { state: [] }, sort: "default" },
+  ])("round-trips the $tab tab and maps its server query independently of board lanes", ({ tab, query, sort }) => {
+    const state = parseViewState(`view=list&tab=${tab}&lanes=Done&state=Done`);
+    expect(tabQuery(state, LANES)).toEqual(query);
+    expect(effectiveSort(state)).toBe(sort);
+    expect(parseViewState(serializeViewState(state))).toEqual(state);
+    writeStoredViewState("tabs", state);
+    expect(readStoredViewState("tabs")).toEqual(state);
+    expect(tabQuery({ ...state, view: "board" }, LANES)).toEqual({ state: ["Done"] });
+    expect(effectiveSort({ ...state, view: "board" })).toBe("default");
+  });
+
   it("reads every control out of the query string", () => {
     const state = parseViewState(
       "view=list&q=lease&state=Todo,Review&label=bug&assignee=michael&priority=High&sort=updated&lanes=Todo,Done",
@@ -52,8 +70,9 @@ describe("the board's view state", () => {
   });
 
   it("falls back rather than failing on a value it does not know", () => {
-    const state = parseViewState("view=gallery&sort=vibes");
+    const state = parseViewState("view=gallery&sort=vibes&tab=unknown");
     expect(state.view).toBe("board");
+    expect(state.tab).toBe("active");
     expect(state.sort).toBe("default");
   });
 
@@ -62,7 +81,7 @@ describe("the board's view state", () => {
     expect(serializeViewState({ ...DEFAULT_VIEW_STATE, view: "list" })).toBe("view=list");
   });
 
-  it.each(["priority", "updated", "created", "title"])("preserves an explicit %s sort", (sort) => {
+  it.each(["priority", "updated", "created", "title", "closed"])("preserves an explicit %s sort", (sort) => {
     const state = parseViewState(`sort=${sort}`);
     expect(state.sort).toBe(sort);
     expect(serializeViewState(state)).toBe(`sort=${sort}`);
