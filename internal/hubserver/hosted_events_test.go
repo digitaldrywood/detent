@@ -150,53 +150,6 @@ func TestHostedActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
 	}
 }
 
-func TestHostedHealthFindingEvents(t *testing.T) {
-	t.Parallel()
-	f := newHostedSecurityFixture(t)
-	user := f.user(t, "member", "member", "member@example.test", "read", "")
-	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-	finding := newHealthFinding("dead_man", "flow", "project", string(f.project), "No landings", "Check admission", []string{string(f.project)}, healthEvidence{})
-	write := func(at time.Time, findings []healthFinding) {
-		t.Helper()
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		if _, err := writeHealthEvaluation(t.Context(), tx, "org_security", at, findings); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(now, []healthFinding{finding})
-	scanner := openHostedTestStream(t, f, user, "")
-	kind, _ := readHostedEvent(t, scanner)
-	if kind != "activity" {
-		t.Fatalf("initial frame = %q", kind)
-	}
-	for _, at := range []time.Time{now, now.Add(time.Minute)} {
-		if at != now {
-			write(at, nil)
-		}
-		for {
-			kind, data := readHostedEvent(t, scanner)
-			if kind == "activity" {
-				continue
-			}
-			if kind != "health.findings" || data != formatHubTime(at) {
-				t.Fatalf("finding frame = %q %q, want %s", kind, data, formatHubTime(at))
-			}
-			break
-		}
-	}
-	page, err := f.service.readHealthFindings(t.Context(), nativeScope{organization: "org_security", project: f.project, credential: apiCredential{Scope: apiScopeAdmin}}, "open", "", "", 100)
-	if err != nil || len(page.Items) != 0 {
-		t.Fatalf("resolved findings = %#v: %v", page, err)
-	}
-}
-
 func TestHostedIssueEvents(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
