@@ -1628,6 +1628,17 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		"workspace_path", info.Path,
 		"workspace_branch", info.Branch,
 	)
+	if nativeLanding {
+		if cleaner, ok := runWorkspace.(workspace.LandingWorkspaceCleaner); ok {
+			defer func() {
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+				defer cancel()
+				if err := cleaner.CleanupLanding(cleanupCtx, info, workspaceIssue); err != nil {
+					r.logger.Warn("landing workspace left behind", "path", info.Path, "error", err)
+				}
+			}()
+		}
+	}
 
 	if req.Execution != nil {
 		if err := req.Execution.Validate(ctx); err != nil {
