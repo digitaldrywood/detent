@@ -69,7 +69,8 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "refused", ObservedAt: s.cfg.Now().UTC()}
 	targetMatches := retry || request.ExpectedBuildRevision == observed.Revision && request.Version == observed.AvailableVersion
 	if request.FollowHub {
-		targetMatches = retry || request.ExpectedBuildRevision == observed.Revision && !IsDevelopmentVersion(request.Version) && strings.TrimPrefix(request.Version, "v") != strings.TrimPrefix(running.Version, "v")
+		comparison, err := CompareVersions(request.Version, running.Version)
+		targetMatches = err == nil && comparison > 0 && (retry || request.ExpectedBuildRevision == observed.Revision)
 	}
 	if request.Urgent {
 		comparison, err := CompareVersions(request.Version, running.Version)

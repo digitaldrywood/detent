@@ -53,6 +53,15 @@ describe("runner rows", () => {
   ])("shows the enrolled update outcome %s", (status, label) => {
     renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, update: { status, desired: { version: "1.2.4" } } }] });
     expect(screen.getByText(`${label} · 1.2.4`)).toBeTruthy();
+    if (status === "refused") {
+      expect(screen.getByText(/Needs human: reinstall/)).toBeTruthy();
+      expect(screen.getByText("curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh")).toBeTruthy();
+    }
+  });
+  it.each(["0.117.47", "0.117.50"])("explains the one-time reinstall for %s", (version) => {
+    renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, version, claim_refusal_reason: "Too old to take work, needs 0.117.51", update: { status: "unavailable", desired: null } }] });
+    expect(screen.getByText(/One-time manual reinstall required/)).toBeTruthy();
+    expect(screen.getByText("curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh")).toBeTruthy();
   });
   it("refreshes active and historical names through the scoped names projection", async () => {
     vi.useFakeTimers();

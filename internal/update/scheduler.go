@@ -323,7 +323,6 @@ func (s *Scheduler) ApplyRelease(ctx context.Context, fromRelease bool) (Status,
 	defer s.operationMu.Unlock()
 	opts := s.cfg.ApplyOptions
 	opts.FromRelease = fromRelease
-	opts.PublishedRelease = true
 	return s.drainAndApplyWithOptionsLocked(ctx, opts)
 }
 

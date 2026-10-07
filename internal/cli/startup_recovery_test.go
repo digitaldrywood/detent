@@ -198,7 +198,7 @@ func TestRuntimeUpdaterReleaseDiscoveryForEnrolledRunner(t *testing.T) {
 	previousTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = previousTransport })
 	for _, enrolled := range []bool{false, true} {
-		t.Run(map[bool]string{false: "legacy Hub target", true: "enrolled release discovery"}[enrolled], func(t *testing.T) {
+		t.Run(map[bool]string{false: "Hub without enrollment", true: "enrolled release discovery"}[enrolled], func(t *testing.T) {
 			releaseReads, hubReads := 0, 0
 			http.DefaultTransport = readinessRoundTripper(func(request *http.Request) (*http.Response, error) {
 				body := `{"version":"operator-landed-a69c4b1dd060"}`
@@ -227,12 +227,8 @@ func TestRuntimeUpdaterReleaseDiscoveryForEnrolledRunner(t *testing.T) {
 				t.Fatal(err)
 			}
 			status, err := updater.Check(t.Context())
-			if enrolled {
-				if err != nil || !status.UpdateAvailable || status.LatestVersion != "0.117.47" || releaseReads != 1 || hubReads != 0 {
-					t.Fatalf("release discovery = %+v, error = %v, releases = %d, Hub reads = %d", status, err, releaseReads, hubReads)
-				}
-			} else if err == nil || !strings.Contains(err.Error(), "invalid Hub update target") || hubReads != 1 || releaseReads != 0 {
-				t.Fatalf("legacy Hub target = %+v, error = %v, releases = %d, Hub reads = %d", status, err, releaseReads, hubReads)
+			if err != nil || !status.UpdateAvailable || status.LatestVersion != "0.117.47" || releaseReads != 1 || hubReads != 0 {
+				t.Fatalf("release discovery = %+v, error = %v, releases = %d, Hub reads = %d", status, err, releaseReads, hubReads)
 			}
 		})
 	}

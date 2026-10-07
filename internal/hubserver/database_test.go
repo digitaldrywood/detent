@@ -1050,6 +1050,9 @@ func TestBackupCancellationRemovesPartialDestination(t *testing.T) {
 
 func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
+	if cfg.RunnerReleaseClient == nil {
+		cfg.RunnerReleaseClient = &runnerReleaseFixture{}
+	}
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}

@@ -2,6 +2,24 @@
 
 [Back to README](../README.md#documentation)
 
+Enrolled runners learn the target version on every heartbeat after its signed
+release assets are published. They stop taking new work, finish active leases,
+install that exact release and restart. The claim version gate remains a backstop.
+A failed update is reported on the next heartbeat and the runner card requests
+human help with the manual reinstall command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh
+```
+
+Restart the runner service after a manual reinstall.
+
+Runners on 0.117.50 and earlier need a one-time manual reinstall of the release
+that introduces heartbeat updates if their scheduled updater has stalled. Run
+`detent update --yes --from-release` on the runner host. If the old binary cannot
+coordinate with its running service, install the signed release using the
+[installation instructions](../README.md#installation) and restart the service.
+
 GitHub Actions runs the complete suite hourly on a pinned `develop` commit.
 The scheduled workflow uses the default branch's cron. Scheduled and manual
 runs validate the pinned current `develop` commit even if it already has a

@@ -38,6 +38,8 @@ export function HostCard({
     drifted: "Version changed since update",
     unavailable: "Update unavailable",
   };
+  const updateNeedsHuman = runner.update?.status === "refused" || runner.update?.status === "uncertain";
+  const legacyReinstall = !!runner.claim_refusal_reason && (runner.update?.status === "unavailable" || /^v?0\.117\.(?:[0-9]|[1-4][0-9]|50)$/.test(runner.version ?? ""));
   const updateStatus = runner.update?.desired ? updateLabels[runner.update.status] ?? "Update pending" : undefined;
   return (
     <article
@@ -50,6 +52,7 @@ export function HostCard({
         <span aria-hidden="true" className={cn("mt-1.5 size-2 shrink-0 rounded-full", healthTone(runner.health))} />
         <div className="min-w-0 space-y-1">
           <h3 className="break-words text-sm font-medium">{runner.display_name}</h3>
+          {updateNeedsHuman ? <p className="text-xs text-warning-foreground">Needs human: reinstall the signed release with <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : legacyReinstall ? <p className="text-xs text-warning-foreground">One-time manual reinstall required to enable heartbeat updates: <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : null}
           {updateStatus ? <p className="text-xs text-muted-foreground">{updateStatus} · {runner.update?.desired?.version}</p> : null}
         </div>
       </div>

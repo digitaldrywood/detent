@@ -34,6 +34,7 @@ type DashboardReadClient struct {
 	baseURL              *url.URL
 	address              dashboardAddress
 	credential           string
+	configuredCredential string
 	operatorConnectionID string
 	http                 dashboardHTTPClient
 	timeout              time.Duration
@@ -140,11 +141,12 @@ func newDashboardReadClient(
 		return nil, errors.New("dashboard API HTTP client is not configured")
 	}
 	return &DashboardReadClient{
-		baseURL:    baseURL,
-		address:    address,
-		credential: credential,
-		http:       dashboardHTTPClientFunc(opts.httpDo),
-		timeout:    dashboardReadTimeout,
+		baseURL:              baseURL,
+		address:              address,
+		credential:           credential,
+		configuredCredential: strings.TrimSpace(boot.Global.APIToken),
+		http:                 dashboardHTTPClientFunc(opts.httpDo),
+		timeout:              dashboardReadTimeout,
 	}, nil
 }
 

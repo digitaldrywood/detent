@@ -41,6 +41,12 @@ func readUrgentRunnerUpdate(ctx context.Context, db nativeQueryer, organization 
 }
 
 func applyUrgentRunnerRouting(ctx context.Context, db nativeQueryer, r *runnerauth.Runner) error {
+	if request := r.UpdateRequest; request != nil && request.FollowHub && r.Update != nil {
+		comparison, err := update.CompareVersions(request.Version, r.Update.Running.Version)
+		if err == nil && comparison > 0 && r.State == "active" {
+			r.State = "draining"
+		}
+	}
 	urgent, err := readUrgentRunnerUpdate(ctx, db, r.OrganizationID)
 	if err != nil || urgent.Request == nil {
 		return err

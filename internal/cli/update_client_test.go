@@ -28,28 +28,43 @@ func TestApplyRunningUpdate(t *testing.T) {
 
 	t.Parallel()
 	for _, test := range []struct {
-		name             string
-		status           int
-		wantErr          bool
-		legacy           bool
-		count            int
-		large            bool
-		ignoreProjection bool
+		name                             string
+		status                           int
+		wantErr                          bool
+		legacy                           bool
+		count                            int
+		large                            bool
+		ignoreProjection                 bool
+		credential, configuredCredential string
 	}{
-		{"accepted", http.StatusAccepted, false, false, 2, false, false},
-		{"large fleet", http.StatusAccepted, false, false, 202, false, false},
-		{"oversized fleet state", http.StatusAccepted, false, false, 202, true, false},
-		{"old large instance reports failed pre-check", 0, true, false, 202, true, true},
-		{"authorization denied", http.StatusForbidden, true, false, 2, false, false},
-		{"unavailable", http.StatusServiceUnavailable, true, false, 2, false, false},
-		{"old instance", http.StatusServiceUnavailable, true, true, 2, false, false},
+		{"accepted", http.StatusAccepted, false, false, 2, false, false, "", ""},
+		{"large fleet", http.StatusAccepted, false, false, 202, false, false, "", ""},
+		{"oversized fleet state", http.StatusAccepted, false, false, 202, true, false, "", ""},
+		{"old large instance reports failed pre-check", 0, true, false, 202, true, true, "", ""},
+		{"authorization denied", http.StatusForbidden, true, false, 2, false, false, "", ""},
+		{"unavailable", http.StatusServiceUnavailable, true, false, 2, false, false, "", ""},
+		{"old instance", http.StatusServiceUnavailable, true, true, 2, false, false, "", ""},
+		{"enrolled runner with Cloud environment token", http.StatusAccepted, false, false, 2, false, false, "cloud-token", "fixture"},
+		{"enrolled runner without a local token", http.StatusAccepted, false, false, 2, false, false, "cloud-token", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			reported := make(chan struct{})
 			var output bytes.Buffer
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Authorization") != "Bearer fixture" {
-					t.Error("missing credential")
+				expected := "Bearer fixture"
+				if test.credential != "" {
+					if r.Header.Get("Authorization") == "Bearer cloud-token" {
+						w.WriteHeader(http.StatusUnauthorized)
+						io.WriteString(w, `{"error":{"code":"invalid_token","message":"Invalid API token"}}`)
+						return
+					}
+					expected = ""
+					if test.configuredCredential != "" {
+						expected = "Bearer " + test.configuredCredential
+					}
+				}
+				if r.Header.Get("Authorization") != expected {
+					t.Error("missing local credential")
 				}
 				if r.Method == http.MethodGet {
 					if test.legacy {
@@ -98,7 +113,10 @@ func TestApplyRunningUpdate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			client := &DashboardReadClient{baseURL: address, credential: "fixture", http: server.Client()}
+			client := &DashboardReadClient{baseURL: address, credential: "fixture", configuredCredential: test.configuredCredential, http: server.Client()}
+			if test.credential != "" {
+				client.credential = test.credential
+			}
 			writer := &drainReportWriter{Writer: &output, reported: reported}
 			status, err := client.applyRunningUpdate(context.Background(), detentupdate.ApplyOptions{AssumeYes: true, FromRelease: true, Stderr: writer})
 			if (err != nil) != test.wantErr {

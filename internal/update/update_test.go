@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -536,8 +535,6 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		brew            bool
 		explicit        bool
 		fromRelease     bool
-		hubTarget       string
-		hubError        error
 		invalidSelector string
 		missingReceipt  bool
 		failureStage    string
@@ -552,12 +549,10 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		{name: "checksum failure restores drain", current: "1.2.3", failureStage: "checksum", failureReason: "Update checksum verification failed"},
 		{name: "install failure restores drain", current: "1.2.3", failureStage: "install", failureReason: "Update installation failed"},
 		{name: "urgent restart failure restores drain", current: "1.2.3", urgent: true, failureStage: "restart", failureReason: "Update restart request was declined"},
-		{name: "explicit release refuses wrong lock selector", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060", invalidSelector: "DETENT_INSTALL_LOCK"},
-		{name: "explicit release refuses wrong state selector", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060", invalidSelector: "DETENT_STATE_DIR"},
-		{name: "explicit release with operator Hub build", current: "1.2.3", explicit: true, hubTarget: "operator-landed-a69c4b1dd060"},
-		{name: "explicit from-release with operator Hub build", current: "1.2.3", explicit: true, fromRelease: true, hubTarget: "operator-landed-a69c4b1dd060"},
-		{name: "explicit release ignores older Hub pin", current: "1.2.3", explicit: true, hubTarget: "1.2.2"},
-		{name: "explicit release when Hub is unavailable", current: "1.2.3", explicit: true, hubError: errors.New("Hub unavailable")},
+		{name: "explicit release refuses wrong lock selector", current: "1.2.3", explicit: true, invalidSelector: "DETENT_INSTALL_LOCK"},
+		{name: "explicit release refuses wrong state selector", current: "1.2.3", explicit: true, invalidSelector: "DETENT_STATE_DIR"},
+		{name: "explicit release", current: "1.2.3", explicit: true},
+		{name: "explicit from-release", current: "1.2.3", explicit: true, fromRelease: true},
 		{name: "follow Hub below latest", current: "1.2.3", follow: true},
 		{name: "runner ahead of Hub", current: "1.2.5", follow: true},
 		{name: "installed development build", current: "operator-landed-abcdef123456", follow: true},
@@ -646,7 +641,11 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/releases":
-					if err := json.NewEncoder(w).Encode([]Release{release}); err != nil {
+					releases := []Release{release}
+					if test.follow {
+						releases = append(releases, Release{TagName: "v9.0.0"})
+					}
+					if err := json.NewEncoder(w).Encode(releases); err != nil {
 						t.Fatal(err)
 					}
 				case "/releases/tags/v1.2.4":
@@ -692,14 +691,9 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				if _, err := service.Check(t.Context()); err != nil {
 					t.Fatal(err)
 				}
-			} else {
-				service.cfg.TargetVersion = func(context.Context) (string, error) { return "1.2.99", nil }
 			}
 			if test.brew {
 				service.cfg.EvalSymlinks = func(string) (string, error) { return "/opt/homebrew/Cellar/detent/1.2.3/bin/detent", nil }
-			}
-			if !test.follow {
-				service.cfg.TargetVersion = func(context.Context) (string, error) { return "v1.2.4", nil }
 			}
 			if !test.follow && !test.explicit {
 				stale, staleErr := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.5"})
@@ -749,7 +743,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				}
 				switch test.failureStage {
 				case "target":
-					service.cfg.TargetVersion = func(context.Context) (string, error) { return "operator-landed-a69c4b1dd060", nil }
+					httpClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("release unavailable") })
 				case "download":
 					httpClient.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 						if r.URL.Path == "/checksums" {
@@ -807,7 +801,6 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			}
 			var status Status
 			if test.explicit {
-				service.cfg.TargetVersion = func(context.Context) (string, error) { return test.hubTarget, test.hubError }
 				drains, restarts, releases := 0, 0, 0
 				scheduler, schedulerErr := NewScheduler(SchedulerConfig{
 					CheckInterval: time.Hour, Updater: service, ApplyOptions: applyOptions,
@@ -1204,98 +1197,6 @@ func TestServiceCheckReportsCriticalReleaseMarker(t *testing.T) {
 			}
 			if status.Critical != tt.critical {
 				t.Fatalf("Check().Critical = %t, want %t", status.Critical, tt.critical)
-			}
-		})
-	}
-}
-
-func TestServiceChoosesHubUpdateTarget(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name        string
-		target      string
-		hubError    error
-		release     string
-		draft       bool
-		wantTag     string
-		available   bool
-		wantError   bool
-		wantPath    string
-		applyTarget string
-		applyError  error
-		urgent      bool
-	}{
-		{name: "Hub pinned below latest", target: "1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4"},
-		{name: "Hub older than runner", target: "v1.2.2", wantTag: "v1.2.2"},
-		{name: "Hub matches runner", target: "v1.2.3", wantTag: "v1.2.3"},
-		{name: "Hub unreachable", hubError: errors.New("Hub unavailable"), wantError: true},
-		{name: "Hub missing version", wantError: true},
-		{name: "Hub development version", target: "dev", wantError: true},
-		{name: "Hub pin has no release", target: "v1.2.4", wantError: true, wantPath: "/releases/tags/v1.2.4"},
-		{name: "Hub pin resolves to wrong release", target: "v1.2.4", release: "v1.2.5", wantError: true, wantPath: "/releases/tags/v1.2.4"},
-		{name: "Hub pin is draft", target: "v1.2.4", release: "v1.2.4", draft: true, wantError: true, wantPath: "/releases/tags/v1.2.4"},
-		{name: "Hub explicitly pins prerelease", target: "v1.2.4-rc.1", release: "v1.2.4-rc.1", wantTag: "v1.2.4-rc.1", available: true, wantPath: "/releases/tags/v1.2.4-rc.1"},
-		{name: "Hub rolls back before apply", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyTarget: "v1.2.2"},
-		{name: "Hub unreachable before apply", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyError: errors.New("Hub unavailable before apply")},
-		{name: "urgent target survives Hub advancing during drain", target: "v1.2.4", release: "v1.2.4", wantTag: "v1.2.4", available: true, wantPath: "/releases/tags/v1.2.4", applyTarget: "v1.2.5", urgent: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			var paths []string
-			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				paths = append(paths, r.URL.Path)
-				var output any = Release{TagName: test.release, Draft: test.draft, Prerelease: strings.Contains(test.release, "-rc.")}
-				status := http.StatusOK
-				if r.URL.Path == "/releases" {
-					output = []Release{{TagName: "v9.0.0"}}
-				} else if test.release == "" {
-					status = http.StatusNotFound
-				}
-				payload, err := json.Marshal(output)
-				if err != nil {
-					return nil, err
-				}
-				return &http.Response{StatusCode: status, Status: http.StatusText(status), Body: io.NopCloser(bytes.NewReader(payload)), Header: make(http.Header)}, nil
-			})}
-			target, hubError := test.target, test.hubError
-			service := NewService(Config{
-				CurrentVersion: "1.2.3",
-				ExecutablePath: "/opt/detent/bin/detent",
-				GOOS:           "linux",
-				GOARCH:         "amd64",
-				Client:         NewGitHubClient(GitHubClientConfig{APIBase: "https://releases.example.test", HTTPClient: client}),
-				TargetVersion:  func(context.Context) (string, error) { return target, hubError },
-			})
-			status, err := service.Check(t.Context())
-			if (err != nil) != test.wantError {
-				t.Fatalf("Check() error = %v, want error = %t", err, test.wantError)
-			}
-			if status.LatestTag != test.wantTag || status.UpdateAvailable != test.available {
-				t.Fatalf("Check() = %#v, want tag %q, available %t", status, test.wantTag, test.available)
-			}
-			if test.wantPath == "" && len(paths) != 0 || test.wantPath != "" && (len(paths) != 1 || paths[0] != test.wantPath) {
-				t.Fatalf("release requests = %v, want only %q", paths, test.wantPath)
-			}
-			if test.hubError != nil && !errors.Is(err, test.hubError) {
-				t.Fatalf("Check() lost Hub error: %v", err)
-			}
-			if test.applyTarget != "" || test.applyError != nil {
-				target, hubError = test.applyTarget, test.applyError
-				if test.urgent {
-					selected, err := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.4", Urgent: true})
-					if !errors.Is(err, ErrRefused) || selected.LatestTag != "v1.2.4" || len(paths) != 2 || paths[1] != test.wantPath {
-						t.Fatalf("urgent target changed during drain: %+v, %v, requests=%v", selected, err, paths)
-					}
-					return
-				}
-				applied, err := service.Apply(t.Context(), ApplyOptions{AssumeYes: true})
-				if !errors.Is(err, test.applyError) || applied.UpdateAvailable || len(paths) != 1 {
-					t.Fatalf("Apply() reused obsolete target: status %#v, error %v, release requests %v", applied, err, paths)
-				}
-				if test.applyError == nil && (applied.Action != ActionUpToDate || applied.LatestTag != test.applyTarget) {
-					t.Fatalf("Apply() = %#v, want up to date at Hub target %s", applied, test.applyTarget)
-				}
 			}
 		})
 	}

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,11 +27,13 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 		supported bool
 		denied    bool
 		dispatch  bool
+		draining  bool
 	}{
-		{"older Hub", false, false, false},
-		{"capacity owner Hub", true, false, false},
-		{"dispatch heartbeat", true, false, true},
-		{"denied heartbeat", true, true, false},
+		{"older Hub", false, false, false, false},
+		{"capacity owner Hub", true, false, false, false},
+		{"dispatch heartbeat", true, false, true, false},
+		{"denied heartbeat", true, true, false, false},
+		{"heartbeat upgrade stops claims", true, false, true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -63,6 +67,11 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			projectCalls, projectApplications := 0, 0
 			projectReport := runnerauth.ProjectConfiguration{ProjectID: "prj_test", Authority: "local_global_configuration", Source: "unavailable", ObservedAt: observedAt}
 			snapshot := runnerauth.RoutingSnapshot{ProjectConfigurationRequest: projectRequest, RunnerID: file.Identity.RunnerID, Revision: 2, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 6, CapacityRequest: &request, UpdateRequest: &updateRequest}.Normalized()}
+			if test.draining {
+				snapshot.Routing.State = "draining"
+				updateRequest.FollowHub = true
+				snapshot.Routing.UpdateRequest = &updateRequest
+			}
 			calls, observations, applications, appliedLimit := 0, 0, 0, 2
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -181,7 +190,13 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			})
 			for range 2 {
 				var err error
-				if test.dispatch {
+				if test.draining {
+					var issues []connector.Issue
+					issues, err = scheduler.fetchNativeCandidate(t.Context(), orchestrator.SchedulingRequest{ProjectID: "native"}, scheduler.nativeProjects["native"])
+					if len(issues) != 0 {
+						t.Fatal("claimed new work during heartbeat update")
+					}
+				} else if test.dispatch {
 					err = scheduler.ensureNativeMachine(t.Context(), scheduler.nativeProjects["native"])
 				} else {
 					err = scheduler.Heartbeat(t.Context())

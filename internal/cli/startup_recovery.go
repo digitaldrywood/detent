@@ -2,12 +2,10 @@ package cli
 
 import (
 	"context"
-	"net/http"
 	"os"
 	"runtime"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/notify"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
@@ -71,19 +69,6 @@ func newRuntimeUpdater(cfg BootConfig, executable string, version string) (deten
 		Client: detentupdate.NewGitHubClient(detentupdate.GitHubClientConfig{
 			Token: strings.TrimSpace(cfg.Runtime.GitHubToken.Value),
 		}),
-	}
-	if cfg.Global.Client.Configured() && strings.TrimSpace(cfg.Global.Client.IdentityFile) == "" {
-		settings := cfg.Global.Client.Normalized()
-		client, err := hubclient.New(hubclient.Config{
-			URL:          settings.URL,
-			IdentityFile: settings.IdentityFile,
-			TokenSource:  func() string { return os.Getenv(settings.TokenEnvironment) },
-			HTTPClient:   &http.Client{Timeout: settings.RequestTimeout()},
-		})
-		if err != nil {
-			return nil, err
-		}
-		updateConfig.TargetVersion = client.Version
 	}
 	return detentupdate.NewService(updateConfig), nil
 }
