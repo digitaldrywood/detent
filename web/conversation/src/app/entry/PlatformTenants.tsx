@@ -68,7 +68,7 @@ const unavailableLabels: Record<string, string> = {
 };
 export type TenantSort = "name" | "state" | "created_at";
 
-export function filterTenants(
+function filterTenants(
   organizations: readonly PlatformOrganization[],
   search: string,
   state: string,

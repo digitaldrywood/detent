@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 //
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import React from "react";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,7 +11,6 @@ import { type EntryApi, SIGN_IN_PLATFORM } from "../../src/app/entry/api.ts";
 import {
   EntryApiContext,
 } from "../../src/app/entry/EntryScreens.tsx";
-import { filterTenants } from "../../src/app/entry/PlatformTenants.tsx";
 import { formatBytes } from "../../src/app/entry/PlatformConsole.tsx";
 import { makeEntryRouter } from "../../src/app/entry/router.tsx";
 import { STALE_PLAN_MESSAGE } from "../../src/app/entry/ComplimentaryPlans.tsx";
@@ -426,19 +426,46 @@ describe("complimentary plans", () => {
 });
 
 describe("tenant discovery and detail", () => {
-  it("filters name, id and creator and combines state and plan filters with sorting", () => {
-    const values = organizations.organizations.map((tenant, index) => ({ ...tenant, plan: index === 0 ? "growth" : "free" }));
-    expect(filterTenants(values, "DANA", "all", "all", "created_at").map((tenant) => tenant.id)).toEqual(["org_alpha"]);
-    expect(filterTenants(values, "org_beta", "all", "all", "created_at").map((tenant) => tenant.name)).toEqual(["Beta"]);
-    expect(filterTenants(values, "Alpha", "failed", "all", "name")).toEqual([]);
-    expect(filterTenants(values, "", "ready", "growth", "name")).toHaveLength(1);
-    expect(filterTenants(values, "", "ready", "free", "name")).toEqual([]);
-    for (const sort of ["name", "state", "created_at"] as const) {
-      expect(filterTenants(values, "", "all", "all", sort, true)).toEqual(filterTenants(values, "", "all", "all", sort).reverse());
+  it("filters name, id and creator and combines state and plan filters with sorting", async () => {
+    const user = userEvent.setup();
+    const values = [
+      { ...organizations.organizations[0]!, plan: "growth", created_at: "2026-09-22T10:00:00Z" },
+      { ...organizations.organizations[1]!, plan: "free" },
+    ];
+    renderPlatform(fakeApi({ platformOrganizations: vi.fn(async () => ({ ...organizations, organizations: values })) }));
+    const table = await screen.findByRole("table", { name: "Tenants" });
+    const names = () => within(table).getAllByRole("row").slice(1).map((row) => within(row).getByRole("button").textContent);
+    expect(names()).toEqual(["Beta", "Alpha"]);
+    for (const [header, ascending, descending] of [
+      ["Tenant", ["Alpha", "Beta"], ["Beta", "Alpha"]],
+      ["State", ["Beta", "Alpha"], ["Alpha", "Beta"]],
+      ["Created", ["Beta", "Alpha"], ["Alpha", "Beta"]],
+    ] as const) {
+      fireEvent.click(within(table).getByRole("button", { name: header }));
+      expect(names()).toEqual(ascending);
+      expect(within(table).getByRole("columnheader", { name: header }).getAttribute("aria-sort")).toBe("ascending");
+      fireEvent.click(within(table).getByRole("button", { name: header }));
+      expect(names()).toEqual(descending);
+      expect(within(table).getByRole("columnheader", { name: header }).getAttribute("aria-sort")).toBe("descending");
     }
+    const search = screen.getByRole("textbox", { name: "Search tenants" });
+    for (const query of ["DANA", "org_alpha", "alpha"]) {
+      fireEvent.change(search, { target: { value: query } });
+      expect(names()).toEqual(["Alpha"]);
+    }
+    fireEvent.change(search, { target: { value: "" } });
+    await user.click(screen.getByRole("combobox", { name: "State" }));
+    await user.click(await screen.findByRole("option", { name: "ready" }));
+    await user.click(screen.getByRole("combobox", { name: "Plan" }));
+    await user.click(await screen.findByRole("option", { name: "growth" }));
+    expect(names()).toEqual(["Alpha"]);
+    expect(screen.getByText("1 tenants · 1 ready")).toBeTruthy();
+    await user.click(screen.getByRole("combobox", { name: "Plan" }));
+    await user.click(await screen.findByRole("option", { name: "free" }));
+    expect(screen.getByText("No tenants match")).toBeTruthy();
   });
 
-  it("updates counts, empty results, unavailable cells and sortable headers", async () => {
+  it("updates counts, empty results and unavailable cells", async () => {
     renderPlatform(fakeApi());
     const table = await screen.findByRole("table", { name: "Tenants" });
     expect(within(table).getAllByText("—")).toHaveLength(6);
@@ -448,11 +475,7 @@ describe("tenant discovery and detail", () => {
     expect(within(table).queryByRole("button", { name: "Alpha" })).toBeNull();
     fireEvent.change(screen.getByRole("textbox", { name: "Search tenants" }), { target: { value: "missing" } });
     expect(screen.getByText("No tenants match")).toBeTruthy();
-    fireEvent.change(screen.getByRole("textbox", { name: "Search tenants" }), { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: "Tenant" }));
-    fireEvent.click(screen.getByRole("button", { name: "Tenant" }));
-    expect(screen.getByRole("columnheader", { name: /Tenant/ }).getAttribute("aria-sort")).toBe("descending");
-    expect(within(screen.getAllByRole("row")[1]!).getByRole("button", { name: "Beta" })).toBeTruthy();
+
   });
 
   it.each(["viewer", "support", "billing", "admin"])("opens an addressable sheet with role-gated actions for %s", async (role) => {
