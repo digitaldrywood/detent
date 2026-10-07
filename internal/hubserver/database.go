@@ -211,7 +211,6 @@ func sqliteDSN(path string, busyTimeout time.Duration) string {
 	query := databaseURL.Query()
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMillis(busyTimeout)))
 	query.Add("_pragma", "foreign_keys(1)")
-	query.Add("_pragma", "locking_mode(EXCLUSIVE)")
 	query.Add("_pragma", "synchronous(FULL)")
 	databaseURL.RawQuery = query.Encode()
 	return databaseURL.String()
@@ -250,11 +249,11 @@ func (d *database) configure(ctx context.Context, busyTimeout time.Duration) err
 	}
 
 	var lockingMode string
-	if err := d.db.QueryRowContext(ctx, "PRAGMA locking_mode = EXCLUSIVE").Scan(&lockingMode); err != nil {
-		return fmt.Errorf("enable hub sqlite exclusive locking: %w", err)
+	if err := d.db.QueryRowContext(ctx, "PRAGMA locking_mode").Scan(&lockingMode); err != nil {
+		return fmt.Errorf("read hub sqlite locking mode: %w", err)
 	}
-	if !strings.EqualFold(lockingMode, "exclusive") {
-		return fmt.Errorf("hub sqlite locking mode is %q, want exclusive", lockingMode)
+	if !strings.EqualFold(lockingMode, "normal") {
+		return fmt.Errorf("hub sqlite locking mode is %q, want normal so live replication can read it", lockingMode)
 	}
 	if _, err := d.db.ExecContext(ctx, "BEGIN EXCLUSIVE"); err != nil {
 		return fmt.Errorf("acquire hub sqlite ownership: %w", err)
