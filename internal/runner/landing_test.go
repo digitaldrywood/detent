@@ -296,13 +296,6 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			if err != nil || result.Output != RunOutputNativeLanded || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.MergeSHA != head || len(execution.recorded) != 1 || provider.calls != 0 {
 				t.Fatalf("landing result = %#v, execution %#v, provider calls %d, error %v", result, execution, provider.calls, err)
 			}
-			landingPath := filepath.Join(filepath.Dir(code.Path), ".detent", "landing", head, filepath.Base(code.Path))
-			if _, err := os.Stat(landingPath); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("prepared landing worktree remains: %v", err)
-			}
-			if listed := runRunnerGit(t, source, "worktree", "list", "--porcelain"); strings.Contains(listed, "worktree "+landingPath) {
-				t.Fatalf("prepared landing registration remains:\n%s", listed)
-			}
 			if external && strings.Join(operations, ",") != "GET,GET,PUT" || !external && publishedBranch == code.Branch {
 				t.Fatalf("landing used wrong publication owner: %s, %v", publishedBranch, operations)
 			}

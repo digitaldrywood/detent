@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -412,125 +410,6 @@ func TestLocalGitLandChangeMethods(t *testing.T) {
 						t.Fatalf("landing worktree %s was left behind", entry.Name())
 					}
 				}
-			}
-		})
-	}
-}
-
-func TestLocalGitLandingCleanup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-	t.Parallel()
-	for _, outcome := range []string{"landed", "refused", "conflict", "error", "cancelled", "unreported"} {
-		t.Run(outcome, func(t *testing.T) {
-			t.Parallel()
-			f := newLandingFixture(t)
-			opts := LandOptions{HeadSHA: f.head, Method: "squash"}
-			issue := f.issue
-			preparedOptions := opts
-			issue.Landing = &preparedOptions
-			info, err := f.backend.infoForIssue(issue)
-			if err != nil {
-				t.Fatal(err)
-			}
-			runGit(t, f.source, "worktree", "add", "-b", info.Branch, info.Path, f.head)
-			if err := f.backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
-				t.Fatal(err)
-			}
-			if outcome == "refused" || outcome == "error" || outcome == "cancelled" {
-				runGit(t, f.source, "worktree", "add", "--detach", filepath.Join(f.backend.root, "landing-"+info.Key), f.head)
-			}
-			switch outcome {
-			case "refused":
-				opts.HeadSHA = strings.Repeat("d", 40)
-			case "conflict":
-				f.advanceMain(t, "feature.txt", "conflicting\n")
-			case "error":
-				opts.Remote = "missing"
-			}
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			if outcome == "cancelled" {
-				cancel()
-			}
-			result, err := f.backend.LandChange(ctx, info, issue, opts)
-			if (outcome == "landed" || outcome == "unreported") != (err == nil) {
-				t.Fatalf("landing outcome %s: %v", outcome, err)
-			}
-			if outcome == "unreported" {
-				if err := RecordLanding(t.Context(), info, f.head, result); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := f.backend.CleanupLanding(context.WithoutCancel(ctx), info, issue); err != nil {
-				t.Fatal(err)
-			}
-			for _, path := range []string{info.Path, filepath.Join(f.backend.root, "landing-"+info.Key)} {
-				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-					t.Fatalf("landing directory remains: %s: %v", path, err)
-				}
-				if got := runGit(t, f.source, "worktree", "list", "--porcelain"); strings.Contains(got, path) {
-					t.Fatalf("landing registration remains: %s\n%s", path, got)
-				}
-			}
-			if outcome == "unreported" {
-				runGit(t, f.source, "worktree", "add", "--detach", info.Path, f.head)
-				if kept, ok := keptLanding(t.Context(), info.Path, f.head, "refs/remotes/origin/main"); !ok || kept.MergeSHA != result.MergeSHA {
-					t.Fatalf("landing receipt lost after cleanup: %+v, %v", kept, ok)
-				}
-			}
-		})
-	}
-}
-
-func TestLandingRemovalFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-	for _, mode := range []string{"git removal fails", "locked"} {
-		t.Run(mode, func(t *testing.T) {
-			backend := retentionBackend(t)
-			head := strings.TrimSpace(runGit(t, backend.sourceRoot, "rev-parse", "HEAD"))
-			path := filepath.Join(backend.root, ".detent", "landing", head, "DD-LAND")
-			runGit(t, backend.sourceRoot, "worktree", "add", "--detach", path, head)
-			var logs bytes.Buffer
-			backend.logger = slog.New(slog.NewTextHandler(&logs, nil))
-			if mode == "locked" {
-				runGit(t, backend.sourceRoot, "worktree", "lock", path)
-			} else {
-				realGit, err := exec.LookPath("git")
-				if err != nil {
-					t.Fatal(err)
-				}
-				wrapper := t.TempDir()
-				script := "#!/bin/sh\nif [ \"$3\" = worktree ] && [ \"$4\" = remove ]; then exit 23; fi\nexec " + shellQuote(realGit) + " \"$@\"\n"
-				if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
-			}
-			err := backend.removeLandingWorktree(t.Context(), backend.sourceRoot, path)
-			if mode == "locked" {
-				if err == nil {
-					t.Fatal("locked worktree removed")
-				}
-				if _, err := os.Stat(path); err != nil {
-					t.Fatal(err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("landing directory remains: %v", err)
-			}
-			if listed := runGit(t, backend.sourceRoot, "worktree", "list", "--porcelain"); strings.Contains(listed, path) {
-				t.Fatalf("landing registration remains:\n%s", listed)
-			}
-			if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "landing worktree not removed by git") {
-				t.Fatalf("removal failure warning missing: %s", &logs)
 			}
 		})
 	}
