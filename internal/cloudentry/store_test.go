@@ -38,7 +38,7 @@ func TestStoreEscapedPaths(t *testing.T) {
 				for _, pragma := range []struct{ name, want string }{
 					{"busy_timeout", "5000"},
 					{"foreign_keys", "1"},
-					{"locking_mode", "exclusive"},
+					{"locking_mode", "normal"},
 					{"synchronous", "2"},
 					{"journal_mode", "wal"},
 				} {
