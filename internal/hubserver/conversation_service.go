@@ -114,9 +114,10 @@ type conversationService struct {
 	// conversation. It is woken after a control committed.
 	controls conversationControlRouter
 	// settle stops the settle sweep; settled waits for it to exit.
-	settle  chan struct{}
-	settled chan struct{}
-	once    sync.Once
+	settle              chan struct{}
+	settled             chan struct{}
+	monthlyBudgetPeriod string
+	once                sync.Once
 }
 
 // conversationCoordinator runs model turns for unlinked conversations. The
@@ -205,6 +206,13 @@ func (c *conversationService) settleLoop() {
 			if err != nil {
 				c.logger.Warn("conversation.settle_sweep_failed", "error", err)
 				continue
+			}
+			period := now.UTC().Format("2006-01")
+			if c.monthlyBudgetPeriod != period {
+				c.monthlyBudgetPeriod = period
+				if err := c.wakePending(context.Background()); err != nil {
+					c.logger.Warn("conversation.budget_rollover", "error", err)
+				}
 			}
 			settled, err := c.settleIdleConversations(context.Background(), now)
 			if err != nil {

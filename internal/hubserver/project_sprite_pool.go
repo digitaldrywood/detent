@@ -11,6 +11,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -208,6 +209,20 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 	}
 	input.Depth, input.Free, input.Pending = placement.SpriteTarget, placement.SpriteFree, placement.Pending
 	input.CreateLimit = placement.ProviderFree
+	allowed, err := monthlySpriteAllowed(ctx, s.database.db, scope, now)
+	if err != nil {
+		return input, nil, err
+	}
+	decision, err := checkMonthlyBudget(ctx, s.database.db, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
+	if err != nil {
+		return input, nil, err
+	}
+	if !decision.Allowed {
+		input.CreateLimit = new(placement.Provisionable)
+	}
+	if !allowed {
+		input.CreateLimit = new(0)
+	}
 	if placement.Policy.Mode == "local_first" {
 		input.Floor = min(input.Floor, placement.Policy.OverflowSlots)
 	}
@@ -230,7 +245,11 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 		if err != nil {
 			return input, nil, err
 		}
-		if runner.HostUsed > 0 {
+		retained, err := monthlyBudgetRetainsRunner(ctx, s.database.db, scope, runner.MachineID)
+		if err != nil {
+			return input, nil, err
+		}
+		if runner.HostUsed > 0 || retained {
 			_, err := s.database.db.ExecContext(ctx, `UPDATE project_sprite_members SET idle_since=? WHERE organization_id=? AND project_id=? AND name=?`, formatHubTime(now), scope.organization, scope.project, member.Name)
 			if err != nil {
 				return input, nil, err

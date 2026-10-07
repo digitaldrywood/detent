@@ -119,6 +119,15 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 				evidence.Admission = append(evidence.Admission, a)
 				continue
 			}
+			decision, _, err := checkMonthlyClaim(ctx, q, scope, r.MachineID, id, false, now)
+			if err != nil {
+				return err
+			}
+			if !decision.Allowed {
+				refuse("provider_capacity", monthlyBudgetRefusal(decision))
+				evidence.Admission = append(evidence.Admission, a)
+				continue
+			}
 			exclusions := r.Exclusions(scope.project, requirements, false)
 			if len(exclusions) > 0 {
 				refuse(exclusions[0].Code, exclusions[0].Message)

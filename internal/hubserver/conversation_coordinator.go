@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/genkitbackend"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -121,9 +122,10 @@ type coordinatorPass struct {
 // cancel (interrupted) from a process stop (failed); done closes once the
 // turn's final writes are over.
 type coordinatorTurn struct {
-	cancel    context.CancelFunc
-	cancelled bool
-	done      chan struct{}
+	cancel        context.CancelFunc
+	cancelled     bool
+	budgetStopped bool
+	done          chan struct{}
 }
 
 func newConversationCoordinator(service *conversationService) conversationCoordinator {
@@ -174,6 +176,10 @@ func (c *conversationTurnCoordinator) Wake(conversationID string) {
 // Cancel stops the running turn of the conversation and reports whether one
 // was running.
 func (c *conversationTurnCoordinator) Cancel(conversationID string) bool {
+	return c.cancelTurn(conversationID, false)
+}
+
+func (c *conversationTurnCoordinator) cancelTurn(conversationID string, budgetStop bool) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	turn, ok := c.turns[conversationID]
@@ -181,6 +187,7 @@ func (c *conversationTurnCoordinator) Cancel(conversationID string) bool {
 		return false
 	}
 	turn.cancelled = true
+	turn.budgetStopped = budgetStop
 	turn.cancel()
 	return true
 }
@@ -447,9 +454,10 @@ type coordinatorTurnState struct {
 	threadID       string
 	// preferences are the conversation's turn preferences as they stood when
 	// the turn started.
-	preferences  conversation.Preferences
-	modelChoice  bool
-	toolMessages map[string]conversationMessageRecord
+	preferences   conversation.Preferences
+	modelChoice   bool
+	budgetStopped bool
+	toolMessages  map[string]conversationMessageRecord
 }
 
 // runTurn marks pending messages as sending, streams one backend turn into
@@ -484,6 +492,13 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 			return err
 		}
 		if len(pending) == 0 {
+			return errCoordinatorNothingPending
+		}
+		decision, err := checkMonthlyBudget(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, budget.CostExposure{LunaAPI: true}, false, now)
+		if err != nil {
+			return err
+		}
+		if !decision.Allowed {
 			return errCoordinatorNothingPending
 		}
 		refusal = c.service.server.database.requireHostedFeature(ctx, tx, "native_execution", now)
@@ -660,6 +675,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 
 	c.mu.Lock()
 	cancelled := turn.cancelled
+	state.budgetStopped = turn.budgetStopped
 	c.mu.Unlock()
 	if runErr == nil {
 		runErr = turnCtx.Err()
@@ -680,6 +696,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	if err := state.finish(writeCtx, outcome, runErr, durableUsage); err != nil {
 		return true, fmt.Errorf("finish coordinator turn: %w", err)
 	}
+	c.service.server.stopMonthlyBudgetTurns(writeCtx, state.organizationID)
 	if sink := c.service.config.UsageSink; sink != nil && sink != c.service.server.database && usage != nil {
 		if err := sink.RecordConversationUsage(writeCtx, *usage); err != nil {
 			c.logger.Warn("coordinator usage report failed", "conversation_id", conversationID, "error", err)
@@ -1129,6 +1146,10 @@ func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.
 		userDelivery = conversation.DeliveryUnknown
 		execution.Status = conversation.ExecutionUnknown
 		failure = &conversation.ReceiptError{Code: "unknown", Message: "The coordinator turn stopped before it answered"}
+	}
+	if s.budgetStopped {
+		userDelivery = conversation.DeliverySaved
+		failure = nil
 	}
 	return s.coordinator.write(ctx, s.conversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		if usage != nil {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -223,6 +224,42 @@ func readPlacementSnapshot(ctx context.Context, q nativeQueryer, scope nativeSco
 			break
 		}
 		query.After = page[len(page)-1]
+	}
+	exposure := budget.CostExposure{SpriteInfrastructure: true, RunnerAPI: workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered}
+	budgetDecision, err := checkMonthlyBudget(ctx, q, scope, exposure, false, now)
+	if err != nil {
+		return result, err
+	}
+	if !budgetDecision.Allowed {
+		query.After = 0
+		var continuations []tracker.WorkItemID
+		for {
+			page, err := nativeCandidateIDs(ctx, q, query, nil, nil, nil, nil, nil, nil, nil)
+			if err != nil {
+				return result, err
+			}
+			for _, id := range page {
+				admitted, err := monthlyIssueAdmitted(ctx, q, id)
+				if err != nil {
+					return result, err
+				}
+				if !admitted {
+					continue
+				}
+				decision, err := checkMonthlyBudget(ctx, q, scope, exposure, true, now)
+				if err != nil {
+					return result, err
+				}
+				if decision.Allowed {
+					continuations = append(continuations, id)
+				}
+			}
+			if len(page) < query.Limit {
+				break
+			}
+			query.After = page[len(page)-1]
+		}
+		ids = continuations
 	}
 	localCapacity := newPlacementCapacity()
 	localAssigned := make(map[tracker.WorkItemID]bool)

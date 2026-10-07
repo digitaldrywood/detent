@@ -36,6 +36,12 @@ func validateSpriteCostObservation(o *costObservation, now time.Time) error {
 }
 
 func (s *Service) registerCostUsageRoutes(e *echo.Echo) {
+	if s.config.Hosted == nil {
+		e.GET("/api/v2/organizations/:organization/monthly-budget", s.instanceMonthlyBudgetScope, s.requireInstanceAdmin())
+		e.PUT("/api/v2/organizations/:organization/monthly-budget", s.instanceMonthlyBudgetScope, s.requireInstanceAdmin())
+	}
+	e.GET(nativeBase+"/monthly-budget", s.getMonthlyBudget, s.requireNativeScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
+	e.PUT(nativeBase+"/monthly-budget", s.updateMonthlyBudget, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
 	e.GET(nativeBase+"/usage/monthly", s.projectMonthlyCosts, s.requireNativeScope(apiScopeWorker, apiScopeOperator, apiScopeAdmin))
 	e.GET("/api/v2/organizations/:organization/usage/monthly", s.organizationMonthlyCosts, s.requireInstanceAdmin())
 	e.POST(nativeBase+"/usage/sprites", s.ingestSpriteUsage, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
