@@ -49,13 +49,13 @@ for ((offset = 0; offset < ${#stages[@]}; offset += workers)); do
     if [ "$result" -ne 0 ]; then exit "$result"; fi
 done
 
-module=$(go list -m)
 touched=()
 while IFS= read -r dir; do
     [ -d "$dir" ] || continue
     if package=$(go list "./$dir" 2>/dev/null); then touched+=("$package"); fi
 done < <({ git diff --name-only "$base" -- '*.go'; git ls-files --others --exclude-standard -- '*.go'; } | xargs -r -n1 dirname | sort -u)
 if [ "${#touched[@]}" -gt 0 ]; then
+    module=$(go list -m)
     full=()
     for package in "${touched[@]}"; do
         case "$package" in
