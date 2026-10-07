@@ -105,6 +105,7 @@ export const LANES: readonly Lane[] = PROJECT.states.map((state) => ({
   id: state.name,
   name: state.name,
   terminal: state.terminal,
+  dispatchable: state.dispatchable,
   category: state.terminal ? "completed" : state.dispatchable ? "unstarted" : "started",
 }));
 

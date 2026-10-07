@@ -34,6 +34,7 @@ export function toLanes(project: NativeProject): readonly Lane[] {
     id: state.name,
     name: state.name,
     terminal: state.terminal,
+    dispatchable: state.dispatchable,
     category: laneCategory(state.terminal, state.dispatchable),
   }));
 }

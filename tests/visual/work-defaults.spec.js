@@ -33,19 +33,34 @@ for (const scope of ["all", "project"]) {
     await expect(page.getByTestId("lane-count-Merging")).toHaveText("0");
     await expect(page.getByTestId("lane-body-Merging")).toContainText("Nothing is in merging.");
     const copies = scope === "all" ? 2 : 1;
-    const queuedTotal = await page.evaluate(async (projectId) => {
+    const totals = await page.evaluate(async (projectId) => {
       const bootstrap = await (await fetch("/chat/bootstrap")).json();
       const projects = projectId === null ? bootstrap.projects.map((project) => project.id) : [projectId];
       const counts = await Promise.all(projects.map(async (id) => {
         const base = `${bootstrap.api_base}/projects/${id}`;
         const [project, page] = await Promise.all([fetch(base).then((response) => response.json()), fetch(`${base}/work-items?include=work`).then((response) => response.json())]);
-        return page.work.lanes.reduce((total, lane) => total + (!project.states.find((state) => state.name === lane.state)?.terminal && (lane.state === "Backlog" || project.states.find((state) => state.name === lane.state)?.dispatchable) ? lane.total - lane.running : 0), 0);
+        return page.work.lanes.reduce((counts, lane) => {
+          const state = project.states.find((state) => state.name === lane.state);
+          if (state?.terminal) return counts;
+          counts.open += lane.total;
+          counts.running += lane.running;
+          if (lane.state === "Backlog") counts.backlog += lane.total - lane.running;
+          else if (state?.dispatchable) counts.waiting += lane.total - lane.running;
+          else counts.attention += lane.total - lane.running;
+          return counts;
+        }, { running: 0, waiting: 0, attention: 0, backlog: 0, open: 0 });
       }));
-      return counts.reduce((total, count) => total + count, 0);
+      return counts.reduce((totals, count) => Object.fromEntries(Object.keys(totals).map((key) => [key, totals[key] + count[key]])), { running: 0, waiting: 0, attention: 0, backlog: 0, open: 0 });
     }, scope === "all" ? null : hub.fixture.project_id);
-    expect(queuedTotal).toBeGreaterThanOrEqual(130 * copies);
-    await expect(page.getByTestId("stat-queued")).toHaveText(`${queuedTotal} queued inventory`);
-    const queued = await page.getByTestId("stat-queued").innerText();
+    expect(totals.running + totals.waiting + totals.attention + totals.backlog).toBe(totals.open);
+    expect(totals.backlog).toBe(130 * copies);
+    await expect(page.getByTestId("stat-running")).toHaveText(`${totals.running} running`);
+    await expect(page.getByTestId("stat-waiting")).toHaveText(`${totals.waiting} waiting`);
+    await expect(page.getByTestId("stat-need-attention")).toHaveText(`${totals.attention} need attention`);
+    await expect(page.getByTestId("stat-backlog")).toHaveText(`${totals.backlog} backlog`);
+    expect(await page.getByTestId("work-stats").locator('[data-testid^="stat-"]').evaluateAll((counters) => counters.map((counter) => counter.dataset.testid))).toEqual(["stat-running", "stat-waiting", "stat-need-attention", "stat-backlog", "stat-completed"]);
+    await expect(page.getByTestId("work-toolbar").getByText(/Completed/)).toHaveCount(0);
+    const waiting = await page.getByTestId("stat-waiting").innerText();
     const backlog = page.getByRole("region", { name: "Backlog", exact: true });
     expect(await backlog.evaluate((lane) => lane.getBoundingClientRect().width)).toBe(44);
     await expect(page.getByTestId("lane-body-Backlog")).toHaveCount(0);
@@ -61,6 +76,7 @@ for (const scope of ["all", "project"]) {
         document.documentElement.dataset.theme = theme;
         document.documentElement.classList.toggle("dark", theme === "dark");
       }, theme);
+      await expect(page.getByTestId("work-stats")).toHaveScreenshot(`stats-row-${scope}-${theme}.png`);
       await expect(page.getByTestId("work-board")).toHaveScreenshot(`active-board-${scope}-${theme}.png`, { mask: [page.getByTestId("issue-age")] });
     }
     await page.getByTestId("lanes-trigger").click();
@@ -70,13 +86,15 @@ for (const scope of ["all", "project"]) {
     await expect(page.getByTestId("lane-toggle-Done")).toHaveCount(0);
     await expect(page.getByTestId("lane-toggle-Cancelled")).toHaveCount(0);
     await page.keyboard.press("Escape");
+    const collapsedSaved = page.waitForResponse((response) => response.url().endsWith("/work-view-preference") && response.request().method() === "PUT" && response.request().postDataJSON().query.includes("collapsed="));
     await page.getByTestId("lane-collapse-Backlog").focus();
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("lane-body-Backlog")).toBeVisible();
     await expect(page.getByTestId("lane-collapse-Backlog")).toHaveAttribute("aria-label", "Collapse Backlog");
     expect(await backlog.evaluate((lane) => lane.getBoundingClientRect().width)).toBe(300);
     await expect(page).toHaveURL(/collapsed=/);
-    await expect(page.getByTestId("stat-queued")).toHaveText(queued);
+    await expect(page.getByTestId("stat-waiting")).toHaveText(waiting);
+    await collapsedSaved;
     await page.reload();
     await expect(page.getByTestId("lane-body-Backlog")).toBeVisible();
     await page.goto(new URL(route, hub.fixture.url).toString());
@@ -113,19 +131,30 @@ for (const scope of ["all", "project"]) {
     const copies = scope === "all" ? 2 : 1;
     await expect(page.getByTestId("stat-completed")).toHaveText(`${2 * copies} completed · 48h`);
     for (const [window, count] of [["7d", 3], ["14d", 3], ["all", 4]]) {
-      await page.getByTestId("completed-window-trigger").click();
-      await page.getByRole("menuitemradio", { name: window === "all" ? "All time" : window, exact: true }).click();
+      const saved = page.waitForResponse((response) => response.url().endsWith("/work-view-preference") && response.request().method() === "PUT" && new URLSearchParams(response.request().postDataJSON().query).get("completed") === window);
+      const counter = page.getByTestId("stat-completed");
+      await expect(counter).toHaveRole("button");
+      const request = page.waitForRequest((request) => new URL(request.url()).searchParams.get("completed_window") === window);
+      await counter.click();
+      await expect(counter).toHaveAttribute("aria-expanded", "true");
+      await expect(page.getByRole("menuitemradio")).toHaveText(["48 hours", "7 days", "14 days", "All time"]);
+      const anchor = await counter.boundingBox();
+      const menu = await page.getByRole("menu").boundingBox();
+      expect(Math.abs(menu.x - anchor.x)).toBeLessThan(2);
+      await page.getByRole("menuitemradio", { name: window === "all" ? "All time" : window === "7d" ? "7 days" : "14 days", exact: true }).click();
+      await request;
       await page.keyboard.press("Escape");
-      await expect(page.getByTestId("stat-completed")).toHaveText(`${count * copies} completed · ${window}`);
+      await expect(page.getByTestId("stat-completed")).toHaveText(`${count * copies} completed · ${window === "all" ? "All time" : window}`);
       await expect(page).toHaveURL(new RegExp(`completed=${window}`));
+      await saved;
     }
     await page.reload();
-    await expect(page.getByTestId("stat-completed")).toHaveText(`${4 * copies} completed · all`);
+    await expect(page.getByTestId("stat-completed")).toHaveText(`${4 * copies} completed · All time`);
     await page.goto(new URL(route, hub.fixture.url).toString());
     await expect(page).toHaveURL(/completed=all/);
-    await expect(page.getByTestId("stat-completed")).toHaveText(`${4 * copies} completed · all`);
-    await page.getByTestId("completed-window-trigger").click();
-    await page.getByRole("menuitemradio", { name: "48h", exact: true }).click();
+    await expect(page.getByTestId("stat-completed")).toHaveText(`${4 * copies} completed · All time`);
+    await page.getByTestId("stat-completed").click();
+    await page.getByRole("menuitemradio", { name: "48 hours", exact: true }).click();
     await expect(page.getByTestId("stat-completed")).toHaveText(`${2 * copies} completed · 48h`);
     expect(new URL(page.url()).searchParams.has("completed")).toBe(false);
   });

@@ -14,6 +14,7 @@ export interface Lane {
   readonly id: string;
   readonly name: string;
   readonly terminal: boolean;
+  readonly dispatchable: boolean;
   /** `backlog`, `unstarted`, `started`, `completed`, `cancelled`, or "". */
   readonly category: string;
 }
@@ -204,7 +205,9 @@ export interface BoardStats {
     readonly change: Readonly<Record<Observation, number>>;
   };
   readonly running: number;
-  readonly queued: number;
+  readonly waiting: number;
+  readonly needAttention: number;
+  readonly backlog: number;
   readonly open: number;
   readonly completed: number;
   readonly importedClosed: number;
@@ -214,7 +217,9 @@ export interface BoardStats {
 export interface ScopedWorkStats {
   readonly lanes: Readonly<Record<string, number>>;
   readonly running: number;
-  readonly queued: number;
+  readonly waiting: number;
+  readonly needAttention: number;
+  readonly backlog: number;
   readonly open: number;
   readonly completed: number | null;
   readonly total: number;
@@ -228,10 +233,12 @@ export function boardStats(
 ): BoardStats {
   const terminal = new Set(lanes.filter((lane) => lane.terminal).map((lane) => lane.name));
   const dispatchable = new Set(
-    lanes.filter((lane) => lane.category === "unstarted" || lane.name.toLowerCase() === "backlog").map((lane) => lane.name),
+    lanes.filter((lane) => lane.dispatchable).map((lane) => lane.name),
   );
   let running = 0;
-  let queued = 0;
+  let waiting = 0;
+  let needAttention = 0;
+  let backlog = 0;
   let completed = 0;
   let importedClosed = 0;
   const observations = {
@@ -250,7 +257,9 @@ export function boardStats(
       running += 1;
       continue;
     }
-    if (dispatchable.has(item.state)) queued += 1;
+    if (item.state.toLowerCase() === "backlog") backlog += 1;
+    else if (dispatchable.has(item.state)) waiting += 1;
+    else needAttention += 1;
   }
-  return { running, queued, open: items.length - completed, completed, importedClosed, total: items.length, observations };
+  return { running, waiting, needAttention, backlog, open: items.length - completed, completed, importedClosed, total: items.length, observations };
 }
