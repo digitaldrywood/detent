@@ -19,33 +19,15 @@ import {
 
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table.tsx";
 import { DetentCloudLogo } from "../account/Login.tsx";
 import { usePlatformResource } from "./usePlatformResource.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import {
   type PlatformAllowlist,
   type PlatformHealth,
-  type PlatformOrganization,
-  type PlatformOrganizations,
-  SUPPORT_REASONS,
 } from "./api.ts";
-import { ComplimentaryPlansPanel } from "./ComplimentaryPlans.tsx";
+import { PlatformTenants } from "./PlatformTenants.tsx";
 import { Problem, SignOut, useEntryApi } from "./EntryScreens.tsx";
-
-const UNAVAILABLE_LABELS: Record<string, string> = {
-  plan: "plan",
-  grants: "grants",
-  member_count: "member count",
-  runner_count: "runner count",
-};
 
 function Panel({
   title,
@@ -67,18 +49,6 @@ function Panel({
   );
 }
 
-function stateVariant(state: string): "success" | "error" | "warning" | "outline" {
-  if (state === "ready") return "success";
-  if (state === "failed") return "error";
-  if (state === "requested" || state === "allocating" || state === "deleting") return "warning";
-  return "outline";
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toISOString().slice(0, 10);
-}
-
 export function formatBytes(value: number): string {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   let amount = value;
@@ -88,124 +58,6 @@ export function formatBytes(value: number): string {
     unit += 1;
   }
   return `${unit === 0 ? amount : amount.toFixed(1)} ${units[unit]}`;
-}
-
-function SupportAction({
-  organization,
-  csrf,
-}: {
-  readonly organization: PlatformOrganization;
-  readonly csrf: string;
-}): React.ReactElement {
-  if (!organization.can_support) {
-    return (
-      <span className="text-muted-foreground">
-        {organization.state === "ready" ? "Support actors only" : "Not ready"}
-      </span>
-    );
-  }
-  const reasonId = `support-reason-${organization.id}`;
-  return (
-    <form method="post" action="/support/start" className="flex flex-wrap items-center gap-2">
-      <input type="hidden" name="organization" value={organization.id} />
-      <input type="hidden" name="csrf" value={csrf} />
-      <label htmlFor={reasonId} className="sr-only">
-        Support reason for {organization.name}
-      </label>
-      <select
-        id={reasonId}
-        name="reason"
-        required
-        defaultValue=""
-        className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-      >
-        <option value="" disabled>
-          Reason…
-        </option>
-        {SUPPORT_REASONS.map((reason) => (
-          <option key={reason} value={reason}>
-            {reason}
-          </option>
-        ))}
-      </select>
-      <Button type="submit" size="sm" variant="outline">
-        Start support access
-      </Button>
-    </form>
-  );
-}
-
-export function PlatformOrganizationsPanel({
-  value,
-}: {
-  readonly value: PlatformOrganizations;
-}): React.ReactElement {
-  const unavailable = value.unavailable.map((field) => UNAVAILABLE_LABELS[field] ?? field);
-  return (
-    <Panel
-      title="Organizations"
-      description={
-        unavailable.length === 0
-          ? undefined
-          : `Not shown: ${unavailable.join(", ")}. The entry cannot read them without a new tenant query.`
-      }
-    >
-      {value.organizations.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No organizations are registered.</p>
-      ) : (
-        <Table aria-label="Organizations">
-          <TableHeader>
-            <TableRow>
-              <TableHead>Organization</TableHead>
-              <TableHead>State</TableHead>
-              <TableHead>Created by</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead>Billing</TableHead>
-              <TableHead>Support access</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {value.organizations.map((organization) => (
-              <TableRow key={organization.id}>
-                <TableCell>
-                  <div className="font-medium">{organization.name}</div>
-                  <div className="font-mono text-muted-foreground">{organization.id}</div>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={stateVariant(organization.state)}>{organization.state}</Badge>
-                  {organization.error_code === "" ? null : (
-                    <div className="mt-1 text-destructive-foreground">
-                      Last error: {organization.error_code}
-                      {organization.step === "" ? "" : ` after ${organization.step}`}
-                      {organization.error_detail === undefined || organization.error_detail === "" ? "" : ` (${organization.error_detail})`}
-                    </div>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {organization.creator_email === "" ? (
-                    <span className="text-muted-foreground">Registered externally</span>
-                  ) : (
-                    organization.creator_email
-                  )}
-                </TableCell>
-                <TableCell>{formatDate(organization.created_at)}</TableCell>
-                <TableCell>
-                  {organization.billing.available ? (
-                    organization.billing.status
-                  ) : (
-                    <span className="text-muted-foreground">Unavailable</span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <SupportAction organization={organization} csrf={value.csrf} />
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-    </Panel>
-  );
 }
 
 export function PlatformAllowlistPanel({ value }: { readonly value: PlatformAllowlist }): React.ReactElement {
@@ -408,26 +260,8 @@ function PlatformPageTitle({ section }: { readonly section: PlatformSection }): 
 }
 
 export function PlatformTenantsPage(): React.ReactElement {
-  const api = useEntryApi();
   const role = React.useContext(PlatformRoleContext);
-  const organizations = usePlatformResource(() => api.platformOrganizations(), [api]);
-  const value = organizations.value;
-  return (
-    <>
-      <PlatformPageTitle section="tenants" />
-      <Problem message={organizations.error?.status === 403 ? "The platform console is limited to Detent staff." : organizations.error?.message ?? null} />
-      {value === undefined ? (
-        organizations.loading ? <p className="text-sm text-muted-foreground">Loading organizations…</p> : null
-      ) : (
-        <>
-          <PlatformOrganizationsPanel value={value} />
-          {(role === "billing" || role === "admin") && value.can_grant === true ? (
-            <ComplimentaryPlansPanel organizations={value.organizations} csrf={value.csrf} />
-          ) : null}
-        </>
-      )}
-    </>
-  );
+  return <><PlatformPageTitle section="tenants" /><PlatformTenants role={role} /></>;
 }
 
 export function PlatformHealthPage(): React.ReactElement {

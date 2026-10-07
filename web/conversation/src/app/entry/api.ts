@@ -59,7 +59,7 @@ export const PlatformOrganization = Schema.Struct({
   creator_email: Schema.String,
   created_at: Schema.String,
   updated_at: Schema.String,
-  billing: Schema.Struct({ available: Schema.Boolean, status: Schema.optional(Schema.String) }),
+  billing: Schema.Struct({ available: Schema.Boolean, status: Schema.optional(Schema.String), customer_id: Schema.optional(Schema.String), plan: Schema.optional(Schema.String), price_label: Schema.optional(Schema.String) }),
   can_support: Schema.Boolean,
   plan: Schema.NullOr(Schema.String),
   grants: Schema.NullOr(Schema.Number),
@@ -112,6 +112,20 @@ export const OrganizationEntitlements = Schema.Struct({
   plans: Schema.Array(EntitlementPlan),
 });
 export type OrganizationEntitlements = typeof OrganizationEntitlements.Type;
+
+export const PlatformTenantDetail = Schema.Struct({
+  organization: PlatformOrganization,
+  csrf: Schema.String,
+  can_grant: Schema.Boolean,
+  can_resume: Schema.Boolean,
+  unavailable: Schema.Array(Schema.String),
+  members: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String, role: Schema.String }))),
+  runners: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, health: Schema.String }))),
+  projects: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String }))),
+  entitlements: Schema.NullOr(OrganizationEntitlements),
+  events: Schema.Array(Schema.Struct({ event: Schema.String, generation: Schema.Number, recorded_at: Schema.String })),
+});
+export type PlatformTenantDetail = typeof PlatformTenantDetail.Type;
 
 export type EntitlementChange =
   | {
@@ -259,6 +273,9 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     resume: (input: { organization: string; csrf: string }) =>
       submit(NextResult, `/organizations/${encodeURIComponent(input.organization)}/provisioning/resume`, input.csrf, {}),
     platformOrganizations: () => read(PlatformOrganizations, "/api/cloud/platform/organizations"),
+    platformTenant: (organization: string) => read(PlatformTenantDetail, `/api/cloud/platform/organizations/${encodeURIComponent(organization)}`),
+    resumePlatformTenant: (input: { organization: string; csrf: string }) =>
+      submit(NextResult, `/api/cloud/platform/organizations/${encodeURIComponent(input.organization)}/resume`, input.csrf, {}),
     platformAllowlist: () => read(PlatformAllowlist, "/api/cloud/platform/allowlist"),
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
     platformEntitlements: (organization: string) => read(OrganizationEntitlements, entitlementsPath(organization)),

@@ -33,12 +33,18 @@ async function openPlatform(page, canGrant = true) {
       }
       return route.fulfill({ json: { ...fixture.entitlements, revision, features, grants } });
     }
+    if (path.endsWith("/org_preview")) return route.fulfill({ json: {
+      ...fixture.detail, can_grant: canGrant,
+      entitlements: { ...fixture.entitlements, revision, features, grants },
+    } });
     if (path.endsWith("/organizations")) return route.fulfill({ json: { ...fixture.organizations, can_grant: canGrant } });
     if (path.endsWith("/allowlist")) return route.fulfill({ json: fixture.allowlist });
     return route.fulfill({ json: fixture.health });
   });
   await page.goto(origin + "/platform/tenants");
-  await expect(page.getByRole("table", { name: "Organizations", exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Tenants", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Model Choice Labs", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Model Choice Labs", exact: true })).toBeVisible();
   return changes;
 }
 

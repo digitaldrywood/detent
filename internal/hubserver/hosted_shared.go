@@ -190,6 +190,9 @@ func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
 	e.POST("/internal/v1/sessions/revoke", s.revokeHostedSharedSessions)
 	e.POST("/internal/v1/invitations/accept", s.acceptHostedSharedInvitation)
 	e.POST("/internal/v1/health", s.hostedSharedHealth)
+	e.POST("/internal/v1/platform/members", s.platformTenantMembers)
+	e.POST("/internal/v1/platform/runners", s.platformTenantRunners)
+	e.POST("/internal/v1/platform/projects", s.platformTenantProjects)
 	e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
 	e.POST("/internal/v1/billing/binding", s.hostedSharedBillingBinding)
 	e.POST("/internal/v1/billing/events", s.hostedSharedBillingEvent)
@@ -201,6 +204,8 @@ type hostedSharedBilling struct {
 	Mode            string    `json:"mode,omitempty"`
 	CustomerID      string    `json:"customer_id,omitempty"`
 	Status          string    `json:"status"`
+	Plan            string    `json:"plan,omitempty"`
+	PriceLabel      string    `json:"price_label,omitempty"`
 	AccessUntil     time.Time `json:"access_until,omitzero"`
 	CheckoutPending bool      `json:"checkout_pending"`
 }
@@ -241,6 +246,13 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
 		}
 		result.Status, result.AccessUntil = state.Status, state.AccessUntil
+		result.Plan = state.Plan.ID
+		for _, price := range cfg.Prices {
+			if price.PriceID == state.Snapshot.PriceID {
+				result.PriceLabel = price.Label
+				break
+			}
+		}
 	}
 	return c.JSON(http.StatusOK, result)
 }

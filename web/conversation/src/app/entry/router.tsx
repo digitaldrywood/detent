@@ -74,7 +74,12 @@ const platformRoutes = platformRoute.addChildren([
       throw redirect({ to: "/platform/tenants", replace: true } as never);
     },
   }),
-  createRoute({ getParentRoute: () => platformRoute, path: "/tenants", component: PlatformTenantsPage }),
+  createRoute({
+    getParentRoute: () => platformRoute,
+    path: "/tenants",
+    validateSearch: (search: Record<string, unknown>) => ({ tenant: typeof search.tenant === "string" ? search.tenant : undefined }),
+    component: PlatformTenantsPage,
+  }),
   createRoute({
     getParentRoute: () => platformRoute,
     path: "/staff",

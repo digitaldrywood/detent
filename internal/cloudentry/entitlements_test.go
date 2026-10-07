@@ -160,6 +160,13 @@ func testPlatformEntitlement(t *testing.T, feature, planID string) {
 	if len(state.Grants) != 1 || state.Revision != revision+1 || slices.Contains(state.Features, "model_choice") != (feature != "") {
 		t.Fatalf("entitlements after grant = %+v", state)
 	}
+	var detail platformTenantDetail
+	response = admin.get("/api/cloud/platform/organizations/" + organization)
+	pilotStatus(t, "tenant detail after grant", response, http.StatusOK)
+	pilotDecode(t, response, &detail)
+	if detail.Entitlements == nil || detail.Entitlements.Revision != state.Revision || len(detail.Entitlements.Grants) != 1 || detail.Organization.Grants == nil || *detail.Organization.Grants != 1 || detail.Organization.Plan == nil || *detail.Organization.Plan != state.EffectiveBase.ID || detail.Members == nil || detail.Runners == nil || detail.Projects == nil {
+		t.Fatalf("detail after grant = %+v", detail)
+	}
 	granted := state.Grants[0]
 	if granted.ID != first["grant_id"] || granted.Plan.ID != planID || granted.Reason != "design partner" || granted.GrantedBy != "staff@example.test" || granted.ExpiresAt == nil || !granted.ExpiresAt.Equal(expires) || len(granted.Scope) == 0 {
 		t.Fatalf("grant = %+v", granted)

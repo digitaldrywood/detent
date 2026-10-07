@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -159,11 +160,11 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 			Unavailable   []string               `json:"unavailable"`
 		}
 		decodeJSON(t, body, &listing)
-		if response.StatusCode != http.StatusOK || listing.CSRF == "" || listing.CanSupport != test.canSupport || len(listing.Organizations) != 2 || len(listing.Unavailable) != len(platformUnavailable) {
+		if response.StatusCode != http.StatusOK || listing.CSRF == "" || listing.CanSupport != test.canSupport || len(listing.Organizations) != 2 || !slices.Contains(listing.Unavailable, "plan") || !slices.Contains(listing.Unavailable, "grants") {
 			t.Fatalf("%s organizations = %d %+v", test.code, response.StatusCode, listing)
 		}
 		for _, organization := range listing.Organizations {
-			if organization.State != "ready" || organization.CreatedAt == "" || !organization.Billing.Available || organization.Billing.Status != "free" || organization.CanSupport != test.canSupport || organization.MemberCount != nil || organization.RunnerCount != nil {
+			if organization.State != "ready" || organization.CreatedAt == "" || !organization.Billing.Available || organization.Billing.Status != "free" || organization.CanSupport != test.canSupport || organization.RunnerCount == nil {
 				t.Fatalf("%s organization = %+v", test.code, organization)
 			}
 		}
@@ -490,7 +491,11 @@ func TestPlatformTenantFanOutIsBounded(t *testing.T) {
 				transport.mu.Lock()
 				peak, requests := transport.peak, transport.requests
 				transport.mu.Unlock()
-				if peak > platformTenantWorkers || test.allReached && (peak != platformTenantWorkers || requests != tenants) || !test.allReached && requests >= tenants {
+				calls := 1
+				if route == "/api/cloud/platform/organizations" {
+					calls = 4
+				}
+				if peak > platformTenantWorkers || test.allReached && (peak != platformTenantWorkers || requests != tenants*calls) || !test.allReached && requests >= tenants*calls {
 					t.Fatalf("%s peak concurrency = %d, requests = %d", route, peak, requests)
 				}
 				reached := 0
