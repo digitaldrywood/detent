@@ -3,7 +3,9 @@ package operatortool
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -95,6 +97,13 @@ func IsWorkTool(name string) bool {
 // discovery is bypassed. JSON schema remains documentation, never authority.
 func DecodeWorkArguments(name string, raw json.RawMessage) (WorkArguments, error) {
 	var request WorkArguments
+	if name == EditItem || name == SetDependency {
+		var err error
+		raw, err = normalizeWorkRevision(raw)
+		if err != nil {
+			return request, err
+		}
+	}
 	if err := DecodeArguments(raw, &request); err != nil {
 		return request, err
 	}
@@ -158,4 +167,35 @@ func DecodeWorkArguments(name string, raw json.RawMessage) (WorkArguments, error
 		}
 	}
 	return request, nil
+}
+
+func normalizeWorkRevision(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) > MaxArgumentBytes {
+		return nil, invalidArgument("arguments", fmt.Sprintf("must not exceed %d bytes", MaxArgumentBytes))
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, argumentDecodeError(err)
+	}
+	value, ok := fields["expected_revision"]
+	if !ok {
+		return raw, nil
+	}
+	var text string
+	if json.Unmarshal(value, &text) == nil {
+		return raw, nil
+	}
+	number, _, err := big.ParseFloat(string(value), 10, uint(len(value)*4+64), big.ToZero)
+	if err != nil {
+		return nil, invalidArgument("expected_revision", "must be a positive int64 integer")
+	}
+	revision, accuracy := number.Int64()
+	if accuracy != big.Exact || revision < 1 {
+		return nil, invalidArgument("expected_revision", "must be a positive int64 integer")
+	}
+	fields["expected_revision"], err = json.Marshal(strconv.FormatInt(revision, 10))
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(fields)
 }

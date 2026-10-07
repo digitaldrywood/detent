@@ -107,6 +107,19 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 						if err != nil {
 							t.Fatalf("handler rejects schema-declared revision: %v", err)
 						}
+						if definition.Name == operatortool.EditItem || definition.Name == operatortool.SetDependency {
+							for _, value := range []json.RawMessage{json.RawMessage(`16`), json.RawMessage(`16.0`)} {
+								fields["expected_revision"] = value
+								compatibilityRaw, err := json.Marshal(fields)
+								if err != nil {
+									t.Fatal(err)
+								}
+								request, err := operatortool.DecodeWorkArguments(definition.Name, compatibilityRaw)
+								if err != nil || request.ExpectedRevision != 16 {
+									t.Fatalf("numeric compatibility revision=%d error=%v, want 16", request.ExpectedRevision, err)
+								}
+							}
+						}
 					}
 				})
 			}
