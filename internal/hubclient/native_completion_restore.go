@@ -100,7 +100,15 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 	if err := s.CheckProjectPolicy(ctx, request.ProjectID, request.Repository, request.Policy); err != nil {
 		return orchestrator.Claimed{}, completionRestoreError(err)
 	}
-	owner, err := source.client.ValidateLease(ctx, lease)
+	started := s.now()
+	renewed, err := source.client.Renew(ctx, lease, int64(s.leaseTTL.Seconds()))
+	if err != nil {
+		return orchestrator.Claimed{}, completionRestoreError(err)
+	}
+	if !sameCompletionLease(renewed, lease) {
+		return orchestrator.Claimed{}, runner.ErrExecutionAuthorityUnavailable
+	}
+	owner, err := source.client.ValidateLease(ctx, renewed)
 	if err != nil {
 		return orchestrator.Claimed{}, completionRestoreError(err)
 	}
@@ -143,14 +151,6 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 		state.Diff = &tracker.AttemptDiffRequest{Producer: diff.Producer, Generation: diff.Generation, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, Files: diff.Files}
 		state.StoredSeq = diff.Generation.Seq
 	} else if !sameCompletionRun(state.Data, attempt.NativeRunData) || state.Data.LeaseID != lease.ID || state.Data.FencingToken != lease.FencingToken || state.Data.PolicyID != lease.PolicyID {
-		return orchestrator.Claimed{}, runner.ErrExecutionAuthorityUnavailable
-	}
-	started := s.now()
-	renewed, err := source.client.Renew(ctx, lease, int64(s.leaseTTL.Seconds()))
-	if err != nil {
-		return orchestrator.Claimed{}, completionRestoreError(err)
-	}
-	if !sameCompletionLease(renewed, lease) {
 		return orchestrator.Claimed{}, runner.ErrExecutionAuthorityUnavailable
 	}
 	claim = nativeClaim{source: source, lease: renewed, recovery: recovery, deadline: nativeLeaseDeadline(started, renewed)}

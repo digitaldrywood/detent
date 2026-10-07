@@ -215,15 +215,29 @@ type claimPolicy struct {
 }
 
 func (s *Scheduler) checkClaimPolicy(ctx context.Context, issueID, pinnedID string) error {
+	if err := s.checkClaimPolicyApproval(ctx, issueID, pinnedID); err != nil {
+		return err
+	}
+	return s.checkClaimRunner(ctx, issueID, pinnedID)
+}
+
+func (s *Scheduler) checkClaimPolicyApproval(ctx context.Context, issueID, pinnedID string) error {
+	s.mu.Lock()
+	pinned, ok := s.claimPolicies[issueID]
+	s.mu.Unlock()
+	if !ok || pinnedID != pinned.descriptor.ID {
+		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "claim has no matching pinned repository policy; release it and request a new claim"}
+	}
+	return s.CheckProjectPolicy(ctx, pinned.project, pinned.repository, pinned.descriptor)
+}
+
+func (s *Scheduler) checkClaimRunner(ctx context.Context, issueID, pinnedID string) error {
 	s.mu.Lock()
 	pinned, ok := s.claimPolicies[issueID]
 	claim, native := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if !ok || pinnedID != pinned.descriptor.ID {
 		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "claim has no matching pinned repository policy; release it and request a new claim"}
-	}
-	if err := s.CheckProjectPolicy(ctx, pinned.project, pinned.repository, pinned.descriptor); err != nil {
-		return err
 	}
 	if native && s.client.runner != nil {
 		r, err := claim.source.client.ValidateLease(ctx, claim.lease)

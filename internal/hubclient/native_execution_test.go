@@ -163,6 +163,9 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 				descriptor := clientTestPolicy()
 				transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					body := []byte(`{}`)
+					if strings.HasSuffix(request.URL.Path, "/renew") {
+						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: request}, nil
+					}
 					if strings.HasSuffix(request.URL.Path, "/policy") {
 						var err error
 						body, err = json.Marshal(policy.Approval{Policy: descriptor})
@@ -300,6 +303,16 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					if guarded.Err() != nil {
 						t.Fatal("renewed owner stopped at old deadline")
 					}
+					time.Sleep(30 * time.Second)
+					synctest.Wait()
+				}
+				if name == "renewal outage" {
+					time.Sleep(4 * time.Minute)
+					synctest.Wait()
+					if guarded.Err() != nil {
+						t.Fatalf("outage canceled worker: %v", context.Cause(guarded))
+					}
+					client.httpClient.Transport = transport
 					time.Sleep(30 * time.Second)
 					synctest.Wait()
 				}
@@ -682,7 +695,7 @@ func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
 		{name: "timed out policy request", path: "/policy", interruption: context.DeadlineExceeded},
 		{name: "canceled lease request", path: "/validate", interruption: context.Canceled},
 		{name: "timed out lease request", path: "/validate", interruption: context.DeadlineExceeded},
-		{name: "canceled expired lease", interruption: context.Canceled, expired: true, fatal: true},
+		{name: "canceled renewal retains expired lease", interruption: context.Canceled, expired: true},
 		{name: "canceled revoked authority", interruption: runner.ErrExecutionAuthorityUnavailable, fatal: true},
 		{name: "transport"},
 		{name: "server", status: http.StatusServiceUnavailable, body: `{"code":"tenant_unavailable"}`},

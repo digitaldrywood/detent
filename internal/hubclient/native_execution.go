@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -150,6 +151,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	go func() {
 		defer close(done)
 		var routingChanged <-chan struct{}
+		backoff := time.Second
 		for {
 			if source := e.scheduler.client.runner; source != nil {
 				availability, changed, err := source.availabilityState()
@@ -171,8 +173,17 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 			}
 			remaining := e.remaining()
 			if remaining <= 0 {
-				cancel(runner.ErrExecutionAuthorityUnavailable)
-				return
+				if err := e.renew(guarded); err != nil {
+					if !nativeTransportUnavailable(err) {
+						cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, err))
+						return
+					}
+					remaining = backoff
+					backoff = min(30*time.Second, backoff*2)
+				} else {
+					remaining = e.remaining()
+					backoff = time.Second
+				}
 			}
 			if deadline := e.AvailabilityDeadline(); !deadline.IsZero() {
 				untilDeadline := deadline.Sub(e.scheduler.now())
@@ -211,7 +222,7 @@ func (e *nativeExecution) executionError(err error) error {
 	if nativeAuthorityLost(err) {
 		err = e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
 	}
-	if e.remaining() <= 0 || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+	if errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 		return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 	}
 	return err
@@ -222,7 +233,9 @@ func (e *nativeExecution) Validate(ctx context.Context) error {
 		return e.validationError(errors.Join(err, context.Cause(ctx)))
 	}
 	if e.remaining() <= 0 {
-		return e.unavailable(nil)
+		if err := e.renew(ctx); err != nil {
+			return e.validationError(err)
+		}
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.PolicyID); err != nil {
 		return e.validationError(err)
@@ -232,6 +245,17 @@ func (e *nativeExecution) Validate(ctx context.Context) error {
 		return e.validationError(err)
 	}
 	return nil
+}
+
+func (e *nativeExecution) renew(ctx context.Context) error {
+	e.scheduler.mu.Lock()
+	claim, ok := e.scheduler.nativeClaims[string(e.claim.lease.WorkItemID)]
+	e.scheduler.mu.Unlock()
+	if !ok || claim.lease.FencingToken != e.claim.lease.FencingToken {
+		return runner.ErrExecutionAuthorityUnavailable
+	}
+	_, err := e.scheduler.renewNativeClaim(ctx, string(e.claim.lease.WorkItemID), claim)
+	return err
 }
 
 func (e *nativeExecution) validationError(err error) error {
@@ -380,7 +404,12 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 				if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 					return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 				}
-				e.change = &runner.NativeChange{Error: err.Error()}
+				if nativeTransportUnavailable(err) {
+					e.change = &runner.NativeChange{Error: err.Error()}
+				} else {
+					e.change = &runner.NativeChange{VersionError: err.Error(), VersionCode: hubErrorCode(err)}
+					e.settled = true
+				}
 				return nil
 			}
 		}
@@ -395,8 +424,10 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 			if nativeTransportUnavailable(err) {
 				e.change.VersionID, e.change.VersionError, e.change.VersionCode, e.change.Reviewed = "", "", "", false
 				e.change.Error = err.Error()
-			} else if e.change.VersionError == "" {
-				e.change.Error = err.Error()
+			} else {
+				e.change.Error = ""
+				e.change.VersionError, e.change.VersionCode = err.Error(), hubErrorCode(err)
+				e.settled = true
 			}
 		}
 	}
@@ -407,6 +438,9 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	preparationErr := e.prepareFinish(ctx, outcome)
+	if e.change != nil && e.change.Error != "" {
+		return fmt.Errorf("%w: %s", ErrUnavailable, e.change.Error)
+	}
 	if preparationErr != nil {
 		outcome = "failed"
 	}
@@ -438,7 +472,9 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 		return nil
 	}
 	if e.remaining() <= 0 {
-		return orchestrator.ErrSchedulingClaimLost
+		if err := e.renew(ctx); err != nil {
+			return err
+		}
 	}
 	return e.Finish(ctx, outcome)
 }
@@ -546,7 +582,9 @@ func (e *nativeExecution) flush(ctx context.Context) error {
 		return nil
 	}
 	if e.remaining() <= 0 {
-		return runner.ErrExecutionAuthorityUnavailable
+		if err := e.renew(ctx); err != nil {
+			return e.executionError(err)
+		}
 	}
 	if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
 		return e.executionError(err)

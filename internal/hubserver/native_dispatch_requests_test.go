@@ -147,6 +147,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		continued      bool
 		commented      bool
 		wantCandidate  bool
+		accepted       bool
 		legacy         bool
 		retainedSource bool
 		checkpointEdit func(*tracker.NativeCheckpoint)
@@ -170,8 +171,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "native273 malformed predicate remains held", finalMessage: strings.Replace(instanceReport, "    reason:", "    predicate: instance_available\n    reason:", 1)},
 		{name: "unfinished custom Rework remains runnable", disposition: &tracker.NativeDisposition{Status: "in_progress"}, wantCandidate: true},
 		{name: "unfinished dirty source remains runnable", disposition: &tracker.NativeDisposition{Status: "in_progress"}, worktreeState: "dirty", wantCandidate: true},
-		{name: "completed custom Rework is answered", disposition: &tracker.NativeDisposition{Status: "complete"}},
-		{name: "completed dirty source is answered", disposition: &tracker.NativeDisposition{Status: "complete"}, worktreeState: "dirty"},
+		{name: "unaccepted completed custom Rework remains claimable", disposition: &tracker.NativeDisposition{Status: "complete"}, wantCandidate: true},
+		{name: "accepted completion remains answered", disposition: &tracker.NativeDisposition{Status: "complete"}, accepted: true},
+		{name: "unaccepted completed dirty source remains claimable", disposition: &tracker.NativeDisposition{Status: "complete"}, worktreeState: "dirty", wantCandidate: true},
 		{name: "explicit blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}},
 		{name: "dirty external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, worktreeState: "dirty"},
 		{name: "unfinished external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", Blockers: true}},
@@ -244,6 +246,11 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			}
 			revision := f.reload(t).Revision
 			f.finish(t, test.disposition)
+			if test.accepted {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.runtime.completion.acceptance_recorded', json('true')) WHERE id = ?`, f.attempt); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.publication != "" {
 				rules := tracker.ChangeReviewPolicy{PolicyID: f.policy, RequireReview: true}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
