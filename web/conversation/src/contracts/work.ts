@@ -393,6 +393,7 @@ export const CollaborationData = Schema.Struct({
   from_state: Schema.optional(Schema.String),
   to_state: Schema.optional(Schema.String),
   reason: Schema.optional(Schema.String),
+  reason_detail: Schema.optional(Schema.String),
 });
 export type CollaborationData = typeof CollaborationData.Type;
 

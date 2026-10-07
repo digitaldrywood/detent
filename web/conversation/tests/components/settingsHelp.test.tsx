@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ProjectSettingsView, draftOf } from "../../src/app/account/ProjectSettings.tsx";
+import { ProjectSettingsView, draftOf, draftChanged } from "../../src/app/account/ProjectSettings.tsx";
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
 import { SettingsHelp } from "../../src/app/settings/SettingsHelp.tsx";
 import type { FleetResponse, ProjectIntegration, RunnerRouting, PolicyApproval } from "../../src/contracts/account.ts";
@@ -53,6 +53,29 @@ function renderProject(canManage = true, overrides: Partial<React.ComponentProps
 }
 
 describe("settings help interactions", () => {
+  it("edits the archive periods and preserves Never", async () => {
+    const user = userEvent.setup();
+    const onDraftChange = vi.fn();
+    renderProject(true, { onDraftChange });
+    const completed = await screen.findByRole("combobox", { name: "Archive completed issues" });
+    const cancelled = screen.getByRole("combobox", { name: "Archive cancelled issues" });
+    expect((completed as HTMLSelectElement).value).toBe("30");
+    expect((cancelled as HTMLSelectElement).value).toBe("7");
+    await user.selectOptions(completed, "14");
+    expect(onDraftChange).toHaveBeenLastCalledWith({ ...draftOf(integration), archiveCompletedAfterDays: 14 });
+    await user.selectOptions(cancelled, "never");
+    const never = { ...draftOf(integration), archiveCancelledAfterDays: null };
+    expect(onDraftChange).toHaveBeenLastCalledWith(never);
+    expect(draftChanged(never, draftOf(integration))).toBe(true);
+    expect(draftOf({ ...integration, archive_cancelled_after_days: null }).archiveCancelledAfterDays).toBeNull();
+  });
+
+  it.each([false, true])("disables archive controls when management is unavailable or saving (%s)", async (saving) => {
+    renderProject(saving, { saving });
+    expect((await screen.findByRole("combobox", { name: "Archive completed issues" }) as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByRole("combobox", { name: "Archive cancelled issues" }) as HTMLSelectElement).disabled).toBe(true);
+  });
+
   it.each(["conflict", "historical", "resolved"] as const)("shows shared policy %s without another approval action", async (state) => {
     const policy: PolicyApproval = { ...policyFixture, policy: { ...policyFixture.policy, configuration: { behavior: {}, prompt: "Run the work." } } };
     renderProject(true, { policy, observedPolicies: state === "resolved" ? [] : [{

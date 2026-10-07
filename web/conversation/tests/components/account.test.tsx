@@ -435,6 +435,7 @@ describe("the project settings", () => {
   it("shows the saved workflow and submits a reviewed edit without allowing viewer edits", () => {
     const integration = {
       profile: "native", revision: "2", intake: "disabled", projection: "disabled", repository_enabled: false,
+      archive_completed_after_days: 30, archive_cancelled_after_days: 7,
       authority: { workflow: "detent" },
       states: [
         { name: "Backlog", terminal: false, dispatchable: false, operator_only: true, transitions: ["Todo"] },

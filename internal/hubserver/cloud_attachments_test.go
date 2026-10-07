@@ -273,6 +273,9 @@ func TestCloudAttachmentRetention(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+				t.Fatal(err)
+			}
 			response := f.serve(t, hostedSharedRequest{kind: cloudassert.KindService, method: http.MethodPost, target: "/internal/v1/attachments/expired", body: "{}"})
 			if response.Code != http.StatusOK {
 				t.Fatalf("sweep=%d %s", response.Code, response.Body.String())

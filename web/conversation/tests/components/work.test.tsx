@@ -762,6 +762,29 @@ async function settledWork() {
   await waitFor(() => expect(screen.getByTestId("work-stats").getAttribute("aria-busy")).toBe("false"));
 }
 
+describe("the archive period hint", () => {
+  it.each([
+    [30, 7, "Closed issues archive after 30 days, cancelled after 7."],
+    [14, null, "Completed issues archive after 14 days."],
+    [null, 60, "Cancelled issues archive after 60 days."],
+    [null, null, null],
+  ] as const)("reads configured periods %s/%s in List view", async (completed, cancelled, hint) => {
+    await pagedWork("/work/p/proj_alpha?view=list", (fetch) => async (input, init) => {
+      if (new URL(input, "http://fixture.test").pathname.endsWith("/integration")) {
+        return Response.json({ profile: "native", revision: "1", intake: "disabled", projection: "disabled", repository_enabled: false,
+          archive_completed_after_days: completed, archive_cancelled_after_days: cancelled });
+      }
+      return fetch(input, init);
+    });
+    await settledWork();
+    if (hint === null) {
+      expect(screen.queryByText(/issues archive after/)).toBeNull();
+    } else {
+      expect(await screen.findByText(hint)).toBeTruthy();
+    }
+  });
+});
+
 describe("the Work clock render boundary", () => {
   it("shares one timer and releases it after the final label unmounts", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });

@@ -16,7 +16,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { LoaderCircleIcon, PlusIcon } from "lucide-react";
 
 import { Button } from "../../components/ui/button.tsx";
-import { useAccountBootstrap } from "../account/context.ts";
+import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
+import { useResource } from "../account/useResource.ts";
 import { useClient } from "../client.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { boardScopeMeta } from "./lib/format.ts";
@@ -62,6 +63,13 @@ function applyFilters(
   });
 }
 
+function archivePeriodsHint(completed: number | null, cancelled: number | null): string | null {
+  if (completed !== null && cancelled !== null) return `Closed issues archive after ${completed} days, cancelled after ${cancelled}.`;
+  if (completed !== null) return `Completed issues archive after ${completed} days.`;
+  if (cancelled !== null) return `Cancelled issues archive after ${cancelled} days.`;
+  return null;
+}
+
 function narrowed(view: WorkViewState): boolean {
   return (
     view.archived === true ||
@@ -85,6 +93,11 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const searchRef = React.useRef<HTMLInputElement>(null);
   const newIssue = useNewIssue();
   const accountBootstrap = useAccountBootstrap();
+  const accountApi = useAccountApi();
+  const integration = useResource(async () => projectId === null ? null : accountApi.integration(projectId), [accountApi, projectId]);
+  const archiveHint = integration.value?.profile === "native"
+    ? archivePeriodsHint(integration.value.archive_completed_after_days, integration.value.archive_cancelled_after_days)
+    : null;
   useNewIssueScope(projectId);
 
   // An issue created from any entry point, this board's or the palette's,
@@ -337,13 +350,16 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
             Loading work…
           </div>
         ) : null) : firstRunPanel ?? (view.view === "list" ? (
-          <WorkList
-            items={items}
-            showProject={projectId === null}
-            onOpen={open}
-            movesFor={movesFor}
-            onMove={move}
-          />
+          <>
+            {archiveHint === null ? null : <p className="px-5 pb-3 text-sm text-muted-foreground">{archiveHint}</p>}
+            <WorkList
+              items={items}
+              showProject={projectId === null}
+              onOpen={open}
+              movesFor={movesFor}
+              onMove={move}
+            />
+          </>
         ) : (
           <div className="flex h-full items-start gap-3 px-5 pb-5" data-testid="work-board">
             {visible.length === 0 ? (

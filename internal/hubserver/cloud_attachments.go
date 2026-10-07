@@ -329,10 +329,7 @@ func (s *Service) expiredCloudAttachments(c echo.Context) error {
 	if !ok || claims.Kind != cloudassert.KindService {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	ctx, now := c.Request().Context(), s.config.now()
-	if _, err := s.database.db.ExecContext(ctx, "UPDATE attachments SET deleted_at=? WHERE deleted_at IS NULL AND work_item_id IS NULL AND julianday(created_at)<=julianday(?)", formatHubTime(now), formatHubTime(now.Add(-attachment.OrphanTTL))); err != nil {
-		return s.nativeAPIError(c, err)
-	}
+	ctx := c.Request().Context()
 	rows, err := s.database.db.QueryContext(ctx, "SELECT "+cloudAttachmentColumns+" FROM attachments WHERE deleted_at IS NOT NULL AND object_deleted_at IS NULL ORDER BY created_at,id LIMIT 100")
 	if err != nil {
 		return s.nativeAPIError(c, err)
