@@ -625,7 +625,7 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 	}
 	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "shared-host", DisplayName: "Shared runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "amd64"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, organization+"/runner-enrollments/redeem", issued.Token, redemption), http.StatusCreated)
-	response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "private-run"}, Title: "Private run", State: "Todo"})
+	response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "private-run"}, Title: "Private run", Body: issueContractTestSections, State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, response, &issue)

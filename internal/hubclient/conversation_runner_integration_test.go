@@ -43,7 +43,7 @@ func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 			var id, issueID string
 			if ordinary {
 				var issue tracker.NativeIssue
-				hub.expect(t, http.MethodPost, "/work-items", map[string]any{"idempotency_key": "ordinary-1", "title": "Rewrite the parser", "body": "Split the parser into a lexer and a parser.", "state": "Todo"}, http.StatusOK, &issue)
+				hub.expect(t, http.MethodPost, "/work-items", map[string]any{"idempotency_key": "ordinary-1", "title": "Rewrite the parser", "body": "Split the parser into a lexer and a parser." + issueContractTestSections, "state": "Todo"}, http.StatusOK, &issue)
 				issueID = string(issue.WorkItemID)
 				hub.expect(t, http.MethodPost, "/work-items/"+issueID+"/comments", map[string]any{"idempotency_key": "comment-1", "body": "Historical issue comment: do not steer this turn."}, http.StatusOK, nil)
 			} else {
@@ -61,7 +61,7 @@ func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 				}
 				hub.expect(t, http.MethodPost, "/conversations/"+id+"/link", map[string]any{
 					"key": "link-1", "share_history": true,
-					"issue": map[string]any{"title": "Rewrite the parser", "description": "Split the parser into a lexer and a parser."},
+					"issue": map[string]any{"title": "Rewrite the parser", "description": "Split the parser into a lexer and a parser." + issueContractTestSections},
 				}, http.StatusOK, &link)
 				issueID = link.Issue.ID
 				if receipt := hub.command(t, id, conversation.Command{Key: "follow-up", Kind: conversation.CommandMessage, Text: "Keep the public API stable."}); receipt.Status != conversation.DeliveryQueued {

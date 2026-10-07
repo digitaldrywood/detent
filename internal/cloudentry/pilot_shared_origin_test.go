@@ -38,6 +38,8 @@ import (
 
 const pilotOperatorToken = "detent_pilot_entitlement_operator_0123456789abcdef"
 
+const issueContractTestSections = "## Acceptance criteria\nComplete the requested work.\n## Must not break\nExisting behavior.\n## How we know it worked\nRun the project checks."
+
 type pilotTenantLauncher struct {
 	provider   *fakeProvider
 	billing    billing.Provider
@@ -823,7 +825,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		}
 		descriptor := pilotPolicy()
 		pilotStatus(t, "policy", alpha.owner.json(http.MethodPut, alpha.projectAPI()+"/onboarding/policy", alpha.ownerCSRF, policy.Change{Policy: descriptor}), http.StatusOK)
-		created := alpha.owner.json(http.MethodPost, alpha.projectAPI()+"/work-items", alpha.ownerCSRF, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "runner-work"}, Title: "Runner work", State: "Todo"})
+		created := alpha.owner.json(http.MethodPost, alpha.projectAPI()+"/work-items", alpha.ownerCSRF, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "runner-work"}, Title: "Runner work", Body: issueContractTestSections, State: "Todo"})
 		pilotStatus(t, "runner issue", created, http.StatusOK)
 		pilotDecode(t, created, &alphaIssue)
 		claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: alphaIssue.WorkItemID, MachineID: alphaRunner.MachineID, SessionID: "shared-origin", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}

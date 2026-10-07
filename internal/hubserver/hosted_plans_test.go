@@ -1119,7 +1119,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 		d.hostedPlans = nil
 		for i := previous; i < retained; i++ {
 			issue := f.create(t, fmt.Sprintf("retained-%d", i))
-			body := strings.Repeat("x", 32768)
+			body := strings.Repeat("x", 32768) + issueContractTestSections
 			if _, err := d.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, issue.WorkItemID); err != nil {
 				t.Fatal(err)
 			}

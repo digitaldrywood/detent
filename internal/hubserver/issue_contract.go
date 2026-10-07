@@ -46,6 +46,9 @@ func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope na
 	if strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") {
 		return false, nil
 	}
+	if issue.LinkedSource != nil && issue.LinkedSource.Status != "complete" {
+		return true, nil
+	}
 	if issue.IssueContract.Exempt {
 		return true, nil
 	}

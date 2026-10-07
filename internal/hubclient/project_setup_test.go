@@ -27,7 +27,7 @@ func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 		t.Skip("fixture runs POSIX setup hooks")
 	}
 	h := newNativeChangeHub(t, true)
-	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "setup failure must not claim this", State: "Todo"})
+	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "setup failure must not claim this", Body: issueContractTestSections, State: "Todo"})
 	if err != nil {
 		t.Fatal(err)
 	}

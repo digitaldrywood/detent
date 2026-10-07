@@ -40,7 +40,7 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		human := project == f.project
 		rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: human, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted pilot CI")), Source: "independent", MaxAgeSeconds: 3600}}}
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "pilot-review-policy"}, Policy: rules}), http.StatusOK)
-		response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "pilot-policy-job"}, Title: "Pilot repository review journey", State: "Todo", Labels: []string{"pilot-review"}})
+		response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "pilot-policy-job"}, Title: "Pilot repository review journey", Body: issueContractTestSections, State: "Todo", Labels: []string{"pilot-review"}})
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)
@@ -74,7 +74,7 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		if got := pilotChangeSummary(t, f, path); got.Status != "needs_evidence" || got.Checks != "success" {
 			t.Fatalf("missing validator marked ready: %+v", got)
 		}
-		validator := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "pilot-validator", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
+		validator := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "pilot-validator", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff")), CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "pilot_review_test.go:TestPilotHostedTwoRepositoryReadiness", Behavior: "A separate validator session reviews each repository version"}}}}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", runner.Credential, validator), http.StatusOK)
 		finish := start
 		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"

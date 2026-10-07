@@ -124,7 +124,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			body := "private-body /private/runner credential-sentinel"
+			body := "private-body /private/runner credential-sentinel" + issueContractTestSections
 			if test.body != "" {
 				body += "\n" + test.body
 			}

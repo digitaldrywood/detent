@@ -63,10 +63,11 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure string) {
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previousPolicyID, Policy: h.descriptor}); err != nil {
 		t.Fatal(err)
 	}
-	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Plan then implement", Body: "Update the README."})
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Plan then implement", Body: "Update the README." + issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}
+	confirmIssueContract(t, h.admin, issue.ID)
 	source := nativeChangeSourceRepo(t)
 	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 	nativeChangeGit(t, source, "config", "url."+source+".insteadOf", nativeChangeRepository)
