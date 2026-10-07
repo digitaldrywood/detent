@@ -237,13 +237,15 @@ func CanonicalPath(u *url.URL) bool {
 	if err != nil {
 		return false
 	}
-	for _, values := range query {
-		if len(values) > 1 {
+	for key, values := range query {
+		if len(values) > 1 && !repeatableQueryKeys[key] {
 			return false
 		}
 	}
 	return true
 }
+
+var repeatableQueryKeys = map[string]bool{"state": true, "label": true, "assignee": true, "priority": true}
 
 func PublicKeyOf(key ed25519.PrivateKey) string {
 	if len(key) != ed25519.PrivateKeySize {

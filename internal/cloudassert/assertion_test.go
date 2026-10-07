@@ -194,6 +194,9 @@ func TestCanonicalPath(t *testing.T) {
 		{"/organizations/org_a/../org_b", false},
 		{"/organizations//org_a", false},
 		{"/organizations/org_a/projects/p?cursor=a&cursor=b", false},
+		{"/api/v2/organizations/org_a/projects/p/work-items?state=Todo&state=Blocked&open=true", true},
+		{"/api/v2/organizations/org_a/projects/p/work-items?label=a&label=b&assignee=x&assignee=y&priority=0&priority=1", true},
+		{"/api/v2/organizations/org_a/projects/p/work-items?state=Todo&state=Blocked&limit=1&limit=2", false},
 		{"/organizations/org_a/projects/p?cursor=%zz", false},
 	} {
 		t.Run(test.target, func(t *testing.T) {
