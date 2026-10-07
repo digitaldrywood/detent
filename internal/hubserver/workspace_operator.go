@@ -22,30 +22,7 @@ type workspaceOperatorExecutor struct{ server *Service }
 
 var errWorkspaceOperationUnavailable = errors.New("workspace operation is unavailable")
 
-type workspaceToolRequest struct {
-	Path              string           `json:"path"`
-	ShowIgnored       bool             `json:"show_ignored"`
-	ProjectID         string           `json:"project_id"`
-	RequestID         string           `json:"request_id"`
-	WorkspaceID       string           `json:"workspace_id"`
-	ConversationID    string           `json:"conversation_id"`
-	AttachmentID      string           `json:"attachment_id"`
-	ActionID          string           `json:"action_id"`
-	RunID             string           `json:"run_id"`
-	RecordingID       string           `json:"recording_id"`
-	WorkItemID        string           `json:"work_item_id"`
-	SubjectWorkItemID string           `json:"subject_work_item_id"`
-	Cursor            string           `json:"cursor"`
-	Query             string           `json:"query"`
-	State             string           `json:"state"`
-	Settled           *bool            `json:"settled"`
-	Before            int64            `json:"before"`
-	Limit             int              `json:"limit"`
-	Offset            int              `json:"offset"`
-	Length            int              `json:"length"`
-	ExpectedRevision  tracker.Revision `json:"expected_revision"`
-	Input             json.RawMessage  `json:"input"`
-}
+type workspaceToolRequest = operatortool.WorkspaceArguments
 
 func (e workspaceOperatorExecutor) OpenConnection(ctx context.Context) error {
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
@@ -406,9 +383,7 @@ func (e workspaceOperatorExecutor) actionResult(action chat.Action, data json.Ra
 	}{action, action.ID, action.Status, data, operatortool.ActionResult})
 }
 func (e workspaceOperatorExecutor) connectionResult(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
-	var request struct {
-		ActionID string `json:"action_id"`
-	}
+	var request operatortool.ActionResultArguments
 	if call.Name == operatortool.ConnectionInfo {
 		if operatortool.DecodeArguments(call.Arguments, &struct{}{}) != nil {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
@@ -609,11 +584,7 @@ func (s *Service) commandWorkspaceTool(ctx context.Context, scope nativeScope, n
 		}
 		return s.commandPatchConversation(ctx, scope, r.ConversationID, input)
 	case "upload_conversation_attachment":
-		var input struct {
-			Name    string `json:"name"`
-			MIME    string `json:"mime"`
-			Content string `json:"content_base64"`
-		}
+		var input operatortool.ConversationAttachmentArguments
 		if operatortool.DecodeArguments(r.Input, &input) != nil {
 			return nil, operatortool.ErrInvalidArguments
 		}

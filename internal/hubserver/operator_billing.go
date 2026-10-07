@@ -180,9 +180,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return e.service.administration.Execute(ctx, call)
 	}
 	if call.Name == operatortool.ActionResult {
-		var request struct {
-			ActionID string `json:"action_id"`
-		}
+		var request operatortool.ActionResultArguments
 		if operatortool.DecodeArguments(call.Arguments, &request) == nil {
 			if action, ok := e.service.operatorChat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID); ok {
 				if _, err := operatortool.WorkspaceDefinition(string(action.Kind)); err == nil {
@@ -213,9 +211,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	case operatortool.BillingCheckout, operatortool.BillingPortal, operatortool.CreditCheckout, operatortool.CreditAutoFund:
 		return e.submitBilling(ctx, call)
 	case operatortool.ActionResult:
-		var request struct {
-			ActionID string `json:"action_id"`
-		}
+		var request operatortool.ActionResultArguments
 		if operatortool.DecodeArguments(call.Arguments, &request) != nil || request.ActionID == "" || len(request.ActionID) > 256 {
 			return result, operatortool.ErrInvalidArguments
 		}
@@ -265,10 +261,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		}{conversation.ConnectionID, conversation.OrganizationID})
 	case operatortool.BillingStatus, operatortool.BillingUsage, operatortool.BillingExport, operatortool.HostedPlan, operatortool.HostedUsage:
 		kind := "billing"
-		var request struct {
-			ProjectID string `json:"project_id"`
-			Range     string `json:"range"`
-		}
+		var request operatortool.HostedUsageArguments
 		if call.Name == operatortool.HostedUsage {
 			kind = ""
 			if operatortool.DecodeArguments(call.Arguments, &request) != nil || len(request.ProjectID) > 256 {
@@ -369,29 +362,19 @@ func decodeBillingAction(name string, raw json.RawMessage) (billingActionRequest
 	var request billingActionRequest
 	switch name {
 	case operatortool.BillingCheckout, operatortool.CreditCheckout:
-		var input struct {
-			RequestID string `json:"request_id"`
-			Price     string `json:"price"`
-		}
+		var input operatortool.CheckoutArguments
 		if operatortool.DecodeArguments(raw, &input) != nil || input.Price == "" {
 			return request, operatortool.ErrInvalidArguments
 		}
 		request.RequestID, request.Price = input.RequestID, input.Price
 	case operatortool.BillingPortal:
-		var input struct {
-			RequestID string `json:"request_id"`
-		}
+		var input operatortool.PortalArguments
 		if operatortool.DecodeArguments(raw, &input) != nil {
 			return request, operatortool.ErrInvalidArguments
 		}
 		request.RequestID = input.RequestID
 	case operatortool.CreditAutoFund:
-		var input struct {
-			RequestID string  `json:"request_id"`
-			Price     *string `json:"price"`
-			Enabled   *bool   `json:"enabled"`
-			Threshold *int64  `json:"threshold_cents"`
-		}
+		var input operatortool.AutoFundArguments
 		if operatortool.DecodeArguments(raw, &input) != nil || input.Price == nil || input.Enabled == nil || input.Threshold == nil || *input.Threshold < 0 {
 			return request, operatortool.ErrInvalidArguments
 		}

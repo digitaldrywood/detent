@@ -17,9 +17,7 @@ func (s *Server) operatorChatTool(ctx context.Context, call operatortool.Call) (
 		return operatortool.Result{}, err
 	}
 	if call.Name == "get_operator_chat" {
-		var request struct {
-			Limit int `json:"limit"`
-		}
+		var request operatortool.OperatorChatReadArguments
 		if operatortool.DecodeArguments(call.Arguments, &request) != nil || request.Limit < 0 || request.Limit > 200 {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
@@ -39,11 +37,7 @@ func (s *Server) operatorChatTool(ctx context.Context, call operatortool.Call) (
 		}
 		return operatorResult(transcript)
 	}
-	var request struct {
-		ProjectID string `json:"project_id"`
-		RequestID string `json:"request_id"`
-		Message   string `json:"message"`
-	}
+	var request operatortool.OperatorChatArguments
 	if operatortool.DecodeArguments(call.Arguments, &request) != nil || strings.TrimSpace(request.ProjectID) == "" || len(request.ProjectID) > 256 || request.RequestID == "" || len(request.RequestID) > 128 || strings.TrimSpace(request.Message) == "" || len(request.Message) > 8192 {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}

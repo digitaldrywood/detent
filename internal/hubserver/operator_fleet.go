@@ -22,21 +22,7 @@ var errHubOperatorUnavailable = errors.New("operator command is unavailable")
 
 type hubOperatorResolverKey struct{}
 type hubFleetExecutor struct{ service *Service }
-type hubFleetRequest struct {
-	Release      bool                         `json:"release,omitempty"`
-	FromRelease  bool                         `json:"from_release,omitempty"`
-	Backend      string                       `json:"backend,omitempty"`
-	ProjectID    string                       `json:"project_id,omitempty"`
-	RequestID    string                       `json:"request_id,omitempty"`
-	RunnerID     string                       `json:"runner_id,omitempty"`
-	MachineID    string                       `json:"machine_id,omitempty"`
-	EnrollmentID string                       `json:"enrollment_id,omitempty"`
-	Enrollment   runnerauth.EnrollmentRequest `json:"enrollment,omitempty"`
-	Change       json.RawMessage              `json:"change,omitempty"`
-	Limit        int                          `json:"limit,omitempty"`
-	Cursor       string                       `json:"cursor,omitempty"`
-	Offset       int                          `json:"offset,omitempty"`
-}
+type hubFleetRequest = operatortool.HubFleetArguments
 
 func hubFleetTool(name string) bool {
 	if name == operatortool.AnalyticsDashboard || name == operatortool.TimeSeries || name == operatortool.Reports || name == operatortool.GetUrgentRunnerUpdate || name == operatortool.MarkUrgentRunnerUpdate {
@@ -166,9 +152,7 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 		}{c.ConnectionID, c.OrganizationID})
 	}
 	if call.Name == operatortool.ActionResult {
-		var r struct {
-			ActionID string `json:"action_id"`
-		}
+		var r operatortool.ActionResultArguments
 		if operatortool.DecodeArguments(call.Arguments, &r) != nil || r.ActionID == "" || len(r.ActionID) > 256 {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}

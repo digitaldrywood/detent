@@ -19,11 +19,7 @@ var errHostedContextUnavailable = errors.New("hosted application context is unav
 
 type hostedContextExecutor struct{ service *Service }
 
-type hostedEventRequest struct {
-	ProjectID   string `json:"project_id"`
-	WorkspaceID string `json:"workspace_id"`
-	Cursor      string `json:"cursor"`
-}
+type hostedEventRequest = operatortool.HostedEventArguments
 
 type hostedEventCursor struct {
 	Organization string `json:"organization_id"`
