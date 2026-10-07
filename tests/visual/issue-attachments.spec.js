@@ -121,9 +121,11 @@ test("another project's attachment renders unavailable without requesting bytes"
   store.files.set(id, { id, project_id: "prj_other", name: "private.png", content_type: "image/png", size: png.length, width: 1, height: 1 });
   const metadataReads = [];
   page.on("request", (request) => { if (request.url().includes(id)) metadataReads.push(request.url()); });
-  await page.getByRole("textbox", { name: "Comment", exact: true }).fill(`![private](attachment:${id})`);
+  const marker = `Cross-project attachment ${id}`;
+  await page.getByRole("textbox", { name: "Comment", exact: true }).fill(`${marker}\n\n![private](attachment:${id})`);
   await page.getByRole("button", { name: "Send message", exact: true }).click();
-  await expect(page.getByTestId("attachment-unavailable").last()).toBeVisible();
+  const comment = page.getByTestId("issue-comment").filter({ hasText: marker });
+  await expect(comment.getByTestId("attachment-unavailable")).toBeVisible();
   expect(metadataReads.length).toBeGreaterThan(0);
   expect(metadataReads.every((url) => new URL(url).origin === new URL(hub.fixture.url).origin && url.includes(`/projects/${hub.fixture.project_id}/attachments/`) && url.endsWith("/metadata"))).toBe(true);
   expect(store.reads.filter((url) => url.includes(id))).toEqual([]);

@@ -2616,13 +2616,16 @@ test("archives native work, finds retained history, and restores from the archiv
   const history = await hubAPI(page, "GET", `${project}/work-items/${item}/history`);
   expect(history.status).toBe(200);
   expect(JSON.stringify(history.payload)).toContain('"operation":"archive"');
-  await page.goto(new URL(`/work/p/${hub.fixture.project_id}?view=list`, hub.fixture.url).toString());
+  await page.goto(new URL(`/work/p/${hub.fixture.project_id}?view=list&tab=closed`, hub.fixture.url).toString());
+  await expect(page.getByTestId("list-tab-closed")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("work-list").or(page.getByTestId("work-list-empty"))).toBeVisible();
   await expect(page.getByText("Retain completed archive history", { exact: true })).toHaveCount(0);
   await page.getByTestId("work-archived").click();
   await expect(page.getByText("Retain completed archive history", { exact: true })).toBeVisible();
   await expect(page).toHaveURL(/archived=true/);
   await page.reload();
   await expect(page.getByTestId("work-archived")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("list-tab-closed")).toHaveAttribute("aria-pressed", "true");
   await page.screenshot({ path: testInfo.outputPath("archived-list.png") });
   await page.getByText("Retain completed archive history", { exact: true }).click();
   await page.getByRole("button", { name: "Restore issue", exact: true }).click();
